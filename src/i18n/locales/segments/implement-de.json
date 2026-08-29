@@ -1,6 +1,7 @@
 {
   "tasks": "Aufgaben",
   "createStandaloneTask": "Erstellen Sie eine eigenständige Aufgabe",
+  "standaloneLaunch": { "title": "Aufgabe wird vorbereitet", "preparingTask": "Aufgabe vorbereiten", "creatingName": "Namen erstellen", "creatingWorkspace": "Arbeitsbereich erstellen", "preparingProject": "Projekt vorbereiten", "startingAgent": "Agent starten", "ready": "Bereit", "retry": "Erneut versuchen", "details": "Details" },
   "selectProject": "Wählen Sie ein Projekt aus, um Aufgaben anzuzeigen",
   "selectTaskShort": "Wählen Sie eine Aufgabe aus",
   "selectTask": "Wählen Sie eine Aufgabe aus, um Änderungen zu überprüfen",

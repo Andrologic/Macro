@@ -10,6 +10,8 @@ import {
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
   ConversationRuntimeState,
+  StandaloneTaskLaunchProgress,
+  StandaloneTaskLaunchStep,
   ContextCompactionKind,
   ContextFootprint,
   ContextFootprintReason,
@@ -409,6 +411,7 @@ const METADATA_MAX_TITLE_LENGTH = 72;
 const METADATA_MAX_DESCRIPTION_LENGTH = 180;
 const MANUAL_FEATURE_MAX_SLUG_LENGTH = 64;
 const MANUAL_FEATURE_METADATA_ATTEMPT_LIMIT = 4;
+const MANUAL_FEATURE_METADATA_TIMEOUT_MS = 15_000;
 const ARCHITECT_PLAN_METADATA_ATTEMPT_LIMIT = 3;
 const COPILOT_COMPACTION_SUMMARY_TIMEOUT_MS = 60_000;
 const metadataGenerationInFlight = new Set<string>();
@@ -1051,6 +1054,10 @@ interface ChatStore {
   selectionRequestId: number;
   pendingArchitectPlanSwitchRequestId: number | null;
   conversationRuntimeById: Record<string, ConversationRuntimeState | undefined>;
+  standaloneTaskLaunchByConversationId: Record<
+    string,
+    StandaloneTaskLaunchProgress | undefined
+  >;
   conversationCompactionStatusById: Record<
     string,
     ConversationCompactionStatus | undefined
@@ -2807,6 +2814,106 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? { lastError: options.globalLastError ?? null }
         : {}),
     }));
+  };
+
+  const standaloneTaskLaunchSteps: StandaloneTaskLaunchStep[] = [
+    "preparing_task",
+    "creating_name",
+    "creating_workspace",
+    "preparing_project",
+    "starting_agent",
+  ];
+
+  const beginStandaloneTaskLaunch = (params: {
+    conversationId: string;
+    taskId: string;
+    userMessageId: string;
+    sessionId: string;
+  }) => {
+    set((state) => ({
+      standaloneTaskLaunchByConversationId: {
+        ...state.standaloneTaskLaunchByConversationId,
+        [params.conversationId]: {
+          ...params,
+          activeStep: "preparing_task",
+          completedSteps: [],
+          status: "running",
+          error: null,
+          canRetry: false,
+        },
+      },
+    }));
+  };
+
+  const setStandaloneTaskLaunchStep = (
+    conversationId: string,
+    sessionId: string,
+    activeStep: StandaloneTaskLaunchStep,
+  ) => {
+    set((state) => {
+      const current = state.standaloneTaskLaunchByConversationId[conversationId];
+      if (!current || current.sessionId !== sessionId) return state;
+      const activeIndex = standaloneTaskLaunchSteps.indexOf(activeStep);
+      return {
+        standaloneTaskLaunchByConversationId: {
+          ...state.standaloneTaskLaunchByConversationId,
+          [conversationId]: {
+            ...current,
+            activeStep,
+            completedSteps: standaloneTaskLaunchSteps.slice(0, activeIndex),
+            status: "running",
+            error: null,
+            canRetry: false,
+          },
+        },
+      };
+    });
+  };
+
+  const completeStandaloneTaskLaunch = (
+    conversationId: string,
+    sessionId: string,
+  ) => {
+    set((state) => {
+      const current = state.standaloneTaskLaunchByConversationId[conversationId];
+      if (!current || current.sessionId !== sessionId) return state;
+      return {
+        standaloneTaskLaunchByConversationId: {
+          ...state.standaloneTaskLaunchByConversationId,
+          [conversationId]: {
+            ...current,
+            activeStep: "starting_agent",
+            completedSteps: [...standaloneTaskLaunchSteps],
+            status: "completed",
+            error: null,
+            canRetry: false,
+          },
+        },
+      };
+    });
+  };
+
+  const failStandaloneTaskLaunch = (params: {
+    conversationId: string;
+    sessionId: string;
+    error: string;
+    canRetry: boolean;
+  }) => {
+    set((state) => {
+      const current = state.standaloneTaskLaunchByConversationId[params.conversationId];
+      if (!current || current.sessionId !== params.sessionId) return state;
+      return {
+        standaloneTaskLaunchByConversationId: {
+          ...state.standaloneTaskLaunchByConversationId,
+          [params.conversationId]: {
+            ...current,
+            status: "error",
+            error: params.error,
+            canRetry: params.canRetry,
+          },
+        },
+      };
+    });
   };
 
   const updateConversationRuntimeIfSessionMatches = (
@@ -8070,6 +8177,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     apiKey?: string;
     modelId: string;
     reasoningEffort?: ReasoningEffort | null;
+    onStep?: (step: StandaloneTaskLaunchStep) => void;
   }): Promise<ManualFeatureDraftRecovery | null> => {
     const task = useTaskStore.getState().getTaskById(params.taskId);
     if (
@@ -8098,6 +8206,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         apiKey: params.apiKey,
         modelId: params.modelId,
         reasoningEffort: params.reasoningEffort,
+        onStep: params.onStep,
       });
     } catch (error) {
       await rollbackManualFeatureDraftAfterFailedLaunch(recovery);
@@ -8213,6 +8322,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     apiKey?: string;
     modelId: string;
     reasoningEffort?: ReasoningEffort | null;
+    onStep?: (step: StandaloneTaskLaunchStep) => void;
   }) => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(params.taskId);
@@ -8225,6 +8335,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
+    params.onStep?.("creating_name");
     const metadataProviderContext =
       await resolveMetadataGenerationProviderContext({
         providerId: params.providerId,
@@ -8336,22 +8447,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const requestManualFeatureMetadata = async (
       unavailableBranchNames: string[],
     ) => {
-      const output = await sendChatNonStreaming({
-        providerId: metadataProviderContext.providerId,
-        providerType: metadataProviderContext.providerType,
-        baseUrl: metadataProviderContext.baseUrl,
-        apiKey: metadataProviderContext.apiKey,
-        modelId: metadataProviderContext.modelId,
-        reasoningEffort: metadataProviderContext.reasoningEffort,
-        messages: prepareManualFeatureMetadataMessages(
-          task.title,
-          params.firstUserContent,
-          unavailableBranchNames,
-          selectedTaskKind,
-        ),
-        onComplete: () => {},
-        onError: () => {},
+      const abortController = new AbortController();
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          abortController.abort();
+          reject(new Error('Manual feature metadata generation timed out.'));
+        }, MANUAL_FEATURE_METADATA_TIMEOUT_MS);
       });
+
+      let output: string;
+      try {
+        output = await Promise.race([
+          sendChatNonStreaming({
+            providerId: metadataProviderContext.providerId,
+            providerType: metadataProviderContext.providerType,
+            baseUrl: metadataProviderContext.baseUrl,
+            apiKey: metadataProviderContext.apiKey,
+            modelId: metadataProviderContext.modelId,
+            reasoningEffort: metadataProviderContext.reasoningEffort,
+            messages: prepareManualFeatureMetadataMessages(
+              task.title,
+              params.firstUserContent,
+              unavailableBranchNames,
+              selectedTaskKind,
+            ),
+            signal: abortController.signal,
+            onComplete: () => {},
+            onError: () => {},
+          }),
+          timeout,
+        ]);
+      } finally {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+      }
       return keepSelectedTaskKind(extractManualFeatureMetadataFromModelOutput(output));
     };
 
@@ -8433,23 +8562,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     updateConversationMetadataLocally(params.conversationId, metadata);
 
-    if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.updateConversationDetails({
-        id: params.conversationId,
-        title: metadata.title,
-        description: metadata.description,
-      });
+    params.onStep?.("creating_workspace");
+    const [conversationMetadataResult, taskFinalizationResult] =
+      await Promise.allSettled([
+        tauriIpc.isTauriAvailable()
+          ? tauriIpc.updateConversationDetails({
+              id: params.conversationId,
+              title: metadata.title,
+              description: metadata.description,
+            })
+          : Promise.resolve(),
+        taskStore.finalizeManualFeatureDraft({
+          taskId: params.taskId,
+          conversationId: params.conversationId,
+          title: metadata.title,
+          description: metadata.description,
+          featureSlug: metadata.featureSlug,
+          taskKind: metadata.taskKind,
+        }),
+      ]);
+    if (taskFinalizationResult.status === "rejected") {
+      throw taskFinalizationResult.reason;
     }
-
-    await taskStore.finalizeManualFeatureDraft({
-      taskId: params.taskId,
-      conversationId: params.conversationId,
-      title: metadata.title,
-      description: metadata.description,
-      featureSlug: metadata.featureSlug,
-      taskKind: metadata.taskKind,
+    if (conversationMetadataResult.status === "rejected") {
+      throw conversationMetadataResult.reason;
+    }
+    await taskStore.startTask(params.taskId, {
+      onWorkspacesPrepared: () => params.onStep?.("preparing_project"),
     });
-    await taskStore.startTask(params.taskId);
 
     const refreshedTask = useTaskStore.getState().getTaskById(params.taskId);
     if (
@@ -12771,6 +12911,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectionRequestId: 0,
       pendingArchitectPlanSwitchRequestId: null,
       conversationRuntimeById: {},
+      standaloneTaskLaunchByConversationId: {},
       conversationCompactionStatusById: {},
       sessionCompactionEventsByConversationId: {},
       agentCodeCheckpointsByConversationId: {},
@@ -13220,6 +13361,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectionRequestId: 0,
     pendingArchitectPlanSwitchRequestId: null,
     conversationRuntimeById: {},
+    standaloneTaskLaunchByConversationId: {},
     conversationCompactionStatusById: {},
     sessionCompactionEventsByConversationId: {},
     agentCodeCheckpointsByConversationId: {},
@@ -13561,6 +13703,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ...buildMessageState([]),
         messageLoadStatusByConversationId: {},
         conversationRuntimeById: {},
+        standaloneTaskLaunchByConversationId: {},
         conversationCompactionStatusById: {},
         sessionCompactionEventsByConversationId: {},
         agentCodeCheckpointsByConversationId: {},
@@ -15215,6 +15358,61 @@ export const useChatStore = create<ChatStore>((set, get) => {
           : undefined;
         let finalizedManualFeatureDraft = false;
         let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
+        let userMessage: ChatMessage | null = null;
+        let userMessageCountBeforeSend = getOrderedConversationMessages(
+          conversationId,
+        ).filter((message) => message.role === "user").length;
+        const publishUserMessage = (message: ChatMessage) => {
+          get().addMessage(message);
+          if (images && images.length > 0) {
+            get().setMessageImages(message.id, images);
+          }
+          for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
+            const path = getFileRefPath(ref);
+            useCitationsStore.getState().addCitation({
+              type: "file",
+              scope: "context",
+              source: path,
+              title: ref.title,
+              path,
+              messageId: message.id,
+              conversationId,
+            });
+          }
+          if (shouldClearComposerContextRefs) {
+            clearComposerContextRefsIfRevisionMatches(
+              conversationId,
+              composerContextRefsRevisionAtSend,
+            );
+          }
+        };
+
+        const isFirstManualFeatureMessage =
+          modeAtSend === "Implement" &&
+          Boolean(resolvedTaskId) &&
+          taskForSend?.task_source === "standalone" &&
+          taskForSend.standalone_kind === "manual_feature" &&
+          taskForSend.draft === true &&
+          userMessageCountBeforeSend === 0;
+
+        if (isFirstManualFeatureMessage) {
+          userMessage = await buildUserMessageForSend({
+            conversationId,
+            turnId: activeTurnId,
+            taskId: resolvedTaskId,
+            content,
+            hiddenContext,
+            providerInputItems,
+            contextRefs: contextRefsForMessage,
+          });
+          publishUserMessage(userMessage);
+          beginStandaloneTaskLaunch({
+            conversationId,
+            taskId: resolvedTaskId,
+            userMessageId: userMessage.id,
+            sessionId: activeSessionId,
+          });
+        }
 
         if (modeAtSend === "Implement" && resolvedTaskId) {
           if (
@@ -15233,6 +15431,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 apiKey: providerConfigForUse.apiKey,
                 modelId: selectedModelId,
                 reasoningEffort: selectedReasoningEffort,
+                onStep: (step) => {
+                  if (activeSessionId) {
+                    setStandaloneTaskLaunchStep(
+                      conversationId,
+                      activeSessionId,
+                      step,
+                    );
+                  }
+                },
               });
             if (!isCurrentPreparation()) {
               return cancelledResult();
@@ -15247,63 +15454,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
             return cancelledResult();
           }
           assertStandaloneTaskExecutionContextReady(taskForSend);
+          if (isFirstManualFeatureMessage && activeSessionId) {
+            setStandaloneTaskLaunchStep(
+              conversationId,
+              activeSessionId,
+              "starting_agent",
+            );
+          }
         }
 
-        const userMessageCountBeforeSend = getOrderedConversationMessages(
-          conversationId,
-        ).filter((message) => message.role === "user").length;
-
-        const userMessage = await buildUserMessageForSend({
-          conversationId,
-          turnId: activeTurnId,
-          taskId: resolvedTaskId,
-          content,
-          hiddenContext,
-          providerInputItems,
-          contextRefs: contextRefsForMessage,
-        });
-        const publishUserMessage = () => {
-          get().addMessage(userMessage);
-          if (images && images.length > 0) {
-            get().setMessageImages(userMessage.id, images);
-          }
-          for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
-            const path = getFileRefPath(ref);
-            useCitationsStore.getState().addCitation({
-              type: "file",
-              scope: "context",
-              source: path,
-              title: ref.title,
-              path,
-              messageId: userMessage.id,
-              conversationId,
-            });
-          }
-        };
+        if (!userMessage) {
+          userMessageCountBeforeSend = getOrderedConversationMessages(
+            conversationId,
+          ).filter((message) => message.role === "user").length;
+          userMessage = await buildUserMessageForSend({
+            conversationId,
+            turnId: activeTurnId,
+            taskId: resolvedTaskId,
+            content,
+            hiddenContext,
+            providerInputItems,
+            contextRefs: contextRefsForMessage,
+          });
+        }
+        const persistedUserMessage = userMessage;
         const sentWithoutAssistantResult = () => ({
           status: "sent" as const,
           conversationId,
           turnId: activeTurnId ?? "",
-          userMessageId: userMessage.id,
+          userMessageId: persistedUserMessage.id,
           assistantMessageId: null,
         });
         if (!isCurrentPreparation()) {
-          publishUserMessage();
-          if (shouldClearComposerContextRefs) {
-            clearComposerContextRefsIfRevisionMatches(
-              conversationId,
-              composerContextRefsRevisionAtSend,
-            );
+          if (!isFirstManualFeatureMessage) {
+            publishUserMessage(persistedUserMessage);
           }
           return sentWithoutAssistantResult();
         }
 
-        publishUserMessage();
-        if (shouldClearComposerContextRefs) {
-          clearComposerContextRefsIfRevisionMatches(
-            conversationId,
-            composerContextRefsRevisionAtSend,
-          );
+        if (!isFirstManualFeatureMessage) {
+          publishUserMessage(persistedUserMessage);
         }
 
         if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
@@ -15345,7 +15535,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         try {
           const streamLaunch = await prepareAssistantStreamLaunch({
             conversationId,
-            replyToMessageId: userMessage.id,
+            replyToMessageId: persistedUserMessage.id,
             userContent: content,
             resolvedTaskId,
             modeAtSend,
@@ -15386,7 +15576,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               await deletePersistedMessagesAfter(
                 chatPersistenceAdapters,
                 conversationId,
-                userMessage.id,
+                persistedUserMessage.id,
               ).catch(() => undefined);
             }
             return sentWithoutAssistantResult();
@@ -15421,7 +15611,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             sessionId: activeSessionId,
             assistantMessage,
             conversationId,
-            replyToMessageId: userMessage.id,
+            replyToMessageId: persistedUserMessage.id,
             userContent: content,
             modeAtSend,
             agentTypeAtSend,
@@ -15457,6 +15647,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             compactionDecision: streamLaunch.compactionDecision,
             abortController: preparationAbortController,
           });
+          if (isFirstManualFeatureMessage && activeSessionId) {
+            completeStandaloneTaskLaunch(conversationId, activeSessionId);
+          }
         } catch (error) {
           launchError = error;
           if (manualFeatureDraftRecovery) {
@@ -15475,11 +15668,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
           status: "sent",
           conversationId,
           turnId: activeTurnId,
-          userMessageId: userMessage.id,
+          userMessageId: persistedUserMessage.id,
           assistantMessageId,
         };
       } catch (error) {
         const normalized = toServiceError(error);
+        if (activeSessionId) {
+          const launch =
+            get().standaloneTaskLaunchByConversationId[conversationId];
+          if (launch?.sessionId === activeSessionId) {
+            const retryTask = useTaskStore.getState().getTaskById(launch.taskId);
+            failStandaloneTaskLaunch({
+              conversationId,
+              sessionId: activeSessionId,
+              error: normalized.message,
+              canRetry: retryTask?.draft === true,
+            });
+          }
+        }
         if (preparationAbortController.signal.aborted) {
           return cancelledResult();
         }
@@ -15706,6 +15912,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const executionContextAtEdit = resolveConversationExecutionContext(conversationId);
       let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
       let committedCodeReplay = !options?.skipAgentCodeReplayCheck;
+      const taskAtEdit = target.task_id
+        ? useTaskStore.getState().getTaskById(target.task_id)
+        : undefined;
+      const isRetryingManualFeatureLaunch =
+        modeAtEdit === "Implement" &&
+        taskAtEdit?.task_source === "standalone" &&
+        taskAtEdit.standalone_kind === "manual_feature" &&
+        taskAtEdit.draft === true;
       assertConversationRuntimeAvailableForSend(conversationId);
       latestConversationSessionIdByConversationId.set(conversationId, sessionId);
       setConversationRuntime(
@@ -15720,6 +15934,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         { globalLastError: null },
       );
+      if (isRetryingManualFeatureLaunch && target.task_id) {
+        beginStandaloneTaskLaunch({
+          conversationId,
+          taskId: target.task_id,
+          userMessageId: target.id,
+          sessionId,
+        });
+      }
       const isCurrentPreparation = () => {
         const runtime = getConversationRuntimeSnapshot(
           get().conversationRuntimeById,
@@ -15878,9 +16100,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
               apiKey: providerConfigForUse.apiKey,
               modelId: selectedModelId,
               reasoningEffort: selectedReasoningEffort,
+              onStep: (step) => {
+                setStandaloneTaskLaunchStep(conversationId, sessionId, step);
+              },
             });
           if (!isCurrentPreparation()) {
             return;
+          }
+          if (isRetryingManualFeatureLaunch) {
+            setStandaloneTaskLaunchStep(
+              conversationId,
+              sessionId,
+              "starting_agent",
+            );
           }
           await assertImplementTaskReadyForSend(target.task_id);
           if (!isCurrentPreparation()) {
@@ -15997,12 +16229,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
             : undefined,
         });
         committedCodeReplay = replayLaunched;
+        if (replayLaunched && isRetryingManualFeatureLaunch) {
+          completeStandaloneTaskLaunch(conversationId, sessionId);
+        }
       } catch (error) {
         await restoreReplayRecovery();
         if (manualFeatureDraftRecovery) {
           await rollbackManualFeatureDraftAfterFailedLaunch(
             manualFeatureDraftRecovery,
           );
+        }
+        if (isRetryingManualFeatureLaunch) {
+          const normalized = toServiceError(error);
+          const retryTask = target.task_id
+            ? useTaskStore.getState().getTaskById(target.task_id)
+            : undefined;
+          failStandaloneTaskLaunch({
+            conversationId,
+            sessionId,
+            error: normalized.message,
+            canRetry: retryTask?.draft === true,
+          });
         }
         if (isCurrentPreparation()) {
           applyAssistantLaunchError(conversationId, sessionId, null, error, {
@@ -16046,6 +16293,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       cancelStream();
       set({
         conversationRuntimeById: {},
+        standaloneTaskLaunchByConversationId: {},
         conversationCompactionStatusById: {},
         sessionCompactionEventsByConversationId: {},
         agentCodeCheckpointsByConversationId: {},
@@ -16095,6 +16343,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           selectionRequestId: 0,
           pendingArchitectPlanSwitchRequestId: null,
           conversationRuntimeById: {},
+          standaloneTaskLaunchByConversationId: {},
           conversationCompactionStatusById: {},
           sessionCompactionEventsByConversationId: {},
           agentCodeCheckpointsByConversationId: {},

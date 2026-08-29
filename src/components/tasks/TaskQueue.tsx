@@ -81,6 +81,7 @@ import {
 import { retargetTaskForProjectSelection } from '../../services/projectIdentityReconciliation';
 import { isStandaloneTaskKindCreatable } from '../../services/standaloneTaskKinds';
 import { TaskProjectFilter, type TaskProjectFilterOption } from './TaskProjectFilter';
+import { toServiceError } from '../../services/contracts/errors';
 
 const ConfirmPromptModal = React.lazy(() =>
   import('../ui/ConfirmPromptModal').then((module) => ({
@@ -948,7 +949,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         }
       }
       setSelectedTask(null);
-      const message = error instanceof Error ? error.message : t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
+      const message = toServiceError(error).message
+        || t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
       notify.error(message, {
         description: cleanupError instanceof Error
           ? `La conversation créée n'a pas pu être nettoyée : ${cleanupError.message}`

@@ -33,6 +33,77 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     setComposerText,
   } = context;
 
+  it('shows manual draft guidance above the composer only before the first message', async () => {
+    context.appState = {
+      ...context.appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    context.taskState = {
+      ...context.taskState,
+      tasks: [{
+        id: 'task-1',
+        title: 'New feature',
+        draft: true,
+        task_source: 'standalone',
+        standalone_kind: 'manual_feature',
+        is_blocked: false,
+        status: 'Pending',
+        execution_targets: [{ projectId: 'project-1' }],
+        project_ids: ['project-1'],
+        project_id: 'project-1',
+        plan_id: null,
+        branch_name: '',
+        dependencies: [],
+        estimated_changes: [],
+        description: '',
+      }],
+    };
+
+    await act(async () => {
+      requireRoot().render(renderChatZone());
+    });
+
+    const notice = requireContainer().querySelector(
+      '[data-testid="manual-draft-composer-notice"]',
+    );
+    const footer = requireContainer().querySelector('[data-tour-id="chat-footer"]');
+    const composer = requireContainer().querySelector('[data-tour-id="chat-composer"]');
+    expect(notice).not.toBeNull();
+    expect(footer?.contains(notice)).toBe(false);
+    const controlRow = requireContainer().querySelector('[data-tour-id="chat-control-row"]');
+    expect(
+      notice && controlRow
+        ? Boolean(notice.compareDocumentPosition(controlRow) & Node.DOCUMENT_POSITION_FOLLOWING)
+        : false,
+    ).toBe(true);
+    expect(
+      notice && composer
+        ? Boolean(notice.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING)
+        : false,
+    ).toBe(true);
+    expect(requireContainer().querySelector('[data-chat-conversation-header]')?.contains(notice)).toBe(false);
+
+    await act(async () => {
+      context.chatState = {
+        ...context.chatState,
+        messages: [{
+          id: 'msg-user-1',
+          conversation_id: 'conv-1',
+          role: 'user',
+          content: 'Prépare cette fonctionnalité.',
+          timestamp: '2026-08-29T00:00:00.000Z',
+          task_id: 'task-1',
+        }],
+      };
+      context.emitChatStore();
+    });
+
+    expect(requireContainer().querySelector(
+      '[data-testid="manual-draft-composer-notice"]',
+    )).toBeNull();
+  });
+
   it('shows a read-only task todo dropdown in the Implement header', async () => {
     context.appState = {
       ...context.appState,
@@ -349,6 +420,15 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     expect(requireContainer().textContent).not.toContain('Task briefing');
     expect(requireContainer().textContent).not.toContain('Optional guidance for this task kickoff');
     expect(requireContainer().querySelector('[data-icon="lock"]')).not.toBeNull();
+    const floatingBlockedNotice = Array.from(
+      requireContainer().querySelectorAll('[data-chat-floating-notice="true"]'),
+    ).find((element) => element.textContent?.includes('Blocked by: Prepare checkout model'));
+    expect(floatingBlockedNotice).toBeDefined();
+    expect(
+      requireContainer().querySelector('[data-tour-id="chat-footer"]')?.contains(
+        floatingBlockedNotice ?? null,
+      ),
+    ).toBe(false);
     const composer = requireContainer().querySelector('[data-testid="composer-editor"]') as HTMLTextAreaElement | null;
     expect(composer).not.toBeNull();
     expect(composer?.disabled).toBe(true);

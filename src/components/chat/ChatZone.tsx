@@ -29,6 +29,7 @@ import type {
   PredictedBranch,
   SkillManifest,
   SkillTurnFeedback,
+  StandaloneTaskLaunchProgress,
   WorkspaceFileReference,
 } from '../../types';
 import { useProviderStore } from '../../stores/useProviderStore';
@@ -103,6 +104,9 @@ import { useAgentCodeReplayConfirmation } from './useAgentCodeReplayConfirmation
 import { notify } from '../ui/toastService';
 import { toServiceError } from '../../services/contracts/errors';
 import { parseConversationGoalCommand } from '../../services/conversationGoalCommand';
+import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
+import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
+import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
 
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
@@ -403,6 +407,7 @@ interface ChatMessageRowProps {
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
   skillTurnFeedback?: SkillTurnFeedback | null;
+  standaloneLaunchProgress?: StandaloneTaskLaunchProgress | null;
 }
 
 const USER_CONTEXT_MENTION_PATTERN = /\[(skill|file|source):\s*([^\]]+)\]/gi;
@@ -709,6 +714,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onEditStart,
   onRegenerate,
   skillTurnFeedback,
+  standaloneLaunchProgress,
 }) => {
   const { t } = useTranslation();
   const message = virtualMessage.item.message;
@@ -753,6 +759,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
         )}
       >
         <div
+          data-chat-message-bubble="true"
           className={cn(
             'relative rounded-lg group',
             message.role === 'user'
@@ -902,6 +909,17 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
           )}
         </div>
       </div>
+      {message.role === 'user' && standaloneLaunchProgress && (
+        <div
+          data-testid="standalone-task-launch-progress-container"
+          className="mx-auto w-full max-w-sm"
+        >
+          <StandaloneTaskLaunchProgressCard
+            progress={standaloneLaunchProgress}
+            onRetry={() => void onRegenerate(message.id, message.content)}
+          />
+        </div>
+      )}
     </div>
   );
 };
@@ -917,7 +935,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
-    prev.skillTurnFeedback === next.skillTurnFeedback
+    prev.skillTurnFeedback === next.skillTurnFeedback &&
+    prev.standaloneLaunchProgress === next.standaloneLaunchProgress
 );
 
 /**
@@ -1014,6 +1033,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationId,
     activeContextKey,
     selectedConversationRuntime,
+    standaloneTaskLaunchByConversationId,
     conversationCompactionStatusById,
     sessionCompactionEventsByConversationId,
     contextDiagnosticsByConversationId,
@@ -1070,6 +1090,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedConversationRuntime: state.selectedConversationId
       ? state.getConversationRuntime(state.selectedConversationId)
       : state.getConversationRuntime(''),
+    standaloneTaskLaunchByConversationId:
+      state.standaloneTaskLaunchByConversationId ?? {},
     conversationCompactionStatusById: state.conversationCompactionStatusById,
     sessionCompactionEventsByConversationId:
       state.sessionCompactionEventsByConversationId,
@@ -1226,6 +1248,26 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           messages.filter((message) => message.conversation_id === selectedConversationId)
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
+  );
+  const activeStandaloneLaunchProgress = selectedConversationId
+    ? standaloneTaskLaunchByConversationId[selectedConversationId]
+    : undefined;
+  const visibleStandaloneLaunchProgress = useMemo(() => {
+    if (!activeStandaloneLaunchProgress) return undefined;
+    const kickoffMessageIndex = currentMessages.findIndex(
+      (message) => message.id === activeStandaloneLaunchProgress.userMessageId
+    );
+    if (kickoffMessageIndex < 0) return activeStandaloneLaunchProgress;
+    const agentHasStartedReplying = currentMessages
+      .slice(kickoffMessageIndex + 1)
+      .some((message) => message.role === 'assistant');
+    return agentHasStartedReplying ? undefined : activeStandaloneLaunchProgress;
+  }, [activeStandaloneLaunchProgress, currentMessages]);
+  const showManualDraftComposerNotice = Boolean(
+    mode === 'Implement' &&
+      isManualDraftPendingInitialization(selectedTask) &&
+      !activeStandaloneLaunchProgress &&
+      !currentMessages.some((message) => message.role === 'user')
   );
 
   useEffect(() => {
@@ -2656,14 +2698,59 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
     }
 
+    const sentDraft: SavedComposerDraft = {
+      savedDraftText: text,
+      savedDraftImages: imagesForMessage,
+      savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+    };
+    const clearsComposerImmediately = !goalComposerEditSession;
+    const restoreSentDraft = () => {
+      saveComposerDraftForContext(conversationDraftKey, {
+        text: sentDraft.savedDraftText,
+        images: sentDraft.savedDraftImages,
+        contextRefs: sentDraft.savedDraftContextRefs,
+      });
+      const activeDraftContext = activeComposerDraftContextKeyRef.current;
+      if (
+        activeDraftContext !== composerDraftContextKey &&
+        activeDraftContext !== conversationDraftKey
+      ) {
+        return;
+      }
+      const latestDraft = latestComposerDraftRef.current;
+      if (
+        latestDraft.text.length > 0 ||
+        latestDraft.images.length > 0 ||
+        latestDraft.contextRefs.length > 0
+      ) {
+        return;
+      }
+      applySavedComposerDraft(sentDraft);
+    };
+
     try {
-      const result = await sendMessage({
+      const sendPromise = sendMessage({
         conversationId,
         content,
         taskId: implementTaskIdForSend,
         images: imagesForMessage,
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
       });
+      if (clearsComposerImmediately) {
+        clearComposerDraftForContext(composerDraftContextKey);
+        clearComposerDraftForContext(conversationDraftKey);
+        composerEditorRef.current?.clear();
+        clearComposerContextRefs();
+        setComposerImages([]);
+        setInputValue('');
+        latestComposerDraftRef.current = {
+          text: '',
+          images: [],
+          contextRefs: [],
+        };
+        resetPromptHistoryNavigation();
+      }
+      const result = await sendPromise;
       if (result.status === 'sent') {
         if (goalEditTransactionId) {
           if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
@@ -2691,16 +2778,15 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         } else {
           clearComposerDraftForContext(composerDraftContextKey);
           clearComposerDraftForContext(conversationDraftKey);
-          composerEditorRef.current?.clear();
-          clearComposerContextRefs();
-          setComposerImages([]);
-          setInputValue('');
         }
         resetPromptHistoryNavigation();
       } else if (goalEditTransactionId) {
         settleConversationGoalEdit(goalEditTransactionId, 'rollback');
       } else if (tracksGoalTurn) {
         setConversationGoalStatus(conversationId, 'paused');
+        if (clearsComposerImmediately) restoreSentDraft();
+      } else if (clearsComposerImmediately) {
+        restoreSentDraft();
       }
     } catch (error) {
       if (goalEditTransactionId) {
@@ -2712,6 +2798,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           toServiceError(error).message,
         );
       }
+      if (clearsComposerImmediately) restoreSentDraft();
       // Keep the draft intact. The visible error feedback comes from the chat store.
     }
   };
@@ -3382,7 +3469,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                 const messageImages = message.role === 'user' ? getMessageImages(message.id) : [];
                 const assistantActivity: AssistantMessageActivity =
                   message.id === streamingAssistantActivityMessageId ? 'streaming' : null;
-
                 return (
                   <MemoizedChatMessageRow
                     key={virtualMessage.key}
@@ -3401,6 +3487,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
                     skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
+                    standaloneLaunchProgress={
+                      visibleStandaloneLaunchProgress?.userMessageId === message.id
+                        ? visibleStandaloneLaunchProgress
+                        : null
+                    }
                   />
                 );
               })}
@@ -3445,6 +3536,67 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             </div>
           )}
         </div>
+
+        {(showManualDraftComposerNotice ||
+          (selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0) ||
+          composerError ||
+          showSkillNativeToolWarning ||
+          isSelectedConversationArchived) && (
+          <ChatFloatingNoticeStack>
+            {composerError && (
+              <ActionableErrorCallout
+                className="shadow-lg shadow-black/15 backdrop-blur"
+                compact
+                presentation={presentServiceError(composerError, {
+                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
+                    ? t(
+                        'chat.providerRestoreUnavailable',
+                        'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
+                      )
+                    : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
+                })}
+              />
+            )}
+
+            {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
+              <ChatFloatingNotice icon="lock" tone="neutral">
+                <div className="font-medium text-foreground">
+                  {t('implement.taskBlockedTitle', 'Task blocked')}
+                </div>
+                {selectedTaskBlockedMessage && (
+                  <p className="mt-1">{selectedTaskBlockedMessage}</p>
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {showSkillNativeToolWarning && (
+              <ChatFloatingNotice icon="triangle-alert" tone="warning">
+                {t(
+                  'skills.nativeToolRequiredWarning',
+                  'Skills require a native tool-calling model/provider.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {isSelectedConversationArchived && (
+              <ChatFloatingNotice icon="archive" tone="neutral">
+                {t(
+                  'chat.archivedConversationReadOnly',
+                  'This conversation is archived. Restore it before sending another message.'
+                )}
+              </ChatFloatingNotice>
+            )}
+
+            {showManualDraftComposerNotice && (
+              <ChatFloatingNotice icon="alert-circle" testId="manual-draft-composer-notice">
+                {t(
+                  'terminal.manualDraftBanner',
+                  'Send a first message to name this feature and initialize its terminal.'
+                )}
+              </ChatFloatingNotice>
+            )}
+          </ChatFloatingNoticeStack>
+        )}
 
         {/* Input Area */}
         <ScrollSeparator state={separatorState} />
@@ -3546,14 +3698,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               )}
             </div>
 
-            {selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0 && (
-              <TaskBlockedState
-                variant="compact"
-                title={t('implement.taskBlockedTitle', 'Task blocked')}
-                message={selectedTaskBlockedMessage}
-              />
-            )}
-
             {selectedTask && !isSelectedTaskDependencyBlocked && selectedTaskRequiresKickoff && currentMessages.length === 0 && (
               <div className="rounded-xl border border-border bg-card/70 p-3 space-y-3">
                 <div className="flex items-start justify-between gap-3">
@@ -3599,45 +3743,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     {t('implement.startExecution', 'Start execution')}
                   </button>
                 </div>
-              </div>
-            )}
-
-            {composerError && (
-              <ActionableErrorCallout
-                className="mb-3"
-                compact
-                presentation={presentServiceError(composerError, {
-                  fallbackBody: composerError === 'No available provider or model could be restored for this conversation.'
-                    ? t(
-                        'chat.providerRestoreUnavailable',
-                        'The provider or model previously used by this conversation is no longer available. Select another one to continue.'
-                      )
-                    : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
-                })}
-              />
-            )}
-
-            {showSkillNativeToolWarning && (
-              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                <Icon name="triangle-alert" size={14} className="mt-0.5 shrink-0" />
-                <span>
-                  {t(
-                    'skills.nativeToolRequiredWarning',
-                    'Skills require a native tool-calling model/provider.'
-                  )}
-                </span>
-              </div>
-            )}
-
-            {isSelectedConversationArchived && (
-              <div className="mb-3 flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                <Icon name="archive" size={14} className="mt-0.5 shrink-0" />
-                <span>
-                  {t(
-                    'chat.archivedConversationReadOnly',
-                    'This conversation is archived. Restore it before sending another message.'
-                  )}
-                </span>
               </div>
             )}
 
