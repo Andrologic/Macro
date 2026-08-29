@@ -550,6 +550,13 @@ describe('buildImplementTaskCatalog', () => {
       executionKind: 'repository_root',
       worktreeKey: 'plan-finalization:docs:docs',
     }]);
+    expect(finalizationTask).toMatchObject({
+      assigned_branch: '',
+      branch_name: '',
+      plan_target_branch: null,
+      base_branch: null,
+      plan_target_branches_by_project_id: {},
+    });
   });
 });
 

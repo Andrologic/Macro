@@ -39,6 +39,7 @@ let importCounter = 0;
 
 interface LoadArchitectPlanServiceOptions {
   tauriAvailable?: boolean;
+  appSettings?: Map<string, string>;
   filesByWorkspacePath?: Record<string, Record<string, string>>;
   registrySnapshot?: ValidProjectRegistrySnapshot;
   workspaceRoot?: string;
@@ -47,11 +48,16 @@ interface LoadArchitectPlanServiceOptions {
     operation: string;
     workspaceScope?: WorkspaceScope;
   }>;
+  failWriteOnce?: (params: {
+    path: string;
+    workspacePath?: string | null;
+    workspaceScope?: WorkspaceScope;
+  }) => boolean;
 }
 
 const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {}) => {
   mock.restore();
-  const appSettings = new Map<string, string>();
+  const appSettings = options.appSettings ?? new Map<string, string>();
   const configDocuments = new Map(['runtime', 'settings', 'agents', 'providers', 'tools', 'skills', 'git'].map((kind) => [kind, {
     kind,
     scope: { type: 'user' },
@@ -63,6 +69,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
     diagnostics: [],
   }]));
   let configRevision = 0;
+  let writeFailureTriggered = false;
   const workspaceFilesByWorkspacePath = options.filesByWorkspacePath ?? {};
   const normalizeMockPath = (value: string): string =>
     value.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -199,6 +206,10 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       workspaceScope?: WorkspaceScope;
     }) => {
       options.workspaceScopeCalls?.push({ operation: 'write', workspaceScope: params.workspaceScope });
+      if (!writeFailureTriggered && options.failWriteOnce?.(params)) {
+        writeFailureTriggered = true;
+        throw new Error('Injected replica write failure');
+      }
       const workspacePath = params.workspacePath ?? '';
       if (!workspaceFilesByWorkspacePath[workspacePath]) {
         workspaceFilesByWorkspacePath[workspacePath] = {};
@@ -1366,6 +1377,109 @@ describe('architectPlanService', () => {
     expect(filesByWorkspacePath['/repos/docs'][
       'branches/develop/plans/mixed-transition-plan/tasks/mixed-task/executed.md'
     ]).toContain('Update docs and API');
+  });
+
+  it('recovers a mixed direct and Git replica mutation with the full workspace key', async () => {
+    registerAppStateGetter(() => ({
+      standaloneProjects: [
+        {
+          id: 'docs',
+          path: '/repos/docs',
+          isReadOnly: false,
+          gitSetupState: 'not_git',
+          directEdit: true,
+        },
+        {
+          id: 'api',
+          path: '/repos/api',
+          isReadOnly: false,
+          gitSetupState: 'ready',
+          directEdit: false,
+        },
+      ],
+      projectGroups: [],
+    }));
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs', 'api'],
+      actionableProjectIds: ['docs', 'api'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs', 'api']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs', 'api'],
+      validProjectIdSet: new Set(['docs', 'api']),
+      repoPathByProjectId: new Map([['api', '/repos/api']]),
+      workspacePathByProjectId: new Map([
+        ['docs', '/repos/docs'],
+        ['api', '/repos/api'],
+      ]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([
+        ['docs', 'direct'],
+        ['api', 'git'],
+      ]),
+      hasRegisteredProjects: true,
+    };
+    const appSettings = new Map<string, string>();
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+      '/repos/api': {},
+    };
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      appSettings,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot,
+      filesByWorkspacePath,
+      failWriteOnce: ({ workspacePath }) => workspacePath === '/repos/api',
+    });
+
+    await expect(service.createArchitectPlan({
+      branchName,
+      planId: 'mixed-recovery-plan',
+      projectIds: ['docs', 'api'],
+      nodes: [{
+        id: 'mixed-task',
+        title: 'Update docs and API',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        assignedBranch: '',
+        projectId: 'docs',
+        projectIds: ['docs', 'api'],
+        executionModesByProjectId: { docs: 'direct', api: 'git' },
+      }],
+    })).rejects.toThrow('Injected replica write failure');
+
+    const pendingBeforeRecovery = JSON.parse(
+      appSettings.get('pendingArchitectPlanReplicaMutations:v1') ?? '[]',
+    ) as Array<{ workspaceKey: string }>;
+    expect(pendingBeforeRecovery).toHaveLength(1);
+    expect(pendingBeforeRecovery[0]?.workspaceKey).toBe('/repos/api|/repos/docs');
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      appSettings,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot,
+      filesByWorkspacePath,
+    });
+    await service.listArchitectPlans(branchName, true, true);
+
+    expect(JSON.parse(
+      appSettings.get('pendingArchitectPlanReplicaMutations:v1') ?? '[]',
+    )).toEqual([]);
+    expect(JSON.parse(
+      appSettings.get('pendingArchitectPlanReplicaMutationsQuarantine:v1') ?? '[]',
+    )).toEqual([]);
+    expect(filesByWorkspacePath['/repos/docs'][
+      'branches/develop/plans/mixed-recovery-plan/plan.json'
+    ]).toBeDefined();
+    expect(filesByWorkspacePath['/repos/api'][
+      'branches/develop/plans/mixed-recovery-plan/plan.json'
+    ]).toBeDefined();
   });
 
   it('removes orphaned planned metadata while preserving executed task history', async () => {

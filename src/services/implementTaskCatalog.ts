@@ -164,8 +164,20 @@ const buildPlanFinalizationTask = (
   const blockedBy = blockedByTaskIds
     .map((taskId) => blockingTasks.find((task) => task.id === taskId)?.title)
     .filter((title): title is string => Boolean(title));
-  const targetBranchesByProjectId = getArchitectPlanTargetBranchesByProjectId(plan);
-  const effectiveTargetBranch = getUniqueTargetBranch(targetBranchesByProjectId, plan.targetBranch);
+  const executionTargets = buildPlanFinalizationExecutionTargets(plan);
+  const gitProjectIds = new Set(
+    executionTargets
+      .filter((target) => target.executionMode !== 'direct')
+      .map((target) => target.projectId),
+  );
+  const targetBranchesByProjectId = Object.fromEntries(
+    Object.entries(getArchitectPlanTargetBranchesByProjectId(plan))
+      .filter(([targetProjectId]) => gitProjectIds.has(targetProjectId)),
+  );
+  const effectiveTargetBranch = getUniqueTargetBranch(
+    targetBranchesByProjectId,
+    gitProjectIds.size > 0 ? plan.targetBranch : null,
+  );
 
   const nodeId = buildPlanFinalizationTaskId(plan.id);
   return {
@@ -190,7 +202,7 @@ const buildPlanFinalizationTask = (
     is_ready: !isBlocked,
     needs_revalidation: false,
     sequence_index: sequenceIndex,
-    execution_targets: buildPlanFinalizationExecutionTargets(plan),
+    execution_targets: executionTargets,
     todos: [],
     task_source: 'plan_finalization',
     plan_title: plan.title,
@@ -198,7 +210,7 @@ const buildPlanFinalizationTask = (
     plan_storage_branch: plan.targetBranch,
     plan_target_branch: effectiveTargetBranch,
     plan_target_branches_by_project_id: targetBranchesByProjectId,
-    has_mixed_target_branches: planHasMixedTargetBranches(plan),
+    has_mixed_target_branches: new Set(Object.values(targetBranchesByProjectId)).size > 1,
     draft: false,
     standalone_kind: 'legacy',
     task_kind: null,

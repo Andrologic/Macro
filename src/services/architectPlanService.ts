@@ -3167,7 +3167,10 @@ const getRegistryWorkspaceKey = (
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
   targets: ArchitectPlanReplicaMutationTarget[],
 ): string => {
-  const roots = Array.from(registrySnapshot?.repoPathByProjectId.values() || [])
+  const roots = Array.from(new Set([
+    ...Array.from(registrySnapshot?.workspacePathByProjectId.values() || []),
+    ...Array.from(registrySnapshot?.repoPathByProjectId.values() || []),
+  ]))
     .map(normalizeProjectRegistryPath).filter((value): value is string => !!value).sort();
   return roots.length > 0 ? roots.join('|') : getReplicaMutationWorkspaceKey(targets);
 };

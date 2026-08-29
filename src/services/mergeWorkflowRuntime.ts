@@ -74,10 +74,17 @@ export const resolveMergeWorkflowActivationContext = (params: {
     executionTargets,
     params.preferredProjectId
   );
+  const focusedExecutionTarget = params.preferredProjectId
+    ? params.task.execution_targets?.find((target) => target.projectId === params.preferredProjectId)
+    : params.task.execution_targets?.length === 1
+      ? params.task.execution_targets[0]
+      : null;
   return {
     repoPath: focus.repoPath,
     branchName:
-      focus.branchName || params.task.plan_target_branch || params.task.assigned_branch,
+      focus.branchName || (focusedExecutionTarget?.executionMode === 'direct'
+        ? null
+        : params.task.plan_target_branch || params.task.assigned_branch),
   };
 };
 
