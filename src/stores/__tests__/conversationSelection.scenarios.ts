@@ -64,6 +64,82 @@ export const registerConversationSelectionScenarios = (
       expect(useChatStore.getState().getComposerDraftForContext('conversation:created')).toBeNull();
     });
 
+    it('removes a persisted composer draft after deleting its conversation', async () => {
+      const { useChatStore } = await loadChatStore();
+      const conversation = {
+        ...createConversation('conversation-to-delete', ''),
+        project_id: null,
+        group_id: null,
+        task_id: 'task-to-delete',
+        scope_mode: 'Chat' as const,
+      };
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [conversation],
+        selectedConversationId: conversation.id,
+        selectedConversationIdsByMode: { Chat: conversation.id },
+        composerDraftsByContextKey: {},
+      }));
+      useChatStore.getState().saveComposerDraftForContext(
+        `conversation:${conversation.id}`,
+        { text: 'Draft to delete', images: [], contextRefs: [] },
+      );
+      const temporaryTaskContextKey =
+        'context:Implement::none::none::task-to-delete';
+      useChatStore.getState().saveComposerDraftForContext(
+        temporaryTaskContextKey,
+        { text: 'Temporary task draft', images: [], contextRefs: [] },
+      );
+
+      await useChatStore.getState().deleteConversation(conversation.id, { mode: 'chat' });
+
+      expect(
+        useChatStore.getState().getComposerDraftForContext(`conversation:${conversation.id}`),
+      ).toBeNull();
+      expect(
+        useChatStore.getState().getComposerDraftForContext(temporaryTaskContextKey),
+      ).toBeNull();
+    });
+
+    it('drops an archived conversation draft and refuses to restore it', async () => {
+      const { useChatStore } = await loadChatStore();
+      const { useConversationArchiveStore } = await import('../useConversationArchiveStore');
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [{
+          ...createConversation('archived', ''),
+          task_id: 'archived-task',
+          scope_mode: 'Implement' as const,
+        }],
+        composerDraftsByContextKey: {},
+      }));
+      useChatStore.getState().saveComposerDraftForContext('conversation:archived', {
+        text: 'Private archived draft',
+        images: [],
+        contextRefs: [],
+      });
+      const temporaryTaskContextKey =
+        'context:Implement::none::none::archived-task';
+      useChatStore.getState().saveComposerDraftForContext(temporaryTaskContextKey, {
+        text: 'Private temporary draft',
+        images: [],
+        contextRefs: [],
+      });
+
+      useConversationArchiveStore.getState().replaceArchivedConversationIds(['archived']);
+      useChatStore.getState().discardComposerDraftForConversation('archived');
+      useChatStore.getState().saveComposerDraftForContext('conversation:archived', {
+        text: 'Must stay discarded',
+        images: [],
+        contextRefs: [],
+      });
+
+      expect(
+        useChatStore.getState().getComposerDraftForContext('conversation:archived'),
+      ).toBeNull();
+      expect(
+        useChatStore.getState().getComposerDraftForContext(temporaryTaskContextKey),
+      ).toBeNull();
+    });
+
     it('clears Architect conversation selection when no plan is selected', async () => {
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(

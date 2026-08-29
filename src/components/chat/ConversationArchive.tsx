@@ -382,6 +382,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     createConversation,
     togglePinConversation,
     deleteChatConversations,
+    discardComposerDraftForConversation,
   } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     conversationRuntimeById: state.conversationRuntimeById,
@@ -392,6 +393,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     createConversation: state.createConversation,
     togglePinConversation: state.togglePinConversation,
     deleteChatConversations: state.deleteChatConversations,
+    discardComposerDraftForConversation: state.discardComposerDraftForConversation,
   })));
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -647,6 +649,9 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           archiveWriteCommitted = true;
         },
         onCommitted: async () => {
+          if (shouldArchive) {
+            normalizedIds.forEach(discardComposerDraftForConversation);
+          }
           if (shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
             const fallbackConversation = chatConversations.find(
               (conversation) =>
@@ -702,6 +707,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       replaceSharedArchivedConversationIds,
       selectConversation,
       clearSelectedConversation,
+      discardComposerDraftForConversation,
       selectedConversationId,
       t,
     ]

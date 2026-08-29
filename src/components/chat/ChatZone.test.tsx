@@ -1131,11 +1131,104 @@ describe('ChatZone', () => {
     });
 
     expect(getComposerEditor().value).toBe('Message suivant pendant la préparation.');
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Message suivant pendant la préparation.',
+    );
+  });
+
+  it('removes the persisted draft after a confirmed send', async () => {
+    const sendDeferred = createDeferred<{ status: 'sent' }>();
+    chatState = {
+      ...chatState,
+      sendMessage: mock(() => sendDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Brouillon envoyé et confirmé.');
+    await clickSendButton();
+
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Brouillon envoyé et confirmé.',
+    );
+
+    await act(async () => {
+      sendDeferred.resolve({ status: 'sent' });
+      await sendDeferred.promise;
+    });
+
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+  });
+
+  it('keeps the composer draft when an Implement kickoff is cancelled', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Persist composer drafts',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Running',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/composer-drafts',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Persist unsent composer content.',
+        },
+      ],
+    };
+    chatState = {
+      ...chatState,
+      sendMessage: mock(async () => ({ status: 'cancelled' as const })),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Conserver ces notes si le démarrage est annulé.');
+
+    const kickoffButton = requireContainer().querySelector(
+      '[data-tour-id="implement-start-execution"]',
+    );
+    expect(kickoffButton).not.toBeNull();
+    await act(async () => {
+      kickoffButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe(
+      'Conserver ces notes si le démarrage est annulé.',
+    );
+    expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
+      'Conserver ces notes si le démarrage est annulé.',
+    );
   });
 
   it('restores the composer when a send fails before Macro accepts it', async () => {
+    const draftRef = {
+      id: 'file:failure.md',
+      kind: 'file' as const,
+      title: 'failure.md',
+      data: {
+        id: 'file:failure.md',
+        path: 'C:/repo/failure.md',
+        relativePath: 'failure.md',
+      },
+    };
     chatState = {
       ...chatState,
+      composerContextRefs: [draftRef],
       sendMessage: mock(async () => {
         throw new Error('Envoi refusé');
       }),
@@ -1145,9 +1238,72 @@ describe('ChatZone', () => {
       requireRoot().render(<ChatZone />);
     });
     await setComposerText('Brouillon à restaurer.');
+    await pasteComposerImage();
     await clickSendButton();
 
     expect(getComposerEditor().value).toBe('Brouillon à restaurer.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([draftRef]);
+    expect(composerDraftsByContextKey['conversation:conv-1']).toEqual({
+      text: 'Brouillon à restaurer.',
+      images: [expect.objectContaining({ mimeType: 'image/png' })],
+      contextRefs: [draftRef],
+    });
+  });
+
+  it('saves and restores text, images, and context refs when the conversation changes', async () => {
+    const draftRef = {
+      id: 'file:README.md',
+      kind: 'file' as const,
+      title: 'README.md',
+      data: {
+        id: 'file:README.md',
+        path: 'C:/repo/README.md',
+        relativePath: 'README.md',
+      },
+    };
+    chatState = {
+      ...chatState,
+      conversations: [
+        buildConversation(),
+        { ...buildConversation(), id: 'conv-2', title: 'Second conversation' },
+      ],
+      composerContextRefs: [draftRef],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Brouillon privé de la première conversation.');
+    await pasteComposerImage();
+
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-2' });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+
+    expect(composerDraftsByContextKey['conversation:conv-1']).toEqual({
+      text: 'Brouillon privé de la première conversation.',
+      images: [expect.objectContaining({ mimeType: 'image/png' })],
+      contextRefs: [draftRef],
+    });
+    expect(getComposerEditor().value).toBe('');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+
+    await setComposerText('Brouillon de la seconde conversation.');
+    await act(async () => {
+      useChatStore.setState({ selectedConversationId: 'conv-1' });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+
+    expect(composerDraftsByContextKey['conversation:conv-2']?.text).toBe(
+      'Brouillon de la seconde conversation.',
+    );
+    expect(getComposerEditor().value).toBe(
+      'Brouillon privé de la première conversation.',
+    );
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([draftRef]);
   });
 
   it('renders standalone launch steps under the first message and retries a safe failure', async () => {

@@ -48,6 +48,7 @@ import {
 import { providerHasCredentials, useProviderStore } from "./useProviderStore";
 import { useCitationsStore } from "./useCitationsStore";
 import type { Citation, SourcePassageKind } from "./useCitationsStore";
+import { useConversationArchiveStore } from "./useConversationArchiveStore";
 import {
   cancelStream,
   sendChatNonStreaming,
@@ -371,13 +372,16 @@ import {
 import {
   EMPTY_MESSAGE_IMAGES,
   clearQuestionnaireDraftsForConversations,
+  loadComposerDraftsFromStorage,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
+  saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
   setActiveQuestionnaireDraftStep,
   setQuestionnaireDraftForConversation,
   type MessageImageAttachment,
+  type PersistedComposerDraft,
 } from "./chat/chatLocalSessionState";
 import {
   buildConversationRuntimePatch,
@@ -1172,6 +1176,7 @@ interface ChatStore {
   saveComposerDraftForContext: (contextKey: string, draft: ComposerDraft) => void;
   getComposerDraftForContext: (contextKey: string) => ComposerDraft | null;
   clearComposerDraftForContext: (contextKey: string) => void;
+  discardComposerDraftForConversation: (conversationId: string) => void;
   migrateComposerDraftContext: (fromContextKey: string, toContextKey: string) => void;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
   approvePendingToolApprovalOnce: (conversationId: string) => void;
@@ -6387,6 +6392,139 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
   };
 
+  const restoreComposerDraftContextRefs = (
+    contextKey: string,
+    persistedRefs: PersistedContextReference[],
+  ): ContextReference[] => {
+    const conversationId = contextKey.startsWith("conversation:")
+      ? contextKey.slice("conversation:".length)
+      : "";
+    const seen = new Set<string>();
+    return persistedRefs
+      .map((ref) => {
+        const restored = rebuildComposerContextRef(conversationId, ref);
+        if (restored || ref.kind !== "source") return restored;
+        const source: Citation = {
+          id: ref.id,
+          type: "source_passage",
+          scope: "source",
+          source: ref.sourceLabel ?? ref.subtitle ?? ref.title,
+          title: ref.title,
+          snippet: ref.snippet,
+          content: ref.snippet,
+          messageId: "",
+          conversationId,
+          timestamp: "",
+          url: ref.url,
+        };
+        return {
+          id: ref.id,
+          kind: "source" as const,
+          title: ref.title,
+          subtitle: ref.subtitle,
+          data: source,
+        };
+      })
+      .filter((ref): ref is ContextReference => {
+        if (!ref) return false;
+        const key = `${ref.kind}:${ref.id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  };
+
+  const serializeComposerDrafts = (
+    draftsByContextKey: Record<string, ComposerDraft>,
+  ): Record<string, PersistedComposerDraft> =>
+    Object.fromEntries(
+      Object.entries(draftsByContextKey).map(([contextKey, draft]) => [
+        contextKey,
+        {
+          text: draft.text,
+          images: draft.images.map((image) => ({ ...image })),
+          contextRefs: persistableContextRefs(draft.contextRefs) ?? [],
+        },
+      ]),
+    );
+
+  const persistComposerDrafts = (
+    draftsByContextKey: Record<string, ComposerDraft>,
+  ): void => {
+    saveComposerDraftsToStorage(serializeComposerDrafts(draftsByContextKey));
+  };
+
+  const restorePersistedComposerDrafts = (
+    visibleConversations: Conversation[],
+    archivedConversationIds: ReadonlySet<string>,
+  ): Record<string, ComposerDraft> => {
+    const visibleConversationIds = new Set(
+      visibleConversations.map((conversation) => conversation.id),
+    );
+    const restored = Object.fromEntries(
+      Object.entries(loadComposerDraftsFromStorage()).flatMap(
+        ([contextKey, draft]) => {
+          if (contextKey.startsWith("conversation:")) {
+            const conversationId = contextKey.slice("conversation:".length);
+            if (
+              !visibleConversationIds.has(conversationId) ||
+              archivedConversationIds.has(conversationId)
+            ) {
+              return [];
+            }
+          }
+          return [[
+            contextKey,
+            {
+              text: draft.text,
+              images: draft.images.map((image) => ({ ...image })),
+              contextRefs: restoreComposerDraftContextRefs(
+                contextKey,
+                draft.contextRefs,
+              ),
+            },
+          ]];
+        },
+      ),
+    ) as Record<string, ComposerDraft>;
+    persistComposerDrafts(restored);
+    return restored;
+  };
+
+  const discardComposerDraftsForConversationIds = (
+    conversationIds: readonly string[],
+  ): void => {
+    if (conversationIds.length === 0) return;
+    set((state) => {
+      const next = { ...state.composerDraftsByContextKey };
+      const conversationIdSet = new Set(conversationIds);
+      const removedTaskIds = new Set(
+        state.conversations
+          .filter((conversation) => conversationIdSet.has(conversation.id))
+          .map((conversation) => conversation.task_id)
+          .filter((taskId): taskId is string => Boolean(taskId)),
+      );
+      let changed = false;
+      conversationIds.forEach((conversationId) => {
+        const contextKey = `conversation:${conversationId}`;
+        if (contextKey in next) {
+          delete next[contextKey];
+          changed = true;
+        }
+      });
+      Object.keys(next).forEach((contextKey) => {
+        if (!contextKey.startsWith("context:Implement::")) return;
+        const taskId = contextKey.slice(contextKey.lastIndexOf("::") + 2);
+        if (!removedTaskIds.has(taskId)) return;
+        delete next[contextKey];
+        changed = true;
+      });
+      if (!changed) return state;
+      persistComposerDrafts(next);
+      return { composerDraftsByContextKey: next };
+    });
+  };
+
   const persistComposerContextRefsForConversation = (
     conversationId: string | null | undefined,
     refs: ContextReference[],
@@ -7827,6 +7965,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (conversationIds.length === 0) {
       return;
     }
+    discardComposerDraftsForConversationIds(conversationIds);
     clearPendingArchitectConversationsForConversationIds(conversationIds);
     clearGitStageCommitChallengesForConversations(conversationIds);
     clearAssistantTurnContextsForConversations(conversationIds);
@@ -12890,6 +13029,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     pruneConversationSelections(visibleConversations);
 
     const loadedImages = loadMessageImagesFromStorage();
+    const archivedConversationPreference = await loadPreference<unknown>(
+      PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
+    );
+    const archivedConversationIds = Array.isArray(archivedConversationPreference)
+      ? new Set(
+          archivedConversationPreference.filter(
+            (value): value is string => typeof value === "string" && Boolean(value.trim()),
+          ),
+        )
+      : EMPTY_STRING_SET;
+    const composerDraftsByContextKey = restorePersistedComposerDrafts(
+      visibleConversations,
+      archivedConversationIds,
+    );
 
     set({
       conversations: visibleConversations,
@@ -12903,6 +13056,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ]),
       ),
       messageImagesByMessageId: loadedImages,
+      composerDraftsByContextKey,
       selectedConversationId: null,
       selectedConversationIdsByMode: {},
       hydrationStatus: "ready",
@@ -14660,16 +14814,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     saveComposerDraftForContext: (contextKey, draft) => {
       if (!contextKey) return;
-      set((state) => ({
-        composerDraftsByContextKey: {
-          ...state.composerDraftsByContextKey,
-          [contextKey]: {
+      const conversationId = contextKey.startsWith("conversation:")
+        ? contextKey.slice("conversation:".length)
+        : null;
+      if (
+        conversationId &&
+        (deletedConversationIds.has(conversationId) ||
+          useConversationArchiveStore
+            .getState()
+            .archivedConversationIds.has(conversationId))
+      ) {
+        discardComposerDraftsForConversationIds([conversationId]);
+        return;
+      }
+      set((state) => {
+        const next = { ...state.composerDraftsByContextKey };
+        if (
+          draft.text.length === 0 &&
+          draft.images.length === 0 &&
+          draft.contextRefs.length === 0
+        ) {
+          if (!(contextKey in next)) return state;
+          delete next[contextKey];
+        } else {
+          next[contextKey] = {
             text: draft.text,
             images: [...draft.images],
             contextRefs: draft.contextRefs.map((ref) => ({ ...ref })),
-          },
-        },
-      }));
+          };
+        }
+        persistComposerDrafts(next);
+        return { composerDraftsByContextKey: next };
+      });
     },
 
     getComposerDraftForContext: (contextKey) => {
@@ -14688,8 +14864,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!(contextKey in state.composerDraftsByContextKey)) return state;
         const next = { ...state.composerDraftsByContextKey };
         delete next[contextKey];
+        persistComposerDrafts(next);
         return { composerDraftsByContextKey: next };
       });
+    },
+
+    discardComposerDraftForConversation: (conversationId) => {
+      discardComposerDraftsForConversationIds([conversationId]);
     },
 
     migrateComposerDraftContext: (fromContextKey, toContextKey) => {
@@ -14699,7 +14880,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!draft) return state;
         const next = { ...state.composerDraftsByContextKey };
         delete next[fromContextKey];
-        next[toContextKey] = draft;
+        const conversationId = toContextKey.startsWith("conversation:")
+          ? toContextKey.slice("conversation:".length)
+          : null;
+        if (
+          !conversationId ||
+          (!deletedConversationIds.has(conversationId) &&
+            !useConversationArchiveStore
+              .getState()
+              .archivedConversationIds.has(conversationId))
+        ) {
+          next[toContextKey] = draft;
+        }
+        persistComposerDrafts(next);
         return { composerDraftsByContextKey: next };
       });
     },
@@ -16330,11 +16523,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const normalized = toServiceError(error);
         console.error("Failed to initialize chat store:", normalized.message);
         const messageImagesByMessageId = loadMessageImagesFromStorage();
+        const composerDraftsByContextKey = restorePersistedComposerDrafts(
+          [],
+          EMPTY_STRING_SET,
+        );
         set({
           conversations: [],
           ...buildMessageState([]),
           messageLoadStatusByConversationId: {},
           messageImagesByMessageId,
+          composerDraftsByContextKey,
           selectedConversationId: null,
           selectedConversationIdsByMode: {},
           hydrationStatus: "error",

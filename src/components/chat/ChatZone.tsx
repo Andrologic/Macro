@@ -16,6 +16,7 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { presentServiceError } from '../../services/degradedErrorPresentation';
 import type {
+  ComposerDraft,
   ManualCompactionResult,
   ManualCompactionSkipReason,
   MessageImageAttachment,
@@ -417,6 +418,28 @@ interface SavedComposerDraft {
   savedDraftImages: MessageImageAttachment[];
   savedDraftContextRefs: ContextReference[];
 }
+
+const isComposerDraftEmpty = (draft: ComposerDraft): boolean =>
+  draft.text.length === 0 && draft.images.length === 0 && draft.contextRefs.length === 0;
+
+const composerDraftMatchesSavedDraft = (
+  draft: ComposerDraft | null,
+  savedDraft: SavedComposerDraft,
+): boolean =>
+  Boolean(
+    draft &&
+    draft.text === savedDraft.savedDraftText &&
+    draft.images.length === savedDraft.savedDraftImages.length &&
+    draft.images.every((image, index) => {
+      const savedImage = savedDraft.savedDraftImages[index];
+      return savedImage?.id === image.id && savedImage.dataUrl === image.dataUrl;
+    }) &&
+    draft.contextRefs.length === savedDraft.savedDraftContextRefs.length &&
+    draft.contextRefs.every((ref, index) => {
+      const savedRef = savedDraft.savedDraftContextRefs[index];
+      return savedRef?.id === ref.id && savedRef.kind === ref.kind;
+    }),
+  );
 
 interface ComposerEditSession extends SavedComposerDraft {
   messageId: string;
@@ -1229,6 +1252,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   }, [composerDraftContextKey]);
   const activeComposerDraftContextKeyRef = useRef<string | null>(null);
   const renderedComposerDraftContextKeyRef = useRef(composerDraftContextKey);
+  const skipComposerDraftPersistenceRef = useRef(false);
+  const pendingSentComposerDraftContextKeysRef = useRef(new Set<string>());
   const latestComposerDraftRef = useRef({
     text: '',
     images: [] as MessageImageAttachment[],
@@ -1655,10 +1680,27 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               contextRefs: goalComposerEditSession.savedDraftContextRefs,
             }
         : latestComposerDraftRef.current;
-      saveComposerDraftForContext(previousContextKey, draftToSave);
+      const hasVisibleDraft =
+        draftToSave.text.length > 0 ||
+        draftToSave.images.length > 0 ||
+        draftToSave.contextRefs.length > 0;
+      if (
+        hasVisibleDraft ||
+        !pendingSentComposerDraftContextKeysRef.current.has(previousContextKey)
+      ) {
+        if (hasVisibleDraft) {
+          pendingSentComposerDraftContextKeysRef.current.delete(previousContextKey);
+        }
+        saveComposerDraftForContext(previousContextKey, draftToSave);
+      }
     }
 
-    const savedNextDraft = getComposerDraftForContext(composerDraftContextKey);
+    const savedNextDraft = pendingSentComposerDraftContextKeysRef.current.has(
+      composerDraftContextKey,
+    )
+      ? null
+      : getComposerDraftForContext(composerDraftContextKey);
+    skipComposerDraftPersistenceRef.current = true;
     activeComposerDraftContextKeyRef.current = composerDraftContextKey;
     if (!previousContextKey && !savedNextDraft) {
       return;
@@ -1717,6 +1759,61 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       contextRefs: cloneContextRefs(composerContextRefs),
     };
   }, [composerContextRefs, composerImages, inputValue]);
+
+  useEffect(() => {
+    if (activeComposerDraftContextKeyRef.current !== composerDraftContextKey) return;
+    if (skipComposerDraftPersistenceRef.current) {
+      skipComposerDraftPersistenceRef.current = false;
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      const hasVisibleDraft =
+        inputValue.length > 0 ||
+        composerImages.length > 0 ||
+        composerContextRefs.length > 0;
+      if (
+        !hasVisibleDraft &&
+        pendingSentComposerDraftContextKeysRef.current.has(composerDraftContextKey)
+      ) {
+        return;
+      }
+      if (hasVisibleDraft) {
+        pendingSentComposerDraftContextKeysRef.current.delete(composerDraftContextKey);
+      }
+      saveComposerDraftForContext(composerDraftContextKey, {
+        text: inputValue,
+        images: [...composerImages],
+        contextRefs: cloneContextRefs(composerContextRefs),
+      });
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    composerContextRefs,
+    composerDraftContextKey,
+    composerImages,
+    inputValue,
+    saveComposerDraftForContext,
+  ]);
+
+  useEffect(() => {
+    const persistActiveDraft = () => {
+      const contextKey = activeComposerDraftContextKeyRef.current;
+      if (contextKey) {
+        const draft = latestComposerDraftRef.current;
+        if (
+          pendingSentComposerDraftContextKeysRef.current.has(contextKey) &&
+          draft.text.length === 0 &&
+          draft.images.length === 0 &&
+          draft.contextRefs.length === 0
+        ) {
+          return;
+        }
+        saveComposerDraftForContext(contextKey, draft);
+      }
+    };
+    window.addEventListener('pagehide', persistActiveDraft);
+    return () => window.removeEventListener('pagehide', persistActiveDraft);
+  }, [saveComposerDraftForContext]);
 
   const streamingMessageContentLength =
     currentMessages[currentMessages.length - 1]?.content.length ?? 0;
@@ -2387,6 +2484,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         estimatedChanges: selectedTask.estimated_changes,
         notes: params?.notesOverride ?? composerEditorRef.current?.getTextContent() ?? '',
       });
+      const sentDraft: SavedComposerDraft = {
+        savedDraftText: latestComposerDraftRef.current.text,
+        savedDraftImages: [...latestComposerDraftRef.current.images],
+        savedDraftContextRefs: cloneContextRefs(latestComposerDraftRef.current.contextRefs),
+      };
+      saveComposerDraftForContext(composerDraftContextKey, {
+        text: sentDraft.savedDraftText,
+        images: sentDraft.savedDraftImages,
+        contextRefs: sentDraft.savedDraftContextRefs,
+      });
+      migrateComposerDraftContext(
+        composerDraftContextKey,
+        `conversation:${conversationId}`,
+      );
 
       const result = await sendMessage({
         conversationId,
@@ -2399,11 +2510,41 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           result.status === 'sent' ? 'executor_running' : 'paused',
         );
       }
-      clearComposerDraftForContext(composerDraftContextKey);
-      clearComposerDraftForContext(`conversation:${conversationId}`);
-      composerEditorRef.current?.clear();
-      setInputValue('');
-      resetPromptHistoryNavigation();
+      if (result.status !== 'sent') {
+        delete executionKickoffByConversationRef.current[conversationId];
+        return false;
+      }
+
+      const conversationDraftKey = `conversation:${conversationId}`;
+      const activeDraftContext = activeComposerDraftContextKeyRef.current;
+      const activeDraftTargetsSentConversation =
+        activeDraftContext === composerDraftContextKey ||
+        activeDraftContext === conversationDraftKey;
+      const latestDraft = latestComposerDraftRef.current;
+      const visibleDraftWasReplaced =
+        activeDraftTargetsSentConversation &&
+        !isComposerDraftEmpty(latestDraft) &&
+        !composerDraftMatchesSavedDraft(latestDraft, sentDraft);
+      const storedDraft =
+        getComposerDraftForContext(conversationDraftKey) ??
+        getComposerDraftForContext(composerDraftContextKey);
+      const storedDraftWasReplaced =
+        storedDraft !== null && !composerDraftMatchesSavedDraft(storedDraft, sentDraft);
+
+      if (visibleDraftWasReplaced) {
+        saveComposerDraftForContext(activeDraftContext, latestDraft);
+      } else if (!storedDraftWasReplaced) {
+        clearComposerDraftForContext(composerDraftContextKey);
+        clearComposerDraftForContext(conversationDraftKey);
+      }
+      if (activeDraftTargetsSentConversation && !visibleDraftWasReplaced) {
+        composerEditorRef.current?.clear();
+        clearComposerContextRefs();
+        setComposerImages([]);
+        setInputValue('');
+        latestComposerDraftRef.current = { text: '', images: [], contextRefs: [] };
+        resetPromptHistoryNavigation();
+      }
       return true;
     } catch (error) {
       if (conversationId) {
@@ -2424,10 +2565,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     ensureConversation,
     activateConversationGoal,
     clearComposerDraftForContext,
+    clearComposerContextRefs,
     composerDraftContextKey,
+    getComposerDraftForContext,
     isConversationPending,
     isBusySending,
     mode,
+    migrateComposerDraftContext,
     selectedModelId,
     selectedProviderId,
     selectedReasoningEffort,
@@ -2435,6 +2579,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     selectedTaskProjectSummary,
     selectedTaskRequiresKickoff,
     sendMessage,
+    saveComposerDraftForContext,
+    setComposerImages,
     setConversationGoalStatus,
     startTask,
     resetPromptHistoryNavigation,
@@ -2704,12 +2850,38 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       savedDraftContextRefs: cloneContextRefs(composerContextRefs),
     };
     const clearsComposerImmediately = !goalComposerEditSession;
-    const restoreSentDraft = () => {
+    const pendingDraftContextKeys = [composerDraftContextKey, conversationDraftKey];
+    const finishPendingDraft = (confirmed: boolean) => {
+      pendingDraftContextKeys.forEach((contextKey) => {
+        pendingSentComposerDraftContextKeysRef.current.delete(contextKey);
+      });
+      const activeDraftContext = activeComposerDraftContextKeyRef.current;
+      const latestDraft = latestComposerDraftRef.current;
+      if (
+        (activeDraftContext === composerDraftContextKey ||
+          activeDraftContext === conversationDraftKey) &&
+        !isComposerDraftEmpty(latestDraft)
+      ) {
+        saveComposerDraftForContext(activeDraftContext, latestDraft);
+        return;
+      }
+      const storedDraft = getComposerDraftForContext(conversationDraftKey);
+      if (confirmed) {
+        if (composerDraftMatchesSavedDraft(storedDraft, sentDraft)) {
+          clearComposerDraftForContext(composerDraftContextKey);
+          clearComposerDraftForContext(conversationDraftKey);
+        }
+        return;
+      }
+      if (storedDraft && !composerDraftMatchesSavedDraft(storedDraft, sentDraft)) return;
       saveComposerDraftForContext(conversationDraftKey, {
         text: sentDraft.savedDraftText,
         images: sentDraft.savedDraftImages,
         contextRefs: sentDraft.savedDraftContextRefs,
       });
+    };
+    const restoreSentDraft = () => {
+      finishPendingDraft(false);
       const activeDraftContext = activeComposerDraftContextKeyRef.current;
       if (
         activeDraftContext !== composerDraftContextKey &&
@@ -2737,8 +2909,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
       });
       if (clearsComposerImmediately) {
-        clearComposerDraftForContext(composerDraftContextKey);
-        clearComposerDraftForContext(conversationDraftKey);
+        pendingDraftContextKeys.forEach((contextKey) => {
+          pendingSentComposerDraftContextKeysRef.current.add(contextKey);
+        });
         composerEditorRef.current?.clear();
         clearComposerContextRefs();
         setComposerImages([]);
@@ -2776,8 +2949,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             restoreGoalComposerDraft(goalComposerEditSession);
           }
         } else {
-          clearComposerDraftForContext(composerDraftContextKey);
-          clearComposerDraftForContext(conversationDraftKey);
+          finishPendingDraft(true);
         }
         resetPromptHistoryNavigation();
       } else if (goalEditTransactionId) {
