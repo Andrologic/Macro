@@ -376,6 +376,69 @@ export const presentServiceError = (
   const message = serviceErrorMessage(normalized);
   const lower = message.toLowerCase();
 
+  if (normalized.code === SERVICE_ERROR_CODES.GIT_OBJECT_MISSING) {
+    const worktreeUnmodified = (
+      normalized.details as Record<string, unknown> | undefined
+    )?.worktreeModified === false;
+    return {
+      title: title('errors.degraded.service.gitObjectMissing.title'),
+      body: body(worktreeUnmodified
+        ? 'errors.degraded.service.gitObjectMissing.body'
+        : 'errors.degraded.service.gitObjectMissing.bodyUncertain'),
+      nextStep: nextStep('errors.degraded.service.gitObjectMissing.nextStep'),
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'retry',
+    };
+  }
+
+  if (normalized.code === SERVICE_ERROR_CODES.DIRECT_MODE_CONFIGURATION_REQUIRED) {
+    return {
+      title: title('errors.degraded.service.directModeConfigurationRequired.title'),
+      body: body('errors.degraded.service.directModeConfigurationRequired.body'),
+      nextStep: nextStep('errors.degraded.service.directModeConfigurationRequired.nextStep'),
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'open_project_settings',
+    };
+  }
+
+  if (
+    normalized.code === SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_MISSING ||
+    normalized.code === SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_CORRUPT
+  ) {
+    const key = normalized.code === SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_MISSING
+      ? 'directCheckpointMissing'
+      : 'directCheckpointCorrupt';
+    return {
+      title: title(`errors.degraded.service.${key}.title`),
+      body: body(`errors.degraded.service.${key}.body`),
+      nextStep: nextStep(`errors.degraded.service.${key}.nextStep`),
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'retry',
+    };
+  }
+
+  if (normalized.code === SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_PROJECT_MISMATCH) {
+    return {
+      title: title('errors.degraded.service.directCheckpointProjectMismatch.title'),
+      body: body('errors.degraded.service.directCheckpointProjectMismatch.body'),
+      nextStep: nextStep('errors.degraded.service.directCheckpointProjectMismatch.nextStep'),
+      severity: 'warning',
+      technicalDetails: stringifyDetails(normalized.details) || message,
+      projectId: options.projectId ?? null,
+      repoPath: options.repoPath ?? null,
+      primaryAction: 'open_project_settings',
+    };
+  }
+
   if (isResourcePressureError(normalized) || isTooManyOpenFilesMessage(message)) {
     return {
       title: title('errors.degraded.service.resourcePressure.title'),

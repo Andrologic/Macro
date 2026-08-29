@@ -27,5 +27,7 @@ describe('fileChangesRefreshPolicy', () => {
     expect(canAutoRefreshFileChangesForTask({ ...base, isPlanFinalizationTask: true })).toBe(false);
     expect(canAutoRefreshFileChangesForTask({ ...base, hasActiveMergeWorkflow: true })).toBe(false);
     expect(canAutoRefreshFileChangesForTask({ ...base, isReadOnlyRemoteMode: true })).toBe(false);
+    expect(canAutoRefreshFileChangesForTask({ ...base, hasReviewSuspension: true })).toBe(false);
+    expect(canAutoRefreshFileChangesForTask({ ...base, hasReviewSuspension: false })).toBe(true);
   });
 });

@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub fn direct_checkpoint_id(task_id: &str, project_path: &Path) -> String {
+pub fn direct_checkpoint_task_segment(task_id: &str) -> String {
     let task = task_id
         .chars()
         .map(|character| {
@@ -16,11 +16,15 @@ pub fn direct_checkpoint_id(task_id: &str, project_path: &Path) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string();
-    let task = if task.is_empty() {
+    if task.is_empty() {
         "branch".to_string()
     } else {
         task
-    };
+    }
+}
+
+pub fn direct_checkpoint_id(task_id: &str, project_path: &Path) -> String {
+    let task = direct_checkpoint_task_segment(task_id);
     let mut hash: u64 = 1469598103934665603;
     for byte in project_path.to_string_lossy().as_bytes() {
         hash ^= u64::from(*byte);

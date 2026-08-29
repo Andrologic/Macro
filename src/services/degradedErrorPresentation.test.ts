@@ -91,6 +91,77 @@ describe('degradedErrorPresentation', () => {
     expect(presentation.nextStep?.key).toBe('errors.degraded.service.resourcePressure.nextStep');
   });
 
+  it('presents a missing Git object without exposing the raw libgit2 message', () => {
+    const presentation = presentServiceError({
+      code: 'GIT_OBJECT_MISSING',
+      message: 'A Git object required for this operation is missing.',
+      details: {
+        objectId: '0123456789abcdef0123456789abcdef01234567',
+        worktreeModified: false,
+      },
+    });
+
+    expect(presentation.title.key).toBe('errors.degraded.service.gitObjectMissing.title');
+    expect(presentation.body.key).toBe('errors.degraded.service.gitObjectMissing.body');
+    expect(presentation.nextStep?.key).toBe('errors.degraded.service.gitObjectMissing.nextStep');
+    expect(presentation.severity).toBe('warning');
+    expect(presentation.technicalDetails).toContain('0123456789abcdef');
+  });
+
+  it('does not claim the worktree is unchanged without read-only operation context', () => {
+    const presentation = presentServiceError({
+      code: 'GIT_OBJECT_MISSING',
+      message: 'A Git object required for this operation is missing.',
+      details: { worktreeModified: null },
+    });
+
+    expect(presentation.body.key).toBe('errors.degraded.service.gitObjectMissing.bodyUncertain');
+  });
+
+  it('identifies a damaged Macro checkpoint without blaming the project repository', () => {
+    const presentation = presentServiceError({
+      code: 'DIRECT_CHECKPOINT_CORRUPT',
+      message: "Macro's internal review checkpoint is incomplete.",
+      details: {
+        checkpointId: 'task-1-0123456789abcdef',
+        objectId: '0123456789abcdef0123456789abcdef01234567',
+        acceptedHistoryAtRisk: true,
+        worktreeModified: false,
+      },
+    });
+
+    expect(presentation.title.key).toBe('errors.degraded.service.directCheckpointCorrupt.title');
+    expect(presentation.body.key).toBe('errors.degraded.service.directCheckpointCorrupt.body');
+    expect(presentation.technicalDetails).toContain('acceptedHistoryAtRisk');
+    expect(presentation.technicalDetails).not.toContain('C:\\Users');
+  });
+
+  it('presents a checkpoint project mismatch as a settings action without retry', () => {
+    const presentation = presentServiceError({
+      code: 'DIRECT_CHECKPOINT_PROJECT_MISMATCH',
+      message: "Macro's internal review checkpoint belongs to another project path.",
+      details: { checkpointId: 'task-1-0123456789abcdef' },
+    });
+
+    expect(presentation.title.key)
+      .toBe('errors.degraded.service.directCheckpointProjectMismatch.title');
+    expect(presentation.body.key)
+      .toBe('errors.degraded.service.directCheckpointProjectMismatch.body');
+    expect(presentation.primaryAction).toBe('open_project_settings');
+  });
+
+  it('routes missing direct-mode configuration to project settings', () => {
+    const presentation = presentServiceError({
+      code: 'DIRECT_MODE_CONFIGURATION_REQUIRED',
+      message: 'Direct review requires project configuration.',
+      details: { projectId: 'project-direct' },
+    });
+
+    expect(presentation.title.key)
+      .toBe('errors.degraded.service.directModeConfigurationRequired.title');
+    expect(presentation.primaryAction).toBe('open_project_settings');
+  });
+
   it('presents missing plan metadata as a repairable metadata issue', () => {
     const presentation = presentServiceError({
       code: 'PLAN_METADATA_MISSING',

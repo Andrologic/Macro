@@ -410,7 +410,8 @@
     "commitMessageRequired": "Eine Commit-Message ist erforderlich.",
     "commitSucceededTaskNotCompleted": "Änderungen wurden übernommen, die Aufgabe konnte jedoch nicht automatisch abgeschlossen werden.",
     "deletedChangeReadOnly": "Gelöschte Dateien sind während der Überprüfung schreibgeschützt. Stellen Sie sie stattdessen aus dem Taskflow wieder her.",
-    "revertChangesFailed": "Änderungen konnten nicht verworfen werden."
+    "revertChangesFailed": "Änderungen konnten nicht verworfen werden.",
+    "reviewChangedSinceLoad": "Die Datei wurde nach dem Laden dieser Review geändert. Aktualisieren Sie die Review, bevor Sie es erneut versuchen."
   },
   "taskCommandsManualDraftUnsupported": "Senden Sie eine erste Nachricht, um Branch, Worktree und Terminal dieser Funktion vorzubereiten.",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

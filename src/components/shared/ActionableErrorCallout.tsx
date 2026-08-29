@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon, type IconName } from '../ui/Icon';
 import { Button } from '../ui/Button';
@@ -16,6 +16,7 @@ interface ActionableErrorCalloutProps {
   onSecondaryAction?: (() => void) | null;
   className?: string;
   compact?: boolean;
+  announce?: boolean;
 }
 
 const toneClassName: Record<DegradedErrorPresentation['severity'], string> = {
@@ -38,6 +39,7 @@ export const ActionableErrorCallout: React.FC<ActionableErrorCalloutProps> = ({
   onSecondaryAction,
   className,
   compact = false,
+  announce = false,
 }) => {
   const { t } = useTranslation();
   const [showDetails, setShowDetails] = useState(false);
@@ -48,9 +50,10 @@ export const ActionableErrorCallout: React.FC<ActionableErrorCalloutProps> = ({
   const hasTechnicalDetails = Boolean(presentation.technicalDetails?.trim());
   const buttonVariant = presentation.severity === 'danger' ? 'error' : 'secondary';
   const resolvedDetails = presentation.technicalDetails?.trim() || null;
+  const detailsId = useId();
 
   return (
-    <div className={cn('rounded-xl border px-4 py-3', toneClassName[presentation.severity], className)}>
+    <div role={announce ? 'alert' : undefined} className={cn('rounded-xl border px-4 py-3', toneClassName[presentation.severity], className)}>
       <div className="flex items-start gap-3">
         <div className="mt-0.5 shrink-0">
           <Icon name={iconBySeverity[presentation.severity]} size={compact ? 14 : 16} />
@@ -88,6 +91,8 @@ export const ActionableErrorCallout: React.FC<ActionableErrorCalloutProps> = ({
                   size="sm"
                   variant="ghost"
                   className="px-2"
+                  aria-expanded={showDetails}
+                  aria-controls={detailsId}
                   onClick={() => setShowDetails((current) => !current)}
                 >
                   {showDetails
@@ -98,7 +103,7 @@ export const ActionableErrorCallout: React.FC<ActionableErrorCalloutProps> = ({
             </div>
           )}
           {showDetails && resolvedDetails && (
-            <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/70 bg-background/70 p-3 text-[11px] text-muted-foreground">
+            <pre id={detailsId} className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/70 bg-background/70 p-3 text-[11px] text-muted-foreground">
               {resolvedDetails}
             </pre>
           )}

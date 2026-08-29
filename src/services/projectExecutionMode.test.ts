@@ -89,6 +89,20 @@ describe('resolveProjectExecutionMode', () => {
     });
   });
 
+  it('blocks a persisted direct target for a user read-only project', () => {
+    expect(resolveProjectExecutionMode({
+      project: project({ gitSetupState: 'not_git', directEdit: true, userReadOnly: true }),
+      target: target('direct', { checkpointId: 'task-1-0123456789abcdef' }),
+    })).toMatchObject({ mode: 'blocked', reason: 'project_read_only' });
+  });
+
+  it('fails closed for an unknown persisted mode', () => {
+    expect(resolveProjectExecutionMode({
+      project: project(),
+      target: target('future-mode' as never),
+    })).toMatchObject({ mode: 'invalid', reason: 'contradictory_project_metadata' });
+  });
+
   it('keeps a persisted direct target valid after direct editing is disabled for new tasks', () => {
     expect(resolveProjectExecutionMode({
       project: project({ gitSetupState: 'not_git', directEdit: false, isReadOnly: true }),

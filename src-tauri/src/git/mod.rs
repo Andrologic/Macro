@@ -872,6 +872,29 @@ impl GitState {
         Ok(repo_arc)
     }
 
+    /// Evict a cached repository handle so the next open observes fresh ODB state.
+    pub fn invalidate_repo_if_same(
+        &self,
+        path: &Path,
+        expected: &Arc<Mutex<Repository>>,
+    ) -> Result<()> {
+        let canonical = canonicalize_for_cache(path);
+        let mut repos = self
+            .inner
+            .repos
+            .lock()
+            .map_err(|_| BackendError::Internal {
+                message: "Failed to lock git repository cache".to_string(),
+            })?;
+        let should_remove = repos
+            .get(&canonical)
+            .is_some_and(|cached| Arc::ptr_eq(cached, expected));
+        if should_remove {
+            repos.remove(&canonical);
+        }
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn get_worktree(&self, task_id: &str) -> Option<PathBuf> {
         self.inner

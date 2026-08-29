@@ -4,24 +4,32 @@
 mod review;
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::{Duration, Instant};
 
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
 use chrono::{DateTime, Utc};
 use git2::{
-    BranchType, Commit, DiffFormat, DiffStatsFormat, Oid, Repository, RepositoryState, ResetType,
-    StashFlags, Status, StatusEntry, TreeWalkMode, TreeWalkResult,
+    BranchType, Commit, ConfigLevel, DiffFormat, DiffStatsFormat, Oid, Repository, RepositoryState,
+    ResetType, StashFlags, Status, StatusEntry, TreeWalkMode, TreeWalkResult,
 };
 use serde::Serialize;
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
 use crate::core::error::{BackendError, Result};
-use crate::core::process::background_command;
-use crate::fs::validate_path;
+use crate::core::process::{
+    background_command, background_contained_tokio_command, ContainedBackgroundProcess,
+};
+use crate::fs::{normalize_path, validate_path};
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::git::{
     GitState, TaskWorktreeEnsureStatus, TaskWorktreeStatus, MACRO_BRANCH_NAME,
@@ -32,7 +40,9 @@ use crate::project_path::{
     run_wsl_git_bounded_allow_failure, WslCommandOutput, WslProjectPath,
 };
 use crate::workspace;
-use crate::workspace::metadata::{direct_checkpoint_id, WorkspaceRecoverMissingMetadataRequestDto};
+use crate::workspace::metadata::{
+    direct_checkpoint_id, direct_checkpoint_task_segment, WorkspaceRecoverMissingMetadataRequestDto,
+};
 use crate::{WorkspaceMetadataRoot, WorkspaceRoot};
 
 const DEFAULT_LOG_LIMIT: usize = 50;
@@ -43,7 +53,18 @@ const MAX_CONFLICT_FILE_BYTES: usize = 1_000_000;
 const WSL_GIT_TIMEOUT: Duration = Duration::from_secs(8);
 const WSL_GIT_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 const NATIVE_GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
+const GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_GIT_COMMAND_OUTPUT_BYTES: u64 = 256 * 1024;
 static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[derive(Default)]
+struct GitReviewCancellationRegistry {
+    active: HashMap<String, Arc<AtomicBool>>,
+    pre_cancelled: HashMap<String, Instant>,
+}
+
+static GIT_REVIEW_CANCELLATIONS: OnceLock<Mutex<GitReviewCancellationRegistry>> = OnceLock::new();
+const GIT_REVIEW_PRE_CANCEL_TTL: Duration = Duration::from_secs(60);
+const MAX_GIT_REVIEW_PRE_CANCELLED: usize = 256;
 
 #[derive(Serialize)]
 pub struct GitStatusDto {
@@ -411,6 +432,7 @@ pub struct DirectReviewSnapshotDto {
     #[serde(flatten)]
     pub snapshot: GitReviewSnapshotDto,
     pub has_accepted_changes: bool,
+    pub restore_revisions: HashMap<String, String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -540,56 +562,7 @@ fn run_git_command_with_timeout(
     args: &[String],
     timeout_duration: Duration,
 ) -> Result<GitCommandOutput> {
-    let repo = Repository::discover(cwd)?;
-    ensure_safe_config(&repo)?;
-
-    let mut command = background_command("git");
-    command
-        .env_clear()
-        .envs(std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())))
-        // Network commands must not wait forever for an interactive credential prompt.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .current_dir(cwd)
-        .args(args);
-    let mut child = command.spawn().map_err(|error| BackendError::Git {
-        message: format!("Failed to run git command '{}': {}", args.join(" "), error),
-    })?;
-    let started = std::time::Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().map_err(|error| BackendError::Git {
-            message: format!(
-                "Failed while waiting for git command '{}': {}",
-                args.join(" "),
-                error
-            ),
-        })? {
-            let output = child
-                .wait_with_output()
-                .map_err(|error| BackendError::Git {
-                    message: format!(
-                        "Failed to collect git command '{}': {}",
-                        args.join(" "),
-                        error
-                    ),
-                })?;
-            return Ok(GitCommandOutput {
-                success: status.success(),
-                code: status.code(),
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            });
-        }
-        if started.elapsed() >= timeout_duration {
-            // Reap the child after killing it so Git lock files and handles are
-            // not retained by the launcher process.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(BackendError::Git {
-                message: format!("Git command '{}' timed out.", args.join(" ")),
-            });
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    run_contained_git_command_with_timeout(cwd, args, timeout_duration, false)
 }
 
 fn is_git_environment_variable(key: &OsStr) -> bool {
@@ -611,6 +584,653 @@ fn command_output_text(output: &GitCommandOutput) -> String {
         return stdout.to_string();
     }
     format!("{}\n{}", stdout, stderr)
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PartialCloneConfig {
+    extension_remote: Option<String>,
+    promisor_remotes: Vec<String>,
+    filters: Vec<(String, String)>,
+}
+
+impl PartialCloneConfig {
+    fn is_partial(&self) -> bool {
+        self.extension_remote.is_some()
+            || !self.promisor_remotes.is_empty()
+            || !self.filters.is_empty()
+    }
+}
+
+fn config_value_is_true(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "true" | "yes" | "on" | "1"
+        )
+    })
+}
+
+fn detect_partial_clone(repo: &Repository) -> Result<PartialCloneConfig> {
+    let config = repo.config()?;
+    let mut detected = PartialCloneConfig::default();
+    let mut entries = config.entries(None)?;
+    while let Some(entry) = entries.next() {
+        let entry = entry?;
+        let name = entry.name()?;
+        let lower_name = name.to_ascii_lowercase();
+        let value = entry
+            .value()
+            .ok()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        if lower_name == "extensions.partialclone" {
+            detected.extension_remote = value.map(str::to_string);
+            continue;
+        }
+
+        let Some(remote_setting) = lower_name.strip_prefix("remote.") else {
+            continue;
+        };
+        if let Some(remote_name) = remote_setting.strip_suffix(".promisor") {
+            if config_value_is_true(value) {
+                detected.promisor_remotes.push(remote_name.to_string());
+            }
+        } else if let Some(remote_name) = remote_setting.strip_suffix(".partialclonefilter") {
+            if let Some(filter) = value {
+                detected
+                    .filters
+                    .push((remote_name.to_string(), filter.to_string()));
+            }
+        }
+    }
+    detected.promisor_remotes.sort();
+    detected.promisor_remotes.dedup();
+    detected.filters.sort();
+    detected.filters.dedup();
+    Ok(detected)
+}
+
+fn hydrate_review_objects_with_git(
+    repo_root: &Path,
+    object_id: &str,
+    cancellation: Option<Arc<AtomicBool>>,
+) -> std::result::Result<String, String> {
+    let repo = Repository::discover(repo_root).map_err(|error| error.to_string())?;
+    ensure_safe_automatic_hydration_config(&repo).map_err(|error| error.to_string())?;
+    let diagnostic_redactions = git_remote_diagnostic_redactions(&repo);
+    let args = vec![
+        "cat-file".to_string(),
+        "-e".to_string(),
+        object_id.to_string(),
+    ];
+    let output = run_contained_git_command_with_timeout_and_cancellation(
+        repo_root,
+        &args,
+        NATIVE_GIT_NETWORK_TIMEOUT,
+        true,
+        cancellation,
+    )
+    .map_err(|error| error.to_string())?;
+    if output.success {
+        return Ok(format!("git {} completed successfully", args.join(" ")));
+    }
+    let diagnostic = sanitize_git_diagnostic(
+        &command_output_text(&output),
+        repo_root,
+        &diagnostic_redactions,
+    );
+    Err(format!(
+        "git {} exited with code {:?}{}",
+        args.join(" "),
+        output.code,
+        if diagnostic.is_empty() {
+            String::new()
+        } else {
+            format!(": {diagnostic}")
+        }
+    ))
+}
+
+fn git_review_is_cancelled(cancellation: &Option<Arc<AtomicBool>>) -> bool {
+    cancellation
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Acquire))
+}
+
+fn git_remote_diagnostic_redactions(repo: &Repository) -> Vec<String> {
+    let Ok(config) = repo.config() else {
+        return Vec::new();
+    };
+    let Ok(mut entries) = config.entries(None) else {
+        return Vec::new();
+    };
+    let mut redactions = HashSet::new();
+    while let Some(Ok(entry)) = entries.next() {
+        let Ok(name) = entry.name() else {
+            continue;
+        };
+        let lower_name = name.to_ascii_lowercase();
+        if !lower_name.starts_with("remote.")
+            || (!lower_name.ends_with(".url") && !lower_name.ends_with(".pushurl"))
+        {
+            continue;
+        }
+        let Ok(value) = entry.value() else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        redactions.insert(value.to_string());
+        if let Ok(url) = url::Url::parse(value) {
+            if let Some(host) = url.host_str() {
+                redactions.insert(host.to_string());
+            }
+        } else if let Some((authority, _)) = value.split_once(':') {
+            let host = authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host);
+            if !host.is_empty() && !host.contains('/') && !host.contains('\\') {
+                redactions.insert(host.to_string());
+            }
+        }
+    }
+    redactions.into_iter().collect()
+}
+
+fn sanitize_git_diagnostic(output: &str, repo_root: &Path, redactions: &[String]) -> String {
+    let mut sensitive = redactions
+        .iter()
+        .map(|value| value.to_ascii_lowercase().replace('\\', "/"))
+        .collect::<Vec<_>>();
+    for path in [Some(repo_root.to_path_buf()), repo_root.canonicalize().ok()]
+        .into_iter()
+        .flatten()
+    {
+        sensitive.push(
+            path.to_string_lossy()
+                .to_ascii_lowercase()
+                .replace('\\', "/"),
+        );
+    }
+    output
+        .split_whitespace()
+        .map(|part| {
+            let normalized = part.to_ascii_lowercase().replace('\\', "/");
+            if sensitive
+                .iter()
+                .any(|value| !value.is_empty() && normalized.contains(value))
+            {
+                return "[redacted]";
+            }
+            let scp_remote = part.split_once(':').is_some_and(|(authority, path)| {
+                authority.contains('@')
+                    && !authority.contains('/')
+                    && !authority.contains('\\')
+                    && !path.is_empty()
+            });
+            if part.contains("://") || scp_remote {
+                "[remote URL]"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn run_contained_git_command_with_timeout(
+    cwd: &Path,
+    args: &[String],
+    timeout_duration: Duration,
+    fail_on_truncated_output: bool,
+) -> Result<GitCommandOutput> {
+    run_contained_git_command_with_timeout_and_cancellation(
+        cwd,
+        args,
+        timeout_duration,
+        fail_on_truncated_output,
+        None,
+    )
+}
+
+fn run_contained_git_command_with_timeout_and_cancellation(
+    cwd: &Path,
+    args: &[String],
+    timeout_duration: Duration,
+    fail_on_truncated_output: bool,
+    cancellation: Option<Arc<AtomicBool>>,
+) -> Result<GitCommandOutput> {
+    let repo = Repository::discover(cwd)?;
+    ensure_safe_config(&repo)?;
+    let cwd = cwd.to_path_buf();
+    let args = args.to_vec();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to create Git command runtime: {error}"),
+        })?;
+
+    runtime.block_on(async move {
+        let mut command = background_contained_tokio_command("git");
+        command.env_clear().envs(
+            std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())),
+        );
+        configure_noninteractive_git_command(&mut command);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(&cwd)
+            .args(&args);
+        let mut process =
+            ContainedBackgroundProcess::spawn(command).map_err(|error| BackendError::Git {
+                message: format!("Failed to run git command '{}': {error}", args.join(" ")),
+            })?;
+        let stdout = process.take_stdout().ok_or_else(|| BackendError::Git {
+            message: format!(
+                "Failed to capture stdout for git command '{}'.",
+                args.join(" ")
+            ),
+        })?;
+        let stderr = process.take_stderr().ok_or_else(|| BackendError::Git {
+            message: format!(
+                "Failed to capture stderr for git command '{}'.",
+                args.join(" ")
+            ),
+        })?;
+        let stdout_reader =
+            tokio::spawn(async move { read_bounded_git_command_output(stdout).await });
+        let stderr_reader =
+            tokio::spawn(async move { read_bounded_git_command_output(stderr).await });
+
+        enum WaitOutcome {
+            Completed(std::io::Result<std::process::ExitStatus>),
+            Cancelled,
+            TimedOut,
+        }
+        let wait_for_cancellation = async {
+            if let Some(cancellation) = cancellation {
+                loop {
+                    if cancellation.load(Ordering::Acquire) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let outcome = tokio::select! {
+            status = process.wait() => WaitOutcome::Completed(status),
+            _ = wait_for_cancellation => WaitOutcome::Cancelled,
+            _ = tokio::time::sleep(timeout_duration) => WaitOutcome::TimedOut,
+        };
+        let status = match outcome {
+            WaitOutcome::Completed(status) => status.map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed while waiting for git command '{}': {error}",
+                    args.join(" ")
+                ),
+            })?,
+            WaitOutcome::Cancelled => {
+                let _ = process.terminate_bounded().await;
+                stdout_reader.abort();
+                stderr_reader.abort();
+                return Err(BackendError::Git {
+                    message: "Git review was cancelled.".to_string(),
+                });
+            }
+            WaitOutcome::TimedOut => {
+                let _ = process.terminate_bounded().await;
+                stdout_reader.abort();
+                stderr_reader.abort();
+                return Err(BackendError::Git {
+                    message: format!("Git command '{}' timed out.", args.join(" ")),
+                });
+            }
+        };
+        let _ = process.terminate_with_grace(Duration::ZERO).await;
+        let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+            tokio::time::timeout(GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT, async {
+                let stdout = stdout_reader.await.map_err(|error| BackendError::Git {
+                    message: format!("Git stdout reader failed for '{}': {error}", args.join(" ")),
+                })??;
+                let stderr = stderr_reader.await.map_err(|error| BackendError::Git {
+                    message: format!("Git stderr reader failed for '{}': {error}", args.join(" ")),
+                })??;
+                Ok::<_, BackendError>((stdout, stderr))
+            })
+            .await
+            .map_err(|_| BackendError::Git {
+                message: format!(
+                    "Git command '{}' did not close its output streams.",
+                    args.join(" ")
+                ),
+            })??;
+        if fail_on_truncated_output && (stdout_truncated || stderr_truncated) {
+            return Err(BackendError::Git {
+                message: format!("Git command '{}' produced too much output.", args.join(" ")),
+            });
+        }
+        let append_truncation_notice = |bytes: &[u8], truncated: bool| {
+            let mut value = String::from_utf8_lossy(bytes).to_string();
+            if truncated {
+                value.push_str("\n[Git output truncated by Macro]");
+            }
+            value
+        };
+        Ok(GitCommandOutput {
+            success: status.success(),
+            code: status.code(),
+            stdout: append_truncation_notice(&stdout, stdout_truncated),
+            stderr: append_truncation_notice(&stderr, stderr_truncated),
+        })
+    })
+}
+
+fn configure_noninteractive_git_command(command: &mut tokio::process::Command) {
+    command
+        .env_remove("GIT_ASKPASS")
+        .env_remove("SSH_ASKPASS")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "0")
+        .env("GCM_GUI_PROMPT", "0")
+        .env("GIT_ALLOW_PROTOCOL", "git:http:https:ssh")
+        .env("GIT_CONFIG_COUNT", "3")
+        .env("GIT_CONFIG_KEY_0", "core.askPass")
+        .env("GIT_CONFIG_VALUE_0", "")
+        .env("GIT_CONFIG_KEY_1", "maintenance.auto")
+        .env("GIT_CONFIG_VALUE_1", "false")
+        .env("GIT_CONFIG_KEY_2", "gc.recentObjectsHook")
+        .env("GIT_CONFIG_VALUE_2", "")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
+}
+
+async fn read_bounded_git_command_output<R>(mut reader: R) -> std::io::Result<(Vec<u8>, bool)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = (MAX_GIT_COMMAND_OUTPUT_BYTES as usize).saturating_sub(retained.len());
+        let keep = remaining.min(read);
+        retained.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < read;
+    }
+    Ok((retained, truncated))
+}
+
+fn run_review_with_missing_object_retry<T, F>(
+    git_state: &GitState,
+    repo_root: &Path,
+    cancellation: Option<Arc<AtomicBool>>,
+    operation: F,
+) -> Result<T>
+where
+    F: Fn(&Repository) -> Result<T>,
+{
+    run_review_with_missing_object_retry_and_hydrator(
+        git_state,
+        repo_root,
+        cancellation,
+        operation,
+        hydrate_review_objects_with_git,
+    )
+}
+
+fn run_review_with_missing_object_retry_and_hydrator<T, F, H>(
+    git_state: &GitState,
+    repo_root: &Path,
+    cancellation: Option<Arc<AtomicBool>>,
+    operation: F,
+    hydrate: H,
+) -> Result<T>
+where
+    F: Fn(&Repository) -> Result<T>,
+    H: Fn(&Path, &str, Option<Arc<AtomicBool>>) -> std::result::Result<String, String>,
+{
+    if git_review_is_cancelled(&cancellation) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+    let repo = git_state.open_repo(repo_root)?;
+    let (first_result, partial_clone) = {
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        if git_review_is_cancelled(&cancellation) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        let result = operation(&repo);
+        let partial_clone = if result
+            .as_ref()
+            .err()
+            .is_some_and(BackendError::is_git_object_missing)
+        {
+            detect_partial_clone(&repo).unwrap_or_default()
+        } else {
+            PartialCloneConfig::default()
+        };
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(BackendError::is_git_object_missing)
+        {
+            if let Ok(odb) = repo.odb() {
+                let _ = odb.refresh();
+            }
+        }
+        (result, partial_clone)
+    };
+
+    let first_error = match first_result {
+        Ok(value) => return Ok(value),
+        Err(error) if error.is_git_object_missing() => error,
+        Err(error) => return Err(error),
+    };
+    let object_id = first_error.git_object_id().map(str::to_string);
+    if git_review_is_cancelled(&cancellation) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+    let git_output = if partial_clone.is_partial() && object_id.is_some() {
+        match hydrate(
+            repo_root,
+            object_id.as_deref().unwrap_or_default(),
+            cancellation.clone(),
+        ) {
+            Ok(output) => Some(output),
+            Err(_) if git_review_is_cancelled(&cancellation) => {
+                return Err(BackendError::Git {
+                    message: "Git review was cancelled.".to_string(),
+                });
+            }
+            Err(error) => Some(error),
+        }
+    } else {
+        None
+    };
+    if git_review_is_cancelled(&cancellation) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+
+    // Other commands may already hold a clone of this cached Arc. Refresh the
+    // shared handle after Git CLI hydration before replacing the cache entry.
+    {
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        if git_review_is_cancelled(&cancellation) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        if let Ok(odb) = repo.odb() {
+            let _ = odb.refresh();
+        };
+    }
+
+    git_state.invalidate_repo_if_same(repo_root, &repo)?;
+    if git_review_is_cancelled(&cancellation) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+    let refreshed_repo = git_state.open_repo(repo_root)?;
+    let retry_result = {
+        let refreshed_repo = refreshed_repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        if git_review_is_cancelled(&cancellation) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        refreshed_repo.odb()?.refresh()?;
+        if git_review_is_cancelled(&cancellation) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        operation(&refreshed_repo)
+    };
+
+    retry_result.map_err(|retry_error| {
+        if retry_error.is_git_object_missing() {
+            retry_error.with_git_object_diagnostics(
+                repo_root,
+                partial_clone.is_partial(),
+                true,
+                git_output,
+            )
+        } else {
+            retry_error
+        }
+    })
+}
+
+struct GitReviewCancellationGuard {
+    request_id: String,
+}
+
+impl Drop for GitReviewCancellationGuard {
+    fn drop(&mut self) {
+        if let Some(cancellations) = GIT_REVIEW_CANCELLATIONS.get() {
+            if let Ok(mut cancellations) = cancellations.lock() {
+                cancellations.active.remove(&self.request_id);
+            }
+        }
+    }
+}
+
+fn validate_git_review_request_id(request_id: &str) -> Result<()> {
+    if request_id.is_empty()
+        || request_id.len() > 128
+        || !request_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(BackendError::Validation(
+            "Invalid Git review request identifier.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn register_git_review_cancellation(
+    request_id: Option<&str>,
+) -> Result<(Option<Arc<AtomicBool>>, Option<GitReviewCancellationGuard>)> {
+    let Some(request_id) = request_id else {
+        return Ok((None, None));
+    };
+    validate_git_review_request_id(request_id)?;
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let cancellations = GIT_REVIEW_CANCELLATIONS
+        .get_or_init(|| Mutex::new(GitReviewCancellationRegistry::default()));
+    let mut cancellations = cancellations.lock().map_err(|_| BackendError::Internal {
+        message: "Failed to lock Git review cancellation registry".to_string(),
+    })?;
+    cancellations
+        .pre_cancelled
+        .retain(|_, cancelled_at| cancelled_at.elapsed() <= GIT_REVIEW_PRE_CANCEL_TTL);
+    if cancellations.active.contains_key(request_id) {
+        return Err(BackendError::Validation(
+            "Git review request identifier is already active.".to_string(),
+        ));
+    }
+    if cancellations.pre_cancelled.remove(request_id).is_some() {
+        cancellation.store(true, Ordering::Release);
+    }
+    cancellations
+        .active
+        .insert(request_id.to_string(), cancellation.clone());
+    Ok((
+        Some(cancellation),
+        Some(GitReviewCancellationGuard {
+            request_id: request_id.to_string(),
+        }),
+    ))
+}
+
+#[tauri::command]
+pub async fn git_cancel_review(request_id: String) -> Result<()> {
+    validate_git_review_request_id(&request_id)?;
+    let cancellations = GIT_REVIEW_CANCELLATIONS
+        .get_or_init(|| Mutex::new(GitReviewCancellationRegistry::default()));
+    let mut cancellations = cancellations.lock().map_err(|_| BackendError::Internal {
+        message: "Failed to lock Git review cancellation registry".to_string(),
+    })?;
+    if let Some(cancellation) = cancellations.active.get(&request_id) {
+        cancellation.store(true, Ordering::Release);
+        return Ok(());
+    }
+    cancellations
+        .pre_cancelled
+        .retain(|_, cancelled_at| cancelled_at.elapsed() <= GIT_REVIEW_PRE_CANCEL_TTL);
+    if cancellations.pre_cancelled.len() >= MAX_GIT_REVIEW_PRE_CANCELLED {
+        if let Some(oldest) = cancellations
+            .pre_cancelled
+            .iter()
+            .min_by_key(|(_, cancelled_at)| **cancelled_at)
+            .map(|(request_id, _)| request_id.clone())
+        {
+            cancellations.pre_cancelled.remove(&oldest);
+        }
+    }
+    cancellations
+        .pre_cancelled
+        .insert(request_id, Instant::now());
+    Ok(())
+}
+
+pub(crate) fn cancel_all_git_reviews() {
+    if let Some(cancellations) = GIT_REVIEW_CANCELLATIONS.get() {
+        if let Ok(mut cancellations) = cancellations.lock() {
+            for cancellation in cancellations.active.values() {
+                cancellation.store(true, Ordering::Release);
+            }
+            cancellations.pre_cancelled.clear();
+        }
+    }
 }
 
 fn wsl_output_text(output: &WslCommandOutput) -> String {
@@ -2890,17 +3510,86 @@ fn ensure_safe_config(repo: &Repository) -> Result<()> {
     if let Ok(value) = config.get_string("core.hooksPath") {
         if !value.trim().is_empty() {
             let hooks_path = Path::new(&value);
-            if hooks_path.is_absolute() {
-                let repo_root = repo_root(repo)?;
-                if !hooks_path.starts_with(&repo_root) {
-                    return Err(BackendError::Git {
-                        message: "core.hooksPath must be inside the repository".to_string(),
-                    });
-                }
+            let repo_root = repo_root(repo)?;
+            let configured_hooks_path = if hooks_path.is_absolute() {
+                hooks_path.to_path_buf()
+            } else {
+                repo_root.join(hooks_path)
+            };
+            let resolved_hooks_path = normalize_path(&configured_hooks_path);
+            let lexical_escape = !resolved_hooks_path.starts_with(&repo_root);
+            let linked_escape = resolved_hooks_path
+                .canonicalize()
+                .is_ok_and(|canonical| !canonical.starts_with(&repo_root));
+            if lexical_escape || linked_escape {
+                return Err(BackendError::Git {
+                    message: "core.hooksPath must be inside the repository".to_string(),
+                });
             }
         }
     }
     Ok(())
+}
+
+fn ensure_safe_automatic_hydration_config(repo: &Repository) -> Result<()> {
+    ensure_safe_config(repo)?;
+    let config = repo.config()?;
+    let mut entries = config.entries(None)?;
+    while let Some(entry) = entries.next() {
+        let entry = entry?;
+        if !matches!(entry.level(), ConfigLevel::Local | ConfigLevel::Worktree) {
+            continue;
+        }
+        let name = entry.name()?.to_ascii_lowercase();
+        let value = entry.value().unwrap_or("").trim();
+        if value.is_empty() {
+            continue;
+        }
+        let executable_setting = name == "credential.helper"
+            || (name.starts_with("credential.") && name.ends_with(".helper"))
+            || name == "core.sshcommand"
+            || name == "core.gitproxy"
+            || name == "core.alternaterefscommand"
+            || name == "gc.recentobjectshook"
+            || (name.starts_with("remote.") && name.ends_with(".uploadpack"))
+            || (name.starts_with("remote.") && name.ends_with(".vcs"))
+            || (name.starts_with("url.")
+                && (name.ends_with(".insteadof") || name.ends_with(".pushinsteadof")));
+        let local_remote =
+            name.starts_with("remote.") && name.ends_with(".url") && is_local_git_remote_url(value);
+        if executable_setting || local_remote {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Automatic Git object hydration refused unsafe repository setting '{name}'."
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_local_git_remote_url(value: &str) -> bool {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    let windows_drive = value.as_bytes().get(1) == Some(&b':')
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic);
+    let scp_remote = value.split_once(':').is_some_and(|(host, path)| {
+        !host.is_empty()
+            && !host.contains('/')
+            && !host.contains('\\')
+            && !path.is_empty()
+            && !windows_drive
+    });
+    lower.starts_with("file:")
+        || value.starts_with('.')
+        || value.starts_with('/')
+        || value.starts_with('\\')
+        || Path::new(value).is_absolute()
+        || windows_drive
+        || (!value.contains("://") && !scp_remote)
 }
 
 fn repo_root(repo: &Repository) -> Result<PathBuf> {
@@ -3713,7 +4402,7 @@ pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
                 staged.push(GitFileStatus {
                     path,
                     status: status_to_label(status).unwrap_or_else(|| "modified".to_string()),
-                    old_path,
+                    old_path: old_path.clone(),
                 });
             }
         }
@@ -3723,7 +4412,7 @@ pub(crate) fn build_git_status(repo: &Repository) -> Result<GitStatusDto> {
                 unstaged.push(GitFileStatus {
                     path,
                     status: status_to_label(status).unwrap_or_else(|| "modified".to_string()),
-                    old_path: None,
+                    old_path,
                 });
             }
         }
@@ -6287,7 +6976,10 @@ pub async fn git_review_snapshot(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
     repo_path: String,
+    request_id: Option<String>,
 ) -> Result<GitReviewSnapshotDto> {
+    let (cancellation, _cancellation_guard) =
+        register_git_review_cancellation(request_id.as_deref())?;
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_review_snapshot"));
     }
@@ -6297,18 +6989,18 @@ pub async fn git_review_snapshot(
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
-        let repo = git_state.open_repo(&validated)?;
-        let repo = repo.lock().map_err(|_| BackendError::Internal {
-            message: "Failed to lock repository".to_string(),
-        })?;
-
-        review::build_git_review_snapshot(&repo, &validated)
+        run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
+            review::build_git_review_snapshot(repo, &validated)
+                .map_err(|error| error.with_git_object_context(None, "git_review_snapshot"))
+        })
     })
     .await
     .map_err(to_join_error)?
 }
 
 const DIRECT_CHECKPOINTS_DIR: &str = "direct-checkpoints";
+const DIRECT_CHECKPOINT_STORAGE_LOCK_KEY: &str = "__direct_checkpoint_storage__";
+static DIRECT_CHECKPOINT_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> = OnceLock::new();
 const DIRECT_CHECKPOINT_EXCLUDES: &str = "\
 .git/\n\
 .macro/\n\
@@ -6320,18 +7012,440 @@ build/\n\
 coverage/\n\
 .env\n\
 .env.*\n\
+.envrc\n\
+.dev.vars\n\
 *.pem\n\
-*.key\n";
+*.key\n\
+*.p12\n\
+*.pfx\n\
+*.jks\n\
+*.ppk\n\
+id_rsa\n\
+id_ed25519\n\
+id_ecdsa\n\
+.npmrc\n\
+.pypirc\n\
+.netrc\n\
+.git-credentials\n\
+.ssh/\n\
+.aws/credentials\n\
+.docker/config.json\n\
+.kube/config\n\
+kubeconfig\n\
+terraform.tfstate\n\
+terraform.tfstate.*\n\
+*service-account*.json\n\
+credentials.json\n\
+client_secret_*.json\n\
+.streamlit/secrets.toml\n";
 
-fn direct_checkpoint_key(task_id: &str, project_path: &Path) -> String {
-    direct_checkpoint_id(task_id, project_path)
+fn is_direct_checkpoint_excluded_path(path: &Path) -> bool {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if components.iter().any(|component| {
+        let component = component.to_ascii_lowercase();
+        matches!(
+            component.as_str(),
+            ".git" | ".macro" | "node_modules" | "vendor" | ".pnpm" | "dist" | "build" | "coverage"
+        ) || component == ".env"
+            || component.starts_with(".env.")
+            || component == ".envrc"
+            || component == ".dev.vars"
+            || component.ends_with(".pem")
+            || component.ends_with(".key")
+            || component.ends_with(".p12")
+            || component.ends_with(".pfx")
+            || component.ends_with(".jks")
+            || component.ends_with(".ppk")
+            || matches!(component.as_str(), "id_rsa" | "id_ed25519" | "id_ecdsa")
+            || component == "kubeconfig"
+            || component == "terraform.tfstate"
+            || component.starts_with("terraform.tfstate.")
+            || (component.ends_with(".json") && component.contains("service-account"))
+            || component == "credentials.json"
+            || (component.ends_with(".json") && component.starts_with("client_secret_"))
+            || matches!(
+                component.as_str(),
+                ".npmrc" | ".pypirc" | ".netrc" | ".git-credentials"
+            )
+    }) {
+        return true;
+    }
+    let lower = components
+        .iter()
+        .map(|component| component.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    lower.iter().enumerate().any(|(index, component)| {
+        component == ".ssh"
+            || (component == ".aws"
+                && lower
+                    .get(index + 1)
+                    .is_some_and(|next| next == "credentials"))
+            || (component == ".docker"
+                && lower
+                    .get(index + 1)
+                    .is_some_and(|next| next == "config.json"))
+            || (component == ".kube" && lower.get(index + 1).is_some_and(|next| next == "config"))
+            || (component == ".streamlit"
+                && lower
+                    .get(index + 1)
+                    .is_some_and(|next| next == "secrets.toml"))
+    })
 }
 
-#[cfg(test)]
-fn direct_checkpoint_path(app_data_dir: &Path, task_id: &str, project_path: &Path) -> PathBuf {
-    app_data_dir
-        .join(DIRECT_CHECKPOINTS_DIR)
-        .join(direct_checkpoint_key(task_id, project_path))
+fn direct_worktree_path_has_linked_parent(root: &Path, relative: &Path) -> Result<bool> {
+    let component_count = relative.components().count();
+    let mut current = root.to_path_buf();
+    for (index, component) in relative.components().enumerate() {
+        let std::path::Component::Normal(segment) = component else {
+            return Err(BackendError::Validation(
+                "Direct checkpoint path must remain relative.".to_string(),
+            ));
+        };
+        if index + 1 == component_count {
+            break;
+        }
+        current.push(segment);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if direct_checkpoint_metadata_is_link(&metadata) => return Ok(true),
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!("Failed to inspect direct checkpoint path: {error}"),
+                    source: error,
+                });
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn collect_direct_checkpoint_files(
+    repo: &Repository,
+    root: &Path,
+    current: &Path,
+    output: &mut Vec<PathBuf>,
+) -> Result<()> {
+    for entry in fs::read_dir(current).map_err(|error| BackendError::Io {
+        message: format!("Failed to inspect direct checkpoint worktree: {error}"),
+        source: error,
+    })? {
+        let entry = entry.map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect direct checkpoint entry: {error}"),
+            source: error,
+        })?;
+        let path = entry.path();
+        let relative = path.strip_prefix(root).map_err(|_| {
+            BackendError::Validation(
+                "Direct checkpoint scan escaped the project directory.".to_string(),
+            )
+        })?;
+        if is_direct_checkpoint_excluded_path(relative) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect direct checkpoint entry: {error}"),
+            source: error,
+        })?;
+        if direct_checkpoint_metadata_is_link(&metadata) {
+            #[cfg(unix)]
+            {
+                output.push(relative.to_path_buf());
+            }
+            #[cfg(windows)]
+            if metadata.file_type().is_symlink()
+                && !fs::metadata(&path).is_ok_and(|target| target.is_dir())
+            {
+                output.push(relative.to_path_buf());
+            }
+            continue;
+        }
+        if metadata.is_dir() {
+            if fs::symlink_metadata(path.join(".git")).is_ok() {
+                return Err(BackendError::DirectCheckpointCorrupt {
+                    message:
+                        "Macro cannot checkpoint a nested Git repository in direct review mode."
+                            .to_string(),
+                    checkpoint_id: direct_checkpoint_repo_id(repo),
+                    object_id: None,
+                    operation: Some("direct_checkpoint_init_gitlink".to_string()),
+                    retry_attempted: false,
+                    accepted_history_at_risk: false,
+                    git_output: None,
+                });
+            }
+            collect_direct_checkpoint_files(repo, root, &path, output)?;
+        } else if metadata.is_file() {
+            output.push(relative.to_path_buf());
+        }
+    }
+    Ok(())
+}
+
+fn reject_direct_checkpoint_excluded_path(path: &Path) -> Result<()> {
+    if is_direct_checkpoint_excluded_path(path) {
+        return Err(BackendError::Validation(
+            "This path is excluded from Macro's internal review checkpoint.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn filter_direct_checkpoint_snapshot(snapshot: &mut GitReviewSnapshotDto) {
+    snapshot
+        .changes
+        .retain(|change| !is_direct_checkpoint_excluded_path(Path::new(&change.path)));
+    snapshot
+        .staged_paths
+        .retain(|path| !is_direct_checkpoint_excluded_path(Path::new(path)));
+    snapshot
+        .conflicted_files
+        .retain(|path| !is_direct_checkpoint_excluded_path(Path::new(path)));
+    snapshot.is_clean = snapshot.changes.is_empty() && snapshot.conflicted_files.is_empty();
+}
+
+fn direct_checkpoint_key(task_id: &str, project_path: &Path) -> String {
+    let identity_path = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    direct_checkpoint_id(task_id, &identity_path)
+}
+
+fn direct_checkpoint_known_marker(checkpoint_root: &Path, checkpoint_id: &str) -> PathBuf {
+    checkpoint_root.join(format!(".known-{checkpoint_id}"))
+}
+
+fn direct_checkpoint_known_marker_exists(marker_path: &Path, checkpoint_id: &str) -> Result<bool> {
+    match fs::symlink_metadata(marker_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(BackendError::Io {
+            message: format!("Failed to inspect direct checkpoint marker: {error}"),
+            source: error,
+        }),
+        Ok(metadata) if metadata.is_file() && !direct_checkpoint_metadata_is_link(&metadata) => {
+            Ok(true)
+        }
+        Ok(_) => Err(direct_checkpoint_storage_corruption(
+            checkpoint_id,
+            "direct_checkpoint_marker",
+        )),
+    }
+}
+
+fn direct_checkpoint_storage_corruption(checkpoint_id: &str, operation: &str) -> BackendError {
+    BackendError::DirectCheckpointCorrupt {
+        message: "Macro's internal review checkpoint storage is invalid.".to_string(),
+        checkpoint_id: checkpoint_id.to_string(),
+        object_id: None,
+        operation: Some(operation.to_string()),
+        retry_attempted: false,
+        accepted_history_at_risk: true,
+        git_output: None,
+    }
+}
+
+fn ensure_direct_checkpoint_exclusions(checkpoint_path: &Path, checkpoint_id: &str) -> Result<()> {
+    let checkpoint_root = checkpoint_path.parent().ok_or_else(|| {
+        direct_checkpoint_storage_corruption(checkpoint_id, "direct_checkpoint_exclusions")
+    })?;
+    let checkpoint_name = checkpoint_path.file_name().ok_or_else(|| {
+        direct_checkpoint_storage_corruption(checkpoint_id, "direct_checkpoint_exclusions")
+    })?;
+    let checkpoint_root = CapabilityDir::open_ambient_dir(checkpoint_root, ambient_authority())
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to retain direct checkpoint storage: {error}"),
+            source: error,
+        })?;
+    let checkpoint =
+        checkpoint_root
+            .open_dir(checkpoint_name)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to retain direct checkpoint directory: {error}"),
+                source: error,
+            })?;
+    let info_path = Path::new("info");
+    match checkpoint.symlink_metadata(info_path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => {
+            return Err(direct_checkpoint_storage_corruption(
+                checkpoint_id,
+                "direct_checkpoint_exclusions",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            checkpoint
+                .create_dir(info_path)
+                .map_err(|error| BackendError::Io {
+                    message: format!("Failed to create direct checkpoint exclusions: {error}"),
+                    source: error,
+                })?;
+        }
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!("Failed to inspect direct checkpoint exclusions: {error}"),
+                source: error,
+            });
+        }
+    }
+    let info = checkpoint.open_dir(info_path).map_err(|_| {
+        direct_checkpoint_storage_corruption(checkpoint_id, "direct_checkpoint_exclusions")
+    })?;
+
+    let exclude_path = Path::new("exclude");
+    let existing = match info.symlink_metadata(exclude_path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => true,
+        Ok(_) => {
+            return Err(direct_checkpoint_storage_corruption(
+                checkpoint_id,
+                "direct_checkpoint_exclusions",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!("Failed to inspect direct checkpoint exclude file: {error}"),
+                source: error,
+            });
+        }
+    };
+    if existing
+        && info
+            .read_to_string(exclude_path)
+            .is_ok_and(|contents| contents == DIRECT_CHECKPOINT_EXCLUDES)
+    {
+        return Ok(());
+    }
+
+    let temporary_name = format!("exclude.macro-{}.tmp", std::process::id());
+    let temporary_path = Path::new(&temporary_name);
+    if let Ok(metadata) = info.symlink_metadata(temporary_path) {
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(direct_checkpoint_storage_corruption(
+                checkpoint_id,
+                "direct_checkpoint_exclusions",
+            ));
+        }
+        info.remove_file(temporary_path)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to clear stale checkpoint exclude file: {error}"),
+                source: error,
+            })?;
+    }
+    let mut options = CapabilityOpenOptions::new();
+    options.write(true).create_new(true);
+    let mut temporary =
+        info.open_with(temporary_path, &options)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to create checkpoint exclude file: {error}"),
+                source: error,
+            })?;
+    use std::io::Write;
+    temporary
+        .write_all(DIRECT_CHECKPOINT_EXCLUDES.as_bytes())
+        .and_then(|_| temporary.sync_all())
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to persist checkpoint exclusions: {error}"),
+            source: error,
+        })?;
+    drop(temporary);
+    #[cfg(windows)]
+    if existing {
+        info.remove_file(exclude_path)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to replace checkpoint exclusions: {error}"),
+                source: error,
+            })?;
+    }
+    info.rename(temporary_path, &info, exclude_path)
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to publish checkpoint exclusions: {error}"),
+            source: error,
+        })?;
+    Ok(())
+}
+
+fn direct_checkpoint_operation_lock(checkpoint_id: &str) -> Result<Arc<Mutex<()>>> {
+    let locks = DIRECT_CHECKPOINT_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks.lock().map_err(|_| BackendError::Internal {
+        message: "Failed to lock direct checkpoint registry".to_string(),
+    })?;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(checkpoint_id).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(checkpoint_id.to_string(), Arc::downgrade(&lock));
+    Ok(lock)
+}
+
+fn direct_project_operation_lock_key(project_path: &Path) -> String {
+    let canonical = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    let key = canonical.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    return key.to_ascii_lowercase();
+    #[cfg(not(windows))]
+    key
+}
+
+fn with_direct_project_operation_lock<T, F>(project_path: &Path, operation: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    let lock = direct_checkpoint_operation_lock(&direct_project_operation_lock_key(project_path))?;
+    let _guard = lock.lock().map_err(|_| BackendError::Internal {
+        message: "Failed to lock direct checkpoint project".to_string(),
+    })?;
+    operation()
+}
+
+fn with_direct_checkpoint_storage_lock<T, F>(operation: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T>,
+{
+    let lock = direct_checkpoint_operation_lock(DIRECT_CHECKPOINT_STORAGE_LOCK_KEY)?;
+    let _guard = lock.lock().map_err(|_| BackendError::Internal {
+        message: "Failed to lock direct checkpoint storage".to_string(),
+    })?;
+    operation()
+}
+
+fn with_locked_direct_checkpoint<T, F>(
+    app: &AppHandle,
+    workspace: &Path,
+    task_id: &str,
+    project_path: &str,
+    checkpoint_id: Option<&str>,
+    create: bool,
+    operation: F,
+) -> Result<T>
+where
+    F: FnOnce(&Repository, &Path) -> Result<T>,
+{
+    reject_unsupported_direct_project_path(project_path)?;
+    let validated = validate_repo_path(project_path, workspace)?;
+    with_direct_project_operation_lock(&validated, || {
+        let repo = open_direct_checkpoint(app, task_id, &validated, checkpoint_id, create)?;
+        operation(&repo, &validated)
+    })
+}
+
+fn reject_unsupported_direct_project_path(project_path: &str) -> Result<()> {
+    if parse_wsl_unc_path(project_path).is_some() {
+        return Err(BackendError::Validation(
+            "Direct review for WSL projects is unavailable until Macro can preserve Linux file modes safely."
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_direct_checkpoint_id(checkpoint_id: &str) -> Result<&str> {
@@ -6358,7 +7472,7 @@ fn validate_direct_checkpoint_owner<'a>(checkpoint_id: &'a str, task_id: &str) -
     let (owner, _) = checkpoint_id.rsplit_once('-').ok_or_else(|| {
         BackendError::Validation("Invalid direct checkpoint identifier.".to_string())
     })?;
-    if owner != sanitize_temp_segment(task_id) {
+    if owner != direct_checkpoint_task_segment(task_id) {
         return Err(BackendError::Validation(
             "Direct checkpoint does not belong to this task.".to_string(),
         ));
@@ -6398,10 +7512,14 @@ fn resolve_direct_checkpoint_root(
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(&checkpoint_root).map_err(|error| BackendError::Io {
-                message: format!("Failed to create direct checkpoint root: {}", error),
-                source: error,
-            })?;
+            if let Err(error) = fs::create_dir(&checkpoint_root) {
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(BackendError::Io {
+                        message: format!("Failed to create direct checkpoint root: {error}"),
+                        source: error,
+                    });
+                }
+            }
         }
         Err(error) => {
             return Err(BackendError::Io {
@@ -6445,15 +7563,16 @@ fn resolve_direct_checkpoint_path(
         Ok(_) => false,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(&checkpoint_path).map_err(|error| BackendError::Io {
-                message: format!(
-                    "Failed to create direct checkpoint directory {}: {}",
-                    checkpoint_path.display(),
-                    error
-                ),
-                source: error,
-            })?;
-            true
+            match fs::create_dir(&checkpoint_path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!("Failed to create direct checkpoint directory: {error}"),
+                        source: error,
+                    });
+                }
+            }
         }
         Err(error) => {
             return Err(BackendError::Io {
@@ -6494,12 +7613,6 @@ fn open_direct_checkpoint(
     checkpoint_id: Option<&str>,
     create: bool,
 ) -> Result<Repository> {
-    if task_id.trim().is_empty() {
-        return Err(BackendError::Validation(
-            "Direct checkpoint requires a task id.".to_string(),
-        ));
-    }
-
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -6509,134 +7622,697 @@ fn open_direct_checkpoint(
                 error
             ),
         })?;
-    let has_persisted_checkpoint_id = checkpoint_id.is_some();
-    let checkpoint_id = match checkpoint_id {
-        Some(checkpoint_id) => {
-            let checkpoint_id = validate_direct_checkpoint_owner(checkpoint_id, task_id)?;
-            checkpoint_id.to_string()
-        }
-        None => direct_checkpoint_key(task_id, project_path),
-    };
-    let Some((checkpoint_root, canonical_root)) =
-        resolve_direct_checkpoint_root(&app_data_dir, create)?
-    else {
-        return Err(BackendError::FilesystemNotFound {
-            message: format!("Direct checkpoint for task {} does not exist", task_id),
-        });
-    };
-    let Some((checkpoint_path, checkpoint_created)) =
-        resolve_direct_checkpoint_path(&checkpoint_root, &canonical_root, &checkpoint_id, create)?
-    else {
-        return Err(BackendError::FilesystemNotFound {
-            message: format!("Direct checkpoint for task {} does not exist", task_id),
-        });
-    };
+    open_direct_checkpoint_at(&app_data_dir, task_id, project_path, checkpoint_id, create)
+}
 
-    if checkpoint_created {
-        let repo = Repository::init_bare(&checkpoint_path).map_err(|error| BackendError::Git {
-            message: format!("Failed to initialize direct checkpoint: {}", error),
-        })?;
-        {
-            let mut config = repo.config().map_err(|error| BackendError::Git {
-                message: format!("Failed to configure direct checkpoint: {}", error),
-            })?;
-            config
-                .set_bool("core.bare", false)
-                .map_err(|error| BackendError::Git {
-                    message: format!("Failed to configure direct checkpoint worktree: {}", error),
-                })?;
-            config
-                .set_str("core.worktree", &project_path.to_string_lossy())
-                .map_err(|error| BackendError::Git {
-                    message: format!("Failed to configure direct checkpoint path: {}", error),
-                })?;
+fn initialize_created_direct_checkpoint<F>(
+    checkpoint_path: &Path,
+    checkpoint_id: &str,
+    initialize: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    if let Err(initialization_error) = initialize() {
+        if fs::remove_dir_all(checkpoint_path).is_err() {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro could not finish or roll back the new internal review checkpoint. The incomplete checkpoint was preserved for diagnosis.".to_string(),
+                checkpoint_id: checkpoint_id.to_string(),
+                object_id: None,
+                operation: Some("direct_checkpoint_initialize".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: false,
+                git_output: None,
+            });
         }
-        let info_dir = checkpoint_path.join("info");
-        fs::create_dir_all(&info_dir).map_err(|error| BackendError::Io {
-            message: format!("Failed to create direct checkpoint exclusions: {}", error),
-            source: error,
-        })?;
-        fs::write(info_dir.join("exclude"), DIRECT_CHECKPOINT_EXCLUDES).map_err(|error| {
-            BackendError::Io {
-                message: format!("Failed to write direct checkpoint exclusions: {}", error),
-                source: error,
-            }
-        })?;
+        return Err(initialization_error);
     }
+    Ok(())
+}
 
-    let mut repo = Repository::open(&checkpoint_path).map_err(|error| BackendError::Git {
-        message: format!("Failed to open direct checkpoint: {}", error),
-    })?;
-    if has_persisted_checkpoint_id {
-        {
-            let mut config = repo.config().map_err(|error| BackendError::Git {
-                message: format!("Failed to open direct checkpoint configuration: {}", error),
-            })?;
-            config
-                .set_str("core.worktree", &project_path.to_string_lossy())
-                .map_err(|error| BackendError::Git {
-                    message: format!("Failed to update direct checkpoint path: {}", error),
-                })?;
-        }
-        drop(repo);
-        repo = Repository::open(&checkpoint_path).map_err(|error| BackendError::Git {
-            message: format!("Failed to reopen direct checkpoint: {}", error),
-        })?;
+fn open_direct_checkpoint_at(
+    app_data_dir: &Path,
+    task_id: &str,
+    project_path: &Path,
+    checkpoint_id: Option<&str>,
+    create: bool,
+) -> Result<Repository> {
+    with_direct_checkpoint_storage_lock(|| {
+        open_direct_checkpoint_at_locked(app_data_dir, task_id, project_path, checkpoint_id, create)
+    })
+}
+
+fn open_direct_checkpoint_at_locked(
+    app_data_dir: &Path,
+    task_id: &str,
+    project_path: &Path,
+    checkpoint_id: Option<&str>,
+    create: bool,
+) -> Result<Repository> {
+    if task_id.trim().is_empty() {
+        return Err(BackendError::Validation(
+            "Direct checkpoint requires a task id.".to_string(),
+        ));
     }
-    let configured_worktree =
-        repo.workdir()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| BackendError::Git {
-                message: "Direct checkpoint has no configured worktree.".to_string(),
-            })?;
     let expected = project_path
         .canonicalize()
         .map_err(|error| BackendError::Io {
             message: format!("Failed to resolve direct project path: {}", error),
             source: error,
         })?;
-    let actual = configured_worktree
-        .canonicalize()
-        .map_err(|error| BackendError::Io {
-            message: format!("Failed to resolve direct checkpoint worktree: {}", error),
-            source: error,
+
+    let has_persisted_checkpoint_id = checkpoint_id.is_some();
+    let checkpoint_id =
+        match checkpoint_id {
+            Some(checkpoint_id) => {
+                let checkpoint_id = validate_direct_checkpoint_owner(checkpoint_id, task_id)
+                    .map_err(|error| BackendError::DirectCheckpointMissing {
+                        message: format!(
+                            "Macro's internal checkpoint identifier is invalid: {error}"
+                        ),
+                        checkpoint_id: checkpoint_id.to_string(),
+                        project_path: project_path.display().to_string(),
+                    })?;
+                checkpoint_id.to_string()
+            }
+            None => direct_checkpoint_key(task_id, &expected),
+        };
+    let Some((checkpoint_root, canonical_root)) =
+        resolve_direct_checkpoint_root(app_data_dir, create).map_err(|error| match error {
+            BackendError::Validation(_) => {
+                direct_checkpoint_storage_corruption(&checkpoint_id, "direct_checkpoint_root")
+            }
+            other => other,
+        })?
+    else {
+        return Err(BackendError::DirectCheckpointMissing {
+            message: "Macro's internal review checkpoint does not exist.".to_string(),
+            checkpoint_id,
+            project_path: project_path.display().to_string(),
+        });
+    };
+    let checkpoint_path = checkpoint_root.join(&checkpoint_id);
+    let marker_path = direct_checkpoint_known_marker(&canonical_root, &checkpoint_id);
+    let marker_exists = direct_checkpoint_known_marker_exists(&marker_path, &checkpoint_id)?;
+    let checkpoint_is_missing = fs::symlink_metadata(&checkpoint_path)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+    if create && checkpoint_is_missing && marker_exists {
+        return Err(BackendError::DirectCheckpointMissing {
+            message: "Macro's internal review checkpoint was removed after initialization."
+                .to_string(),
+            checkpoint_id,
+            project_path: project_path.display().to_string(),
+        });
+    }
+    let Some((checkpoint_path, checkpoint_created)) =
+        resolve_direct_checkpoint_path(&checkpoint_root, &canonical_root, &checkpoint_id, create)
+            .map_err(|error| match error {
+            BackendError::Validation(_) => {
+                direct_checkpoint_storage_corruption(&checkpoint_id, "direct_checkpoint_path")
+            }
+            other => other,
+        })?
+    else {
+        return Err(BackendError::DirectCheckpointMissing {
+            message: "Macro's internal review checkpoint does not exist.".to_string(),
+            checkpoint_id,
+            project_path: project_path.display().to_string(),
+        });
+    };
+
+    if checkpoint_created {
+        initialize_created_direct_checkpoint(&checkpoint_path, &checkpoint_id, || {
+            let repo =
+                Repository::init_bare(&checkpoint_path).map_err(|error| BackendError::Git {
+                    message: format!("Failed to initialize direct checkpoint: {}", error),
+                })?;
+            {
+                let mut config = repo.config().map_err(|error| BackendError::Git {
+                    message: format!("Failed to configure direct checkpoint: {}", error),
+                })?;
+                config
+                    .set_bool("core.bare", false)
+                    .map_err(|error| BackendError::Git {
+                        message: format!(
+                            "Failed to configure direct checkpoint worktree: {}",
+                            error
+                        ),
+                    })?;
+                config
+                    .set_str("core.worktree", &expected.to_string_lossy())
+                    .map_err(|error| BackendError::Git {
+                        message: format!("Failed to configure direct checkpoint path: {}", error),
+                    })?;
+                config
+                    .set_str("macro.taskId", task_id)
+                    .map_err(|error| BackendError::Git {
+                        message: format!("Failed to bind direct checkpoint task: {}", error),
+                    })?;
+            }
+            ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)
         })?;
-    if actual != expected {
-        return Err(BackendError::Validation(
-            "Direct checkpoint belongs to a different project path.".to_string(),
-        ));
+    } else {
+        ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)?;
+    }
+
+    let repo = match Repository::open(&checkpoint_path) {
+        Ok(repo) => repo,
+        Err(_open_error) if has_persisted_checkpoint_id => {
+            let bare = Repository::open_bare(&checkpoint_path).map_err(|_| {
+                BackendError::DirectCheckpointCorrupt {
+                    message: "Macro's internal review checkpoint cannot be opened.".to_string(),
+                    checkpoint_id: checkpoint_id.clone(),
+                    object_id: None,
+                    operation: Some("direct_checkpoint_open".to_string()),
+                    retry_attempted: false,
+                    accepted_history_at_risk: true,
+                    git_output: None,
+                }
+            })?;
+            let configured = bare
+                .config()
+                .and_then(|config| config.get_path("core.worktree"));
+            if configured.as_ref().is_ok_and(|configured| {
+                configured != project_path
+                    && (!cfg!(windows)
+                        || !configured
+                            .to_string_lossy()
+                            .eq_ignore_ascii_case(&project_path.to_string_lossy()))
+            }) {
+                return Err(BackendError::DirectCheckpointProjectMismatch {
+                    message: "Macro's internal review checkpoint belongs to another project path."
+                        .to_string(),
+                    checkpoint_id,
+                });
+            }
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint cannot be opened.".to_string(),
+                checkpoint_id,
+                object_id: None,
+                operation: Some("direct_checkpoint_open".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: true,
+                git_output: None,
+            });
+        }
+        Err(_error) => {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint cannot be opened.".to_string(),
+                checkpoint_id,
+                object_id: None,
+                operation: Some("direct_checkpoint_open".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: true,
+                git_output: None,
+            })
+        }
+    };
+    {
+        let config = repo.config().map_err(|_| {
+            direct_checkpoint_storage_corruption(&checkpoint_id, "direct_checkpoint_config")
+        })?;
+        let configured_worktree = match config.get_path("core.worktree") {
+            Ok(path) => path,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {
+                return Err(direct_checkpoint_storage_corruption(
+                    &checkpoint_id,
+                    "direct_checkpoint_worktree",
+                ));
+            }
+            Err(_) => {
+                return Err(direct_checkpoint_storage_corruption(
+                    &checkpoint_id,
+                    "direct_checkpoint_worktree",
+                ));
+            }
+        };
+        let configured_matches = configured_worktree
+            .canonicalize()
+            .map(|actual| actual == expected)
+            .unwrap_or(false);
+        if !configured_matches {
+            return Err(BackendError::DirectCheckpointProjectMismatch {
+                message: "Macro's internal review checkpoint belongs to another project path."
+                    .to_string(),
+                checkpoint_id,
+            });
+        }
+        match config.get_string("macro.taskId") {
+            Ok(owner) if owner != task_id => {
+                return Err(BackendError::DirectCheckpointProjectMismatch {
+                    message: "Macro's internal review checkpoint belongs to another task."
+                        .to_string(),
+                    checkpoint_id,
+                });
+            }
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {
+                return Err(BackendError::DirectCheckpointCorrupt {
+                    message: "Macro cannot prove who owns this legacy internal review checkpoint; it was preserved.".to_string(),
+                    checkpoint_id,
+                    object_id: None,
+                    operation: Some("direct_checkpoint_owner".to_string()),
+                    retry_attempted: false,
+                    accepted_history_at_risk: true,
+                    git_output: None,
+                });
+            }
+            Err(_) => {
+                return Err(direct_checkpoint_storage_corruption(
+                    &checkpoint_id,
+                    "direct_checkpoint_owner",
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    if create && !direct_checkpoint_known_marker_exists(&marker_path, &checkpoint_id)? {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&marker_path)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to record direct checkpoint identity: {error}"),
+                source: error,
+            })?;
     }
     Ok(repo)
 }
 
+fn direct_checkpoint_repo_id(repo: &Repository) -> String {
+    repo.path()
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn verify_direct_checkpoint_blob(
+    repo: &Repository,
+    oid: Oid,
+    operation: &str,
+    cancellation: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
+    let odb = repo.odb().map_err(|error| {
+        BackendError::git_object_missing(error, Some(oid.to_string()), Some(operation.to_string()))
+    })?;
+    let (mut reader, size, kind) = odb.reader(oid).map_err(|error| {
+        BackendError::git_object_missing(error, Some(oid.to_string()), Some(operation.to_string()))
+    })?;
+    if kind != git2::ObjectType::Blob {
+        return Err(BackendError::DirectCheckpointCorrupt {
+            message: "Macro's internal review checkpoint contains an invalid file object."
+                .to_string(),
+            checkpoint_id: direct_checkpoint_repo_id(repo),
+            object_id: Some(oid.to_string()),
+            operation: Some(operation.to_string()),
+            retry_attempted: false,
+            accepted_history_at_risk: true,
+            git_output: None,
+        });
+    }
+    let mut hasher = Sha1::new();
+    hasher.update(format!("blob {size}\0").as_bytes());
+    let mut bytes_read_total = 0usize;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        let bytes_read = reader.read(&mut buffer).map_err(|error| BackendError::Io {
+            message: format!("Failed to verify direct checkpoint object: {error}"),
+            source: error,
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        bytes_read_total = bytes_read_total.saturating_add(bytes_read);
+        hasher.update(&buffer[..bytes_read]);
+    }
+    let actual_oid =
+        Oid::from_bytes(hasher.finalize().as_slice()).map_err(|error| BackendError::Git {
+            message: format!("Failed to verify direct checkpoint object identity: {error}"),
+        })?;
+    if bytes_read_total != size || actual_oid != oid {
+        return Err(BackendError::DirectCheckpointCorrupt {
+            message: "Macro's internal review checkpoint contains an altered file object."
+                .to_string(),
+            checkpoint_id: direct_checkpoint_repo_id(repo),
+            object_id: Some(oid.to_string()),
+            operation: Some(operation.to_string()),
+            retry_attempted: false,
+            accepted_history_at_risk: true,
+            git_output: None,
+        });
+    }
+    Ok(())
+}
+
+fn verify_direct_checkpoint_tree(
+    repo: &Repository,
+    tree_id: Oid,
+    visited_trees: &mut HashSet<Oid>,
+    visited_blobs: &mut HashSet<Oid>,
+    cancellation: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+    if !visited_trees.insert(tree_id) {
+        return Ok(());
+    }
+    let tree = repo.find_tree(tree_id).map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(tree_id.to_string()),
+            Some("direct_checkpoint_head_tree".to_string()),
+        )
+    })?;
+    for entry in tree.iter() {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        if entry.filemode() == 0o160000 {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint contains an unsupported nested Git repository.".to_string(),
+                checkpoint_id: direct_checkpoint_repo_id(repo),
+                object_id: Some(entry.id().to_string()),
+                operation: Some("direct_checkpoint_head_gitlink".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: true,
+                git_output: None,
+            });
+        }
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => verify_direct_checkpoint_tree(
+                repo,
+                entry.id(),
+                visited_trees,
+                visited_blobs,
+                cancellation,
+            )?,
+            Some(git2::ObjectType::Blob) => {
+                if !visited_blobs.insert(entry.id()) {
+                    continue;
+                }
+                verify_direct_checkpoint_blob(
+                    repo,
+                    entry.id(),
+                    "direct_checkpoint_head_blob",
+                    cancellation,
+                )?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn verify_direct_checkpoint_history(repo: &Repository) -> Result<Oid> {
+    verify_direct_checkpoint_history_with_cancellation(repo, None)
+}
+
+fn verify_direct_checkpoint_history_with_cancellation(
+    repo: &Repository,
+    cancellation: Option<&Arc<AtomicBool>>,
+) -> Result<Oid> {
+    let head = repo.head().map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            None,
+            Some("direct_checkpoint_head_reference".to_string()),
+        )
+    })?;
+    let head_id = head
+        .target()
+        .ok_or_else(|| BackendError::DirectCheckpointCorrupt {
+            message: "Macro's internal review checkpoint HEAD has no target.".to_string(),
+            checkpoint_id: direct_checkpoint_repo_id(repo),
+            object_id: None,
+            operation: Some("direct_checkpoint_head_reference".to_string()),
+            retry_attempted: false,
+            accepted_history_at_risk: true,
+            git_output: None,
+        })?;
+    let mut pending = vec![head_id];
+    let mut visited = HashSet::new();
+    let mut visited_trees = HashSet::new();
+    let mut visited_blobs = HashSet::new();
+    while let Some(commit_id) = pending.pop() {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        if !visited.insert(commit_id) {
+            continue;
+        }
+        let commit = repo.find_commit(commit_id).map_err(|error| {
+            BackendError::git_object_missing(
+                error,
+                Some(commit_id.to_string()),
+                Some("direct_checkpoint_head_commit".to_string()),
+            )
+        })?;
+        verify_direct_checkpoint_tree(
+            repo,
+            commit.tree_id(),
+            &mut visited_trees,
+            &mut visited_blobs,
+            cancellation,
+        )?;
+        pending.extend(commit.parent_ids());
+    }
+    Ok(head_id)
+}
+
+fn verify_direct_checkpoint_index(repo: &Repository) -> Result<()> {
+    verify_direct_checkpoint_index_with_cancellation(repo, None)
+}
+
+fn verify_direct_checkpoint_index_with_cancellation(
+    repo: &Repository,
+    cancellation: Option<&Arc<AtomicBool>>,
+) -> Result<()> {
+    match fs::symlink_metadata(repo.path().join("index")) {
+        Ok(metadata) if metadata.is_file() && !direct_checkpoint_metadata_is_link(&metadata) => {}
+        Ok(_) => {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint index is invalid.".to_string(),
+                checkpoint_id: direct_checkpoint_repo_id(repo),
+                object_id: None,
+                operation: Some("direct_checkpoint_index".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: false,
+                git_output: None,
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint index is missing.".to_string(),
+                checkpoint_id: direct_checkpoint_repo_id(repo),
+                object_id: None,
+                operation: Some("direct_checkpoint_index".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: false,
+                git_output: None,
+            });
+        }
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!("Failed to inspect direct checkpoint index: {error}"),
+                source: error,
+            });
+        }
+    }
+    let mut index = repo.index().map_err(|error| BackendError::Git {
+        message: format!("Failed to open direct checkpoint index: {error}"),
+    })?;
+    index.read(true).map_err(|error| BackendError::Git {
+        message: format!("Failed to refresh direct checkpoint index: {error}"),
+    })?;
+    reject_direct_checkpoint_gitlinks(repo, &index, "direct_checkpoint_index_gitlink")?;
+    for entry in index.iter() {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        if entry.flags & 0x3000 != 0 {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint index contains unresolved entries."
+                    .to_string(),
+                checkpoint_id: direct_checkpoint_repo_id(repo),
+                object_id: Some(entry.id.to_string()),
+                operation: Some("direct_checkpoint_index_conflict".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: false,
+                git_output: None,
+            });
+        }
+        verify_direct_checkpoint_blob(
+            repo,
+            entry.id,
+            "direct_checkpoint_index_blob",
+            cancellation,
+        )?;
+    }
+    Ok(())
+}
+
+fn reject_direct_checkpoint_gitlinks(
+    repo: &Repository,
+    index: &git2::Index,
+    operation: &str,
+) -> Result<()> {
+    if let Some(entry) = index.iter().find(|entry| entry.mode & 0o170000 == 0o160000) {
+        return Err(BackendError::DirectCheckpointCorrupt {
+            message: "Macro cannot checkpoint a nested Git repository in direct review mode."
+                .to_string(),
+            checkpoint_id: direct_checkpoint_repo_id(repo),
+            object_id: Some(entry.id.to_string()),
+            operation: Some(operation.to_string()),
+            retry_attempted: false,
+            accepted_history_at_risk: false,
+            git_output: None,
+        });
+    }
+    Ok(())
+}
+
+fn ensure_direct_checkpoint_integrity(repo: &Repository) -> Result<()> {
+    verify_direct_checkpoint_history(repo)
+        .and_then(|_| verify_direct_checkpoint_index(repo))
+        .map_err(|error| direct_checkpoint_corruption(repo, error, false))
+}
+
+fn direct_checkpoint_corruption(
+    repo: &Repository,
+    error: BackendError,
+    retry_attempted: bool,
+) -> BackendError {
+    let accepted_history_at_risk = verify_direct_checkpoint_history(repo).is_err();
+    match error {
+        BackendError::GitObjectMissing { .. } => error.into_direct_checkpoint_corrupt(
+            direct_checkpoint_repo_id(repo),
+            retry_attempted,
+            accepted_history_at_risk,
+        ),
+        BackendError::DirectCheckpointCorrupt {
+            message,
+            checkpoint_id,
+            object_id,
+            operation,
+            accepted_history_at_risk: existing_risk,
+            git_output,
+            ..
+        } => BackendError::DirectCheckpointCorrupt {
+            message,
+            checkpoint_id,
+            object_id,
+            operation,
+            retry_attempted,
+            accepted_history_at_risk: existing_risk || accepted_history_at_risk,
+            git_output,
+        },
+        _other => BackendError::DirectCheckpointCorrupt {
+            message: "Macro's internal review checkpoint cannot be read.".to_string(),
+            checkpoint_id: direct_checkpoint_repo_id(repo),
+            object_id: None,
+            operation: Some("direct_checkpoint_integrity".to_string()),
+            retry_attempted,
+            accepted_history_at_risk,
+            git_output: None,
+        },
+    }
+}
+
+fn direct_checkpoint_initialization_error(repo: &Repository, operation: &str) -> BackendError {
+    BackendError::DirectCheckpointCorrupt {
+        message: "Macro could not initialize its internal review checkpoint.".to_string(),
+        checkpoint_id: direct_checkpoint_repo_id(repo),
+        object_id: None,
+        operation: Some(operation.to_string()),
+        retry_attempted: false,
+        accepted_history_at_risk: false,
+        git_output: None,
+    }
+}
+
 fn ensure_direct_checkpoint_head(repo: &Repository) -> Result<String> {
-    if let Ok(head) = repo.head() {
-        if let Some(target) = head.target() {
-            return Ok(target.to_string());
+    match repo.head() {
+        Ok(_) => {
+            let head_id = verify_direct_checkpoint_history(repo)
+                .and_then(|head_id| verify_direct_checkpoint_index(repo).map(|_| head_id))
+                .map_err(|error| direct_checkpoint_corruption(repo, error, false))?;
+            return Ok(head_id.to_string());
+        }
+        Err(error)
+            if error.code() == git2::ErrorCode::UnbornBranch
+                && repo.is_empty().unwrap_or(false) => {}
+        Err(error) => {
+            let error = BackendError::git_object_missing(
+                error,
+                None,
+                Some("direct_checkpoint_head_reference".to_string()),
+            );
+            return Err(direct_checkpoint_corruption(repo, error, false));
         }
     }
 
-    let mut index = repo.index().map_err(|error| BackendError::Git {
-        message: format!("Failed to open direct checkpoint index: {}", error),
+    let mut index = repo.index().map_err(|_| {
+        direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_index")
     })?;
-    index
-        .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-        .map_err(|error| BackendError::Git {
-            message: format!("Failed to capture direct checkpoint files: {}", error),
+    index.clear().map_err(|_| {
+        direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_index_clear")
+    })?;
+    let configured_worktree = repo
+        .workdir()
+        .map(Path::to_path_buf)
+        .or_else(|| repo.config().ok()?.get_path("core.worktree").ok())
+        .ok_or_else(|| {
+            direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_worktree")
         })?;
-    index.write().map_err(|error| BackendError::Git {
-        message: format!("Failed to write direct checkpoint index: {}", error),
+    let mut files = Vec::new();
+    collect_direct_checkpoint_files(repo, &configured_worktree, &configured_worktree, &mut files)?;
+    let retained_worktree = open_direct_restore_capability(&configured_worktree).map_err(|_| {
+        direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_worktree")
     })?;
-    let tree_id = index.write_tree().map_err(|error| BackendError::Git {
-        message: format!("Failed to write direct checkpoint tree: {}", error),
-    })?;
-    let tree = repo.find_tree(tree_id).map_err(|error| BackendError::Git {
-        message: format!("Failed to load direct checkpoint tree: {}", error),
-    })?;
-    let signature =
-        git2::Signature::now("Macro", "macro@local").map_err(|error| BackendError::Git {
-            message: format!("Failed to create direct checkpoint signature: {}", error),
+    for relative in files {
+        if repo.status_should_ignore(&relative).unwrap_or(true) {
+            continue;
+        }
+        let display_path = relative.to_string_lossy().replace('\\', "/");
+        stage_direct_path_from_capability(
+            repo,
+            &mut index,
+            &retained_worktree,
+            &relative,
+            &display_path,
+        )
+        .map_err(|_| {
+            direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_capture")
         })?;
+    }
+    reject_direct_checkpoint_gitlinks(repo, &index, "direct_checkpoint_init_gitlink")?;
+    index.write().map_err(|_| {
+        direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_index_write")
+    })?;
+    let tree_id = index.write_tree().map_err(|_| {
+        direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_tree_write")
+    })?;
+    let tree = repo.find_tree(tree_id).map_err(|_| {
+        direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_tree_read")
+    })?;
+    let signature = git2::Signature::now("Macro", "macro@local").map_err(|_| {
+        direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_signature")
+    })?;
     let oid = repo
         .commit(
             Some("HEAD"),
@@ -6646,46 +8322,359 @@ fn ensure_direct_checkpoint_head(repo: &Repository) -> Result<String> {
             &tree,
             &[],
         )
-        .map_err(|error| BackendError::Git {
-            message: format!("Failed to create direct checkpoint: {}", error),
+        .map_err(|_| {
+            direct_checkpoint_initialization_error(repo, "direct_checkpoint_init_commit")
         })?;
     Ok(oid.to_string())
 }
 
-fn open_validated_direct_checkpoint(
+fn run_direct_checkpoint_review<T, O, F>(
+    open: O,
+    cancellation: Option<Arc<AtomicBool>>,
+    operation: F,
+) -> Result<T>
+where
+    O: Fn() -> Result<(Repository, PathBuf)>,
+    F: Fn(&Repository, &Path) -> Result<T>,
+{
+    if git_review_is_cancelled(&cancellation) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+    let (repo, project_path) = open()?;
+    let execute = |repo: &Repository, project_path: &Path| {
+        if git_review_is_cancelled(&cancellation) {
+            return Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            });
+        }
+        let integrity =
+            verify_direct_checkpoint_history_with_cancellation(repo, cancellation.as_ref())
+                .and_then(|_| {
+                    verify_direct_checkpoint_index_with_cancellation(repo, cancellation.as_ref())
+                });
+        match integrity {
+            Ok(()) if git_review_is_cancelled(&cancellation) => Err(BackendError::Git {
+                message: "Git review was cancelled.".to_string(),
+            }),
+            Ok(()) => operation(repo, project_path),
+            Err(error) if error.is_git_object_missing() => Err(error),
+            Err(error) if git_review_is_cancelled(&cancellation) => Err(error),
+            Err(error) => Err(direct_checkpoint_corruption(repo, error, false)),
+        }
+    };
+    let first_result = execute(&repo, &project_path);
+    match first_result {
+        Ok(value) => return Ok(value),
+        Err(error) if error.is_git_object_missing() => {}
+        Err(error) => return Err(error),
+    }
+    if let Ok(odb) = repo.odb() {
+        let _ = odb.refresh();
+    }
+    drop(repo);
+
+    if git_review_is_cancelled(&cancellation) {
+        return Err(BackendError::Git {
+            message: "Git review was cancelled.".to_string(),
+        });
+    }
+
+    let (reopened, reopened_project_path) = open()?;
+    if let Ok(odb) = reopened.odb() {
+        let _ = odb.refresh();
+    }
+    execute(&reopened, &reopened_project_path).map_err(|error| {
+        if error.is_git_object_missing() {
+            direct_checkpoint_corruption(&reopened, error, true)
+        } else {
+            error
+        }
+    })
+}
+
+fn run_locked_direct_checkpoint_review<T, F>(
     app: &AppHandle,
     workspace: &Path,
     task_id: &str,
     project_path: &str,
     checkpoint_id: Option<&str>,
-    create: bool,
-) -> Result<(Repository, PathBuf)> {
+    cancellation: Option<Arc<AtomicBool>>,
+    operation: F,
+) -> Result<T>
+where
+    F: Fn(&Repository, &Path) -> Result<T>,
+{
     let validated = validate_repo_path(project_path, workspace)?;
-    let repo = open_direct_checkpoint(app, task_id, &validated, checkpoint_id, create)?;
-    Ok((repo, validated))
+    with_direct_project_operation_lock(&validated, || {
+        run_direct_checkpoint_review(
+            || {
+                let repo = open_direct_checkpoint(app, task_id, &validated, checkpoint_id, false)?;
+                Ok((repo, validated.clone()))
+            },
+            cancellation,
+            operation,
+        )
+    })
 }
 
-fn remove_direct_checkpoint(app_data_dir: &Path, checkpoint_id: &str) -> Result<bool> {
-    let checkpoint_id = validate_direct_checkpoint_id(checkpoint_id)?;
+fn remove_direct_checkpoint(
+    app_data_dir: &Path,
+    task_id: &str,
+    checkpoint_id: &str,
+    project_path: &Path,
+) -> Result<bool> {
+    with_direct_checkpoint_storage_lock(|| {
+        remove_direct_checkpoint_locked(app_data_dir, task_id, checkpoint_id, project_path)
+    })
+}
+
+fn remove_direct_checkpoint_locked(
+    app_data_dir: &Path,
+    task_id: &str,
+    checkpoint_id: &str,
+    project_path: &Path,
+) -> Result<bool> {
+    let checkpoint_id = validate_direct_checkpoint_owner(checkpoint_id, task_id)?;
     let Some((checkpoint_root, canonical_root)) =
         resolve_direct_checkpoint_root(app_data_dir, false)?
     else {
         return Ok(false);
     };
-    let Some((canonical_checkpoint, _)) =
-        resolve_direct_checkpoint_path(&checkpoint_root, &canonical_root, checkpoint_id, false)?
-    else {
-        return Ok(false);
-    };
-    fs::remove_dir_all(&canonical_checkpoint).map_err(|error| BackendError::Io {
-        message: format!("Failed to remove direct checkpoint: {}", error),
+    let retained_app_data = CapabilityDir::open_ambient_dir(
+        app_data_dir
+            .canonicalize()
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to retain Macro application data: {error}"),
+                source: error,
+            })?,
+        ambient_authority(),
+    )
+    .map_err(|error| BackendError::Io {
+        message: format!("Failed to retain Macro application data: {error}"),
         source: error,
     })?;
-    Ok(true)
+    let retained_checkpoint_root =
+        retained_app_data
+            .open_dir(DIRECT_CHECKPOINTS_DIR)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to retain direct checkpoint storage: {error}"),
+                source: error,
+            })?;
+    let checkpoint_path =
+        resolve_direct_checkpoint_path(&checkpoint_root, &canonical_root, checkpoint_id, false)?;
+    if let Some((canonical_checkpoint, _)) = checkpoint_path {
+        let owner_repo = Repository::open_bare(&canonical_checkpoint).map_err(|_| {
+            BackendError::Validation(
+                "Cannot verify the owner of this direct checkpoint; it was preserved.".to_string(),
+            )
+        })?;
+        let configured_project_path = owner_repo
+            .config()
+            .and_then(|config| config.get_path("core.worktree"))
+            .map_err(|_| {
+                BackendError::Validation(
+                    "Cannot verify the owner of this direct checkpoint; it was preserved."
+                        .to_string(),
+                )
+            })?;
+        let configured_task_id = owner_repo
+            .config()
+            .and_then(|config| config.get_string("macro.taskId"))
+            .map_err(|_| {
+                BackendError::Validation(
+                    "Cannot verify the owner of this legacy direct checkpoint; it was preserved. Reopen the task before removing it."
+                        .to_string(),
+                )
+            })?;
+        if configured_task_id != task_id {
+            return Err(BackendError::Validation(
+                "Direct checkpoint does not belong to this task.".to_string(),
+            ));
+        }
+        let expected_project_path =
+            project_path
+                .canonicalize()
+                .map_err(|error| BackendError::Io {
+                    message: format!("Failed to resolve direct project path: {error}"),
+                    source: error,
+                })?;
+        let configured_project_path = configured_project_path.canonicalize().map_err(|_| {
+            BackendError::Validation(
+                "Cannot verify the project owner of this direct checkpoint; it was preserved."
+                    .to_string(),
+            )
+        })?;
+        if configured_project_path != expected_project_path
+            && (!cfg!(windows)
+                || !configured_project_path
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&expected_project_path.to_string_lossy()))
+        {
+            return Err(BackendError::Validation(
+                "Direct checkpoint does not belong to this project.".to_string(),
+            ));
+        }
+        if direct_checkpoint_key(task_id, &configured_project_path) != checkpoint_id {
+            return Err(BackendError::Validation(
+                "Direct checkpoint does not belong to this task.".to_string(),
+            ));
+        }
+        let marker_name = format!(".known-{checkpoint_id}");
+        match retained_checkpoint_root.symlink_metadata(&marker_name) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(direct_checkpoint_storage_corruption(
+                    checkpoint_id,
+                    "direct_checkpoint_marker",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut options = CapabilityOpenOptions::new();
+                options.write(true).create_new(true);
+                retained_checkpoint_root
+                    .open_with(&marker_name, &options)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| BackendError::Io {
+                        message: format!("Failed to record direct checkpoint removal: {error}"),
+                        source: error,
+                    })?;
+            }
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!("Failed to inspect direct checkpoint marker: {error}"),
+                    source: error,
+                });
+            }
+        }
+        retained_checkpoint_root
+            .remove_dir_all(checkpoint_id)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to remove direct checkpoint: {}", error),
+                source: error,
+            })?;
+        return Ok(true);
+    }
+    // Keep the marker as a tombstone. A stale activation must never turn the
+    // current project files into a replacement accepted baseline.
+    Ok(false)
+}
+
+fn remove_locked_direct_checkpoint_at(
+    app_data_dir: &Path,
+    task_id: &str,
+    checkpoint_id: &str,
+    project_path: &Path,
+) -> Result<bool> {
+    with_direct_project_operation_lock(project_path, || {
+        remove_direct_checkpoint(app_data_dir, task_id, checkpoint_id, project_path)
+    })
+}
+
+fn resolve_direct_checkpoint_id_at(
+    app_data_dir: &Path,
+    task_id: &str,
+    project_path: &Path,
+) -> Result<String> {
+    with_direct_checkpoint_storage_lock(|| {
+        resolve_direct_checkpoint_id_at_locked(app_data_dir, task_id, project_path)
+    })
+}
+
+fn resolve_direct_checkpoint_id_at_locked(
+    app_data_dir: &Path,
+    task_id: &str,
+    project_path: &Path,
+) -> Result<String> {
+    let derived = direct_checkpoint_key(task_id, project_path);
+    let Some((_checkpoint_root, canonical_root)) =
+        resolve_direct_checkpoint_root(app_data_dir, false)?
+    else {
+        return Ok(derived);
+    };
+    let expected = project_path
+        .canonicalize()
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to resolve direct project path: {error}"),
+            source: error,
+        })?;
+    let mut found_other_path = false;
+    for entry in fs::read_dir(&canonical_root).map_err(|error| BackendError::Io {
+        message: format!("Failed to inspect direct checkpoint storage: {error}"),
+        source: error,
+    })? {
+        let entry = entry.map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect direct checkpoint entry: {error}"),
+            source: error,
+        })?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect direct checkpoint entry: {error}"),
+            source: error,
+        })?;
+        if !metadata.is_dir() || direct_checkpoint_metadata_is_link(&metadata) {
+            continue;
+        }
+        let Some(checkpoint_id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let filename_claims_task =
+            validate_direct_checkpoint_owner(&checkpoint_id, task_id).is_ok();
+        let repo = match Repository::open_bare(entry.path()) {
+            Ok(repo) => repo,
+            Err(_) if filename_claims_task => {
+                return Err(direct_checkpoint_storage_corruption(
+                    &checkpoint_id,
+                    "direct_checkpoint_resolve",
+                ));
+            }
+            Err(_) => continue,
+        };
+        let config = match repo.config() {
+            Ok(config) => config,
+            Err(_) if filename_claims_task => {
+                return Err(direct_checkpoint_storage_corruption(
+                    &checkpoint_id,
+                    "direct_checkpoint_owner",
+                ));
+            }
+            Err(_) => continue,
+        };
+        match config.get_string("macro.taskId") {
+            Ok(owner) if owner == task_id => {}
+            Err(error) if error.code() == git2::ErrorCode::NotFound && filename_claims_task => {
+                return Err(direct_checkpoint_storage_corruption(
+                    &checkpoint_id,
+                    "direct_checkpoint_owner",
+                ));
+            }
+            _ => continue,
+        }
+        let configured_path = config.get_path("core.worktree").map_err(|_| {
+            direct_checkpoint_storage_corruption(&checkpoint_id, "direct_checkpoint_worktree")
+        })?;
+        if configured_path
+            .canonicalize()
+            .is_ok_and(|actual| actual == expected)
+        {
+            validate_direct_checkpoint_owner(&checkpoint_id, task_id)?;
+            return Ok(checkpoint_id);
+        }
+        found_other_path = true;
+    }
+    if found_other_path {
+        return Err(BackendError::DirectCheckpointProjectMismatch {
+            message: "Macro's internal review checkpoint belongs to another project path."
+                .to_string(),
+            checkpoint_id: derived,
+        });
+    }
+    Ok(derived)
 }
 
 #[tauri::command]
 pub async fn direct_checkpoint_resolve_id(
+    app: AppHandle,
     workspace_root: State<'_, WorkspaceRoot>,
     task_id: String,
     project_path: String,
@@ -6698,15 +8687,30 @@ pub async fn direct_checkpoint_resolve_id(
                 "Direct checkpoint requires a task id.".to_string(),
             ));
         }
-        Ok(direct_checkpoint_key(&task_id, &validated))
+        let app_data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Failed to resolve Macro application data directory: {error}"),
+            })?;
+        resolve_direct_checkpoint_id_at(&app_data_dir, &task_id, &validated)
     })
     .await
     .map_err(to_join_error)?
 }
 
 #[tauri::command]
-pub async fn direct_checkpoint_remove(app: AppHandle, checkpoint_id: String) -> Result<bool> {
+pub async fn direct_checkpoint_remove(
+    app: AppHandle,
+    workspace_root: State<'_, WorkspaceRoot>,
+    task_id: String,
+    checkpoint_id: String,
+    project_path: String,
+) -> Result<bool> {
+    let workspace = workspace_root.inner().read().await.clone();
     tokio::task::spawn_blocking(move || {
+        validate_direct_checkpoint_owner(&checkpoint_id, &task_id)?;
+        let validated = validate_repo_path(&project_path, &workspace)?;
         let app_data_dir = app
             .path()
             .app_data_dir()
@@ -6716,7 +8720,7 @@ pub async fn direct_checkpoint_remove(app: AppHandle, checkpoint_id: String) -> 
                     error
                 ),
             })?;
-        remove_direct_checkpoint(&app_data_dir, &checkpoint_id)
+        remove_locked_direct_checkpoint_at(&app_data_dir, &task_id, &checkpoint_id, &validated)
     })
     .await
     .map_err(to_join_error)?
@@ -6732,15 +8736,15 @@ pub async fn direct_checkpoint_ensure(
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
     tokio::task::spawn_blocking(move || {
-        let (repo, _) = open_validated_direct_checkpoint(
+        with_locked_direct_checkpoint(
             &app,
             &workspace,
             &task_id,
             &project_path,
             checkpoint_id.as_deref(),
             true,
-        )?;
-        ensure_direct_checkpoint_head(&repo)
+            |repo, _| ensure_direct_checkpoint_head(repo),
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -6753,23 +8757,79 @@ pub async fn direct_review_snapshot(
     task_id: String,
     project_path: String,
     checkpoint_id: Option<String>,
+    request_id: Option<String>,
 ) -> Result<DirectReviewSnapshotDto> {
     let workspace = workspace_root.inner().read().await.clone();
+    let (cancellation, cancellation_guard) =
+        register_git_review_cancellation(request_id.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        let (repo, validated) = open_validated_direct_checkpoint(
+        let _cancellation_guard = cancellation_guard;
+        let operation_cancellation = cancellation.clone();
+        run_locked_direct_checkpoint_review(
             &app,
             &workspace,
             &task_id,
             &project_path,
             checkpoint_id.as_deref(),
-            false,
-        )?;
-        let snapshot = review::build_git_review_snapshot(&repo, &validated)?;
-        let has_accepted_changes = repo.head()?.peel_to_commit()?.parent_count() > 0;
-        Ok(DirectReviewSnapshotDto {
-            snapshot,
-            has_accepted_changes,
-        })
+            cancellation,
+            |repo, validated| {
+                let status = build_git_status(repo)?;
+                let mut visible_paths = status
+                    .staged_files
+                    .iter()
+                    .chain(status.unstaged_files.iter())
+                    .chain(status.untracked_files.iter())
+                    .map(|change| change.path.clone())
+                    .collect::<Vec<_>>();
+                visible_paths.sort();
+                visible_paths.dedup();
+                let restore_paths =
+                    expand_direct_rename_paths(repo, &visible_paths, DirectRenameAxis::Worktree)?;
+                let restore_root = open_direct_restore_capability(validated)?;
+                let mut restore_revisions = HashMap::new();
+                for path in restore_paths {
+                    if git_review_is_cancelled(&operation_cancellation) {
+                        return Err(BackendError::Git {
+                            message: "Git review was cancelled.".to_string(),
+                        });
+                    }
+                    let relative = validate_repo_relative_file_path(&path)?;
+                    if is_direct_checkpoint_excluded_path(&relative) {
+                        continue;
+                    }
+                    restore_revisions.insert(
+                        path.clone(),
+                        direct_worktree_revision(&restore_root, &relative, &path)?,
+                    );
+                }
+                let snapshot =
+                    review::build_git_review_snapshot_with_cancellation(repo, validated, || {
+                        git_review_is_cancelled(&operation_cancellation)
+                    })
+                    .map_err(|error| {
+                        error.with_git_object_context(None, "direct_review_snapshot")
+                    })?;
+                let mut snapshot = snapshot;
+                filter_direct_checkpoint_snapshot(&mut snapshot);
+                let has_accepted_changes = repo
+                    .head()
+                    .and_then(|head| head.peel_to_commit())
+                    .map_err(|error| {
+                        BackendError::git_object_missing(
+                            error,
+                            None,
+                            Some("direct_review_accepted_state".to_string()),
+                        )
+                    })?
+                    .parent_count()
+                    > 0;
+                Ok(DirectReviewSnapshotDto {
+                    snapshot,
+                    has_accepted_changes,
+                    restore_revisions,
+                })
+            },
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -6784,50 +8844,307 @@ pub async fn direct_review_file(
     checkpoint_id: Option<String>,
     path: String,
     status: String,
+    request_id: Option<String>,
 ) -> Result<GitReviewFileDto> {
     let workspace = workspace_root.inner().read().await.clone();
+    let (cancellation, cancellation_guard) =
+        register_git_review_cancellation(request_id.as_deref())?;
     tokio::task::spawn_blocking(move || {
-        let (repo, validated) = open_validated_direct_checkpoint(
+        let _cancellation_guard = cancellation_guard;
+        let operation_cancellation = cancellation.clone();
+        run_locked_direct_checkpoint_review(
             &app,
             &workspace,
             &task_id,
             &project_path,
             checkpoint_id.as_deref(),
-            false,
-        )?;
-        let relative = validate_repo_relative_file_path(&path)?;
-        review::build_git_review_file(&repo, &validated, &relative, &status)
+            cancellation,
+            |repo, validated| {
+                if git_review_is_cancelled(&operation_cancellation) {
+                    return Err(BackendError::Git {
+                        message: "Git review was cancelled.".to_string(),
+                    });
+                }
+                let relative = validate_repo_relative_file_path(&path)?;
+                reject_direct_checkpoint_excluded_path(&relative)?;
+                let result = review::build_git_review_file_with_cancellation(
+                    repo,
+                    validated,
+                    &relative,
+                    &status,
+                    || git_review_is_cancelled(&operation_cancellation),
+                )
+                .map_err(|error| error.with_git_object_context(None, "direct_review_file"))?;
+                Ok(result)
+            },
+        )
     })
     .await
     .map_err(to_join_error)?
 }
 
 fn stage_direct_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+    ensure_direct_checkpoint_integrity(repo)?;
+    let paths = expand_direct_rename_paths(repo, paths, DirectRenameAxis::Worktree)?;
     let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
         message: "Direct checkpoint has no worktree.".to_string(),
     })?;
     let mut index = repo.index().map_err(|error| BackendError::Git {
         message: format!("Failed to open direct checkpoint index: {}", error),
     })?;
-    for path in paths {
+    let retained_worktree = open_direct_restore_capability(workdir)?;
+    for path in &paths {
         let relative = validate_repo_relative_file_path(path)?;
-        if workdir.join(&relative).exists() {
-            index
-                .add_path(&relative)
-                .map_err(|error| BackendError::Git {
-                    message: format!("Failed to validate direct change {}: {}", path, error),
-                })?;
-        } else {
-            let _ = index.remove_path(&relative);
+        reject_direct_checkpoint_excluded_path(&relative)?;
+        if direct_worktree_path_has_linked_parent(workdir, &relative)? {
+            return Err(BackendError::Validation(format!(
+                "Direct checkpoint path crosses a linked parent: {path}"
+            )));
         }
+        stage_direct_path_from_capability(repo, &mut index, &retained_worktree, &relative, path)?;
     }
+    reject_direct_checkpoint_gitlinks(repo, &index, "direct_checkpoint_stage_gitlink")?;
     index.write().map_err(|error| BackendError::Git {
         message: format!("Failed to save direct change validation: {}", error),
     })?;
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum DirectRenameAxis {
+    Index,
+    Worktree,
+}
+
+fn expand_direct_rename_paths(
+    repo: &Repository,
+    paths: &[String],
+    axis: DirectRenameAxis,
+) -> Result<Vec<String>> {
+    let selected = paths.iter().cloned().collect::<HashSet<_>>();
+    let statuses = repo.statuses(Some(&mut get_status_options()))?;
+    let mut expanded = paths.to_vec();
+    for entry in statuses.iter() {
+        let status = entry.status();
+        let delta = match axis {
+            DirectRenameAxis::Index if status.is_index_renamed() => entry.head_to_index(),
+            DirectRenameAxis::Worktree if status.is_wt_renamed() => entry.index_to_workdir(),
+            _ => None,
+        };
+        let Some(delta) = delta else {
+            continue;
+        };
+        let Some(new_path) = delta.new_file().path().and_then(Path::to_str) else {
+            continue;
+        };
+        if selected.contains(new_path) {
+            if let Some(old_path) = delta.old_file().path().and_then(Path::to_str) {
+                expanded.push(old_path.to_string());
+            }
+        }
+    }
+    expanded.sort();
+    expanded.dedup();
+    Ok(expanded)
+}
+
+fn stage_direct_path_from_capability(
+    repo: &Repository,
+    index: &mut git2::Index,
+    worktree: &CapabilityDir,
+    relative: &Path,
+    display_path: &str,
+) -> Result<()> {
+    let file_name = relative.file_name().ok_or_else(|| {
+        BackendError::Validation(format!("Invalid direct checkpoint path: {display_path}"))
+    })?;
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain direct checkpoint root: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Validation(format!(
+                    "Invalid direct checkpoint path: {display_path}"
+                )));
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(BackendError::Validation(format!(
+                        "Direct checkpoint path crosses a linked parent: {display_path}"
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let _ = index.remove_path(relative);
+                    return Ok(());
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!("Failed to inspect direct checkpoint path: {error}"),
+                        source: error,
+                    });
+                }
+            }
+            parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                message: format!("Failed to retain direct checkpoint parent: {error}"),
+                source: error,
+            })?;
+        }
+    }
+    let metadata = match parent.symlink_metadata(file_name) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let _ = index.remove_path(relative);
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!("Failed to inspect direct change {display_path}: {error}"),
+                source: error,
+            });
+        }
+    };
+    let (mut source, size, mode): (Box<dyn std::io::Read>, usize, u32) =
+        if metadata.file_type().is_symlink() {
+            #[cfg(windows)]
+            {
+                return Err(BackendError::Validation(format!(
+                    "Validating a linked path is not supported safely on Windows: {display_path}"
+                )));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let target =
+                    parent
+                        .read_link_contents(file_name)
+                        .map_err(|error| BackendError::Io {
+                            message: format!(
+                                "Failed to read direct linked path {display_path}: {error}"
+                            ),
+                            source: error,
+                        })?;
+                let bytes = target.as_os_str().as_bytes().to_vec();
+                let size = bytes.len();
+                (Box::new(std::io::Cursor::new(bytes)), size, 0o120000)
+            }
+        } else if metadata.is_file() {
+            let file = open_direct_regular_file_no_follow(&parent, file_name).map_err(|error| {
+                BackendError::Io {
+                    message: format!("Failed to open direct change {display_path}: {error}"),
+                    source: error,
+                }
+            })?;
+            let handle_metadata = file.metadata().map_err(|error| BackendError::Io {
+                message: format!("Failed to inspect direct change handle {display_path}: {error}"),
+                source: error,
+            })?;
+            let size = usize::try_from(handle_metadata.len()).map_err(|_| {
+                BackendError::Validation(format!(
+                    "Direct change is too large to checkpoint: {display_path}"
+                ))
+            })?;
+            #[cfg(unix)]
+            let mode = {
+                use cap_std::fs::PermissionsExt;
+                if handle_metadata.permissions().mode() & 0o111 != 0 {
+                    0o100755
+                } else {
+                    0o100644
+                }
+            };
+            #[cfg(not(unix))]
+            let mode = 0o100644;
+            (Box::new(file), size, mode)
+        } else {
+            return Err(BackendError::Validation(format!(
+                "Unsupported direct checkpoint entry: {display_path}"
+            )));
+        };
+    let odb = repo.odb()?;
+    let mut writer = odb.writer(size, git2::ObjectType::Blob)?;
+    std::io::copy(&mut source, &mut writer).map_err(|error| BackendError::Io {
+        message: format!("Failed to persist direct change {display_path}: {error}"),
+        source: error,
+    })?;
+    let oid = writer.finalize()?;
+    let entry = git2::IndexEntry {
+        ctime: git2::IndexTime::new(0, 0),
+        mtime: git2::IndexTime::new(0, 0),
+        dev: 0,
+        ino: 0,
+        mode,
+        uid: 0,
+        gid: 0,
+        file_size: u32::try_from(size).unwrap_or(u32::MAX),
+        id: oid,
+        flags: 0,
+        flags_extended: 0,
+        path: direct_checkpoint_index_path_bytes(relative),
+    };
+    index.add(&entry).map_err(|error| BackendError::Git {
+        message: format!("Failed to validate direct change {display_path}: {error}"),
+    })
+}
+
+#[cfg(windows)]
+fn direct_capability_metadata_is_reparse_point(metadata: &cap_std::fs::Metadata) -> bool {
+    use cap_std::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn direct_capability_metadata_is_reparse_point(_metadata: &cap_std::fs::Metadata) -> bool {
+    false
+}
+
+fn open_direct_regular_file_no_follow(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+) -> std::io::Result<cap_std::fs::File> {
+    let mut options = CapabilityOpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = parent.open_with(file_name, &options)?;
+    let metadata = file.metadata()?;
+    if metadata.file_type().is_symlink()
+        || direct_capability_metadata_is_reparse_point(&metadata)
+        || !metadata.is_file()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Direct checkpoint path changed to a linked or unsupported entry.",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn direct_checkpoint_index_path_bytes(relative: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    relative.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn direct_checkpoint_index_path_bytes(relative: &Path) -> Vec<u8> {
+    relative.to_string_lossy().replace('\\', "/").into_bytes()
+}
+
 fn accept_direct_changes(repo: &Repository) -> Result<String> {
+    ensure_direct_checkpoint_integrity(repo)?;
     let mut index = repo.index()?;
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
@@ -6855,15 +9172,15 @@ pub async fn direct_stage_paths(
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
     tokio::task::spawn_blocking(move || {
-        let (repo, _) = open_validated_direct_checkpoint(
+        with_locked_direct_checkpoint(
             &app,
             &workspace,
             &task_id,
             &project_path,
             checkpoint_id.as_deref(),
             false,
-        )?;
-        stage_direct_paths(&repo, &paths)
+            |repo, _| stage_direct_paths(repo, &paths),
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -6880,31 +9197,41 @@ pub async fn direct_unstage_paths(
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
     tokio::task::spawn_blocking(move || {
-        let (repo, _) = open_validated_direct_checkpoint(
+        with_locked_direct_checkpoint(
             &app,
             &workspace,
             &task_id,
             &project_path,
             checkpoint_id.as_deref(),
             false,
-        )?;
-        let head = repo.head()?.peel_to_commit()?;
-        let object = head.as_object();
-        let validated_paths = paths
-            .iter()
-            .map(|path| validate_repo_relative_file_path(path))
-            .collect::<Result<Vec<_>>>()?;
-        repo.reset_default(Some(object), validated_paths.iter())
-            .map_err(|error| BackendError::Git {
-                message: format!("Failed to unvalidate direct changes: {}", error),
-            })?;
-        Ok(())
+            |repo, _| unstage_direct_paths(repo, &paths),
+        )
     })
     .await
     .map_err(to_join_error)?
 }
 
-fn validate_direct_restore_target(worktree: &Path, relative: &Path) -> Result<PathBuf> {
+fn unstage_direct_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+    ensure_direct_checkpoint_integrity(repo)?;
+    let paths = expand_direct_rename_paths(repo, paths, DirectRenameAxis::Index)?;
+    let head = repo.head()?.peel_to_commit()?;
+    let object = head.as_object();
+    let validated_paths = paths
+        .iter()
+        .map(|path| {
+            let relative = validate_repo_relative_file_path(path)?;
+            reject_direct_checkpoint_excluded_path(&relative)?;
+            Ok(relative)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    repo.reset_default(Some(object), validated_paths.iter())
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to unvalidate direct changes: {}", error),
+        })?;
+    Ok(())
+}
+
+fn open_direct_restore_capability(worktree: &Path) -> Result<CapabilityDir> {
     let canonical_worktree = worktree.canonicalize().map_err(|error| BackendError::Io {
         message: format!(
             "Failed to resolve direct-edit project root {}: {}",
@@ -6913,38 +9240,24 @@ fn validate_direct_restore_target(worktree: &Path, relative: &Path) -> Result<Pa
         ),
         source: error,
     })?;
-    let absolute = worktree.join(relative);
-    let mut existing_ancestor = absolute.as_path();
-    while fs::symlink_metadata(existing_ancestor).is_err() {
-        existing_ancestor = existing_ancestor.parent().ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Direct restore target escapes the project root: {}",
-                relative.display()
-            ))
-        })?;
-    }
-    let canonical_ancestor =
-        existing_ancestor
-            .canonicalize()
-            .map_err(|error| BackendError::Io {
-                message: format!(
-                    "Failed to resolve direct restore target {}: {}",
-                    relative.display(),
-                    error
-                ),
-                source: error,
-            })?;
-    if !canonical_ancestor.starts_with(&canonical_worktree) {
-        return Err(BackendError::Validation(format!(
-            "Direct restore target escapes the project root through a symbolic link: {}",
-            relative.display()
-        )));
-    }
-    Ok(absolute)
+    CapabilityDir::open_ambient_dir(&canonical_worktree, ambient_authority()).map_err(|error| {
+        BackendError::Io {
+            message: format!(
+                "Failed to retain direct-edit project root {}: {}",
+                worktree.display(),
+                error
+            ),
+            source: error,
+        }
+    })
 }
 
-fn remove_direct_untracked_path(path: &Path, display_path: &str) -> Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
+fn remove_direct_untracked_path(
+    worktree: &CapabilityDir,
+    relative: &Path,
+    display_path: &str,
+) -> Result<()> {
+    let metadata = match worktree.symlink_metadata(relative) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
@@ -6961,25 +9274,1173 @@ fn remove_direct_untracked_path(path: &Path, display_path: &str) -> Result<()> {
     let result = if metadata.file_type().is_symlink() {
         #[cfg(windows)]
         {
-            if path.is_dir() {
-                fs::remove_dir(path)
+            if metadata.is_dir() {
+                worktree.remove_dir(relative)
             } else {
-                fs::remove_file(path)
+                worktree.remove_file(relative)
             }
         }
         #[cfg(not(windows))]
         {
-            fs::remove_file(path)
+            worktree.remove_file(relative)
         }
     } else if metadata.is_dir() {
-        fs::remove_dir_all(path)
+        worktree.remove_dir_all(relative)
     } else {
-        fs::remove_file(path)
+        worktree.remove_file(relative)
     };
     result.map_err(|error| BackendError::Io {
         message: format!("Failed to remove reverted path {}: {}", display_path, error),
         source: error,
     })
+}
+
+fn open_direct_restore_parent(
+    worktree: &CapabilityDir,
+    relative: &Path,
+    display_path: &str,
+) -> Result<(CapabilityDir, OsString, DirectRestoreCreatedParents)> {
+    let file_name = relative.file_name().ok_or_else(|| {
+        BackendError::Validation(format!("Invalid direct restore path: {display_path}"))
+    })?;
+    let cleanup_root = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain direct restore root: {error}"),
+        source: error,
+    })?;
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain direct restore root: {error}"),
+        source: error,
+    })?;
+    let mut current_path = PathBuf::new();
+    let mut created_parents = DirectRestoreCreatedParents {
+        root: cleanup_root,
+        paths: Vec::new(),
+    };
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Validation(format!(
+                    "Invalid direct restore path: {display_path}"
+                )));
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(BackendError::Validation(format!(
+                        "Direct restore path crosses a linked or non-directory entry: {display_path}"
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    parent
+                        .create_dir(segment)
+                        .map_err(|error| BackendError::Io {
+                            message: format!(
+                            "Failed to create a parent for reverted path {display_path}: {error}"
+                        ),
+                            source: error,
+                        })?;
+                    created_parents.paths.push(current_path.join(segment));
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect a parent for reverted path {display_path}: {error}"
+                        ),
+                        source: error,
+                    });
+                }
+            }
+            parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to retain a parent for reverted path {display_path}: {error}"
+                ),
+                source: error,
+            })?;
+            current_path.push(segment);
+        }
+    }
+    Ok((parent, file_name.to_os_string(), created_parents))
+}
+
+fn remove_direct_restore_entry(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+    display_path: &str,
+) -> Result<()> {
+    let metadata = match parent.symlink_metadata(file_name) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!("Failed to inspect reverted path {display_path}: {error}"),
+                source: error,
+            });
+        }
+    };
+    let result = if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        parent.remove_file(file_name)
+    } else {
+        parent.remove_dir_all(file_name)
+    };
+    result.map_err(|error| BackendError::Io {
+        message: format!("Failed to replace reverted path {display_path}: {error}"),
+        source: error,
+    })
+}
+
+fn reserve_direct_restore_backup_name(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+    display_path: &str,
+) -> Result<OsString> {
+    loop {
+        let candidate = OsString::from(format!(
+            ".{}.macro-restore-backup-{}",
+            file_name.to_string_lossy(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        match parent.symlink_metadata(&candidate) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Ok(_) => continue,
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!(
+                        "Failed to reserve a backup for reverted path {display_path}: {error}"
+                    ),
+                    source: error,
+                });
+            }
+        }
+    }
+}
+
+fn move_direct_restore_entry_to_backup(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+    display_path: &str,
+) -> Result<Option<OsString>> {
+    match parent.symlink_metadata(file_name) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!("Failed to inspect reverted path {display_path}: {error}"),
+                source: error,
+            });
+        }
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            return Err(BackendError::Validation(format!(
+                "Cannot safely replace a directory while reverting {display_path}."
+            )));
+        }
+        Ok(_) => {}
+    }
+    let backup_name = reserve_direct_restore_backup_name(parent, file_name, display_path)?;
+    parent
+        .rename(file_name, parent, &backup_name)
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to preserve reverted path {display_path}: {error}"),
+            source: error,
+        })?;
+    Ok(Some(backup_name))
+}
+
+#[cfg(windows)]
+fn atomic_replace_direct_restore_entry(
+    parent: &CapabilityDir,
+    source_name: &OsStr,
+    target_name: &OsStr,
+    absolute_parent: &Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, MoveFileExW, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let metadata = fs::symlink_metadata(absolute_parent)?;
+    if direct_checkpoint_metadata_is_link(&metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Direct restore parent is a Windows reparse point.",
+        ));
+    }
+    let retained_parent = fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(absolute_parent)?;
+    let identity = |handle| -> std::io::Result<(u32, u64)> {
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((
+            information.dwVolumeSerialNumber,
+            ((information.nFileIndexHigh as u64) << u32::BITS) | information.nFileIndexLow as u64,
+        ))
+    };
+    if identity(parent.as_raw_handle() as _)? != identity(retained_parent.as_raw_handle() as _)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Direct restore parent changed during the operation.",
+        ));
+    }
+    let source = absolute_parent
+        .join(source_name)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = absolute_parent
+        .join(target_name)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace_direct_restore_entry(
+    parent: &CapabilityDir,
+    source_name: &OsStr,
+    target_name: &OsStr,
+    _absolute_parent: &Path,
+) -> std::io::Result<()> {
+    parent.rename(source_name, parent, target_name)
+}
+
+#[cfg(windows)]
+fn atomic_publish_direct_restore_entry(
+    parent: &CapabilityDir,
+    source_name: &OsStr,
+    target_name: &OsStr,
+    absolute_parent: &Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, MoveFileExW, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, MOVEFILE_WRITE_THROUGH,
+    };
+    let metadata = fs::symlink_metadata(absolute_parent)?;
+    if direct_checkpoint_metadata_is_link(&metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Direct restore parent is a Windows reparse point.",
+        ));
+    }
+    let retained_parent = fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(absolute_parent)?;
+    let identity = |handle| -> std::io::Result<(u32, u64)> {
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((
+            information.dwVolumeSerialNumber,
+            ((information.nFileIndexHigh as u64) << u32::BITS) | information.nFileIndexLow as u64,
+        ))
+    };
+    if identity(parent.as_raw_handle() as _)? != identity(retained_parent.as_raw_handle() as _)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Direct restore parent changed during the operation.",
+        ));
+    }
+    let source = absolute_parent
+        .join(source_name)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = absolute_parent
+        .join(target_name)
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    if parent.symlink_metadata(target_name).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "Direct restore target changed during the operation.",
+        ));
+    }
+    let result = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_publish_direct_restore_entry(
+    parent: &CapabilityDir,
+    source_name: &OsStr,
+    target_name: &OsStr,
+    _absolute_parent: &Path,
+) -> std::io::Result<()> {
+    parent.hard_link(source_name, parent, target_name)?;
+    parent.remove_file(source_name)
+}
+
+fn restore_direct_restore_backup(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+    backup_name: Option<&OsStr>,
+    absolute_parent: &Path,
+) -> Result<()> {
+    if let Some(backup_name) = backup_name {
+        atomic_publish_direct_restore_entry(parent, backup_name, file_name, absolute_parent)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to restore preserved direct-edit content: {error}"),
+                source: error,
+            })?;
+    }
+    Ok(())
+}
+
+struct DirectRestoreBackup {
+    parent: CapabilityDir,
+    file_name: OsString,
+    backup_name: Option<OsString>,
+    display_path: String,
+    absolute_parent: PathBuf,
+    expected_fingerprint: Option<DirectRestoreFingerprint>,
+    _created_parents: Option<DirectRestoreCreatedParents>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectRestoreEntryKind {
+    File,
+    Symlink,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectRestoreFingerprint {
+    digest: [u8; 32],
+    kind: DirectRestoreEntryKind,
+    mode: u32,
+}
+
+fn direct_restore_metadata_fingerprint(
+    metadata: &cap_std::fs::Metadata,
+    digest: [u8; 32],
+    display_path: &str,
+) -> Result<DirectRestoreFingerprint> {
+    let kind = if metadata.file_type().is_symlink() {
+        DirectRestoreEntryKind::Symlink
+    } else if metadata.is_file() {
+        DirectRestoreEntryKind::File
+    } else {
+        return Err(BackendError::Validation(format!(
+            "Cannot fingerprint a non-file path while reverting {display_path}."
+        )));
+    };
+    #[cfg(unix)]
+    let mode = {
+        use cap_std::fs::MetadataExt;
+        metadata.mode() & 0o7777
+    };
+    #[cfg(windows)]
+    let mode = {
+        use cap_std::fs::MetadataExt;
+        const FILE_ATTRIBUTE_READONLY: u32 = 0x0001;
+        metadata.file_attributes() & FILE_ATTRIBUTE_READONLY
+    };
+    Ok(DirectRestoreFingerprint { digest, kind, mode })
+}
+
+fn direct_restore_published_fingerprint(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+    digest: [u8; 32],
+    display_path: &str,
+) -> Result<DirectRestoreFingerprint> {
+    let metadata = parent
+        .symlink_metadata(file_name)
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect reverted path {display_path}: {error}"),
+            source: error,
+        })?;
+    direct_restore_metadata_fingerprint(&metadata, digest, display_path)
+}
+
+struct DirectRestoreCreatedParents {
+    root: CapabilityDir,
+    paths: Vec<PathBuf>,
+}
+
+impl Drop for DirectRestoreCreatedParents {
+    fn drop(&mut self) {
+        for path in self.paths.iter().rev() {
+            match self.root.remove_dir(path) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                    ) => {}
+                Err(error) => tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "Failed to remove a direct restore directory created by a rolled-back operation"
+                ),
+            }
+        }
+    }
+}
+
+fn restore_direct_tracked_path(
+    repo: &Repository,
+    worktree: &CapabilityDir,
+    worktree_path: &Path,
+    entry: &git2::IndexEntry,
+    relative: &Path,
+    display_path: &str,
+    expected_revision: &str,
+) -> Result<DirectRestoreBackup> {
+    let odb = repo.odb().map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(entry.id.to_string()),
+            Some("direct_restore_index_blob".to_string()),
+        )
+    })?;
+    let (mut object_reader, object_size, object_type) = odb.reader(entry.id).map_err(|error| {
+        BackendError::git_object_missing(
+            error,
+            Some(entry.id.to_string()),
+            Some("direct_restore_index_blob".to_string()),
+        )
+    })?;
+    if object_type != git2::ObjectType::Blob {
+        return Err(BackendError::Validation(format!(
+            "Direct checkpoint entry is not a blob: {display_path}"
+        )));
+    }
+    let (parent, file_name, created_parents) =
+        open_direct_restore_parent(worktree, relative, display_path)?;
+    let absolute_parent = relative.parent().map_or_else(
+        || worktree_path.to_path_buf(),
+        |path| worktree_path.join(path),
+    );
+    let file_mode = entry.mode & 0o170000;
+    if file_mode == 0o120000 {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            if object_size > MAX_REVIEW_INLINE_BYTES {
+                return Err(BackendError::Validation(format!(
+                    "Direct checkpoint link target is too large: {display_path}"
+                )));
+            }
+            let mut link_target = Vec::with_capacity(object_size);
+            object_reader
+                .read_to_end(&mut link_target)
+                .map_err(|error| BackendError::Io {
+                    message: format!("Failed to read linked path {display_path}: {error}"),
+                    source: error,
+                })?;
+            let mut git_hasher = Sha1::new();
+            git_hasher.update(format!("blob {object_size}\0").as_bytes());
+            git_hasher.update(&link_target);
+            if Oid::from_bytes(git_hasher.finalize().as_slice()).ok() != Some(entry.id) {
+                return Err(BackendError::DirectCheckpointCorrupt {
+                    message: "Macro's internal review checkpoint contains an altered file object."
+                        .to_string(),
+                    checkpoint_id: direct_checkpoint_repo_id(repo),
+                    object_id: Some(entry.id.to_string()),
+                    operation: Some("direct_restore_index_blob".to_string()),
+                    retry_attempted: false,
+                    accepted_history_at_risk: true,
+                    git_output: None,
+                });
+            }
+            let expected_digest: [u8; 32] = Sha256::digest(&link_target).into();
+            let temporary_name = OsString::from(format!(
+                ".{}.macro-restore-link-{}",
+                file_name.to_string_lossy(),
+                uuid::Uuid::new_v4().simple()
+            ));
+            parent
+                .symlink_contents(OsString::from_vec(link_target), &temporary_name)
+                .map_err(|error| BackendError::Io {
+                    message: format!("Failed to create linked path {display_path}: {error}"),
+                    source: error,
+                })?;
+            let backup =
+                match move_direct_restore_entry_to_backup(&parent, &file_name, display_path) {
+                    Ok(backup) => backup,
+                    Err(error) => {
+                        let _ = parent.remove_file(&temporary_name);
+                        return Err(error);
+                    }
+                };
+            if let Err(error) = verify_direct_restore_backup_revision(
+                &parent,
+                &file_name,
+                backup.as_deref(),
+                &absolute_parent,
+                display_path,
+                expected_revision,
+            ) {
+                let _ = parent.remove_file(&temporary_name);
+                return Err(error);
+            }
+            if let Err(error) = atomic_publish_direct_restore_entry(
+                &parent,
+                &temporary_name,
+                &file_name,
+                &absolute_parent,
+            ) {
+                let _ = parent.remove_file(&temporary_name);
+                let _ = restore_direct_restore_backup(
+                    &parent,
+                    &file_name,
+                    backup.as_deref(),
+                    &absolute_parent,
+                );
+                return Err(BackendError::Io {
+                    message: format!("Failed to publish linked path {display_path}: {error}"),
+                    source: error,
+                });
+            }
+            let expected_fingerprint = direct_restore_published_fingerprint(
+                &parent,
+                &file_name,
+                expected_digest,
+                display_path,
+            )?;
+            return Ok(DirectRestoreBackup {
+                parent,
+                file_name,
+                backup_name: backup,
+                display_path: display_path.to_string(),
+                absolute_parent,
+                expected_fingerprint: Some(expected_fingerprint),
+                _created_parents: Some(created_parents),
+            });
+        }
+        #[cfg(windows)]
+        {
+            return Err(BackendError::Validation(format!(
+                "Restoring a linked path is not supported safely on Windows: {display_path}"
+            )));
+        }
+    }
+    #[cfg(unix)]
+    let supported_regular_mode = file_mode == 0o100000;
+    #[cfg(windows)]
+    let supported_regular_mode = file_mode == 0o100000;
+    if !supported_regular_mode {
+        return Err(BackendError::Validation(format!(
+            "Unsupported direct checkpoint entry for restore: {display_path}"
+        )));
+    }
+
+    let temporary_name = format!(
+        ".{}.macro-restore-{}-{}",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        REBASE_CHECK_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let mut options = CapabilityOpenOptions::new();
+    options.write(true).create_new(true);
+    let mut temporary = parent
+        .open_with(&temporary_name, &options)
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to create reverted path {display_path}: {error}"),
+            source: error,
+        })?;
+    let mut hasher = Sha256::new();
+    let mut git_hasher = Sha1::new();
+    git_hasher.update(format!("blob {object_size}\0").as_bytes());
+    let mut buffer = [0u8; 64 * 1024];
+    let write_result = loop {
+        match object_reader.read(&mut buffer) {
+            Ok(0) => break temporary.sync_all(),
+            Ok(bytes_read) => {
+                hasher.update(&buffer[..bytes_read]);
+                git_hasher.update(&buffer[..bytes_read]);
+                if let Err(error) = temporary.write_all(&buffer[..bytes_read]) {
+                    break Err(error);
+                }
+            }
+            Err(error) => break Err(error),
+        }
+    };
+    if let Err(error) = write_result {
+        drop(temporary);
+        let _ = parent.remove_file(&temporary_name);
+        return Err(BackendError::Io {
+            message: format!("Failed to persist reverted path {display_path}: {error}"),
+            source: error,
+        });
+    }
+    if Oid::from_bytes(git_hasher.finalize().as_slice()).ok() != Some(entry.id) {
+        drop(temporary);
+        let _ = parent.remove_file(&temporary_name);
+        return Err(BackendError::DirectCheckpointCorrupt {
+            message: "Macro's internal review checkpoint contains an altered file object."
+                .to_string(),
+            checkpoint_id: direct_checkpoint_repo_id(repo),
+            object_id: Some(entry.id.to_string()),
+            operation: Some("direct_restore_index_blob".to_string()),
+            retry_attempted: false,
+            accepted_history_at_risk: true,
+            git_output: None,
+        });
+    }
+    let expected_digest: [u8; 32] = hasher.finalize().into();
+    #[cfg(unix)]
+    {
+        use cap_std::fs::PermissionsExt;
+        let mode = if entry.mode & 0o111 != 0 {
+            0o755
+        } else {
+            0o644
+        };
+        if let Err(error) = temporary.set_permissions(cap_std::fs::Permissions::from_mode(mode)) {
+            drop(temporary);
+            let _ = parent.remove_file(&temporary_name);
+            return Err(BackendError::Io {
+                message: format!("Failed to set reverted path permissions {display_path}: {error}"),
+                source: error,
+            });
+        }
+    }
+    drop(temporary);
+    #[cfg(test)]
+    if display_path == "macro-test-save-before-backup.txt" {
+        let mut concurrent_options = CapabilityOpenOptions::new();
+        concurrent_options.write(true).truncate(true);
+        let mut concurrent = parent
+            .open_with(&file_name, &concurrent_options)
+            .expect("open concurrent save target");
+        concurrent
+            .write_all(b"save during restore\n")
+            .expect("write concurrent save");
+        concurrent.sync_all().expect("persist concurrent save");
+    }
+    let backup = match move_direct_restore_entry_to_backup(&parent, &file_name, display_path) {
+        Ok(backup) => backup,
+        Err(error) => {
+            let _ = parent.remove_file(&temporary_name);
+            return Err(error);
+        }
+    };
+    if let Err(error) = verify_direct_restore_backup_revision(
+        &parent,
+        &file_name,
+        backup.as_deref(),
+        &absolute_parent,
+        display_path,
+        expected_revision,
+    ) {
+        let _ = parent.remove_file(&temporary_name);
+        return Err(error);
+    }
+    #[cfg(test)]
+    if display_path == "macro-test-concurrent-save.txt" {
+        let mut concurrent_options = CapabilityOpenOptions::new();
+        concurrent_options.write(true).create_new(true);
+        let mut concurrent = parent
+            .open_with(&file_name, &concurrent_options)
+            .expect("inject concurrent save");
+        concurrent
+            .write_all(b"concurrent save\n")
+            .expect("write concurrent save");
+        concurrent.sync_all().expect("persist concurrent save");
+    }
+    #[cfg(test)]
+    if display_path == "macro-test-fail-after-backup.txt" {
+        let _ = parent.remove_file(&temporary_name);
+        restore_direct_restore_backup(&parent, &file_name, backup.as_deref(), &absolute_parent)?;
+        let concurrent_name = OsStr::new("macro-test-concurrent-rollback.txt");
+        if parent.symlink_metadata(concurrent_name).is_ok() {
+            parent
+                .remove_file(concurrent_name)
+                .expect("replace published file with a concurrent directory");
+            parent
+                .create_dir(concurrent_name)
+                .expect("create concurrent directory");
+            let concurrent_dir = parent
+                .open_dir(concurrent_name)
+                .expect("open concurrent directory");
+            let mut options = CapabilityOpenOptions::new();
+            options.write(true).create_new(true);
+            let mut marker = concurrent_dir
+                .open_with("keep.txt", &options)
+                .expect("create concurrent marker");
+            marker
+                .write_all(b"concurrent directory\n")
+                .expect("write concurrent marker");
+            marker.sync_all().expect("persist concurrent marker");
+        }
+        return Err(BackendError::Validation(
+            "Injected direct restore failure after backup.".to_string(),
+        ));
+    }
+    if let Err(error) = atomic_publish_direct_restore_entry(
+        &parent,
+        OsStr::new(&temporary_name),
+        &file_name,
+        &absolute_parent,
+    ) {
+        let _ = parent.remove_file(&temporary_name);
+        let _ =
+            restore_direct_restore_backup(&parent, &file_name, backup.as_deref(), &absolute_parent);
+        return Err(BackendError::Io {
+            message: format!("Failed to publish reverted path {display_path}: {error}"),
+            source: error,
+        });
+    }
+    let expected_fingerprint =
+        direct_restore_published_fingerprint(&parent, &file_name, expected_digest, display_path)?;
+    Ok(DirectRestoreBackup {
+        parent,
+        file_name,
+        backup_name: backup,
+        display_path: display_path.to_string(),
+        absolute_parent,
+        expected_fingerprint: Some(expected_fingerprint),
+        _created_parents: Some(created_parents),
+    })
+}
+
+fn direct_restore_entry_fingerprint(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+    display_path: &str,
+) -> Result<DirectRestoreFingerprint> {
+    let metadata = parent
+        .symlink_metadata(file_name)
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect preserved path {display_path}: {error}"),
+            source: error,
+        })?;
+    let mut hasher = Sha256::new();
+    if metadata.file_type().is_symlink() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let target =
+                parent
+                    .read_link_contents(file_name)
+                    .map_err(|error| BackendError::Io {
+                        message: format!(
+                            "Failed to inspect preserved link {display_path}: {error}"
+                        ),
+                        source: error,
+                    })?;
+            hasher.update(target.as_os_str().as_bytes());
+        }
+        #[cfg(windows)]
+        return Err(BackendError::Validation(format!(
+            "Cannot verify a native linked path safely on Windows: {display_path}"
+        )));
+    } else if metadata.is_file() {
+        let mut file = open_direct_regular_file_no_follow(parent, file_name).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to inspect preserved path {display_path}: {error}"),
+                source: error,
+            }
+        })?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let bytes_read = file.read(&mut buffer).map_err(|error| BackendError::Io {
+                message: format!("Failed to inspect preserved path {display_path}: {error}"),
+                source: error,
+            })?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
+        }
+    } else {
+        return Err(BackendError::Validation(format!(
+            "Cannot verify a non-file path while reverting {display_path}."
+        )));
+    }
+    let digest = hasher.finalize().into();
+    direct_restore_metadata_fingerprint(&metadata, digest, display_path)
+}
+
+fn encode_direct_restore_digest(digest: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn direct_restore_revision_from_fingerprint(fingerprint: DirectRestoreFingerprint) -> String {
+    let kind = match fingerprint.kind {
+        DirectRestoreEntryKind::File => "file",
+        DirectRestoreEntryKind::Symlink => "symlink",
+    };
+    format!(
+        "v1:{kind}:{:o}:{}",
+        fingerprint.mode,
+        encode_direct_restore_digest(&fingerprint.digest)
+    )
+}
+
+fn direct_worktree_revision(
+    worktree: &CapabilityDir,
+    relative: &Path,
+    display_path: &str,
+) -> Result<String> {
+    let file_name = relative.file_name().ok_or_else(|| {
+        BackendError::Validation(format!("Invalid direct review path: {display_path}"))
+    })?;
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain direct review root: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Validation(format!(
+                    "Invalid direct review path: {display_path}"
+                )));
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(BackendError::Validation(format!(
+                        "Direct review path crosses a linked parent: {display_path}"
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok("v1:absent".to_string());
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!("Failed to inspect direct review path: {error}"),
+                        source: error,
+                    });
+                }
+            }
+            parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                message: format!("Failed to retain direct review parent: {error}"),
+                source: error,
+            })?;
+        }
+    }
+    match parent.symlink_metadata(file_name) {
+        Ok(_) => direct_restore_entry_fingerprint(&parent, file_name, display_path)
+            .map(direct_restore_revision_from_fingerprint),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("v1:absent".to_string()),
+        Err(error) => Err(BackendError::Io {
+            message: format!("Failed to inspect direct review path: {error}"),
+            source: error,
+        }),
+    }
+}
+
+fn verify_direct_restore_backup_revision(
+    parent: &CapabilityDir,
+    file_name: &OsStr,
+    backup_name: Option<&OsStr>,
+    absolute_parent: &Path,
+    display_path: &str,
+    expected_revision: &str,
+) -> Result<()> {
+    let actual_revision = match backup_name {
+        Some(backup_name) => {
+            match direct_restore_entry_fingerprint(parent, backup_name, display_path) {
+                Ok(fingerprint) => direct_restore_revision_from_fingerprint(fingerprint),
+                Err(error) => {
+                    if let Err(restore_error) = restore_direct_restore_backup(
+                        parent,
+                        file_name,
+                        Some(backup_name),
+                        absolute_parent,
+                    ) {
+                        tracing::warn!(
+                            path = %display_path,
+                            %restore_error,
+                            "Retained an unreadable direct restore backup"
+                        );
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        None => "v1:absent".to_string(),
+    };
+    if actual_revision == expected_revision {
+        return Ok(());
+    }
+    if let Err(error) =
+        restore_direct_restore_backup(parent, file_name, backup_name, absolute_parent)
+    {
+        tracing::warn!(
+            path = %display_path,
+            %error,
+            "Retained a stale direct restore backup after a revision conflict"
+        );
+    }
+    Err(BackendError::RevisionConflict {
+        message: format!(
+            "The direct-review file changed after the snapshot was loaded: {display_path}"
+        ),
+    })
+}
+
+fn prepare_direct_untracked_removal(
+    worktree: &CapabilityDir,
+    worktree_path: &Path,
+    relative: &Path,
+    display_path: &str,
+    expected_revision: &str,
+) -> Result<Option<DirectRestoreBackup>> {
+    let file_name = relative.file_name().ok_or_else(|| {
+        BackendError::Validation(format!("Invalid direct restore path: {display_path}"))
+    })?;
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain direct restore root: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Validation(format!(
+                    "Invalid direct restore path: {display_path}"
+                )));
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(BackendError::Validation(format!(
+                        "Direct restore path crosses a linked or non-directory entry: {display_path}"
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect a parent for reverted path {display_path}: {error}"
+                        ),
+                        source: error,
+                    });
+                }
+            }
+            parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to retain a parent for reverted path {display_path}: {error}"
+                ),
+                source: error,
+            })?;
+        }
+    }
+    let backup_name = move_direct_restore_entry_to_backup(&parent, &file_name, display_path)?;
+    verify_direct_restore_backup_revision(
+        &parent,
+        &file_name,
+        backup_name.as_deref(),
+        &relative.parent().map_or_else(
+            || worktree_path.to_path_buf(),
+            |path| worktree_path.join(path),
+        ),
+        display_path,
+        expected_revision,
+    )?;
+    let Some(backup_name) = backup_name else {
+        return Ok(None);
+    };
+    Ok(Some(DirectRestoreBackup {
+        parent,
+        file_name: file_name.to_os_string(),
+        backup_name: Some(backup_name),
+        display_path: display_path.to_string(),
+        absolute_parent: relative.parent().map_or_else(
+            || worktree_path.to_path_buf(),
+            |path| worktree_path.join(path),
+        ),
+        expected_fingerprint: None,
+        _created_parents: None,
+    }))
+}
+
+fn rollback_direct_restore(entry: &DirectRestoreBackup) -> Result<()> {
+    let displaced_name =
+        move_direct_restore_entry_to_backup(&entry.parent, &entry.file_name, &entry.display_path)?;
+    if let Err(error) = restore_direct_restore_backup(
+        &entry.parent,
+        &entry.file_name,
+        entry.backup_name.as_deref(),
+        &entry.absolute_parent,
+    ) {
+        return Err(error);
+    }
+    let Some(displaced_name) = displaced_name else {
+        return Ok(());
+    };
+    let Some(expected_fingerprint) = entry.expected_fingerprint else {
+        return Err(BackendError::Validation(format!(
+            "Direct restore kept a concurrent change as '{}' while rolling back {}.",
+            displaced_name.to_string_lossy(),
+            entry.display_path,
+        )));
+    };
+    if direct_restore_entry_fingerprint(&entry.parent, &displaced_name, &entry.display_path)?
+        != expected_fingerprint
+    {
+        return Err(BackendError::Validation(format!(
+            "Direct restore kept a concurrent change as '{}' while rolling back {}.",
+            displaced_name.to_string_lossy(),
+            entry.display_path,
+        )));
+    }
+    remove_direct_restore_entry(&entry.parent, &displaced_name, &entry.display_path)
+}
+
+fn commit_direct_restore(entry: &DirectRestoreBackup) {
+    if let Some(backup_name) = entry.backup_name.as_deref() {
+        #[cfg(test)]
+        if entry.display_path == "macro-test-keep-backup-on-cleanup-failure.txt" {
+            return;
+        }
+        if let Err(error) =
+            remove_direct_restore_entry(&entry.parent, backup_name, &entry.display_path)
+        {
+            tracing::warn!(
+                path = %entry.display_path,
+                %error,
+                "Retained a direct restore backup because cleanup failed"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+fn restore_direct_worktree_paths(
+    repo: &Repository,
+    validated: &Path,
+    paths: Vec<String>,
+) -> Result<()> {
+    let expanded = expand_direct_rename_paths(repo, &paths, DirectRenameAxis::Worktree)?;
+    let root = open_direct_restore_capability(validated)?;
+    let revisions = expanded
+        .iter()
+        .map(|path| {
+            let relative = validate_repo_relative_file_path(path)?;
+            Ok((
+                path.clone(),
+                direct_worktree_revision(&root, &relative, path)?,
+            ))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
+    restore_direct_worktree_paths_with_revisions(repo, validated, paths, &revisions)
+}
+
+fn restore_direct_worktree_paths_with_revisions(
+    repo: &Repository,
+    validated: &Path,
+    paths: Vec<String>,
+    expected_revisions: &HashMap<String, String>,
+) -> Result<()> {
+    ensure_direct_checkpoint_integrity(repo)?;
+    let paths = expand_direct_rename_paths(repo, &paths, DirectRenameAxis::Worktree)?;
+    let mut index = repo.index()?;
+    index.read(true)?;
+    let restore_root = open_direct_restore_capability(validated)?;
+    let validated_paths = paths
+        .into_iter()
+        .map(|path| {
+            let relative = validate_repo_relative_file_path(&path)?;
+            reject_direct_checkpoint_excluded_path(&relative)?;
+            if direct_worktree_path_has_linked_parent(validated, &relative)? {
+                return Err(BackendError::Validation(format!(
+                    "Direct restore path crosses a linked parent: {path}"
+                )));
+            }
+            let expected_revision = expected_revisions.get(&path).cloned().ok_or_else(|| {
+                BackendError::RevisionConflict {
+                    message: format!(
+                        "The direct-review snapshot has no revision for the selected path: {path}"
+                    ),
+                }
+            })?;
+            let actual_revision = direct_worktree_revision(&restore_root, &relative, &path)?;
+            if actual_revision != expected_revision {
+                return Err(BackendError::RevisionConflict {
+                    message: format!(
+                        "The direct-review file changed after the snapshot was loaded: {path}"
+                    ),
+                });
+            }
+            Ok((path, relative, expected_revision))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut applied = Vec::new();
+    for (path, relative, expected_revision) in validated_paths {
+        let result = if let Some(entry) = index.get_path(&relative, 0) {
+            restore_direct_tracked_path(
+                repo,
+                &restore_root,
+                validated,
+                &entry,
+                &relative,
+                &path,
+                &expected_revision,
+            )
+            .map(Some)
+        } else {
+            prepare_direct_untracked_removal(
+                &restore_root,
+                validated,
+                &relative,
+                &path,
+                &expected_revision,
+            )
+        };
+        match result {
+            Ok(Some(backup)) => applied.push(backup),
+            Ok(None) => {}
+            Err(error) => {
+                let mut rollback_errors = Vec::new();
+                for backup in applied.iter().rev() {
+                    if let Err(rollback_error) = rollback_direct_restore(backup) {
+                        rollback_errors.push(format!("{}: {rollback_error}", backup.display_path));
+                    }
+                }
+                if !rollback_errors.is_empty() {
+                    return Err(BackendError::Validation(format!(
+                        "Direct restore failed and Macro could not restore every preserved file: {error}; rollback: {}",
+                        rollback_errors.join("; ")
+                    )));
+                }
+                return Err(error);
+            }
+        }
+    }
+    for backup in &applied {
+        commit_direct_restore(backup);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -6990,41 +10451,26 @@ pub async fn direct_restore_worktree_paths(
     project_path: String,
     checkpoint_id: Option<String>,
     paths: Vec<String>,
+    expected_revisions: HashMap<String, String>,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
     tokio::task::spawn_blocking(move || {
-        let (repo, validated) = open_validated_direct_checkpoint(
+        with_locked_direct_checkpoint(
             &app,
             &workspace,
             &task_id,
             &project_path,
             checkpoint_id.as_deref(),
             false,
-        )?;
-        let mut index = repo.index()?;
-        let mut checkout = git2::build::CheckoutBuilder::new();
-        checkout.force();
-        let mut has_checkout_paths = false;
-        let validated_paths = paths
-            .into_iter()
-            .map(|path| {
-                let relative = validate_repo_relative_file_path(&path)?;
-                let absolute = validate_direct_restore_target(&validated, &relative)?;
-                Ok((path, relative, absolute))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for (path, relative, absolute) in validated_paths {
-            if index.get_path(&relative, 0).is_some() {
-                checkout.path(&relative);
-                has_checkout_paths = true;
-            } else {
-                remove_direct_untracked_path(&absolute, &path)?;
-            }
-        }
-        if has_checkout_paths {
-            repo.checkout_index(Some(&mut index), Some(&mut checkout))?;
-        }
-        Ok(())
+            |repo, validated| {
+                restore_direct_worktree_paths_with_revisions(
+                    repo,
+                    validated,
+                    paths,
+                    &expected_revisions,
+                )
+            },
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -7040,15 +10486,15 @@ pub async fn direct_accept_changes(
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
     tokio::task::spawn_blocking(move || {
-        let (repo, _) = open_validated_direct_checkpoint(
+        with_locked_direct_checkpoint(
             &app,
             &workspace,
             &task_id,
             &project_path,
             checkpoint_id.as_deref(),
             false,
-        )?;
-        accept_direct_changes(&repo)
+            |repo, _| accept_direct_changes(repo),
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -7061,32 +10507,33 @@ pub async fn git_review_file(
     git_state: State<'_, GitState>,
     repo_path: String,
     path: String,
+    request_id: Option<String>,
 ) -> Result<GitReviewFileDto> {
+    let (cancellation, _cancellation_guard) =
+        register_git_review_cancellation(request_id.as_deref())?;
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_review_file"));
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
-
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let repo = git_state.open_repo(&validated)?;
-        let repo = repo.lock().map_err(|_| BackendError::Internal {
-            message: "Failed to lock repository".to_string(),
-        })?;
-        let status = build_git_status(&repo)?;
-        let status_label = status
-            .staged_files
-            .iter()
-            .chain(status.unstaged_files.iter())
-            .chain(status.untracked_files.iter())
-            .find(|file| file.path == path)
-            .map(|file| file.status.as_str())
-            .unwrap_or("modified");
+        run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
+            let status = build_git_status(repo)?;
+            let status_label = status
+                .staged_files
+                .iter()
+                .chain(status.unstaged_files.iter())
+                .chain(status.untracked_files.iter())
+                .find(|file| file.path == path)
+                .map(|file| file.status.as_str())
+                .unwrap_or("modified");
 
-        review::build_git_review_file(&repo, &validated, &relative_path, status_label)
+            review::build_git_review_file(repo, &validated, &relative_path, status_label)
+                .map_err(|error| error.with_git_object_context(None, "git_review_file"))
+        })
     })
     .await
     .map_err(to_join_error)?
@@ -8201,7 +11648,666 @@ pub async fn macro_branch_pull(
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use tempfile::TempDir;
+
+    fn run_test_git(args: &[String]) {
+        let output = background_command("git")
+            .args(args)
+            .output()
+            .expect("run git for test");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(windows)]
+    fn create_windows_junction(link: &Path, target: &Path) {
+        let status = background_command("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .expect("create Windows junction");
+        assert!(status.success(), "mklink /J must create the test junction");
+    }
+
+    #[test]
+    fn detects_every_supported_partial_clone_configuration() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+        {
+            let mut config = repo.config().expect("repo config");
+            config
+                .set_str("extensions.partialClone", "origin")
+                .expect("partial clone extension");
+            config
+                .set_bool("remote.cache.promisor", true)
+                .expect("promisor remote");
+            config
+                .set_str("remote.origin.partialCloneFilter", "blob:none")
+                .expect("partial clone filter");
+        }
+
+        let detected = detect_partial_clone(&repo).expect("detect partial clone");
+        assert_eq!(detected.extension_remote.as_deref(), Some("origin"));
+        assert_eq!(detected.promisor_remotes, vec!["cache"]);
+        assert_eq!(
+            detected.filters,
+            vec![("origin".to_string(), "blob:none".to_string())]
+        );
+        assert!(detected.is_partial());
+    }
+
+    #[test]
+    fn direct_review_rejects_wsl_paths_until_linux_modes_are_preserved() {
+        for path in [
+            r"\\wsl$\Ubuntu\home\user\project",
+            r"\\wsl.localhost\Ubuntu\home\user\project",
+        ] {
+            assert!(matches!(
+                reject_unsupported_direct_project_path(path),
+                Err(BackendError::Validation(message))
+                    if message.contains("preserve Linux file modes safely")
+            ));
+        }
+        assert!(reject_unsupported_direct_project_path(r"C:\work\project").is_ok());
+    }
+
+    #[test]
+    fn official_git_hydrates_one_promised_blob_without_checkout() {
+        let temp = TempDir::new().expect("temp dir");
+        let source = temp.path().join("source");
+        let origin = temp.path().join("origin.git");
+        let partial = temp.path().join("partial");
+        fs::create_dir_all(&source).expect("create source");
+        run_test_git(&[
+            "init".to_string(),
+            "-q".to_string(),
+            source.display().to_string(),
+        ]);
+        for (key, value) in [
+            ("user.email", "tester@example.com"),
+            ("user.name", "Tester"),
+        ] {
+            run_test_git(&[
+                "-C".to_string(),
+                source.display().to_string(),
+                "config".to_string(),
+                key.to_string(),
+                value.to_string(),
+            ]);
+        }
+        fs::write(source.join("promised.txt"), "promised\n".repeat(4096))
+            .expect("write promised blob");
+        run_test_git(&[
+            "-C".to_string(),
+            source.display().to_string(),
+            "add".to_string(),
+            "promised.txt".to_string(),
+        ]);
+        run_test_git(&[
+            "-C".to_string(),
+            source.display().to_string(),
+            "commit".to_string(),
+            "-qm".to_string(),
+            "base".to_string(),
+        ]);
+        run_test_git(&[
+            "clone".to_string(),
+            "-q".to_string(),
+            "--bare".to_string(),
+            source.display().to_string(),
+            origin.display().to_string(),
+        ]);
+        for (key, value) in [
+            ("uploadpack.allowFilter", "true"),
+            ("uploadpack.allowAnySHA1InWant", "true"),
+        ] {
+            run_test_git(&[
+                format!("--git-dir={}", origin.display()),
+                "config".to_string(),
+                key.to_string(),
+                value.to_string(),
+            ]);
+        }
+        struct GitDaemon(std::process::Child);
+        impl Drop for GitDaemon {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve Git port");
+        let port = listener.local_addr().expect("Git listener address").port();
+        drop(listener);
+        let mut daemon_command = background_command("git");
+        daemon_command
+            .args([
+                "daemon".to_string(),
+                "--reuseaddr".to_string(),
+                "--export-all".to_string(),
+                format!("--base-path={}", temp.path().display()),
+                "--listen=127.0.0.1".to_string(),
+                format!("--port={port}"),
+                temp.path().display().to_string(),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _daemon = GitDaemon(daemon_command.spawn().expect("start local Git daemon"));
+        let daemon_address = ("127.0.0.1", port);
+        let mut ready = false;
+        for _ in 0..50 {
+            if std::net::TcpStream::connect(daemon_address).is_ok() {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ready, "local Git daemon did not start");
+        let origin_url = format!("git://127.0.0.1:{port}/origin.git");
+        run_test_git(&[
+            "clone".to_string(),
+            "-q".to_string(),
+            "--filter=blob:none".to_string(),
+            "--no-checkout".to_string(),
+            origin_url,
+            partial.display().to_string(),
+        ]);
+        run_test_git(&[
+            "-C".to_string(),
+            partial.display().to_string(),
+            "read-tree".to_string(),
+            "HEAD".to_string(),
+        ]);
+
+        let repo = Repository::open(&partial).expect("open partial clone");
+        let mut index = repo.index().expect("partial index");
+        index.read(true).expect("refresh partial index");
+        let object_id = index
+            .get_path(Path::new("promised.txt"), 0)
+            .expect("promised index entry")
+            .id;
+        let missing = repo
+            .find_blob(object_id)
+            .expect_err("blob must start as promised and absent");
+        assert_eq!(missing.class(), git2::ErrorClass::Odb);
+        assert_eq!(missing.code(), git2::ErrorCode::NotFound);
+        assert!(detect_partial_clone(&repo)
+            .expect("detect partial clone")
+            .is_partial());
+        assert!(!partial.join("promised.txt").exists());
+
+        drop(index);
+        drop(repo);
+        let git_state = GitState::new();
+        let snapshot = run_review_with_missing_object_retry(&git_state, &partial, None, |repo| {
+            review::build_git_review_snapshot(repo, &partial)
+                .map_err(|error| error.with_git_object_context(None, "git_review_snapshot"))
+        })
+        .expect("the full review snapshot should hydrate the promised blob with official Git");
+        assert!(snapshot
+            .changes
+            .iter()
+            .any(|change| change.path == "promised.txt"));
+        assert!(GitState::new()
+            .open_repo(&partial)
+            .expect("reopen hydrated partial clone")
+            .lock()
+            .expect("lock hydrated partial clone")
+            .find_blob(object_id)
+            .is_ok());
+        assert!(!partial.join("promised.txt").exists());
+    }
+
+    #[test]
+    fn contained_git_command_bounds_descendants_that_keep_output_open() {
+        let temp = TempDir::new().expect("temp dir");
+        Repository::init(temp.path()).expect("init repo");
+        let args = vec![
+            "-c".to_string(),
+            "alias.macro-pipe=!sh -c 'sleep 30 &'".to_string(),
+            "macro-pipe".to_string(),
+        ];
+        let started = std::time::Instant::now();
+        let output = run_contained_git_command_with_timeout(
+            temp.path(),
+            &args,
+            Duration::from_secs(8),
+            true,
+        )
+        .expect("the completed Git parent must terminate descendants and drain both pipes");
+        assert!(output.success);
+        assert!(
+            started.elapsed() < Duration::from_secs(12),
+            "contained Git command or its output readers outlived their bounds"
+        );
+    }
+
+    #[test]
+    fn contained_git_command_timeout_terminates_the_process_group() {
+        let temp = TempDir::new().expect("temp dir");
+        Repository::init(temp.path()).expect("init repo");
+        let args = vec![
+            "-c".to_string(),
+            "alias.macro-timeout=!sh -c 'sleep 30 & wait'".to_string(),
+            "macro-timeout".to_string(),
+        ];
+        let started = std::time::Instant::now();
+        let error = match run_contained_git_command_with_timeout(
+            temp.path(),
+            &args,
+            Duration::from_millis(200),
+            true,
+        ) {
+            Ok(_) => panic!("the Git command must exceed its deadline"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("timed out"));
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the timed-out Git process group or its output readers outlived their bounds"
+        );
+    }
+
+    #[test]
+    fn contained_git_review_cancellation_terminates_the_process_group() {
+        let temp = TempDir::new().expect("temp dir");
+        Repository::init(temp.path()).expect("init repo");
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let worker_cancellation = cancellation.clone();
+        let repo_path = temp.path().to_path_buf();
+        let started = std::time::Instant::now();
+        let worker = std::thread::spawn(move || {
+            run_contained_git_command_with_timeout_and_cancellation(
+                &repo_path,
+                &[
+                    "-c".to_string(),
+                    "alias.macro-wait=!sh -c 'sleep 30'".to_string(),
+                    "macro-wait".to_string(),
+                ],
+                Duration::from_secs(30),
+                true,
+                Some(worker_cancellation),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        cancellation.store(true, Ordering::Release);
+
+        let error = match worker.join().expect("cancellation worker") {
+            Ok(_) => panic!("cancelled Git review must stop"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn cancelled_hydration_does_not_retry_the_review_operation() {
+        let temp = TempDir::new().expect("temporary repository");
+        let repo = Repository::init(temp.path()).expect("initialize repository");
+        repo.config()
+            .and_then(|mut config| {
+                config.set_bool("remote.origin.promisor", true)?;
+                config.set_str("remote.origin.partialCloneFilter", "blob:none")?;
+                config.set_str("remote.origin.url", "https://example.test/repository.git")
+            })
+            .expect("configure partial repository");
+        drop(repo);
+
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let operation_calls = AtomicUsize::new(0);
+        let error = run_review_with_missing_object_retry_and_hydrator(
+            &GitState::new(),
+            temp.path(),
+            Some(cancellation.clone()),
+            |_repo| {
+                operation_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                Err::<(), _>(BackendError::GitObjectMissing {
+                    message: "missing promised object".to_string(),
+                    object_id: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                    operation: Some("test_review".to_string()),
+                    repository_path: None,
+                    partial_clone: false,
+                    retry_attempted: false,
+                    worktree_modified: Some(false),
+                    git_output: None,
+                })
+            },
+            |_repo_root, _object_id, hydration_cancellation| {
+                hydration_cancellation
+                    .expect("hydration cancellation flag")
+                    .store(true, Ordering::Release);
+                Err("Git review was cancelled.".to_string())
+            },
+        )
+        .expect_err("cancelled hydration must stop the review");
+
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(operation_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pre_cancelled_review_does_not_run_a_successful_operation() {
+        let temp = TempDir::new().expect("temporary repository");
+        Repository::init(temp.path()).expect("initialize repository");
+        let cancellation = Arc::new(AtomicBool::new(true));
+        let operation_calls = AtomicUsize::new(0);
+
+        let error = run_review_with_missing_object_retry(
+            &GitState::new(),
+            temp.path(),
+            Some(cancellation),
+            |_repo| {
+                operation_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect_err("pre-cancelled review must not start");
+
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(operation_calls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_arriving_before_registration_is_preserved() {
+        let request_id = format!("pre-register-cancel-{}", std::process::id());
+        git_cancel_review(request_id.clone())
+            .await
+            .expect("pre-cancel review");
+
+        let (cancellation, guard) = register_git_review_cancellation(Some(&request_id))
+            .expect("register pre-cancelled review");
+
+        assert!(cancellation
+            .expect("cancellation flag")
+            .load(Ordering::Acquire));
+        drop(guard);
+    }
+
+    #[test]
+    fn app_shutdown_cancels_every_registered_git_review() {
+        let (first, first_guard) = register_git_review_cancellation(Some("review-shutdown-first"))
+            .expect("register first review");
+        let (second, second_guard) =
+            register_git_review_cancellation(Some("review-shutdown-second"))
+                .expect("register second review");
+
+        cancel_all_git_reviews();
+
+        assert!(first.expect("first cancellation").load(Ordering::Acquire));
+        assert!(second.expect("second cancellation").load(Ordering::Acquire));
+        drop(first_guard);
+        drop(second_guard);
+    }
+
+    #[test]
+    fn contained_git_command_disables_ssh_askpass_and_uses_batch_mode() {
+        let mut command = background_contained_tokio_command("git");
+        command.env("SSH_ASKPASS", "askpass-sentinel");
+        command.env("GIT_ASKPASS", "git-askpass-sentinel");
+        configure_noninteractive_git_command(&mut command);
+        let environment = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().to_string(),
+                        value.to_string_lossy().to_string(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            environment.get("SSH_ASKPASS_REQUIRE").map(String::as_str),
+            Some("never")
+        );
+        assert_eq!(
+            environment.get("GIT_SSH_COMMAND").map(String::as_str),
+            Some("ssh -oBatchMode=yes")
+        );
+        assert_eq!(
+            environment.get("GIT_TERMINAL_PROMPT").map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            environment.get("GIT_ALLOW_PROTOCOL").map(String::as_str),
+            Some("git:http:https:ssh")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_KEY_0").map(String::as_str),
+            Some("core.askPass")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_VALUE_0").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_COUNT").map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_KEY_1").map(String::as_str),
+            Some("maintenance.auto")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_VALUE_1").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_KEY_2").map(String::as_str),
+            Some("gc.recentObjectsHook")
+        );
+        assert_eq!(
+            environment.get("GIT_CONFIG_VALUE_2").map(String::as_str),
+            Some("")
+        );
+        for key in ["GIT_ASKPASS", "SSH_ASKPASS"] {
+            assert!(command
+                .as_std()
+                .get_envs()
+                .any(|(candidate, value)| candidate == key && value.is_none()));
+        }
+    }
+
+    #[test]
+    fn automatic_hydration_rejects_repository_defined_executable_settings() {
+        for setting in [
+            "credential.helper",
+            "credential.https://example.test.helper",
+            "core.sshCommand",
+            "core.gitProxy",
+            "core.alternateRefsCommand",
+            "gc.recentObjectsHook",
+            "remote.origin.uploadpack",
+            "remote.origin.vcs",
+            "url.https://mirror.example.test/.insteadOf",
+        ] {
+            let temp = TempDir::new().expect("temporary repository");
+            let repo = Repository::init(temp.path()).expect("initialize repository");
+            let sentinel = temp.path().join("unsafe-setting-ran");
+            repo.config()
+                .and_then(|mut config| {
+                    config.set_str(setting, &format!("!echo unsafe > {}", sentinel.display()))
+                })
+                .unwrap_or_else(|error| panic!("configure unsafe setting {setting}: {error}"));
+
+            let error = hydrate_review_objects_with_git(
+                temp.path(),
+                "0123456789abcdef0123456789abcdef01234567",
+                None,
+            )
+            .expect_err("automatic hydration must reject repository-defined executables");
+
+            assert!(error.contains(&setting.to_ascii_lowercase()), "{error}");
+            assert!(!sentinel.exists(), "unsafe setting ran: {setting}");
+        }
+    }
+
+    #[test]
+    fn automatic_hydration_rejects_a_local_promisor_remote() {
+        let temp = TempDir::new().expect("temporary repository");
+        let repo_path = temp.path().join("partial");
+        let outside_path = temp.path().join("outside.git");
+        let repo = Repository::init(&repo_path).expect("initialize partial repository");
+        Repository::init_bare(&outside_path).expect("initialize outside repository");
+        let outside_url = format!(
+            "file:///{}",
+            outside_path.to_string_lossy().replace('\\', "/")
+        );
+        repo.config()
+            .and_then(|mut config| {
+                config.set_bool("remote.origin.promisor", true)?;
+                config.set_str("remote.origin.partialCloneFilter", "blob:none")?;
+                config.set_str("remote.origin.url", &outside_url)
+            })
+            .expect("configure local promisor");
+
+        let error = hydrate_review_objects_with_git(
+            &repo_path,
+            "0123456789abcdef0123456789abcdef01234567",
+            None,
+        )
+        .expect_err("automatic hydration must not read another local repository");
+
+        assert!(error.contains("remote.origin.url"), "{error}");
+    }
+
+    #[test]
+    fn git_diagnostics_redact_repository_paths_and_remote_urls() {
+        let root = Path::new("C:/Users/example/private-project");
+        let redactions = vec![
+            "https://token@example.test/repo.git".to_string(),
+            "example.test".to_string(),
+            "git@forge.internal:private/team.git".to_string(),
+            "forge.internal".to_string(),
+        ];
+        let sanitized = sanitize_git_diagnostic(
+            "fatal: C:/Users/example/private-project https://token@example.test/repo.git failed",
+            root,
+            &redactions,
+        );
+        assert_eq!(sanitized, "fatal: [redacted] [redacted] failed");
+
+        let scp_sanitized = sanitize_git_diagnostic(
+            "fatal: git@forge.internal:private/team.git host forge.internal failed",
+            root,
+            &redactions,
+        );
+        assert_eq!(scp_sanitized, "fatal: [redacted] host [redacted] failed");
+
+        let windows_variant = sanitize_git_diagnostic(
+            "fatal: c:\\users\\EXAMPLE\\private-project\\.git failed",
+            root,
+            &redactions,
+        );
+        assert_eq!(windows_variant, "fatal: [redacted] failed");
+    }
+
+    #[test]
+    fn contained_git_command_rejects_output_above_the_memory_limit() {
+        let (temp, _repo) = init_repo();
+        fs::write(temp.path().join("before.txt"), "before\n".repeat(50_000))
+            .expect("write first large file");
+        fs::write(temp.path().join("after.txt"), "after\n".repeat(50_000))
+            .expect("write second large file");
+        let args = vec![
+            "diff".to_string(),
+            "--no-index".to_string(),
+            "before.txt".to_string(),
+            "after.txt".to_string(),
+        ];
+
+        let drained = run_contained_git_command_with_timeout(
+            temp.path(),
+            &args,
+            Duration::from_secs(5),
+            false,
+        )
+        .expect("mutating command mode must drain and truncate diagnostics");
+        assert!(drained.stdout.contains("[Git output truncated by Macro]"));
+
+        let error = match run_contained_git_command_with_timeout(
+            temp.path(),
+            &args,
+            Duration::from_secs(5),
+            true,
+        ) {
+            Ok(_) => panic!("oversized Git output must not be retained"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("produced too much output"));
+    }
+
+    #[test]
+    fn missing_object_refresh_retries_once_and_can_recover() {
+        let temp = TempDir::new().expect("temp dir");
+        Repository::init(temp.path()).expect("init repo");
+        let git_state = GitState::new();
+        let attempts = AtomicUsize::new(0);
+
+        let result = run_review_with_missing_object_retry(&git_state, temp.path(), None, |_| {
+            let attempt = attempts.fetch_add(1, AtomicOrdering::SeqCst);
+            if attempt == 0 {
+                return Err(BackendError::GitObjectMissing {
+                    message: "missing".to_string(),
+                    object_id: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                    operation: Some("test_review".to_string()),
+                    repository_path: None,
+                    partial_clone: false,
+                    retry_attempted: false,
+                    worktree_modified: Some(false),
+                    git_output: None,
+                });
+            }
+            Ok("recovered")
+        })
+        .expect("single retry should recover");
+
+        assert_eq!(result, "recovered");
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 2);
+    }
+
+    #[test]
+    fn missing_object_refresh_never_retries_more_than_once() {
+        let temp = TempDir::new().expect("temp dir");
+        Repository::init(temp.path()).expect("init repo");
+        let git_state = GitState::new();
+        let attempts = AtomicUsize::new(0);
+
+        let error = run_review_with_missing_object_retry(&git_state, temp.path(), None, |_| {
+            attempts.fetch_add(1, AtomicOrdering::SeqCst);
+            Err::<(), _>(BackendError::GitObjectMissing {
+                message: "missing".to_string(),
+                object_id: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                operation: Some("test_review".to_string()),
+                repository_path: None,
+                partial_clone: false,
+                retry_attempted: false,
+                worktree_modified: Some(false),
+                git_output: None,
+            })
+        })
+        .expect_err("persistent missing object must remain an error");
+
+        assert_eq!(attempts.load(AtomicOrdering::SeqCst), 2);
+        assert!(matches!(
+            error,
+            BackendError::GitObjectMissing {
+                retry_attempted: true,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn test_wsl_diff_range_matches_native_four_way_contract() {
@@ -8407,6 +12513,34 @@ mod tests {
         (temp, project_path, repo)
     }
 
+    fn remove_loose_checkpoint_object(repo: &Repository, object_id: Oid) {
+        let object_id = object_id.to_string();
+        let object_path = repo
+            .path()
+            .join("objects")
+            .join(&object_id[..2])
+            .join(&object_id[2..]);
+        assert!(object_path.is_file(), "test requires a loose object");
+        fs::remove_file(object_path).expect("remove temporary checkpoint object");
+    }
+
+    fn expect_checkpoint_open_error(result: Result<Repository>, message: &str) -> BackendError {
+        match result {
+            Ok(_) => panic!("{message}"),
+            Err(error) => error,
+        }
+    }
+
+    fn assert_direct_checkpoint_corrupt(error: BackendError, accepted_history_at_risk: bool) {
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                accepted_history_at_risk: actual_risk,
+                ..
+            } if actual_risk == accepted_history_at_risk
+        ));
+    }
+
     #[test]
     fn direct_checkpoint_tracks_validated_files_without_touching_project_git() {
         let (_temp, project_path, repo) = init_direct_checkpoint();
@@ -8461,6 +12595,691 @@ mod tests {
     }
 
     #[test]
+    fn direct_checkpoint_rejects_a_nested_git_repository_before_initialization() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let nested = project_path.join("nested");
+        fs::create_dir_all(&nested).expect("create nested project");
+        let nested_repo = Repository::init(&nested).expect("create nested Git repository");
+        fs::write(nested.join("README.md"), "nested content\n").expect("write nested file");
+        let mut nested_index = nested_repo.index().expect("nested index");
+        nested_index
+            .add_path(Path::new("README.md"))
+            .expect("stage nested file");
+        let nested_tree_id = nested_index.write_tree().expect("nested tree");
+        let nested_tree = nested_repo
+            .find_tree(nested_tree_id)
+            .expect("find nested tree");
+        let signature = git2::Signature::now("Tester", "tester@example.com").expect("signature");
+        nested_repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "nested baseline",
+                &nested_tree,
+                &[],
+            )
+            .expect("commit nested baseline");
+        drop(nested_tree);
+        drop(nested_index);
+        drop(nested_repo);
+
+        let error = ensure_direct_checkpoint_head(&repo)
+            .expect_err("a nested Git repository cannot become an accepted checkpoint gitlink");
+
+        assert!(
+            matches!(
+                &error,
+                BackendError::DirectCheckpointCorrupt {
+                    operation: Some(operation),
+                    accepted_history_at_risk: false,
+                    ..
+            } if operation == "direct_checkpoint_init_capture"
+                || operation == "direct_checkpoint_init_gitlink"
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert!(repo.head().is_err());
+        assert!(!project_path.join(".git").exists());
+        assert!(nested.join(".git").exists());
+        assert_eq!(
+            fs::read_to_string(nested.join("README.md")).expect("nested file"),
+            "nested content\n"
+        );
+    }
+
+    #[test]
+    fn direct_checkpoint_rejects_an_accepted_tree_containing_a_gitlink() {
+        let (_temp, _project_path, repo) = init_direct_checkpoint();
+        let gitlink_id =
+            Oid::from_str("0123456789abcdef0123456789abcdef01234567").expect("gitlink id");
+        let mut builder = repo.treebuilder(None).expect("tree builder");
+        builder
+            .insert("nested", gitlink_id, 0o160000)
+            .expect("insert gitlink");
+        let tree_id = builder.write().expect("write gitlink tree");
+        let tree = repo.find_tree(tree_id).expect("find gitlink tree");
+        let signature = git2::Signature::now("Macro", "macro@local").expect("signature");
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "crafted gitlink",
+            &tree,
+            &[],
+        )
+        .expect("commit crafted tree");
+
+        let error = verify_direct_checkpoint_history(&repo)
+            .expect_err("accepted gitlinks must not pass integrity validation");
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                accepted_history_at_risk: true,
+                ..
+            } if operation == "direct_checkpoint_head_gitlink"
+        ));
+    }
+
+    #[test]
+    fn direct_checkpoint_missing_is_reported_without_initializing_the_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("README.md"), "unchanged\n").expect("project file");
+
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(&app_data, "task-1", &project, None, false),
+            "review must not initialize an absent checkpoint",
+        );
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointMissing { .. }
+        ));
+        assert!(!app_data.join(DIRECT_CHECKPOINTS_DIR).exists());
+        assert!(!project.join(".git").exists());
+        assert_eq!(
+            fs::read(project.join("README.md")).expect("project file"),
+            b"unchanged\n"
+        );
+    }
+
+    #[test]
+    fn direct_checkpoint_reopens_after_restart_and_reports_later_removal() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("README.md"), "baseline\n").expect("project file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project.canonicalize().expect("path"));
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        let accepted_head = ensure_direct_checkpoint_head(&repo).expect("baseline");
+        drop(repo);
+
+        let reopened =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), false)
+                .expect("reopen checkpoint");
+        assert_eq!(
+            ensure_direct_checkpoint_head(&reopened).expect("verify"),
+            accepted_head
+        );
+        drop(reopened);
+        assert!(
+            remove_direct_checkpoint(&app_data, "task-1", &checkpoint_id, &project)
+                .expect("remove checkpoint")
+        );
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), false),
+            "removed checkpoint must stay absent",
+        );
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointMissing { .. }
+        ));
+        assert_eq!(
+            fs::read(project.join("README.md")).expect("project file"),
+            b"baseline\n"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn persisted_direct_checkpoint_removal_never_creates_a_new_baseline() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("README.md"), "accepted\n").expect("write accepted state");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        let accepted_head = ensure_direct_checkpoint_head(&repo).expect("accepted baseline");
+        let checkpoint_path = repo.path().to_path_buf();
+        drop(repo);
+        fs::remove_dir_all(&checkpoint_path).expect("simulate removed internal checkpoint");
+        fs::write(project.join("README.md"), "unaccepted after removal\n")
+            .expect("write unaccepted state");
+
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true),
+            "persisted checkpoint removal must not recreate current files as accepted",
+        );
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointMissing { .. }
+        ));
+        assert!(!checkpoint_path.exists());
+        assert_eq!(
+            fs::read(project.join("README.md")).expect("read project"),
+            b"unaccepted after removal\n"
+        );
+        assert!(!project.join(".git").exists());
+        assert!(!accepted_head.is_empty());
+    }
+
+    #[test]
+    fn official_direct_checkpoint_removal_blocks_a_stale_recreation() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("README.md"), "accepted\n").expect("write accepted state");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        ensure_direct_checkpoint_head(&repo).expect("accepted baseline");
+        drop(repo);
+
+        assert!(
+            remove_direct_checkpoint(&app_data, "task-1", &checkpoint_id, &project)
+                .expect("remove checkpoint")
+        );
+        fs::write(project.join("README.md"), "unaccepted after removal\n")
+            .expect("write unaccepted state");
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true),
+            "stale activation must not recreate an explicitly removed checkpoint",
+        );
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointMissing { .. }
+        ));
+        assert_eq!(
+            fs::read(project.join("README.md")).expect("read project"),
+            b"unaccepted after removal\n"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_never_rebinds_to_an_existing_other_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let first_project = temp.path().join("first");
+        let second_project = temp.path().join("second");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&first_project).expect("first project");
+        fs::create_dir_all(&second_project).expect("second project");
+        let checkpoint_id =
+            direct_checkpoint_key("task-1", &first_project.canonicalize().expect("first path"));
+        let repo = open_direct_checkpoint_at(
+            &app_data,
+            "task-1",
+            &first_project,
+            Some(&checkpoint_id),
+            true,
+        )
+        .expect("create checkpoint");
+        drop(repo);
+
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(
+                &app_data,
+                "task-1",
+                &second_project,
+                Some(&checkpoint_id),
+                true,
+            ),
+            "checkpoint must remain bound to the first existing project",
+        );
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointProjectMismatch { .. }
+        ));
+        assert!(!first_project.join(".git").exists());
+        assert!(!second_project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_blocks_an_unverified_project_move_without_changing_head() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let old_project = temp.path().join("old-project");
+        let moved_project = temp.path().join("moved-project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&old_project).expect("old project");
+        fs::write(old_project.join("README.md"), "baseline\n").expect("project file");
+        let checkpoint_id =
+            direct_checkpoint_key("task-1", &old_project.canonicalize().expect("old path"));
+        let repo = open_direct_checkpoint_at(
+            &app_data,
+            "task-1",
+            &old_project,
+            Some(&checkpoint_id),
+            true,
+        )
+        .expect("create checkpoint");
+        let head_before = ensure_direct_checkpoint_head(&repo).expect("baseline");
+        drop(repo);
+        fs::rename(&old_project, &moved_project).expect("move project");
+
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(
+                &app_data,
+                "task-1",
+                &moved_project,
+                Some(&checkpoint_id),
+                true,
+            ),
+            "project moves require an explicit identity-preserving migration",
+        );
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointProjectMismatch { .. }
+        ));
+        let bare =
+            Repository::open_bare(app_data.join(DIRECT_CHECKPOINTS_DIR).join(&checkpoint_id))
+                .expect("open preserved checkpoint");
+        assert_eq!(
+            bare.head().expect("head").target().map(|id| id.to_string()),
+            Some(head_before)
+        );
+        assert!(!moved_project.join(".git").exists());
+    }
+
+    #[test]
+    fn legacy_checkpoint_resolution_reuses_the_existing_identity() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("README.md"), "accepted\n").expect("project file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        drop(repo);
+
+        assert_eq!(
+            resolve_direct_checkpoint_id_at(&app_data, "task-1", &project)
+                .expect("resolve existing checkpoint"),
+            checkpoint_id
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn legacy_checkpoint_resolution_blocks_a_moved_project_without_rebasing() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let original_project = temp.path().join("project-before");
+        let moved_project = temp.path().join("project-after");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&original_project).expect("project");
+        fs::write(original_project.join("README.md"), "accepted\n").expect("project file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &original_project);
+        let repo = open_direct_checkpoint_at(
+            &app_data,
+            "task-1",
+            &original_project,
+            Some(&checkpoint_id),
+            true,
+        )
+        .expect("create checkpoint");
+        let accepted_head = ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let checkpoint_path = repo.path().to_path_buf();
+        drop(repo);
+        fs::rename(&original_project, &moved_project).expect("move project");
+        fs::write(moved_project.join("README.md"), "unaccepted after move\n")
+            .expect("pending project change");
+
+        let error = resolve_direct_checkpoint_id_at(&app_data, "task-1", &moved_project)
+            .expect_err("a moved legacy checkpoint must not derive a new baseline");
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointProjectMismatch { .. }
+        ));
+        let preserved = Repository::open_bare(&checkpoint_path).expect("preserved checkpoint");
+        assert_eq!(
+            preserved
+                .head()
+                .expect("head")
+                .target()
+                .map(|id| id.to_string()),
+            Some(accepted_head)
+        );
+        let derived_after_move = direct_checkpoint_key("task-1", &moved_project);
+        assert!(!app_data
+            .join(DIRECT_CHECKPOINTS_DIR)
+            .join(derived_after_move)
+            .exists());
+        assert_eq!(
+            fs::read_to_string(moved_project.join("README.md")).expect("project file"),
+            "unaccepted after move\n"
+        );
+        assert!(!moved_project.join(".git").exists());
+    }
+
+    #[test]
+    fn legacy_checkpoint_resolution_preserves_an_ambiguous_second_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project_a = temp.path().join("project-a");
+        let project_b = temp.path().join("project-b");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project_a).expect("project a");
+        fs::create_dir_all(&project_b).expect("project b");
+        fs::write(project_a.join("README.md"), "accepted a\n").expect("project a file");
+        fs::write(project_b.join("README.md"), "unaccepted b\n").expect("project b file");
+        let checkpoint_a = direct_checkpoint_key("task-1", &project_a);
+        let repo_a =
+            open_direct_checkpoint_at(&app_data, "task-1", &project_a, Some(&checkpoint_a), true)
+                .expect("create checkpoint a");
+        let accepted_a = ensure_direct_checkpoint_head(&repo_a).expect("baseline a");
+        let checkpoint_a_path = repo_a.path().to_path_buf();
+        drop(repo_a);
+
+        let error = resolve_direct_checkpoint_id_at(&app_data, "task-1", &project_b)
+            .expect_err("legacy identity cannot distinguish a move from a second project safely");
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointProjectMismatch { .. }
+        ));
+        assert_eq!(
+            Repository::open_bare(&checkpoint_a_path)
+                .expect("checkpoint a preserved")
+                .head()
+                .expect("head a")
+                .target()
+                .map(|id| id.to_string()),
+            Some(accepted_a)
+        );
+        assert!(!app_data
+            .join(DIRECT_CHECKPOINTS_DIR)
+            .join(direct_checkpoint_key("task-1", &project_b))
+            .exists());
+        assert_eq!(
+            fs::read_to_string(project_b.join("README.md")).expect("project b file"),
+            "unaccepted b\n"
+        );
+        assert!(!project_b.join(".git").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn direct_checkpoint_treats_windows_path_case_as_the_same_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("mixedCaseProject");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        let canonical = project.canonicalize().expect("canonical project");
+        let checkpoint_id = direct_checkpoint_key("task-1", &canonical);
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        drop(repo);
+        let alternate_case = PathBuf::from(project.to_string_lossy().to_uppercase());
+
+        open_direct_checkpoint_at(
+            &app_data,
+            "task-1",
+            &alternate_case,
+            Some(&checkpoint_id),
+            false,
+        )
+        .expect("same Windows path with different case");
+    }
+
+    #[test]
+    fn direct_checkpoint_rejects_a_head_with_a_missing_commit_without_rebasing() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "accepted\n").expect("write project file");
+        let head_id = Oid::from_str(&ensure_direct_checkpoint_head(&repo).expect("baseline"))
+            .expect("head oid");
+        let index_before = fs::read(repo.path().join("index")).expect("read index");
+        let checkpoint_path = repo.path().to_path_buf();
+        let worktree_before = fs::read(project_path.join("README.md")).expect("read project file");
+        remove_loose_checkpoint_object(&repo, head_id);
+        drop(repo);
+        let repo = Repository::open(checkpoint_path).expect("reopen checkpoint");
+
+        let error = ensure_direct_checkpoint_head(&repo).expect_err("missing commit must block");
+        assert_direct_checkpoint_corrupt(error, true);
+        assert_eq!(repo.head().expect("head reference").target(), Some(head_id));
+        assert_eq!(
+            fs::read(repo.path().join("index")).expect("read index"),
+            index_before
+        );
+        assert_eq!(
+            fs::read(project_path.join("README.md")).expect("read project file"),
+            worktree_before
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_rejects_a_missing_head_tree_without_rebasing() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "accepted\n").expect("write project file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let head = repo.head().expect("head").peel_to_commit().expect("commit");
+        let tree_id = head.tree_id();
+        let head_id = head.id();
+        let checkpoint_path = repo.path().to_path_buf();
+        drop(head);
+        remove_loose_checkpoint_object(&repo, tree_id);
+        drop(repo);
+        let repo = Repository::open(checkpoint_path).expect("reopen checkpoint");
+
+        let error = ensure_direct_checkpoint_head(&repo).expect_err("missing tree must block");
+        assert_direct_checkpoint_corrupt(error, true);
+        assert_eq!(repo.head().expect("head reference").target(), Some(head_id));
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_rejects_a_missing_head_blob_without_rebasing() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "accepted\n").expect("write project file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let head = repo.head().expect("head").peel_to_commit().expect("commit");
+        let blob_id = head
+            .tree()
+            .expect("tree")
+            .get_path(Path::new("README.md"))
+            .expect("tree entry")
+            .id();
+        drop(head);
+        remove_loose_checkpoint_object(&repo, blob_id);
+
+        let error = ensure_direct_checkpoint_head(&repo).expect_err("missing blob must block");
+        assert_direct_checkpoint_corrupt(error, true);
+        assert_eq!(
+            fs::read(project_path.join("README.md")).expect("read project file"),
+            b"accepted\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_rejects_a_missing_index_without_changing_accepted_history() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "accepted\n").expect("write baseline");
+        let accepted_head = ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let worktree_before = fs::read(project_path.join("README.md")).expect("read project file");
+        fs::remove_file(repo.path().join("index")).expect("remove internal index");
+
+        let error = ensure_direct_checkpoint_head(&repo).expect_err("missing index must block");
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                accepted_history_at_risk: false,
+                ..
+            } if operation == "direct_checkpoint_index"
+        ));
+        assert_eq!(
+            repo.head().expect("head").target().map(|id| id.to_string()),
+            Some(accepted_head)
+        );
+        verify_direct_checkpoint_history(&repo).expect("accepted history remains readable");
+        assert_eq!(
+            fs::read(project_path.join("README.md")).expect("read project file"),
+            worktree_before
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_rejects_an_unmerged_checkpoint_index_without_touching_the_project() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("conflict.txt"), "accepted\n").expect("write accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+        let mut index = repo.index().expect("checkpoint index");
+        index.read(true).expect("refresh index");
+        let mut conflict_entry = index
+            .get_path(Path::new("conflict.txt"), 0)
+            .expect("accepted index entry");
+        index
+            .remove_path(Path::new("conflict.txt"))
+            .expect("remove stage zero");
+        conflict_entry.flags = (conflict_entry.flags & !0x3000) | 0x2000;
+        index.add(&conflict_entry).expect("add conflict stage");
+        index.write().expect("persist conflict index");
+        fs::write(project_path.join("conflict.txt"), "pending\n").expect("write pending file");
+
+        let error =
+            restore_direct_worktree_paths(&repo, &project_path, vec!["conflict.txt".to_string()])
+                .expect_err("an unmerged checkpoint index must block restore");
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                ..
+            } if operation == "direct_checkpoint_index_conflict"
+        ));
+        assert_eq!(
+            fs::read_to_string(project_path.join("conflict.txt")).expect("read pending file"),
+            "pending\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_checks_integrity_before_removing_an_untracked_file() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "accepted\n").expect("write baseline");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let head = repo.head().expect("head").peel_to_commit().expect("commit");
+        let blob_id = head
+            .tree()
+            .expect("tree")
+            .get_path(Path::new("README.md"))
+            .expect("tree entry")
+            .id();
+        drop(head);
+        remove_loose_checkpoint_object(&repo, blob_id);
+        fs::write(project_path.join("untracked.txt"), "keep me\n").expect("write untracked");
+
+        let error =
+            restore_direct_worktree_paths(&repo, &project_path, vec!["untracked.txt".to_string()])
+                .expect_err("corrupt accepted history must block restore before mutation");
+
+        assert_direct_checkpoint_corrupt(error, true);
+        assert_eq!(
+            fs::read(project_path.join("untracked.txt")).expect("read preserved file"),
+            b"keep me\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_review_reopens_once_then_reports_a_missing_index_blob() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "accepted\n").expect("write baseline");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(project_path.join("README.md"), "accepted change\n").expect("write accepted");
+        stage_direct_paths(&repo, &["README.md".to_string()]).expect("stage accepted change");
+        let accepted_head = accept_direct_changes(&repo).expect("accept change");
+        fs::write(project_path.join("README.md"), "validated pending\n").expect("write change");
+        stage_direct_paths(&repo, &["README.md".to_string()]).expect("stage direct change");
+        let mut index = repo.index().expect("index");
+        index.read(true).expect("refresh index");
+        let missing_id = index
+            .get_path(Path::new("README.md"), 0)
+            .expect("index entry")
+            .id;
+        let checkpoint_path = repo.path().to_path_buf();
+        let head_id = repo.head().expect("head").target();
+        drop(index);
+        drop(repo);
+        let repo = Repository::open(&checkpoint_path).expect("reopen checkpoint");
+        remove_loose_checkpoint_object(&repo, missing_id);
+        drop(repo);
+        let worktree_before = fs::read(project_path.join("README.md")).expect("read project file");
+
+        let error = match run_direct_checkpoint_review(
+            || Ok((Repository::open(&checkpoint_path)?, project_path.clone())),
+            None,
+            |repo, project| review::build_git_review_snapshot(repo, project),
+        ) {
+            Ok(_) => panic!("persistent missing index blob must block direct review"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                object_id: Some(ref object_id),
+                retry_attempted: true,
+                accepted_history_at_risk: false,
+                ..
+            } if object_id == &missing_id.to_string()
+        ));
+        let reopened = Repository::open(&checkpoint_path).expect("reopen after failure");
+        assert_eq!(reopened.head().expect("head").target(), head_id);
+        let accepted = reopened
+            .find_commit(Oid::from_str(&accepted_head).expect("accepted oid"))
+            .expect("accepted commit remains readable");
+        assert_eq!(accepted.parent_count(), 1);
+        verify_direct_checkpoint_history(&reopened).expect("accepted history remains readable");
+        assert_eq!(
+            fs::read(project_path.join("README.md")).expect("read project file"),
+            worktree_before
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
     fn direct_checkpoint_owner_requires_an_exact_task_id() {
         let checkpoint_id = direct_checkpoint_key("task-other", Path::new("/project"));
 
@@ -8470,6 +13289,499 @@ mod tests {
             .expect_err("task prefix must not grant checkpoint ownership");
 
         assert!(error.to_string().contains("does not belong to this task"));
+    }
+
+    #[test]
+    fn direct_checkpoint_rejects_malformed_and_foreign_identifiers_without_creation() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        for checkpoint_id in ["malformed", "other-task-0123456789abcdef"] {
+            let error = expect_checkpoint_open_error(
+                open_direct_checkpoint_at(&app_data, "task-1", &project, Some(checkpoint_id), true),
+                "invalid checkpoint id must fail",
+            );
+            assert!(matches!(
+                error,
+                BackendError::DirectCheckpointMissing { .. }
+            ));
+        }
+        assert!(!app_data.join(DIRECT_CHECKPOINTS_DIR).exists());
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_without_worktree_config_returns_a_structured_corruption() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let checkpoint_path = app_data.join(DIRECT_CHECKPOINTS_DIR).join(&checkpoint_id);
+        fs::create_dir_all(checkpoint_path.parent().expect("checkpoint root"))
+            .expect("checkpoint root");
+        let repo = Repository::init_bare(&checkpoint_path).expect("bare checkpoint");
+        repo.config()
+            .and_then(|mut config| config.set_bool("core.bare", false))
+            .expect("simulate missing worktree config");
+        drop(repo);
+
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), false),
+            "missing worktree config must be structured",
+        );
+
+        assert!(
+            matches!(error, BackendError::DirectCheckpointCorrupt { .. }),
+            "unexpected error: {error:?}"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_operations_are_serialized_per_project() {
+        let temp = TempDir::new().expect("temporary project");
+        let project_key = direct_project_operation_lock_key(temp.path());
+        let first_lock = direct_checkpoint_operation_lock(&project_key).expect("first lock");
+        let first_guard = first_lock.lock().expect("first guard");
+        let second_lock = direct_checkpoint_operation_lock(&project_key).expect("second lock");
+        assert!(Arc::ptr_eq(&first_lock, &second_lock));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _guard = second_lock.lock().expect("second guard");
+            sender.send(()).expect("signal acquisition");
+        });
+
+        assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(first_guard);
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second operation proceeds after release");
+        worker.join().expect("worker");
+    }
+
+    #[test]
+    fn two_tasks_initialize_checkpoints_for_one_project_without_overlapping() {
+        let temp = TempDir::new().expect("temporary roots");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("create app data");
+        fs::create_dir_all(&project).expect("create project");
+        fs::write(project.join("user.txt"), "user content\n").expect("write user file");
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let workers = ["task-a", "task-b"]
+            .into_iter()
+            .map(|task_id| {
+                let app_data = app_data.clone();
+                let project = project.clone();
+                let start = Arc::clone(&start);
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                std::thread::spawn(move || {
+                    start.wait();
+                    with_direct_project_operation_lock(&project, || {
+                        let current = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                        peak.fetch_max(current, AtomicOrdering::SeqCst);
+                        let checkpoint_id = direct_checkpoint_key(task_id, &project);
+                        let repo = open_direct_checkpoint_at(
+                            &app_data,
+                            task_id,
+                            &project,
+                            Some(&checkpoint_id),
+                            true,
+                        )?;
+                        let head = ensure_direct_checkpoint_head(&repo)?;
+                        std::thread::sleep(Duration::from_millis(25));
+                        active.fetch_sub(1, AtomicOrdering::SeqCst);
+                        Ok((checkpoint_id, head))
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+
+        let checkpoints = workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .expect("checkpoint worker")
+                    .expect("checkpoint init")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(peak.load(AtomicOrdering::SeqCst), 1);
+        assert_ne!(checkpoints[0].0, checkpoints[1].0);
+        for (checkpoint_id, head) in checkpoints {
+            let repo = Repository::open(app_data.join(DIRECT_CHECKPOINTS_DIR).join(checkpoint_id))
+                .expect("reopen checkpoint");
+            assert_eq!(
+                repo.head().expect("head").target().map(|id| id.to_string()),
+                Some(head)
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(project.join("user.txt")).expect("read user file"),
+            "user content\n"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_removal_waits_for_the_project_operation_lock() {
+        let temp = TempDir::new().expect("temporary roots");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("create app data");
+        fs::create_dir_all(&project).expect("create project");
+        fs::write(project.join("user.txt"), "unchanged\n").expect("write user file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        ensure_direct_checkpoint_head(&repo).expect("create baseline");
+        let checkpoint_path = repo.path().to_path_buf();
+        drop(repo);
+
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let locked_project = project.clone();
+        let holder = std::thread::spawn(move || {
+            with_direct_project_operation_lock(&locked_project, || {
+                locked_tx.send(()).expect("signal locked project");
+                release_rx.recv().expect("release project lock");
+                Ok(())
+            })
+        });
+        locked_rx.recv().expect("wait for project lock");
+
+        let removal_app_data = app_data.clone();
+        let removal_project = project.clone();
+        let removal_checkpoint_id = checkpoint_id.clone();
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+        let remover = std::thread::spawn(move || {
+            let removed = remove_locked_direct_checkpoint_at(
+                &removal_app_data,
+                "task-1",
+                &removal_checkpoint_id,
+                &removal_project,
+            );
+            removed_tx.send(()).expect("signal removal completion");
+            removed
+        });
+
+        assert!(removed_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(checkpoint_path.exists());
+        release_tx.send(()).expect("release project lock");
+        holder.join().expect("lock holder").expect("held operation");
+        assert!(remover
+            .join()
+            .expect("removal worker")
+            .expect("remove checkpoint"));
+        assert!(removed_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        assert!(!checkpoint_path.exists());
+        assert_eq!(
+            fs::read_to_string(project.join("user.txt")).expect("read user file"),
+            "unchanged\n"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn checkpoint_id_resolution_waits_for_initialization_publication() {
+        let temp = TempDir::new().expect("temporary roots");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("create app data");
+        fs::create_dir_all(&project).expect("create project");
+        fs::write(project.join("user.txt"), "unchanged\n").expect("write user file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let (partial_tx, partial_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let initialization_app_data = app_data.clone();
+        let initialization_project = project.clone();
+        let initialization_checkpoint_id = checkpoint_id.clone();
+        let initializer = std::thread::spawn(move || {
+            with_direct_checkpoint_storage_lock(|| {
+                let checkpoint_root = initialization_app_data.join(DIRECT_CHECKPOINTS_DIR);
+                fs::create_dir_all(&checkpoint_root).expect("create checkpoint root");
+                let checkpoint_path = checkpoint_root.join(&initialization_checkpoint_id);
+                let repo = Repository::init_bare(&checkpoint_path).expect("publish partial repo");
+                partial_tx.send(()).expect("signal partial publication");
+                finish_rx.recv().expect("finish initialization");
+                let mut config = repo.config().expect("checkpoint config");
+                config
+                    .set_bool("core.bare", false)
+                    .expect("configure worktree mode");
+                config
+                    .set_str("core.worktree", &initialization_project.to_string_lossy())
+                    .expect("configure project path");
+                config
+                    .set_str("macro.taskId", "task-1")
+                    .expect("configure task owner");
+                Ok(())
+            })
+        });
+        partial_rx.recv().expect("wait for partial publication");
+
+        let resolution_app_data = app_data.clone();
+        let resolution_project = project.clone();
+        let (resolved_tx, resolved_rx) = std::sync::mpsc::channel();
+        let resolver = std::thread::spawn(move || {
+            let result = resolve_direct_checkpoint_id_at(
+                &resolution_app_data,
+                "task-1",
+                &resolution_project,
+            );
+            resolved_tx.send(()).expect("signal resolution");
+            result
+        });
+
+        assert!(resolved_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        finish_tx
+            .send(())
+            .expect("finish checkpoint initialization");
+        initializer
+            .join()
+            .expect("initializer")
+            .expect("initialize checkpoint");
+        assert_eq!(
+            resolver.join().expect("resolver").expect("resolve id"),
+            checkpoint_id
+        );
+        assert!(resolved_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+        assert_eq!(
+            fs::read_to_string(project.join("user.txt")).expect("read user file"),
+            "unchanged\n"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn failed_new_checkpoint_configuration_is_removed_and_can_be_retried() {
+        let temp = TempDir::new().expect("temporary roots");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        let checkpoint_root = app_data.join(DIRECT_CHECKPOINTS_DIR);
+        fs::create_dir_all(&checkpoint_root).expect("create checkpoint root");
+        fs::create_dir_all(&project).expect("create project");
+        fs::write(project.join("user.txt"), "unchanged\n").expect("write user file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let checkpoint_path = checkpoint_root.join(&checkpoint_id);
+        fs::create_dir(&checkpoint_path).expect("create new checkpoint directory");
+
+        let error = initialize_created_direct_checkpoint(&checkpoint_path, &checkpoint_id, || {
+            fs::write(checkpoint_path.join("partial-config"), "incomplete")
+                .expect("write partial checkpoint state");
+            Err(BackendError::Git {
+                message: "simulated transient checkpoint configuration failure".to_string(),
+            })
+        })
+        .expect_err("partial initialization must fail");
+        assert!(error.to_string().contains("simulated transient"));
+        assert!(!checkpoint_path.exists());
+
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("retry checkpoint initialization");
+        ensure_direct_checkpoint_head(&repo).expect("create baseline after retry");
+        assert!(checkpoint_path.exists());
+        assert_eq!(
+            fs::read_to_string(project.join("user.txt")).expect("read user file"),
+            "unchanged\n"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn different_checkpoints_can_create_the_shared_storage_root_concurrently() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project_a = temp.path().join("project-a");
+        let project_b = temp.path().join("project-b");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project_a).expect("project a");
+        fs::create_dir_all(&project_b).expect("project b");
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let workers = [("task-a", project_a), ("task-b", project_b)]
+            .into_iter()
+            .map(|(task_id, project)| {
+                let app_data = app_data.clone();
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    let checkpoint_id = direct_checkpoint_key(task_id, &project);
+                    open_direct_checkpoint_at(
+                        &app_data,
+                        task_id,
+                        &project,
+                        Some(&checkpoint_id),
+                        true,
+                    )
+                    .map(|repo| repo.path().to_path_buf())
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+
+        let paths = workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .expect("checkpoint worker")
+                    .expect("create checkpoint")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().all(|path| path.is_dir()));
+        assert!(app_data.join(DIRECT_CHECKPOINTS_DIR).is_dir());
+    }
+
+    #[test]
+    fn concurrent_direct_review_loads_share_the_checkpoint_lock() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "accepted\n").expect("write baseline");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let checkpoint_path = repo.path().to_path_buf();
+        drop(repo);
+        let checkpoint_id = "task-review-lock-0123456789abcdef";
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+
+        for _ in 0..2 {
+            let checkpoint_path = checkpoint_path.clone();
+            let project_path = project_path.clone();
+            let start = Arc::clone(&start);
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            workers.push(std::thread::spawn(move || {
+                start.wait();
+                let lock = direct_checkpoint_operation_lock(checkpoint_id).expect("review lock");
+                let _guard = lock.lock().expect("review guard");
+                let current = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                peak.fetch_max(current, AtomicOrdering::SeqCst);
+                let opened = Repository::open(&checkpoint_path).expect("open checkpoint");
+                verify_direct_checkpoint_history(&opened).expect("read accepted history");
+                review::build_git_review_snapshot(&opened, &project_path)
+                    .expect("load direct review");
+                std::thread::sleep(Duration::from_millis(25));
+                active.fetch_sub(1, AtomicOrdering::SeqCst);
+            }));
+        }
+
+        start.wait();
+        for worker in workers {
+            worker.join().expect("review worker");
+        }
+        assert_eq!(peak.load(AtomicOrdering::SeqCst), 1);
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_review_detects_an_ancestor_object_removed_between_loads() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "first accepted state\n")
+            .expect("write first baseline");
+        ensure_direct_checkpoint_head(&repo).expect("first baseline");
+        let first_blob = repo
+            .head()
+            .expect("first head")
+            .peel_to_commit()
+            .expect("first commit")
+            .tree()
+            .expect("first tree")
+            .get_path(Path::new("README.md"))
+            .expect("first tree entry")
+            .id();
+
+        fs::write(project_path.join("README.md"), "second accepted state\n")
+            .expect("write second baseline");
+        stage_direct_paths(&repo, &["README.md".to_string()]).expect("stage second baseline");
+        accept_direct_changes(&repo).expect("accept second baseline");
+        let checkpoint_path = repo.path().to_path_buf();
+        let project_before = fs::read(project_path.join("README.md")).expect("read project");
+        drop(repo);
+
+        run_direct_checkpoint_review(
+            || Ok((Repository::open(&checkpoint_path)?, project_path.clone())),
+            None,
+            |repo, project| review::build_git_review_snapshot(repo, project),
+        )
+        .expect("first review");
+        let repo = Repository::open(&checkpoint_path).expect("reopen checkpoint");
+        remove_loose_checkpoint_object(&repo, first_blob);
+        drop(repo);
+
+        let error = match run_direct_checkpoint_review(
+            || Ok((Repository::open(&checkpoint_path)?, project_path.clone())),
+            None,
+            |repo, project| review::build_git_review_snapshot(repo, project),
+        ) {
+            Ok(_) => panic!("a missing ancestor object must block the next review"),
+            Err(error) => error,
+        };
+
+        assert_direct_checkpoint_corrupt(error, true);
+        assert_eq!(
+            fs::read(project_path.join("README.md")).expect("read preserved project"),
+            project_before
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn failed_direct_checkpoint_object_write_does_not_publish_a_head() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("README.md"), "user content\n").expect("write project");
+        let worktree_before = fs::read(project_path.join("README.md")).expect("read project");
+        let objects = repo.path().join("objects");
+        let saved_objects = repo.path().join("objects.saved-for-test");
+        fs::rename(&objects, &saved_objects).expect("move temporary object directory");
+        fs::write(&objects, "not a directory").expect("block object writes");
+
+        let error = ensure_direct_checkpoint_head(&repo)
+            .expect_err("object write failure must stop checkpoint initialization");
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                accepted_history_at_risk: false,
+                git_output: None,
+                ..
+            } if operation.starts_with("direct_checkpoint_init_")
+        ));
+        assert!(repo.head().is_err());
+        assert_eq!(
+            fs::read(project_path.join("README.md")).expect("read project after failure"),
+            worktree_before
+        );
+        assert!(!project_path.join(".git").exists());
+
+        fs::remove_file(&objects).expect("remove test blocker");
+        fs::rename(&saved_objects, &objects).expect("restore object directory");
+        fs::remove_file(project_path.join("README.md")).expect("remove file before retry");
+
+        ensure_direct_checkpoint_head(&repo).expect("retry checkpoint initialization");
+        let accepted_tree = repo
+            .head()
+            .expect("checkpoint head")
+            .peel_to_commit()
+            .expect("checkpoint commit")
+            .tree()
+            .expect("checkpoint tree");
+        assert!(accepted_tree.get_path(Path::new("README.md")).is_err());
+        assert!(!project_path.join("README.md").exists());
+        assert!(!project_path.join(".git").exists());
     }
 
     #[test]
@@ -8488,12 +13800,25 @@ mod tests {
             return;
         }
 
-        let error = resolve_direct_checkpoint_root(&app_data_dir, true)
-            .expect_err("linked checkpoint root must be rejected before creation");
+        let checkpoint_id = direct_checkpoint_key("task-1", &outside_root);
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(
+                &app_data_dir,
+                "task-1",
+                &outside_root,
+                Some(&checkpoint_id),
+                true,
+            ),
+            "linked checkpoint root must be rejected before creation",
+        );
 
-        assert!(error
-            .to_string()
-            .contains("root is not a managed directory"));
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                ..
+            } if operation == "direct_checkpoint_root"
+        ));
         assert!(fs::read_dir(&outside_root)
             .expect("read outside root")
             .next()
@@ -8505,18 +13830,648 @@ mod tests {
         let temp = TempDir::new().expect("temp dir");
         let project_path = temp.path().join("project");
         fs::create_dir_all(&project_path).expect("create project");
-        let checkpoint_path = direct_checkpoint_path(temp.path(), "task-1", &project_path);
-        fs::create_dir_all(&checkpoint_path).expect("create checkpoint");
-        fs::write(checkpoint_path.join("HEAD"), "checkpoint").expect("write checkpoint");
-        let sibling_path = direct_checkpoint_path(temp.path(), "task-2", &project_path);
-        fs::create_dir_all(&sibling_path).expect("create sibling checkpoint");
         let checkpoint_id = direct_checkpoint_key("task-1", &project_path);
+        let repo = open_direct_checkpoint_at(
+            temp.path(),
+            "task-1",
+            &project_path,
+            Some(&checkpoint_id),
+            true,
+        )
+        .expect("create checkpoint");
+        let checkpoint_path = repo.path().to_path_buf();
+        drop(repo);
+        let sibling_id = direct_checkpoint_key("task-2", &project_path);
+        let sibling = open_direct_checkpoint_at(
+            temp.path(),
+            "task-2",
+            &project_path,
+            Some(&sibling_id),
+            true,
+        )
+        .expect("create sibling checkpoint");
+        let sibling_path = sibling.path().to_path_buf();
+        drop(sibling);
 
-        assert!(remove_direct_checkpoint(temp.path(), &checkpoint_id).expect("remove checkpoint"));
+        let other_project = temp.path().join("other-project");
+        fs::create_dir_all(&other_project).expect("create other project");
+        let wrong_project_error =
+            remove_direct_checkpoint(temp.path(), "task-1", &checkpoint_id, &other_project)
+                .expect_err("another project must not remove the checkpoint");
+        assert!(wrong_project_error
+            .to_string()
+            .contains("does not belong to this project"));
+        assert!(checkpoint_path.exists());
+
+        assert!(
+            remove_direct_checkpoint(temp.path(), "task-1", &checkpoint_id, &project_path)
+                .expect("remove checkpoint")
+        );
         assert!(!checkpoint_path.exists());
         assert!(sibling_path.exists());
-        assert!(!remove_direct_checkpoint(temp.path(), &checkpoint_id)
-            .expect("repeat checkpoint removal"));
+        assert!(direct_checkpoint_known_marker(
+            &temp.path().join(DIRECT_CHECKPOINTS_DIR),
+            &checkpoint_id,
+        )
+        .exists());
+        assert!(
+            !remove_direct_checkpoint(temp.path(), "task-1", &checkpoint_id, &project_path)
+                .expect("repeat checkpoint removal")
+        );
+    }
+
+    #[test]
+    fn direct_checkpoint_never_recreates_after_a_dangling_marker() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("project");
+        fs::create_dir_all(&project_path).expect("project");
+        fs::write(project_path.join("pending.txt"), "pending\n").expect("project file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project_path);
+        let repo = open_direct_checkpoint_at(
+            temp.path(),
+            "task-1",
+            &project_path,
+            Some(&checkpoint_id),
+            true,
+        )
+        .expect("create checkpoint");
+        drop(repo);
+        assert!(
+            remove_direct_checkpoint(temp.path(), "task-1", &checkpoint_id, &project_path)
+                .expect("remove checkpoint")
+        );
+        let marker = direct_checkpoint_known_marker(
+            &temp.path().join(DIRECT_CHECKPOINTS_DIR),
+            &checkpoint_id,
+        );
+        fs::remove_file(&marker).expect("remove regular marker");
+        let missing_target = temp.path().join("missing-marker-target");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&missing_target, &marker).expect("dangling marker link");
+        #[cfg(windows)]
+        {
+            fs::create_dir_all(&missing_target).expect("temporary marker target");
+            create_windows_junction(&marker, &missing_target);
+            fs::remove_dir(&missing_target).expect("make marker junction dangling");
+        }
+
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(
+                temp.path(),
+                "task-1",
+                &project_path,
+                Some(&checkpoint_id),
+                true,
+            ),
+            "a dangling tombstone must block recreation",
+        );
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                ..
+            } if operation == "direct_checkpoint_marker"
+        ));
+        assert!(!temp
+            .path()
+            .join(DIRECT_CHECKPOINTS_DIR)
+            .join(&checkpoint_id)
+            .exists());
+        assert_eq!(
+            fs::read_to_string(project_path.join("pending.txt")).expect("project preserved"),
+            "pending\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_removal_rejects_another_task_owner() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("project");
+        fs::create_dir_all(&project_path).expect("create project");
+        let checkpoint_id = direct_checkpoint_key("task/2", &project_path);
+        let repo = open_direct_checkpoint_at(
+            temp.path(),
+            "task/2",
+            &project_path,
+            Some(&checkpoint_id),
+            true,
+        )
+        .expect("create checkpoint");
+        let checkpoint_path = repo.path().to_path_buf();
+        drop(repo);
+
+        let error = remove_direct_checkpoint(temp.path(), "task:2", &checkpoint_id, &project_path)
+            .expect_err("a colliding sanitized task id must not remove the checkpoint");
+
+        assert!(error.to_string().contains("does not belong to this task"));
+        assert!(checkpoint_path.exists());
+    }
+
+    #[test]
+    fn legacy_checkpoint_without_exact_owner_is_preserved_and_blocked() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("project");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let repo =
+            open_direct_checkpoint_at(temp.path(), "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        let checkpoint_path = repo.path().to_path_buf();
+        repo.config()
+            .and_then(|mut config| config.remove("macro.taskId"))
+            .expect("simulate legacy checkpoint");
+        drop(repo);
+
+        let error = remove_direct_checkpoint(temp.path(), "task-1", &checkpoint_id, &project)
+            .expect_err("unverified legacy checkpoint must be preserved");
+        assert!(error.to_string().contains("legacy direct checkpoint"));
+        assert!(checkpoint_path.exists());
+
+        let reopen_error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(temp.path(), "task-1", &project, Some(&checkpoint_id), true),
+            "legacy ownership must not be guessed",
+        );
+        assert!(matches!(
+            reopen_error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(operation),
+                accepted_history_at_risk: true,
+                ..
+            } if operation == "direct_checkpoint_owner"
+        ));
+        assert!(checkpoint_path.exists());
+    }
+
+    #[test]
+    fn failed_checkpoint_directory_initialization_does_not_publish_a_tombstone() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let checkpoint_root = app_data.join(DIRECT_CHECKPOINTS_DIR);
+        fs::create_dir_all(&checkpoint_root).expect("checkpoint root");
+        let blocked_path = checkpoint_root.join(&checkpoint_id);
+        fs::write(&blocked_path, "not a directory").expect("block checkpoint directory");
+
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true),
+            "failed initialization must remain retryable",
+        );
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                ..
+            } if operation == "direct_checkpoint_path"
+        ));
+        assert!(!direct_checkpoint_known_marker(&checkpoint_root, &checkpoint_id).exists());
+
+        fs::remove_file(&blocked_path).expect("remove blocker");
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("retry initialization");
+        assert!(direct_checkpoint_known_marker(&checkpoint_root, &checkpoint_id).exists());
+        assert!(repo.head().is_err());
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_repairs_exclusions_before_capturing_a_baseline() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("visible.txt"), "visible\n").expect("visible file");
+        fs::write(project.join(".gitignore"), "ignored.log\n!.env\n").expect("project gitignore");
+        fs::write(project.join(".env"), "SECRET=must-not-be-captured\n").expect("secret file");
+        fs::write(project.join("ignored.log"), "ignored\n").expect("ignored file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        let exclude_path = repo.path().join("info").join("exclude");
+        drop(repo);
+        fs::write(&exclude_path, "!*.env\n").expect("corrupt exclusions");
+
+        let reopened =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("reopen repairs exclusions");
+        ensure_direct_checkpoint_head(&reopened).expect("capture baseline");
+        let mut index = reopened.index().expect("index");
+        index.read(true).expect("refresh index");
+
+        assert_eq!(
+            fs::read_to_string(&exclude_path).expect("repaired exclusions"),
+            DIRECT_CHECKPOINT_EXCLUDES
+        );
+        assert!(index.get_path(Path::new("visible.txt"), 0).is_some());
+        assert!(index.get_path(Path::new(".env"), 0).is_none());
+        assert!(index.get_path(Path::new("ignored.log"), 0).is_none());
+        let head = reopened
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("commit");
+        let tree = head.tree().expect("tree");
+        assert!(tree.get_path(Path::new("visible.txt")).is_ok());
+        assert!(tree.get_path(Path::new(".env")).is_err());
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_exclusions_cannot_be_negated_by_project_gitignore() {
+        let (_temp, project, repo) = init_direct_checkpoint();
+        fs::create_dir_all(project.join(".env")).expect("secret directory");
+        fs::write(
+            project.join(".gitignore"),
+            "!.env\n!.env/**\n!.env.*\n!*.pem\n!*.key\n",
+        )
+        .expect("gitignore");
+        fs::write(project.join(".env").join("token.txt"), "hidden\n").expect("secret child");
+        fs::write(project.join(".npmrc"), "//registry/:_authToken=hidden\n")
+            .expect("credential file");
+        let excluded_files = [
+            (".env.production", "production secret\n"),
+            ("certificate.pem", "private certificate\n"),
+            ("private.key", "private key\n"),
+        ];
+        for (name, contents) in excluded_files {
+            fs::write(project.join(name), contents).expect("excluded credential file");
+        }
+        fs::write(project.join("visible.txt"), "visible\n").expect("visible file");
+
+        ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+        let mut index = repo.index().expect("index");
+        index.read(true).expect("refresh index");
+        assert!(index.get_path(Path::new("visible.txt"), 0).is_some());
+        assert!(index.get_path(Path::new(".env/token.txt"), 0).is_none());
+        assert!(index.get_path(Path::new(".npmrc"), 0).is_none());
+        for (name, _) in excluded_files {
+            assert!(index.get_path(Path::new(name), 0).is_none(), "{name}");
+        }
+
+        fs::write(project.join(".env").join("later.txt"), "later\n").expect("later secret");
+        let mut snapshot = review::build_git_review_snapshot(&repo, &project).expect("snapshot");
+        filter_direct_checkpoint_snapshot(&mut snapshot);
+        assert!(snapshot
+            .changes
+            .iter()
+            .all(|change| !change.path.starts_with(".env")));
+        assert!(stage_direct_paths(&repo, &[".env/later.txt".to_string()]).is_err());
+        assert!(stage_direct_paths(&repo, &[".npmrc".to_string()]).is_err());
+        for (name, _) in excluded_files {
+            assert!(stage_direct_paths(&repo, &[name.to_string()]).is_err());
+            assert!(
+                restore_direct_worktree_paths(&repo, &project, vec![name.to_string()]).is_err()
+            );
+        }
+        assert!(
+            restore_direct_worktree_paths(&repo, &project, vec![".env/later.txt".to_string()])
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(project.join(".env").join("later.txt")).expect("secret preserved"),
+            "later\n"
+        );
+        assert_eq!(
+            fs::read_to_string(project.join(".npmrc")).expect("credential preserved"),
+            "//registry/:_authToken=hidden\n"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_never_captures_files_through_a_linked_directory() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = temp.path().join("project");
+        let checkpoint = temp.path().join("checkpoint");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&project).expect("project");
+        fs::create_dir_all(&outside).expect("outside");
+        fs::write(project.join("visible.txt"), "visible\n").expect("visible file");
+        fs::write(outside.join("token.txt"), "outside secret\n").expect("outside file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, project.join("linked")).expect("linked directory");
+        #[cfg(windows)]
+        create_windows_junction(&project.join("linked"), &outside);
+        let repo = Repository::init_bare(&checkpoint).expect("checkpoint");
+        {
+            let mut config = repo.config().expect("config");
+            config.set_bool("core.bare", false).expect("non-bare");
+            config
+                .set_str("core.worktree", &project.to_string_lossy())
+                .expect("worktree");
+        }
+        fs::create_dir_all(checkpoint.join("info")).expect("info");
+        fs::write(checkpoint.join("info/exclude"), DIRECT_CHECKPOINT_EXCLUDES).expect("exclusions");
+
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let tree = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("commit")
+            .tree()
+            .expect("tree");
+        assert!(tree.get_path(Path::new("visible.txt")).is_ok());
+        assert!(tree.get_path(Path::new("linked/token.txt")).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let linked = tree.get_path(Path::new("linked")).expect("linked entry");
+            assert_eq!(linked.filemode(), 0o120000);
+            assert_eq!(
+                repo.find_blob(linked.id()).expect("linked blob").content(),
+                outside.as_os_str().as_bytes()
+            );
+        }
+        #[cfg(windows)]
+        assert!(tree.get_path(Path::new("linked")).is_err());
+        assert!(stage_direct_paths(&repo, &["linked/token.txt".to_string()]).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("token.txt")).expect("outside preserved"),
+            "outside secret\n"
+        );
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_file_open_never_follows_a_linked_entry() {
+        let temp = TempDir::new().expect("temp dir");
+        let project = temp.path().join("project");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&project).expect("project");
+        fs::create_dir_all(&outside).expect("outside");
+        fs::write(outside.join("secret.txt"), "outside secret\n").expect("outside secret");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.join("secret.txt"), project.join("linked"))
+            .expect("linked file");
+        #[cfg(windows)]
+        create_windows_junction(&project.join("linked"), &outside);
+        let root =
+            CapabilityDir::open_ambient_dir(&project, ambient_authority()).expect("retain project");
+
+        open_direct_regular_file_no_follow(&root, OsStr::new("linked"))
+            .expect_err("linked entries must not be opened as checkpoint files");
+
+        assert_eq!(
+            fs::read_to_string(outside.join("secret.txt")).expect("outside preserved"),
+            "outside secret\n"
+        );
+    }
+
+    #[test]
+    fn direct_checkpoint_excludes_common_credential_files() {
+        for name in [
+            ".npmrc",
+            ".pypirc",
+            ".netrc",
+            ".git-credentials",
+            ".envrc",
+            ".dev.vars",
+            "identity.p12",
+            "identity.pfx",
+            "keystore.jks",
+            "identity.ppk",
+            "id_rsa",
+            "id_ed25519",
+            "id_ecdsa",
+            "kubeconfig",
+            "terraform.tfstate",
+            "terraform.tfstate.backup",
+            "build-service-account.json",
+            "credentials.json",
+            "client_secret_app.json",
+            ".streamlit/secrets.toml",
+            ".ssh/id_ed25519",
+            ".aws/credentials",
+            ".docker/config.json",
+            ".kube/config",
+        ] {
+            assert!(
+                is_direct_checkpoint_excluded_path(Path::new(name)),
+                "{name}"
+            );
+            assert!(is_direct_checkpoint_excluded_path(
+                Path::new("nested").join(name).join("child").as_path()
+            ));
+        }
+    }
+
+    #[test]
+    fn direct_checkpoint_never_captures_tool_credentials() {
+        let (_temp, project, repo) = init_direct_checkpoint();
+        let credentials = [
+            ".envrc",
+            ".dev.vars",
+            ".ssh/id_ed25519",
+            ".aws/credentials",
+            ".docker/config.json",
+            ".kube/config",
+            "identity.p12",
+            "identity.ppk",
+            "id_rsa",
+            "id_ed25519",
+            "id_ecdsa",
+            "terraform.tfstate",
+            "build-service-account.json",
+            "credentials.json",
+            "client_secret_app.json",
+            ".streamlit/secrets.toml",
+        ];
+        for path in credentials {
+            let path = project.join(path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("credential parent");
+            }
+            fs::write(path, "secret\n").expect("credential file");
+        }
+        fs::write(project.join("visible.txt"), "visible\n").expect("visible file");
+
+        ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+        let mut index = repo.index().expect("index");
+        index.read(true).expect("refresh index");
+        assert!(index.get_path(Path::new("visible.txt"), 0).is_some());
+        for path in credentials {
+            assert!(index.get_path(Path::new(path), 0).is_none(), "{path}");
+        }
+        fs::write(project.join("client_secret_late.json"), "late secret\n")
+            .expect("late credential");
+        assert!(stage_direct_paths(&repo, &["client_secret_late.json".to_string()]).is_err());
+        assert!(!project.join(".git").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_direct_restore_rejects_a_reparse_or_mismatched_parent() {
+        let temp = TempDir::new().expect("temp dir");
+        let expected = temp.path().join("expected");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&expected).expect("expected");
+        fs::create_dir_all(&outside).expect("outside");
+        fs::write(outside.join("temporary"), "new\n").expect("temporary");
+        fs::write(outside.join("target"), "old\n").expect("target");
+        let retained_outside =
+            CapabilityDir::open_ambient_dir(&outside, ambient_authority()).expect("retain outside");
+
+        let mismatch = atomic_replace_direct_restore_entry(
+            &retained_outside,
+            OsStr::new("temporary"),
+            OsStr::new("target"),
+            &expected,
+        )
+        .expect_err("a mismatched retained parent must fail");
+        assert_eq!(mismatch.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            fs::read_to_string(outside.join("target")).expect("target"),
+            "old\n"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_direct_restore_never_converts_a_link_to_a_regular_file() {
+        let (_temp, project, repo) = init_direct_checkpoint();
+        let path = project.join("linked.txt");
+        fs::write(&path, "user file\n").expect("user file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let blob = repo.blob(b"target.txt").expect("link blob");
+        let mut index = repo.index().expect("index");
+        index
+            .add(&git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: 0o120000,
+                uid: 0,
+                gid: 0,
+                file_size: 10,
+                id: blob,
+                flags: 0,
+                flags_extended: 0,
+                path: b"linked.txt".to_vec(),
+            })
+            .expect("link index entry");
+        index.write().expect("write link index");
+
+        restore_direct_worktree_paths(&repo, &project, vec!["linked.txt".to_string()])
+            .expect_err("Windows must reject link restore before mutation");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("user file preserved"),
+            "user file\n"
+        );
+        assert!(!project.join(".git").exists());
+        assert!(fs::read_dir(&project)
+            .expect("project entries")
+            .filter_map(|entry| entry.ok())
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .contains("macro-restore")));
+    }
+
+    #[test]
+    fn pre_cancelled_direct_review_never_runs_the_operation() {
+        let (_temp, project, repo) = init_direct_checkpoint();
+        fs::write(project.join("README.md"), "accepted\n").expect("project file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let checkpoint = repo.path().to_path_buf();
+        drop(repo);
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let operation_ran = Arc::new(AtomicBool::new(false));
+        let operation_marker = operation_ran.clone();
+
+        let error = run_direct_checkpoint_review(
+            || Ok((Repository::open(&checkpoint)?, project.clone())),
+            Some(cancelled),
+            move |_, _| {
+                operation_marker.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .expect_err("pre-cancelled direct review must stop");
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "Git review was cancelled."
+        ));
+        assert!(!operation_ran.load(Ordering::Acquire));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_checkpoint_stages_a_dangling_symbolic_link_as_a_link() {
+        use std::os::unix::fs::symlink;
+
+        let (_temp, project, repo) = init_direct_checkpoint();
+        symlink("accepted-target", project.join("linked.txt")).expect("accepted link");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::remove_file(project.join("linked.txt")).expect("remove accepted link");
+        symlink("missing-pending-target", project.join("linked.txt")).expect("pending link");
+
+        stage_direct_paths(&repo, &["linked.txt".to_string()]).expect("stage pending link");
+        accept_direct_changes(&repo).expect("accept pending link");
+
+        let head = repo.head().expect("head").peel_to_commit().expect("commit");
+        let tree = head.tree().expect("tree");
+        let entry = tree
+            .get_path(Path::new("linked.txt"))
+            .expect("linked entry");
+        assert_eq!(entry.filemode(), 0o120000);
+        let blob = repo.find_blob(entry.id()).expect("link blob");
+        assert_eq!(blob.content(), b"missing-pending-target");
+        assert!(!project.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_never_writes_exclusions_through_a_link() {
+        let temp = TempDir::new().expect("temp dir");
+        let app_data = temp.path().join("app-data");
+        let project = temp.path().join("project");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&app_data).expect("app data");
+        fs::create_dir_all(&project).expect("project");
+        fs::create_dir_all(&outside).expect("outside");
+        fs::write(outside.join("exclude"), "keep outside\n").expect("outside file");
+        let checkpoint_id = direct_checkpoint_key("task-1", &project);
+        let repo =
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true)
+                .expect("create checkpoint");
+        let info = repo.path().join("info");
+        drop(repo);
+        fs::remove_dir_all(&info).expect("remove managed info directory");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &info).expect("link info directory");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&outside, &info).is_err() {
+            return;
+        }
+
+        let error = expect_checkpoint_open_error(
+            open_direct_checkpoint_at(&app_data, "task-1", &project, Some(&checkpoint_id), true),
+            "linked exclusions must be rejected",
+        );
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                operation: Some(ref operation),
+                ..
+            } if operation == "direct_checkpoint_exclusions"
+        ));
+        assert_eq!(
+            fs::read_to_string(outside.join("exclude")).expect("outside file"),
+            "keep outside\n"
+        );
+        assert!(!project.join(".git").exists());
     }
 
     #[test]
@@ -8539,7 +14494,7 @@ mod tests {
             return;
         }
 
-        let error = remove_direct_checkpoint(&app_data_dir, checkpoint_id)
+        let error = remove_direct_checkpoint(&app_data_dir, "task-1", checkpoint_id, &outside_root)
             .expect_err("linked checkpoint root must be rejected");
 
         assert!(error
@@ -8554,10 +14509,570 @@ mod tests {
         let project_path = temp.path().join("project");
         fs::create_dir_all(project_path.join("src")).expect("create project");
 
-        let target = validate_direct_restore_target(&project_path, Path::new("src/new.ts"))
-            .expect("validate target");
+        let capability =
+            open_direct_restore_capability(&project_path).expect("retain project root");
+        assert!(capability.metadata("src").expect("inspect src").is_dir());
+    }
 
-        assert_eq!(target, project_path.join("src/new.ts"));
+    #[test]
+    fn direct_restore_replaces_a_tracked_file_from_the_checkpoint_index() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::create_dir_all(project_path.join("src")).expect("create source directory");
+        fs::write(project_path.join("src/main.txt"), "accepted\n").expect("write accepted file");
+        let accepted_head = ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+        fs::write(project_path.join("src/main.txt"), "pending\n").expect("write pending file");
+
+        restore_direct_worktree_paths(&repo, &project_path, vec!["src/main.txt".to_string()])
+            .expect("restore tracked file");
+
+        assert_eq!(
+            fs::read_to_string(project_path.join("src/main.txt")).expect("read restored file"),
+            "accepted\n"
+        );
+        assert_eq!(
+            repo.head().expect("head").target().map(|id| id.to_string()),
+            Some(accepted_head)
+        );
+        assert!(fs::read_dir(project_path.join("src"))
+            .expect("read source directory")
+            .all(|entry| !entry
+                .expect("source entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("macro-restore")));
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_stage_and_restore_treat_a_rename_as_one_change() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("old.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::rename(project_path.join("old.txt"), project_path.join("new.txt"))
+            .expect("rename file");
+
+        let status = build_git_status(&repo).expect("rename status");
+        let renamed = status
+            .unstaged_files
+            .iter()
+            .find(|file| file.path == "new.txt")
+            .expect("renamed file");
+        assert_eq!(renamed.status, "renamed");
+        assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
+        stage_direct_paths(&repo, &["new.txt".to_string()]).expect("stage rename pair");
+        let mut index = repo.index().expect("index");
+        index.read(true).expect("refresh index");
+        assert!(index.get_path(Path::new("old.txt"), 0).is_none());
+        assert!(index.get_path(Path::new("new.txt"), 0).is_some());
+
+        unstage_direct_paths(&repo, &["new.txt".to_string()]).expect("unstage rename pair");
+        index.read(true).expect("refresh unstaged index");
+        assert!(index.get_path(Path::new("old.txt"), 0).is_some());
+        assert!(index.get_path(Path::new("new.txt"), 0).is_none());
+
+        restore_direct_worktree_paths(&repo, &project_path, vec!["new.txt".to_string()])
+            .expect("restore rename pair");
+        assert_eq!(
+            fs::read_to_string(project_path.join("old.txt")).expect("old path restored"),
+            "accepted\n"
+        );
+        assert!(!project_path.join("new.txt").exists());
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_checkpoint_rejects_a_blob_with_mismatched_content_hash() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let head = repo.head().expect("head").peel_to_commit().expect("commit");
+        let tree = head.tree().expect("tree");
+        let blob_id = tree.get_path(Path::new("file.txt")).expect("entry").id();
+        let object_path = repo
+            .path()
+            .join("objects")
+            .join(&blob_id.to_string()[..2])
+            .join(&blob_id.to_string()[2..]);
+        let checkpoint_path = repo.path().to_path_buf();
+        drop(tree);
+        drop(head);
+        drop(repo);
+        let altered = b"tampered\n";
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(format!("blob {}\0", altered.len()).as_bytes())
+            .expect("write object header");
+        encoder.write_all(altered).expect("write altered blob");
+        let mut permissions = fs::metadata(&object_path)
+            .expect("loose object metadata")
+            .permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&object_path, permissions).expect("make loose object writable");
+        fs::write(
+            &object_path,
+            encoder.finish().expect("compress altered blob"),
+        )
+        .expect("replace loose object");
+        let reopened = Repository::open(&checkpoint_path).expect("reopen checkpoint");
+
+        let error = ensure_direct_checkpoint_integrity(&reopened)
+            .expect_err("an altered blob must fail integrity verification");
+
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                object_id: Some(ref object_id),
+                operation: Some(ref operation),
+                ..
+            } if object_id == &blob_id.to_string()
+                && operation == "direct_checkpoint_head_blob"
+        ));
+        assert_eq!(
+            fs::read_to_string(project_path.join("file.txt")).expect("project preserved"),
+            "accepted\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_streams_a_large_checkpoint_blob() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let accepted = vec![b'a'; 8 * 1024 * 1024];
+        fs::write(project_path.join("asset.bin"), &accepted).expect("write accepted asset");
+        ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+        fs::write(project_path.join("asset.bin"), b"pending").expect("write pending asset");
+
+        restore_direct_worktree_paths(&repo, &project_path, vec!["asset.bin".to_string()])
+            .expect("restore large asset by streaming");
+
+        assert_eq!(
+            fs::metadata(project_path.join("asset.bin"))
+                .expect("asset metadata")
+                .len(),
+            accepted.len() as u64
+        );
+        assert_eq!(
+            Sha256::digest(fs::read(project_path.join("asset.bin")).expect("restored asset")),
+            Sha256::digest(&accepted)
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_never_overwrites_a_concurrent_save() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let path = project_path.join("macro-test-concurrent-save.txt");
+        fs::write(&path, "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&path, "pending\n").expect("pending file");
+
+        restore_direct_worktree_paths(
+            &repo,
+            &project_path,
+            vec!["macro-test-concurrent-save.txt".to_string()],
+        )
+        .expect_err("a concurrent save must stop publication");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("concurrent save preserved"),
+            "concurrent save\n"
+        );
+        assert!(fs::read_dir(&project_path)
+            .expect("project entries")
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .contains("macro-restore-backup")));
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_rejects_a_file_changed_since_the_snapshot() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let path = project_path.join("file.txt");
+        fs::write(&path, "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&path, "pending at snapshot\n").expect("pending file");
+        let root = open_direct_restore_capability(&project_path).expect("retain project");
+        let expected = direct_worktree_revision(&root, Path::new("file.txt"), "file.txt")
+            .expect("snapshot revision");
+        fs::write(&path, "saved after snapshot\n").expect("late save");
+        let revisions = HashMap::from([("file.txt".to_string(), expected)]);
+
+        let error = restore_direct_worktree_paths_with_revisions(
+            &repo,
+            &project_path,
+            vec!["file.txt".to_string()],
+            &revisions,
+        )
+        .expect_err("a stale snapshot must not restore");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            fs::read_to_string(&path).expect("late save preserved"),
+            "saved after snapshot\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_rechecks_the_file_after_moving_it_to_backup() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let name = "macro-test-save-before-backup.txt";
+        let path = project_path.join(name);
+        fs::write(&path, "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(&path, "pending at snapshot\n").expect("pending file");
+        let root = open_direct_restore_capability(&project_path).expect("retain project");
+        let expected =
+            direct_worktree_revision(&root, Path::new(name), name).expect("snapshot revision");
+        let revisions = HashMap::from([(name.to_string(), expected)]);
+
+        let error = restore_direct_worktree_paths_with_revisions(
+            &repo,
+            &project_path,
+            vec![name.to_string()],
+            &revisions,
+        )
+        .expect_err("a save between validation and backup must stop restore");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            fs::read_to_string(&path).expect("concurrent save restored"),
+            "save during restore\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_prevalidates_the_complete_batch() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("a.txt"), "accepted a\n").expect("accepted a");
+        fs::write(project_path.join("b.txt"), "accepted b\n").expect("accepted b");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(project_path.join("a.txt"), "pending a\n").expect("pending a");
+        fs::write(project_path.join("b.txt"), "pending b\n").expect("pending b");
+        let root = open_direct_restore_capability(&project_path).expect("retain project");
+        let revisions = HashMap::from([
+            (
+                "a.txt".to_string(),
+                direct_worktree_revision(&root, Path::new("a.txt"), "a.txt").expect("a revision"),
+            ),
+            (
+                "b.txt".to_string(),
+                direct_worktree_revision(&root, Path::new("b.txt"), "b.txt").expect("b revision"),
+            ),
+        ]);
+        fs::write(project_path.join("b.txt"), "late b\n").expect("late b");
+
+        restore_direct_worktree_paths_with_revisions(
+            &repo,
+            &project_path,
+            vec!["a.txt".to_string(), "b.txt".to_string()],
+            &revisions,
+        )
+        .expect_err("the stale second path must block the whole batch");
+
+        assert_eq!(
+            fs::read_to_string(project_path.join("a.txt")).expect("a preserved"),
+            "pending a\n"
+        );
+        assert_eq!(
+            fs::read_to_string(project_path.join("b.txt")).expect("b preserved"),
+            "late b\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_requires_a_snapshot_revision_for_every_path() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(project_path.join("file.txt"), "pending\n").expect("pending file");
+
+        let error = restore_direct_worktree_paths_with_revisions(
+            &repo,
+            &project_path,
+            vec!["file.txt".to_string()],
+            &HashMap::new(),
+        )
+        .expect_err("missing revisions must fail closed");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            fs::read_to_string(project_path.join("file.txt")).expect("file preserved"),
+            "pending\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_does_not_expand_an_index_only_rename() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("old.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::rename(project_path.join("old.txt"), project_path.join("new.txt"))
+            .expect("rename file");
+        stage_direct_paths(&repo, &["new.txt".to_string()]).expect("stage rename");
+        fs::write(project_path.join("old.txt"), "independent file\n").expect("recreate old path");
+        fs::write(project_path.join("new.txt"), "pending new\n").expect("modify new path");
+
+        restore_direct_worktree_paths(&repo, &project_path, vec!["new.txt".to_string()])
+            .expect("restore only the worktree-side change");
+
+        assert_eq!(
+            fs::read_to_string(project_path.join("old.txt")).expect("old path preserved"),
+            "independent file\n"
+        );
+        assert_eq!(
+            fs::read_to_string(project_path.join("new.txt")).expect("new path restored"),
+            "accepted\n"
+        );
+        let mut index = repo.index().expect("index");
+        index.read(true).expect("refresh index");
+        assert!(index.get_path(Path::new("old.txt"), 0).is_none());
+        assert!(index.get_path(Path::new("new.txt"), 0).is_some());
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_refuses_to_remove_an_untracked_directory() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let untracked = project_path.join("untracked");
+        fs::create_dir_all(&untracked).expect("untracked directory");
+        fs::write(untracked.join("keep.txt"), "keep\n").expect("untracked content");
+
+        restore_direct_worktree_paths(&repo, &project_path, vec!["untracked".to_string()])
+            .expect_err("untracked directories must not be removed implicitly");
+
+        assert_eq!(
+            fs::read_to_string(untracked.join("keep.txt")).expect("directory preserved"),
+            "keep\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_rolls_back_earlier_paths_when_a_later_path_fails() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("a.txt"), "accepted a\n").expect("accepted a");
+        fs::write(
+            project_path.join("macro-test-fail-after-backup.txt"),
+            "accepted b\n",
+        )
+        .expect("accepted b");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(project_path.join("a.txt"), "pending a\n").expect("pending a");
+        fs::write(
+            project_path.join("macro-test-fail-after-backup.txt"),
+            "pending b\n",
+        )
+        .expect("pending b");
+
+        restore_direct_worktree_paths(
+            &repo,
+            &project_path,
+            vec![
+                "a.txt".to_string(),
+                "macro-test-fail-after-backup.txt".to_string(),
+            ],
+        )
+        .expect_err("the injected second restore must fail");
+
+        assert_eq!(
+            fs::read_to_string(project_path.join("a.txt")).expect("preserved a"),
+            "pending a\n"
+        );
+        assert_eq!(
+            fs::read_to_string(project_path.join("macro-test-fail-after-backup.txt"))
+                .expect("preserved b"),
+            "pending b\n"
+        );
+        let artifacts = fs::read_dir(&project_path)
+            .expect("project entries")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains("macro-restore"))
+            .collect::<Vec<_>>();
+        assert!(artifacts.is_empty(), "restore artifacts: {artifacts:?}");
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_rollback_preserves_a_concurrent_type_change() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(
+            project_path.join("macro-test-concurrent-rollback.txt"),
+            "accepted a\n",
+        )
+        .expect("accepted a");
+        fs::write(
+            project_path.join("macro-test-fail-after-backup.txt"),
+            "accepted b\n",
+        )
+        .expect("accepted b");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        fs::write(
+            project_path.join("macro-test-concurrent-rollback.txt"),
+            "pending a\n",
+        )
+        .expect("pending a");
+        fs::write(
+            project_path.join("macro-test-fail-after-backup.txt"),
+            "pending b\n",
+        )
+        .expect("pending b");
+
+        let error = restore_direct_worktree_paths(
+            &repo,
+            &project_path,
+            vec![
+                "macro-test-concurrent-rollback.txt".to_string(),
+                "macro-test-fail-after-backup.txt".to_string(),
+            ],
+        )
+        .expect_err("the concurrent type change must block rollback");
+
+        assert_eq!(
+            fs::read_to_string(
+                project_path
+                    .join("macro-test-concurrent-rollback.txt")
+                    .join("keep.txt")
+            )
+            .expect("concurrent directory preserved"),
+            "concurrent directory\n"
+        );
+        assert!(error
+            .to_string()
+            .contains("could not restore every preserved file"));
+        assert!(fs::read_dir(&project_path)
+            .expect("project entries")
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .contains("macro-restore-backup")));
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_rollback_removes_parent_directories_created_by_the_batch() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::create_dir_all(project_path.join("absent")).expect("create accepted directory");
+        fs::write(project_path.join("absent/nested.txt"), "accepted nested\n")
+            .expect("write accepted nested file");
+        fs::write(
+            project_path.join("macro-test-fail-after-backup.txt"),
+            "accepted failure\n",
+        )
+        .expect("write accepted failure file");
+        ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+        fs::remove_dir_all(project_path.join("absent")).expect("remove accepted directory");
+        fs::write(
+            project_path.join("macro-test-fail-after-backup.txt"),
+            "pending failure\n",
+        )
+        .expect("write pending failure file");
+
+        restore_direct_worktree_paths(
+            &repo,
+            &project_path,
+            vec![
+                "absent/nested.txt".to_string(),
+                "macro-test-fail-after-backup.txt".to_string(),
+            ],
+        )
+        .expect_err("the second restore must fail");
+
+        assert!(!project_path.join("absent").exists());
+        assert_eq!(
+            fs::read_to_string(project_path.join("macro-test-fail-after-backup.txt"))
+                .expect("read preserved failure file"),
+            "pending failure\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_never_overwrites_an_existing_backup_artifact() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("write accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+        fs::write(project_path.join("file.txt"), "pending\n").expect("write pending file");
+        let existing_backup = project_path.join(".file.txt.macro-restore-backup-existing");
+        fs::write(&existing_backup, "older preserved data\n").expect("write existing backup");
+
+        restore_direct_worktree_paths(&repo, &project_path, vec!["file.txt".to_string()])
+            .expect("restore file");
+
+        assert_eq!(
+            fs::read_to_string(existing_backup).expect("read existing backup"),
+            "older preserved data\n"
+        );
+        assert_eq!(
+            fs::read_to_string(project_path.join("file.txt")).expect("read restored file"),
+            "accepted\n"
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_retains_pending_data_when_backup_cleanup_fails() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let file_name = "macro-test-keep-backup-on-cleanup-failure.txt";
+        fs::write(project_path.join(file_name), "accepted\n").expect("write accepted file");
+        let accepted_head = ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+        fs::write(project_path.join(file_name), "pending\n").expect("write pending file");
+
+        restore_direct_worktree_paths(&repo, &project_path, vec![file_name.to_string()])
+            .expect("cleanup failure must not turn a completed restore into data loss");
+
+        assert_eq!(
+            fs::read_to_string(project_path.join(file_name)).expect("read restored file"),
+            "accepted\n"
+        );
+        let retained = fs::read_dir(&project_path)
+            .expect("read project")
+            .filter_map(|entry| entry.ok())
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("macro-restore-backup")
+            })
+            .expect("pending data backup must remain recoverable");
+        assert_eq!(
+            fs::read_to_string(retained.path()).expect("read retained backup"),
+            "pending\n"
+        );
+        assert_eq!(
+            repo.head().expect("head").target().map(|id| id.to_string()),
+            Some(accepted_head)
+        );
+        assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn direct_restore_of_an_absent_untracked_path_does_not_create_parent_directories() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("kept.txt"), "unchanged\n").expect("write user file");
+        ensure_direct_checkpoint_head(&repo).expect("capture baseline");
+
+        restore_direct_worktree_paths(&repo, &project_path, vec!["absent/nested.txt".to_string()])
+            .expect("an already absent path is a no-op");
+
+        assert!(!project_path.join("absent").exists());
+        assert_eq!(
+            fs::read_to_string(project_path.join("kept.txt")).expect("read user file"),
+            "unchanged\n"
+        );
+        assert!(!project_path.join(".git").exists());
     }
 
     #[test]
@@ -8577,14 +15092,56 @@ mod tests {
             return;
         }
 
-        let error = validate_direct_restore_target(&project_path, Path::new("linked/secret.txt"))
-            .expect_err("outside target must be rejected");
+        let capability =
+            open_direct_restore_capability(&project_path).expect("retain project root");
+        let error = remove_direct_untracked_path(
+            &capability,
+            Path::new("linked/secret.txt"),
+            "linked/secret.txt",
+        )
+        .expect_err("outside target must be rejected");
 
-        assert!(error.to_string().contains("escapes the project root"));
+        assert!(!error.to_string().is_empty());
         assert_eq!(
             fs::read_to_string(outside_path.join("secret.txt")).expect("read outside file"),
             "keep me"
         );
+    }
+
+    #[test]
+    fn direct_restore_never_checks_out_a_tracked_file_through_a_linked_parent() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        let tracked_parent = project_path.join("tracked");
+        fs::create_dir_all(&tracked_parent).expect("create tracked parent");
+        fs::write(tracked_parent.join("file.txt"), "accepted\n").expect("write accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("capture accepted file");
+
+        let outside_path = project_path
+            .parent()
+            .expect("project parent")
+            .join("outside-restore");
+        fs::create_dir_all(&outside_path).expect("create outside directory");
+        fs::write(outside_path.join("file.txt"), "outside stays\n").expect("write outside file");
+        fs::remove_dir_all(&tracked_parent).expect("remove tracked parent");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_path, &tracked_parent)
+            .expect("create tracked parent symlink");
+        #[cfg(windows)]
+        create_windows_junction(&tracked_parent, &outside_path);
+
+        let error = restore_direct_worktree_paths(
+            &repo,
+            &project_path,
+            vec!["tracked/file.txt".to_string()],
+        )
+        .expect_err("tracked restore must reject a linked parent");
+
+        assert!(error.to_string().contains("linked parent"));
+        assert_eq!(
+            fs::read_to_string(outside_path.join("file.txt")).expect("read outside file"),
+            "outside stays\n"
+        );
+        assert!(!project_path.join(".git").exists());
     }
 
     fn init_macro_repo() -> (TempDir, Repository) {
@@ -8617,22 +15174,31 @@ mod tests {
     #[test]
     fn run_git_command_rejects_unsafe_hooks_path() {
         let (temp, repo) = init_repo();
-        let hooks_path = temp
+        let outside_hooks_path = temp
             .path()
             .parent()
             .expect("temp parent")
             .join("outside-hooks");
-        repo.config()
-            .expect("repo config")
-            .set_str("core.hooksPath", hooks_path.to_string_lossy().as_ref())
-            .expect("set hooks path");
+        for hooks_path in [
+            outside_hooks_path.to_string_lossy().to_string(),
+            "../outside-hooks".to_string(),
+            temp.path()
+                .join("hooks/../../outside-hooks")
+                .to_string_lossy()
+                .to_string(),
+        ] {
+            repo.config()
+                .expect("repo config")
+                .set_str("core.hooksPath", &hooks_path)
+                .expect("set hooks path");
 
-        let error = match run_git_command(temp.path(), &["status".to_string()]) {
-            Ok(_) => panic!("unsafe hooks path must be rejected"),
-            Err(error) => error,
-        };
+            let error = match run_git_command(temp.path(), &["status".to_string()]) {
+                Ok(_) => panic!("unsafe hooks path must be rejected: {hooks_path}"),
+                Err(error) => error,
+            };
 
-        assert!(error.to_string().contains("core.hooksPath"));
+            assert!(error.to_string().contains("core.hooksPath"));
+        }
     }
 
     #[test]

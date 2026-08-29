@@ -410,7 +410,8 @@
     "commitMessageRequired": "コミットメッセージは必須です。",
     "commitSucceededTaskNotCompleted": "変更はコミットされましたが、タスクを自動的に完了できませんでした。",
     "deletedChangeReadOnly": "削除されたファイルは、レビュー中は読み取り専用になります。代わりにタスク・フローからそれらを復元してください。",
-    "revertChangesFailed": "変更を元に戻せませんでした。"
+    "revertChangesFailed": "変更を元に戻せませんでした。",
+    "reviewChangedSinceLoad": "レビューの読み込み後にファイルが変更されました。再試行する前にレビューを更新してください。"
   },
   "taskCommandsManualDraftUnsupported": "最初のメッセージを送信して、この機能のブランチ、ワークツリー、ターミナルを準備してください。",
   "remoteTaskMutationUnavailable": "Task management actions are unavailable in remote mode.",

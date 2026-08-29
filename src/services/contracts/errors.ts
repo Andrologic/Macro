@@ -7,6 +7,11 @@ export interface ServiceError {
 export const SERVICE_ERROR_CODES = {
   PLAN_METADATA_MISSING: 'PLAN_METADATA_MISSING',
   PLAN_REPLICA_DIVERGED: 'PLAN_REPLICA_DIVERGED',
+  GIT_OBJECT_MISSING: 'GIT_OBJECT_MISSING',
+  DIRECT_MODE_CONFIGURATION_REQUIRED: 'DIRECT_MODE_CONFIGURATION_REQUIRED',
+  DIRECT_CHECKPOINT_MISSING: 'DIRECT_CHECKPOINT_MISSING',
+  DIRECT_CHECKPOINT_CORRUPT: 'DIRECT_CHECKPOINT_CORRUPT',
+  DIRECT_CHECKPOINT_PROJECT_MISMATCH: 'DIRECT_CHECKPOINT_PROJECT_MISMATCH',
   RESOURCE_PRESSURE: 'RESOURCE_PRESSURE',
   WORKSPACE_STATE_UNAVAILABLE: 'WORKSPACE_STATE_UNAVAILABLE',
   UNEXPECTED_ERROR: 'UNEXPECTED_ERROR',
@@ -136,6 +141,18 @@ export const isResourcePressureError = (error: unknown): boolean => {
     message.includes('os error 24') ||
     message.includes('emfile')
   );
+};
+
+export const isGitObjectMissingError = (error: unknown): boolean =>
+  toServiceError(error).code === SERVICE_ERROR_CODES.GIT_OBJECT_MISSING;
+
+export const isReviewSuspendingError = (error: unknown): boolean => {
+  const code = toServiceError(error).code;
+  return code === SERVICE_ERROR_CODES.GIT_OBJECT_MISSING ||
+    code === SERVICE_ERROR_CODES.DIRECT_MODE_CONFIGURATION_REQUIRED ||
+    code === SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_MISSING ||
+    code === SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_CORRUPT ||
+    code === SERVICE_ERROR_CODES.DIRECT_CHECKPOINT_PROJECT_MISMATCH;
 };
 
 export const isWorkspaceStateUnavailableError = (error: unknown): boolean => {
