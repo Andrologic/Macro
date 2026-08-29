@@ -127,6 +127,7 @@ export const resolveProjectExecutionContext = (
     ? retargetTaskForExecution(rawTask, {
         scopedProjectIds: selectedScopeProjectIds,
         knownProjectIds: Array.from(projectById.keys()),
+        knownProjects: input.projects,
       })
     : null;
   const executionTargets = getExecutionTargets(task).filter((target) => projectById.has(target.projectId));

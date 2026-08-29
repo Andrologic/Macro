@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { retargetPlanForExecution, retargetTaskForExecution } from './projectIdentityReconciliation';
+import { toBranchWorktreeKey } from './implementTaskDerivation';
 import type { PlanNode, PredictedBranch } from '../types';
 
 describe('projectIdentityReconciliation', () => {
@@ -26,6 +27,41 @@ describe('projectIdentityReconciliation', () => {
     expect(retargeted.execution_targets?.[0]).toEqual(task.execution_targets[0]);
     expect(retargeted.execution_targets?.[0]?.projectId).toBe('removed-project');
     expect(retargeted.project_id).toBe('removed-project');
+  });
+
+  it('retargets a stale target only when its persisted path matches the current project', () => {
+    const task = {
+      id: 'reopened-task',
+      project_id: 'old-project-id',
+      project_ids: ['old-project-id'],
+      execution_targets: [{
+        projectId: 'old-project-id',
+        branchName: 'feature/reopened',
+        worktreeKey: 'old-project-id::feature/reopened',
+        repoPath: 'C:\\repos\\reopened-app\\',
+      }],
+    };
+    const currentProject = {
+      id: 'current-project-id',
+      name: 'Reopened App',
+      mountName: 'reopened-app',
+      path: 'c:/repos/reopened-app',
+      created_at: '',
+      status: 'active' as const,
+      metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
+    };
+
+    const retargeted = retargetTaskForExecution(task, {
+      scopedProjectIds: [currentProject.id],
+      knownProjectIds: [currentProject.id],
+      knownProjects: [currentProject],
+    });
+
+    expect(retargeted.project_id).toBe(currentProject.id);
+    expect(retargeted.execution_targets?.[0]?.projectId).toBe(currentProject.id);
+    expect(retargeted.execution_targets?.[0]?.worktreeKey).toBe(
+      toBranchWorktreeKey(currentProject.id, 'feature/reopened')
+    );
   });
 
   it('does not move a plan with a persisted mode onto the selected project', () => {

@@ -675,7 +675,7 @@ describe('createLoadImplementTaskCatalog', () => {
     expect(capturedPlans[0]?.replicationState).toBe('missing_projects');
   });
 
-  it('retargets standalone fallback tasks with stale project ids to the selected single project scope', async () => {
+  it('does not retarget standalone fallback tasks without physical identity proof', async () => {
     const loadImplementTaskCatalog = createLoadImplementTaskCatalog({
       getAppState: () => ({
         activeArchitectPlanId: null,
@@ -711,9 +711,11 @@ describe('createLoadImplementTaskCatalog', () => {
     ]);
     const task = catalog.tasks.find((candidate) => candidate.id === 'standalone-stale');
 
-    expect(task?.project_id).toBe('project-lplr-current');
-    expect(task?.project_ids).toEqual(['project-lplr-current']);
-    expect(task?.execution_targets.map((target) => target.projectId)).toEqual(['project-lplr-current']);
+    expect(task?.project_id).toBe('project-lplr-app-1780237886690');
+    expect(task?.project_ids).toEqual(['project-lplr-app-1780237886690']);
+    expect(task?.execution_targets.map((target) => target.projectId)).toEqual([
+      'project-lplr-app-1780237886690',
+    ]);
   });
 
   it('ignores invalid target branches and preserves valid plans when one branch or plan load fails', async () => {

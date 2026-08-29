@@ -21,7 +21,6 @@ import { buildPlanFinalizationTaskId } from './planFinalization';
 import { getTaskBusinessId, toPlanLocatorKey } from './durableIdentity';
 import {
   collectKnownProjects,
-  collectKnownProjectIds,
   retargetPlanForExecution,
   retargetTaskForExecution,
 } from './projectIdentityReconciliation';
@@ -96,12 +95,13 @@ const migrateLegacyPlanExecutionModes = (
 const reconcileFallbackTasksForCurrentScope = (
   tasks: Task[],
   relevantProjectIds: string[] | null,
-  validProjectIds: string[]
+  validProjects: Project[]
 ): Task[] => {
   return tasks.map((task) =>
     retargetTaskForExecution(task, {
       scopedProjectIds: relevantProjectIds,
-      knownProjectIds: validProjectIds,
+      knownProjectIds: validProjects.map((project) => project.id),
+      knownProjects: validProjects,
     })
   );
 };
@@ -256,7 +256,8 @@ export const createLoadImplementTaskCatalog = (
   return async (fallbackTasks: Task[]): Promise<ImplementTaskCatalog> => {
     const appState = await dependencies.getAppState();
     const reconciliationProjectIds = resolveRelevantProjectIds(appState);
-    const validProjectIds = collectKnownProjectIds(appState);
+    const validProjects = collectKnownProjects(appState);
+    const validProjectIds = validProjects.map((project) => project.id);
     const activeTargetBranch = resolveCandidateTargetBranches(
       [appState.activePlanContext?.targetBranch || null],
       dependencies.resolveTargetBranch
@@ -365,7 +366,7 @@ export const createLoadImplementTaskCatalog = (
     const reconciledFallbackTasks = reconcileFallbackTasksForCurrentScope(
       fallbackTasks,
       reconciliationProjectIds,
-      validProjectIds
+      validProjects
     );
 
     const catalog = dependencies.buildImplementTaskCatalog({

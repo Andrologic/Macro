@@ -33,6 +33,7 @@ export type TaskExecutionScopeRef = {
 export type ProjectExecutionReconciliationScope = {
   scopedProjectIds?: string[] | null;
   knownProjectIds: string[];
+  knownProjects?: Project[];
 };
 
 export type ProjectSelectionReconciliationScope = {
@@ -244,28 +245,44 @@ export const retargetPlanForExecution = <TPlan extends PlanExecutionScopeRef>(
   };
 };
 
-const retargetLegacyExecutionTargets = (
+const normalizePhysicalProjectPath = (value: string | null | undefined): string => {
+  const normalized = (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//')
+    ? normalized.toLowerCase()
+    : normalized;
+};
+
+const retargetVerifiedExecutionTargets = (
   targets: TaskExecutionTarget[] | undefined,
-  replacementProjectIds: string[],
+  knownProjects: Project[],
   knownProjectIdSet: Set<string>
-): TaskExecutionTarget[] | undefined => {
+): TaskExecutionTarget[] | null | undefined => {
   if (!Array.isArray(targets)) {
     return targets;
   }
-  const singleReplacementProjectId =
-    replacementProjectIds.length === 1 ? replacementProjectIds[0] : null;
 
-  return targets.map((target) => {
-    if (knownProjectIdSet.has(target.projectId) || !singleReplacementProjectId) {
-      return target;
+  const retargeted: TaskExecutionTarget[] = [];
+  for (const target of targets) {
+    if (knownProjectIdSet.has(target.projectId)) {
+      retargeted.push(target);
+      continue;
     }
+    const persistedPath = normalizePhysicalProjectPath(target.repoPath);
+    const matches = persistedPath
+      ? knownProjects.filter((project) => normalizePhysicalProjectPath(project.path) === persistedPath)
+      : [];
+    if (matches.length !== 1) {
+      return null;
+    }
+    const replacementProjectId = matches[0].id;
     const branchName = target.branchName || target.targetBranchName || 'work';
-    return {
+    retargeted.push({
       ...target,
-      projectId: singleReplacementProjectId,
-      worktreeKey: toBranchWorktreeKey(singleReplacementProjectId, branchName),
-    };
-  });
+      projectId: replacementProjectId,
+      worktreeKey: toBranchWorktreeKey(replacementProjectId, branchName),
+    });
+  }
+  return retargeted;
 };
 
 export const retargetTaskForExecution = <TTask extends TaskExecutionScopeRef>(
@@ -282,26 +299,32 @@ export const retargetTaskForExecution = <TTask extends TaskExecutionScopeRef>(
   if (!hasUnknownProjectId) {
     return task;
   }
-  if ((task.execution_targets ?? []).some((target) =>
-    !knownProjectIdSet.has(target.projectId) && target.executionMode !== undefined
-  )) {
+  const executionTargets = retargetVerifiedExecutionTargets(
+    task.execution_targets,
+    scope.knownProjects ?? [],
+    knownProjectIdSet
+  );
+  if (executionTargets === null) {
+    return task;
+  }
+
+  const verifiedPersistedProjectIds = normalizeExecutionProjectIds([
+    ...(executionTargets ?? []).map((target) => target.projectId),
+    ...(task.project_ids ?? []).filter((projectId) => knownProjectIdSet.has(projectId)),
+    knownProjectIdSet.has(task.project_id) ? task.project_id : null,
+  ]);
+  if (verifiedPersistedProjectIds.length === 0) {
     return task;
   }
 
   const replacementProjectIds = resolveExecutionProjectIds({
-    persistedIds: persistedProjectIds,
+    persistedIds: verifiedPersistedProjectIds,
     scopedProjectIds: scope.scopedProjectIds,
     knownProjectIds: scope.knownProjectIds,
   });
   if (replacementProjectIds.length === 0) {
     return task;
   }
-
-  const executionTargets = retargetLegacyExecutionTargets(
-    task.execution_targets,
-    replacementProjectIds,
-    knownProjectIdSet
-  );
 
   return {
     ...task,
@@ -330,6 +353,10 @@ export const retargetTaskForProjectSelection = <TTask extends TaskExecutionScope
   retargetTaskForExecution(task, {
     scopedProjectIds: getProjectSelectionScopedProjectIds(scope),
     knownProjectIds: collectKnownProjectIds({
+      standaloneProjects: scope.standaloneProjects ?? [],
+      projectGroups: scope.projectGroups,
+    }),
+    knownProjects: collectKnownProjects({
       standaloneProjects: scope.standaloneProjects ?? [],
       projectGroups: scope.projectGroups,
     }),
