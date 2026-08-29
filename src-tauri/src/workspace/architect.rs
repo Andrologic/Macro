@@ -1991,6 +1991,7 @@ mod tests {
             &project_path,
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
@@ -2102,6 +2103,7 @@ mod tests {
             workspace.path(),
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
@@ -2209,6 +2211,7 @@ mod tests {
             workspace.path(),
             &metadata_root,
             WorkspaceArchitectListPlansRequestDto {
+                request_id: None,
                 branch_name: "main".to_string(),
                 include_deleted: false,
                 include_archived: false,
