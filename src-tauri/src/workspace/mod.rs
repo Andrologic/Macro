@@ -6620,23 +6620,35 @@ fn sanitize_workspace_state(
         assign_group_mount_names(&mut sanitized_standalone_projects);
     state.standalone_projects = sanitized_standalone_projects;
     state.project_groups = sanitized_groups;
-    let _valid_project_ids = collect_valid_project_ids_from_state(&state);
+    let persisted_target_project_ids = collect_valid_project_ids_from_state(&state);
     let actionable_project_ids = collect_actionable_project_ids_from_state(&state);
     let read_only_project_ids = collect_read_only_project_ids_from_state(&state);
     let architect_context_project_ids = collect_architect_context_project_ids_from_state(&state);
+    let manual_read_only_project_ids = state
+        .standalone_projects
+        .iter()
+        .chain(
+            state
+                .project_groups
+                .iter()
+                .flat_map(|group| group.projects.iter()),
+        )
+        .filter(|project| project.user_read_only)
+        .map(|project| project.id.clone())
+        .collect::<HashSet<_>>();
 
     if let Some(plan) = state.current_plan.as_mut() {
         let original_project_ids = plan.project_ids.clone();
         let initial_project_ids = plan.project_ids.len();
         plan.project_ids
-            .retain(|project_id| actionable_project_ids.contains(project_id));
+            .retain(|project_id| persisted_target_project_ids.contains(project_id));
         let mut unique_project_ids = HashSet::new();
         plan.project_ids
             .retain(|project_id| unique_project_ids.insert(project_id.clone()));
         let mut context_project_ids =
             sanitize_project_id_list(&plan.context_project_ids, &architect_context_project_ids);
         for project_id in original_project_ids {
-            if architect_context_project_ids.contains(&project_id)
+            if manual_read_only_project_ids.contains(&project_id)
                 && !context_project_ids.iter().any(|value| value == &project_id)
             {
                 context_project_ids.push(project_id);
@@ -6648,8 +6660,8 @@ fn sanitize_workspace_state(
 
         let (sanitized_tasks, removed_tasks, removed_targets) = sanitize_plan_tasks(
             &plan.tasks,
-            &actionable_project_ids,
-            &architect_context_project_ids,
+            &persisted_target_project_ids,
+            &manual_read_only_project_ids,
         );
         if removed_tasks > 0 || removed_targets > 0 || sanitized_tasks.len() != plan.tasks.len() {
             plan.tasks = sanitized_tasks;
@@ -6698,7 +6710,7 @@ fn sanitize_workspace_state(
     state.plan_nodes.retain(|node| {
         node.project_id
             .as_ref()
-            .map(|project_id| actionable_project_ids.contains(project_id))
+            .map(|project_id| persisted_target_project_ids.contains(project_id))
             .unwrap_or(true)
     });
     repair_report.plan_nodes_removed =
@@ -6707,7 +6719,7 @@ fn sanitize_workspace_state(
     let initial_predicted_branch_count = state.predicted_branches.len();
     state
         .predicted_branches
-        .retain(|branch| actionable_project_ids.contains(&branch.project_id));
+        .retain(|branch| persisted_target_project_ids.contains(&branch.project_id));
     repair_report.predicted_branches_removed =
         initial_predicted_branch_count.saturating_sub(state.predicted_branches.len());
 
@@ -8617,6 +8629,51 @@ mod tests {
         assert!(!direct.is_read_only);
         assert!(collect_actionable_project_ids_from_state(&state).contains(&direct.id));
         assert!(!collect_architect_context_project_ids_from_state(&state).contains(&direct.id));
+    }
+
+    #[test]
+    fn sanitize_workspace_state_preserves_targets_for_a_registered_blocked_project() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_path = temp.path().join("blocked");
+        stdfs::create_dir_all(&project_path).expect("create blocked project");
+        let mut blocked = make_project("project-blocked", project_path.to_string_lossy().as_ref());
+        blocked.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
+        blocked.direct_edit = false;
+        blocked.is_read_only = true;
+        let state = WorkspaceState {
+            standalone_projects: vec![blocked],
+            current_plan: Some(PlanDto {
+                id: "plan-blocked".to_string(),
+                description: "Blocked plan".to_string(),
+                created_at: "2026-08-29T00:00:00Z".to_string(),
+                updated_at: "2026-08-29T00:00:00Z".to_string(),
+                status: "Validated".to_string(),
+                project_ids: vec!["project-blocked".to_string()],
+                context_project_ids: Vec::new(),
+                tasks: vec![json!({
+                    "id": "task-blocked",
+                    "project_id": "project-blocked",
+                    "project_ids": ["project-blocked"],
+                    "execution_targets": [{
+                        "projectId": "project-blocked",
+                        "executionMode": "git",
+                        "branchName": "feature/blocked",
+                        "worktreeKey": "project-blocked::feature/blocked"
+                    }]
+                })],
+                predicted_git_trees: HashMap::new(),
+            }),
+            ..WorkspaceState::default()
+        };
+
+        let (sanitized, report) = sanitize_workspace_state(temp.path(), state);
+        let plan = sanitized.current_plan.expect("plan should remain");
+
+        assert_eq!(plan.project_ids, vec!["project-blocked".to_string()]);
+        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(report.current_plan_project_ids_removed, 0);
+        assert_eq!(report.current_plan_tasks_removed, 0);
+        assert_eq!(report.current_plan_task_targets_removed, 0);
     }
 
     #[test]

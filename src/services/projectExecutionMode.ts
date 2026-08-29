@@ -115,6 +115,20 @@ export const resolveProjectExecutionMode = (params: {
     return { mode: 'git', reason: 'git_ready', source: 'legacy_migration' };
   }
 
+  if (target && project.gitSetupState === 'unborn') {
+    return { mode: 'blocked', reason: 'initial_commit_missing', source: 'observed_project' };
+  }
+
+  if (target && project.gitSetupState === 'not_git') {
+    if (project.userReadOnly) {
+      return { mode: 'blocked', reason: 'project_read_only', source: 'observed_project' };
+    }
+    if (project.directEdit && (project.path?.trim() || target.repoPath?.trim())) {
+      return { mode: 'direct', reason: 'direct_edit_enabled', source: 'legacy_migration' };
+    }
+    return { mode: 'blocked', reason: 'git_not_initialized', source: 'observed_project' };
+  }
+
   if (target) {
     return { mode: 'invalid', reason: 'target_mode_missing', source: 'legacy_migration' };
   }

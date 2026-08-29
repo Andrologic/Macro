@@ -3490,3 +3490,67 @@ describe('useTaskStore task command terminal lifecycle', () => {
     expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
   });
 });
+
+describe('useTaskStore task preparation safety', () => {
+  it('rejects every target before preparing the Git part of a mixed blocked task', async () => {
+    gitWorktreeInspectMock.mockClear();
+    gitWorktreeCreateMock.mockClear();
+    gitWorktreeRemoveMock.mockClear();
+    appStoreState.selectedTaskId = null;
+    appStoreState.selectedGroupId = 'group-1';
+    appStoreState.selectedProjectId = 'project-git';
+    appStoreState.projectGroups = [];
+    appStoreState.standaloneProjects = [];
+    appStoreState.getProjectById = (projectId: string) => projectId === 'project-git'
+      ? {
+          id: 'project-git',
+          name: 'Git project',
+          path: '/repos/git',
+          gitSetupState: 'ready' as const,
+          directEdit: false,
+        }
+      : {
+          id: 'project-blocked',
+          name: 'Blocked project',
+          path: '/repos/blocked',
+          gitSetupState: 'not_git' as const,
+          directEdit: false,
+          isReadOnly: true,
+        };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({
+        id: 'mixed-blocked-task',
+        status: 'Pending',
+        draft: false,
+        project_id: 'project-git',
+        project_ids: ['project-git', 'project-blocked'],
+        execution_targets: [
+          {
+            projectId: 'project-git',
+            executionMode: 'git',
+            branchName: 'feature/mixed-blocked',
+            worktreeKey: 'project-git::feature/mixed-blocked',
+            repoPath: '/repos/git',
+          },
+          {
+            projectId: 'project-blocked',
+            branchName: '',
+            worktreeKey: 'project-blocked::blocked',
+            repoPath: '/repos/blocked',
+          },
+        ],
+      })],
+      branchWorktrees: {},
+      lastError: null,
+    });
+
+    await useTaskStore.getState().startTask('mixed-blocked-task');
+
+    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Initialize Git or enable direct editing');
+  });
+
+});

@@ -1182,7 +1182,8 @@ const inspectTargetWorktreePath = async (
 const ensureTargetWorktreePath = async (
   task: CatalogedImplementTask,
   target: TaskExecutionTarget,
-  branchWorktrees: Record<string, string>
+  branchWorktrees: Record<string, string>,
+  onGitEnsureResult?: (status: 'created' | 'reused' | 'repaired') => void,
 ): Promise<string> => {
   const directProject = useAppStore.getState().getProjectById(target.projectId);
   const targetMode = resolveExecutionTargetMode(target);
@@ -1278,6 +1279,7 @@ const ensureTargetWorktreePath = async (
     );
   }
 
+  onGitEnsureResult?.(ensured.status);
   return ensured.worktreePath;
 };
 
@@ -1694,73 +1696,105 @@ const ensureTaskExecutionTargetsReady = async (
 
   const createdWorktrees: Record<string, string> = {};
   const preparedTargets: PreparedTaskExecutionTarget[] = [];
+  const rollbackTargets: Array<TaskExecutionTarget & { repoPath: string }> = [];
+  executionTargets.forEach(assertExecutionTargetRunnable);
   const commandRegistry = commandRegistryOverride ?? await loadTaskProjectCommandRegistry(
     executionTargets.map((target) => target.projectId),
   );
 
-  for (const target of executionTargets) {
-    const worktreePath = await ensureTargetWorktreePath(executionTask, target, branchWorktrees);
-
-    createdWorktrees[target.worktreeKey] = worktreePath;
-
-    const project = appState.getProjectById(target.projectId);
-    const repoPath = project?.path ?? target.repoPath ?? null;
-    if (!repoPath) {
-      throw toServiceError(
-        tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
-          taskId: task.id,
-        })
+  try {
+    for (const target of executionTargets) {
+      let createdByThisAttempt = false;
+      const worktreePath = await ensureTargetWorktreePath(
+        executionTask,
+        target,
+        branchWorktrees,
+        (status) => {
+          createdByThisAttempt = status === 'created';
+        },
       );
-    }
 
-    assertExecutionTargetRunnable(target);
-    const isDirectEdit = isDirectEditTarget(target);
-    const setupCommand = isDirectEdit
-      ? ''
-      : getTaskProjectCommand(commandRegistry, repoPath)?.worktreeSetupCommand.trim() || '';
-    if (setupCommand) {
-      try {
-        const setupResult = await runWorktreeSetupCommand({
-          taskId: executionTask.id,
-          taskTitle: executionTask.title,
-          projectId: target.projectId,
-          projectName: project?.name ?? target.projectId,
-          repoPath,
-          worktreePath,
-          command: setupCommand,
-        });
-        if (setupResult.failed) {
+      createdWorktrees[target.worktreeKey] = worktreePath;
+
+      const project = appState.getProjectById(target.projectId);
+      const repoPath = project?.path ?? target.repoPath ?? null;
+      if (!repoPath) {
+        throw toServiceError(
+          tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
+            taskId: task.id,
+          })
+        );
+      }
+      if (isGitExecutionTarget(target) && createdByThisAttempt) {
+        rollbackTargets.push({ ...target, repoPath });
+      }
+
+      const isDirectEdit = isDirectEditTarget(target);
+      const setupCommand = isDirectEdit
+        ? ''
+        : getTaskProjectCommand(commandRegistry, repoPath)?.worktreeSetupCommand.trim() || '';
+      if (setupCommand) {
+        try {
+          const setupResult = await runWorktreeSetupCommand({
+            taskId: executionTask.id,
+            taskTitle: executionTask.title,
+            projectId: target.projectId,
+            projectName: project?.name ?? target.projectId,
+            repoPath,
+            worktreePath,
+            command: setupCommand,
+          });
+          if (setupResult.failed) {
+            notify.warning(
+              tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
+                project: project?.name ?? target.projectId,
+              }),
+              {
+                description: tTask(
+                  'implement.worktreeSetupFailedDescription',
+                  'Macro will continue. The setup terminal was opened for review.'
+                ),
+              }
+            );
+          }
+        } catch (error) {
+          const normalized = toServiceError(error);
           notify.warning(
             tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
               project: project?.name ?? target.projectId,
             }),
             {
-              description: tTask(
-                'implement.worktreeSetupFailedDescription',
-                'Macro will continue. The setup terminal was opened for review.'
-              ),
+              description: normalized.message,
             }
           );
         }
-      } catch (error) {
-        const normalized = toServiceError(error);
-        notify.warning(
-          tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
-            project: project?.name ?? target.projectId,
-          }),
-          {
-            description: normalized.message,
-          }
-        );
+      }
+
+      preparedTargets.push({
+        ...target,
+        projectName: project?.name ?? target.projectId,
+        repoPath,
+        worktreePath,
+      });
+    }
+  } catch (error) {
+    for (const target of rollbackTargets.reverse()) {
+      try {
+        await tauriIpc.gitWorktreeRemove({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          force: false,
+          branchName: target.branchName,
+        });
+      } catch (rollbackError) {
+        devLogger.warn('[tasks] Could not roll back a worktree after task preparation failed.', {
+          taskId: task.id,
+          projectId: target.projectId,
+          error: toServiceError(rollbackError).message,
+        });
       }
     }
-
-    preparedTargets.push({
-      ...target,
-      projectName: project?.name ?? target.projectId,
-      repoPath,
-      worktreePath,
-    });
+    throw error;
   }
 
   return {

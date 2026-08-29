@@ -38,11 +38,18 @@ describe('resolveProjectExecutionMode', () => {
     expect(resolveProjectExecutionMode({ project: inputProject, target: inputTarget }).mode).toBe(expected);
   });
 
-  it('never migrates a legacy target to Git when the observed project is not Git', () => {
+  it('blocks a legacy target when the observed project is confirmed not Git', () => {
     expect(resolveProjectExecutionMode({
       project: project({ gitSetupState: 'not_git', directEdit: false, isReadOnly: true }),
       target: target(),
-    })).toMatchObject({ mode: 'invalid', reason: 'target_mode_missing' });
+    })).toMatchObject({ mode: 'blocked', reason: 'git_not_initialized' });
+  });
+
+  it('migrates a legacy target to direct only when direct editing is currently enabled', () => {
+    expect(resolveProjectExecutionMode({
+      project: project({ gitSetupState: 'not_git', directEdit: true }),
+      target: target(),
+    })).toMatchObject({ mode: 'direct', reason: 'direct_edit_enabled', source: 'legacy_migration' });
   });
 
   it('migrates a legacy target to Git only from a confirmed ready project', () => {

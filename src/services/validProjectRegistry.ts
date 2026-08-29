@@ -20,6 +20,7 @@ export interface ValidProjectRegistrySnapshot {
   readOnlyProjectIds: string[];
   actionableProjectIdSet: Set<string>;
   readOnlyProjectIdSet: Set<string>;
+  manualReadOnlyProjectIdSet?: Set<string>;
   validProjectIds: string[];
   validProjectIdSet: Set<string>;
   repoPathByProjectId: Map<string, string>;
@@ -37,6 +38,7 @@ const emptySnapshot = (): ValidProjectRegistrySnapshot => ({
   readOnlyProjectIds: [],
   actionableProjectIdSet: new Set<string>(),
   readOnlyProjectIdSet: new Set<string>(),
+  manualReadOnlyProjectIdSet: new Set<string>(),
   validProjectIds: [],
   validProjectIdSet: new Set<string>(),
   repoPathByProjectId: new Map<string, string>(),
@@ -67,6 +69,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
   const actionableProjectIdSet = new Set<string>();
   const readOnlyProjectIds: string[] = [];
   const readOnlyProjectIdSet = new Set<string>();
+  const manualReadOnlyProjectIdSet = new Set<string>();
   const repoPathByProjectId = new Map<string, string>();
   const workspacePathByProjectId = new Map<string, string>();
   const gitFlowSettingsByProjectId = new Map<string, ProjectGroup['projects'][number]['gitFlowSettings']>();
@@ -85,6 +88,9 @@ export const buildValidProjectRegistrySnapshot = (params: {
     validProjectIdSet.add(projectId);
     workspacePathByProjectId.set(projectId, repoPath);
     gitFlowSettingsByProjectId.set(projectId, project.gitFlowSettings);
+    if (project.userReadOnly) {
+      manualReadOnlyProjectIdSet.add(projectId);
+    }
     const executionMode = resolveProjectExecutionMode({ project }).mode;
     if (executionMode !== 'git' && executionMode !== 'direct') {
       readOnlyProjectIds.push(projectId);
@@ -144,6 +150,7 @@ export const buildValidProjectRegistrySnapshot = (params: {
     readOnlyProjectIds: scopedReadOnlyProjectIds,
     actionableProjectIdSet,
     readOnlyProjectIdSet,
+    manualReadOnlyProjectIdSet,
     validProjectIds,
     validProjectIdSet,
     repoPathByProjectId,

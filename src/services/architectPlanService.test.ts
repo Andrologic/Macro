@@ -1398,6 +1398,59 @@ describe('architectPlanService', () => {
     expect(runtimeHead).not.toHaveBeenCalled();
   });
 
+  it('keeps persisted direct plan targets when direct editing becomes blocked', async () => {
+    const baseSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs']),
+      readOnlyProjectIdSet: new Set<string>(),
+      manualReadOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs'],
+      validProjectIdSet: new Set(['docs']),
+      repoPathByProjectId: new Map(),
+      workspacePathByProjectId: new Map([['docs', '/repos/docs']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['docs', 'direct']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: baseSnapshot,
+      filesByWorkspacePath,
+    });
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: 'direct-plan-blocked-after-reload',
+      projectIds: ['docs'],
+    });
+
+    const blockedSnapshot: ValidProjectRegistrySnapshot = {
+      ...baseSnapshot,
+      actionableProjectIds: [],
+      readOnlyProjectIds: ['docs'],
+      actionableProjectIdSet: new Set<string>(),
+      readOnlyProjectIdSet: new Set(['docs']),
+      executionModeByProjectId: new Map(),
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: blockedSnapshot,
+      filesByWorkspacePath,
+    });
+
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
+    expect(reloaded?.projectIds).toEqual(['docs']);
+    expect(reloaded?.executionModesByProjectId).toEqual({ docs: 'direct' });
+  });
+
   it('flushes task execution metadata only for persisted Git targets in a mixed plan', async () => {
     const projects = [
       {

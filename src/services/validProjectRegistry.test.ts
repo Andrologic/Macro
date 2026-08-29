@@ -83,4 +83,34 @@ describe('validProjectRegistry', () => {
     expect(snapshot.repoPathByProjectId.has('project-direct')).toBe(false);
     expect(snapshot.executionModeByProjectId.get('project-direct')).toBe('direct');
   });
+
+  it('distinguishes an execution-blocked project from a manually read-only project', () => {
+    const blockedProject = {
+      ...makeProject('project-blocked', 'C:/dev/blocked'),
+      directEdit: false,
+      gitSetupState: 'not_git' as const,
+      isReadOnly: true,
+      userReadOnly: false,
+    };
+    const manualProject = {
+      ...makeProject('project-manual', 'C:/dev/manual'),
+      isReadOnly: true,
+      userReadOnly: true,
+    };
+
+    const snapshot = buildValidProjectRegistrySnapshot({
+      projectGroups: [{
+        id: 'group-read-only',
+        name: 'Read only',
+        isOpen: true,
+        projects: [blockedProject, manualProject],
+      }],
+      selectedGroupId: 'group-read-only',
+      selectedProjectId: null,
+    });
+
+    expect(snapshot.readOnlyProjectIdSet.has('project-blocked')).toBe(true);
+    expect(snapshot.manualReadOnlyProjectIdSet?.has('project-blocked')).toBe(false);
+    expect(snapshot.manualReadOnlyProjectIdSet?.has('project-manual')).toBe(true);
+  });
 });

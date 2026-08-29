@@ -874,7 +874,9 @@ const normalizeContextProjectIds = (
       if (!registrySnapshot?.validProjectIdSet.has(normalizedProjectId)) {
         continue;
       }
-      if (!registrySnapshot?.readOnlyProjectIdSet.has(normalizedProjectId)) {
+      const contextProjectIdSet = registrySnapshot.manualReadOnlyProjectIdSet ??
+        registrySnapshot.readOnlyProjectIdSet;
+      if (!contextProjectIdSet.has(normalizedProjectId)) {
         continue;
       }
     }
@@ -1819,7 +1821,9 @@ const sanitizeProjectIdsForRegistry = (
       continue;
     }
 
-    if (validateProjectIds && registrySnapshot?.readOnlyProjectIdSet.has(normalizedProjectId)) {
+    const manualReadOnlyProjectIdSet = registrySnapshot?.manualReadOnlyProjectIdSet ??
+      registrySnapshot?.readOnlyProjectIdSet;
+    if (validateProjectIds && manualReadOnlyProjectIdSet?.has(normalizedProjectId)) {
       removedInvalidProjectIds.push(normalizedProjectId);
       continue;
     }
@@ -1887,7 +1891,10 @@ const sanitizePredictedBranchesForRegistry = (
     if (
       isSyntheticProjectId(normalizedProjectId) ||
       (validateProjectIds && !registrySnapshot?.validProjectIdSet.has(normalizedProjectId)) ||
-      (validateProjectIds && Boolean(registrySnapshot?.readOnlyProjectIdSet.has(normalizedProjectId)))
+      (validateProjectIds && Boolean(
+        (registrySnapshot?.manualReadOnlyProjectIdSet ?? registrySnapshot?.readOnlyProjectIdSet)
+          ?.has(normalizedProjectId),
+      ))
     ) {
       removedInvalidProjectIds.push(normalizedProjectId);
       changed = true;
@@ -2053,7 +2060,10 @@ const sanitizeArchitectPlanRecord = (
     registrySnapshot
   );
   const migratedContextProjectIds = registrySnapshot?.hasRegisteredProjects
-    ? (normalizedPlan.projectIds || []).filter((projectId) => registrySnapshot.readOnlyProjectIdSet.has(projectId))
+    ? (normalizedPlan.projectIds || []).filter((projectId) =>
+        (registrySnapshot.manualReadOnlyProjectIdSet ?? registrySnapshot.readOnlyProjectIdSet)
+          .has(projectId)
+      )
     : [];
   const sanitizedContextProjectIds = normalizeContextProjectIds(
     [...(normalizedPlan.contextProjectIds || []), ...migratedContextProjectIds],
@@ -2211,7 +2221,10 @@ const sanitizeArchitectPlanSummary = (
     registrySnapshot
   );
   const migratedContextProjectIds = registrySnapshot?.hasRegisteredProjects
-    ? (normalizedSummary.projectIds || []).filter((projectId) => registrySnapshot.readOnlyProjectIdSet.has(projectId))
+    ? (normalizedSummary.projectIds || []).filter((projectId) =>
+        (registrySnapshot.manualReadOnlyProjectIdSet ?? registrySnapshot.readOnlyProjectIdSet)
+          .has(projectId)
+      )
     : [];
   const sanitizedContextProjectIds = normalizeContextProjectIds(
     [...(normalizedSummary.contextProjectIds || []), ...migratedContextProjectIds],
