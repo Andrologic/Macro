@@ -6,6 +6,29 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+## 0.1.2
+
+### Added
+
+- Added direct tasks for working in the current checkout of a Git repository without creating a worktree.
+- Added direct and mixed Architect plans for folders that do not use Git.
+- Added scoped `AGENTS.md` loading so agents receive the instructions that belong to each active repository.
+- Added a browser runtime bridge for debugging the real Tauri backend from a local browser.
+
+### Changed
+
+- Signed updates now download in the background and can be installed on the next launch or immediately after Macro checks for active work.
+- Conversation compaction now runs before provider limits are reached, removes superseded file reads, and records more complete diagnostics.
+- Responses cut off by the model output limit can continue once in the same turn.
+- Update-channel controls and shared settings components now use a denser, more consistent layout.
+
+### Fixed
+
+- Fixed direct and mixed task routing across preparation, execution, review, persistence, and project retargeting.
+- Fixed incomplete chat streams, tool-result pairing, and compaction checkpoints that could lose the terminal cause or resume from stale state.
+- Fixed archived conversation hydration, provider form state, modal borders, focus indicators, and several settings inconsistencies.
+- Fixed silent update installation on Windows by using the shared background-process wrapper.
+
 ## 0.1.1
 
 ### Added

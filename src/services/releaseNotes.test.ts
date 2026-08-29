@@ -10,6 +10,12 @@ import {
 describe('release notes', () => {
   it('ships bootstrap notes for supported public versions', () => {
     expect(getReleaseNote('0.1.0', 'en')).not.toBeNull();
+    expect(getReleaseNote('0.1.2', 'en')?.content).toContain(
+      '## Direct work without a worktree',
+    );
+    expect(getReleaseNote('0.1.2', 'fr-FR')?.content).toContain(
+      '## Instructions de dépôt',
+    );
     expect(getReleaseNote('0.1.1', 'en')?.content).toContain('## Automatic updates');
     expect(getReleaseNote('0.1.1', 'en')?.content).toContain('## Context and images');
     expect(getReleaseNote('0.1.1', 'fr-FR')?.content).toContain(
