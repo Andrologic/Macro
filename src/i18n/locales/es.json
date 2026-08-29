@@ -648,7 +648,7 @@
     "archivedView": "Archived view",
     "archivedConversationReadOnly": "Esta conversación está archivada. Restáurala antes de enviar otro mensaje.",
     "archivedConversationPlaceholder": "Restaura esta conversación para continuar.",
-    "noArchivedResults": "No archived conversations match this search",
+    "noArchivedResults": "Ninguna conversación archivada coincide con esta búsqueda.",
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
     "noActiveConversationsDescription": "Start a new conversation to see it here.",
@@ -1447,6 +1447,8 @@
     },
     "projectNavigator": {
       "title": "Proyectos",
+      "searchPlans": "Buscar planes...",
+      "noSearchResults": "Ningún plan coincide con esta búsqueda.",
       "projects": "Todos los proyectos",
       "pinned": "Fijados",
       "archived": "Archivados",

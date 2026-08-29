@@ -5,6 +5,7 @@ import type { ArchitectPlanCatalogBranch } from '../../services/macroProjectMeta
 import {
   buildArchitectNavigatorPlanEntries,
   buildArchitectNavigatorScopes,
+  filterArchitectPlanEntriesByQuery,
   sanitizeArchitectNavigatorIds,
   toggleArchitectNavigatorScope,
 } from './architectProjectNavigatorModel';
@@ -100,5 +101,28 @@ describe('architect project navigator model', () => {
   it('toggles the same project row open and closed', () => {
     expect(toggleArchitectNavigatorScope([], 'project:macro')).toEqual(['project:macro']);
     expect(toggleArchitectNavigatorScope(['project:macro'], 'project:macro')).toEqual([]);
+  });
+
+  it('filters plan titles without case or accent sensitivity and preserves their order', () => {
+    const scopes = buildArchitectNavigatorScopes({
+      projectGroups: [],
+      standaloneProjects: [project('a')],
+    });
+    const entries = buildArchitectNavigatorPlanEntries({
+      scopes,
+      branches: [{
+        branchName: 'develop',
+        activePlanId: null,
+        error: null,
+        plans: [
+          plan({ id: 'first', title: 'Préparer le déploiement', projectId: 'a', updatedAt: '2026-08-03T00:00:00.000Z' }),
+          plan({ id: 'second', title: 'Réparer la navigation', projectId: 'a', updatedAt: '2026-08-02T00:00:00.000Z' }),
+        ],
+      }],
+    });
+
+    expect(filterArchitectPlanEntriesByQuery(entries, 'DEPLOIEMENT').map((entry) => entry.plan.id)).toEqual(['first']);
+    expect(filterArchitectPlanEntriesByQuery(entries, '').map((entry) => entry.plan.id)).toEqual(['first', 'second']);
+    expect(filterArchitectPlanEntriesByQuery(entries, 'conversation')).toEqual([]);
   });
 });

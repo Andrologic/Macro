@@ -1,4 +1,5 @@
 import type { Conversation } from '../../types';
+import { matchesLocalSearchQuery } from '../../services/localModeSearch';
 
 export const normalizeConversationIdList = (value: unknown): string[] => {
   if (!Array.isArray(value)) {
@@ -82,15 +83,11 @@ export const filterConversationsByQuery = (
   conversations: Conversation[],
   searchQuery: string
 ): Conversation[] => {
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-  if (!normalizedQuery) {
-    return conversations;
-  }
-
-  return conversations.filter(
-    (conversation) =>
-      conversation.title.toLowerCase().includes(normalizedQuery) ||
-      conversation.description?.toLowerCase().includes(normalizedQuery)
+  return conversations.filter((conversation) =>
+    matchesLocalSearchQuery(searchQuery, [
+      conversation.title,
+      conversation.description,
+    ])
   );
 };
 

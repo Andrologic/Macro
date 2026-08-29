@@ -1,5 +1,7 @@
 {
   "tasks": "Tâches",
+  "searchTasks": "Rechercher des tâches...",
+  "noSearchResults": "Aucune tâche ne correspond à cette recherche.",
   "createStandaloneTask": "Créer une tâche autonome",
   "standaloneLaunch": { "title": "Préparation de la tâche", "preparingTask": "Préparation de la tâche", "creatingName": "Création du nom", "creatingWorkspace": "Création de l’espace de travail", "preparingProject": "Préparation du projet", "startingAgent": "Démarrage de l’agent", "ready": "Prête", "retry": "Réessayer", "details": "Détails" },
   "selectProject": "Sélectionnez un projet pour afficher les tâches",

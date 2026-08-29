@@ -497,6 +497,88 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Blocked task');
   });
 
+  it('searches within the active task filters and activates the selected result', async () => {
+    const activateTask = mock(async () => undefined);
+    seedTasks([
+      makeTask('ready-task', 'Pending', { title: 'Préparer le déploiement' }),
+      makeTask('blocked-task', 'Blocked', {
+        title: 'Déploiement bloqué',
+        is_blocked: true,
+        is_ready: false,
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      activateTask: activateTask as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const readyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Ready'));
+    await act(async () => {
+      readyFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-tour-id="implement-task-search"]')).toBeNull();
+    const searchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-search-toggle"]'
+    );
+    expect(searchToggle?.className).toContain('h-7 w-7');
+    await act(async () => {
+      searchToggle?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    const searchInput = document.body.querySelector<HTMLInputElement>(
+      '[data-tour-id="implement-task-search"] input'
+    );
+    const header = searchInput?.closest('.h-12');
+    const openSearchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-search-toggle"]'
+    );
+    const searchBar = document.body.querySelector<HTMLElement>(
+      '[data-tour-id="implement-task-search"]'
+    );
+    expect(header).not.toBeNull();
+    expect(header?.className).toContain('gap-2');
+    expect(openSearchToggle?.className).toContain('h-8 w-8');
+    expect(searchBar?.className).toContain('focus-within:border-border');
+    expect(searchBar?.className).toContain('focus-within:ring-0');
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value'
+    )?.set;
+    await act(async () => {
+      valueSetter?.call(searchInput, 'DEPLOIEMENT');
+      searchInput?.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Préparer le déploiement');
+    expect(document.body.textContent).not.toContain('Déploiement bloqué');
+
+    const resultCard = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]')
+    ).find((element) => element.textContent?.includes('Préparer le déploiement'));
+    await act(async () => {
+      resultCard?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+    expect(activateTask).toHaveBeenCalledWith('ready-task');
+
+    await act(async () => {
+      valueSetter?.call(searchInput, 'conversation');
+      searchInput?.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain('No task matches this search.');
+  });
+
   it('sends task workspace errors to an actionable retry notification', async () => {
     seedStores('Pending');
     const activateTask = mock(() => undefined);

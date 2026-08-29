@@ -1,5 +1,7 @@
 {
   "tasks": "タスク",
+  "searchTasks": "タスクを検索...",
+  "noSearchResults": "この検索に一致するタスクはありません。",
   "createStandaloneTask": "スタンドアロンタスクの作成",
   "standaloneLaunch": { "title": "タスクの準備", "preparingTask": "タスクを準備中", "creatingName": "名前を作成中", "creatingWorkspace": "ワークスペースを作成中", "preparingProject": "プロジェクトを準備中", "startingAgent": "エージェントを起動中", "ready": "準備完了", "retry": "再試行", "details": "詳細" },
   "selectProject": "タスクを表示するにはプロジェクトを選択してください",
