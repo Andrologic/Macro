@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { findReusableRun, selectReusableRun } from './find-reusable-ci.mjs';
+import { findReusableRun, hasSuccessfulJobStep, selectReusableRun } from './find-reusable-ci.mjs';
 
 const expected = {
   branch: 'main',
@@ -48,5 +48,92 @@ describe('reusable CI lookup', () => {
   test('rejects an unsuccessful GitHub response', async () => {
     const request = async () => new Response('', { status: 403 });
     await expect(findReusableRun(expected, request as typeof fetch)).rejects.toThrow('HTTP 403');
+  });
+
+  test('requires the selected job and step to have completed successfully', () => {
+    const jobs = [{
+      name: 'Linux validation',
+      status: 'completed',
+      conclusion: 'success',
+      steps: [
+        { name: 'Run conservative validation profile', status: 'completed', conclusion: 'skipped' },
+        { name: 'Run shared frontend validation profile', status: 'completed', conclusion: 'success' },
+      ],
+    }];
+
+    expect(hasSuccessfulJobStep(jobs, 'Linux validation', 'Run conservative validation profile')).toBe(false);
+    expect(hasSuccessfulJobStep(jobs, 'Linux validation', 'Run shared frontend validation profile')).toBe(true);
+    expect(hasSuccessfulJobStep(jobs, 'Windows native check', undefined)).toBe(false);
+  });
+
+  test('does not reuse a green workflow when the required full-validation step was skipped', async () => {
+    const candidate = {
+      event: 'push',
+      head_branch: 'main',
+      head_sha: expected.sha,
+      status: 'completed',
+      conclusion: 'success',
+      html_url: 'https://github.com/Andrologic/Macro/actions/runs/1',
+      jobs_url: 'https://api.github.com/repos/Andrologic/Macro/actions/runs/1/jobs',
+    };
+    const request = async (url: string | URL) => {
+      if (String(url).includes('/jobs?')) {
+        return new Response(JSON.stringify({
+          jobs: [{
+            name: 'Linux validation',
+            status: 'completed',
+            conclusion: 'success',
+            steps: [{
+              name: 'Run conservative validation profile',
+              status: 'completed',
+              conclusion: 'skipped',
+            }],
+          }],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ workflow_runs: [candidate] }), { status: 200 });
+    };
+
+    const reusable = await findReusableRun({
+      ...expected,
+      requiredJob: 'Linux validation',
+      requiredStep: 'Run conservative validation profile',
+    }, request as typeof fetch);
+    expect(reusable).toBeUndefined();
+  });
+
+  test('reuses a green workflow after verifying the required full-validation step', async () => {
+    const candidate = {
+      event: 'push',
+      head_branch: 'main',
+      head_sha: expected.sha,
+      status: 'completed',
+      conclusion: 'success',
+      html_url: 'https://github.com/Andrologic/Macro/actions/runs/2',
+      jobs_url: 'https://api.github.com/repos/Andrologic/Macro/actions/runs/2/jobs',
+    };
+    const request = async (url: string | URL) => new Response(JSON.stringify(
+      String(url).includes('/jobs?')
+        ? {
+            jobs: [{
+              name: 'Linux validation',
+              status: 'completed',
+              conclusion: 'success',
+              steps: [{
+                name: 'Run conservative validation profile',
+                status: 'completed',
+                conclusion: 'success',
+              }],
+            }],
+          }
+        : { workflow_runs: [candidate] },
+    ), { status: 200 });
+
+    const reusable = await findReusableRun({
+      ...expected,
+      requiredJob: 'Linux validation',
+      requiredStep: 'Run conservative validation profile',
+    }, request as typeof fetch);
+    expect(reusable?.html_url).toBe(candidate.html_url);
   });
 });

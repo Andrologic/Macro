@@ -22,6 +22,46 @@ export function selectReusableRun(runs, expected) {
   ));
 }
 
+export function hasSuccessfulJobStep(jobs, requiredJob, requiredStep) {
+  if (!Array.isArray(jobs)) {
+    return false;
+  }
+
+  const job = jobs.find((candidate) => (
+    candidate?.name === requiredJob
+    && candidate?.status === 'completed'
+    && candidate?.conclusion === 'success'
+  ));
+  if (!job) {
+    return false;
+  }
+  if (!requiredStep) {
+    return true;
+  }
+
+  return Array.isArray(job.steps) && job.steps.some((step) => (
+    step?.name === requiredStep
+    && step?.status === 'completed'
+    && step?.conclusion === 'success'
+  ));
+}
+
+async function requestJson(url, options, request) {
+  const response = await request(url, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${options.token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub returned HTTP ${response.status}.`);
+  }
+
+  return response.json();
+}
+
 export async function findReusableRun(options, request = fetch) {
   const workflow = encodeURIComponent(options.workflow);
   const query = new URLSearchParams({
@@ -31,23 +71,34 @@ export async function findReusableRun(options, request = fetch) {
     per_page: '10',
     status: 'success',
   });
-  const response = await request(
+  const payload = await requestJson(
     `https://api.github.com/repos/${options.repository}/actions/workflows/${workflow}/runs?${query}`,
-    {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${options.token}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    },
+    options,
+    request,
   );
-
-  if (!response.ok) {
-    throw new Error(`GitHub returned HTTP ${response.status}.`);
+  const candidates = Array.isArray(payload.workflow_runs)
+    ? payload.workflow_runs.filter((run) => selectReusableRun([run], options))
+    : [];
+  if (!options.requiredJob) {
+    return candidates[0];
   }
 
-  const payload = await response.json();
-  return selectReusableRun(payload.workflow_runs, options);
+  for (const candidate of candidates) {
+    if (!candidate.jobs_url) {
+      continue;
+    }
+    const separator = candidate.jobs_url.includes('?') ? '&' : '?';
+    const jobsPayload = await requestJson(
+      `${candidate.jobs_url}${separator}filter=latest&per_page=100`,
+      options,
+      request,
+    );
+    if (hasSuccessfulJobStep(jobsPayload.jobs, options.requiredJob, options.requiredStep)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
 }
 
 function appendOutput(file, name, value) {
@@ -60,6 +111,8 @@ async function main() {
     branch: argumentValue('--branch'),
     event: argumentValue('--event') || 'push',
     repository: process.env.GITHUB_REPOSITORY,
+    requiredJob: argumentValue('--required-job'),
+    requiredStep: argumentValue('--required-step'),
     sha: argumentValue('--sha'),
     token: process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
     workflow: argumentValue('--workflow') || 'ci.yml',

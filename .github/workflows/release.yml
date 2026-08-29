@@ -127,6 +127,8 @@ jobs:
           --branch main
           --event push
           --sha "$GITHUB_SHA"
+          --required-job "Linux validation"
+          --required-step "Run conservative validation profile"
           --github-output "$GITHUB_OUTPUT"
 
       - name: Restore frontend dependency cache

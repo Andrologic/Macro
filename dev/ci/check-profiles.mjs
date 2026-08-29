@@ -28,7 +28,14 @@ const rustTestCheck = step('Run locked Rust tests for all targets', 'cargo', [
   '--',
   '--test-threads=1',
 ]);
-const nativeChecks = [sidecarCheck, rustTestCheck];
+const rustDocTestCheck = step('Run locked Rust doc tests', 'cargo', [
+  'test',
+  '--manifest-path',
+  'src-tauri/Cargo.toml',
+  '--locked',
+  '--doc',
+]);
+const nativeChecks = [sidecarCheck, rustTestCheck, rustDocTestCheck];
 
 const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
   'check',
@@ -61,7 +68,7 @@ export function stepsForProfile(profile, options = {}) {
     case 'native':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
     case 'native-core':
-      return [...repositoryChecks, rustTestCheck];
+      return [...repositoryChecks, rustTestCheck, rustDocTestCheck];
     case 'sidecar':
       return [...install, sidecarCheck];
     case 'windows':

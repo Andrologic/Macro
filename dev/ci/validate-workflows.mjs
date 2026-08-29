@@ -159,6 +159,8 @@ export function validateWorkflowDocument(document, filePath) {
       && step.run.includes('dev/ci/find-reusable-ci.mjs')
       && step.run.includes('--branch main')
       && step.run.includes('--sha "$GITHUB_SHA"')
+      && step.run.includes('--required-job "Linux validation"')
+      && step.run.includes('--required-step "Run conservative validation profile"')
     ));
     const fallbackIndex = validationSteps.findIndex((step) => (
       step?.name === 'Run fallback release validation profile'
@@ -260,6 +262,8 @@ export function validateWorkflowDocument(document, filePath) {
       && step.run.includes('dev/ci/find-reusable-ci.mjs')
       && step.run.includes('--branch develop')
       && step.run.includes('--sha "$SOURCE_SHA"')
+      && step.run.includes('--required-job "Linux validation"')
+      && step.run.includes('--required-step "Run conservative validation profile"')
     ));
     const fallbackIndex = validationSteps.findIndex((step) => (
       step?.name === 'Run fallback validation profile'

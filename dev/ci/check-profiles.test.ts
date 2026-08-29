@@ -17,6 +17,7 @@ describe('local CI profiles', () => {
     const checks = names('native');
     expect(checks).toContain('Run frontend tests');
     expect(checks).toContain('Run locked Rust tests for all targets');
+    expect(checks).toContain('Run locked Rust doc tests');
     expect(checks).not.toContain('Check all Windows native targets');
   });
 
@@ -26,6 +27,7 @@ describe('local CI profiles', () => {
       'Reject generated binaries',
       'Check Tauri updater configuration',
       'Run locked Rust tests for all targets',
+      'Run locked Rust doc tests',
     ]);
   });
 
@@ -44,6 +46,7 @@ describe('local CI profiles', () => {
       const steps = stepsForProfile('full', { platform });
       const rustTests = steps.find((entry) => entry.name === 'Run locked Rust tests for all targets');
       expect(rustTests?.args).toContain('--all-targets');
+      expect(steps.filter((entry) => entry.name === 'Run locked Rust doc tests')).toHaveLength(1);
       expect(steps.filter((entry) => entry.name === 'Check all Windows native targets')).toHaveLength(0);
     }
   });
