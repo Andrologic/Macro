@@ -6,6 +6,31 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+## 0.1.3
+
+### Added
+
+- Added compact, mode-specific search for Implement tasks, Conversation chats, and Architect plans.
+- Added persistent composer drafts for text, pasted images, and context references, isolated per task or conversation.
+- Added visible progress steps while Macro names and prepares a new standalone task and its workspace.
+
+### Changed
+
+- Windows installers now default to the standard per-user Programs folder and preserve valid existing install locations without reusing temporary test paths.
+- Local CI reuses proven checks more aggressively while keeping release validation exhaustive.
+
+### Fixed
+
+- Fixed browser runtime session ownership and concurrent RPC dispatch during client handoffs.
+- Fixed project creation, Architect bootstrap, and post-creation work that could stall or briefly show an incorrect empty state.
+- Fixed stale asynchronous completions and concurrent hydration that could overwrite newer task or project state.
+- Fixed Git review recovery so checkpoints, snapshots, paths, cancellation, and restoration remain tied to the exact reviewed state.
+- Fixed composer drafts being cleared before a send was confirmed.
+
+### Security
+
+- Tightened Git recovery boundaries for external paths, direct checkpoints, and mutation requests derived from stale snapshots.
+
 ## 0.1.2
 
 ### Added

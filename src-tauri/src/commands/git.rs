@@ -10382,7 +10382,7 @@ fn restore_direct_tracked_path(
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStringExt;
-            if object_size > MAX_REVIEW_INLINE_BYTES {
+            if object_size > review::MAX_REVIEW_INLINE_BYTES {
                 return Err(BackendError::Validation(format!(
                     "Direct checkpoint link target is too large: {display_path}"
                 )));
