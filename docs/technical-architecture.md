@@ -725,7 +725,9 @@ Cette séparation permet :
 - d'exposer un état clair dans l'interface
 - de gérer les conflits metadata de façon explicite
 
-### 12.7 Exécution directe sans dépôt Git
+### 12.7 Exécution directe dans le dossier du projet
+
+Le type de tâche `direct` utilise toujours `executionKind: repository_root`. Avec Git, il conserve `executionMode: git`, la branche courante et le hash du commit de départ. Cette combinaison réutilise la revue, l'index et le commit Git existants sans provisionner de worktree. La création exige un dossier propre. Le commit vérifie que la branche courante correspond encore à la branche capturée. La différence entre le commit de départ et le `HEAD` courant permet de retrouver l'état validé après un redémarrage. L'archivage, la suppression et le retour au brouillon ne suppriment jamais cette branche ni le dossier du projet.
 
 Le résolveur typé `projectExecutionMode` est la source de vérité commune. Il retourne `git`, `direct`, `blocked` ou `invalid` à partir de l'état observé du projet et du mode persisté de la cible. Un état observé `not_git` ne devient jamais Git par défaut. Une ancienne cible sans `executionMode` suit l'état confirmé du projet. Une cible persistée valide conserve son mode pendant sa tâche, y compris si le projet est ensuite initialisé en Git ou si l'édition directe est désactivée.
 

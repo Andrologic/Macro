@@ -5,18 +5,18 @@ import {
 } from './standaloneTaskKinds';
 
 describe('standaloneTaskKinds', () => {
-  it('allows Feature, Bugfix, and Hotfix with a distinct development branch', () => {
+  it('allows Feature, Bugfix, Hotfix, and Direct with a distinct development branch', () => {
     expect(getCreatableStandaloneTaskKinds({
       baseBranch: 'develop',
       mainBranch: 'main',
-    })).toEqual(['feature', 'bugfix', 'hotfix']);
+    })).toEqual(['direct', 'feature', 'bugfix', 'hotfix']);
   });
 
   it('removes Bugfix when the project uses its production branch as the development target', () => {
     expect(getCreatableStandaloneTaskKinds({
       baseBranch: 'main',
       mainBranch: 'main',
-    })).toEqual(['feature', 'hotfix']);
+    })).toEqual(['direct', 'feature', 'hotfix']);
     expect(isStandaloneTaskKindCreatable('bugfix', {
       baseBranch: 'MAIN',
       mainBranch: 'main',
@@ -25,6 +25,7 @@ describe('standaloneTaskKinds', () => {
 
   it('keeps legacy projects permissive when their workflow settings are unavailable', () => {
     expect(getCreatableStandaloneTaskKinds(undefined)).toEqual([
+      'direct',
       'feature',
       'bugfix',
       'hotfix',

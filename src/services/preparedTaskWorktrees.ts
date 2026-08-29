@@ -78,6 +78,10 @@ export const resolvePreparedTaskWorktreePath = async (params: {
       return null;
     }
 
+    if (params.target.executionKind === 'repository_root') {
+      return repoPath;
+    }
+
     const inspection = await params.tauri.gitWorktreeInspect({
       repoPath,
       taskId: params.target.worktreeKey,

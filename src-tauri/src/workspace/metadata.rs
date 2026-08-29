@@ -376,8 +376,12 @@ pub struct WorkspaceTaskExecutionTargetDto {
     pub target_branch_name: Option<String>,
     #[serde(default, rename = "executionMode")]
     pub execution_mode: Option<String>,
+    #[serde(default, rename = "executionKind")]
+    pub execution_kind: Option<String>,
     #[serde(default, rename = "checkpointId")]
     pub checkpoint_id: Option<String>,
+    #[serde(default, rename = "baseCommitHash")]
+    pub base_commit_hash: Option<String>,
     #[serde(rename = "worktreeKey")]
     pub worktree_key: String,
     #[serde(default, rename = "repoPath")]

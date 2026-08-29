@@ -322,7 +322,7 @@ export const deriveFallbackImplementTasks = (tasks: Task[]): CatalogedImplementT
       draft: isDraft,
       standalone_kind: raw.standalone_kind === 'manual_feature' ? 'manual_feature' : 'legacy',
       task_kind:
-        raw.task_kind === 'feature' || raw.task_kind === 'bugfix' || raw.task_kind === 'hotfix'
+        raw.task_kind === 'feature' || raw.task_kind === 'bugfix' || raw.task_kind === 'hotfix' || raw.task_kind === 'direct'
           ? raw.task_kind
           : null,
       base_branch: typeof raw.base_branch === 'string' ? raw.base_branch : null,

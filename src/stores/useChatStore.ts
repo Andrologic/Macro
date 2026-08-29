@@ -847,7 +847,8 @@ const extractManualFeatureMetadataFromModelOutput = (
     typeof parsed.featureSlug !== "string" ||
     (parsed.taskKind !== "feature" &&
       parsed.taskKind !== "bugfix" &&
-      parsed.taskKind !== "hotfix")
+      parsed.taskKind !== "hotfix" &&
+      parsed.taskKind !== "direct")
   ) {
     throw new Error("Invalid manual feature metadata shape");
   }
@@ -870,7 +871,15 @@ const extractManualFeatureMetadataFromModelOutput = (
   return { title, description, featureSlug, taskKind };
 };
 
-const buildManualFeatureFallbackMetadata = (content: string, taskTitle = '') => {
+const buildManualFeatureFallbackMetadata = (
+  content: string,
+  taskTitle = '',
+): {
+  title: string;
+  description: string;
+  featureSlug: string;
+  taskKind: StandaloneTaskKind;
+} => {
   const title = getConversationFallbackTitle(content);
   const description = getConversationFallbackDescription(content);
   const featureSlug = normalizeManualFeatureSlugInput(title || content);
@@ -7961,7 +7970,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           "featureSlug: lowercase kebab-case branch slug without any branch prefix. " +
           (selectedTaskKind
             ? `taskKind must be exactly ${selectedTaskKind}, as selected by the user. Do not change it. `
-            : "taskKind must be exactly feature, bugfix, or hotfix. ") +
+            : "taskKind must be exactly feature, bugfix, hotfix, or direct. ") +
           "The concrete branch name is rendered later from the selected project's Git Flow template." +
           unavailableBranchSummary,
       },
@@ -8251,6 +8260,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       featureSlug: string,
       taskKind: StandaloneTaskKind,
     ): Array<{ projectId: string; branchName: string }> => {
+      if (taskKind === "direct") {
+        return [];
+      }
       const projectIdsToCheck =
         projectIds.length > 0
           ? projectIds.filter((projectId) =>

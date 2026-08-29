@@ -2,10 +2,22 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import {
+  installTauriRuntimeMock,
+  removeTauriRuntimeMock,
+} from '../../test-utils/tauriRuntime';
 
 let availableStartPoints = {
   worktrees: [] as Array<{ name: string; path: string; branchName: string; isDirty: boolean }>,
   branches: [] as Array<{ name: string; commit: string }>,
+};
+let currentStatus = {
+  branch: 'develop',
+  head_commit: {
+    id: '0123456789abcdef0123456789abcdef01234567',
+    hash: '0123456',
+  },
+  is_clean: true,
 };
 
 mock.module('react-i18next', () => ({
@@ -16,12 +28,8 @@ mock.module('react-i18next', () => ({
 
 mock.module('../ui/Dialog', () => ({
   Dialog: ({ children, panelClassName }: { children: React.ReactNode; panelClassName?: string }) => (
-    <div data-panel-class={panelClassName}>{children}</div>
+    <div role="dialog" data-panel-class={panelClassName}>{children}</div>
   ),
-}));
-
-mock.module('../../services/tauriIpc', () => ({
-  gitTaskStartPoints: async () => availableStartPoints,
 }));
 
 import { CreateImplementTaskDialog } from './CreateImplementTaskDialog';
@@ -59,8 +67,21 @@ describe('CreateImplementTaskDialog task type help', () => {
 
   beforeEach(() => {
     availableStartPoints = { worktrees: [], branches: [] };
+    currentStatus = {
+      branch: 'develop',
+      head_commit: {
+        id: '0123456789abcdef0123456789abcdef01234567',
+        hash: '0123456',
+      },
+      is_clean: true,
+    };
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800 });
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 600 });
+    installTauriRuntimeMock(mock(async (command) => {
+      if (command === 'git_task_start_points') return availableStartPoints;
+      if (command === 'git_status') return currentStatus;
+      return undefined;
+    }));
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -69,6 +90,7 @@ describe('CreateImplementTaskDialog task type help', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    removeTauriRuntimeMock();
   });
 
   it('describes every available task type for pointer and keyboard users', async () => {
@@ -88,7 +110,13 @@ describe('CreateImplementTaskDialog task type help', () => {
       Feature: 'Feature creates a branch from the configured development branch and merges it back into that branch.',
       Bugfix: 'Bugfix creates a branch from the configured development branch and merges it back into that branch.',
       Hotfix: 'Hotfix creates a branch from the configured production branch and merges it back into that branch.',
+      Direct: 'Work in the project folder without a dedicated branch or worktree. Accepted changes are committed to the current branch.',
     };
+
+    expect(
+      Array.from(container.querySelectorAll<HTMLButtonElement>('[data-task-kind-available]'))
+        .map((button) => button.textContent?.trim())
+    ).toEqual(['Direct', 'Feature', 'Bugfix', 'Hotfix']);
 
     for (const [label, description] of Object.entries(expected)) {
       const button = Array.from(container.querySelectorAll('button')).find(
@@ -178,6 +206,143 @@ describe('CreateImplementTaskDialog task type help', () => {
     expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
   });
 
+  it('reveals Git task choices only after selecting a project', async () => {
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[project('develop', 'Develop project', 'develop', 'main')]}
+          initialProjectId={null}
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={() => undefined}
+        />
+      );
+    });
+
+    expect(container.textContent).not.toContain('Task type');
+    expect(container.textContent).not.toContain('Starting point');
+    expect(container.textContent).not.toContain('New work');
+    expect(container.textContent).not.toContain('Resume work');
+
+    const projectButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Develop project'),
+    );
+    await act(async () => projectButton?.click());
+
+    expect(container.textContent).toContain('Task type');
+    expect(container.textContent).toContain('Starting point');
+    expect(container.textContent).toContain('New work');
+    expect(container.textContent).toContain('Resume work');
+  });
+
+  it('creates a Direct task on the current branch without a worktree start point', async () => {
+    const onCreate = mock(() => undefined);
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[project('develop', 'Develop project', 'develop', 'main')]}
+          initialProjectId="develop"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={onCreate}
+        />
+      );
+    });
+    await act(async () => Promise.resolve());
+
+    const findButton = (label: string) => Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === label,
+    ) as HTMLButtonElement;
+    await act(async () => findButton('Direct').click());
+    expect(container.textContent).not.toContain('Starting point');
+    await act(async () => findButton('Create task').click());
+
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: 'develop',
+      taskKind: 'direct',
+      startPoint: {
+        kind: 'direct',
+        branchName: 'develop',
+        baseCommitHash: '0123456789abcdef0123456789abcdef01234567',
+      },
+    });
+  });
+
+  it('creates directly for a project without Git without showing task choices', async () => {
+    const onCreate = mock(() => undefined);
+    const noGitProject: TaskProjectFilterOption = {
+      ...project('folder', 'Folder project', 'develop', 'main'),
+      directEdit: true,
+      gitSetupState: 'not_git',
+    };
+
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[noGitProject]}
+          initialProjectId="folder"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={onCreate}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const createButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Create task',
+    );
+    expect(container.textContent).not.toContain('Task type');
+    expect(container.textContent).not.toContain('Starting point');
+    expect(container.querySelector('[data-task-kind-available]')).toBeNull();
+    expect(createButton?.disabled).toBe(false);
+
+    await act(async () => createButton?.click());
+    expect(onCreate).toHaveBeenCalledWith({
+      projectId: 'folder',
+      taskKind: 'direct',
+      startPoint: {
+        kind: 'direct',
+        branchName: 'direct',
+        baseCommitHash: null,
+      },
+    });
+  });
+
+  it('clears the automatic Direct choice when switching back to a Git project', async () => {
+    const noGitProject: TaskProjectFilterOption = {
+      ...project('folder', 'Folder project', 'develop', 'main'),
+      directEdit: true,
+      gitSetupState: 'not_git',
+    };
+    await act(async () => {
+      root.render(
+        <CreateImplementTaskDialog
+          projects={[
+            noGitProject,
+            project('develop', 'Develop project', 'develop', 'main'),
+          ]}
+          initialProjectId="folder"
+          isCreating={false}
+          onClose={() => undefined}
+          onCreate={() => undefined}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('Task type');
+    const gitProjectButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Develop project'),
+    );
+    await act(async () => gitProjectButton?.click());
+
+    expect(container.textContent).toContain('Task type');
+    expect(container.textContent).toContain('New work');
+    expect(container.textContent).toContain('Resume work');
+    expect(container.querySelector('[data-task-kind-available][aria-pressed="true"]')).toBeNull();
+  });
+
   it('recomputes task type availability from the selected project workflow', async () => {
     const onCreate = mock(() => undefined);
     await act(async () => {
@@ -236,54 +401,6 @@ describe('CreateImplementTaskDialog task type help', () => {
     await act(async () => createButton.click());
     expect(onCreate).toHaveBeenCalledWith({
       projectId: 'mainline',
-      taskKind: 'hotfix',
-      startPoint: { kind: 'new' },
-    });
-  });
-
-  it('offers every task kind without branch selection for a direct-edit project', async () => {
-    const onCreate = mock(() => undefined);
-    await act(async () => {
-      root.render(
-        <CreateImplementTaskDialog
-          projects={[project('direct', 'Direct project', 'develop', 'main', {
-            directEdit: true,
-            gitSetupState: 'not_git',
-          })]}
-          initialProjectId="direct"
-          isCreating={false}
-          onClose={() => undefined}
-          onCreate={onCreate}
-        />
-      );
-    });
-
-    const findButton = (label: string) => Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === label,
-    ) as HTMLButtonElement;
-    expect(findButton('Feature').getAttribute('aria-disabled')).toBe('false');
-    expect(findButton('Bugfix').getAttribute('aria-disabled')).toBe('false');
-    expect(findButton('Hotfix').getAttribute('aria-disabled')).toBe('false');
-    expect(container.textContent).not.toContain('Resume work');
-    const directHelp = 'Edit the source folder without Git branches, worktrees, or commits. Only one task can run at a time.';
-    for (const label of ['Feature', 'Bugfix', 'Hotfix']) {
-      const button = findButton(label);
-      const descriptionId = button.getAttribute('aria-describedby');
-      expect(descriptionId).toBeTruthy();
-      expect(container.querySelector(`#${descriptionId}`)?.textContent).toBe(directHelp);
-    }
-    await act(async () => findButton('Feature').dispatchEvent(new MouseEvent('mouseover', {
-      bubbles: true,
-      clientX: 100,
-      clientY: 120,
-    })));
-    expect(document.body.querySelector<HTMLElement>('[role="tooltip"]')?.textContent).toBe(directHelp);
-    await act(async () => findButton('Feature').dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
-
-    await act(async () => findButton('Hotfix').click());
-    await act(async () => findButton('Create task').click());
-    expect(onCreate).toHaveBeenCalledWith({
-      projectId: 'direct',
       taskKind: 'hotfix',
       startPoint: { kind: 'new' },
     });
