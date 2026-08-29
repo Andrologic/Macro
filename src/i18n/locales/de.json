@@ -644,7 +644,7 @@
     "archivedView": "Archived view",
     "archivedConversationReadOnly": "Diese Unterhaltung ist archiviert. Stelle sie wieder her, bevor du eine weitere Nachricht sendest.",
     "archivedConversationPlaceholder": "Stelle diese Unterhaltung wieder her, um fortzufahren.",
-    "noArchivedResults": "No archived conversations match this search",
+    "noArchivedResults": "Keine archivierte Konversation entspricht dieser Suche.",
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
     "noActiveConversationsDescription": "Start a new conversation to see it here.",

@@ -643,7 +643,7 @@
     "archivedView": "Archived view",
     "archivedConversationReadOnly": "이 대화는 보관되어 있습니다. 다른 메시지를 보내기 전에 복원하세요.",
     "archivedConversationPlaceholder": "계속하려면 이 대화를 복원하세요.",
-    "noArchivedResults": "No archived conversations match this search",
+    "noArchivedResults": "검색과 일치하는 보관된 대화가 없습니다.",
     "noArchivedConversations": "No archived conversations yet",
     "noActiveConversations": "No active conversations",
     "noActiveConversationsDescription": "Start a new conversation to see it here.",
