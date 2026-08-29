@@ -14,6 +14,66 @@ export interface PendingUpdateReleaseNote {
 type ReleaseNoteLocale = 'en' | 'fr';
 
 const RELEASE_NOTES: Record<string, Record<ReleaseNoteLocale, ReleaseNote>> = {
+  '0.1.2': {
+    en: {
+      version: '0.1.2',
+      eyebrow: 'Workflow update',
+      title: 'Macro 0.1.2',
+      summary:
+        'Direct tasks, repository instructions, safer long conversations, and background updates.',
+      content: `## Direct work without a worktree
+
+- Run a direct task in the current checkout of a Git repository when a separate branch and worktree would get in the way.
+- Folders without Git can now take part in Architect plans. A plan can mix Git projects and directly edited folders while keeping the right review and recovery flow for each one.
+- Direct work keeps its original execution mode after restarts or later Git setup, which prevents tasks from silently switching workflows.
+
+## Repository instructions
+
+- Macro now loads the applicable \`AGENTS.md\` instructions for every project in a conversation.
+- Instructions stay scoped to their own project. The context diagnostics report files that were loaded and warn when a limit or read error makes the result incomplete.
+
+## Longer, safer conversations
+
+- Conversation compaction can run before the provider limit is reached and can remove file reads that a newer read replaced.
+- If a model stops because it reached its output limit, Macro can request the missing continuation once without repeating completed text.
+- Compaction and recovery preserve tool-call pairs, errors, checkpoints, and the real reason a response ended.
+
+## Updates and interface fixes
+
+- Signed updates download in the background. Macro can install them on the next launch, or immediately after checking that no agent or implementation is still running.
+- Update-channel settings are easier to scan and show the current download or install state directly.
+- Fixed inconsistent archive state, provider forms, focus indicators, modal borders, and several settings screens.`,
+    },
+    fr: {
+      version: '0.1.2',
+      eyebrow: 'Mise à jour des workflows',
+      title: 'Macro 0.1.2',
+      summary:
+        'Tâches directes, instructions de dépôt, conversations longues plus sûres et mises à jour en arrière-plan.',
+      content: `## Travail direct sans worktree
+
+- Lancez une tâche directe dans le checkout courant d’un dépôt Git lorsqu’une branche et un worktree séparés seraient gênants.
+- Les dossiers sans Git peuvent maintenant participer aux plans Architect. Un plan peut mélanger des projets Git et des dossiers modifiés directement, tout en conservant le bon parcours de revue et de récupération pour chaque cible.
+- Le travail direct conserve son mode d’exécution après un redémarrage ou une initialisation Git ultérieure. Une tâche ne change donc pas de workflow en silence.
+
+## Instructions de dépôt
+
+- Macro charge maintenant les instructions \`AGENTS.md\` applicables à chaque projet d’une conversation.
+- Les instructions restent limitées à leur propre projet. Les diagnostics de contexte indiquent les fichiers chargés et signalent lorsqu’une limite ou une erreur de lecture rend le résultat incomplet.
+
+## Conversations longues plus sûres
+
+- Le compactage peut intervenir avant d’atteindre la limite du fournisseur et retirer les lectures de fichiers remplacées par une lecture plus récente.
+- Si un modèle s’arrête parce qu’il a atteint sa limite de sortie, Macro peut demander une fois la suite manquante sans répéter le texte déjà reçu.
+- Le compactage et la reprise préservent les paires d’appels d’outils, les erreurs, les checkpoints et la cause réelle de fin d’une réponse.
+
+## Mises à jour et corrections d’interface
+
+- Les mises à jour signées se téléchargent en arrière-plan. Macro peut les installer à la prochaine ouverture ou immédiatement après avoir vérifié qu’aucun agent ni aucune implémentation n’est encore en cours.
+- Les réglages du canal de mise à jour sont plus lisibles et affichent directement l’état du téléchargement ou de l’installation.
+- Correction d’incohérences dans les archives, les formulaires de fournisseurs, les indicateurs de focus, les contours des modales et plusieurs écrans de réglages.`,
+    },
+  },
   '0.1.1': {
     en: {
       version: '0.1.1',
