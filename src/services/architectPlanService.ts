@@ -6088,9 +6088,18 @@ export const writeArchitectTaskExecution = async (params: {
     )
   );
 
+  const executionModesByProjectId = getPlanExecutionModes(
+    replicaSet.canonical.plan,
+    registrySnapshot,
+  );
+  const persistedModes = Object.values(executionModesByProjectId);
   const taskExecutionWorkspacePaths: string[] = [];
   for (const scope of dedupeScopes(replicaSet.expectedScopes)) {
     if (scope.source === 'local' || !scope.workspacePath) continue;
+    const shouldSyncGitMetadata = scope.projectId
+      ? executionModesByProjectId[scope.projectId] === 'git'
+      : persistedModes.includes('git');
+    if (!shouldSyncGitMetadata) continue;
     taskExecutionWorkspacePaths.push(scope.workspacePath);
     recordMacroMetadataMutation({
       workspacePath: scope.workspacePath,

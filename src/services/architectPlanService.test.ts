@@ -1234,6 +1234,140 @@ describe('architectPlanService', () => {
     expect(workspaceScopeCalls.every((call) => call.workspaceScope === 'direct')).toBe(true);
   });
 
+  it('flushes task execution metadata only for persisted Git targets in a mixed plan', async () => {
+    const projects = [
+      {
+        id: 'docs',
+        path: '/repos/docs',
+        isReadOnly: false,
+        gitSetupState: 'not_git' as 'not_git' | 'ready',
+        directEdit: true,
+      },
+      {
+        id: 'api',
+        path: '/repos/api',
+        isReadOnly: false,
+        gitSetupState: 'ready' as const,
+        directEdit: false,
+      },
+    ];
+    registerAppStateGetter(() => ({ standaloneProjects: projects, projectGroups: [] }));
+    const initialSnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'docs',
+      scopedProjectIds: ['docs'],
+      actionableProjectIds: ['docs', 'api'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['docs', 'api']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['docs', 'api'],
+      validProjectIdSet: new Set(['docs', 'api']),
+      repoPathByProjectId: new Map([['api', '/repos/api']]),
+      workspacePathByProjectId: new Map([
+        ['docs', '/repos/docs'],
+        ['api', '/repos/api'],
+      ]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([
+        ['docs', 'direct'],
+        ['api', 'git'],
+      ]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/docs': {},
+      '/repos/api': {},
+    };
+    const macroBranchCommitIfDirty = mock(async ({ workspacePath }: { workspacePath?: string | null } = {}) => ({
+      branch: '@macro',
+      state: 'clean' as const,
+      worktree_path: `${workspacePath}/.git/macro-metadata-worktree`,
+      is_dirty: false,
+      has_origin: false,
+      has_upstream: false,
+      ahead: 0,
+      behind: 0,
+      conflicted_files: [],
+      committed: false,
+      commit_hash: null,
+      reason: null,
+      next_action: null,
+      output: '',
+      error: null,
+    }));
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: initialSnapshot,
+      filesByWorkspacePath,
+      macroBranchCommitIfDirty,
+    });
+    await service.createArchitectPlan({
+      branchName,
+      planId: 'mixed-transition-plan',
+      projectIds: ['docs', 'api'],
+      nodes: [{
+        id: 'mixed-task',
+        title: 'Update docs and API',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+        assignedBranch: '',
+        projectId: 'docs',
+        projectIds: ['docs', 'api'],
+        executionModesByProjectId: { docs: 'direct', api: 'git' },
+      }],
+    });
+
+    projects[0]!.gitSetupState = 'ready';
+    projects[0]!.directEdit = false;
+    const transitionedSnapshot: ValidProjectRegistrySnapshot = {
+      ...initialSnapshot,
+      repoPathByProjectId: new Map([
+        ['docs', '/repos/docs'],
+        ['api', '/repos/api'],
+      ]),
+      executionModeByProjectId: new Map([
+        ['docs', 'git'],
+        ['api', 'git'],
+      ]),
+    };
+    storage.clear();
+    macroBranchCommitIfDirty.mockClear();
+    const { clearMacroMetadataCoordinatorForTests } = await import('./macroMetadataCoordinator');
+    clearMacroMetadataCoordinatorForTests();
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/docs',
+      registrySnapshot: transitionedSnapshot,
+      filesByWorkspacePath,
+      macroBranchCommitIfDirty,
+    });
+
+    await service.writeArchitectTaskExecution({
+      branchName,
+      planId: 'mixed-transition-plan',
+      execution: {
+        taskId: 'mixed-task',
+        title: 'Update docs and API',
+        completedAt: '2026-08-29T12:00:00.000Z',
+        repositories: [{
+          projectId: 'api',
+          repoPath: '/repos/api',
+          branchName: 'feature/mixed-task',
+          planBranchName: 'plan/mixed-transition-plan',
+        }],
+      },
+    });
+
+    expect(macroBranchCommitIfDirty.mock.calls.map(([params]) => params?.workspacePath)).toEqual([
+      '/repos/api',
+    ]);
+    expect(filesByWorkspacePath['/repos/docs'][
+      'branches/develop/plans/mixed-transition-plan/tasks/mixed-task/executed.md'
+    ]).toContain('Update docs and API');
+  });
+
   it('removes orphaned planned metadata while preserving executed task history', async () => {
     const registrySnapshot: ValidProjectRegistrySnapshot = {
       selectedGroupId: null,
