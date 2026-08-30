@@ -189,6 +189,7 @@ export interface FileDiffModalSession {
 interface LoadCurrentChangesOptions {
   silent?: boolean;
   preserveDiffModalSession?: boolean;
+  expectedDiffModalSessionId?: string;
   preserveReviewSuspension?: boolean;
 }
 
@@ -1782,6 +1783,12 @@ export const createFileChangesStore = (
     executionRecords: {},
 
   loadCurrentChanges: async (options) => {
+    if (
+      options?.expectedDiffModalSessionId &&
+      get().diffModalSession?.sessionId !== options.expectedDiffModalSessionId
+    ) {
+      return;
+    }
     cancelActiveReviewRequests();
     const previousState = get();
     const task = resolveSelectedTask(deps);
@@ -1799,6 +1806,12 @@ export const createFileChangesStore = (
     const isStaleRequest = (requestId: number, taskId: string | null): boolean => {
       const latestState = get();
       if (latestState.loadRequestId !== requestId) {
+        return true;
+      }
+      if (
+        options?.expectedDiffModalSessionId &&
+        latestState.diffModalSession?.sessionId !== options.expectedDiffModalSessionId
+      ) {
         return true;
       }
       const selectedTask = resolveSelectedTask(deps);
@@ -2121,6 +2134,10 @@ export const createFileChangesStore = (
               repository.loadingChangeId === closingTarget.changeId
                 ? null
                 : repository.loadingChangeId,
+            savingChangeId:
+              repository.savingChangeId === closingTarget.changeId
+                ? null
+                : repository.savingChangeId,
           }),
         )
         : state.repositories,
@@ -2567,21 +2584,25 @@ export const createFileChangesStore = (
     }
 
     const nextContent = session.rightDraftContent;
+    const requestSessionId = session.sessionId;
 
-    set((state) => ({
-      repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
-        ...currentRepository,
-        savingChangeId: session.changeId,
-        lastError: null,
-      })),
-      diffModalSession: state.diffModalSession
-        ? {
+    set((state) => {
+      if (state.diffModalSession?.sessionId !== requestSessionId) {
+        return state;
+      }
+      return {
+        repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: session.changeId,
+          lastError: null,
+        })),
+        diffModalSession: {
           ...state.diffModalSession,
           isSaving: true,
-        }
-        : null,
-      lastError: null,
-    }));
+        },
+        lastError: null,
+      };
+    });
 
     try {
       const path = resolveChangeFilePath(repository.worktreePath, change.path);
@@ -2601,48 +2622,54 @@ export const createFileChangesStore = (
         expectedRevision,
       });
 
-      set((state) => ({
-        ...(() => {
-          const repositories = updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
-            ...currentRepository,
-            savingChangeId: null,
-            lastError: null,
-          }));
-          return {
-            repositories,
-            ...deriveReviewState(repositories),
-          };
-        })(),
-        diffModalSession: state.diffModalSession
-          ? {
+      set((state) => {
+        if (state.diffModalSession?.sessionId !== requestSessionId) {
+          return state;
+        }
+        const repositories = updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+          lastError: null,
+        }));
+        return {
+          repositories,
+          ...deriveReviewState(repositories),
+          diffModalSession: {
             ...state.diffModalSession,
             rightDraftContent: nextContent,
             lastLoadedModifiedContent: nextContent,
             isDirty: false,
             isSaving: false,
             editRevision: writeResult.revision ?? null,
-          }
-          : null,
-      }));
+          },
+        };
+      });
 
-      await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+      await get().loadCurrentChanges({
+        silent: true,
+        preserveDiffModalSession: true,
+        expectedDiffModalSessionId: requestSessionId,
+      });
     } catch (error) {
       const message = toServiceError(error).message ||
         tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
-      set((state) => ({
-        repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          savingChangeId: null,
-          lastError: message,
-        })),
-        diffModalSession: state.diffModalSession
-          ? {
+      set((state) => {
+        if (state.diffModalSession?.sessionId !== requestSessionId) {
+          return state;
+        }
+        return {
+          repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            savingChangeId: null,
+            lastError: message,
+          })),
+          diffModalSession: {
             ...state.diffModalSession,
             isSaving: false,
-          }
-          : null,
-        lastError: message,
-      }));
+          },
+          lastError: message,
+        };
+      });
       throw error;
     }
   },

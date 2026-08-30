@@ -2224,6 +2224,65 @@ describe('useFileChangesStore', () => {
     expect(finalState.getChange(repositoryIdA, changeIdA)?.modifiedContent).toBe(freshContent);
   });
 
+  it('does not publish a completed save into a modal session reopened on the same file', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision) break;
+      await Promise.resolve();
+    }
+
+    const staleDraft = 'const staleSave = true;\n';
+    store.updateRightDraft(staleDraft);
+    let markWriteStarted: () => void = () => undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    let releaseWrite: () => void = () => undefined;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    fsWriteFileMock.mockImplementationOnce(async ({ path, content }) => {
+      markWriteStarted();
+      await writeGate;
+      currentFiles[worktreeAPath]['src/main.ts'] = content;
+      return {
+        path,
+        bytes_written: content.length,
+        created: false,
+        skipped: false,
+        revision: `revision:${content}`,
+      };
+    });
+
+    const staleSessionId = useFileChangesStore.getState().diffModalSession?.sessionId;
+    const pendingSave = store.saveRightDraft();
+    await writeStarted;
+    store.closeDiffModal();
+    const freshContent = 'const freshSessionAfterSave = true;\n';
+    currentFiles[worktreeAPath]['src/main.ts'] = freshContent;
+    store.openDiffModal(repositoryIdA, changeIdA);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision === `revision:${freshContent}`) break;
+      await Promise.resolve();
+    }
+    const freshSessionId = useFileChangesStore.getState().diffModalSession?.sessionId;
+    const gitStatusCallsBeforeCompletion = gitStatusMock.mock.calls.length;
+
+    releaseWrite();
+    await pendingSave;
+
+    const finalState = useFileChangesStore.getState();
+    expect(freshSessionId).not.toBe(staleSessionId);
+    expect(finalState.diffModalSession?.sessionId).toBe(freshSessionId);
+    expect(finalState.diffModalSession?.rightDraftContent).toBe(freshContent);
+    expect(finalState.diffModalSession?.editRevision).toBe(`revision:${freshContent}`);
+    expect(finalState.diffModalSession?.isSaving).toBe(false);
+    expect(finalState.getRepository(repositoryIdA)?.savingChangeId).toBeNull();
+    expect(gitStatusMock.mock.calls.length).toBe(gitStatusCallsBeforeCompletion);
+  });
+
   it('opens the diff modal with full file hydration while keeping focused as the initial presentation mode', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
