@@ -248,7 +248,7 @@ export const initializeConfigRuntime = async (): Promise<void> => {
     return;
   }
   if (isTauriAvailable() && !listenerPromise) {
-    listenerPromise = Promise.all([
+    const registrations = [
       listen<ConfigDocument>('config://changed', () => {
         void useConfigStore.getState().refresh();
       }),
@@ -267,8 +267,25 @@ export const initializeConfigRuntime = async (): Promise<void> => {
       listen<ConfigDocument>('config://restart-required', () => {
         void useConfigStore.getState().refresh();
       }),
-    ]).then((unlisteners) => {
+    ];
+    const currentListenerPromise = Promise.allSettled(registrations).then((results) => {
+      const unlisteners = results.flatMap((result) =>
+        result.status === 'fulfilled' ? [result.value] : []
+      );
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (failure) {
+        for (const unlisten of unlisteners) unlisten();
+        throw failure.reason;
+      }
       eventUnlisteners = unlisteners;
+    });
+    listenerPromise = currentListenerPromise;
+    void currentListenerPromise.catch(() => {
+      if (listenerPromise === currentListenerPromise) {
+        listenerPromise = null;
+      }
     });
   }
   if (listenerPromise) await listenerPromise;

@@ -6,7 +6,10 @@ import { createRoot, type Root } from 'react-dom/client';
 const updateProviderConfigMock = mock(
   async (_providerId: string, _updates: Record<string, unknown>) => undefined
 );
-const updateProviderSettingsMock = mock(async () => undefined);
+const updateProviderSettingsMock = mock(async (
+  _providerId: string,
+  _updates: { copilotSendTimeoutMs?: number | null },
+) => undefined);
 const createProviderConfigMock = mock(async () => undefined);
 const testConnectionMock = mock(async () => ({ success: true, message: 'ok' }));
 
@@ -222,7 +225,9 @@ describe('ProvidersSettings Copilot timeout', () => {
 
   beforeEach(() => {
     updateProviderConfigMock.mockClear();
+    updateProviderConfigMock.mockImplementation(async () => undefined);
     updateProviderSettingsMock.mockClear();
+    updateProviderSettingsMock.mockImplementation(async () => undefined);
     createProviderConfigMock.mockClear();
     testConnectionMock.mockClear();
     providerType = 'copilot';
@@ -280,6 +285,48 @@ describe('ProvidersSettings Copilot timeout', () => {
       'copilot',
       expect.objectContaining({ baseUrl: 'copilot://cli', providerType: 'copilot' })
     );
+  });
+
+  it('restores the previous Copilot timeout when the configuration save fails', async () => {
+    const calls: string[] = [];
+    updateProviderSettingsMock.mockImplementation(async (
+      _providerId: string,
+      updates: { copilotSendTimeoutMs?: number | null },
+    ) => {
+      calls.push(`timeout:${updates.copilotSendTimeoutMs}`);
+    });
+    updateProviderConfigMock.mockImplementationOnce(async () => {
+      calls.push('config');
+      throw new Error('provider write failed');
+    });
+    const { ProvidersSettings } = await loadProvidersSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ProvidersSettings />);
+    });
+    await act(async () => {
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Edit'
+      )!);
+    });
+    const timeoutInput = container!.querySelector('input[type="number"]') as HTMLInputElement;
+
+    await act(async () => {
+      setInputValue(timeoutInput, '2');
+      click(Array.from(container!.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Save Provider'
+      )!);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(calls).toEqual([
+      'timeout:120000',
+      'config',
+      'timeout:2700000',
+    ]);
+    expect(container!.textContent).toContain('Save Provider');
   });
 
   it('does not show the timeout field for OpenAI-compatible providers', async () => {

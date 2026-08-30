@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useConfigStore } from '../../../stores/useConfigStore';
+import { patchConfigTopLevel } from '../../../services/configDocuments';
 import type { ConfigScope } from '../../../types/generated/config';
 import type { Project } from '../../../types';
 import { Icon } from '../../ui/Icon';
@@ -29,14 +30,17 @@ type SkillsConfig = {
 
 const CONVENTIONAL_ROOTS = ['agents', 'codex', 'opencode', 'claude'] as const;
 
+const asRecord = <T,>(value: unknown): Record<string, T> =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, T>
+    : {};
+
 export const SkillSourcesPanel: React.FC<{
   projects: Project[];
   onChanged: () => Promise<void>;
 }> = ({ projects, onChanged }) => {
   const { t } = useTranslation();
   const snapshot = useConfigStore((state) => state.snapshot);
-  const getDocument = useConfigStore((state) => state.getDocument);
-  const patch = useConfigStore((state) => state.patch);
   const [projectId, setProjectId] = useState('');
   const [newRootId, setNewRootId] = useState('');
   const [newRootPath, setNewRootPath] = useState('');
@@ -54,16 +58,13 @@ export const SkillSourcesPanel: React.FC<{
     return (value && typeof value === 'object' ? value : {}) as SkillsConfig;
   }, [projectId, snapshot]);
 
-  const updateTopLevel = async (key: keyof SkillsConfig, value: unknown) => {
+  const updateTopLevel = async (
+    key: keyof SkillsConfig,
+    update: unknown | ((currentValue: unknown) => unknown),
+  ) => {
     setBusy(true);
     try {
-      const document = await getDocument('skills', scope);
-      await patch({
-        kind: 'skills',
-        scope,
-        expectedEtag: document.etag,
-        patch: [{ op: 'add', path: `/${key}`, value }],
-      });
+      await patchConfigTopLevel('skills', scope, key, update);
       await onChanged();
     } catch (error) {
       notify.error(t('skills.sources.saveFailed', 'Could not update skill sources'), {
@@ -108,12 +109,15 @@ export const SkillSourcesPanel: React.FC<{
                   type="checkbox"
                   checked={config.conventionalRoots?.[root] !== false}
                   disabled={busy}
-                  onChange={(event) => void updateTopLevel('conventionalRoots', {
-                    agents: config.conventionalRoots?.agents !== false,
-                    codex: config.conventionalRoots?.codex !== false,
-                    opencode: config.conventionalRoots?.opencode !== false,
-                    claude: config.conventionalRoots?.claude !== false,
-                    [root]: event.target.checked,
+                  onChange={(event) => void updateTopLevel('conventionalRoots', (currentValue: unknown) => {
+                    const current = asRecord<boolean>(currentValue);
+                    return {
+                      agents: current.agents !== false,
+                      codex: current.codex !== false,
+                      opencode: current.opencode !== false,
+                      claude: current.claude !== false,
+                      [root]: event.target.checked,
+                    };
                   })}
                 />
                 {root}
@@ -136,9 +140,12 @@ export const SkillSourcesPanel: React.FC<{
                   defaultValue={root.path}
                   aria-label={`${id} path`}
                   onBlur={(event) => {
-                    if (event.target.value !== root.path) void updateTopLevel('roots', {
-                      ...roots,
-                      [id]: { ...root, path: event.target.value },
+                    if (event.target.value !== root.path) void updateTopLevel('roots', (currentValue: unknown) => {
+                      const current = asRecord<SkillRoot>(currentValue);
+                      return {
+                        ...current,
+                        [id]: { ...(current[id] ?? root), path: event.target.value },
+                      };
                     });
                   }}
                 />
@@ -146,14 +153,21 @@ export const SkillSourcesPanel: React.FC<{
                   type="number"
                   defaultValue={root.priority ?? 0}
                   aria-label={`${id} priority`}
-                  onBlur={(event) => void updateTopLevel('roots', {
-                    ...roots,
-                    [id]: { ...root, priority: Number(event.target.value) || 0 },
+                  onBlur={(event) => void updateTopLevel('roots', (currentValue: unknown) => {
+                    const current = asRecord<SkillRoot>(currentValue);
+                    return {
+                      ...current,
+                      [id]: { ...(current[id] ?? root), priority: Number(event.target.value) || 0 },
+                    };
                   })}
                 />
                 <button type="button" title={t('common.delete', 'Delete')} onClick={() => {
-                  const next = { ...roots };
-                  delete next[id];
+                  const next = (currentValue: unknown) => {
+                    const current = asRecord<SkillRoot>(currentValue);
+                    const nextRoots = { ...current };
+                    delete nextRoots[id];
+                    return nextRoots;
+                  };
                   void updateTopLevel('roots', next);
                 }} className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
                   <Icon name="trash" size={14} />
@@ -165,15 +179,15 @@ export const SkillSourcesPanel: React.FC<{
               <Input value={newRootId} onChange={(event) => setNewRootId(event.target.value)} placeholder="team-skills" />
               <Input value={newRootPath} onChange={(event) => setNewRootPath(event.target.value)} placeholder={projectId ? '${projectRoot}/.team/skills' : '${home}/.team/skills'} />
               <button type="button" disabled={busy || !newRootId.trim() || !newRootPath.trim()} onClick={() => {
-                void updateTopLevel('roots', {
-                  ...roots,
+                void updateTopLevel('roots', (currentValue: unknown) => ({
+                  ...asRecord<SkillRoot>(currentValue),
                   [newRootId.trim()]: {
                     sourceType: 'local',
                     path: newRootPath.trim(),
                     enabled: true,
                     priority: 0,
                   },
-                }).then(() => {
+                })).then(() => {
                   setNewRootId('');
                   setNewRootPath('');
                 });
@@ -194,9 +208,15 @@ export const SkillSourcesPanel: React.FC<{
                 <select
                   value={destination.scope}
                   disabled={projectId.length > 0}
-                  onChange={(event) => void updateTopLevel('installDestinations', {
-                    ...destinations,
-                    [id]: { ...destination, scope: event.target.value as 'user' | 'project' },
+                  onChange={(event) => void updateTopLevel('installDestinations', (currentValue: unknown) => {
+                    const current = asRecord<SkillDestination>(currentValue);
+                    return {
+                      ...current,
+                      [id]: {
+                        ...(current[id] ?? destination),
+                        scope: event.target.value as 'user' | 'project',
+                      },
+                    };
                   })}
                   className="h-9 rounded-md border border-input bg-background px-2 text-xs text-foreground"
                 >
@@ -207,15 +227,22 @@ export const SkillSourcesPanel: React.FC<{
                   defaultValue={destination.path}
                   aria-label={`${id} destination path`}
                   onBlur={(event) => {
-                    if (event.target.value !== destination.path) void updateTopLevel('installDestinations', {
-                      ...destinations,
-                      [id]: { ...destination, path: event.target.value },
+                    if (event.target.value !== destination.path) void updateTopLevel('installDestinations', (currentValue: unknown) => {
+                      const current = asRecord<SkillDestination>(currentValue);
+                      return {
+                        ...current,
+                        [id]: { ...(current[id] ?? destination), path: event.target.value },
+                      };
                     });
                   }}
                 />
                 <button type="button" title={t('common.delete', 'Delete')} onClick={() => {
-                  const next = { ...destinations };
-                  delete next[id];
+                  const next = (currentValue: unknown) => {
+                    const current = asRecord<SkillDestination>(currentValue);
+                    const nextDestinations = { ...current };
+                    delete nextDestinations[id];
+                    return nextDestinations;
+                  };
                   void updateTopLevel('installDestinations', next);
                 }} className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
                   <Icon name="trash" size={14} />
@@ -227,13 +254,13 @@ export const SkillSourcesPanel: React.FC<{
               <Input value={newDestinationId} onChange={(event) => setNewDestinationId(event.target.value)} placeholder="team-default" />
               <Input value={newDestinationPath} onChange={(event) => setNewDestinationPath(event.target.value)} placeholder={projectId ? '.agents/skills' : '${home}/.agents/skills'} />
               <button type="button" disabled={busy || !newDestinationId.trim() || !newDestinationPath.trim()} onClick={() => {
-                void updateTopLevel('installDestinations', {
-                  ...destinations,
+                void updateTopLevel('installDestinations', (currentValue: unknown) => ({
+                  ...asRecord<SkillDestination>(currentValue),
                   [newDestinationId.trim()]: {
                     scope: projectId ? 'project' : 'user',
                     path: newDestinationPath.trim(),
                   },
-                }).then(() => {
+                })).then(() => {
                   setNewDestinationId('');
                   setNewDestinationPath('');
                 });

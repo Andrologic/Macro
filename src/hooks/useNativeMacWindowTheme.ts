@@ -9,6 +9,9 @@ import {
   windowSetTheme,
 } from '../services/tauriWindow';
 import { devLogger } from '../utils/devLogger';
+import { createSerialQueue } from '../services/serialQueue';
+
+const enqueueNativeThemeSync = createSerialQueue();
 
 export function useNativeMacWindowTheme(theme: Theme, enabled = true): void {
   useEffect(() => {
@@ -19,7 +22,7 @@ export function useNativeMacWindowTheme(theme: Theme, enabled = true): void {
     let cancelled = false;
     const titlebarTheme = deriveTitlebarTheme(theme);
 
-    void (async () => {
+    void enqueueNativeThemeSync(async () => {
       try {
         await Promise.all([
           savePreference(PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG, titlebarTheme.nativeWindowBackground),
@@ -39,7 +42,7 @@ export function useNativeMacWindowTheme(theme: Theme, enabled = true): void {
           console.error('Failed to sync native macOS window theme:', error);
         }
       }
-    })();
+    });
 
     return () => {
       cancelled = true;

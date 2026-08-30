@@ -32,6 +32,7 @@ import {
 } from '../services/providerCredentials';
 import { devLogger } from '../utils/devLogger';
 import { MACRO_AI_DEFAULT_MODEL_ID, MACRO_AI_PROVIDER_ID } from '../config/macroAi';
+import { createKeyedSerialQueue } from '../services/serialQueue';
 
 export { isLinkedProviderType, providerHasAuthSession };
 
@@ -90,6 +91,7 @@ let providerConfigMutationVersion = 0;
 const providerSettingsRequestVersionById = new Map<string, number>();
 const providerModelScanGenerationById = new Map<string, number>();
 const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
+const enqueueProviderMutation = createKeyedSerialQueue<string>();
 
 const invalidateProviderModelScans = (providerId: string): number => {
   const nextGeneration = (providerModelScanGenerationById.get(providerId) ?? 0) + 1;
@@ -2302,41 +2304,42 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     return fallback;
   },
 
-  updateProviderSettings: async (providerId: string, updates: Partial<ProviderSettings>) => {
-    const requestVersion = startProviderSettingsRequest(providerId);
-    const current = get().providerSettingsById[providerId] ?? {
-      providerId,
-      filterFreeModels: false,
-      copilotSendTimeoutMs: null,
-    };
-    const next: ProviderSettings = { ...current, ...updates, providerId };
+  updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) =>
+    enqueueProviderMutation(providerId, async () => {
+      const requestVersion = startProviderSettingsRequest(providerId);
+      const current = get().providerSettingsById[providerId] ?? {
+        providerId,
+        filterFreeModels: false,
+        copilotSendTimeoutMs: null,
+      };
+      const next: ProviderSettings = { ...current, ...updates, providerId };
 
-    try {
-      if (tauriIpc.isTauriAvailable()) {
-        await tauriIpc.updateProviderSettings({
-          providerId,
-          ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
-            ? { filterFreeModels: next.filterFreeModels }
-            : {}),
-          ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
-            ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
-            : {}),
-        });
+      try {
+        if (tauriIpc.isTauriAvailable()) {
+          await tauriIpc.updateProviderSettings({
+            providerId,
+            ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
+              ? { filterFreeModels: next.filterFreeModels }
+              : {}),
+            ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
+              ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
+              : {}),
+          });
+        }
+
+        if (providerSettingsRequestVersionById.get(providerId) !== requestVersion) {
+          return;
+        }
+
+        set((state) => ({
+          providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
+        }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to update provider settings';
+        set({ lastError: message });
+        throw error;
       }
-
-      if (providerSettingsRequestVersionById.get(providerId) !== requestVersion) {
-        return;
-      }
-
-      set((state) => ({
-        providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
-      }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update provider settings';
-      set({ lastError: message });
-      throw error;
-    }
-  },
+    }),
 
   commitRestoredSelection: async (selection, options) => {
     const { providerId } = selection;
@@ -2539,8 +2542,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     });
   },
 
-  updateProviderConfig: async (id: string, updates: Partial<ProviderConfig>) => {
-    try {
+  updateProviderConfig: (id: string, updates: Partial<ProviderConfig>) =>
+    enqueueProviderMutation(id, async () => {
+      try {
       requireProviderConfigurationIpc();
       providerConfigMutationVersion += 1;
 
@@ -2710,12 +2714,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           },
         }));
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update provider';
-      set({ lastError: message });
-      throw error;
-    }
-  },
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to update provider';
+        set({ lastError: message });
+        throw error;
+      }
+    }),
 
   createProviderConfig: async (
     config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded' | 'isEnabled'>

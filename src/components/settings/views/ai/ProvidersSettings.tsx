@@ -561,20 +561,39 @@ export const ProvidersSettings: React.FC = () => {
           editingProvider.apiKeyTouched
             ? editingProvider.apiKey
             : undefined;
-        await updateProviderConfig(editingProvider.id, {
+        const configUpdates = {
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
           apiKey: apiKeyUpdate,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
-        });
+        };
         if (editingProvider.providerType === 'copilot') {
           const timeoutMinutes = normalizeTimeoutMinutesInput(
             editingProvider.copilotSendTimeoutMinutes
           );
+          const previousTimeout =
+            providerSettingsById[editingProvider.id]?.copilotSendTimeoutMs ?? null;
           await updateProviderSettings(editingProvider.id, {
             copilotSendTimeoutMs: timeoutMinutes * 60_000,
           });
+          try {
+            await updateProviderConfig(editingProvider.id, configUpdates);
+          } catch (configError) {
+            try {
+              await updateProviderSettings(editingProvider.id, {
+                copilotSendTimeoutMs: previousTimeout,
+              });
+            } catch (rollbackError) {
+              throw new Error(
+                `${getErrorMessage(configError, 'Failed to save provider')}. `
+                + `Failed to restore the Copilot timeout: ${getErrorMessage(rollbackError, 'unknown error')}`,
+              );
+            }
+            throw configError;
+          }
+        } else {
+          await updateProviderConfig(editingProvider.id, configUpdates);
         }
         notify.success(t('providers.updated', 'Provider updated'));
       }

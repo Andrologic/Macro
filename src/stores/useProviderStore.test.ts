@@ -49,7 +49,15 @@ const listProviderConfigsMock = mock(async () => [
 ]);
 
 const revealProviderApiKeyMock = mock(async () => 'test-api-key');
-const updateProviderConfigMock = mock(async () => undefined);
+const updateProviderConfigMock = mock(async (_params: {
+  id: string;
+  name?: string;
+  providerType?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  isLocal?: boolean;
+  isEnabled?: boolean;
+}): Promise<void> => undefined);
 const createProviderConfigMock = mock(async () => ({
   id: 'provider-created',
   name: 'Created Provider',
@@ -73,7 +81,11 @@ const getProviderSettingsMock = mock(async () => ({
   filter_free_models: false,
   copilot_send_timeout_ms: 1_800_000,
 }));
-const updateProviderSettingsMock = mock(async () => undefined);
+const updateProviderSettingsMock = mock(async (_params: {
+  providerId: string;
+  filterFreeModels?: boolean;
+  copilotSendTimeoutMs?: number | null;
+}): Promise<void> => undefined);
 const listProviderModelsMock = mock(async () => []);
 const upsertProviderModelsMock = mock(async () => []);
 const aiDownloadCopilotRuntimeMock = mock(
@@ -794,6 +806,70 @@ describe('useProviderStore secret resolution', () => {
         filterFreeModels: false,
         copilotSendTimeoutMs: 2_400_000,
       });
+  });
+
+  it('keeps rapid provider setting saves in request order through the backend', async () => {
+    let releaseFirstWrite: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    updateProviderSettingsMock.mockImplementationOnce(async () => firstWrite);
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    const first = providerStore.useProviderStore.getState().updateProviderSettings(
+      'provider-openai',
+      { copilotSendTimeoutMs: 120_000 },
+    );
+    const second = providerStore.useProviderStore.getState().updateProviderSettings(
+      'provider-openai',
+      { copilotSendTimeoutMs: 240_000 },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(updateProviderSettingsMock).toHaveBeenCalledTimes(1);
+    releaseFirstWrite?.();
+    await Promise.all([first, second]);
+
+    expect(updateProviderSettingsMock.mock.calls).toEqual([
+      [{ providerId: 'provider-openai', copilotSendTimeoutMs: 120_000 }],
+      [{ providerId: 'provider-openai', copilotSendTimeoutMs: 240_000 }],
+    ]);
+    expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
+      .toMatchObject({ copilotSendTimeoutMs: 240_000 });
+  });
+
+  it('does not let an older provider configuration save finish after a newer one', async () => {
+    let releaseFirstWrite: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    updateProviderConfigMock.mockImplementationOnce(async () => firstWrite);
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+
+    const first = providerStore.useProviderStore.getState().updateProviderConfig(
+      'provider-openai',
+      { name: 'First name' },
+    );
+    const second = providerStore.useProviderStore.getState().updateProviderConfig(
+      'provider-openai',
+      { name: 'Second name' },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(updateProviderConfigMock).toHaveBeenCalledTimes(1);
+    releaseFirstWrite?.();
+    await Promise.all([first, second]);
+
+    expect(updateProviderConfigMock.mock.calls.map((call) => call[0].name)).toEqual([
+      'First name',
+      'Second name',
+    ]);
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]?.name)
+      .toBe('Second name');
   });
 
   it('persists providerType and isLocal when updating an existing provider', async () => {
