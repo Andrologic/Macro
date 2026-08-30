@@ -39,6 +39,25 @@ const getFocusableElements = (container: HTMLElement): HTMLElement[] =>
     (element) => !element.hasAttribute('hidden')
   );
 
+const restoreFocusAfterDialogClose = (
+  previousFocus: HTMLElement | null,
+): void => {
+  const topmostDialog = getTopmostDialog();
+  if (!topmostDialog) {
+    previousFocus?.focus();
+    return;
+  }
+
+  if (previousFocus && topmostDialog.contains(previousFocus)) {
+    previousFocus.focus();
+    return;
+  }
+
+  const panel = topmostDialog.querySelector<HTMLElement>('[role="dialog"]');
+  if (!panel) return;
+  (getFocusableElements(panel)[0] ?? panel).focus();
+};
+
 const synchronizeBackgroundInertness = (): void => {
   if (typeof document === 'undefined') return;
 
@@ -156,7 +175,7 @@ export const Dialog: React.FC<DialogProps> = ({
       document.removeEventListener('keydown', handleKeyDown, true);
       openDialogs.delete(root);
       synchronizeBackgroundInertness();
-      previousFocusRef.current?.focus();
+      restoreFocusAfterDialogClose(previousFocusRef.current);
       if (openDialogs.size === 0) nextDialogOrder = 0;
     };
   }, [initialFocusRef, stackDepth]);

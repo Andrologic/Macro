@@ -222,6 +222,8 @@ describe('Dialog', () => {
 
     expect(cancelConfirmation).toHaveBeenCalledTimes(1);
     expect(closeOuter).not.toHaveBeenCalled();
-    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    const remainingDialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+    expect(remainingDialogs).toHaveLength(1);
+    expect(remainingDialogs[0]?.contains(document.activeElement)).toBe(true);
   });
 });
