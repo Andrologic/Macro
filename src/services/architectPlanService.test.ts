@@ -1452,6 +1452,120 @@ describe('architectPlanService', () => {
     expect(activation).toBeNull();
   });
 
+  it('rejects a full runtime head without a replica scope key', async () => {
+    const planId = 'runtime-project-only-head';
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'web',
+      scopedProjectIds: ['web'],
+      actionableProjectIds: ['web'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web']),
+      readOnlyProjectIdSet: new Set<string>(),
+      manualReadOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web'],
+      validProjectIdSet: new Set(['web']),
+      repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([['web', '/repos/web']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['web', 'git']]),
+      hasRegisteredProjects: true,
+    };
+    const runtimeHead = mock(async () => ({
+      plan: {
+        id: planId,
+        slug: planId,
+        title: 'Incomplete runtime identity',
+        description: 'The project id alone cannot identify a physical replica.',
+        status: 'draft',
+        targetBranch: branchName,
+        projectId: 'web',
+        projectIds: ['web'],
+        createdAt: '2026-08-30T09:00:00.000Z',
+        updatedAt: '2026-08-30T09:00:00.000Z',
+        nodes: [],
+        predictedBranches: [],
+      },
+      conversationId: 'runtime-project-only-conversation',
+      sharedConversation: false,
+      targetBranch: branchName,
+      replicaScopeKey: null,
+      replicaProjectId: 'web',
+      resolutionMode: 'full',
+      chatTranscriptRevision: 'chat-project-only',
+      chatMessageCount: 1,
+    }));
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      registrySnapshot,
+      workspaceArchitectListPlans: mock(async () => ({ activePlanId: null, plans: [] })),
+      workspaceArchitectActivatePlanHead:
+        runtimeHead as typeof actualTauriIpc.workspaceArchitectActivatePlanHead,
+    });
+
+    await expect(
+      service.getArchitectPlanActivationPayload(branchName, planId),
+    ).rejects.toThrow('incomplete transcript replica identity');
+  });
+
+  it('keeps a scope-less blank runtime head self-contained', async () => {
+    const planId = 'runtime-blank-head';
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'web',
+      scopedProjectIds: ['web'],
+      actionableProjectIds: ['web'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web']),
+      readOnlyProjectIdSet: new Set<string>(),
+      manualReadOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web'],
+      validProjectIdSet: new Set(['web']),
+      repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([['web', '/repos/web']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['web', 'git']]),
+      hasRegisteredProjects: true,
+    };
+    const runtimeHead = mock(async () => ({
+      plan: {
+        id: planId,
+        slug: planId,
+        title: 'New plan',
+        description: '',
+        status: 'draft',
+        targetBranch: branchName,
+        projectId: 'web',
+        projectIds: ['web'],
+        createdAt: '2026-08-30T09:00:00.000Z',
+        updatedAt: '2026-08-30T09:00:00.000Z',
+        nodes: [],
+        predictedBranches: [],
+      },
+      conversationId: null,
+      sharedConversation: false,
+      targetBranch: branchName,
+      replicaScopeKey: null,
+      replicaProjectId: null,
+      resolutionMode: 'blank_fast_path',
+      chatTranscriptRevision: null,
+      chatMessageCount: 0,
+    }));
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      registrySnapshot,
+      workspaceArchitectListPlans: mock(async () => ({ activePlanId: null, plans: [] })),
+      workspaceArchitectActivatePlanHead:
+        runtimeHead as typeof actualTauriIpc.workspaceArchitectActivatePlanHead,
+    });
+
+    const activation = await service.getArchitectPlanActivationPayload(branchName, planId);
+
+    expect(activation?.resolutionMode).toBe('blank_fast_path');
+    expect(activation?.chatMessagesLoaded).toBe(true);
+    expect(activation?.chatMessages).toEqual([]);
+  });
+
   it('keeps an exact runtime transcript pinned when scope eligibility changes after head loading', async () => {
     const planId = 'runtime-scope-transition';
     const replicaScopeKey = 'project:web:/repos/web';
@@ -1540,6 +1654,30 @@ describe('architectPlanService', () => {
     expect(runtimeChat).toHaveBeenCalledTimes(1);
     expect(transcript?.messages[0]?.content).toBe('Transcript from the exact Git replica.');
     expect(workspaceScopeCalls).toHaveLength(workspaceCallCountAfterHead);
+  });
+
+  it('rejects a project-only transcript request before runtime or legacy reads', async () => {
+    const runtimeChat = mock(async () => null);
+    const workspaceScopeCalls: Array<{
+      operation: string;
+      workspaceScope?: WorkspaceScope;
+    }> = [];
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceScopeCalls,
+      workspaceArchitectActivatePlanChat:
+        runtimeChat as typeof actualTauriIpc.workspaceArchitectActivatePlanChat,
+    });
+
+    await expect(
+      service.getArchitectPlanChatTranscript(branchName, 'project-only-transcript', {
+        replicaProjectId: 'web',
+        expectedTranscriptRevision: 'chat-project-only',
+        expectedMessageCount: 1,
+      }),
+    ).rejects.toThrow('transcript replica identity is incomplete');
+    expect(runtimeChat).not.toHaveBeenCalled();
+    expect(workspaceScopeCalls).toEqual([]);
   });
 
   it('keeps persisted direct plan targets when direct editing becomes blocked', async () => {

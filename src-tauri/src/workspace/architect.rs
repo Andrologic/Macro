@@ -1632,6 +1632,19 @@ pub async fn activate_plan_chat(
     let expected_transcript_revision =
         trim_to_option(request.expected_transcript_revision.as_deref());
     let expected_message_count = request.expected_message_count;
+    if requested_scope_key.is_none()
+        && (requested_project_id.is_some()
+            || expected_transcript_revision.is_some()
+            || expected_message_count.is_some())
+    {
+        return Err(BackendError::RevisionConflict {
+            message: format!(
+                "An exact transcript request requires a replica scope key for branch '{}' and plan '{}'",
+                normalized_branch,
+                sanitize_id(&request.plan_id)
+            ),
+        });
+    }
     let index = load_branch_index(workspace_path, metadata_root, &normalized_branch, &[]).await?;
     let effective_plan_id = resolve_effective_plan_id(&index, &request.plan_id);
     let Some(locators) = index.plan_locators_by_id.get(&effective_plan_id) else {
@@ -2425,6 +2438,80 @@ mod tests {
         assert_eq!(transcript.replica_scope_key, activation.replica_scope_key);
         assert_eq!(transcript.replica_project_id.as_deref(), Some(project_b_id));
         assert_eq!(transcript.messages[0].content, "Transcript from project B");
+    }
+
+    #[tokio::test]
+    async fn rejects_project_only_transcript_identity_across_physical_scopes() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let metadata_root = workspace.path().join("metadata");
+        std_fs::create_dir_all(&metadata_root).expect("create metadata root");
+        let project_path = workspace.path().join("project-a");
+        let _repo = init_repo(&project_path);
+        let repo_metadata = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let direct_metadata = project_path.join(".macro");
+        let project_id = "project-a";
+        let plan_id = "shared-physical-plan";
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![project(
+            project_id,
+            project_path.to_str().expect("project path string"),
+        )];
+        write_json(&metadata_root.join("workspace.json"), &state);
+
+        write_plan_replica(
+            &direct_metadata,
+            plan_id,
+            project_id,
+            "2026-06-02T12:00:00.000Z",
+            "2026-06-02T12:00:00.000Z",
+            "conversation-direct",
+            "Transcript from direct scope",
+        );
+        write_plan_replica(
+            &repo_metadata,
+            plan_id,
+            project_id,
+            "2026-06-02T13:00:00.000Z",
+            "2026-06-02T13:00:00.000Z",
+            "conversation-repo",
+            "Transcript from repo scope",
+        );
+
+        let index = load_branch_index(workspace.path(), &metadata_root, "main", &[])
+            .await
+            .expect("load branch index");
+        let scope_keys = index
+            .plan_locators_by_id
+            .get(plan_id)
+            .expect("plan locators")
+            .iter()
+            .filter(|locator| locator.scope.project_id.as_deref() == Some(project_id))
+            .map(|locator| locator.scope.scope_key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(scope_keys.len(), 2);
+        assert!(scope_keys
+            .iter()
+            .any(|scope_key| scope_key.starts_with("direct:")));
+        assert!(scope_keys
+            .iter()
+            .any(|scope_key| scope_key.starts_with("repo:")));
+
+        let error = activate_plan_chat(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectActivatePlanChatRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                replica_project_id: Some(project_id.to_string()),
+                ..WorkspaceArchitectActivatePlanChatRequestDto::default()
+            },
+        )
+        .await
+        .expect_err("project-only identity must fail closed");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
     }
 
     #[tokio::test]

@@ -4133,19 +4133,30 @@ const loadArchitectPlanActivationPayloadFromRuntime = async (
     return null;
   }
 
+  const resolutionMode =
+    head.resolutionMode === 'blank_fast_path' && head.chatMessageCount === 0
+      ? 'blank_fast_path'
+      : 'full';
+  const replicaScopeKey = head.replicaScopeKey?.trim() || null;
+  const replicaProjectId = head.replicaProjectId?.trim() || null;
+  if (resolutionMode === 'full' && !replicaScopeKey) {
+    throw new Error(
+      `Architect runtime returned an incomplete transcript replica identity for branch ${branchName} and plan ${planId}.`,
+    );
+  }
+
   return {
     plan: mapRuntimeArchitectPlanRecord(branchName, head.plan),
     chatMessages: [],
-    chatMessagesLoaded: false,
+    chatMessagesLoaded: resolutionMode === 'blank_fast_path',
     chatTranscriptRevision: head.chatTranscriptRevision,
     chatMessageCount: head.chatMessageCount,
-    replicaScopeKey: head.replicaScopeKey ?? null,
-    replicaProjectId: head.replicaProjectId ?? null,
+    replicaScopeKey,
+    replicaProjectId,
     conversationId: head.conversationId,
     sharedConversation: head.sharedConversation,
     targetBranch: normalizeBranchName(head.targetBranch || branchName),
-    resolutionMode:
-      head.resolutionMode === 'blank_fast_path' ? 'blank_fast_path' : 'full',
+    resolutionMode,
   };
 };
 
@@ -4169,11 +4180,23 @@ export const getArchitectPlanChatTranscript = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
-  const exactReplicaRequested = Boolean(options.replicaScopeKey || options.replicaProjectId);
+  const replicaScopeKey = options.replicaScopeKey?.trim() || null;
+  const replicaProjectId = options.replicaProjectId?.trim() || null;
+  const hasHeadIdentityWithoutScope = Boolean(
+    replicaProjectId ||
+    options.expectedTranscriptRevision ||
+    typeof options.expectedMessageCount === 'number'
+  );
+  if (!replicaScopeKey && hasHeadIdentityWithoutScope) {
+    throw new Error(
+      `Architect transcript replica identity is incomplete for branch ${normalizedBranch} and plan ${safeId}.`,
+    );
+  }
+  const exactReplicaRequested = Boolean(replicaScopeKey);
   const runtimeAvailable = isWorkspaceArchitectRuntimeAvailable(deps);
   if (exactReplicaRequested && !runtimeAvailable) {
     throw new Error(
-      `Architect runtime is unavailable for exact transcript replica ${options.replicaScopeKey ?? options.replicaProjectId}.`,
+      `Architect runtime is unavailable for exact transcript replica ${replicaScopeKey}.`,
     );
   }
 
@@ -4196,8 +4219,8 @@ export const getArchitectPlanChatTranscript = async (
     const transcript = await deps.tauri.workspaceArchitectActivatePlanChat({
       branchName: normalizedBranch,
       planId: safeId,
-      replicaScopeKey: options.replicaScopeKey,
-      replicaProjectId: options.replicaProjectId,
+      replicaScopeKey,
+      replicaProjectId,
       expectedTranscriptRevision: options.expectedTranscriptRevision,
       expectedMessageCount: options.expectedMessageCount,
     });
@@ -4205,8 +4228,8 @@ export const getArchitectPlanChatTranscript = async (
       return null;
     }
     if (
-      (options.replicaScopeKey && transcript.replicaScopeKey !== options.replicaScopeKey) ||
-      (options.replicaProjectId && transcript.replicaProjectId !== options.replicaProjectId) ||
+      (replicaScopeKey && transcript.replicaScopeKey !== replicaScopeKey) ||
+      (replicaProjectId && transcript.replicaProjectId !== replicaProjectId) ||
       (options.expectedTranscriptRevision &&
         transcript.transcriptRevision !== options.expectedTranscriptRevision) ||
       (typeof options.expectedMessageCount === 'number' &&

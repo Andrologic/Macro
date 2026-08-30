@@ -269,7 +269,7 @@ export const registerArchitectLifecycleScenarios = (
       ]);
     });
 
-    it('rejects newer local messages without rewriting the active replica', async () => {
+    it('rejects newer local messages for an incomplete project-only replica identity', async () => {
       context.tauriAvailable = true;
       const plan = createScenarioPlan('started', {
         id: 'plan-local-ahead',
@@ -312,7 +312,6 @@ export const registerArchitectLifecycleScenarios = (
         chatMessagesLoaded: false,
         chatTranscriptRevision: 'revision-local-ahead',
         chatMessageCount: 1,
-        replicaScopeKey: 'repo:C:/repos/project-a',
         replicaProjectId: 'project-a',
         conversationId: 'local-ahead-conv',
         sharedConversation: false,
@@ -332,7 +331,7 @@ export const registerArchitectLifecycleScenarios = (
       );
     });
 
-    it('rejects equal-length local and replica transcripts with different content', async () => {
+    it('rejects divergent local messages for an incomplete project-only replica identity', async () => {
       context.tauriAvailable = true;
       const plan = createScenarioPlan('started', {
         id: 'plan-local-diverged',
@@ -368,7 +367,6 @@ export const registerArchitectLifecycleScenarios = (
         chatMessagesLoaded: false,
         chatTranscriptRevision: 'revision-local-diverged',
         chatMessageCount: 1,
-        replicaScopeKey: 'repo:C:/repos/project-a',
         replicaProjectId: 'project-a',
         conversationId: 'local-diverged-conv',
         sharedConversation: false,

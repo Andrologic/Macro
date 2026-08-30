@@ -12504,6 +12504,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       replicaScopeKey = null,
       replicaProjectId = null,
     } = params;
+    const hasExactReplicaIdentity = Boolean(replicaScopeKey || replicaProjectId);
     const resolvedConversationId = conversationIdHint ?? plan.conversationId ?? null;
     const existingConversation = resolvedConversationId
       ? (get().conversations.find(
@@ -12612,7 +12613,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
     } else if (transcriptState.relation === "metadata_prefix") {
-      if (!replicaScopeKey) {
+      if (!hasExactReplicaIdentity) {
         await syncArchitectMetadataFromDb({
           branchName: targetBranch,
           planId: plan.id,
@@ -12644,7 +12645,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         dbCount: transcriptState.dbCount,
         metadataCount: transcriptState.metadataCount,
       });
-      if (replicaScopeKey) {
+      if (hasExactReplicaIdentity) {
         throw new Error(
           "Le transcript local diverge de la réplique Architect active. La conversation reste désélectionnée pour éviter d’afficher un contenu incohérent.",
         );
