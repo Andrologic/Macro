@@ -193,6 +193,7 @@ import {
   createAssistantPlaceholderMessage,
   createUserMessage,
   deleteConversation as deletePersistedConversation,
+  deleteConversationTurn as deletePersistedConversationTurn,
   deleteConversations as deletePersistedConversations,
   deleteMessagesAfter as deletePersistedMessagesAfter,
   loadChatBootstrapSnapshot,
@@ -16233,15 +16234,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const targetIndex = orderedMessages.findIndex(
         (message) => message.id === messageId,
       );
-      const previousMessage = orderedMessages[targetIndex - 1];
-      const messagesToRemove = orderedMessages.slice(targetIndex);
       const targetTurnId = getMessageTurnId(assistantMessage);
-      const hasLaterUnrelatedTurn = messagesToRemove
-        .slice(1)
+      const turnStartIndex = targetTurnId
+        ? orderedMessages.findIndex(
+            (message) => getMessageTurnId(message) === targetTurnId,
+          )
+        : -1;
+      const hasLaterUnrelatedTurn = orderedMessages
+        .slice(turnStartIndex)
         .some((message) => getMessageTurnId(message) !== targetTurnId);
       if (
-        targetIndex <= 0 ||
-        !previousMessage ||
+        targetIndex < 0 ||
+        !targetTurnId ||
+        turnStartIndex < 0 ||
+        turnStartIndex > targetIndex ||
         hasLaterUnrelatedTurn
       ) {
         throw buildSendError(
@@ -16249,10 +16255,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
       try {
-        await deletePersistedMessagesAfter(
+        await deletePersistedConversationTurn(
           chatPersistenceAdapters,
           assistantMessage.conversation_id,
-          previousMessage.id,
+          targetTurnId,
         );
       } catch (error) {
         throw buildSendError(
@@ -16267,18 +16273,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             assistantMessage.conversation_id,
           ),
         );
-        const currentAnchorIndex = currentConversationMessages.findIndex(
-          (message) => message.id === previousMessage.id,
-        );
-        const retainedConversationMessages = currentAnchorIndex >= 0
-          ? currentConversationMessages.slice(0, currentAnchorIndex + 1)
-          : orderedMessages.slice(0, targetIndex);
-        const retainedMessageIds = new Set(
-          retainedConversationMessages.map((message) => message.id),
+        const retainedConversationMessages = currentConversationMessages.filter(
+          (message) => getMessageTurnId(message) !== targetTurnId,
         );
         const removedMessageIds = new Set(
           currentConversationMessages
-            .filter((message) => !retainedMessageIds.has(message.id))
+            .filter((message) => getMessageTurnId(message) === targetTurnId)
             .map((message) => message.id),
         );
         const nextMessages = state.messages.filter(

@@ -197,6 +197,47 @@ describe('useCitationsStore', () => {
     expect(useCitationsStore.getState().citations).toEqual([]);
   });
 
+  it('does not restore stale citations when an empty conversation is cleared during hydration', async () => {
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    useCitationsStore.getState().clearConversationCitations('chat-conv');
+    finishHydration?.([
+      {
+        id: 'cite-stale',
+        conversation_id: 'chat-conv',
+        message_id: 'message-old',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'notes.md',
+        title: 'Stale persisted source',
+        snippet: 'This citation was deleted while hydration was pending.',
+        content: null,
+        url: null,
+        favicon: null,
+        path: null,
+        language: null,
+        size_bytes: null,
+        kind: 'used',
+        reason: null,
+        created_at: '2026-07-04T12:00:00Z',
+        updated_at: '2026-07-04T12:01:00Z',
+      },
+    ]);
+    await hydration;
+
+    expect(deleteConversationCitationsMock).toHaveBeenCalledWith('chat-conv');
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
   it('loads full citation content lazily when requested', async () => {
     listConversationCitationsMock.mockImplementationOnce(async () => [
       {

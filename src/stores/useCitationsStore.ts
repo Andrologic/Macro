@@ -225,6 +225,13 @@ const contentLoadPromisesByCitationId = new Map<string, Promise<Citation | null>
 const citationHydrationRequestIdsByConversationId = new Map<string, number>();
 let nextCitationHydrationRequestId = 0;
 
+const invalidateCitationHydration = (conversationId: string): void => {
+  citationHydrationRequestIdsByConversationId.set(
+    conversationId,
+    ++nextCitationHydrationRequestId,
+  );
+};
+
 export const useCitationsStore = create<CitationsState>((set, get) => ({
   citations: [],
 
@@ -528,6 +535,7 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
   },
 
   clearConversationCitations: (conversationId) => {
+    invalidateCitationHydration(conversationId);
     set((state) => ({
       citations: state.citations.filter((c) => c.conversationId !== conversationId),
     }));
@@ -536,6 +544,7 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
 
   clearConversationCitationsBulk: (conversationIds) => {
     if (conversationIds.length === 0) return;
+    conversationIds.forEach(invalidateCitationHydration);
     const ids = new Set(conversationIds);
     set((state) => ({
       citations: state.citations.filter((citation) => !ids.has(citation.conversationId)),

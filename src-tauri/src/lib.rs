@@ -647,6 +647,7 @@ pub fn run() {
             commands::db_import_messages,
             commands::db_update_message,
             commands::db_delete_messages_after,
+            commands::db_delete_conversation_turn,
             commands::db_trim_conversation_replay,
             commands::db_prepare_conversation_replay,
             commands::db_restore_conversation_replay,

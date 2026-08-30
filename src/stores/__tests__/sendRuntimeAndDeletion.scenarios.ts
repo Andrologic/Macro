@@ -21,6 +21,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
     createMessageMock,
     createScenarioPlan,
     deleteConversationMock,
+    deleteConversationTurnMock,
     deleteConversationsMock,
     deleteConversationToolboxStateMock,
     deleteMessagesAfterMock,
@@ -455,6 +456,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
       appState.mode = 'Chat';
       const userMessage: ChatMessage = {
         id: 'user-1',
+        turn_id: 'turn-1',
         task_id: '',
         conversation_id: 'chat-conv',
         role: 'user',
@@ -481,6 +483,15 @@ export const registerSendRuntimeAndDeletionScenarios = (
         content: 'Ajoute aussi les détails du journal.',
         timestamp: '2026-08-30T08:02:00.000Z',
       };
+      const previousMessage: ChatMessage = {
+        id: 'user-previous',
+        turn_id: 'turn-previous',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user',
+        content: 'Question précédente',
+        timestamp: '2026-08-30T07:59:00.000Z',
+      };
       window.localStorage.setItem(
         'macro_chat_unsaved_assistant_responses_v1',
         JSON.stringify({ 'assistant-1': assistantMessage }),
@@ -488,8 +499,22 @@ export const registerSendRuntimeAndDeletionScenarios = (
 
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(createIdleChatStoreState({
-        conversations: [{ ...createConversation('chat-conv'), message_count: 3 }],
-        messages: [userMessage, assistantMessage, steeringMessage],
+        conversations: [{ ...createConversation('chat-conv'), message_count: 4 }],
+        messages: [previousMessage, userMessage, assistantMessage, steeringMessage],
+        messageImagesByMessageId: {
+          'user-previous': [{
+            id: 'image-previous',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,cHJldmlvdXM=',
+            createdAt: '2026-08-30T07:59:00.000Z',
+          }],
+          'user-1': [{
+            id: 'image-failed',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,ZmFpbGVk',
+            createdAt: '2026-08-30T08:00:00.000Z',
+          }],
+        },
         selectedConversationId: 'chat-conv',
         selectedConversationIdsByMode: { Chat: 'chat-conv' },
         conversationRuntimeById: {
@@ -507,10 +532,13 @@ export const registerSendRuntimeAndDeletionScenarios = (
 
       await useChatStore.getState().deleteUnsavedAssistantResponse('assistant-1');
 
-      expect(deleteMessagesAfterMock).toHaveBeenCalledWith('chat-conv', 'user-1');
+      expect(deleteConversationTurnMock).toHaveBeenCalledWith('chat-conv', 'turn-1');
       expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
-        userMessage,
+        previousMessage,
       ]);
+      expect(useChatStore.getState().messageImagesByMessageId).toEqual({
+        'user-previous': expect.any(Array),
+      });
       expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe('idle');
       expect(
         window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1'),

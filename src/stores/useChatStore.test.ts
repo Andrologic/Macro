@@ -1299,6 +1299,7 @@ const updateMessageMock = mock(
   ) => undefined
 );
 const deleteMessagesAfterMock = mock(async () => undefined);
+const deleteConversationTurnMock = mock(async () => undefined);
 const dbTrimConversationReplayMock = mock(async () => undefined);
 const dbPrepareConversationReplayMock = mock(async () => undefined);
 const dbRestoreConversationReplayMock = mock(async () => true);
@@ -1888,6 +1889,7 @@ const registerUseChatStoreMocks = async () => {
 	    fsDelete: fsDeleteMock,
 	    updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
+    deleteConversationTurn: deleteConversationTurnMock,
     dbTrimConversationReplay: dbTrimConversationReplayMock,
     dbPrepareConversationReplay: dbPrepareConversationReplayMock,
     dbRestoreConversationReplay: dbRestoreConversationReplayMock,
@@ -2539,6 +2541,7 @@ const useChatStoreScenarioContext = {
   dbUpsertConversationCompactionStateMock,
   dbUpsertArchitectPlanConversationSyncMock,
   deleteConversationMock,
+  deleteConversationTurnMock,
   deleteConversationsMock,
   deleteMessagesAfterMock,
   deleteConversationToolboxStateMock,
@@ -2833,6 +2836,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     deleteConversationToolboxStateMock.mockClear();
     updateConversationAISelectionMock.mockClear();
     deleteConversationMock.mockClear();
+    deleteConversationTurnMock.mockClear();
     deleteConversationsMock.mockClear();
     updateConversationScopeMock.mockClear();
     updateMessageMock.mockClear();
