@@ -98,6 +98,9 @@ export interface PlanLifecycleSagaQuarantineEntry {
   entry: unknown;
   reason: string;
   quarantinedAt: string;
+  sourceKey: string;
+  sourceRevision: string;
+  sourceIndex: number | 'root';
 }
 
 export interface PlanLifecycleSagaJournal {
@@ -197,7 +200,10 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   return saga as PlanLifecycleSaga;
 };
 
-export const parsePlanLifecycleSagaJournal = (value: string | null | undefined): PlanLifecycleSagaJournal => {
+export const parsePlanLifecycleSagaJournal = (
+  value: string | null | undefined,
+  sourceRevision = 'inline',
+): PlanLifecycleSagaJournal => {
   if (!value) return { sagas: [], quarantined: [] };
   let parsed: unknown;
   try {
@@ -209,6 +215,9 @@ export const parsePlanLifecycleSagaJournal = (value: string | null | undefined):
         entry: value,
         reason: 'Journal de saga JSON illisible : valeur brute conservée, aucune reprise automatique exécutée.',
         quarantinedAt: new Date().toISOString(),
+        sourceKey: SAGA_KEY,
+        sourceRevision,
+        sourceIndex: 'root',
       }],
     };
   }
@@ -219,11 +228,14 @@ export const parsePlanLifecycleSagaJournal = (value: string | null | undefined):
         entry: parsed,
         reason: 'Racine du journal de saga invalide : un tableau était attendu, aucune reprise automatique exécutée.',
         quarantinedAt: new Date().toISOString(),
+        sourceKey: SAGA_KEY,
+        sourceRevision,
+        sourceIndex: 'root',
       }],
     };
   }
   const journal: PlanLifecycleSagaJournal = { sagas: [], quarantined: [] };
-  for (const entry of parsed) {
+  for (const [sourceIndex, entry] of parsed.entries()) {
     try {
       journal.sagas.push(parseSagaEntry(entry));
     } catch {
@@ -231,6 +243,9 @@ export const parsePlanLifecycleSagaJournal = (value: string | null | undefined):
         entry,
         reason: 'Entrée de saga invalide : reprise automatique ignorée pour cette entrée uniquement.',
         quarantinedAt: new Date().toISOString(),
+        sourceKey: SAGA_KEY,
+        sourceRevision,
+        sourceIndex,
       });
     }
   }
@@ -388,7 +403,38 @@ const appendQuarantine = async (
   if (entries.length === 0) return;
   await updateSetting(
     SAGA_QUARANTINE_KEY,
-    (current) => JSON.stringify([...parseUnknownArray(current), ...entries]),
+    (current) => {
+      const currentEntries = parseUnknownArray(current);
+      const identities = new Set(currentEntries.flatMap((candidate) => {
+        if (!candidate || typeof candidate !== 'object') return [];
+        const entry = candidate as Partial<PlanLifecycleSagaQuarantineEntry>;
+        if (
+          typeof entry.sourceKey !== 'string' || typeof entry.sourceRevision !== 'string' ||
+          (entry.sourceIndex !== 'root' && !Number.isSafeInteger(entry.sourceIndex)) ||
+          typeof entry.reason !== 'string'
+        ) return [];
+        return [JSON.stringify([
+          entry.sourceKey,
+          entry.sourceRevision,
+          entry.sourceIndex,
+          entry.reason,
+          entry.entry,
+        ])];
+      }));
+      const additions = entries.filter((entry) => {
+        const identity = JSON.stringify([
+          entry.sourceKey,
+          entry.sourceRevision,
+          entry.sourceIndex,
+          entry.reason,
+          entry.entry,
+        ]);
+        if (identities.has(identity)) return false;
+        identities.add(identity);
+        return true;
+      });
+      return JSON.stringify([...currentEntries, ...additions]);
+    },
     transport,
   );
 };
@@ -400,7 +446,10 @@ export const loadPlanLifecycleSagas = async (
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
     const setting = await transport.dbGetAppSetting(SAGA_KEY);
     const expectedValueJson = setting?.value_json ?? null;
-    const journal = parsePlanLifecycleSagaJournal(expectedValueJson);
+    const journal = parsePlanLifecycleSagaJournal(
+      expectedValueJson,
+      setting?.updated_at ?? 'absent',
+    );
     if (journal.quarantined.length === 0) {
       const completed = await loadCompletedRegistry(transport);
       return journal.sagas.filter((saga) => !registryCompletesSaga(completed, saga));

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   getPlanLifecycleSagaKey,
   getPlanLifecycleSagaGeneration,
+  loadPlanLifecycleSagas,
   parsePlanLifecycleSagaJournal,
   parsePlanLifecycleSagas,
   removePlanLifecycleSaga,
@@ -80,6 +81,46 @@ describe('planLifecycleSaga', () => {
     expect(journal.quarantined).toHaveLength(1);
     expect(journal.quarantined[0]?.entry).toEqual(invalidRoot);
     expect(journal.quarantined[0]?.reason).toContain('tableau était attendu');
+  });
+
+  it('does not duplicate quarantine entries when source normalization must retry', async () => {
+    const valid = JSON.parse(serializeSaga())[0];
+    const invalid = { ...valid, planId: 'broken', phase: 'metadata_deleted' };
+    const values = new Map<string, string>([
+      ['pendingPlanLifecycles:v1', JSON.stringify([invalid, valid])],
+    ]);
+    let rejectFirstSourceNormalization = true;
+    const transport: PlanLifecycleSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: 'source-revision-1' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        if (key === 'pendingPlanLifecycles:v1' && rejectFirstSourceNormalization) {
+          rejectFirstSourceNormalization = false;
+          return { applied: false };
+        }
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+
+    await expect(loadPlanLifecycleSagas(transport)).resolves.toEqual([valid]);
+
+    const quarantine = JSON.parse(
+      values.get('pendingPlanLifecyclesQuarantine:v1') ?? '[]',
+    ) as Array<{ entry: unknown; sourceRevision: string; sourceIndex: number }>;
+    expect(quarantine).toHaveLength(1);
+    expect(quarantine[0]).toMatchObject({
+      entry: invalid,
+      sourceRevision: 'source-revision-1',
+      sourceIndex: 0,
+    });
+    expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([valid]);
   });
 
   it('preserves concurrent lifecycle updates from independent clients', async () => {
