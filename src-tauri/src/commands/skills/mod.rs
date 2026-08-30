@@ -27,6 +27,7 @@ const AGENTS_SKILLS_DIR: &str = ".agents/skills";
 const RESOURCE_MAX_BYTES: u64 = 512 * 1024;
 const SCRIPT_OUTPUT_MAX_CHARS: usize = 20_000;
 const SCRIPT_OUTPUT_TRUNCATION_MARKER: &str = "\n[truncated]";
+const SCRIPT_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const MAX_DISCOVERY_DEPTH: usize = 6;
@@ -1483,6 +1484,36 @@ where
     Ok(finalize_bounded_skill_output(raw, discarded))
 }
 
+async fn finish_skill_output_tasks(
+    mut stdout_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
+    mut stderr_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
+    drain_timeout: Duration,
+) -> CommandResult<((String, bool), (String, bool))> {
+    let joined = timeout(drain_timeout, async {
+        tokio::join!(&mut stdout_task, &mut stderr_task)
+    })
+    .await;
+    match joined {
+        Ok((stdout, stderr)) => {
+            let stdout = stdout
+                .map_err(|error| command_error(format!("Failed to join skill stdout: {error}")))?
+                .map_err(|error| command_error(format!("Failed to read skill stdout: {error}")))?;
+            let stderr = stderr
+                .map_err(|error| command_error(format!("Failed to join skill stderr: {error}")))?
+                .map_err(|error| command_error(format!("Failed to read skill stderr: {error}")))?;
+            Ok((stdout, stderr))
+        }
+        Err(_) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            let marker = SCRIPT_OUTPUT_TRUNCATION_MARKER
+                .trim_start_matches('\n')
+                .to_string();
+            Ok(((marker.clone(), true), (marker, true)))
+        }
+    }
+}
+
 fn append_skill_timeout_message(stderr: String, timeout_ms: u64) -> (String, bool) {
     let message = format!("Skill script timed out after {} ms.", timeout_ms);
     if stderr.is_empty() {
@@ -2097,14 +2128,8 @@ async fn run_skill_script_with_manifest(
                 ))
             })?;
     }
-    let (stdout, stdout_truncated) = stdout_task
-        .await
-        .map_err(|error| command_error(format!("Failed to join skill stdout: {}", error)))?
-        .map_err(|error| command_error(format!("Failed to read skill stdout: {}", error)))?;
-    let (stderr, stderr_truncated) = stderr_task
-        .await
-        .map_err(|error| command_error(format!("Failed to join skill stderr: {}", error)))?
-        .map_err(|error| command_error(format!("Failed to read skill stderr: {}", error)))?;
+    let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+        finish_skill_output_tasks(stdout_task, stderr_task, SCRIPT_OUTPUT_DRAIN_TIMEOUT).await?;
 
     let response = if timed_out {
         let (stderr, timeout_message_truncated) = append_skill_timeout_message(stderr, timeout_ms);
@@ -2171,6 +2196,23 @@ mod tests {
         assert!(truncated);
         assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
         assert!(output.ends_with(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+    }
+
+    #[tokio::test]
+    async fn output_drain_timeout_aborts_inherited_pipe_readers() {
+        let stdout_task =
+            tokio::spawn(async { std::future::pending::<std::io::Result<(String, bool)>>().await });
+        let stderr_task = tokio::spawn(async { Ok(("stderr".to_string(), false)) });
+
+        let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+            finish_skill_output_tasks(stdout_task, stderr_task, Duration::from_millis(10))
+                .await
+                .expect("bounded output drain");
+
+        assert!(stdout_truncated);
+        assert!(stderr_truncated);
+        assert_eq!(stdout, "[truncated]");
+        assert_eq!(stderr, "[truncated]");
     }
 
     async fn test_skills_list(
@@ -3084,7 +3126,7 @@ mod tests {
         #[cfg(not(windows))]
         let (descendant_script_path, descendant_script_content) = (
             "scripts/descendant.sh",
-            "(sleep 1.5; printf survived > \"$1\") &\nsleep 10\n",
+            "if command -v setsid >/dev/null 2>&1; then\n  setsid sh -c 'sleep 1.5; printf survived > \"$1\"' sh \"$1\" &\nelse\n  (sleep 1.5; printf survived > \"$1\") &\nfi\nsleep 10\n",
         );
         fs::write(skill_dir.join(slow_script_path), slow_script_content).expect("write slow");
         fs::write(skill_dir.join(noisy_script_path), noisy_script_content).expect("write noisy");
