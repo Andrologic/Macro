@@ -23,13 +23,15 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 
 const DEFAULT_TERMINAL_COLS: u16 = 120;
 const DEFAULT_TERMINAL_ROWS: u16 = 32;
@@ -46,6 +48,7 @@ const LEGACY_COMMAND_OUTPUT_HEAD_BYTES: usize = 64 * 1024;
 const INCOMPLETE_DRAIN_MARKER: &str =
     "\n[terminal output drain timed out; remaining output was discarded]\n";
 const OUTPUT_FLUSH_DELAY_MS: u64 = 16;
+#[cfg(not(windows))]
 const LIVE_TERMINAL_CLOSE_GRACE_MS: u64 = 200;
 const DEFAULT_TERM: &str = "xterm-256color";
 const DEFAULT_COLORTERM: &str = "truecolor";
@@ -222,6 +225,96 @@ struct LegacyTerminalSessionRecord {
 #[cfg(windows)]
 struct WindowsJob {
     handle: HANDLE,
+}
+
+#[cfg(windows)]
+struct WindowsLaunchGate {
+    start_handle: HANDLE,
+    ready_handle: HANDLE,
+    start_name: String,
+    ready_name: String,
+}
+
+#[cfg(windows)]
+unsafe impl Send for WindowsLaunchGate {}
+
+#[cfg(windows)]
+impl WindowsLaunchGate {
+    fn new() -> CommandResult<Self> {
+        let id = Uuid::new_v4();
+        let start_name = format!("Local\\MacroTerminalStart-{id}");
+        let ready_name = format!("Local\\MacroTerminalReady-{id}");
+        let wide_start_name = start_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let start_handle =
+            unsafe { CreateEventW(std::ptr::null(), 1, 0, wide_start_name.as_ptr()) };
+        if start_handle.is_null() {
+            return Err(command_error(format!(
+                "Failed to create terminal launch gate: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let wide_ready_name = ready_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let ready_handle =
+            unsafe { CreateEventW(std::ptr::null(), 1, 0, wide_ready_name.as_ptr()) };
+        if ready_handle.is_null() {
+            unsafe { CloseHandle(start_handle) };
+            return Err(command_error(format!(
+                "Failed to create terminal launch acknowledgement: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(Self {
+            start_handle,
+            ready_handle,
+            start_name,
+            ready_name,
+        })
+    }
+
+    fn apply(&self, command: &mut CommandBuilder) {
+        command.env("MACRO_TERMINAL_START_GATE", &self.start_name);
+        command.env("MACRO_TERMINAL_READY_GATE", &self.ready_name);
+    }
+
+    fn release(&self) -> CommandResult<()> {
+        match unsafe { WaitForSingleObject(self.ready_handle, 5_000) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_TIMEOUT => {
+                return Err(command_error(
+                    "Terminal process did not acknowledge its launch gate",
+                ));
+            }
+            _ => {
+                return Err(command_error(format!(
+                    "Failed to wait for terminal launch acknowledgement: {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
+        }
+        if unsafe { SetEvent(self.start_handle) } == 0 {
+            return Err(command_error(format!(
+                "Failed to release terminal launch gate: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsLaunchGate {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.start_handle);
+            CloseHandle(self.ready_handle);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1014,22 +1107,37 @@ fn apply_unix_shell_args_and_prompt(
 }
 
 #[cfg(windows)]
-fn build_shell_command(record: &TerminalTabRecord) -> (CommandBuilder, ManagedShellKind) {
+fn gated_powershell_script(command: &str) -> String {
+    format!(
+        "$__macroStart = [System.Threading.EventWaitHandle]::OpenExisting($env:MACRO_TERMINAL_START_GATE); $__macroReady = [System.Threading.EventWaitHandle]::OpenExisting($env:MACRO_TERMINAL_READY_GATE); try {{ [void]$__macroReady.Set(); [void]$__macroStart.WaitOne() }} finally {{ $__macroReady.Dispose(); $__macroStart.Dispose() }}; {command}"
+    )
+}
+
+#[cfg(windows)]
+fn build_shell_command(
+    record: &TerminalTabRecord,
+) -> CommandResult<(CommandBuilder, ManagedShellKind, WindowsLaunchGate)> {
+    let gate = WindowsLaunchGate::new()?;
     if let Some(wsl_path) = parse_wsl_unc_path(&record.cwd) {
-        let mut command = CommandBuilder::new("wsl.exe");
-        command.arg("-d");
-        command.arg(wsl_path.distro);
-        command.arg("--cd");
-        command.arg(wsl_path.linux_path);
-        command.arg("--");
-        command.arg("/bin/sh");
-        command.arg("-lc");
-        command.arg("if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi");
+        let mut command = CommandBuilder::new("powershell");
+        command.arg("-NoLogo");
+        command.arg("-NoProfile");
+        command.arg("-Command");
+        command.arg(gated_powershell_script(
+            "& wsl.exe -d $env:MACRO_WSL_DISTRO --cd $env:MACRO_WSL_CWD -- /bin/sh -lc $env:MACRO_WSL_COMMAND; exit $LASTEXITCODE",
+        ));
         command.env("TERM", DEFAULT_TERM);
         command.env("COLORTERM", DEFAULT_COLORTERM);
         command.env("TERM_PROGRAM", TERM_PROGRAM_NAME);
         command.env("MACRO_TERMINAL_CWD", &record.cwd);
-        return (command, ManagedShellKind::Posix);
+        command.env("MACRO_WSL_DISTRO", wsl_path.distro);
+        command.env("MACRO_WSL_CWD", wsl_path.linux_path);
+        command.env(
+            "MACRO_WSL_COMMAND",
+            "if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi",
+        );
+        gate.apply(&mut command);
+        return Ok((command, ManagedShellKind::Posix, gate));
     }
 
     let mut command = CommandBuilder::new("powershell");
@@ -1037,14 +1145,15 @@ fn build_shell_command(record: &TerminalTabRecord) -> (CommandBuilder, ManagedSh
     command.arg("-NoProfile");
     command.arg("-NoExit");
     command.arg("-Command");
-    command.arg(
+    command.arg(gated_powershell_script(
         "function global:prompt { $env:MACRO_TERMINAL_PROMPT }; Set-Location -LiteralPath $env:MACRO_TERMINAL_CWD",
-    );
+    ));
     command.cwd(Path::new(&record.cwd));
     apply_terminal_environment(&mut command, &record.cwd, None);
     command.env("MACRO_TERMINAL_CWD", &record.cwd);
     command.env("MACRO_TERMINAL_PROMPT", render_terminal_prompt(record));
-    (command, ManagedShellKind::PowerShell)
+    gate.apply(&mut command);
+    Ok((command, ManagedShellKind::PowerShell, gate))
 }
 
 #[cfg(not(windows))]
@@ -1116,31 +1225,38 @@ fn build_managed_command(
 }
 
 #[cfg(windows)]
-fn build_command_process(record: &TerminalTabRecord, command_text: &str) -> CommandBuilder {
+fn build_command_process(
+    record: &TerminalTabRecord,
+    command_text: &str,
+) -> CommandResult<(CommandBuilder, WindowsLaunchGate)> {
+    let gate = WindowsLaunchGate::new()?;
     if let Some(wsl_path) = parse_wsl_unc_path(&record.cwd) {
-        let mut command = CommandBuilder::new("wsl.exe");
-        command.arg("-d");
-        command.arg(wsl_path.distro);
-        command.arg("--cd");
-        command.arg(wsl_path.linux_path);
-        command.arg("--");
-        command.arg("/bin/sh");
-        command.arg("-lc");
-        command.arg(command_text);
+        let mut command = CommandBuilder::new("powershell");
+        command.arg("-NoLogo");
+        command.arg("-NoProfile");
+        command.arg("-Command");
+        command.arg(gated_powershell_script(
+            "& wsl.exe -d $env:MACRO_WSL_DISTRO --cd $env:MACRO_WSL_CWD -- /bin/sh -lc $env:MACRO_WSL_COMMAND; exit $LASTEXITCODE",
+        ));
         command.env("TERM", DEFAULT_TERM);
         command.env("COLORTERM", DEFAULT_COLORTERM);
         command.env("TERM_PROGRAM", TERM_PROGRAM_NAME);
-        return command;
+        command.env("MACRO_WSL_DISTRO", wsl_path.distro);
+        command.env("MACRO_WSL_CWD", wsl_path.linux_path);
+        command.env("MACRO_WSL_COMMAND", command_text);
+        gate.apply(&mut command);
+        return Ok((command, gate));
     }
 
     let mut command = CommandBuilder::new("powershell");
     command.arg("-NoLogo");
     command.arg("-NoProfile");
     command.arg("-Command");
-    command.arg(command_text);
+    command.arg(gated_powershell_script(command_text));
     command.cwd(Path::new(&record.cwd));
     apply_terminal_environment(&mut command, &record.cwd, None);
-    command
+    gate.apply(&mut command);
+    Ok((command, gate))
 }
 
 fn shell_single_quote(value: &str) -> String {
@@ -1678,7 +1794,7 @@ async fn spawn_live_tab(
         .map_err(|error| command_error(format!("Failed to create terminal PTY: {}", error)))?;
 
     #[cfg(windows)]
-    let (shell_command, shell_kind) = build_shell_command(&record);
+    let (shell_command, shell_kind, launch_gate) = build_shell_command(&record)?;
     #[cfg(not(windows))]
     let (shell_command, shell_kind) = build_shell_command(&record);
     let mut child = pair
@@ -1688,6 +1804,12 @@ async fn spawn_live_tab(
     drop(pair.slave);
     #[cfg(windows)]
     let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
+        let _ = child.kill();
+        error
+    })?;
+    #[cfg(windows)]
+    launch_gate.release().map_err(|error| {
+        let _ = windows_job.terminate();
         let _ = child.kill();
         error
     })?;
@@ -1814,6 +1936,9 @@ async fn spawn_command_tab(
         .openpty(pty_size(DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS))
         .map_err(|error| command_error(format!("Failed to create terminal PTY: {}", error)))?;
 
+    #[cfg(windows)]
+    let (process_command, launch_gate) = build_command_process(&record, &command_text)?;
+    #[cfg(not(windows))]
     let process_command = build_command_process(&record, &command_text);
     let mut child = pair
         .slave
@@ -1822,6 +1947,12 @@ async fn spawn_command_tab(
     drop(pair.slave);
     #[cfg(windows)]
     let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
+        let _ = child.kill();
+        error
+    })?;
+    #[cfg(windows)]
+    launch_gate.release().map_err(|error| {
+        let _ = windows_job.terminate();
         let _ = child.kill();
         error
     })?;
@@ -2448,6 +2579,79 @@ pub async fn terminal_clear_tab(
     Ok(stored_tab_to_dto(&record, false))
 }
 
+#[cfg_attr(windows, allow(unused_variables))]
+async fn terminate_live_terminal_process(
+    session: &LiveTerminalSession,
+    tab_id: &str,
+) -> CommandResult<()> {
+    #[cfg(windows)]
+    let job_result = session.windows_job.terminate();
+
+    #[cfg(not(windows))]
+    {
+        let writer = session.writer.clone();
+        let interrupt_task = tokio::task::spawn_blocking(move || {
+            if let Ok(mut guard) = writer.lock() {
+                guard
+                    .write_all(&[3])
+                    .and_then(|_| guard.flush())
+                    .map_err(|error| {
+                        command_error(format!(
+                            "Failed to interrupt terminal during close: {error}"
+                        ))
+                    })
+            } else {
+                Err(command_error("Failed to lock terminal writer during close"))
+            }
+        });
+        match tokio::time::timeout(Duration::from_millis(100), interrupt_task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => {
+                tracing::warn!(action = "terminal_close_interrupt_failed", tab_id = %tab_id, error = ?error);
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(action = "terminal_close_interrupt_task_failed", tab_id = %tab_id, error = ?error);
+            }
+            Err(_) => {
+                tracing::warn!(action = "terminal_close_interrupt_timed_out", tab_id = %tab_id);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(LIVE_TERMINAL_CLOSE_GRACE_MS)).await;
+    }
+
+    let child = session.child.clone();
+    let child_result = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || {
+            let mut guard = child
+                .lock()
+                .map_err(|_| command_error("Failed to lock terminal child during close"))?;
+            match guard.try_wait() {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => guard.kill().map_err(|error| {
+                    command_error(format!("Failed to terminate terminal process: {error}"))
+                }),
+                Err(error) => Err(command_error(format!(
+                    "Failed to inspect terminal process: {error}"
+                ))),
+            }
+        }),
+    )
+    .await
+    .map_err(|_| command_error("Terminal close termination timed out"))?
+    .map_err(|error| command_error(format!("Terminal close termination task failed: {error}")))?;
+
+    #[cfg(windows)]
+    {
+        child_result?;
+        job_result?;
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    child_result
+}
+
 #[tauri::command]
 pub async fn terminal_close_tab(
     app_handle: AppHandle,
@@ -2496,49 +2700,7 @@ pub async fn terminal_close_tab(
             );
         }
 
-        let writer = session.writer.clone();
-        let interrupt_result = tokio::task::spawn_blocking(move || {
-            if let Ok(mut guard) = writer.lock() {
-                guard
-                    .write_all(&[3])
-                    .and_then(|_| guard.flush())
-                    .map_err(|error| {
-                        command_error(format!(
-                            "Failed to interrupt terminal during close: {error}"
-                        ))
-                    })
-            } else {
-                Err(command_error("Failed to lock terminal writer during close"))
-            }
-        })
-        .await
-        .map_err(|error| command_error(format!("Terminal close interrupt task failed: {error}")))?;
-        if let Err(error) = interrupt_result {
-            tracing::warn!(action = "terminal_close_interrupt_failed", tab_id = %tab_id, error = ?error);
-        }
-
-        tokio::time::sleep(Duration::from_millis(LIVE_TERMINAL_CLOSE_GRACE_MS)).await;
-        #[cfg(windows)]
-        session.windows_job.terminate()?;
-        let child = session.child.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = child
-                .lock()
-                .map_err(|_| command_error("Failed to lock terminal child during close"))?;
-            match guard.try_wait() {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) => guard.kill().map_err(|error| {
-                    command_error(format!("Failed to terminate terminal process: {error}"))
-                }),
-                Err(error) => Err(command_error(format!(
-                    "Failed to inspect terminal process: {error}"
-                ))),
-            }
-        })
-        .await
-        .map_err(|error| {
-            command_error(format!("Terminal close termination task failed: {error}"))
-        })??;
+        terminate_live_terminal_process(&session, &tab_id).await?;
 
         let db_pool = load_db_pool(&pool).await?;
         let _persistence_guard = persistence_lock.lock().await;
@@ -3621,31 +3783,97 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn closing_a_portable_terminal_job_removes_descendants() {
+    async fn live_terminal_close_path_gates_launch_and_removes_descendants() {
         let temp = TempDir::new().expect("temp dir");
         let marker = temp.path().join("terminal-descendant-survived.txt");
+        let started = temp.path().join("terminal-descendant-started.txt");
         let child_script = format!(
             "Start-Sleep -Milliseconds 1200; Set-Content -LiteralPath '{}' -Value survived",
             marker.to_string_lossy().replace('\'', "''")
         );
         let parent_script = format!(
-            "$child = Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList @('-NoProfile','-Command','{}') -PassThru; Start-Sleep -Seconds 30",
-            child_script.replace('\'', "''")
+            "$child = Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList @('-NoProfile','-Command','{}') -PassThru; Set-Content -LiteralPath '{}' -Value $child.Id; Start-Sleep -Seconds 30",
+            child_script.replace('\'', "''"),
+            started.to_string_lossy().replace('\'', "''")
+        );
+        let record = build_terminal_record(
+            "setup",
+            "project".to_string(),
+            None,
+            "race test".to_string(),
+            None,
+            ProjectTerminalTarget {
+                project_name: "Project".to_string(),
+                mount_name: "project".to_string(),
+                workspace_path: temp.path().to_path_buf(),
+            },
+            temp.path().to_path_buf(),
         );
         let pty = NativePtySystem::default()
             .openpty(pty_size(80, 24))
             .expect("open terminal PTY");
-        let mut command = CommandBuilder::new("powershell.exe");
-        command.args(["-NoProfile", "-Command", &parent_script]);
-        let mut child = pty
+        let (command, launch_gate) =
+            build_command_process(&record, &parent_script).expect("gated command");
+        let child = pty
             .slave
             .spawn_command(command)
             .expect("spawn portable terminal");
-        let job = WindowsJob::assign_portable(child.as_ref()).expect("assign terminal job");
+        drop(pty.slave);
         tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !started.exists(),
+            "terminal command ran before Job Object assignment"
+        );
+        let job = WindowsJob::assign_portable(child.as_ref()).expect("assign terminal job");
+        launch_gate.release().expect("release launch gate");
+        for _ in 0..100 {
+            if started.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            started.exists(),
+            "terminal command did not launch descendant"
+        );
 
-        job.terminate().expect("close terminal job");
-        let _ = child.kill();
+        let writer = pty.master.take_writer().expect("terminal writer");
+        let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+            record,
+            persistence_lock: Arc::new(Mutex::new(())),
+            scan_buffer: String::new(),
+            pending_command: None,
+            pending_output: String::new(),
+            output_flush_scheduled: false,
+            shell_kind: ManagedShellKind::PowerShell,
+            mode: LiveTerminalMode::CommandProcess,
+            output_sequence: 0,
+        }));
+        let session = LiveTerminalSession {
+            child: Arc::new(StdMutex::new(child)),
+            writer: Arc::new(StdMutex::new(writer)),
+            master: Arc::new(StdMutex::new(pty.master)),
+            runtime,
+            windows_job: job,
+        };
+        let writer = session.writer.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let writer_lock_thread = std::thread::spawn(move || {
+            let _guard = writer.lock().expect("lock terminal writer");
+            locked_tx.send(()).expect("signal writer lock");
+            release_rx.recv().expect("release writer lock");
+        });
+        locked_rx.recv().expect("writer lock acquired");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            terminate_live_terminal_process(&session, "race-test"),
+        )
+        .await
+        .expect("close must not wait for a blocked writer")
+        .expect("close live terminal process");
+        release_tx.send(()).expect("release writer");
+        writer_lock_thread.join().expect("join writer lock thread");
         tokio::time::sleep(Duration::from_millis(1_500)).await;
 
         assert!(!marker.exists(), "terminal descendant survived close");

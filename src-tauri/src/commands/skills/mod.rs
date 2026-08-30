@@ -1438,6 +1438,47 @@ fn truncate_chars(value: String, max_chars: usize) -> (String, bool) {
     (truncated, true)
 }
 
+async fn read_bounded_skill_output<R>(mut reader: R) -> std::io::Result<(String, bool)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let byte_limit = SCRIPT_OUTPUT_MAX_CHARS.saturating_mul(4);
+    let mut retained = Vec::with_capacity(byte_limit);
+    let mut discarded = false;
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = byte_limit.saturating_sub(retained.len());
+        let keep = remaining.min(read);
+        retained.extend_from_slice(&buffer[..keep]);
+        discarded |= keep < read;
+    }
+    let raw = String::from_utf8_lossy(&retained).into_owned();
+    let (output, char_truncated) = truncate_chars(raw, SCRIPT_OUTPUT_MAX_CHARS);
+    Ok((output, discarded || char_truncated))
+}
+
+fn append_skill_timeout_message(stderr: String, timeout_ms: u64) -> (String, bool) {
+    let message = format!("Skill script timed out after {} ms.", timeout_ms);
+    if stderr.is_empty() {
+        return (message, false);
+    }
+    let separator = "\n";
+    let reserved_chars = message.chars().count() + separator.chars().count();
+    let stderr_limit = SCRIPT_OUTPUT_MAX_CHARS.saturating_sub(reserved_chars);
+    let stderr_was_truncated = stderr.chars().count() > stderr_limit;
+    let stderr = stderr.chars().take(stderr_limit).collect::<String>();
+    let marker = if stderr_was_truncated {
+        "\n[truncated]\n"
+    } else {
+        separator
+    };
+    (format!("{stderr}{marker}{message}"), stderr_was_truncated)
+}
+
 fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
     fs::create_dir_all(destination)
         .map_err(|error| command_error(format!("Failed to create skill destination: {}", error)))?;
@@ -1995,20 +2036,14 @@ async fn run_skill_script_with_manifest(
 
     let mut process = ContainedBackgroundProcess::spawn(command)
         .map_err(|error| command_error(format!("Failed to run skill script: {}", error)))?;
-    let mut stdout_pipe = process
+    let stdout_pipe = process
         .take_stdout()
         .ok_or_else(|| command_error("Failed to capture skill script stdout."))?;
-    let mut stderr_pipe = process
+    let stderr_pipe = process
         .take_stderr()
         .ok_or_else(|| command_error("Failed to capture skill script stderr."))?;
-    let stdout_task = tokio::spawn(async move {
-        let mut output = Vec::new();
-        stdout_pipe.read_to_end(&mut output).await.map(|_| output)
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut output = Vec::new();
-        stderr_pipe.read_to_end(&mut output).await.map(|_| output)
-    });
+    let stdout_task = tokio::spawn(read_bounded_skill_output(stdout_pipe));
+    let stderr_task = tokio::spawn(read_bounded_skill_output(stderr_pipe));
     let wait_result = timeout(Duration::from_millis(timeout_ms), process.wait()).await;
     let timed_out = wait_result.is_err();
     let status = match wait_result {
@@ -2041,31 +2076,28 @@ async fn run_skill_script_with_manifest(
                 ))
             })?;
     }
-    let stdout_bytes = stdout_task
+    let (stdout, stdout_truncated) = stdout_task
         .await
         .map_err(|error| command_error(format!("Failed to join skill stdout: {}", error)))?
         .map_err(|error| command_error(format!("Failed to read skill stdout: {}", error)))?;
-    let stderr_bytes = stderr_task
+    let (stderr, stderr_truncated) = stderr_task
         .await
         .map_err(|error| command_error(format!("Failed to join skill stderr: {}", error)))?
         .map_err(|error| command_error(format!("Failed to read skill stderr: {}", error)))?;
 
     let response = if timed_out {
+        let (stderr, timeout_message_truncated) = append_skill_timeout_message(stderr, timeout_ms);
         Ok(SkillScriptRunResponse {
             skill_id,
             script_path,
-            stdout: String::from_utf8_lossy(&stdout_bytes).to_string(),
-            stderr: format!("Skill script timed out after {} ms.", timeout_ms),
+            stdout,
+            stderr,
             exit_code: None,
             timed_out: true,
-            truncated: false,
+            truncated: stdout_truncated || stderr_truncated || timeout_message_truncated,
         })
     } else {
         let status = status.expect("completed skill script status");
-        let stdout_raw = String::from_utf8_lossy(&stdout_bytes).to_string();
-        let stderr_raw = String::from_utf8_lossy(&stderr_bytes).to_string();
-        let (stdout, stdout_truncated) = truncate_chars(stdout_raw, SCRIPT_OUTPUT_MAX_CHARS);
-        let (stderr, stderr_truncated) = truncate_chars(stderr_raw, SCRIPT_OUTPUT_MAX_CHARS);
         Ok(SkillScriptRunResponse {
             skill_id,
             script_path,
@@ -2979,6 +3011,16 @@ mod tests {
         let (noisy_script_path, noisy_script_content) =
             ("scripts/noisy.sh", "printf 'x%.0s' {1..21050}\n");
         #[cfg(windows)]
+        let (noisy_timeout_script_path, noisy_timeout_script_content) = (
+            "scripts/noisy-timeout.cmd",
+            "@echo off\r\npowershell -NoProfile -Command \"[Console]::Out.Write(('x' * 100000)); Start-Sleep -Seconds 5\"\r\n",
+        );
+        #[cfg(not(windows))]
+        let (noisy_timeout_script_path, noisy_timeout_script_content) = (
+            "scripts/noisy-timeout.sh",
+            "yes x | head -c 100000\nsleep 5\n",
+        );
+        #[cfg(windows)]
         let (descendant_script_path, descendant_script_content) = (
             "scripts/descendant.cmd",
             "@echo off\r\nstart \"\" /B powershell.exe -NoProfile -Command \"Start-Sleep -Milliseconds 1500; Set-Content -LiteralPath '%~1' -Value survived\"\r\npowershell.exe -NoProfile -Command \"Start-Sleep -Seconds 10\"\r\n",
@@ -2990,6 +3032,11 @@ mod tests {
         );
         fs::write(skill_dir.join(slow_script_path), slow_script_content).expect("write slow");
         fs::write(skill_dir.join(noisy_script_path), noisy_script_content).expect("write noisy");
+        fs::write(
+            skill_dir.join(noisy_timeout_script_path),
+            noisy_timeout_script_content,
+        )
+        .expect("write noisy timeout");
         fs::write(
             skill_dir.join(descendant_script_path),
             descendant_script_content,
@@ -3029,6 +3076,25 @@ mod tests {
             timed_out.stdout, timed_out.stderr, timed_out.exit_code
         );
         assert!(timed_out.stderr.contains("timed out"));
+
+        let noisy_timeout = test_skills_run_script(
+            skill_id.clone(),
+            noisy_timeout_script_path.to_string(),
+            vec![],
+            Some(1_000),
+            false,
+            None,
+            project_roots.clone(),
+        )
+        .await
+        .expect("noisy timeout response");
+        assert!(noisy_timeout.timed_out);
+        assert!(noisy_timeout.truncated);
+        assert!(noisy_timeout.stdout.ends_with("[truncated]"));
+        assert!(
+            noisy_timeout.stdout.chars().count() <= SCRIPT_OUTPUT_MAX_CHARS + 12,
+            "timed out stdout exceeded its bounded response"
+        );
 
         let descendant_marker = project.path().join("descendant-survived.txt");
         let descendant_timeout = test_skills_run_script(
