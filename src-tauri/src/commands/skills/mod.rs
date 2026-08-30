@@ -3013,7 +3013,7 @@ mod tests {
         #[cfg(windows)]
         let (noisy_timeout_script_path, noisy_timeout_script_content) = (
             "scripts/noisy-timeout.cmd",
-            "@echo off\r\npowershell -NoProfile -Command \"[Console]::Out.Write(('x' * 100000)); Start-Sleep -Seconds 5\"\r\n",
+            "@echo off\r\nfor /L %%i in (1,1,5000) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\r\nping -n 6 127.0.0.1 >nul\r\n",
         );
         #[cfg(not(windows))]
         let (noisy_timeout_script_path, noisy_timeout_script_content) = (
