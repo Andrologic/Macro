@@ -16,6 +16,7 @@ export interface ArchivedTaskCleanupTarget {
 }
 
 export interface ArchivedTaskCleanupSaga {
+  operationId: string;
   taskId: string;
   targets: ArchivedTaskCleanupTarget[];
   createdAt: string;
@@ -48,6 +49,7 @@ const parseCleanupSagas = (value: string | null | undefined): ArchivedTaskCleanu
     }
     const saga = entry as Partial<ArchivedTaskCleanupSaga>;
     if (
+      typeof saga.operationId !== 'string' ||
       typeof saga.taskId !== 'string' ||
       !Array.isArray(saga.targets) ||
       !saga.targets.every(isCleanupTarget) ||

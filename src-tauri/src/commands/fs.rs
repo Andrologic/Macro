@@ -18,6 +18,7 @@ use crate::project_path::{
 use crate::WorkspaceRoot;
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -181,12 +182,29 @@ static WRITE_BEFORE_REVALIDATION_HOOKS: LazyLock<
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static WRITE_AFTER_REVALIDATION_HOOKS: LazyLock<
+    Mutex<HashMap<PathBuf, (Arc<Barrier>, Arc<Barrier>)>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
 pub(crate) fn install_write_before_revalidation_hook(
     path: PathBuf,
     reached: Arc<Barrier>,
     release: Arc<Barrier>,
 ) {
     WRITE_BEFORE_REVALIDATION_HOOKS
+        .lock()
+        .expect("write hook mutex")
+        .insert(path, (reached, release));
+}
+
+#[cfg(test)]
+pub(crate) fn install_write_after_revalidation_hook(
+    path: PathBuf,
+    reached: Arc<Barrier>,
+    release: Arc<Barrier>,
+) {
+    WRITE_AFTER_REVALIDATION_HOOKS
         .lock()
         .expect("write hook mutex")
         .insert(path, (reached, release));
@@ -206,6 +224,21 @@ async fn pause_before_write_revalidation(path: &Path) {
 
 #[cfg(not(test))]
 async fn pause_before_write_revalidation(_path: &Path) {}
+
+#[cfg(test)]
+async fn pause_after_write_revalidation(path: &Path) {
+    let hook = WRITE_AFTER_REVALIDATION_HOOKS
+        .lock()
+        .expect("write hook mutex")
+        .remove(path);
+    if let Some((reached, release)) = hook {
+        reached.wait().await;
+        release.wait().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_after_write_revalidation(_path: &Path) {}
 
 fn validate_unix_mode(mode: Option<u32>) -> Result<Option<u32>, BackendError> {
     match mode {
@@ -1651,18 +1684,44 @@ async fn write_file_with_capability_target(
     .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
 
     pause_before_write_revalidation(&validated_path).await;
+    let (revision_lock, locked_revision) =
+        if expected_revision.is_some() && expected_revision != Some(EXPECTED_REVISION_ABSENT) {
+            let (file, revision) = tokio::task::spawn_blocking({
+                let validated_path = validated_path.clone();
+                move || -> std::io::Result<(std::fs::File, String)> {
+                    let mut file = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&validated_path)?;
+                    file.lock_exclusive()?;
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes)?;
+                    Ok((file, content_revision(&bytes)))
+                }
+            })
+            .await
+            .map_err(capability_task_error)?
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+            (Some(file), Some(revision))
+        } else {
+            (None, None)
+        };
     if expected_revision.is_some() {
-        let latest_revision = tokio::task::spawn_blocking({
-            let directory = directory.clone();
-            let relative_path = relative_path.clone();
-            move || {
-                read_capability_file(&directory, &relative_path)
-                    .map(|current| current.map(|(bytes, _)| content_revision(&bytes)))
-            }
-        })
-        .await
-        .map_err(capability_task_error)?
-        .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+        let latest_revision = if let Some(revision) = locked_revision {
+            Some(revision)
+        } else {
+            tokio::task::spawn_blocking({
+                let directory = directory.clone();
+                let relative_path = relative_path.clone();
+                move || {
+                    read_capability_file(&directory, &relative_path)
+                        .map(|current| current.map(|(bytes, _)| content_revision(&bytes)))
+                }
+            })
+            .await
+            .map_err(capability_task_error)?
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?
+        };
         if let Err(error) =
             validate_expected_revision(&display_path, expected_revision, latest_revision.as_deref())
         {
@@ -1676,15 +1735,26 @@ async fn write_file_with_capability_target(
         }
     }
 
+    pause_after_write_revalidation(&validated_path).await;
+
     tokio::task::spawn_blocking({
         let directory = directory.clone();
         let temp_path = temp_path.clone();
         let relative_path = relative_path.clone();
-        move || directory.rename(&temp_path, &directory, &relative_path)
+        let create_only = expected_revision == Some(EXPECTED_REVISION_ABSENT);
+        move || {
+            if create_only {
+                directory.hard_link(&temp_path, &directory, &relative_path)?;
+                directory.remove_file(&temp_path)
+            } else {
+                directory.rename(&temp_path, &directory, &relative_path)
+            }
+        }
     })
     .await
     .map_err(capability_task_error)?
     .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+    drop(revision_lock);
 
     tracing::info!(
         operation = "fs_write_file",
@@ -3760,7 +3830,6 @@ mod tests {
         let workspace = setup_empty_workspace();
         let path = workspace.path().join("guarded.txt");
         fs::write(&path, "current").expect("seed guarded file");
-
         let error = write_file_internal_with_revision(
             workspace.path(),
             "guarded.txt".to_string(),
@@ -3837,6 +3906,50 @@ mod tests {
         assert!(matches!(failure, BackendError::RevisionConflict { .. }));
         let content = fs::read_to_string(path).expect("read winning content");
         assert!(content == "first" || content == "second");
+    }
+
+    #[tokio::test]
+    async fn guarded_write_holds_an_os_lock_through_atomic_replacement() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let hook_path = path.canonicalize().expect("canonical guarded file");
+        let revision = content_revision(b"current");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_after_revalidation_hook(hook_path, reached.clone(), release.clone());
+
+        let workspace_path = workspace.path().to_path_buf();
+        let mut write = tokio::spawn(async move {
+            write_file_internal_with_revision(
+                &workspace_path,
+                "guarded.txt".to_string(),
+                "updated".to_string(),
+                Some(true),
+                None,
+                Some(&revision),
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut write => panic!("write finished before the replacement hook: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("write did not reach the replacement hook"),
+        }
+        let contender = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open lock contender");
+        assert!(contender.try_lock_exclusive().is_err());
+        release.wait().await;
+
+        write.await.expect("write task").expect("guarded write");
+        assert_eq!(
+            fs::read_to_string(path).expect("read guarded file"),
+            "updated"
+        );
     }
 
     #[tokio::test]

@@ -863,6 +863,7 @@ describe('TaskQueue', () => {
       ...useTaskStore.getState(),
       archivedTaskCleanupByTaskId: {
         'archived-task': {
+          operationId: 'cleanup-archived-task',
           taskId: 'archived-task',
           targets: [{
             worktreeKey: 'project-1::feature/archived-task',
@@ -930,6 +931,7 @@ describe('TaskQueue', () => {
         archivedTaskCleanupByTaskId: {
           ...state.archivedTaskCleanupByTaskId,
           [taskId]: {
+            operationId: 'cleanup-dirty-worktree',
             taskId,
             targets: [{
               worktreeKey: 'project-1::feature/archive-with-dirty-worktree',
@@ -1274,7 +1276,7 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('deletes a durable standalone draft when a late creation step fails', async () => {
+  it('reports a failed durable draft compensation and still removes the conversation', async () => {
     const directProject = {
       ...makeProject('project-folder', '/tmp/project-folder', 'Folder project'),
       directEdit: true,
@@ -1286,7 +1288,9 @@ describe('TaskQueue', () => {
     const deleteConversation = mock(async () => undefined);
     const createManualFeatureDraft = mock(async (_params: { taskId: string }) => undefined);
     const activateTask = mock(async () => undefined);
-    const deleteTask = mock(async () => undefined);
+    const deleteManualFeatureDraft = mock(async () => {
+      throw new Error('injected durable draft cleanup failure');
+    });
     useChatStore.setState({
       ...useChatStore.getState(),
       createConversation: createConversation as never,
@@ -1297,7 +1301,7 @@ describe('TaskQueue', () => {
       ...useTaskStore.getState(),
       createManualFeatureDraft: createManualFeatureDraft as never,
       activateTask: activateTask as never,
-      deleteTask: deleteTask as never,
+      deleteManualFeatureDraft: deleteManualFeatureDraft as never,
     });
     useAppStore.setState({
       ...useAppStore.getState(),
@@ -1335,8 +1339,11 @@ describe('TaskQueue', () => {
 
     const taskId = createManualFeatureDraft.mock.calls[0]?.[0]?.taskId;
     expect(taskId).toEqual(expect.stringContaining('manual-feature-'));
-    expect(deleteTask).toHaveBeenCalledWith(taskId);
-    expect(deleteConversation).not.toHaveBeenCalled();
+    expect(deleteManualFeatureDraft).toHaveBeenCalledWith(taskId);
+    expect(deleteConversation).toHaveBeenCalledWith('conversation-created', { mode: 'implement' });
+    expect(notifyMock.error.mock.calls.some(([, options]) =>
+      String(options?.description ?? '').includes('injected durable draft cleanup failure')
+    )).toBe(true);
   });
 
   it('opens task creation for a direct project without loading Git start points', async () => {

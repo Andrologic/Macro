@@ -10,7 +10,10 @@ use crate::db::repository;
 use crate::secrets::{self, ChatGptSecret};
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use sqlx::SqlitePool;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
+
+static DISCONNECT_AUTH_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub async fn disconnect_auth(
     pool: &SqlitePool,
@@ -30,6 +33,7 @@ async fn disconnect_auth_with_secret_delete<F>(
 where
     F: FnOnce(&str) -> Result<(), String>,
 {
+    let _disconnect_guard = DISCONNECT_AUTH_LOCK.lock().await;
     let provider = repository::get_provider_config(pool, provider_id)
         .await
         .map_err(db_error_to_string)?
@@ -41,28 +45,29 @@ where
         account_label: provider.account_label,
         token_expires_at: provider.token_expires_at,
     };
-    repository::update_provider_auth_metadata(
-        pool,
-        provider_id,
-        &ProviderAuthMetadata {
-            auth_status: Some("unauthenticated".to_string()),
-            auth_source: None,
-            plan_type: None,
-            account_label: None,
-            token_expires_at: None,
-        },
-    )
-    .await
-    .map_err(db_error_to_string)?;
+    let disconnected_metadata = ProviderAuthMetadata {
+        auth_status: Some("unauthenticated".to_string()),
+        auth_source: None,
+        plan_type: None,
+        account_label: None,
+        token_expires_at: None,
+    };
+    repository::update_provider_auth_metadata(pool, provider_id, &disconnected_metadata)
+        .await
+        .map_err(db_error_to_string)?;
     if let Err(secret_error) = delete_secret(provider_id) {
-        return match repository::update_provider_auth_metadata(
+        return match repository::compare_and_swap_provider_auth_metadata(
             pool,
             provider_id,
+            &disconnected_metadata,
             &previous_metadata,
         )
         .await
         {
-            Ok(()) => Err(secret_error),
+            Ok(true) => Err(secret_error),
+            Ok(false) => Err(format!(
+                "{secret_error} Les métadonnées d’authentification ont changé pendant la compensation et n’ont pas été écrasées."
+            )),
             Err(rollback_error) => Err(format!(
                 "{secret_error} La restauration des métadonnées d’authentification a aussi échoué : {}",
                 db_error_to_string(rollback_error)
@@ -427,5 +432,24 @@ mod tests {
             row.get::<Option<String>, _>("account_label").as_deref(),
             Some("user@example.com")
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_disconnects_cannot_restore_authenticated_metadata_after_success() {
+        let pool = provider_pool().await;
+        let success = disconnect_auth_with_secret_delete(&pool, "chatgpt", |_| Ok(()));
+        let failure = disconnect_auth_with_secret_delete(&pool, "chatgpt", |_| {
+            Err("injected concurrent secret deletion failure".to_string())
+        });
+        let (success, failure) = tokio::join!(success, failure);
+        assert!(success.is_ok());
+        assert!(failure.is_err());
+
+        let provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
+            .await
+            .expect("provider query")
+            .expect("provider");
+        assert_eq!(provider.auth_status.as_deref(), Some("unauthenticated"));
+        assert!(provider.auth_source.is_none());
     }
 }

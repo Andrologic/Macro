@@ -89,6 +89,7 @@ const directCheckpointRemoveMock = mock(async () => true);
 const workspaceDeleteManualFeatureDraftMock = mock(async () => undefined);
 const workspaceDeleteManualFeatureMock = mock(async () => undefined);
 const workspaceArchiveManualFeatureMock = mock(async () => undefined);
+const workspaceRestoreManualFeatureMock = mock(async () => undefined);
 const dbAppSettings = new Map<string, string>();
 const dbGetAppSettingMock = mock(async (key: string) => {
   const valueJson = dbAppSettings.get(key);
@@ -276,6 +277,7 @@ mock.module('../services/tauriIpc', () => ({
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
+  workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
@@ -308,6 +310,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
+  workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
@@ -1346,6 +1349,77 @@ describe('useTaskStore merge workflow review loading', () => {
         })],
       }),
     ]);
+  });
+
+  it('blocks restore and a second cleanup while archived worktree cleanup is running', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-cleanup-race',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      archived_at: '2026-08-30T00:00:00.000Z',
+      assigned_branch: 'feature/cleanup-race',
+      branch_name: 'feature/cleanup-race',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/cleanup-race',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/cleanup-race',
+        repoPath: '/repos/web',
+      }],
+    });
+    let releaseInspection!: (value: GitWorktreeInspectionDto) => void;
+    gitWorktreeInspectMock.mockImplementation(() => new Promise((resolve) => {
+      releaseInspection = resolve;
+    }));
+    const saga = {
+      operationId: 'cleanup-race-operation',
+      taskId: task.id,
+      targets: [{
+        worktreeKey: 'project-1::feature/cleanup-race',
+        repoPath: '/repos/web',
+        branchName: 'feature/cleanup-race',
+        worktreePath: '/repos/web/.macro/worktrees/cleanup-race',
+        worktreeRemoved: false,
+        branchRemoved: false,
+        state: 'pending' as const,
+      }],
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      archivedTaskCleanupByTaskId: { [task.id]: saga },
+      refreshFromPlan: mock(async () => undefined),
+    });
+
+    const cleanup = useTaskStore.getState().cleanupArchivedTask(task.id);
+    await flushPromises();
+    await expect(useTaskStore.getState().restoreTask(task.id)).rejects.toThrow();
+    await expect(useTaskStore.getState().cleanupArchivedTask(task.id)).rejects.toThrow();
+    expect(workspaceRestoreManualFeatureMock).not.toHaveBeenCalled();
+
+    releaseInspection({
+      taskId: 'project-1::feature/cleanup-race',
+      worktreePath: '/repos/web/.macro/worktrees/cleanup-race',
+      branchName: 'feature/cleanup-race',
+      status: 'ready',
+      isDirty: false,
+    });
+    try {
+      await cleanup;
+    } finally {
+      gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+        taskId: params.taskId,
+        worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+        branchName: params.branchName ?? null,
+        status: 'ready' as const,
+        isDirty: false,
+      }));
+    }
   });
 
   it('blocks deletion while the linked conversation is still running', async () => {

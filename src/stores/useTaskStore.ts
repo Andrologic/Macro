@@ -725,6 +725,7 @@ const updateArchivedCleanupTarget = (
 
 const runArchivedTaskCleanup = async (
   initialSaga: ArchivedTaskCleanupSaga,
+  assertCurrent?: (saga: ArchivedTaskCleanupSaga) => Promise<void> | void,
 ): Promise<ArchivedTaskCleanupSaga | null> => {
   let saga = initialSaga;
   for (const target of saga.targets) {
@@ -755,6 +756,7 @@ const runArchivedTaskCleanup = async (
           await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
           continue;
         } else {
+          await assertCurrent?.(saga);
           await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
@@ -789,8 +791,10 @@ const runArchivedTaskCleanup = async (
       continue;
     }
     try {
+      await assertCurrent?.(saga);
       const branches = await tauriIpc.gitBranchList(currentTarget.repoPath);
       if ((branches.local || []).some((branch) => branch.name === currentTarget.branchName)) {
+        await assertCurrent?.(saga);
         await tauriIpc.gitBranchDelete({
           repoPath: currentTarget.repoPath,
           branchName: currentTarget.branchName,
@@ -1817,7 +1821,7 @@ interface TaskCommandRunState {
   startedAt: string;
 }
 
-type TaskOperationKind = 'commands' | 'archive' | 'delete' | 'merge';
+type TaskOperationKind = 'commands' | 'archive' | 'cleanup' | 'restore' | 'delete' | 'merge';
 
 interface TaskCommandRunCompletion {
   promise: Promise<void>;
@@ -3657,6 +3661,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const now = new Date().toISOString();
       const preparedCleanup: ArchivedTaskCleanupSaga | null = gitTargets.length > 0
         ? {
+          operationId: crypto.randomUUID(),
           taskId,
           targets: gitTargets.map((target) => ({
             worktreeKey: target.worktreeKey,
@@ -3777,24 +3782,54 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   cleanupArchivedTask: async (taskId) => {
-    const saga = get().archivedTaskCleanupByTaskId[taskId]
-      ?? (await loadArchivedTaskCleanupSagas()).find((candidate) => candidate.taskId === taskId)
-      ?? null;
-    if (!saga) return null;
-    const remaining = await runArchivedTaskCleanup(saga);
-    set((state) => ({
-      archivedTaskCleanupByTaskId: remaining
-        ? {
-          ...state.archivedTaskCleanupByTaskId,
-          [taskId]: remaining,
-        }
-        : Object.fromEntries(
-          Object.entries(state.archivedTaskCleanupByTaskId).filter(
-            ([candidateTaskId]) => candidateTaskId !== taskId,
+    if (!acquireTaskOperation(taskId, 'cleanup')) {
+      throw new Error(getTaskCommandMutationBlockedMessage('archive'));
+    }
+    try {
+      const task = get().getTaskById(taskId);
+      if (!task || !isTaskArchived(task)) {
+        throw new Error(
+          tTask(
+            'implement.errors.cleanupArchivedTaskOnly',
+            'Only an archived task can be cleaned up.',
           ),
-        ),
-    }));
-    return remaining;
+        );
+      }
+      const saga = get().archivedTaskCleanupByTaskId[taskId]
+        ?? (await loadArchivedTaskCleanupSagas()).find((candidate) => candidate.taskId === taskId)
+        ?? null;
+      if (!saga) return null;
+      const assertCurrent = async (candidate: ArchivedTaskCleanupSaga): Promise<void> => {
+        const currentTask = get().getTaskById(taskId);
+        const currentSaga = get().archivedTaskCleanupByTaskId[taskId]
+          ?? (await loadArchivedTaskCleanupSagas()).find((entry) => entry.taskId === taskId);
+        if (
+          !currentTask ||
+          !isTaskArchived(currentTask) ||
+          currentSaga?.operationId !== candidate.operationId
+        ) {
+          throw new Error(
+            tTask(
+              'implement.errors.cleanupArchivedTaskStale',
+              'Cleanup stopped because the archived task changed.',
+            ),
+          );
+        }
+      };
+      const remaining = await runArchivedTaskCleanup(saga, assertCurrent);
+      set((state) => ({
+        archivedTaskCleanupByTaskId: remaining
+          ? { ...state.archivedTaskCleanupByTaskId, [taskId]: remaining }
+          : Object.fromEntries(
+            Object.entries(state.archivedTaskCleanupByTaskId).filter(
+              ([candidateTaskId]) => candidateTaskId !== taskId,
+            ),
+          ),
+      }));
+      return remaining;
+    } finally {
+      releaseTaskOperation(taskId, 'cleanup');
+    }
   },
 
   restoreTask: async (taskId) => {
@@ -3814,6 +3849,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ),
       });
       return;
+    }
+
+    if (!acquireTaskOperation(taskId, 'restore')) {
+      throw new Error(getTaskCommandMutationBlockedMessage('archive'));
     }
 
     try {
@@ -3836,6 +3875,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
       throw normalized;
+    } finally {
+      releaseTaskOperation(taskId, 'restore');
     }
   },
 

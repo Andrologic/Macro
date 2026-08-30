@@ -683,6 +683,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     publishedStandaloneTasks,
     activateTask,
     createManualFeatureDraft,
+    deleteManualFeatureDraft,
     reserveManualFeatureCreation,
     releaseManualFeatureCreation,
     renameTask,
@@ -707,6 +708,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     publishedStandaloneTasks: state.publishedStandaloneTasks,
     activateTask: state.activateTask,
     createManualFeatureDraft: state.createManualFeatureDraft,
+    deleteManualFeatureDraft: state.deleteManualFeatureDraft,
     reserveManualFeatureCreation: state.reserveManualFeatureCreation,
     releaseManualFeatureCreation: state.releaseManualFeatureCreation,
     renameTask: state.renameTask,
@@ -959,18 +961,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       setShowCreateTaskDialog(false);
     } catch (error) {
       const cleanupErrors: string[] = [];
-      let taskCleanupSucceeded = false;
       if (draftCreated) {
         try {
-          await deleteTask(taskId);
-          taskCleanupSucceeded = true;
+          await deleteManualFeatureDraft(taskId);
         } catch (cleanupFailure) {
           cleanupErrors.push(
             `La tâche créée n'a pas pu être nettoyée : ${toServiceError(cleanupFailure).message}`,
           );
         }
       }
-      if (conversationId && !taskCleanupSucceeded) {
+      if (conversationId) {
         try {
           await deleteConversation(conversationId, { mode: 'implement' });
         } catch (cleanupFailure) {
