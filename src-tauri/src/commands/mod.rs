@@ -5624,7 +5624,11 @@ pub async fn db_delete_provider_config(
         .find(|provider| provider.id == id)
         .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
     let _chatgpt_auth_guard = if provider.provider_type == "chatgpt" {
-        Some(crate::ai::chatgpt::AUTH_MUTATION_LOCK.lock().await)
+        Some(
+            crate::ai::chatgpt::lock_auth_mutation(&id)
+                .await
+                .map_err(command_error)?,
+        )
     } else {
         None
     };

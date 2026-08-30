@@ -1,9 +1,9 @@
 use super::auth::build_oauth_form_body;
+use super::lock_auth_mutation;
 use super::types::{
     db_error_to_string, extract_response_error, PersistChatGptSessionError, TokenClaims,
     TokenResponse, CHATGPT_CLIENT_ID, CHATGPT_TOKEN_URL, TOKEN_REFRESH_LEEWAY_SECONDS,
 };
-use super::AUTH_MUTATION_LOCK;
 use crate::db::models::{ProviderAuthMetadata, ProviderConfig};
 use crate::db::repository;
 use crate::secrets::{self, ChatGptSecret};
@@ -93,7 +93,7 @@ pub(super) async fn ensure_fresh_secret(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> Result<ChatGptSecret, String> {
-    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    let _auth_guard = lock_auth_mutation(provider_id).await?;
     super::models::recover_pending_disconnect_locked(pool, provider_id).await?;
     sync_local_provider_secret_metadata(pool, provider_id).await?;
 
@@ -126,7 +126,7 @@ pub(super) async fn force_refresh_secret(
     provider_id: &str,
     _secret: &ChatGptSecret,
 ) -> Result<ChatGptSecret, String> {
-    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    let _auth_guard = lock_auth_mutation(provider_id).await?;
     super::models::recover_pending_disconnect_locked(pool, provider_id).await?;
     let current = secrets::get_chatgpt_secret(provider_id)
         .map_err(|error| error.to_string())?
@@ -270,7 +270,9 @@ pub(super) async fn persist_chatgpt_session(
     plan_type: Option<String>,
     account_label: Option<String>,
 ) -> Result<ProviderConfig, PersistChatGptSessionError> {
-    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    let _auth_guard = lock_auth_mutation(provider_id)
+        .await
+        .map_err(PersistChatGptSessionError::Metadata)?;
     super::models::recover_pending_disconnect_locked(pool, provider_id)
         .await
         .map_err(PersistChatGptSessionError::Metadata)?;

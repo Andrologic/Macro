@@ -96,3 +96,7 @@ pub fn init(app_data_dir: &Path) -> Result<(), SecretError> {
     chatgpt::clear_cache();
     Ok(())
 }
+
+pub(crate) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<std::path::PathBuf, SecretError> {
+    store::chatgpt_auth_lock_path(provider_id)
+}

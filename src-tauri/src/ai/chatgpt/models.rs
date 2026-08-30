@@ -1,10 +1,10 @@
 use super::codex_files::{load_cached_model_entries, resolve_codex_client_version};
+use super::lock_auth_mutation;
 use super::session::ensure_fresh_secret;
 use super::types::{
     db_error_to_string, extract_response_error, ModelsCacheEntry, RemoteModelsResponse,
     DEFAULT_ORIGINATOR,
 };
-use super::AUTH_MUTATION_LOCK;
 use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderConfig, ProviderModelInput};
 use crate::db::repository;
@@ -192,7 +192,6 @@ pub(super) async fn recover_pending_disconnect_locked(
 }
 
 pub(crate) async fn recover_auth_mutations(pool: &SqlitePool) -> Result<(), String> {
-    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
     let rows = sqlx::query("SELECT value_json FROM app_settings WHERE key LIKE ?")
         .bind(format!("{DISCONNECT_JOURNAL_PREFIX}%"))
         .fetch_all(pool)
@@ -202,6 +201,7 @@ pub(crate) async fn recover_auth_mutations(pool: &SqlitePool) -> Result<(), Stri
         let value_json: String = row.get("value_json");
         let intent: DurableDisconnectIntent = serde_json::from_str(&value_json)
             .map_err(|error| format!("Le journal de déconnexion ChatGPT est invalide : {error}"))?;
+        let _auth_guard = lock_auth_mutation(&intent.provider_id).await?;
         recover_pending_disconnect_locked(pool, &intent.provider_id).await?;
     }
     Ok(())
@@ -225,7 +225,7 @@ async fn disconnect_auth_with_secret_delete<F>(
 where
     F: FnOnce(&str) -> Result<(), String>,
 {
-    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    let _auth_guard = lock_auth_mutation(provider_id).await?;
     recover_pending_disconnect_locked(pool, provider_id).await?;
     let provider = repository::get_provider_config(pool, provider_id)
         .await
@@ -502,6 +502,7 @@ mod tests {
         disconnect_auth_with_secret_delete, disconnect_journal_key, disconnected_metadata,
         prepare_disconnect, recover_auth_mutations,
     };
+    use crate::ai::chatgpt::lock_auth_mutation;
     use crate::ai::chatgpt::session::{
         ensure_fresh_secret, install_persist_after_secret_hook, persist_chatgpt_session,
     };
@@ -751,6 +752,53 @@ mod tests {
             .expect("provider");
         assert_eq!(provider.auth_status.as_deref(), Some("unauthenticated"));
         assert!(provider.auth_source.is_none());
+    }
+
+    #[tokio::test]
+    async fn auth_mutation_lock_child() {
+        let Ok(directory) = std::env::var("MACRO_TEST_CHATGPT_AUTH_LOCK_DIRECTORY") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        crate::secrets::init(&directory).expect("initialize child secret store");
+        std::fs::write(directory.join("child-started"), b"started").expect("signal child start");
+        let _guard = lock_auth_mutation("chatgpt")
+            .await
+            .expect("child auth mutation lock");
+        std::fs::write(directory.join("child-acquired"), b"acquired")
+            .expect("signal child acquisition");
+    }
+
+    #[tokio::test]
+    async fn auth_mutation_lock_serializes_an_independent_process() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize parent secret store");
+        let guard = lock_auth_mutation("chatgpt")
+            .await
+            .expect("parent auth mutation lock");
+        let mut child =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args([
+                    "--exact",
+                    "ai::chatgpt::models::tests::auth_mutation_lock_child",
+                    "--nocapture",
+                ])
+                .env("MACRO_TEST_CHATGPT_AUTH_LOCK_DIRECTORY", temp.path())
+                .spawn()
+                .expect("spawn independent auth client");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !temp.path().join("child-started").exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(temp.path().join("child-started").exists());
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!temp.path().join("child-acquired").exists());
+
+        drop(guard);
+        let status = child.wait().expect("wait for independent auth client");
+        assert!(status.success());
+        assert!(temp.path().join("child-acquired").exists());
     }
 
     #[tokio::test]

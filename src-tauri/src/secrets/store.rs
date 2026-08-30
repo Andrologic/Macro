@@ -693,6 +693,17 @@ pub(super) fn default_store() -> Result<LocalSecretStore, SecretError> {
         .ok_or(SecretError::StoreUnavailable)
 }
 
+pub(super) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<PathBuf, SecretError> {
+    let store = default_store()?;
+    let parent = store.path.parent().ok_or_else(|| {
+        SecretError::Io(std::io::Error::other(
+            "secret store path has no parent directory",
+        ))
+    })?;
+    let digest = format!("{:x}", Sha256::digest(provider_id.as_bytes()));
+    Ok(parent.join(format!("chatgpt-auth-{}.lock", &digest[..24])))
+}
+
 pub(super) fn with_store_lock<T>(
     operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
 ) -> Result<T, SecretError> {
