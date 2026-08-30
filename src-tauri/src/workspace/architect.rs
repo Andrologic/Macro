@@ -1645,7 +1645,14 @@ pub async fn activate_plan_chat(
             ),
         });
     }
-    let index = load_branch_index(workspace_path, metadata_root, &normalized_branch, &[]).await?;
+    let scope_hint = requested_project_id.iter().cloned().collect::<Vec<_>>();
+    let index = load_branch_index(
+        workspace_path,
+        metadata_root,
+        &normalized_branch,
+        &scope_hint,
+    )
+    .await?;
     let effective_plan_id = resolve_effective_plan_id(&index, &request.plan_id);
     let Some(locators) = index.plan_locators_by_id.get(&effective_plan_id) else {
         return Ok(None);
@@ -2155,14 +2162,14 @@ mod tests {
         let current_project_id = "project-octan-sales-1780653766405";
         let stale_project_id = "project-lplr-app-1780329499166";
         let plan_id = "refonte-catalogue-produit";
-        write_json(
-            &architect_plan_index_path(&metadata_root, "main"),
-            &ArchitectPlanIndexFile {
-                version: 3,
-                active_plan_id: Some(plan_id.to_string()),
-                plans: vec![plan_summary(plan_id, stale_project_id)],
-                reserved_plan_slugs: Vec::new(),
-            },
+        write_plan_replica(
+            &metadata_root,
+            plan_id,
+            stale_project_id,
+            "2026-06-02T12:00:00.000Z",
+            "2026-06-02T12:00:00.000Z",
+            "conversation-workspace",
+            "Transcript from the physical workspace scope",
         );
 
         let listed = list_plans(
@@ -2200,6 +2207,51 @@ mod tests {
                 .map(|replica| replica.project_id.as_deref())
                 .collect::<Vec<_>>(),
             vec![Some(current_project_id)]
+        );
+
+        let activation = activate_plan_head(
+            &project_path,
+            &metadata_root,
+            WorkspaceArchitectActivatePlanHeadRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                summary_hint: None,
+                scoped_project_ids_hint: vec![current_project_id.to_string()],
+            },
+        )
+        .await
+        .expect("activate plan head from physical workspace scope")
+        .expect("activation payload");
+        assert!(activation
+            .replica_scope_key
+            .as_deref()
+            .is_some_and(|scope_key| scope_key.starts_with("workspace:")));
+        assert_eq!(
+            activation.replica_project_id.as_deref(),
+            Some(current_project_id)
+        );
+
+        let transcript = activate_plan_chat(
+            &project_path,
+            &metadata_root,
+            WorkspaceArchitectActivatePlanChatRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                replica_scope_key: activation.replica_scope_key.clone(),
+                replica_project_id: activation.replica_project_id.clone(),
+                expected_transcript_revision: activation.chat_transcript_revision.clone(),
+                expected_message_count: Some(activation.chat_message_count),
+            },
+        )
+        .await
+        .expect("activate transcript from physical workspace scope")
+        .expect("chat transcript");
+
+        assert_eq!(transcript.replica_scope_key, activation.replica_scope_key);
+        assert_eq!(transcript.replica_project_id, activation.replica_project_id);
+        assert_eq!(
+            transcript.messages[0].content,
+            "Transcript from the physical workspace scope"
         );
     }
 
