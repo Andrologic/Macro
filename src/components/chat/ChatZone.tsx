@@ -77,6 +77,7 @@ import {
 import { useVirtualMessages } from '../../hooks/useVirtualList';
 import { usePerformanceMonitor } from '../../hooks/usePerformanceMonitor';
 import LazyComposerEditor, { type ComposerEditorHandle } from './composer/LazyComposerEditor';
+import { consumeComposerImagePaste } from './composer/composerPaste';
 import {
   ARCHITECT_PLAN_SELECTOR_STATE_EVENT,
   dispatchArchitectPlanSelectorRequest,
@@ -2633,40 +2634,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   };
 
-  const readImageFilesFromClipboardApi = async (): Promise<File[]> => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard?.read) return [];
-
-    try {
-      const clipboardItems = await navigator.clipboard.read();
-      const files: File[] = [];
-
-      for (const item of clipboardItems) {
-        const imageType = item.types.find((type) => type.startsWith('image/'));
-        if (!imageType) continue;
-
-        const blob = await item.getType(imageType);
-        const extension = imageType.split('/')[1] || 'png';
-        files.push(new File([blob], `pasted-${Date.now()}.${extension}`, { type: imageType }));
-      }
-
-      return files;
-    } catch (error) {
-      console.error('Clipboard API image read failed:', error);
-      return [];
-    }
-  };
-
-  const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
-    const directFiles = Array.from(event.clipboardData.items || [])
-      .filter((item) => item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter((file): file is File => Boolean(file));
-
-    const files = directFiles.length > 0 ? directFiles : await readImageFilesFromClipboardApi();
+  const handleComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    const files = consumeComposerImagePaste(event);
     if (files.length === 0) return;
-
-    event.preventDefault();
-    await appendPastedImages(files);
+    void appendPastedImages(files);
   };
 
   const removeComposerImage = (imageId: string) => {
@@ -2776,7 +2747,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return;
     }
     if (isImplementComposerInKickoffMode) {
-      if (!text || isBusySending) return;
+      if (isBusySending) return;
       try {
         const goalObjective = goalCommand?.kind === 'activate'
           ? goalCommand.objective

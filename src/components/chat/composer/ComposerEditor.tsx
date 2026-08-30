@@ -23,6 +23,7 @@ import {
   KEY_ARROW_DOWN_COMMAND,
   FORMAT_TEXT_COMMAND,
   type EditorState,
+  type LexicalEditor,
   type NodeMutation,
 } from 'lexical';
 import { useChatStore } from '../../../stores/useChatStore';
@@ -90,6 +91,21 @@ const initializeComposerState = () => {
 
   root.append($createParagraphNode());
 };
+
+export const registerComposerSubmitCommand = (
+  editor: LexicalEditor,
+  onSend: () => void,
+  compositionActiveRef: React.RefObject<boolean>,
+) => editor.registerCommand(
+  KEY_ENTER_COMMAND,
+  (event: KeyboardEvent | null) => {
+    if (!event || !isPrimaryComposerSubmitKey(event, compositionActiveRef.current)) return false;
+    event.preventDefault();
+    onSend();
+    return true;
+  },
+  COMMAND_PRIORITY_HIGH,
+);
 
 const EDITOR_CONTEXT_MENTION_PATTERN = /\[(need|skill|file|source|plan-node|predicted-branch):\s*([^\]]+)\]/gi;
 
@@ -251,6 +267,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
     const [editor] = useLexicalComposerContext();
     const textRef = useRef('');
     const suppressMentionRefRemovalRef = useRef(false);
+    const compositionActiveRef = useRef(false);
 
     const deferMentionRefRemovalResume = () => {
       void Promise.resolve().then(() => {
@@ -351,16 +368,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
 
     // Enter key → send
     useEffect(() => {
-      return editor.registerCommand(
-        KEY_ENTER_COMMAND,
-        (event: KeyboardEvent | null) => {
-          if (event && !isPrimaryComposerSubmitKey(event)) return false;
-          event?.preventDefault();
-          onSend();
-          return true;
-        },
-        COMMAND_PRIORITY_HIGH
-      );
+      return registerComposerSubmitCommand(editor, onSend, compositionActiveRef);
     }, [editor, onSend]);
 
     // Tab inserts an actual tab in the prompt. Slash menu completion overrides this.
@@ -468,6 +476,12 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           contentEditable={
             <ContentEditable
               data-shortcut-chat-input="true"
+              onCompositionStart={() => {
+                compositionActiveRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                compositionActiveRef.current = false;
+              }}
               className={cn(
                 'flex-1 min-w-[100px] bg-transparent border-0 outline-none text-sm text-foreground',
                 'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-[6.5px] leading-[1.35]',
@@ -493,7 +507,9 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
         <ComposerHistoryPlugin />
         {surface === 'composer' && <GoalCommandPlugin />}
         {syncContextRefs && <MentionPlugin />}
-        {syncContextRefs && surface === 'composer' && <SlashContextMenuPlugin />}
+        {syncContextRefs && surface === 'composer' && (
+          <SlashContextMenuPlugin compositionActiveRef={compositionActiveRef} />
+        )}
       </>
     );
   }
