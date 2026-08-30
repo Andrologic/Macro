@@ -210,7 +210,14 @@ fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
 
 fn is_path_in_task_worktree_root(repo: &Repository, path: &Path) -> Result<bool> {
     let root = task_worktree_root(repo)?;
+    let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+        message: "Bare repositories are not supported for worktrees".to_string(),
+    })?;
+    let canonical_workdir = canonicalize_with_missing_tail(workdir);
     let canonical_root = canonicalize_with_missing_tail(&root);
+    if !canonical_root.starts_with(&canonical_workdir) {
+        return Ok(false);
+    }
     let canonical_path = canonicalize_with_missing_tail(path);
     Ok(canonical_path.starts_with(canonical_root))
 }
@@ -220,12 +227,29 @@ fn is_macro_owned_worktree_path(
     worktree_name: &str,
     path: &Path,
 ) -> Result<bool> {
-    if !is_managed_worktree_name(worktree_name, ManagedWorktreeKind::Task)
-        && !is_managed_worktree_name(worktree_name, ManagedWorktreeKind::Branch)
-    {
+    let root = task_worktree_root(repo)?;
+    let expected_path = if is_managed_worktree_name(worktree_name, ManagedWorktreeKind::Task) {
+        root.join(worktree_name)
+    } else if let Some(key) = worktree_name.strip_prefix("macro-integration-") {
+        root.join(format!("integration-{key}"))
+    } else {
         return Ok(false);
+    };
+
+    Ok(is_path_in_task_worktree_root(repo, path)?
+        && canonicalize_with_missing_tail(path) == canonicalize_with_missing_tail(&expected_path))
+}
+
+fn is_macro_metadata_worktree_path(repo: &Repository, worktree_name: &str, path: &Path) -> bool {
+    if worktree_name != super::MACRO_WORKTREE_NAME {
+        return false;
     }
-    is_path_in_task_worktree_root(repo, path)
+
+    let canonical_git_dir = canonicalize_with_missing_tail(repo.path());
+    let canonical_expected =
+        canonicalize_with_missing_tail(&repo.path().join(super::MACRO_WORKTREE_DIR_NAME));
+    canonical_expected.starts_with(&canonical_git_dir)
+        && canonicalize_with_missing_tail(path) == canonical_expected
 }
 
 fn ensure_managed_worktree_ownership(
@@ -234,7 +258,9 @@ fn ensure_managed_worktree_ownership(
     path: &Path,
     kind: ManagedWorktreeKind,
 ) -> Result<()> {
-    if is_managed_worktree_name(worktree_name, kind) && is_path_in_task_worktree_root(repo, path)? {
+    if is_managed_worktree_name(worktree_name, kind)
+        && is_macro_owned_worktree_path(repo, worktree_name, path)?
+    {
         return Ok(());
     }
 
@@ -245,6 +271,16 @@ fn ensure_managed_worktree_ownership(
             path.display()
         ),
     })
+}
+
+fn repair_managed_worktree_links(
+    repo: &Repository,
+    worktree_name: &str,
+    path: &Path,
+    kind: ManagedWorktreeKind,
+) -> Result<bool> {
+    ensure_managed_worktree_ownership(repo, worktree_name, path, kind)?;
+    repair_gitfile_worktree_links(repo, worktree_name, path)
 }
 
 fn current_branch_name(repo: &Repository) -> Option<String> {
@@ -446,6 +482,18 @@ pub(crate) fn repair_gitfile_worktree_links(
     worktree_name: &str,
     worktree_path: &Path,
 ) -> Result<bool> {
+    if !is_macro_metadata_worktree_path(repo, worktree_name, worktree_path)
+        && !is_macro_owned_worktree_path(repo, worktree_name, worktree_path)?
+    {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to repair worktree '{}' at {} because Macro does not own that path",
+                worktree_name,
+                worktree_path.display()
+            ),
+        });
+    }
+
     let git_file_path = worktree_path.join(".git");
     let git_dir = repo.path();
     let admin_dir = git_dir.join("worktrees").join(worktree_name);
@@ -754,7 +802,12 @@ impl GitState {
             Ok(worktree) => Some(worktree.path().to_path_buf()),
             Err(err) if err.code() == ErrorCode::NotFound => None,
             Err(err) => {
-                if repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)? {
+                if repair_managed_worktree_links(
+                    repo,
+                    &worktree_name,
+                    &expected_path,
+                    ManagedWorktreeKind::Task,
+                )? {
                     match repo.find_worktree(&worktree_name) {
                         Ok(worktree) => Some(worktree.path().to_path_buf()),
                         Err(retry_err) => {
@@ -778,7 +831,12 @@ impl GitState {
             if path != expected_path
                 && !path.exists()
                 && expected_path.exists()
-                && repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)?
+                && repair_managed_worktree_links(
+                    repo,
+                    &worktree_name,
+                    &expected_path,
+                    ManagedWorktreeKind::Task,
+                )?
             {
                 if let Ok(worktree) = repo.find_worktree(&worktree_name) {
                     return inspect_registered_worktree(
@@ -808,7 +866,12 @@ impl GitState {
                 }
                 RepoProbe::Missing => {}
                 RepoProbe::Invalid => {
-                    if repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)? {
+                    if repair_managed_worktree_links(
+                        repo,
+                        &worktree_name,
+                        &expected_path,
+                        ManagedWorktreeKind::Task,
+                    )? {
                         if let RepoProbe::Ready(worktree_repo) = probe_repo_path(&expected_path) {
                             return Ok(TaskWorktreeInspection {
                                 task_id: task_id.to_string(),
@@ -1072,7 +1135,12 @@ impl GitState {
             Ok(worktree) => Some(worktree.path().to_path_buf()),
             Err(err) if err.code() == ErrorCode::NotFound => None,
             Err(err) => {
-                if repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)? {
+                if repair_managed_worktree_links(
+                    repo,
+                    &worktree_name,
+                    &expected_path,
+                    ManagedWorktreeKind::Branch,
+                )? {
                     match repo.find_worktree(&worktree_name) {
                         Ok(worktree) => Some(worktree.path().to_path_buf()),
                         Err(retry_err) => {
@@ -1096,7 +1164,12 @@ impl GitState {
             if path != expected_path
                 && !path.exists()
                 && expected_path.exists()
-                && repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)?
+                && repair_managed_worktree_links(
+                    repo,
+                    &worktree_name,
+                    &expected_path,
+                    ManagedWorktreeKind::Branch,
+                )?
             {
                 if let Ok(worktree) = repo.find_worktree(&worktree_name) {
                     return inspect_registered_worktree(
@@ -1134,7 +1207,12 @@ impl GitState {
                 }
                 RepoProbe::Missing => {}
                 RepoProbe::Invalid => {
-                    if repair_gitfile_worktree_links(repo, &worktree_name, &expected_path)? {
+                    if repair_managed_worktree_links(
+                        repo,
+                        &worktree_name,
+                        &expected_path,
+                        ManagedWorktreeKind::Branch,
+                    )? {
                         if let RepoProbe::Ready(worktree_repo) = probe_repo_path(&expected_path) {
                             return Ok(BranchWorktreeInspection {
                                 worktree_key: worktree_key.to_string(),
@@ -1459,6 +1537,24 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[cfg(windows)]
+    fn link_directory(link: &Path, target: &Path) {
+        let link = PathBuf::from(link.to_string_lossy().replace('/', "\\"));
+        let target = PathBuf::from(target.to_string_lossy().replace('/', "\\"));
+        let status = crate::core::process::background_command("cmd")
+            .args(["/d", "/c", "mklink /J"])
+            .arg(&link)
+            .arg(&target)
+            .status()
+            .expect("create Windows junction");
+        assert!(status.success(), "mklink /J must create the test junction");
+    }
+
+    #[cfg(unix)]
+    fn link_directory(link: &Path, target: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("create directory symlink");
+    }
+
     #[test]
     fn task_worktree_name_sanitizes_path_components() {
         let name = task_worktree_name("../../..");
@@ -1484,5 +1580,80 @@ mod tests {
 
         assert!(path.starts_with(&root));
         assert_eq!(path.parent(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn managed_worktree_repair_rejects_a_root_linked_outside_the_repository() {
+        let temp = TempDir::new().expect("temp dir");
+        let external = TempDir::new().expect("external temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+        fs::create_dir_all(temp.path().join(".macro")).expect("create Macro directory");
+        link_directory(
+            &temp.path().join(".macro").join("worktrees"),
+            external.path(),
+        );
+        let worktree_name = "tasklinked-root";
+        let worktree_path = temp
+            .path()
+            .join(".macro")
+            .join("worktrees")
+            .join(worktree_name);
+        fs::create_dir_all(&worktree_path).expect("create external worktree path");
+        fs::write(worktree_path.join(".git"), "gitdir: preserve-external\n")
+            .expect("write external gitfile");
+        let admin_dir = repo.path().join("worktrees").join(worktree_name);
+        fs::create_dir_all(&admin_dir).expect("create admin directory");
+        fs::write(admin_dir.join("gitdir"), "preserve-admin\n").expect("write admin gitdir");
+        fs::write(admin_dir.join("commondir"), "preserve-common\n").expect("write admin commondir");
+
+        let error = repair_gitfile_worktree_links(&repo, worktree_name, &worktree_path)
+            .expect_err("linked external root must not be repaired");
+
+        assert!(matches!(error, BackendError::Git { .. }));
+        assert_eq!(
+            fs::read_to_string(worktree_path.join(".git")).expect("preserved external gitfile"),
+            "gitdir: preserve-external\n"
+        );
+        assert_eq!(
+            fs::read_to_string(admin_dir.join("gitdir")).expect("preserved admin gitdir"),
+            "preserve-admin\n"
+        );
+        assert_eq!(
+            fs::read_to_string(admin_dir.join("commondir")).expect("preserved admin commondir"),
+            "preserve-common\n"
+        );
+    }
+
+    #[test]
+    fn metadata_worktree_repair_rejects_a_path_linked_outside_the_git_directory() {
+        let temp = TempDir::new().expect("temp dir");
+        let external = TempDir::new().expect("external temp dir");
+        let repo = Repository::init(temp.path()).expect("init repo");
+        let worktree_name = super::super::MACRO_WORKTREE_NAME;
+        let worktree_path = repo.path().join(super::super::MACRO_WORKTREE_DIR_NAME);
+        link_directory(&worktree_path, external.path());
+        fs::write(external.path().join(".git"), "gitdir: preserve-external\n")
+            .expect("write external gitfile");
+        let admin_dir = repo.path().join("worktrees").join(worktree_name);
+        fs::create_dir_all(&admin_dir).expect("create admin directory");
+        fs::write(admin_dir.join("gitdir"), "preserve-admin\n").expect("write admin gitdir");
+        fs::write(admin_dir.join("commondir"), "preserve-common\n").expect("write admin commondir");
+
+        let error = repair_gitfile_worktree_links(&repo, worktree_name, &worktree_path)
+            .expect_err("linked external metadata path must not be repaired");
+
+        assert!(matches!(error, BackendError::Git { .. }));
+        assert_eq!(
+            fs::read_to_string(external.path().join(".git")).expect("preserved external gitfile"),
+            "gitdir: preserve-external\n"
+        );
+        assert_eq!(
+            fs::read_to_string(admin_dir.join("gitdir")).expect("preserved admin gitdir"),
+            "preserve-admin\n"
+        );
+        assert_eq!(
+            fs::read_to_string(admin_dir.join("commondir")).expect("preserved admin commondir"),
+            "preserve-common\n"
+        );
     }
 }
