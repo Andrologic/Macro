@@ -2338,11 +2338,15 @@ export async function gitMerge(params: {
   repoPath: string;
   branchName: string;
   intoBranch: string;
+  expectedBranchCommit?: string | null;
+  expectedIntoCommit?: string | null;
 }): Promise<string> {
   return invoke<string>("git_merge", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     intoBranch: params.intoBranch,
+    expectedBranchCommit: params.expectedBranchCommit ?? null,
+    expectedIntoCommit: params.expectedIntoCommit ?? null,
   });
 }
 

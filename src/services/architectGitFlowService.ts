@@ -45,6 +45,7 @@ import {
   removePlanLifecycleSaga,
   upsertPlanLifecycleSaga,
   type PlanLifecycleCleanupResource,
+  type PlanFinalizationRepositoryCheckpoint,
   type PlanLifecycleSaga,
 } from './planLifecycleSaga';
 import { getPlanNodeBranchIntent, type WorkBranchIntent } from './gitFlowBranchIntents';
@@ -1954,6 +1955,356 @@ export const createArchitectGitFlowService = (
       restorePlanAndProvisionBranchesUnlocked(params)
     );
 
+  const requireLocalBranchCommit = (
+    branches: ArchitectGitFlowGitBranches,
+    branchName: string,
+    repoPath: string,
+  ): string => {
+    const commit = branches.local.find((branch) => branch.name === branchName)?.commit?.trim();
+    if (!commit) {
+      throw new Error(
+        `Cannot finalize the plan because ${branchName} has no verifiable local commit in ${repoPath}.`,
+      );
+    }
+    return commit;
+  };
+
+  const assertFinalizationBranchCommit = (
+    branches: ArchitectGitFlowGitBranches,
+    branchName: string,
+    expectedCommit: string,
+    repoPath: string,
+  ): void => {
+    const actualCommit = requireLocalBranchCommit(branches, branchName, repoPath);
+    if (actualCommit !== expectedCommit) {
+      throw new Error(
+        `Plan finalization stopped because ${branchName} changed in ${repoPath}. Expected ${expectedCommit}, found ${actualCommit}.`,
+      );
+    }
+  };
+
+  const capturePlanFinalizationRepositoriesWithDeps = async (
+    plan: ArchitectPlanRecord,
+    explicitRepoPath?: string,
+  ): Promise<PlanFinalizationRepositoryCheckpoint[]> => {
+    const repositories = resolvePlanProjectRepoPathsWithDeps(plan, explicitRepoPath, {
+      logContext: 'finalize_intent',
+    });
+    return Promise.all(repositories.map(async (repository) => {
+      const planBranchName = renderPlanBranchNameForProject({
+        plan,
+        projectId: repository.projectId,
+        getProjectById: deps.getAppState().getProjectById,
+      });
+      const baseBranchName = resolvePlanProjectBaseBranchName(
+        plan,
+        repository.projectId,
+        deps.getAppState().getProjectById,
+      );
+      const backmergeBranchName = resolvePlanProjectBackmergeBranchName(
+        plan,
+        repository.projectId,
+        deps.getAppState().getProjectById,
+      );
+      const branches = await deps.tauri.gitBranchList(repository.repoPath);
+      return {
+        projectId: repository.projectId,
+        repoPath: repository.repoPath,
+        planBranchName,
+        baseBranchName,
+        backmergeBranchName,
+        expectedPlanCommit: requireLocalBranchCommit(branches, planBranchName, repository.repoPath),
+        expectedBaseCommit: requireLocalBranchCommit(branches, baseBranchName, repository.repoPath),
+        expectedBackmergeCommit: backmergeBranchName
+          ? requireLocalBranchCommit(branches, backmergeBranchName, repository.repoPath)
+          : null,
+        phase: 'prepared' as const,
+      };
+    }));
+  };
+
+  const runPlanFinalizationGitWithDeps = async (
+    plan: ArchitectPlanRecord,
+    initialSaga: PlanLifecycleSaga,
+    explicitRepoPath?: string,
+  ): Promise<PlanLifecycleSaga> => {
+    if (!initialSaga.finalizationRepositories) {
+      throw new Error('The plan finalization journal does not contain repository identities.');
+    }
+    let saga = initialSaga;
+    const persistSaga = async (nextSaga: PlanLifecycleSaga): Promise<void> => {
+      await upsertPlanLifecycleSaga(nextSaga);
+      saga = nextSaga;
+    };
+    const persistRepository = async (
+      projectId: string,
+      repoPath: string,
+      update: (repository: PlanFinalizationRepositoryCheckpoint) => PlanFinalizationRepositoryCheckpoint,
+    ): Promise<void> => {
+      const nextSaga: PlanLifecycleSaga = {
+        ...saga,
+        finalizationRepositories: saga.finalizationRepositories!.map((repository) =>
+          repository.projectId === projectId && repository.repoPath === repoPath
+            ? update(repository)
+            : repository
+        ),
+        updatedAt: new Date().toISOString(),
+        lastError: undefined,
+      };
+      await persistSaga(nextSaga);
+    };
+
+    for (const repository of saga.finalizationRepositories!) {
+      if (repository.phase !== 'prepared') continue;
+      let branches = await deps.tauri.gitBranchList(repository.repoPath);
+      assertFinalizationBranchCommit(
+        branches,
+        repository.planBranchName,
+        repository.expectedPlanCommit,
+        repository.repoPath,
+      );
+      assertFinalizationBranchCommit(
+        branches,
+        repository.baseBranchName,
+        repository.expectedBaseCommit,
+        repository.repoPath,
+      );
+      if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.expectedBackmergeCommit,
+          repository.repoPath,
+        );
+      }
+      await deps.tauri.gitCheckout({
+        repoPath: repository.repoPath,
+        branchOrCommit: repository.baseBranchName,
+        create: false,
+      });
+      await deps.tauri.gitPull({ repoPath: repository.repoPath });
+      branches = await deps.tauri.gitBranchList(repository.repoPath);
+      assertFinalizationBranchCommit(
+        branches,
+        repository.planBranchName,
+        repository.expectedPlanCommit,
+        repository.repoPath,
+      );
+      if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.expectedBackmergeCommit,
+          repository.repoPath,
+        );
+      }
+      const baseCommitAfterSync = requireLocalBranchCommit(
+        branches,
+        repository.baseBranchName,
+        repository.repoPath,
+      );
+      await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+        ...current,
+        phase: 'base_synced',
+        baseCommitAfterSync,
+      }));
+    }
+
+    const resolvedRepositories = saga.finalizationRepositories!.map((repository) => ({
+      projectId: repository.projectId,
+      repoPath: repository.repoPath,
+    }));
+    const preflightRepositories = await preflightPlanRepositoriesWithDeps({
+      plan,
+      explicitRepoPath,
+      repositories: resolvedRepositories,
+    });
+    if (preflightRepositories.some((repository) => repository.blockingReason)) {
+      throw createPlanFinalizationBlockedError({
+        planId: plan.id,
+        branchName: saga.branchName,
+        repositories: preflightRepositories,
+      });
+    }
+    await preflightPlanCleanupWithDeps(buildCleanupPlanTargetsWithDeps(plan, explicitRepoPath));
+    const preflightByRepository = new Map(preflightRepositories.map((repository) => [
+      `${repository.projectId}:${repository.repoPath}`,
+      repository,
+    ]));
+    for (const repository of saga.finalizationRepositories!) {
+      if (repository.phase !== 'base_synced' || repository.mergeRequired !== undefined) continue;
+      const preflight = preflightByRepository.get(`${repository.projectId}:${repository.repoPath}`);
+      if (!preflight) {
+        throw new Error(`Plan finalization lost repository ${repository.repoPath} during preflight.`);
+      }
+      await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+        ...current,
+        mergeRequired: preflight.hasChanges,
+      }));
+    }
+
+    for (const repositorySnapshot of saga.finalizationRepositories!) {
+      let repository = saga.finalizationRepositories!.find((candidate) =>
+        candidate.projectId === repositorySnapshot.projectId &&
+        candidate.repoPath === repositorySnapshot.repoPath
+      )!;
+      if (repository.phase === 'base_synced') {
+        if (typeof repository.mergeRequired !== 'boolean' || !repository.baseCommitAfterSync) {
+          throw new Error(`Plan finalization is missing the merge decision for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterSync,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branches,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        const mergeOutput = repository.mergeRequired
+          ? await deps.tauri.gitMerge({
+            repoPath: repository.repoPath,
+            branchName: repository.planBranchName,
+            intoBranch: repository.baseBranchName,
+            expectedBranchCommit: repository.expectedPlanCommit,
+            expectedIntoCommit: repository.baseCommitAfterSync,
+          })
+          : undefined;
+        const branchesAfterMerge = await deps.tauri.gitBranchList(repository.repoPath);
+        const baseCommitAfterMerge = requireLocalBranchCommit(
+          branchesAfterMerge,
+          repository.baseBranchName,
+          repository.repoPath,
+        );
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'plan_merged',
+          baseCommitAfterMerge,
+          mergeOutput,
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'plan_merged' && repository.backmergeBranchName) {
+        if (!repository.baseCommitAfterMerge || !repository.expectedBackmergeCommit) {
+          throw new Error(`Plan finalization is missing backmerge identities for ${repository.repoPath}.`);
+        }
+        let branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.expectedBackmergeCommit,
+          repository.repoPath,
+        );
+        await deps.tauri.gitCheckout({
+          repoPath: repository.repoPath,
+          branchOrCommit: repository.backmergeBranchName,
+          create: false,
+        });
+        await deps.tauri.gitPull({ repoPath: repository.repoPath });
+        branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        const backmergeCommitAfterSync = requireLocalBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.repoPath,
+        );
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'backmerge_synced',
+          backmergeCommitAfterSync,
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'backmerge_synced') {
+        if (
+          !repository.backmergeBranchName || !repository.baseCommitAfterMerge ||
+          !repository.backmergeCommitAfterSync
+        ) {
+          throw new Error(`Plan finalization is missing backmerge progress for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.backmergeCommitAfterSync,
+          repository.repoPath,
+        );
+        const backmergeOutput = await deps.tauri.gitMerge({
+          repoPath: repository.repoPath,
+          branchName: repository.baseBranchName,
+          intoBranch: repository.backmergeBranchName,
+          expectedBranchCommit: repository.baseCommitAfterMerge,
+          expectedIntoCommit: repository.backmergeCommitAfterSync,
+        });
+        const branchesAfterBackmerge = await deps.tauri.gitBranchList(repository.repoPath);
+        const backmergeCommitAfterMerge = requireLocalBranchCommit(
+          branchesAfterBackmerge,
+          repository.backmergeBranchName,
+          repository.repoPath,
+        );
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'complete',
+          backmergeCommitAfterMerge,
+          backmergeOutput,
+        }));
+      } else if (repository.phase === 'plan_merged' && !repository.backmergeBranchName) {
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'complete',
+        }));
+      }
+    }
+
+    if (!saga.finalizationRepositories!.every((repository) => repository.phase === 'complete')) {
+      throw new Error('Plan finalization did not checkpoint every repository merge.');
+    }
+    await persistSaga({
+      ...saga,
+      phase: 'git_merges_complete',
+      updatedAt: new Date().toISOString(),
+      lastError: undefined,
+    });
+    return saga;
+  };
+
   const finalizePlanIntoBaseBranchUnlocked = async (params: {
     branchName: string;
     planId: string;
@@ -1963,90 +2314,124 @@ export const createArchitectGitFlowService = (
     repositories: FinalizedPlanRepositoryResult[];
     cleanup: CleanupPlanRepositoryResult[];
   }> => {
-    const plan = await deps.getArchitectPlan(params.branchName, params.planId);
+    let plan = await deps.getArchitectPlan(params.branchName, params.planId);
     if (!plan || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
-    assertPlanReadyForFinalization(plan);
-    const repositories = await syncPlanRepositoriesToBaseBranchesWithDeps({
-      plan,
-      explicitRepoPath: params.repoPath,
-    });
-
-    const preflightRepositories = await preflightPlanRepositoriesWithDeps({
-      plan,
-      explicitRepoPath: params.repoPath,
-      repositories,
-    });
-
-    if (preflightRepositories.some((repository) => repository.blockingReason)) {
-      throw createPlanFinalizationBlockedError({
+    const pendingFinalization = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === plan!.id && saga.branchName === params.branchName &&
+        saga.operation === 'finalize',
+    );
+    let finalizationSaga: PlanLifecycleSaga;
+    if (pendingFinalization) {
+      finalizationSaga = pendingFinalization;
+    } else {
+      assertPlanReadyForFinalization(plan);
+      const now = new Date().toISOString();
+      finalizationSaga = {
         planId: plan.id,
         branchName: params.branchName,
-        repositories: preflightRepositories,
-      });
+        operation: 'finalize',
+        phase: 'prepared',
+        finalizationRepositories: await capturePlanFinalizationRepositoriesWithDeps(
+          plan,
+          params.repoPath,
+        ),
+        createdAt: now,
+        updatedAt: now,
+      };
+      await upsertPlanLifecycleSaga(finalizationSaga);
     }
 
-    await preflightPlanCleanupWithDeps(buildCleanupPlanTargetsWithDeps(plan, params.repoPath));
-
-    const finalizedRepositories: FinalizedPlanRepositoryResult[] = [];
-    for (const repository of preflightRepositories) {
-      const mergeOutput = repository.hasChanges
-        ? await deps.tauri.gitMerge({
-          repoPath: repository.repoPath,
-          branchName: repository.planBranchName,
-          intoBranch: repository.baseBranchName,
-        })
-        : undefined;
-      const backmergeBranchName = resolvePlanProjectBackmergeBranchName(
+    if (finalizationSaga.phase === 'prepared') {
+      assertPlanReadyForFinalization(plan);
+      finalizationSaga = await runPlanFinalizationGitWithDeps(
         plan,
-        repository.projectId,
-        deps.getAppState().getProjectById
+        finalizationSaga,
+        params.repoPath,
       );
-      let backmergeOutput: string | undefined;
-      if (backmergeBranchName) {
-        await deps.tauri.gitCheckout({
-          repoPath: repository.repoPath,
-          branchOrCommit: backmergeBranchName,
-          create: false,
-        });
-        await deps.tauri.gitPull({
-          repoPath: repository.repoPath,
-        });
-        backmergeOutput = await deps.tauri.gitMerge({
-          repoPath: repository.repoPath,
-          branchName: repository.baseBranchName,
-          intoBranch: backmergeBranchName,
+    }
+    if (finalizationSaga.phase === 'git_merges_complete') {
+      if (plan.status !== 'completed' && plan.status !== 'archived') {
+        plan = await deps.updateArchitectPlan({
+          branchName: params.branchName,
+          planId: plan.id,
+          status: 'completed',
+          setActive: false,
         });
       }
-
-      finalizedRepositories.push({
-        projectId: repository.projectId,
-        repoPath: repository.repoPath,
-        planBranchName: repository.planBranchName,
-        baseBranchName: repository.baseBranchName,
-        mergeOutput,
-        ...(backmergeBranchName
-          ? {
-              backmergeBranchName,
-              backmergeOutput,
-            }
-          : {}),
-      });
+      const metadataWrittenSaga: PlanLifecycleSaga = {
+        ...finalizationSaga,
+        phase: 'metadata_written',
+        updatedAt: new Date().toISOString(),
+        lastError: undefined,
+      };
+      await upsertPlanLifecycleSaga(metadataWrittenSaga);
+      finalizationSaga = metadataWrittenSaga;
     }
 
-    await deps.updateArchitectPlan({
-      branchName: params.branchName,
-      planId: plan.id,
-      status: 'completed',
-      setActive: false,
-    });
+    const finalizedRepositories: FinalizedPlanRepositoryResult[] = (
+      finalizationSaga.finalizationRepositories ?? []
+    ).map((repository) => ({
+      projectId: repository.projectId,
+      repoPath: repository.repoPath,
+      planBranchName: repository.planBranchName,
+      baseBranchName: repository.baseBranchName,
+      mergeOutput: repository.mergeOutput,
+      ...(repository.backmergeBranchName
+        ? {
+            backmergeBranchName: repository.backmergeBranchName,
+            backmergeOutput: repository.backmergeOutput,
+          }
+        : {}),
+    }));
+
+    const pendingArchive = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === plan!.id && saga.branchName === params.branchName &&
+        saga.operation === 'archive',
+    );
+    if (pendingArchive) {
+      await resumePlanLifecycleSagaWithDeps(pendingArchive);
+      const remainingArchive = (await loadPlanLifecycleSagas()).find(
+        (saga) => saga.planId === plan!.id && saga.branchName === params.branchName &&
+          saga.operation === 'archive',
+      );
+      if (remainingArchive) {
+        throw new Error(
+          remainingArchive.lastError || 'The archived plan cleanup remains pending.',
+        );
+      }
+      await removePlanLifecycleSaga(
+        plan.id,
+        'finalize',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(finalizationSaga),
+      );
+      plan = await deps.getArchitectPlan(params.branchName, params.planId) ?? plan;
+      return { plan, repositories: finalizedRepositories, cleanup: [] };
+    }
+    if (plan.status === 'archived') {
+      await removePlanLifecycleSaga(
+        plan.id,
+        'finalize',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(finalizationSaga),
+      );
+      return { plan, repositories: finalizedRepositories, cleanup: [] };
+    }
+
     const { plan: archivedPlan, cleanup, lifecycleSaga } = await archivePlanAndCleanupBranchesUnlocked({
       branchName: params.branchName,
       planId: plan.id,
       repoPath: params.repoPath,
       requireMetadataCommit: true,
     });
+    await removePlanLifecycleSaga(
+      plan.id,
+      'finalize',
+      params.branchName,
+      getPlanLifecycleSagaGeneration(finalizationSaga),
+    );
     await deps.commitArchitectPlanMetadata({
       branchName: params.branchName,
       planId: plan.id,
@@ -2195,6 +2580,13 @@ export const createArchitectGitFlowService = (
     let currentSaga = saga;
     try {
       const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
+      if (saga.operation === 'finalize') {
+        await finalizePlanIntoBaseBranchUnlocked({
+          branchName: saga.branchName,
+          planId: saga.planId,
+        });
+        return;
+      }
       if (saga.operation === 'archive') {
         if (saga.phase === 'metadata_commit_pending') {
           await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
@@ -2260,6 +2652,12 @@ export const createArchitectGitFlowService = (
     } catch (error) {
       if (error instanceof StalePlanLifecycleSagaError) return;
       try {
+        if (saga.operation === 'finalize') {
+          currentSaga = (await loadPlanLifecycleSagas()).find(
+            (candidate) => getPlanLifecycleSagaGeneration(candidate) ===
+              getPlanLifecycleSagaGeneration(saga),
+          ) ?? currentSaga;
+        }
         await upsertPlanLifecycleSaga({
           ...currentSaga,
           updatedAt: new Date().toISOString(),

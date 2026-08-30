@@ -5684,6 +5684,48 @@ pub(crate) fn merge_repo(
     }
 }
 
+fn verify_expected_merge_identity(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: Option<&str>,
+    expected_into_commit: Option<&str>,
+) -> Result<()> {
+    for (branch_name, expected_commit, role) in [
+        (branch_name, expected_branch_commit, "source"),
+        (into_branch, expected_into_commit, "target"),
+    ] {
+        let Some(expected_commit) = expected_commit else {
+            continue;
+        };
+        let expected_oid = Oid::from_str(expected_commit).map_err(|_| BackendError::Git {
+            message: format!(
+                "Invalid expected {} commit for branch {}",
+                role, branch_name
+            ),
+        })?;
+        let actual_oid = repo
+            .find_branch(branch_name, BranchType::Local)
+            .and_then(|branch| branch.get().peel_to_commit())
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to resolve merge {} branch {}: {}",
+                    role, branch_name, error
+                ),
+            })?
+            .id();
+        if actual_oid != expected_oid {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Refusing to merge because the durable {} identity of branch {} changed",
+                    role, branch_name
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<String> {
     validate_commit_message(message)?;
     ensure_safe_config(repo)?;
@@ -6721,8 +6763,15 @@ pub async fn git_merge(
     repo_path: String,
     branch_name: String,
     into_branch: String,
+    expected_branch_commit: Option<String>,
+    expected_into_commit: Option<String>,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        if expected_branch_commit.is_some() || expected_into_commit.is_some() {
+            return Err(unsupported_wsl_git_operation(
+                "git_merge with durable identity",
+            ));
+        }
         return wsl_git_merge(&wsl_repo_path, &branch_name, &into_branch).await;
     }
 
@@ -6736,6 +6785,13 @@ pub async fn git_merge(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        verify_expected_merge_identity(
+            &repo,
+            &branch_name,
+            &into_branch,
+            expected_branch_commit.as_deref(),
+            expected_into_commit.as_deref(),
+        )?;
         merge_repo(&repo, &branch_name, &into_branch)
     })
     .await
@@ -17406,6 +17462,45 @@ mod tests {
         assert!(check.conflict_files.is_empty());
         assert_eq!(check.ahead, 1);
         assert_eq!(check.behind, 0);
+    }
+
+    #[test]
+    fn guarded_merge_rejects_a_target_branch_that_changed_after_preflight() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "late base change").unwrap();
+        commit_repo(&repo, "chore: late base change", true).unwrap();
+
+        let error = verify_expected_merge_identity(
+            &repo,
+            "feature",
+            &base_branch,
+            Some(&feature_commit.to_string()),
+            Some(&expected_base.to_string()),
+        )
+        .expect_err("a changed target ref must fence the merge");
+
+        assert!(error.to_string().contains("durable target identity"));
     }
 
     #[test]

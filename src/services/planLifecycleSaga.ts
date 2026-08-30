@@ -21,8 +21,34 @@ export class StalePlanLifecycleSagaError extends Error {
   }
 }
 
-export type PlanLifecycleOperation = 'archive' | 'delete';
-export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
+export type PlanLifecycleOperation = 'archive' | 'delete' | 'finalize';
+export type PlanLifecyclePhase = 'prepared' | 'git_merges_complete' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
+
+export type PlanFinalizationRepositoryPhase =
+  | 'prepared'
+  | 'base_synced'
+  | 'plan_merged'
+  | 'backmerge_synced'
+  | 'complete';
+
+export interface PlanFinalizationRepositoryCheckpoint {
+  projectId: string;
+  repoPath: string;
+  planBranchName: string;
+  baseBranchName: string;
+  backmergeBranchName: string | null;
+  expectedPlanCommit: string;
+  expectedBaseCommit: string;
+  expectedBackmergeCommit: string | null;
+  phase: PlanFinalizationRepositoryPhase;
+  mergeRequired?: boolean;
+  baseCommitAfterSync?: string;
+  baseCommitAfterMerge?: string;
+  backmergeCommitAfterSync?: string;
+  backmergeCommitAfterMerge?: string;
+  mergeOutput?: string;
+  backmergeOutput?: string;
+}
 
 export interface PlanLifecycleCleanupResource {
   kind: 'branch' | 'worktree';
@@ -42,6 +68,7 @@ export interface PlanLifecycleSaga {
   conversationId?: string | null;
   requiresMetadataCommit?: boolean;
   cleanupResources?: PlanLifecycleCleanupResource[];
+  finalizationRepositories?: PlanFinalizationRepositoryCheckpoint[];
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -85,15 +112,58 @@ const isCleanupResource = (value: unknown): value is PlanLifecycleCleanupResourc
     (resource.expectedWorktreePath === undefined || typeof resource.expectedWorktreePath === 'string');
 };
 
+const isFinalizationRepository = (
+  value: unknown,
+): value is PlanFinalizationRepositoryCheckpoint => {
+  if (!value || typeof value !== 'object') return false;
+  const repository = value as Partial<PlanFinalizationRepositoryCheckpoint>;
+  const validPhase = repository.phase === 'prepared' || repository.phase === 'base_synced' ||
+    repository.phase === 'plan_merged' || repository.phase === 'backmerge_synced' ||
+    repository.phase === 'complete';
+  const validOptionalString = (candidate: unknown): boolean =>
+    candidate === undefined || typeof candidate === 'string';
+  if (
+    typeof repository.projectId !== 'string' || typeof repository.repoPath !== 'string' ||
+    typeof repository.planBranchName !== 'string' || typeof repository.baseBranchName !== 'string' ||
+    (typeof repository.backmergeBranchName !== 'string' && repository.backmergeBranchName !== null) ||
+    typeof repository.expectedPlanCommit !== 'string' ||
+    typeof repository.expectedBaseCommit !== 'string' ||
+    (typeof repository.expectedBackmergeCommit !== 'string' && repository.expectedBackmergeCommit !== null) ||
+    !validPhase ||
+    (repository.mergeRequired !== undefined && typeof repository.mergeRequired !== 'boolean') ||
+    !validOptionalString(repository.baseCommitAfterSync) ||
+    !validOptionalString(repository.baseCommitAfterMerge) ||
+    !validOptionalString(repository.backmergeCommitAfterSync) ||
+    !validOptionalString(repository.backmergeCommitAfterMerge) ||
+    !validOptionalString(repository.mergeOutput) ||
+    !validOptionalString(repository.backmergeOutput)
+  ) return false;
+  if (repository.phase !== 'prepared' && typeof repository.baseCommitAfterSync !== 'string') {
+    return false;
+  }
+  if (
+    (repository.phase === 'plan_merged' || repository.phase === 'backmerge_synced' || repository.phase === 'complete') &&
+    (typeof repository.mergeRequired !== 'boolean' || typeof repository.baseCommitAfterMerge !== 'string')
+  ) return false;
+  if (repository.phase === 'backmerge_synced' && (
+    !repository.backmergeBranchName ||
+    typeof repository.backmergeCommitAfterSync !== 'string'
+  )) return false;
+  if (repository.phase === 'complete' && repository.backmergeBranchName &&
+    typeof repository.backmergeCommitAfterMerge !== 'string') return false;
+  return true;
+};
+
 const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   const saga = entry as Partial<PlanLifecycleSaga>;
   const allowedPhases: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
     archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
     delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
+    finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
   };
   if (
     !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
-    (saga.operation !== 'archive' && saga.operation !== 'delete') ||
+    (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize') ||
     !allowedPhases[saga.operation as PlanLifecycleOperation]?.includes(saga.phase as PlanLifecyclePhase) ||
     typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
   ) throw new PlanLifecycleSagaCorruptionError();
@@ -103,6 +173,15 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   if (saga.cleanupResources !== undefined && (
     !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
   )) throw new PlanLifecycleSagaCorruptionError();
+  if (
+    saga.operation === 'finalize' && (
+      !Array.isArray(saga.finalizationRepositories) ||
+      !saga.finalizationRepositories.every(isFinalizationRepository)
+    )
+  ) throw new PlanLifecycleSagaCorruptionError();
+  if (saga.operation !== 'finalize' && saga.finalizationRepositories !== undefined) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
   if (saga.operation === 'archive' && saga.requiresMetadataCommit === false &&
     (saga.phase === 'metadata_commit_pending' || saga.phase === 'metadata_committed')) {
     throw new PlanLifecycleSagaCorruptionError();
@@ -160,10 +239,11 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
       const allowedPhases: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
         archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
         delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
+        finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
       };
       if (
         !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
-        (saga.operation !== 'archive' && saga.operation !== 'delete') ||
+        (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize') ||
         !allowedPhases[saga.operation as PlanLifecycleOperation]?.includes(saga.phase as PlanLifecyclePhase) ||
         typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
       ) throw new PlanLifecycleSagaCorruptionError();
@@ -173,6 +253,15 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
       if (saga.cleanupResources !== undefined && (
         !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
       )) throw new PlanLifecycleSagaCorruptionError();
+      if (
+        saga.operation === 'finalize' && (
+          !Array.isArray(saga.finalizationRepositories) ||
+          !saga.finalizationRepositories.every(isFinalizationRepository)
+        )
+      ) throw new PlanLifecycleSagaCorruptionError();
+      if (saga.operation !== 'finalize' && saga.finalizationRepositories !== undefined) {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
       if (
         saga.operation === 'archive' &&
         saga.requiresMetadataCommit === false &&
@@ -296,6 +385,60 @@ export const loadPlanLifecycleSagas = async (
   throw new Error('Conflit persistant pendant la normalisation du journal du cycle de vie des plans.');
 };
 
+const finalizationRepositoryPhaseRank = (phase: PlanFinalizationRepositoryPhase): number => [
+  'prepared',
+  'base_synced',
+  'plan_merged',
+  'backmerge_synced',
+  'complete',
+].indexOf(phase);
+
+const getFinalizationRepositoryKey = (
+  repository: Pick<PlanFinalizationRepositoryCheckpoint, 'projectId' | 'repoPath'>,
+): string => `${repository.projectId}:${repository.repoPath}`;
+
+const mergeFinalizationRepositoryProgress = (
+  persisted: PlanFinalizationRepositoryCheckpoint[],
+  incoming: PlanFinalizationRepositoryCheckpoint[],
+): PlanFinalizationRepositoryCheckpoint[] => {
+  if (persisted.length !== incoming.length) throw new PlanLifecycleSagaCorruptionError();
+  const incomingByKey = new Map(incoming.map((repository) => [
+    getFinalizationRepositoryKey(repository),
+    repository,
+  ]));
+  return persisted.map((current) => {
+    const next = incomingByKey.get(getFinalizationRepositoryKey(current));
+    if (!next) throw new PlanLifecycleSagaCorruptionError();
+    const immutableCurrent = {
+      projectId: current.projectId,
+      repoPath: current.repoPath,
+      planBranchName: current.planBranchName,
+      baseBranchName: current.baseBranchName,
+      backmergeBranchName: current.backmergeBranchName,
+      expectedPlanCommit: current.expectedPlanCommit,
+      expectedBaseCommit: current.expectedBaseCommit,
+      expectedBackmergeCommit: current.expectedBackmergeCommit,
+    };
+    const immutableNext = {
+      projectId: next.projectId,
+      repoPath: next.repoPath,
+      planBranchName: next.planBranchName,
+      baseBranchName: next.baseBranchName,
+      backmergeBranchName: next.backmergeBranchName,
+      expectedPlanCommit: next.expectedPlanCommit,
+      expectedBaseCommit: next.expectedBaseCommit,
+      expectedBackmergeCommit: next.expectedBackmergeCommit,
+    };
+    if (JSON.stringify(immutableCurrent) !== JSON.stringify(immutableNext)) {
+      throw new PlanLifecycleSagaCorruptionError();
+    }
+    if (finalizationRepositoryPhaseRank(next.phase) < finalizationRepositoryPhaseRank(current.phase)) {
+      throw new StalePlanLifecycleSagaError();
+    }
+    return { ...current, ...next };
+  });
+};
+
 export const upsertPlanLifecycleSaga = async (
   saga: PlanLifecycleSaga,
   transport: PlanLifecycleSagaTransport = defaultTransport,
@@ -310,6 +453,7 @@ export const upsertPlanLifecycleSaga = async (
   const phaseOrder: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
     archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
     delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
+    finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
   };
   await updateSetting(
     SAGA_KEY,
@@ -323,11 +467,24 @@ export const upsertPlanLifecycleSaga = async (
           if (existing.createdAt >= saga.createdAt) throw new StalePlanLifecycleSagaError();
         } else if (phaseOrder[saga.operation].indexOf(existing.phase) > phaseOrder[saga.operation].indexOf(saga.phase)) {
           throw new StalePlanLifecycleSagaError();
-        } else if (existing.cleanupResources) {
-          if (saga.cleanupResources && JSON.stringify(existing.cleanupResources) !== JSON.stringify(saga.cleanupResources)) {
+        } else {
+          if (existing.cleanupResources && saga.cleanupResources &&
+            JSON.stringify(existing.cleanupResources) !== JSON.stringify(saga.cleanupResources)) {
             throw new PlanLifecycleSagaCorruptionError();
           }
-          nextSaga = { ...saga, cleanupResources: existing.cleanupResources };
+          if (existing.finalizationRepositories) {
+            if (!saga.finalizationRepositories) throw new PlanLifecycleSagaCorruptionError();
+            nextSaga = {
+              ...saga,
+              cleanupResources: existing.cleanupResources ?? saga.cleanupResources,
+              finalizationRepositories: mergeFinalizationRepositoryProgress(
+                existing.finalizationRepositories,
+                saga.finalizationRepositories,
+              ),
+            };
+          } else if (existing.cleanupResources) {
+            nextSaga = { ...saga, cleanupResources: existing.cleanupResources };
+          }
         }
       }
       return JSON.stringify([

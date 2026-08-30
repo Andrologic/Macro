@@ -149,7 +149,13 @@ const gitRebaseCheckMock = mock(async (_params: { repoPath: string; branchName: 
   conflictFiles: [],
   output: '',
 }));
-const gitMergeMock = mock(async (_params: { repoPath: string; branchName?: string; intoBranch?: string }) => 'merge-ok');
+const gitMergeMock = mock(async (_params: {
+  repoPath: string;
+  branchName?: string;
+  intoBranch?: string;
+  expectedBranchCommit?: string | null;
+  expectedIntoCommit?: string | null;
+}) => 'merge-ok');
 const gitPullMock = mock(async (_params: { repoPath: string; branch?: string }) => ({
   branch: _params.branch || 'develop',
   remote: 'origin',
@@ -1582,6 +1588,138 @@ describe('architectGitFlowService', () => {
     ]);
   });
 
+  it('resumes the remaining repository after a checkpointed multi-repository merge failure', async () => {
+    const commitsByRepo = new Map([
+      ['/repos/web', new Map([
+        ['develop', 'web-base-before'],
+        ['plan/checkout', 'web-plan'],
+        ['feature/checkout/checkout-web', 'web-feature'],
+      ])],
+      ['/repos/api', new Map([
+        ['develop', 'api-base-before'],
+        ['plan/checkout', 'api-plan'],
+        ['feature/checkout/checkout-api', 'api-feature'],
+      ])],
+    ]);
+    gitBranchListMock.mockImplementation(async (repoPath: string) => ({
+      current: 'develop',
+      local: Array.from(commitsByRepo.get(repoPath) ?? []).map(([name, commit]) => ({
+        name,
+        commit,
+        is_head: name === 'develop',
+      })),
+      remote: [],
+    }));
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+    }));
+    let failApiMerge = true;
+    gitMergeMock.mockImplementation(async ({ repoPath, intoBranch }) => {
+      if (repoPath === '/repos/api' && failApiMerge) {
+        failApiMerge = false;
+        throw new Error('injected api merge failure');
+      }
+      commitsByRepo.get(repoPath)?.set(
+        intoBranch || 'develop',
+        repoPath === '/repos/web' ? 'web-base-merged' : 'api-base-merged',
+      );
+      return `merged:${repoPath}`;
+    });
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('injected api merge failure');
+
+    const pendingAfterFailure = readPersistedLifecycleSagas().find(
+      (saga) => saga.operation === 'finalize',
+    );
+    expect(pendingAfterFailure).toEqual(expect.objectContaining({
+      phase: 'prepared',
+      finalizationRepositories: expect.arrayContaining([
+        expect.objectContaining({ repoPath: '/repos/web', phase: 'complete' }),
+        expect.objectContaining({ repoPath: '/repos/api', phase: 'base_synced' }),
+      ]),
+    }));
+
+    const result = await architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+
+    expect(result.plan.status).toBe('archived');
+    expect(gitMergeMock.mock.calls.filter(([params]) => params.repoPath === '/repos/web'))
+      .toHaveLength(1);
+    expect(gitMergeMock.mock.calls.filter(([params]) => params.repoPath === '/repos/api'))
+      .toHaveLength(2);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('blocks recovery when a merge changed the base ref before its checkpoint was durable', async () => {
+    currentPlan = {
+      ...currentPlan,
+      projectIds: ['web'],
+      nodes: currentPlan.nodes.filter((node: { projectId: string }) => node.projectId === 'web'),
+      predictedBranches: currentPlan.predictedBranches.filter(
+        (branch: { projectId: string }) => branch.projectId === 'web',
+      ),
+    };
+    const commits = new Map([
+      ['develop', 'base-before'],
+      ['plan/checkout', 'plan-source'],
+      ['feature/checkout/checkout-web', 'feature-source'],
+    ]);
+    gitBranchListMock.mockImplementation(async () => ({
+      current: 'develop',
+      local: Array.from(commits).map(([name, commit]) => ({
+        name,
+        commit,
+        is_head: name === 'develop',
+      })),
+      remote: [],
+    }));
+    gitMergeMock.mockImplementation(async () => {
+      commits.set('develop', 'base-after-ambiguous-merge');
+      return 'merge completed before response loss';
+    });
+    let checkpointFailureArmed = false;
+    afterPlanLifecycleSave = (valueJson) => {
+      const finalization = (JSON.parse(valueJson) as Array<Record<string, any>>).find(
+        (saga) => saga.operation === 'finalize',
+      );
+      const repository = finalization?.finalizationRepositories?.[0];
+      if (
+        !checkpointFailureArmed && repository?.phase === 'base_synced' &&
+        repository?.mergeRequired === true
+      ) {
+        checkpointFailureArmed = true;
+        failPlanLifecycleSave = new Error('injected merge checkpoint failure');
+      }
+    };
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('injected merge checkpoint failure');
+    expect(commits.get('develop')).toBe('base-after-ambiguous-merge');
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(readPersistedLifecycleSagas()).toEqual([
+      expect.objectContaining({
+        operation: 'finalize',
+        phase: 'prepared',
+        lastError: expect.stringContaining('Expected base-before, found base-after-ambiguous-merge'),
+      }),
+    ]);
+  });
+
   it('finalizes release plans into main and backmerges main into develop', async () => {
     currentPlan = {
       ...buildPlan(),
@@ -1652,9 +1790,27 @@ describe('architectGitFlowService', () => {
       { repoPath: '/repos/api', branchOrCommit: 'develop', create: false },
     ]));
     expect(gitMergeMock.mock.calls.map(([params]) => params)).toEqual([
-      { repoPath: '/repos/web', branchName: 'release/v0.2.0', intoBranch: 'main' },
-      { repoPath: '/repos/web', branchName: 'main', intoBranch: 'develop' },
-      { repoPath: '/repos/api', branchName: 'main', intoBranch: 'develop' },
+      {
+        repoPath: '/repos/web',
+        branchName: 'release/v0.2.0',
+        intoBranch: 'main',
+        expectedBranchCommit: 'release/v0.2.0-sha',
+        expectedIntoCommit: 'main-sha',
+      },
+      {
+        repoPath: '/repos/web',
+        branchName: 'main',
+        intoBranch: 'develop',
+        expectedBranchCommit: 'main-sha',
+        expectedIntoCommit: 'develop-sha',
+      },
+      {
+        repoPath: '/repos/api',
+        branchName: 'main',
+        intoBranch: 'develop',
+        expectedBranchCommit: 'main-sha',
+        expectedIntoCommit: 'develop-sha',
+      },
     ]);
   });
 
