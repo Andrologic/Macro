@@ -3111,12 +3111,12 @@ mod tests {
         #[cfg(windows)]
         let (noisy_timeout_script_path, noisy_timeout_script_content) = (
             "scripts/noisy-timeout.cmd",
-            "@echo off\r\nfor /L %%i in (1,1,5000) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\r\nping -n 6 127.0.0.1 >nul\r\n",
+            "@echo off\r\ntype \"%~dp0noisy-payload.txt\"\r\nping -n 6 127.0.0.1 >nul\r\n",
         );
         #[cfg(not(windows))]
         let (noisy_timeout_script_path, noisy_timeout_script_content) = (
             "scripts/noisy-timeout.sh",
-            "yes x | head -c 100000\nsleep 5\n",
+            "cat \"$(dirname \"$0\")/noisy-payload.txt\"\nsleep 5\n",
         );
         #[cfg(windows)]
         let (descendant_script_path, descendant_script_content) = (
@@ -3135,6 +3135,11 @@ mod tests {
             noisy_timeout_script_content,
         )
         .expect("write noisy timeout");
+        fs::write(
+            skill_dir.join("scripts/noisy-payload.txt"),
+            "x".repeat(100_000),
+        )
+        .expect("write noisy payload");
         fs::write(
             skill_dir.join(descendant_script_path),
             descendant_script_content,
