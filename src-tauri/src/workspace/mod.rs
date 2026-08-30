@@ -84,6 +84,8 @@ static WORKSPACE_STATE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<
     OnceLock::new();
 static ARCHIVED_TASK_CLEANUP_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
+static PLAN_LIFECYCLE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
 static NEW_REPO_TARGET_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
 #[cfg(test)]
@@ -155,6 +157,85 @@ async fn lock_archived_task_cleanup_process(lock_path: &Path) -> OwnedMutexGuard
 pub struct ArchivedTaskCleanupGuard {
     _process_guard: OwnedMutexGuard<()>,
     file: std::fs::File,
+}
+
+pub struct PlanLifecycleGuard {
+    _process_guard: OwnedMutexGuard<()>,
+    file: std::fs::File,
+}
+
+impl Drop for PlanLifecycleGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+fn plan_lifecycle_lock_path(metadata_root: &Path, branch_name: &str, plan_id: &str) -> PathBuf {
+    let identity = format!(
+        "{}\0{}\0{}",
+        workspace_state_lock_key(metadata_root).to_string_lossy(),
+        branch_name.trim(),
+        plan_id.trim(),
+    );
+    let digest = Sha256::digest(identity.as_bytes());
+    std::env::temp_dir()
+        .join("macro")
+        .join("plan-lifecycle-locks")
+        .join(format!("{digest:x}.lock"))
+}
+
+pub async fn lock_plan_lifecycle(
+    metadata_root: &Path,
+    branch_name: &str,
+    plan_id: &str,
+) -> Result<PlanLifecycleGuard> {
+    if branch_name.trim().is_empty() || plan_id.trim().is_empty() {
+        return Err(BackendError::Validation(
+            "Le verrou du cycle de vie requiert une branche et un identifiant de plan.".to_string(),
+        ));
+    }
+    let lock_path = plan_lifecycle_lock_path(metadata_root, branch_name, plan_id);
+    let process_guard = {
+        let lock = {
+            let locks = PLAN_LIFECYCLE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+            let mut locks = locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks
+                .entry(lock_path.clone())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    };
+    let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de créer le dossier de verrouillage : {error}"),
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible d’ouvrir le verrou du plan : {error}"),
+            })?;
+        file.lock_exclusive()
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de verrouiller le cycle de vie du plan : {error}"),
+            })?;
+        Ok(file)
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Le verrouillage du cycle de vie du plan a échoué : {error}"),
+    })??;
+    Ok(PlanLifecycleGuard {
+        _process_guard: process_guard,
+        file,
+    })
 }
 
 impl Drop for ArchivedTaskCleanupGuard {
@@ -8433,6 +8514,29 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn plan_lifecycle_lock_holds_a_stable_file_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        stdfs::create_dir_all(&metadata_root).expect("metadata root");
+        let guard = lock_plan_lifecycle(&metadata_root, "develop", "plan-1")
+            .await
+            .expect("acquire plan lock");
+        let lock_path = plan_lifecycle_lock_path(&metadata_root, "develop", "plan-1");
+        let contender = stdfs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .expect("open stable lock file");
+
+        assert!(contender.try_lock_exclusive().is_err());
+        drop(guard);
+        contender
+            .try_lock_exclusive()
+            .expect("lock must become available after lease release");
+        FileExt::unlock(&contender).expect("unlock contender");
+    }
 
     #[test]
     fn manual_feature_projection_keeps_direct_checkpoint_identity() {

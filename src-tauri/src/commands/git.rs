@@ -4693,7 +4693,7 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
         let commit = branch
             .get()
             .peel_to_commit()
-            .map(|c| short_hash(c.id()))
+            .map(|c| c.id().to_string())
             .unwrap_or_default();
         local.push(GitBranch {
             name,
@@ -4708,7 +4708,7 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
         let commit = branch
             .get()
             .peel_to_commit()
-            .map(|c| short_hash(c.id()))
+            .map(|c| c.id().to_string())
             .unwrap_or_default();
         remote.push(GitBranch {
             name,
@@ -4855,7 +4855,12 @@ fn create_branch_from_ref(repo: &Repository, branch_name: &str, from_ref: &str) 
     Ok(())
 }
 
-fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Result<()> {
+fn delete_local_branch(
+    repo: &Repository,
+    branch_name: &str,
+    force: bool,
+    expected_commit: Option<&str>,
+) -> Result<()> {
     let current = get_branch_name(repo)?;
     if current.as_deref() == Some(branch_name) {
         return Err(BackendError::Git {
@@ -4868,6 +4873,27 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
         .map_err(|_| BackendError::GitBranchNotFound {
             message: format!("Branch not found: {}", branch_name),
         })?;
+
+    let actual_commit = branch
+        .get()
+        .peel_to_commit()
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?
+        .id();
+    if let Some(expected_commit) = expected_commit {
+        let expected_commit = Oid::from_str(expected_commit).map_err(|_| BackendError::Git {
+            message: format!("Invalid expected commit for branch {}", branch_name),
+        })?;
+        if actual_commit != expected_commit {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Refusing to delete branch {} because its durable identity changed",
+                    branch_name
+                ),
+            });
+        }
+    }
 
     if !force {
         if let Ok(head_commit) = repo.head().and_then(|head| head.peel_to_commit()) {
@@ -4896,6 +4922,62 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
     branch.delete().map_err(|e| BackendError::Git {
         message: e.to_string(),
     })?;
+
+    Ok(())
+}
+
+fn verify_expected_worktree_identity(
+    repo: &Repository,
+    expected_branch_name: &str,
+    actual_worktree_path: &Path,
+    actual_branch_name: Option<&str>,
+    expected_commit: Option<&str>,
+    expected_worktree_path: Option<&str>,
+) -> Result<()> {
+    if let Some(expected_worktree_path) = expected_worktree_path {
+        let expected_path = normalize_path(Path::new(expected_worktree_path));
+        let actual_path = normalize_path(actual_worktree_path);
+        if expected_path != actual_path {
+            return Err(BackendError::Git {
+                message: "Refusing to remove a worktree because its durable path identity changed"
+                    .to_string(),
+            });
+        }
+    }
+
+    if let Some(expected_commit) = expected_commit {
+        if expected_branch_name.is_empty() || actual_branch_name != Some(expected_branch_name) {
+            return Err(BackendError::Git {
+                message:
+                    "Refusing to remove a worktree because its durable branch identity changed"
+                        .to_string(),
+            });
+        }
+        let expected_oid = Oid::from_str(expected_commit).map_err(|_| BackendError::Git {
+            message: format!(
+                "Invalid expected commit for worktree branch {}",
+                expected_branch_name
+            ),
+        })?;
+        let actual_oid = repo
+            .find_branch(expected_branch_name, BranchType::Local)
+            .and_then(|branch| branch.get().peel_to_commit())
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to resolve worktree branch {}: {}",
+                    expected_branch_name, error
+                ),
+            })?
+            .id();
+        if expected_oid != actual_oid {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Refusing to remove worktree for branch {} because its durable commit identity changed",
+                    expected_branch_name
+                ),
+            });
+        }
+    }
 
     Ok(())
 }
@@ -6459,6 +6541,7 @@ pub async fn git_branch_delete(
     force: Option<bool>,
     archive_task_id: Option<String>,
     archive_token: Option<String>,
+    expected_commit: Option<String>,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
@@ -6470,6 +6553,11 @@ pub async fn git_branch_delete(
     )
     .await?;
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        if expected_commit.is_some() {
+            return Err(unsupported_wsl_git_operation(
+                "git_branch_delete with a durable identity",
+            ));
+        }
         return wsl_git_branch_delete(&wsl_repo_path, &branch_name, force.unwrap_or(false)).await;
     }
 
@@ -6480,7 +6568,12 @@ pub async fn git_branch_delete(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        delete_local_branch(&repo, &branch_name, force.unwrap_or(false))
+        delete_local_branch(
+            &repo,
+            &branch_name,
+            force.unwrap_or(false),
+            expected_commit.as_deref(),
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -12002,6 +12095,8 @@ pub async fn git_branch_worktree_remove(
     worktree_key: String,
     branch_name: String,
     force: Option<bool>,
+    expected_commit: Option<String>,
+    expected_worktree_path: Option<String>,
 ) -> Result<GitBranchWorktreeRemoveDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_branch_worktree_remove"));
@@ -12016,6 +12111,16 @@ pub async fn git_branch_worktree_remove(
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+
+        let inspection = git_state.inspect_branch_worktree(&repo, &worktree_key, &branch_name)?;
+        verify_expected_worktree_identity(
+            &repo,
+            &branch_name,
+            &inspection.worktree_path,
+            inspection.branch_name.as_deref(),
+            expected_commit.as_deref(),
+            expected_worktree_path.as_deref(),
+        )?;
 
         let removed = git_state.remove_branch_worktree(
             &repo,
@@ -12046,6 +12151,8 @@ pub async fn git_worktree_remove(
     branch_name: Option<String>,
     archive_task_id: Option<String>,
     archive_token: Option<String>,
+    expected_commit: Option<String>,
+    expected_worktree_path: Option<String>,
 ) -> Result<GitWorktreeRemoveDto> {
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
@@ -12066,6 +12173,20 @@ pub async fn git_worktree_remove(
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+
+        let inspection = if let Some(branch_name) = branch_name.as_deref() {
+            git_state.inspect_task_worktree_for_branch(&repo, &task_id, branch_name)?
+        } else {
+            git_state.inspect_task_worktree(&repo, &task_id)?
+        };
+        verify_expected_worktree_identity(
+            &repo,
+            branch_name.as_deref().unwrap_or(""),
+            &inspection.worktree_path,
+            inspection.branch_name.as_deref(),
+            expected_commit.as_deref(),
+            expected_worktree_path.as_deref(),
+        )?;
 
         let removed = git_state.remove_task_worktree(
             &repo,
@@ -17197,6 +17318,52 @@ mod tests {
         let (_temp, repo) = init_repo();
         let branches = build_git_branches(&repo).unwrap();
         assert!(branches.local.iter().any(|b| b.is_head));
+        assert!(branches
+            .local
+            .iter()
+            .all(|branch| branch.commit.len() == 40));
+    }
+
+    #[test]
+    fn branch_delete_refuses_a_recreated_branch_identity() {
+        let (_temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/recreated", &head, false).unwrap();
+
+        let error = delete_local_branch(
+            &repo,
+            "feature/recreated",
+            true,
+            Some("0000000000000000000000000000000000000000"),
+        )
+        .expect_err("a mismatched durable identity must fence branch deletion");
+
+        assert!(error.to_string().contains("durable identity changed"));
+        assert!(repo
+            .find_branch("feature/recreated", BranchType::Local)
+            .is_ok());
+    }
+
+    #[test]
+    fn worktree_remove_refuses_a_recreated_branch_identity() {
+        let (temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/recreated", &head, false).unwrap();
+        let worktree_path = temp.path().join("worktree");
+
+        let error = verify_expected_worktree_identity(
+            &repo,
+            "feature/recreated",
+            &worktree_path,
+            Some("feature/recreated"),
+            Some("0000000000000000000000000000000000000000"),
+            Some(&worktree_path.to_string_lossy()),
+        )
+        .expect_err("a mismatched durable identity must fence worktree deletion");
+
+        assert!(error
+            .to_string()
+            .contains("durable commit identity changed"));
     }
 
     #[test]

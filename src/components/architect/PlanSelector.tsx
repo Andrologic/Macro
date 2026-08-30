@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  archiveArchitectPlan,
   getArchitectPlan,
   getArchitectPlanCrudCapabilities,
   getArchitectPlanTargetDisplay,
@@ -17,7 +16,7 @@ import {
   type ArchitectPlanSummary,
 } from '../../services/architectPlanService';
 import {
-  cleanupPlanBranches,
+  archivePlanAndCleanupBranches,
   deletePlanAndCleanupBranches,
   restorePlanAndProvisionBranches,
 } from '../../services/architectGitFlowService';
@@ -84,11 +83,6 @@ import {
   removeLinkedConversationDeletionSaga,
   upsertLinkedConversationDeletionSaga,
 } from '../../services/linkedTaskDeletionSaga';
-import {
-  getPlanLifecycleSagaGeneration,
-  removePlanLifecycleSaga,
-  upsertPlanLifecycleSaga,
-} from '../../services/planLifecycleSaga';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
 import { toPlanLocatorKey } from '../../services/durableIdentity';
@@ -995,31 +989,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           t('architect.planSelector.errorSelectedPlanUnavailable', 'The selected plan is unavailable.')
         );
       }
-      const archiveSagaNow = new Date().toISOString();
-      const archiveSaga = {
-        planId: plan.id,
+      const archiveResult = await archivePlanAndCleanupBranches({
         branchName: storageBranch,
-        operation: 'archive',
-        phase: 'prepared',
-        conversationId: latestPlan.conversationId ?? null,
-        createdAt: archiveSagaNow,
-        updatedAt: archiveSagaNow,
-      } as const;
-      await upsertPlanLifecycleSaga(archiveSaga);
-      archivedPlan = await archiveArchitectPlan(storageBranch, plan.id);
-      await upsertPlanLifecycleSaga({
-        ...archiveSaga,
-        phase: 'metadata_written',
-        conversationId: archivedPlan.conversationId ?? null,
-        updatedAt: new Date().toISOString(),
+        planId: plan.id,
       });
-      const cleanup = await cleanupPlanBranches(archivedPlan);
-      await removePlanLifecycleSaga(
-        plan.id,
-        'archive',
-        storageBranch,
-        getPlanLifecycleSagaGeneration(archiveSaga),
-      );
+      archivedPlan = archiveResult.plan;
+      const cleanup = archiveResult.cleanup;
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>

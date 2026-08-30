@@ -44,6 +44,7 @@ import {
   loadPlanLifecycleSagas,
   removePlanLifecycleSaga,
   upsertPlanLifecycleSaga,
+  type PlanLifecycleCleanupResource,
   type PlanLifecycleSaga,
 } from './planLifecycleSaga';
 import { getPlanNodeBranchIntent, type WorkBranchIntent } from './gitFlowBranchIntents';
@@ -397,6 +398,7 @@ interface ArchitectGitFlowGitStatus {
 
 interface ArchitectGitFlowGitBranchRef {
   name: string;
+  commit?: string;
 }
 
 interface ArchitectGitFlowGitBranches {
@@ -424,6 +426,8 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'gitBranchWorktreeRemove'
   | 'gitPull'
   | 'gitRebaseCheck'
+  | 'workspaceAcquirePlanLifecycleLock'
+  | 'workspaceReleasePlanLifecycleLock'
 > & {
   gitStatus: (repoPath: string) => Promise<ArchitectGitFlowGitStatus>;
   gitMergeCheck: (params: {
@@ -470,6 +474,21 @@ const getDefaultArchitectGitFlowDependencies = (): ArchitectGitFlowDependencies 
   commitArchitectPlanMetadata,
   getGitFlowBaseBranch,
 });
+
+const withPlanLifecycleLock = async <T>(
+  deps: ArchitectGitFlowDependencies,
+  branchName: string,
+  planId: string,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  if (!deps.tauri.isTauriAvailable()) return operation();
+  const leaseId = await deps.tauri.workspaceAcquirePlanLifecycleLock({ branchName, planId });
+  try {
+    return await operation();
+  } finally {
+    await deps.tauri.workspaceReleasePlanLifecycleLock(leaseId);
+  }
+};
 
 const joinRepoPath = (repoPath: string, ...segments: string[]): string =>
   [repoPath.replace(/[\\/]+$/, ''), ...segments.map((segment) => segment.replace(/^[\\/]+|[\\/]+$/g, ''))]
@@ -1083,11 +1102,130 @@ export const createArchitectGitFlowService = (
     }
   };
 
+  const capturePlanCleanupResourcesWithDeps = async (
+    targets: CleanupPlanRepositoryTarget[],
+  ): Promise<PlanLifecycleCleanupResource[]> => {
+    const resources: PlanLifecycleCleanupResource[] = [];
+    for (const target of targets) {
+      const branches = await deps.tauri.gitBranchList(target.repoPath);
+      const localBranches = new Map(
+        (branches.local || []).map((branch) => [branch.name, branch.commit ?? null] as const),
+      );
+      for (const branchName of [...target.featureBranchNames, target.planBranchName]) {
+        if (!localBranches.has(branchName)) continue;
+        resources.push({
+          kind: 'branch',
+          projectId: target.projectId,
+          repoPath: target.repoPath,
+          branchName,
+          expectedCommit: localBranches.get(branchName) ?? null,
+        });
+      }
+      for (const worktree of target.worktrees) {
+        let inspection: tauriIpc.GitWorktreeInspectionDto;
+        try {
+          inspection = await deps.tauri.gitWorktreeInspect({
+            repoPath: target.repoPath,
+            taskId: worktree.worktreeKey,
+            branchName: worktree.branchName,
+          });
+        } catch (error) {
+          if (isMissingGitTargetError(error)) continue;
+          throw error;
+        }
+        if (inspection.status === 'absent') continue;
+        resources.push({
+          kind: 'worktree',
+          projectId: target.projectId,
+          repoPath: target.repoPath,
+          branchName: worktree.branchName,
+          expectedCommit: localBranches.get(worktree.branchName) ?? null,
+          worktreeKey: worktree.worktreeKey,
+          expectedWorktreePath: inspection.worktreePath,
+        });
+      }
+      let integrationInspection: tauriIpc.GitBranchWorktreeInspectionDto;
+      try {
+        integrationInspection = await deps.tauri.gitBranchWorktreeInspect({
+          repoPath: target.repoPath,
+          worktreeKey: target.integrationWorktree.worktreeKey,
+          branchName: target.integrationWorktree.branchName,
+        });
+      } catch (error) {
+        if (isMissingGitTargetError(error)) continue;
+        throw error;
+      }
+      if (integrationInspection.status !== 'absent') {
+        resources.push({
+          kind: 'worktree',
+          projectId: target.projectId,
+          repoPath: target.repoPath,
+          branchName: target.integrationWorktree.branchName,
+          expectedCommit: localBranches.get(target.integrationWorktree.branchName) ?? null,
+          worktreeKey: target.integrationWorktree.worktreeKey,
+          expectedWorktreePath: integrationInspection.worktreePath,
+        });
+      }
+    }
+    return resources;
+  };
+
+  const assertPlanWorktreeIdentityWithDeps = async (params: {
+    target: CleanupPlanRepositoryTarget;
+    worktree: CleanupPlanWorktreeTarget;
+    inspection: tauriIpc.GitWorktreeInspectionDto | tauriIpc.GitBranchWorktreeInspectionDto;
+    resources: PlanLifecycleCleanupResource[];
+  }): Promise<PlanLifecycleCleanupResource> => {
+    const expected = params.resources.find((resource) =>
+      resource.kind === 'worktree' &&
+      resource.repoPath === params.target.repoPath &&
+      resource.worktreeKey === params.worktree.worktreeKey
+    );
+    const branches = await deps.tauri.gitBranchList(params.target.repoPath);
+    const currentCommit = (branches.local || []).find(
+      (branch) => branch.name === params.worktree.branchName,
+    )?.commit ?? null;
+    if (
+      !expected ||
+      expected.branchName !== params.worktree.branchName ||
+      expected.expectedWorktreePath !== params.inspection.worktreePath ||
+      expected.expectedCommit !== currentCommit
+    ) {
+      throw new Error(
+        `Refusing to remove worktree ${params.worktree.worktreeKey} because its durable identity changed.`,
+      );
+    }
+    return expected;
+  };
+
+  const assertPlanBranchIdentityWithDeps = async (params: {
+    repoPath: string;
+    branchName: string;
+    resources: PlanLifecycleCleanupResource[];
+  }): Promise<void> => {
+    const expected = params.resources.find((resource) =>
+      resource.kind === 'branch' &&
+      resource.repoPath === params.repoPath &&
+      resource.branchName === params.branchName
+    );
+    const branches = await deps.tauri.gitBranchList(params.repoPath);
+    const currentCommit = (branches.local || []).find(
+      (branch) => branch.name === params.branchName,
+    )?.commit ?? null;
+    if (!expected || expected.expectedCommit !== currentCommit) {
+      throw new Error(
+        `Refusing to remove branch ${params.branchName} because its durable identity changed.`,
+      );
+    }
+  };
+
   const cleanupPlanBranchesInternalWithDeps = async (
     plan: ArchitectPlanRecord,
     explicitRepoPath?: string,
     options?: {
       allowRetained?: boolean;
+      expectedResources?: PlanLifecycleCleanupResource[];
+      onResourcesCaptured?: (resources: PlanLifecycleCleanupResource[]) => Promise<void>;
     }
   ): Promise<CleanupPlanRepositoryResult[]> => {
     const targets = buildCleanupPlanTargetsWithDeps(plan, explicitRepoPath);
@@ -1105,6 +1243,11 @@ export const createArchitectGitFlowService = (
     }
 
     await preflightPlanCleanupWithDeps(targets);
+    const cleanupResources = options?.expectedResources ??
+      await capturePlanCleanupResourcesWithDeps(targets);
+    if (!options?.expectedResources) {
+      await options?.onResourcesCaptured?.(cleanupResources);
+    }
 
     const allowRetained = options?.allowRetained === true;
     const results: CleanupPlanRepositoryResult[] = [];
@@ -1144,10 +1287,19 @@ export const createArchitectGitFlowService = (
             continue;
           }
 
+          const expectedResource = await assertPlanWorktreeIdentityWithDeps({
+            target,
+            worktree,
+            inspection,
+            resources: cleanupResources,
+          });
+
           const removed = await deps.tauri.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: worktree.worktreeKey,
             branchName: worktree.branchName,
+            expectedCommit: expectedResource.expectedCommit,
+            expectedWorktreePath: expectedResource.expectedWorktreePath,
           });
           if (!removed.alreadyAbsent) {
             deletedWorktrees.push({
@@ -1174,10 +1326,18 @@ export const createArchitectGitFlowService = (
           branchName: target.integrationWorktree.branchName,
         });
         if (inspection.status !== 'absent') {
+          const expectedResource = await assertPlanWorktreeIdentityWithDeps({
+            target,
+            worktree: target.integrationWorktree,
+            inspection,
+            resources: cleanupResources,
+          });
           const removed = await deps.tauri.gitBranchWorktreeRemove({
             repoPath: target.repoPath,
             worktreeKey: target.integrationWorktree.worktreeKey,
             branchName: target.integrationWorktree.branchName,
+            expectedCommit: expectedResource.expectedCommit,
+            expectedWorktreePath: expectedResource.expectedWorktreePath,
           });
           if (!removed.alreadyAbsent) {
             deletedWorktrees.push({
@@ -1199,10 +1359,20 @@ export const createArchitectGitFlowService = (
 
       for (const branchName of branchCandidates) {
         try {
+          await assertPlanBranchIdentityWithDeps({
+            repoPath: target.repoPath,
+            branchName,
+            resources: cleanupResources,
+          });
           await deps.tauri.gitBranchDelete({
             repoPath: target.repoPath,
             branchName,
             force: false,
+            expectedCommit: cleanupResources.find((resource) =>
+              resource.kind === 'branch' &&
+              resource.repoPath === target.repoPath &&
+              resource.branchName === branchName
+            )?.expectedCommit,
           });
           deletedBranches.push(branchName);
         } catch (error) {
@@ -1357,7 +1527,7 @@ export const createArchitectGitFlowService = (
     return repositories;
   };
 
-  const provisionPlanBranchesWithDeps = async (
+  const provisionPlanBranchesUnlocked = async (
     plan: ArchitectPlanRecord,
     explicitRepoPath?: string
   ): Promise<ProvisionPlanBranchesResult> => {
@@ -1511,7 +1681,15 @@ export const createArchitectGitFlowService = (
     return result;
   };
 
-  const validatePlanAndProvisionBranchesWithDeps = async (params: {
+  const provisionPlanBranchesWithDeps = async (
+    plan: ArchitectPlanRecord,
+    explicitRepoPath?: string,
+  ): Promise<ProvisionPlanBranchesResult> =>
+    withPlanLifecycleLock(deps, plan.targetBranch, plan.id, () =>
+      provisionPlanBranchesUnlocked(plan, explicitRepoPath)
+    );
+
+  const validatePlanAndProvisionBranchesUnlocked = async (params: {
     branchName: string;
     planId: string;
     repoPath?: string;
@@ -1554,7 +1732,7 @@ export const createArchitectGitFlowService = (
       predictedBranches: normalizedStrategy.predictedBranches,
     };
 
-    const provision = await provisionPlanBranchesWithDeps(normalizedPlan, params.repoPath);
+    const provision = await provisionPlanBranchesUnlocked(normalizedPlan, params.repoPath);
 
     let validatedPlan: ArchitectPlanRecord;
     try {
@@ -1584,6 +1762,13 @@ export const createArchitectGitFlowService = (
       provision,
     };
   };
+
+  const validatePlanAndProvisionBranchesWithDeps = async (
+    params: Parameters<typeof validatePlanAndProvisionBranchesUnlocked>[0],
+  ): ReturnType<typeof validatePlanAndProvisionBranchesUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      validatePlanAndProvisionBranchesUnlocked(params)
+    );
 
   const mergeFeatureBranchIntoPlanBranchWithDeps = async (params: {
     projectId: string;
@@ -1651,7 +1836,7 @@ export const createArchitectGitFlowService = (
     return cleanupPlanBranchesInternalWithDeps(plan, explicitRepoPath, options);
   };
 
-  const archivePlanAndCleanupBranchesWithDeps = async (params: {
+  const archivePlanAndCleanupBranchesUnlocked = async (params: {
     branchName: string;
     planId: string;
     repoPath?: string;
@@ -1667,14 +1852,21 @@ export const createArchitectGitFlowService = (
       throw new Error(`Plan ${params.planId} cannot be archived.`);
     }
     const now = new Date().toISOString();
-    const saga: PlanLifecycleSaga = {
+    let saga: PlanLifecycleSaga = {
       planId: plan.id, branchName: params.branchName, operation: 'archive', phase: 'prepared',
       conversationId: plan.conversationId ?? null, requiresMetadataCommit: params.requireMetadataCommit === true, createdAt: now, updatedAt: now,
     };
     await upsertPlanLifecycleSaga(saga);
     const archived = plan.status === 'archived' ? plan : await deps.archiveArchitectPlan(params.branchName, plan.id);
-    await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
-    const cleanup = await cleanupPlanBranchesWithDeps(archived, params.repoPath);
+    saga = { ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() };
+    await upsertPlanLifecycleSaga(saga);
+    const cleanup = await cleanupPlanBranchesInternalWithDeps(archived, params.repoPath, {
+      expectedResources: saga.cleanupResources,
+      onResourcesCaptured: async (cleanupResources) => {
+        saga = { ...saga, cleanupResources, updatedAt: new Date().toISOString() };
+        await upsertPlanLifecycleSaga(saga);
+      },
+    });
     const cleanedSaga = { ...saga, phase: 'git_cleanup_complete' as const, updatedAt: new Date().toISOString() };
     await upsertPlanLifecycleSaga(cleanedSaga);
     const lifecycleSaga: PlanLifecycleSaga = params.requireMetadataCommit
@@ -1693,7 +1885,14 @@ export const createArchitectGitFlowService = (
     return { plan: archived, cleanup, lifecycleSaga };
   };
 
-  const restorePlanAndProvisionBranchesWithDeps = async (params: {
+  const archivePlanAndCleanupBranchesWithDeps = async (
+    params: Parameters<typeof archivePlanAndCleanupBranchesUnlocked>[0],
+  ): ReturnType<typeof archivePlanAndCleanupBranchesUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      archivePlanAndCleanupBranchesUnlocked(params)
+    );
+
+  const restorePlanAndProvisionBranchesUnlocked = async (params: {
     branchName: string;
     planId: string;
     repoPath?: string;
@@ -1718,7 +1917,7 @@ export const createArchitectGitFlowService = (
     }
 
     if (plan.archivedFromStatus === 'validated' || plan.archivedFromStatus === 'in_progress') {
-      const provision = await provisionPlanBranchesWithDeps(plan, params.repoPath);
+      const provision = await provisionPlanBranchesUnlocked(plan, params.repoPath);
       let restored: ArchitectPlanRecord;
       try {
         restored = await deps.restoreArchitectPlan(params.branchName, params.planId);
@@ -1748,7 +1947,14 @@ export const createArchitectGitFlowService = (
     return restored;
   };
 
-  const finalizePlanIntoBaseBranchWithDeps = async (params: {
+  const restorePlanAndProvisionBranchesWithDeps = async (
+    params: Parameters<typeof restorePlanAndProvisionBranchesUnlocked>[0],
+  ): ReturnType<typeof restorePlanAndProvisionBranchesUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      restorePlanAndProvisionBranchesUnlocked(params)
+    );
+
+  const finalizePlanIntoBaseBranchUnlocked = async (params: {
     branchName: string;
     planId: string;
     repoPath?: string;
@@ -1835,7 +2041,7 @@ export const createArchitectGitFlowService = (
       status: 'completed',
       setActive: false,
     });
-    const { plan: archivedPlan, cleanup, lifecycleSaga } = await archivePlanAndCleanupBranchesWithDeps({
+    const { plan: archivedPlan, cleanup, lifecycleSaga } = await archivePlanAndCleanupBranchesUnlocked({
       branchName: params.branchName,
       planId: plan.id,
       repoPath: params.repoPath,
@@ -1865,7 +2071,14 @@ export const createArchitectGitFlowService = (
     };
   };
 
-  const deletePlanAndCleanupBranchesWithDeps = async (params: {
+  const finalizePlanIntoBaseBranchWithDeps = async (
+    params: Parameters<typeof finalizePlanIntoBaseBranchUnlocked>[0],
+  ): ReturnType<typeof finalizePlanIntoBaseBranchUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      finalizePlanIntoBaseBranchUnlocked(params)
+    );
+
+  const deletePlanAndCleanupBranchesUnlocked = async (params: {
     branchName: string;
     planId: string;
     hardDelete?: boolean;
@@ -1912,7 +2125,7 @@ export const createArchitectGitFlowService = (
     }
 
     const now = new Date().toISOString();
-    const saga: PlanLifecycleSaga = {
+    let saga: PlanLifecycleSaga = {
       planId: params.planId, branchName: params.branchName, operation: 'delete', phase: 'prepared',
       conversationId: plan.conversationId ?? null, createdAt: now, updatedAt: now,
     };
@@ -1938,15 +2151,23 @@ export const createArchitectGitFlowService = (
       };
     }
 
-    const repositories = await cleanupPlanBranchesWithDeps(plan, params.repoPath);
-    await upsertPlanLifecycleSaga({ ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() });
+    const repositories = await cleanupPlanBranchesInternalWithDeps(plan, params.repoPath, {
+      expectedResources: saga.cleanupResources,
+      onResourcesCaptured: async (cleanupResources) => {
+        saga = { ...saga, cleanupResources, updatedAt: new Date().toISOString() };
+        await upsertPlanLifecycleSaga(saga);
+      },
+    });
+    saga = { ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
+    await upsertPlanLifecycleSaga(saga);
 
     await deps.deleteArchitectPlan({
       branchName: params.branchName,
       planId: params.planId,
       hardDelete: params.hardDelete ?? true,
     });
-    await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_deleted', updatedAt: new Date().toISOString() });
+    saga = { ...saga, phase: 'metadata_deleted', updatedAt: new Date().toISOString() };
+    await upsertPlanLifecycleSaga(saga);
     await removePlanLifecycleSaga(
       params.planId,
       'delete',
@@ -1963,78 +2184,99 @@ export const createArchitectGitFlowService = (
     };
   };
 
+  const deletePlanAndCleanupBranchesWithDeps = async (
+    params: Parameters<typeof deletePlanAndCleanupBranchesUnlocked>[0],
+  ): ReturnType<typeof deletePlanAndCleanupBranchesUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      deletePlanAndCleanupBranchesUnlocked(params)
+    );
+
+  const resumePlanLifecycleSagaWithDeps = async (saga: PlanLifecycleSaga): Promise<void> => {
+    let currentSaga = saga;
+    try {
+      const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
+      if (saga.operation === 'archive') {
+        if (saga.phase === 'metadata_commit_pending') {
+          await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+          currentSaga = { ...saga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+          return;
+        }
+        if (saga.phase === 'metadata_committed' || !plan) {
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+          return;
+        }
+        const archived = plan.status === 'archived'
+          ? plan
+          : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
+        currentSaga = { ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() };
+        await upsertPlanLifecycleSaga(currentSaga);
+        await cleanupPlanBranchesInternalWithDeps(archived, undefined, {
+          expectedResources: currentSaga.cleanupResources,
+          onResourcesCaptured: async (cleanupResources) => {
+            currentSaga = { ...currentSaga, cleanupResources, updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
+          },
+        });
+        currentSaga = { ...currentSaga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
+        await upsertPlanLifecycleSaga(currentSaga);
+        if (saga.requiresMetadataCommit) {
+          currentSaga = { ...currentSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
+          await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+          currentSaga = { ...currentSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
+        }
+        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+        return;
+      }
+      if (!plan) {
+        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+        return;
+      }
+      if (plan.status === 'deleted') {
+        await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
+        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+        return;
+      }
+      const capabilities = getArchitectPlanCrudCapabilities(plan);
+      if (!capabilities.canDelete) {
+        throw new Error('Archive the plan before deleting it.');
+      }
+      if (capabilities.deleteRequiresCleanup) {
+        await cleanupPlanBranchesInternalWithDeps(plan, undefined, {
+          expectedResources: currentSaga.cleanupResources,
+          onResourcesCaptured: async (cleanupResources) => {
+            currentSaga = { ...currentSaga, cleanupResources, updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
+          },
+        });
+        currentSaga = { ...currentSaga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
+        await upsertPlanLifecycleSaga(currentSaga);
+      }
+      await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
+      await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+    } catch (error) {
+      if (error instanceof StalePlanLifecycleSagaError) return;
+      try {
+        await upsertPlanLifecycleSaga({
+          ...currentSaga,
+          updatedAt: new Date().toISOString(),
+          lastError: toServiceError(error).message,
+        });
+      } catch (journalError) {
+        if (!(journalError instanceof StalePlanLifecycleSagaError)) throw journalError;
+      }
+    }
+  };
+
   const resumePlanLifecycleSagasWithDeps = async (): Promise<void> => {
     const pending = await loadPlanLifecycleSagas();
     for (const saga of pending) {
-      let currentSaga = saga;
-      try {
-        const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
-        if (saga.operation === 'archive') {
-          if (saga.phase === 'metadata_commit_pending') {
-            await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
-            currentSaga = { ...saga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
-            await upsertPlanLifecycleSaga(currentSaga);
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
-            continue;
-          }
-          if (saga.phase === 'metadata_committed') {
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
-            continue;
-          }
-          if (!plan) {
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
-            continue;
-          }
-          const archived = plan.status === 'archived'
-            ? plan
-            : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
-          currentSaga = { ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() };
-          await upsertPlanLifecycleSaga(currentSaga);
-          await cleanupPlanBranchesWithDeps(archived);
-          currentSaga = { ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
-          await upsertPlanLifecycleSaga(currentSaga);
-          if (saga.requiresMetadataCommit) {
-            currentSaga = { ...currentSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() };
-            await upsertPlanLifecycleSaga(currentSaga);
-            await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
-            currentSaga = { ...currentSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
-            await upsertPlanLifecycleSaga(currentSaga);
-          }
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
-          continue;
-        }
-        if (!plan) {
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
-          continue;
-        }
-        if (plan.status === 'deleted') {
-          await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
-          continue;
-        }
-        const capabilities = getArchitectPlanCrudCapabilities(plan);
-        if (!capabilities.canDelete) {
-          throw new Error('Archive the plan before deleting it.');
-        }
-        if (capabilities.deleteRequiresCleanup) {
-          await cleanupPlanBranchesWithDeps(plan);
-          currentSaga = { ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
-          await upsertPlanLifecycleSaga(currentSaga);
-        }
-        await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
-        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
-      } catch (error) {
-        if (error instanceof StalePlanLifecycleSagaError) continue;
-        try {
-          await upsertPlanLifecycleSaga({
-            ...currentSaga,
-            updatedAt: new Date().toISOString(),
-            lastError: toServiceError(error).message,
-          });
-        } catch (journalError) {
-          if (!(journalError instanceof StalePlanLifecycleSagaError)) throw journalError;
-        }
-      }
+      await withPlanLifecycleLock(deps, saga.branchName, saga.planId, () =>
+        resumePlanLifecycleSagaWithDeps(saga)
+      );
     }
   };
 

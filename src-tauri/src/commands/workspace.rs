@@ -31,9 +31,12 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tauri::State;
 use tokio::sync::{watch, Mutex};
+
+static PLAN_LIFECYCLE_LEASES: OnceLock<StdMutex<HashMap<String, workspace::PlanLifecycleGuard>>> =
+    OnceLock::new();
 
 fn to_join_error(err: tokio::task::JoinError) -> BackendError {
     BackendError::Internal {
@@ -85,6 +88,41 @@ pub(crate) async fn resolve_metadata_root(
         }
         Err(error) => Err(error),
     }
+}
+
+#[tauri::command]
+pub async fn workspace_acquire_plan_lifecycle_lock(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    branch_name: String,
+    plan_id: String,
+) -> Result<String> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root = resolve_metadata_root(workspace_path, git_state.inner().clone()).await?;
+    let guard = workspace::lock_plan_lifecycle(&metadata_root, &branch_name, &plan_id).await?;
+    let lease_id = uuid::Uuid::new_v4().to_string();
+    PLAN_LIFECYCLE_LEASES
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(lease_id.clone(), guard);
+    Ok(lease_id)
+}
+
+#[tauri::command]
+pub fn workspace_release_plan_lifecycle_lock(lease_id: String) -> Result<()> {
+    let normalized = lease_id.trim();
+    if normalized.is_empty() {
+        return Err(BackendError::Validation(
+            "Le bail du cycle de vie du plan est invalide.".to_string(),
+        ));
+    }
+    PLAN_LIFECYCLE_LEASES
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(normalized);
+    Ok(())
 }
 
 async fn register_project_config_roots(

@@ -2298,6 +2298,7 @@ export async function gitBranchDelete(params: {
   force?: boolean;
   archiveTaskId?: string | null;
   archiveToken?: string | null;
+  expectedCommit?: string | null;
 }): Promise<void> {
   return invoke("git_branch_delete", {
     repoPath: params.repoPath,
@@ -2305,6 +2306,7 @@ export async function gitBranchDelete(params: {
     force: params.force ?? null,
     archiveTaskId: params.archiveTaskId ?? null,
     archiveToken: params.archiveToken ?? null,
+    expectedCommit: params.expectedCommit ?? null,
   });
 }
 
@@ -2708,6 +2710,8 @@ export async function gitWorktreeRemove(params: {
   branchName?: string | null;
   archiveTaskId?: string | null;
   archiveToken?: string | null;
+  expectedCommit?: string | null;
+  expectedWorktreePath?: string | null;
 }): Promise<GitWorktreeRemoveDto> {
   return invoke<GitWorktreeRemoveDto>("git_worktree_remove", {
     repoPath: params.repoPath,
@@ -2716,6 +2720,8 @@ export async function gitWorktreeRemove(params: {
     branchName: params.branchName ?? null,
     archiveTaskId: params.archiveTaskId ?? null,
     archiveToken: params.archiveToken ?? null,
+    expectedCommit: params.expectedCommit ?? null,
+    expectedWorktreePath: params.expectedWorktreePath ?? null,
   });
 }
 
@@ -2752,12 +2758,16 @@ export async function gitBranchWorktreeRemove(params: {
   worktreeKey: string;
   branchName: string;
   force?: boolean;
+  expectedCommit?: string | null;
+  expectedWorktreePath?: string | null;
 }): Promise<GitBranchWorktreeRemoveDto> {
   return invoke<GitBranchWorktreeRemoveDto>("git_branch_worktree_remove", {
     repoPath: params.repoPath,
     worktreeKey: params.worktreeKey,
     branchName: params.branchName,
     force: params.force ?? null,
+    expectedCommit: params.expectedCommit ?? null,
+    expectedWorktreePath: params.expectedWorktreePath ?? null,
   });
 }
 
@@ -3379,6 +3389,17 @@ export async function workspaceDeleteManualFeatureDraft(
   taskId: string,
 ): Promise<boolean> {
   return invoke<boolean>("workspace_delete_manual_feature_draft", { taskId });
+}
+
+export async function workspaceAcquirePlanLifecycleLock(params: {
+  branchName: string;
+  planId: string;
+}): Promise<string> {
+  return invoke<string>('workspace_acquire_plan_lifecycle_lock', params);
+}
+
+export async function workspaceReleasePlanLifecycleLock(leaseId: string): Promise<void> {
+  return invoke<void>('workspace_release_plan_lifecycle_lock', { leaseId });
 }
 
 export async function workspaceRenameManualFeature(params: {

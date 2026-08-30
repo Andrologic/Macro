@@ -25,6 +25,16 @@ export class StalePlanLifecycleSagaError extends Error {
 export type PlanLifecycleOperation = 'archive' | 'delete';
 export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
 
+export interface PlanLifecycleCleanupResource {
+  kind: 'branch' | 'worktree';
+  projectId: string;
+  repoPath: string;
+  branchName: string;
+  expectedCommit: string | null;
+  worktreeKey?: string;
+  expectedWorktreePath?: string;
+}
+
 export interface PlanLifecycleSaga {
   planId: string;
   branchName: string;
@@ -32,6 +42,7 @@ export interface PlanLifecycleSaga {
   phase: PlanLifecyclePhase;
   conversationId?: string | null;
   requiresMetadataCommit?: boolean;
+  cleanupResources?: PlanLifecycleCleanupResource[];
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -63,6 +74,18 @@ export interface PlanLifecycleSagaJournal {
   quarantined: PlanLifecycleSagaQuarantineEntry[];
 }
 
+const isCleanupResource = (value: unknown): value is PlanLifecycleCleanupResource => {
+  if (!value || typeof value !== 'object') return false;
+  const resource = value as Partial<PlanLifecycleCleanupResource>;
+  return (resource.kind === 'branch' || resource.kind === 'worktree') &&
+    typeof resource.projectId === 'string' &&
+    typeof resource.repoPath === 'string' &&
+    typeof resource.branchName === 'string' &&
+    (typeof resource.expectedCommit === 'string' || resource.expectedCommit === null) &&
+    (resource.worktreeKey === undefined || typeof resource.worktreeKey === 'string') &&
+    (resource.expectedWorktreePath === undefined || typeof resource.expectedWorktreePath === 'string');
+};
+
 const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   const saga = entry as Partial<PlanLifecycleSaga>;
   const allowedPhases: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
@@ -78,6 +101,9 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   if (saga.requiresMetadataCommit !== undefined && (saga.operation !== 'archive' || typeof saga.requiresMetadataCommit !== 'boolean')) {
     throw new PlanLifecycleSagaCorruptionError();
   }
+  if (saga.cleanupResources !== undefined && (
+    !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
+  )) throw new PlanLifecycleSagaCorruptionError();
   if (saga.operation === 'archive' && saga.requiresMetadataCommit === false &&
     (saga.phase === 'metadata_commit_pending' || saga.phase === 'metadata_committed')) {
     throw new PlanLifecycleSagaCorruptionError();
@@ -145,6 +171,9 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
       if (saga.requiresMetadataCommit !== undefined && (saga.operation !== 'archive' || typeof saga.requiresMetadataCommit !== 'boolean')) {
         throw new PlanLifecycleSagaCorruptionError();
       }
+      if (saga.cleanupResources !== undefined && (
+        !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
+      )) throw new PlanLifecycleSagaCorruptionError();
       if (
         saga.operation === 'archive' &&
         saga.requiresMetadataCommit === false &&
@@ -262,17 +291,23 @@ export const upsertPlanLifecycleSaga = async (
     (current) => {
       const sagas = parsePlanLifecycleSagas(current);
       const existing = sagas.find((entry) => getPlanLifecycleSagaKey(entry) === sagaKey);
+      let nextSaga = saga;
       if (existing) {
         const existingGeneration = getPlanLifecycleSagaGeneration(existing);
         if (existingGeneration !== generation) {
           if (existing.createdAt >= saga.createdAt) throw new StalePlanLifecycleSagaError();
         } else if (phaseOrder[saga.operation].indexOf(existing.phase) > phaseOrder[saga.operation].indexOf(saga.phase)) {
           throw new StalePlanLifecycleSagaError();
+        } else if (existing.cleanupResources) {
+          if (saga.cleanupResources && JSON.stringify(existing.cleanupResources) !== JSON.stringify(saga.cleanupResources)) {
+            throw new PlanLifecycleSagaCorruptionError();
+          }
+          nextSaga = { ...saga, cleanupResources: existing.cleanupResources };
         }
       }
       return JSON.stringify([
         ...sagas.filter((entry) => getPlanLifecycleSagaKey(entry) !== sagaKey),
-        saga,
+        nextSaga,
       ]);
     },
     transport,

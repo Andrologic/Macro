@@ -442,6 +442,8 @@ describe('architectGitFlowService replica integration', () => {
         gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
         gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
+        workspaceAcquirePlanLifecycleLock: async () => 'plan-lifecycle-lease',
+        workspaceReleasePlanLifecycleLock: async () => undefined,
       },
       getAppState: () => ({
         selectedGroupId: 'group-main',
@@ -522,6 +524,8 @@ describe('architectGitFlowService replica integration', () => {
         gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
         gitWorktreeRemove: gitWorktreeRemoveMock,
         gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
+        workspaceAcquirePlanLifecycleLock: async () => 'plan-lifecycle-lease',
+        workspaceReleasePlanLifecycleLock: async () => undefined,
       },
       getAppState: () => ({
         selectedGroupId: 'group-main',
