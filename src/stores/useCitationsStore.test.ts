@@ -92,6 +92,111 @@ describe('useCitationsStore', () => {
     ]);
   });
 
+  it('preserves a citation added while persisted citations are loading', async () => {
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    const addedId = useCitationsStore.getState().addCitation({
+      type: 'file',
+      scope: 'context',
+      source: 'README.md',
+      title: 'README.md',
+      path: 'README.md',
+      messageId: 'message-new',
+      conversationId: 'chat-conv',
+    });
+
+    finishHydration?.([
+      {
+        id: 'cite-db',
+        conversation_id: 'chat-conv',
+        message_id: 'message-old',
+        type: 'source_passage',
+        scope: 'source',
+        source: 'notes.md',
+        title: 'Persisted source',
+        snippet: 'Persisted passage',
+        content: null,
+        url: null,
+        favicon: null,
+        path: null,
+        language: null,
+        size_bytes: null,
+        kind: 'used',
+        reason: null,
+        created_at: '2026-07-04T12:00:00Z',
+        updated_at: '2026-07-04T12:01:00Z',
+      },
+    ]);
+    await hydration;
+
+    expect(useCitationsStore.getState().citations.map((citation) => citation.id)).toEqual([
+      'cite-db',
+      addedId,
+    ]);
+  });
+
+  it('does not restore a citation removed while persisted citations are loading', async () => {
+    const existing = {
+      id: 'cite-db',
+      type: 'source_passage' as const,
+      scope: 'source' as const,
+      source: 'notes.md',
+      title: 'Persisted source',
+      snippet: 'Persisted passage',
+      messageId: 'message-old',
+      conversationId: 'chat-conv',
+      timestamp: '2026-07-04T12:01:00Z',
+      kind: 'used' as const,
+    };
+    useCitationsStore.setState({ citations: [existing] });
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    useCitationsStore.getState().removeCitation(existing.id);
+    finishHydration?.([
+      {
+        id: existing.id,
+        conversation_id: existing.conversationId,
+        message_id: existing.messageId,
+        type: existing.type,
+        scope: existing.scope,
+        source: existing.source,
+        title: existing.title,
+        snippet: existing.snippet,
+        content: null,
+        url: null,
+        favicon: null,
+        path: null,
+        language: null,
+        size_bytes: null,
+        kind: existing.kind,
+        reason: null,
+        created_at: existing.timestamp,
+        updated_at: existing.timestamp,
+      },
+    ]);
+    await hydration;
+
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
   it('loads full citation content lazily when requested', async () => {
     listConversationCitationsMock.mockImplementationOnce(async () => [
       {
@@ -177,6 +282,37 @@ describe('useCitationsStore', () => {
         favicon: 'data:image/png;base64,abc',
       }),
     );
+  });
+
+  it('deletes a citation only after its older upsert finishes', async () => {
+    let finishUpsert: (() => void) | undefined;
+    upsertConversationCitationMock.mockImplementationOnce(async (input) => {
+      await new Promise<void>((resolve) => {
+        finishUpsert = resolve;
+      });
+      return input;
+    });
+
+    const id = useCitationsStore.getState().addCitation({
+      type: 'file',
+      scope: 'context',
+      source: 'README.md',
+      title: 'README.md',
+      path: 'README.md',
+      messageId: 'message-1',
+      conversationId: 'chat-conv',
+    });
+    await Promise.resolve();
+    useCitationsStore.getState().removeCitation(id);
+    await Promise.resolve();
+
+    expect(deleteConversationCitationMock).not.toHaveBeenCalled();
+
+    finishUpsert?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(deleteConversationCitationMock).toHaveBeenCalledWith(id);
+    expect(useCitationsStore.getState().citations).toEqual([]);
   });
 
   it('awaits durable citation persistence before resolving', async () => {

@@ -440,6 +440,73 @@ export const registerSendRuntimeAndDeletionScenarios = (
       updateMessageMock.mockImplementation(async () => undefined);
     });
 
+    it('ignores an older assistant persistence failure after a newer stream starts', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const releaseOldPersistence = createDeferred<void>();
+      const releaseNewStream = createDeferred<void>();
+      updateMessageMock.mockImplementation(async (_id, content) => {
+        if (content === 'Old response') {
+          await releaseOldPersistence.promise;
+          throw new Error('stale assistant write failed');
+        }
+      });
+      streamChatMock
+        .mockImplementationOnce((async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as {
+            onComplete?: (result: {
+              visibleContent: string;
+              toolTraces: unknown[];
+            }) => void;
+          };
+          options.onComplete?.({
+            visibleContent: 'Old response',
+            toolTraces: [],
+          });
+        }) as unknown as typeof streamChatMock)
+        .mockImplementationOnce((async () => releaseNewStream.promise) as unknown as typeof streamChatMock);
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [createConversation('chat-conv', '')],
+        messages: [],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        isLoading: false,
+        isStreaming: false,
+        sendState: 'idle',
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'First request',
+      });
+      await flushAsyncWork();
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Second request',
+      });
+      await flushAsyncWork();
+      expect(useChatStore.getState().sendState).toBe('streaming');
+
+      releaseOldPersistence.resolve();
+      await flushAsyncWork();
+
+      expect(useChatStore.getState().sendState).toBe('streaming');
+      expect(useChatStore.getState().lastError).toBeNull();
+      expect(useChatStore.getState().conversationRuntimeById['chat-conv']?.phase).toBe(
+        'streaming',
+      );
+
+      releaseNewStream.resolve();
+      await flushAsyncWork();
+      updateMessageMock.mockImplementation(async () => undefined);
+    });
+
     it('marks an exhausted incomplete recovery as an error for its owning session', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';
@@ -1110,7 +1177,11 @@ export const registerSendRuntimeAndDeletionScenarios = (
       context.tauriAvailable = true;
       appState.mode = 'Chat';
       const deletion = createDeferred<undefined>();
-      deleteConversationMock.mockImplementationOnce(async () => deletion.promise);
+      const streamController = new AbortController();
+      deleteConversationMock.mockImplementationOnce(async () => {
+        expect(streamController.signal.aborted).toBe(true);
+        return deletion.promise;
+      });
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(createIdleChatStoreState({
         conversations: [
@@ -1118,10 +1189,22 @@ export const registerSendRuntimeAndDeletionScenarios = (
         ],
         selectedConversationId: 'chat-1',
         selectedConversationIdsByMode: { Chat: 'chat-1' },
+        conversationRuntimeById: {
+          'chat-1': {
+            phase: 'streaming',
+            sessionId: 'session-1',
+            turnId: 'turn-1',
+            assistantMessageId: 'assistant-1',
+            abortController: streamController,
+            lastError: null,
+          },
+        },
       }));
 
       const deletionPromise = useChatStore.getState().deleteConversation('chat-1');
       await Promise.resolve();
+
+      expect(streamController.signal.aborted).toBe(true);
 
       await expect(
         useChatStore.getState().sendMessage({

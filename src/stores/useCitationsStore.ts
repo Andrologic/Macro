@@ -148,58 +148,129 @@ const persistCitation = async (citation: Citation): Promise<void> => {
 };
 
 const citationPersistencePromisesById = new Map<string, Promise<void>>();
+const citationPersistenceTailsByConversationId = new Map<string, Promise<void>>();
 
-const persistCitationAsync = (citation: Citation): void => {
-  const persistence = persistCitation(citation);
-  citationPersistencePromisesById.set(citation.id, persistence);
-  void persistence.catch((error) => {
-    console.warn('[citations] Failed to persist citation:', error);
-  });
+const enqueueCitationPersistence = (
+  conversationId: string,
+  citationId: string | null,
+  operation: () => Promise<void>,
+): Promise<void> => {
+  const previous = citationPersistenceTailsByConversationId.get(conversationId);
+  const persistence = previous
+    ? previous.catch(() => undefined).then(operation)
+    : operation();
+  citationPersistenceTailsByConversationId.set(conversationId, persistence);
+  if (citationId) {
+    citationPersistencePromisesById.set(citationId, persistence);
+  }
   void persistence.then(
     () => {
-      if (citationPersistencePromisesById.get(citation.id) === persistence) {
-        citationPersistencePromisesById.delete(citation.id);
+      if (citationPersistenceTailsByConversationId.get(conversationId) === persistence) {
+        citationPersistenceTailsByConversationId.delete(conversationId);
+      }
+      if (citationId && citationPersistencePromisesById.get(citationId) === persistence) {
+        citationPersistencePromisesById.delete(citationId);
       }
     },
     () => {
-      if (citationPersistencePromisesById.get(citation.id) === persistence) {
-        citationPersistencePromisesById.delete(citation.id);
+      if (citationPersistenceTailsByConversationId.get(conversationId) === persistence) {
+        citationPersistenceTailsByConversationId.delete(conversationId);
+      }
+      if (citationId && citationPersistencePromisesById.get(citationId) === persistence) {
+        citationPersistencePromisesById.delete(citationId);
       }
     },
   );
+  return persistence;
 };
 
-const deletePersistedCitationAsync = (id: string): void => {
+const persistCitationAsync = (citation: Citation): void => {
+  const persistence = enqueueCitationPersistence(
+    citation.conversationId,
+    citation.id,
+    () => persistCitation(citation),
+  );
+  void persistence.catch((error) => {
+    console.warn('[citations] Failed to persist citation:', error);
+  });
+};
+
+const deletePersistedCitationAsync = (id: string, conversationId?: string): void => {
   if (!tauriIpc.isTauriAvailable()) return;
-  void tauriIpc.deleteConversationCitation(id).catch((error) => {
+  const persistence = conversationId
+    ? enqueueCitationPersistence(
+        conversationId,
+        id,
+        () => tauriIpc.deleteConversationCitation(id),
+      )
+    : tauriIpc.deleteConversationCitation(id);
+  void persistence.catch((error) => {
     console.warn('[citations] Failed to delete persisted citation:', error);
   });
 };
 
 const deletePersistedConversationCitationsAsync = (conversationId: string): void => {
   if (!tauriIpc.isTauriAvailable()) return;
-  void tauriIpc.deleteConversationCitations(conversationId).catch((error) => {
+  const persistence = enqueueCitationPersistence(
+    conversationId,
+    null,
+    () => tauriIpc.deleteConversationCitations(conversationId),
+  );
+  void persistence.catch((error) => {
     console.warn('[citations] Failed to delete persisted conversation citations:', error);
   });
 };
 
 const contentLoadPromisesByCitationId = new Map<string, Promise<Citation | null>>();
+const citationHydrationRequestIdsByConversationId = new Map<string, number>();
+let nextCitationHydrationRequestId = 0;
 
 export const useCitationsStore = create<CitationsState>((set, get) => ({
   citations: [],
 
   hydrateConversationCitations: async (conversationId) => {
     if (!tauriIpc.isTauriAvailable()) return;
+    const requestId = ++nextCitationHydrationRequestId;
+    citationHydrationRequestIdsByConversationId.set(conversationId, requestId);
+    const citationsAtStart = new Map(
+      get().citations
+        .filter((citation) => citation.conversationId === conversationId)
+        .map((citation) => [citation.id, citation]),
+    );
     try {
       const loaded = (await tauriIpc.listConversationCitations(conversationId))
         .map(mapDbCitation)
         .filter((citation): citation is Citation => Boolean(citation));
-      set((state) => ({
-        citations: [
-          ...state.citations.filter((citation) => citation.conversationId !== conversationId),
-          ...loaded,
-        ],
-      }));
+      if (citationHydrationRequestIdsByConversationId.get(conversationId) !== requestId) {
+        return;
+      }
+      set((state) => {
+        const currentConversationCitations = state.citations.filter(
+          (citation) => citation.conversationId === conversationId,
+        );
+        const currentById = new Map(
+          currentConversationCitations.map((citation) => [citation.id, citation]),
+        );
+        const locallyChanged = currentConversationCitations.filter((citation) => {
+          const citationAtStart = citationsAtStart.get(citation.id);
+          return !citationAtStart || citationAtStart !== citation;
+        });
+        const locallyChangedIds = new Set(locallyChanged.map((citation) => citation.id));
+        const hydrated = loaded.filter((citation) => {
+          const citationAtStart = citationsAtStart.get(citation.id);
+          if (!citationAtStart) {
+            return !locallyChangedIds.has(citation.id);
+          }
+          return currentById.get(citation.id) === citationAtStart;
+        });
+        return {
+          citations: [
+            ...state.citations.filter((citation) => citation.conversationId !== conversationId),
+            ...hydrated,
+            ...locallyChanged,
+          ],
+        };
+      });
     } catch (error) {
       console.warn('[citations] Failed to hydrate conversation citations:', error);
     }
@@ -449,10 +520,11 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
   },
 
   removeCitation: (id) => {
+    const removed = get().citations.find((citation) => citation.id === id);
     set((state) => ({
       citations: state.citations.filter((c) => c.id !== id),
     }));
-    deletePersistedCitationAsync(id);
+    deletePersistedCitationAsync(id, removed?.conversationId);
   },
 
   clearConversationCitations: (conversationId) => {
@@ -473,24 +545,28 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
 
   pruneConversationCitations: (conversationId, keepMessageIds) => {
     const keepSet = new Set(keepMessageIds);
-    const removedIds = get().citations
+    const removed = get().citations
       .filter((citation) =>
         citation.conversationId === conversationId && !keepSet.has(citation.messageId),
-      )
-      .map((citation) => citation.id);
+      );
     set((state) => ({
       citations: state.citations.filter((citation) =>
         citation.conversationId !== conversationId || keepSet.has(citation.messageId),
       ),
     }));
-    removedIds.forEach(deletePersistedCitationAsync);
+    removed.forEach((citation) => {
+      deletePersistedCitationAsync(citation.id, citation.conversationId);
+    });
   },
 
   pruneConversationSourceCitations: (conversationId, keepMessageIds) => {
     const keepSet = new Set(keepMessageIds);
-    const removedIds = get().citations
-      .filter((c) => c.conversationId === conversationId && c.scope === 'source' && !keepSet.has(c.messageId))
-      .map((citation) => citation.id);
+    const removed = get().citations.filter(
+      (citation) =>
+        citation.conversationId === conversationId &&
+        citation.scope === 'source' &&
+        !keepSet.has(citation.messageId),
+    );
     set((state) => ({
       citations: state.citations.filter((c) => {
         if (c.conversationId !== conversationId) return true;
@@ -499,7 +575,9 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
         return true;
       }),
     }));
-    removedIds.forEach(deletePersistedCitationAsync);
+    removed.forEach((citation) => {
+      deletePersistedCitationAsync(citation.id, citation.conversationId);
+    });
   },
 
   getConversationCitations: (conversationId) => {

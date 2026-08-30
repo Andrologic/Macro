@@ -1477,6 +1477,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const pendingSteersByConversationId = new Map<string, StreamMessage[]>();
   const queuedSubmissionsByConversationId = new Map<string, ComposerSubmissionPayload[]>();
   const drainingQueuedConversationIds = new Set<string>();
+  const toolboxPersistenceTailsByConversationId = new Map<string, Promise<void>>();
   const completionPersistenceOwnersByConversationId = new Map<
     string,
     { sessionId: string; turnId: string | null; assistantMessageId: string }
@@ -6525,6 +6526,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
+  const enqueueToolboxPersistence = (
+    conversationId: string,
+    operation: () => Promise<void>,
+  ): Promise<void> => {
+    const previous = toolboxPersistenceTailsByConversationId.get(conversationId);
+    const persistence = (previous ? previous.catch(() => undefined) : Promise.resolve())
+      .then(operation);
+    toolboxPersistenceTailsByConversationId.set(conversationId, persistence);
+    void persistence.then(
+      () => {
+        if (toolboxPersistenceTailsByConversationId.get(conversationId) === persistence) {
+          toolboxPersistenceTailsByConversationId.delete(conversationId);
+        }
+      },
+      () => {
+        if (toolboxPersistenceTailsByConversationId.get(conversationId) === persistence) {
+          toolboxPersistenceTailsByConversationId.delete(conversationId);
+        }
+      },
+    );
+    return persistence;
+  };
+
+  const waitForToolboxPersistence = async (conversationId: string): Promise<void> => {
+    while (true) {
+      const pending = toolboxPersistenceTailsByConversationId.get(conversationId);
+      if (!pending) return;
+      await pending.catch(() => undefined);
+    }
+  };
+
   const persistComposerContextRefsForConversation = (
     conversationId: string | null | undefined,
     refs: ContextReference[],
@@ -6532,7 +6564,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!conversationId || !tauriIpc.isTauriAvailable()) return;
 
     const persistedRefs = persistableContextRefs(refs) ?? [];
-    const persist = async () => {
+    const persistence = enqueueToolboxPersistence(conversationId, async () => {
       if (persistedRefs.length === 0) {
         if (typeof tauriIpc.deleteConversationToolboxState === "function") {
           await tauriIpc.deleteConversationToolboxState(conversationId);
@@ -6546,9 +6578,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           timestamp: new Date().toISOString(),
         });
       }
-    };
+    });
 
-    void persist().catch((error) => {
+    void persistence.catch((error) => {
       console.warn("[chat] Failed to persist toolbox state:", error);
     });
   };
@@ -6575,7 +6607,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ): Promise<void> => {
     if (!tauriIpc.isTauriAvailable()) return;
     if (typeof tauriIpc.deleteConversationToolboxState !== "function") return;
-    await tauriIpc.deleteConversationToolboxState(conversationId);
+    await enqueueToolboxPersistence(conversationId, () =>
+      tauriIpc.deleteConversationToolboxState(conversationId),
+    );
   };
 
   const beginStandaloneConversationDeletionSaga = async (
@@ -6607,8 +6641,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
     try {
+      await waitForToolboxPersistence(conversationId);
+      const revisionBeforeRead = composerContextRefsRevision;
       const record = await tauriIpc.getConversationToolboxState(conversationId);
-      if (get().selectedConversationId !== conversationId) {
+      if (
+        get().selectedConversationId !== conversationId ||
+        composerContextRefsRevision !== revisionBeforeRead
+      ) {
         return;
       }
       const persistedRefs = parsePersistedContextRefsJson(
@@ -14536,6 +14575,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingConversationDeletionIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
+      stopConversationRuntimeLocally(conversationId);
       try {
         await prepareConversationReplayForDeletion(conversationId);
         await beginStandaloneConversationDeletionSaga(conversationId);
@@ -14567,7 +14607,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           cleanupFailures.push(`${label}: ${toServiceError(error).message}`);
         }
       };
-      stopConversationRuntimeLocally(conversationId);
       await runCleanup("toolbox", () =>
         deleteConversationToolboxStateIfAvailable(conversationId),
       );
@@ -14621,6 +14660,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         pendingConversationDeletionIds.add(conversationId);
         latestConversationSessionIdByConversationId.delete(conversationId);
         completionPersistenceOwnersByConversationId.delete(conversationId);
+        stopConversationRuntimeLocally(conversationId);
       });
       try {
         for (const conversationId of uniqueIds) {
@@ -14639,9 +14679,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
         persistedDeletionCommitted = true;
-        uniqueIds.forEach((conversationId) => {
-          stopConversationRuntimeLocally(conversationId);
-        });
         const cleanupFailures: string[] = [];
         await Promise.all(
           uniqueIds.map(async (conversationId) => {
@@ -14716,6 +14753,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       deletedConversationIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
+      stopConversationRuntimeLocally(conversationId);
       try {
         await prepareConversationReplayForDeletion(conversationId);
       } catch (error) {
