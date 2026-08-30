@@ -282,6 +282,11 @@ impl WindowsLaunchGate {
         command.env("MACRO_TERMINAL_READY_GATE", &self.ready_name);
     }
 
+    fn apply_tokio(&self, command: &mut tokio::process::Command) {
+        command.env("MACRO_TERMINAL_START_GATE", &self.start_name);
+        command.env("MACRO_TERMINAL_READY_GATE", &self.ready_name);
+    }
+
     fn release(&self) -> CommandResult<()> {
         match unsafe { WaitForSingleObject(self.ready_handle, 5_000) } {
             WAIT_OBJECT_0 => {}
@@ -2047,32 +2052,39 @@ async fn get_persisted_tab_record(
         .ok_or_else(|| command_error(format!("Unknown terminal tab id: {}", tab_id)))
 }
 
-fn build_shell_command_compat(command: &str, cwd: &Path) -> tokio::process::Command {
-    #[cfg(windows)]
-    let mut process = {
-        let mut process = background_tokio_command("powershell");
-        process.args(["-NoLogo", "-NoProfile", "-Command", command]);
-        process
-    };
-
-    #[cfg(not(windows))]
-    let mut process = {
-        let mut process = background_tokio_command("bash");
-        process.args(["-lc", command]);
-        process
-    };
-
+#[cfg(windows)]
+fn build_shell_command_compat(
+    command: &str,
+    cwd: &Path,
+) -> CommandResult<(tokio::process::Command, WindowsLaunchGate)> {
+    let gate = WindowsLaunchGate::new()?;
+    let mut process = background_tokio_command("powershell");
+    process.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        &gated_powershell_script(command),
+    ]);
     process
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    gate.apply_tokio(&mut process);
+    Ok((process, gate))
+}
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        process.as_std_mut().process_group(0);
-    }
+#[cfg(not(windows))]
+fn build_shell_command_compat(command: &str, cwd: &Path) -> tokio::process::Command {
+    let mut process = background_tokio_command("bash");
+    process.args(["-lc", command]);
+    process
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    use std::os::unix::process::CommandExt;
+    process.as_std_mut().process_group(0);
     process
 }
 
@@ -2984,6 +2996,22 @@ impl Drop for LegacySessionRunGuard {
     }
 }
 
+async fn mark_legacy_session_start_failed(terminal_store: &TerminalSessionStore, session_id: &str) {
+    let mut sessions = terminal_store.legacy_sessions.lock().await;
+    if let Some(session) = sessions.get_mut(session_id) {
+        session.status = "failed".to_string();
+        session.pid = None;
+        session.run_in_progress = false;
+        session.kill_requested = false;
+        session.active_execution_id = None;
+        #[cfg(windows)]
+        {
+            session.windows_job = None;
+        }
+        session.updated_at = current_timestamp();
+    }
+}
+
 #[cfg(windows)]
 struct LegacyProcessGroupGuard {
     job: Option<Arc<WindowsJob>>,
@@ -3183,16 +3211,22 @@ pub async fn run_legacy_session_internal(
     let mut session_run_guard =
         LegacySessionRunGuard::new(terminal_store.clone(), session_id.clone());
 
-    let mut child = match build_shell_command_compat(trimmed_command, &cwd).spawn() {
+    #[cfg(windows)]
+    let (mut process, launch_gate) = match build_shell_command_compat(trimmed_command, &cwd) {
+        Ok(command) => command,
+        Err(error) => {
+            mark_legacy_session_start_failed(&terminal_store, &session_id).await;
+            session_run_guard.disarm();
+            return Err(error);
+        }
+    };
+    #[cfg(not(windows))]
+    let mut process = build_shell_command_compat(trimmed_command, &cwd);
+
+    let mut child = match process.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let mut sessions = terminal_store.legacy_sessions.lock().await;
-            if let Some(session) = sessions.get_mut(&session_id) {
-                session.status = "failed".to_string();
-                session.run_in_progress = false;
-                session.active_execution_id = None;
-                session.updated_at = current_timestamp();
-            }
+            mark_legacy_session_start_failed(&terminal_store, &session_id).await;
             session_run_guard.disarm();
             return Err(command_error(format!(
                 "Failed to start terminal command: {}",
@@ -3207,13 +3241,7 @@ pub async fn run_legacy_session_internal(
         Err(error) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            let mut sessions = terminal_store.legacy_sessions.lock().await;
-            if let Some(session) = sessions.get_mut(&session_id) {
-                session.status = "failed".to_string();
-                session.run_in_progress = false;
-                session.active_execution_id = None;
-                session.updated_at = current_timestamp();
-            }
+            mark_legacy_session_start_failed(&terminal_store, &session_id).await;
             session_run_guard.disarm();
             return Err(error);
         }
@@ -3247,6 +3275,17 @@ pub async fn run_legacy_session_internal(
 
     let normalized_timeout_ms = normalize_legacy_timeout_ms(timeout_ms);
     let mut timed_out = false;
+    #[cfg(windows)]
+    if !kill_requested_before_registration {
+        if let Err(error) = launch_gate.release() {
+            let _ = stop_legacy_child_tree(&mut child, windows_job.clone()).await;
+            let _ = finish_child_output(stdout_task, stderr_task, output).await;
+            process_guard.disarm();
+            mark_legacy_session_start_failed(&terminal_store, &session_id).await;
+            session_run_guard.disarm();
+            return Err(error);
+        }
+    }
     let exit_status = if kill_requested_before_registration {
         #[cfg(not(windows))]
         let stopped = stop_legacy_child_tree(&mut child, pid).await?;
@@ -3740,17 +3779,23 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn terminating_a_windows_job_removes_descendants() {
+    async fn legacy_terminal_launch_is_gated_and_job_removes_descendants() {
         let temp = TempDir::new().expect("temp dir");
         let child_pid_path = temp.path().join("child.pid");
         let script = format!(
             "$child = Start-Process powershell -PassThru -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30'; Set-Content -NoNewline -Path '{}' -Value $child.Id; Wait-Process -Id $child.Id",
             child_pid_path.display()
         );
-        let mut command = background_tokio_command("powershell");
-        command.args(["-NoProfile", "-Command", &script]);
+        let (mut command, launch_gate) =
+            build_shell_command_compat(&script, temp.path()).expect("gated legacy command");
         let mut child = command.spawn().expect("spawn job root");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !child_pid_path.exists(),
+            "legacy terminal command ran before Job Object assignment"
+        );
         let job = WindowsJob::assign(&child).expect("assign Windows Job Object");
+        launch_gate.release().expect("release legacy launch gate");
 
         let mut descendant_pid = None;
         for _ in 0..100 {
