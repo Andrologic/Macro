@@ -256,11 +256,22 @@ const mergeCleanupSagaProgress = (
   }),
 });
 
-export const upsertArchivedTaskCleanupSaga = async (
+const persistArchivedTaskCleanupSaga = async (
   saga: ArchivedTaskCleanupSaga,
-  transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
+  transport: ArchivedTaskCleanupJournalTransport,
+  startNewGeneration: boolean,
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
+  if (startNewGeneration && saga.generation !== undefined) {
+    throw new StaleArchivedTaskCleanupError();
+  }
+  const completionIdentity = { ...saga };
+  if (
+    !startNewGeneration &&
+    registryCompletesSaga(await loadCompletedRegistry(transport), completionIdentity)
+  ) {
+    throw new StaleArchivedTaskCleanupError();
+  }
   if (!isDurableGeneration(saga.generation)) {
     saga.generation = await allocateDurableGeneration({
       settingKey: GENERATION_COUNTER_KEY,
@@ -268,12 +279,17 @@ export const upsertArchivedTaskCleanupSaga = async (
       transport,
     });
   }
-  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
+  const completedAfterAllocation = await loadCompletedRegistry(transport);
+  if (
+    (!startNewGeneration && registryCompletesSaga(completedAfterAllocation, completionIdentity)) ||
+    registryCompletesSaga(completedAfterAllocation, saga)
+  ) {
     throw new StaleArchivedTaskCleanupError();
   }
   await mutateArchivedTaskCleanupSagas(
     (current) => {
       const existing = current.find((entry) => entry.taskId === saga.taskId);
+      if (existing && startNewGeneration) throw new StaleArchivedTaskCleanupError();
       if (existing && existing.operationId !== saga.operationId) {
         if (
           isDurableGeneration(existing.generation) &&
@@ -291,7 +307,11 @@ export const upsertArchivedTaskCleanupSaga = async (
     },
     transport,
   );
-  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
+  const completedAfterUpsert = await loadCompletedRegistry(transport);
+  if (
+    (!startNewGeneration && registryCompletesSaga(completedAfterUpsert, completionIdentity)) ||
+    registryCompletesSaga(completedAfterUpsert, saga)
+  ) {
     await mutateArchivedTaskCleanupSagas(
       (current) => current.filter((entry) => entry.operationId !== saga.operationId),
       transport,
@@ -299,6 +319,16 @@ export const upsertArchivedTaskCleanupSaga = async (
     throw new StaleArchivedTaskCleanupError();
   }
 };
+
+export const startArchivedTaskCleanupSaga = async (
+  saga: ArchivedTaskCleanupSaga,
+  transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
+): Promise<void> => persistArchivedTaskCleanupSaga(saga, transport, true);
+
+export const upsertArchivedTaskCleanupSaga = async (
+  saga: ArchivedTaskCleanupSaga,
+  transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
+): Promise<void> => persistArchivedTaskCleanupSaga(saga, transport, false);
 
 export const removeArchivedTaskCleanupSaga = async (
   taskId: string,

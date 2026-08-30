@@ -89,6 +89,7 @@ import type { ArchivedTaskCleanupSaga } from '../../services/archivedTaskCleanup
 import {
   getLinkedDeletionSagaGeneration,
   removeLinkedTaskDeletionSaga,
+  startLinkedTaskDeletionSaga,
   upsertLinkedTaskDeletionSaga,
   type LinkedTaskDeletionSaga,
 } from '../../services/linkedTaskDeletionSaga';
@@ -947,7 +948,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         createdAt: now,
         updatedAt: now,
       };
-      await upsertLinkedTaskDeletionSaga(preparedCleanupSaga);
+      await startLinkedTaskDeletionSaga(preparedCleanupSaga);
       cleanupSaga = preparedCleanupSaga;
       draftCreationStarted = true;
       await createManualFeatureDraft({

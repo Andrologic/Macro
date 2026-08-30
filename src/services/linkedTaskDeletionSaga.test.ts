@@ -180,6 +180,67 @@ describe('linkedTaskDeletionSaga', () => {
     expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
+  it('does not convert and resurrect a completed historical linked deletion', async () => {
+    const values = new Map<string, string>();
+    const transport: LinkedTaskDeletionSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const historical: LinkedConversationDeletionSaga = {
+      ownerType: 'task',
+      ownerId: 'historical-task',
+      conversationId: 'historical-conversation',
+      phase: 'task_deleted',
+      targetBranch: 'feature/historical-task',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:01.000Z',
+    };
+    values.set('pendingLinkedTaskDeletions:v1', JSON.stringify([historical]));
+    await sagaService.removeLinkedConversationDeletionSaga(
+      historical.ownerType,
+      historical.ownerId,
+      historical.targetBranch,
+      sagaService.getLinkedDeletionSagaGeneration(historical),
+      transport,
+    );
+
+    await expect(sagaService.upsertLinkedConversationDeletionSaga(historical, transport))
+      .rejects.toBeInstanceOf(sagaService.StaleLinkedTaskDeletionSagaError);
+
+    expect(historical.generation).toBeUndefined();
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+
+    const fresh: LinkedConversationDeletionSaga = {
+      ...historical,
+      conversationId: 'fresh-conversation',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    };
+    await sagaService.startLinkedConversationDeletionSaga(fresh, transport);
+    expect(fresh.generation).toBe(1);
+
+    const competing = {
+      ...fresh,
+      generation: undefined,
+      conversationId: 'competing-conversation',
+      createdAt: '2030-01-01T00:00:00.000Z',
+      updatedAt: '2030-01-01T00:00:00.000Z',
+    };
+    await expect(sagaService.startLinkedConversationDeletionSaga(competing, transport))
+      .rejects.toBeInstanceOf(sagaService.StaleLinkedTaskDeletionSagaError);
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([fresh]);
+  });
+
   it('keeps durable high-water marks after more than 512 completed owner identities', async () => {
     const values = new Map<string, string>();
     const transport: LinkedTaskDeletionSagaTransport = {
@@ -267,7 +328,7 @@ describe('linkedTaskDeletionSaga', () => {
       updatedAt: '2020-01-01T00:00:00.000Z',
     };
 
-    await sagaService.upsertLinkedConversationDeletionSaga(second, transport);
+    await sagaService.startLinkedConversationDeletionSaga(second, transport);
 
     expect(second.generation).toBe(2);
     expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([second]);

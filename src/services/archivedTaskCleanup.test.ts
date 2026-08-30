@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   removeArchivedTaskCleanupSaga,
+  startArchivedTaskCleanupSaga,
   StaleArchivedTaskCleanupError,
   upsertArchivedTaskCleanupSaga,
   type ArchivedTaskCleanupJournalTransport,
@@ -101,9 +102,65 @@ describe('archivedTaskCleanup', () => {
       operationId: 'archive-after-clock-rollback',
       createdAt: '2010-01-01T00:00:00.000Z',
     };
-    await upsertArchivedTaskCleanupSaga(afterClockRollback, transport);
+    await startArchivedTaskCleanupSaga(afterClockRollback, transport);
     expect(afterClockRollback.generation).toBe(3);
     expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([afterClockRollback]);
+  });
+
+  it('does not convert and resurrect a completed historical cleanup', async () => {
+    const settings = new Map<string, string>();
+    const transport: ArchivedTaskCleanupJournalTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const value = settings.get(key);
+        return value === undefined
+          ? null
+          : { key, value_json: value, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((settings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        settings.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const historical = {
+      ...saga('historical-task'),
+      operationId: 'historical-operation',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:01.000Z',
+    };
+    settings.set(CLEANUP_KEY, JSON.stringify([historical]));
+    await removeArchivedTaskCleanupSaga(
+      historical.taskId,
+      historical.operationId,
+      transport,
+    );
+
+    await expect(upsertArchivedTaskCleanupSaga(historical, transport))
+      .rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
+
+    expect(historical.generation).toBeUndefined();
+    expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([]);
+
+    const fresh = {
+      ...historical,
+      operationId: 'fresh-operation',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    };
+    await startArchivedTaskCleanupSaga(fresh, transport);
+    expect(fresh.generation).toBe(1);
+
+    const competing = {
+      ...fresh,
+      generation: undefined,
+      operationId: 'competing-operation',
+      createdAt: '2030-01-01T00:00:00.000Z',
+      updatedAt: '2030-01-01T00:00:00.000Z',
+    };
+    await expect(startArchivedTaskCleanupSaga(competing, transport))
+      .rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
+    expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([fresh]);
   });
 
   it('keeps durable high-water marks after more than 256 completed task identities', async () => {

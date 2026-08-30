@@ -81,7 +81,8 @@ import { useChatStore } from '../../stores/useChatStore';
 import {
   getLinkedDeletionSagaGeneration,
   removeLinkedConversationDeletionSaga,
-  upsertLinkedConversationDeletionSaga,
+  startLinkedConversationDeletionSaga,
+  type LinkedConversationDeletionSaga,
 } from '../../services/linkedTaskDeletionSaga';
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
@@ -1088,7 +1089,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
       if (currentPlan.conversationId) {
         const now = new Date().toISOString();
-        const linkedDeletionSaga = {
+        const linkedDeletionSaga: LinkedConversationDeletionSaga = {
           ownerType: 'plan',
           ownerId: deletedPlanId,
           conversationId: currentPlan.conversationId,
@@ -1096,9 +1097,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           targetBranch: storageBranch,
           createdAt: now,
           updatedAt: now,
-        } as const;
+        };
+        await startLinkedConversationDeletionSaga(linkedDeletionSaga);
         linkedConversationCleanupGeneration = getLinkedDeletionSagaGeneration(linkedDeletionSaga);
-        await upsertLinkedConversationDeletionSaga(linkedDeletionSaga);
       }
       const cleanup = await deletePlanAndCleanupBranches({
         branchName: storageBranch,

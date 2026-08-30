@@ -30,6 +30,7 @@ import {
   getLinkedDeletionSagaGeneration,
   loadLinkedTaskDeletionSagas,
   removeLinkedTaskDeletionSaga,
+  startLinkedTaskDeletionSaga,
   upsertLinkedTaskDeletionSaga,
   type LinkedTaskDeletionSaga,
   type LinkedTaskDeletionTarget,
@@ -38,6 +39,7 @@ import {
   archivedTaskCleanupIsComplete,
   loadArchivedTaskCleanupSagas,
   removeArchivedTaskCleanupSaga,
+  startArchivedTaskCleanupSaga,
   upsertArchivedTaskCleanupSaga,
   type ArchivedTaskCleanupSaga,
   type ArchivedTaskCleanupTarget,
@@ -3666,7 +3668,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           createdAt: now,
           updatedAt: now,
         };
-        await upsertLinkedTaskDeletionSaga(revertSaga);
+        await startLinkedTaskDeletionSaga(revertSaga);
       }
       await tauriIpc.workspaceRevertManualFeatureToDraft({
         taskId: params.taskId,
@@ -3925,7 +3927,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
         : null;
       if (preparedCleanup) {
-        await upsertArchivedTaskCleanupSaga(preparedCleanup);
+        await startArchivedTaskCleanupSaga(preparedCleanup);
       }
       let archiveToken: string | null = null;
       try {
@@ -4282,7 +4284,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             updatedAt: new Date().toISOString(),
           };
       if (linkedConversationSaga) {
-        await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
+        await startLinkedTaskDeletionSaga(linkedConversationSaga);
         linkedConversationSaga = {
           ...linkedConversationSaga,
           phase: 'task_deleting',

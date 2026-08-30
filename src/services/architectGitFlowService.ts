@@ -40,9 +40,11 @@ import {
 import { toServiceError } from './contracts/errors';
 import {
   StalePlanLifecycleSagaError,
+  PlanLifecycleSagaCorruptionError,
   getPlanLifecycleSagaGeneration,
   loadPlanLifecycleSagas,
   removePlanLifecycleSaga,
+  startPlanLifecycleSaga,
   upsertPlanLifecycleSaga,
   type PlanLifecycleCleanupResource,
   type PlanFinalizationRepositoryCheckpoint,
@@ -1855,21 +1857,25 @@ export const createArchitectGitFlowService = (
     if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
       throw new Error(`Plan ${params.planId} cannot be archived.`);
     }
+    const cleanupTargets = buildCleanupPlanTargetsWithDeps(plan, params.repoPath);
+    const cleanupResources = deps.tauri.isTauriAvailable()
+      ? await (async () => {
+          await preflightPlanCleanupWithDeps(cleanupTargets);
+          return capturePlanCleanupResourcesWithDeps(cleanupTargets);
+        })()
+      : [];
     const now = new Date().toISOString();
     let saga: PlanLifecycleSaga = {
       planId: plan.id, branchName: params.branchName, operation: 'archive', phase: 'prepared',
-      conversationId: plan.conversationId ?? null, requiresMetadataCommit: params.requireMetadataCommit === true, createdAt: now, updatedAt: now,
+      conversationId: plan.conversationId ?? null, requiresMetadataCommit: params.requireMetadataCommit === true,
+      cleanupResources, createdAt: now, updatedAt: now,
     };
-    await upsertPlanLifecycleSaga(saga);
+    await startPlanLifecycleSaga(saga);
     const archived = plan.status === 'archived' ? plan : await deps.archiveArchitectPlan(params.branchName, plan.id);
     saga = { ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() };
     await upsertPlanLifecycleSaga(saga);
     const cleanup = await cleanupPlanBranchesInternalWithDeps(archived, params.repoPath, {
       expectedResources: saga.cleanupResources,
-      onResourcesCaptured: async (cleanupResources) => {
-        saga = { ...saga, cleanupResources, updatedAt: new Date().toISOString() };
-        await upsertPlanLifecycleSaga(saga);
-      },
     });
     const cleanedSaga = { ...saga, phase: 'git_cleanup_complete' as const, updatedAt: new Date().toISOString() };
     await upsertPlanLifecycleSaga(cleanedSaga);
@@ -2535,7 +2541,7 @@ export const createArchitectGitFlowService = (
         createdAt: now,
         updatedAt: now,
       };
-      await upsertPlanLifecycleSaga(finalizationSaga);
+      await startPlanLifecycleSaga(finalizationSaga);
     }
 
     if (finalizationSaga.phase === 'prepared') {
@@ -2704,12 +2710,19 @@ export const createArchitectGitFlowService = (
       throw new Error('Archive the plan before deleting it.');
     }
 
+    const cleanupResources = crudCapabilities.deleteRequiresCleanup && deps.tauri.isTauriAvailable()
+      ? await (async () => {
+          const cleanupTargets = buildCleanupPlanTargetsWithDeps(plan, params.repoPath);
+          await preflightPlanCleanupWithDeps(cleanupTargets);
+          return capturePlanCleanupResourcesWithDeps(cleanupTargets);
+        })()
+      : [];
     const now = new Date().toISOString();
     let saga: PlanLifecycleSaga = {
       planId: params.planId, branchName: params.branchName, operation: 'delete', phase: 'prepared',
-      conversationId: plan.conversationId ?? null, createdAt: now, updatedAt: now,
+      conversationId: plan.conversationId ?? null, cleanupResources, createdAt: now, updatedAt: now,
     };
-    await upsertPlanLifecycleSaga(saga);
+    await startPlanLifecycleSaga(saga);
 
     if (!crudCapabilities.deleteRequiresCleanup) {
       await deps.deleteArchitectPlan({
@@ -2733,10 +2746,6 @@ export const createArchitectGitFlowService = (
 
     const repositories = await cleanupPlanBranchesInternalWithDeps(plan, params.repoPath, {
       expectedResources: saga.cleanupResources,
-      onResourcesCaptured: async (cleanupResources) => {
-        saga = { ...saga, cleanupResources, updatedAt: new Date().toISOString() };
-        await upsertPlanLifecycleSaga(saga);
-      },
     });
     saga = { ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
     await upsertPlanLifecycleSaga(saga);
@@ -2794,6 +2803,20 @@ export const createArchitectGitFlowService = (
           await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
           return;
         }
+        if (saga.phase === 'git_cleanup_complete') {
+          if (saga.requiresMetadataCommit) {
+            currentSaga = { ...saga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
+            await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+            currentSaga = { ...currentSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
+          }
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
+          return;
+        }
+        if (!saga.cleanupResources) {
+          throw new PlanLifecycleSagaCorruptionError();
+        }
         const archived = plan.status === 'archived'
           ? plan
           : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
@@ -2801,10 +2824,6 @@ export const createArchitectGitFlowService = (
         await upsertPlanLifecycleSaga(currentSaga);
         await cleanupPlanBranchesInternalWithDeps(archived, undefined, {
           expectedResources: currentSaga.cleanupResources,
-          onResourcesCaptured: async (cleanupResources) => {
-            currentSaga = { ...currentSaga, cleanupResources, updatedAt: new Date().toISOString() };
-            await upsertPlanLifecycleSaga(currentSaga);
-          },
         });
         currentSaga = { ...currentSaga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
         await upsertPlanLifecycleSaga(currentSaga);
@@ -2822,7 +2841,7 @@ export const createArchitectGitFlowService = (
         await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
         return;
       }
-      if (plan.status === 'deleted') {
+      if (plan.status === 'deleted' || saga.phase === 'metadata_deleted') {
         await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
         await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
         return;
@@ -2831,18 +2850,19 @@ export const createArchitectGitFlowService = (
       if (!capabilities.canDelete) {
         throw new Error('Archive the plan before deleting it.');
       }
-      if (capabilities.deleteRequiresCleanup) {
+      if (capabilities.deleteRequiresCleanup && saga.phase === 'prepared') {
+        if (!currentSaga.cleanupResources) {
+          throw new PlanLifecycleSagaCorruptionError();
+        }
         await cleanupPlanBranchesInternalWithDeps(plan, undefined, {
           expectedResources: currentSaga.cleanupResources,
-          onResourcesCaptured: async (cleanupResources) => {
-            currentSaga = { ...currentSaga, cleanupResources, updatedAt: new Date().toISOString() };
-            await upsertPlanLifecycleSaga(currentSaga);
-          },
         });
         currentSaga = { ...currentSaga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
         await upsertPlanLifecycleSaga(currentSaga);
       }
       await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
+      currentSaga = { ...currentSaga, phase: 'metadata_deleted', updatedAt: new Date().toISOString() };
+      await upsertPlanLifecycleSaga(currentSaga);
       await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
     } catch (error) {
       if (error instanceof StalePlanLifecycleSagaError) return;
@@ -2867,9 +2887,16 @@ export const createArchitectGitFlowService = (
   const resumePlanLifecycleSagasWithDeps = async (): Promise<void> => {
     const pending = await loadPlanLifecycleSagas();
     for (const saga of pending) {
-      await withPlanLifecycleLock(deps, saga.branchName, saga.planId, () =>
-        resumePlanLifecycleSagaWithDeps(saga)
-      );
+      await withPlanLifecycleLock(deps, saga.branchName, saga.planId, async () => {
+        const expectedGeneration = getPlanLifecycleSagaGeneration(saga);
+        const activeSaga = (await loadPlanLifecycleSagas()).find((candidate) =>
+          candidate.planId === saga.planId && candidate.branchName === saga.branchName &&
+          candidate.operation === saga.operation &&
+          getPlanLifecycleSagaGeneration(candidate) === expectedGeneration
+        );
+        if (!activeSaga) return;
+        await resumePlanLifecycleSagaWithDeps(activeSaga);
+      });
     }
   };
 

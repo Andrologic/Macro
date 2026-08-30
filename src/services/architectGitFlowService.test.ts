@@ -392,6 +392,34 @@ const buildPlan = () => ({
   ],
 });
 
+const buildPersistedCleanupResources = () => [
+  { projectId: 'web', repoPath: '/repos/web', featureBranch: 'feature/checkout/checkout-web' },
+  { projectId: 'api', repoPath: '/repos/api', featureBranch: 'feature/checkout/checkout-api' },
+].flatMap(({ projectId, repoPath, featureBranch }) => {
+  const featureWorktreeKey = toBranchWorktreeKey(projectId, featureBranch);
+  const planWorktreeKey = toPlanIntegrationWorktreeKey(projectId, 'plan/checkout');
+  return [
+    {
+      kind: 'branch', projectId, repoPath, branchName: featureBranch,
+      expectedCommit: `${featureBranch}-sha`,
+    },
+    {
+      kind: 'branch', projectId, repoPath, branchName: 'plan/checkout',
+      expectedCommit: 'plan/checkout-sha',
+    },
+    {
+      kind: 'worktree', projectId, repoPath, branchName: featureBranch,
+      expectedCommit: `${featureBranch}-sha`, worktreeKey: featureWorktreeKey,
+      expectedWorktreePath: `${repoPath}/.macro/worktrees/task${featureWorktreeKey}`,
+    },
+    {
+      kind: 'worktree', projectId, repoPath, branchName: 'plan/checkout',
+      expectedCommit: 'plan/checkout-sha', worktreeKey: planWorktreeKey,
+      expectedWorktreePath: buildPlanIntegrationWorktreePath(repoPath, planWorktreeKey),
+    },
+  ];
+});
+
 const persistLifecycleSaga = (overrides: Record<string, unknown> = {}) => {
   persistedPlanLifecycleSagas = JSON.stringify([{
     planId: 'plan-1',
@@ -399,6 +427,7 @@ const persistLifecycleSaga = (overrides: Record<string, unknown> = {}) => {
     operation: 'delete',
     phase: 'prepared',
     conversationId: 'conversation-1',
+    cleanupResources: buildPersistedCleanupResources(),
     createdAt: '2026-08-13T00:00:00.000Z',
     updatedAt: '2026-08-13T00:00:00.000Z',
     ...overrides,
@@ -808,6 +837,7 @@ describe('architectGitFlowService', () => {
         branchName: 'feature/storage',
         operation: 'archive',
         phase: 'metadata_written',
+        cleanupResources: buildPersistedCleanupResources(),
         createdAt: now,
         updatedAt: now,
       },
@@ -816,6 +846,7 @@ describe('architectGitFlowService', () => {
         branchName: 'develop',
         operation: 'archive',
         phase: 'metadata_written',
+        cleanupResources: buildPersistedCleanupResources(),
         createdAt: now,
         updatedAt: now,
       },
@@ -2420,7 +2451,12 @@ describe('architectGitFlowService', () => {
 
   it('keeps an archive saga pending after a later repository rejects cleanup, then retries only the remaining work', async () => {
     currentPlan = { ...buildPlan(), status: 'archived' };
-    persistLifecycleSaga({ operation: 'archive' });
+    persistLifecycleSaga({
+      operation: 'archive',
+      cleanupResources: buildPersistedCleanupResources()
+        .filter((resource) => resource.kind === 'worktree')
+        .map((resource) => ({ ...resource, expectedCommit: null })),
+    });
     const removedWorktrees = new Set<string>();
     let failApiCleanup = true;
     gitBranchListMock.mockImplementation(async () => createGitBranches(['develop', 'feature/unrelated']));
@@ -2526,6 +2562,70 @@ describe('architectGitFlowService', () => {
     expect(gitWorktreeRemoveMock).toHaveBeenCalled();
     expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
     expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('quarantines historical cleanup work that has no durable resource identities', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({
+      operation: 'archive',
+      phase: 'metadata_written',
+      cleanupResources: undefined,
+    });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(commitArchitectPlanMetadataMock).not.toHaveBeenCalled();
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('does not replay archive cleanup after its durable checkpoint', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({
+      operation: 'archive',
+      phase: 'git_cleanup_complete',
+      cleanupResources: undefined,
+    });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('does not replay delete cleanup after its durable checkpoint', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({
+      operation: 'delete',
+      phase: 'git_cleanup_complete',
+      cleanupResources: undefined,
+    });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(deleteArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('drops a stale resume snapshot after acquiring the lifecycle lock', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({ operation: 'archive', phase: 'metadata_written' });
+    workspaceAcquirePlanLifecycleLockMock.mockImplementationOnce(async () => {
+      persistedPlanLifecycleSagas = '[]';
+      currentPlan = { ...buildPlan(), status: 'validated' };
+      return 'plan-lifecycle-lease';
+    });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(currentPlan.status).toBe('validated');
+    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
   });
 
   it('resumes metadata_commit_pending without replaying cleanup', async () => {

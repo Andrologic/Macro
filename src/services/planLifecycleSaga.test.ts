@@ -6,6 +6,7 @@ import {
   parsePlanLifecycleSagaJournal,
   parsePlanLifecycleSagas,
   removePlanLifecycleSaga,
+  startPlanLifecycleSaga,
   StalePlanLifecycleSagaError,
   upsertPlanLifecycleSaga,
   type PlanLifecycleSaga,
@@ -17,6 +18,7 @@ const serializeSaga = (overrides: Record<string, unknown> = {}) => JSON.stringif
   branchName: 'develop',
   operation: 'archive',
   phase: 'prepared',
+  cleanupResources: [],
   createdAt: '2026-08-13T00:00:00.000Z',
   updatedAt: '2026-08-13T00:00:00.000Z',
   ...overrides,
@@ -41,6 +43,23 @@ describe('planLifecycleSaga', () => {
 
     expect(historicalSaga).toMatchObject({ phase: 'metadata_commit_pending' });
     expect(historicalSaga).not.toHaveProperty('requiresMetadataCommit');
+  });
+
+  it('quarantines cleanup phases that lack durable resource identities', () => {
+    const archive = parsePlanLifecycleSagaJournal(serializeSaga({
+      phase: 'metadata_written',
+      cleanupResources: undefined,
+    }));
+    const deletion = parsePlanLifecycleSagaJournal(serializeSaga({
+      operation: 'delete',
+      phase: 'prepared',
+      cleanupResources: undefined,
+    }));
+
+    expect(archive.sagas).toEqual([]);
+    expect(archive.quarantined).toHaveLength(1);
+    expect(deletion.sagas).toEqual([]);
+    expect(deletion.quarantined).toHaveLength(1);
   });
 
   it('keeps identical plan ids on distinct branches as separate sagas', () => {
@@ -170,6 +189,7 @@ describe('planLifecycleSaga', () => {
       branchName: `feature/${planId}`,
       operation: 'archive',
       phase: 'prepared',
+      cleanupResources: [],
       createdAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:00:00.000Z',
     });
@@ -206,6 +226,7 @@ describe('planLifecycleSaga', () => {
       branchName: 'develop',
       operation: 'archive',
       phase: 'prepared',
+      cleanupResources: [],
       createdAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:00:00.000Z',
     };
@@ -228,6 +249,66 @@ describe('planLifecycleSaga', () => {
     await expect(upsertPlanLifecycleSaga(committed, transport))
       .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
     expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('does not convert and resurrect a completed historical plan saga', async () => {
+    const values = new Map<string, string>();
+    const transport: PlanLifecycleSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const historical: PlanLifecycleSaga = {
+      planId: 'historical-plan',
+      branchName: 'develop',
+      operation: 'archive',
+      phase: 'git_cleanup_complete',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:01.000Z',
+    };
+    values.set('pendingPlanLifecycles:v1', JSON.stringify([historical]));
+    await removePlanLifecycleSaga(
+      historical.planId,
+      historical.operation,
+      historical.branchName,
+      getPlanLifecycleSagaGeneration(historical),
+      transport,
+    );
+
+    await expect(upsertPlanLifecycleSaga(historical, transport))
+      .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
+
+    expect(historical.generation).toBeUndefined();
+    expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([]);
+
+    const fresh: PlanLifecycleSaga = {
+      ...historical,
+      phase: 'prepared',
+      cleanupResources: [],
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    };
+    await startPlanLifecycleSaga(fresh, transport);
+    expect(fresh.generation).toBe(1);
+
+    const competing = {
+      ...fresh,
+      generation: undefined,
+      createdAt: '2030-01-01T00:00:00.000Z',
+      updatedAt: '2030-01-01T00:00:00.000Z',
+    };
+    await expect(startPlanLifecycleSaga(competing, transport))
+      .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
+    expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([fresh]);
   });
 
   it('keeps durable high-water marks after more than 512 completed plan identities', async () => {
@@ -311,11 +392,12 @@ describe('planLifecycleSaga', () => {
       ...first,
       generation: undefined,
       phase: 'prepared',
+      cleanupResources: [],
       createdAt: '2020-01-01T00:00:00.000Z',
       updatedAt: '2020-01-01T00:00:00.000Z',
     };
 
-    await upsertPlanLifecycleSaga(second, transport);
+    await startPlanLifecycleSaga(second, transport);
 
     expect(second.generation).toBe(2);
     expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([second]);

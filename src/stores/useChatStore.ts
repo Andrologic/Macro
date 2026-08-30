@@ -320,6 +320,7 @@ import {
   getLinkedDeletionSagaGeneration,
   loadLinkedConversationDeletionSagas,
   removeLinkedConversationDeletionSaga,
+  startLinkedConversationDeletionSaga,
   upsertLinkedConversationDeletionSaga,
   type LinkedConversationDeletionSaga,
 } from "../services/linkedTaskDeletionSaga";
@@ -6592,7 +6593,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       createdAt: now,
       updatedAt: now,
     };
-    await upsertLinkedConversationDeletionSaga(saga);
+    await startLinkedConversationDeletionSaga(saga);
     return getLinkedDeletionSagaGeneration(saga);
   };
 
@@ -12545,7 +12546,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         createdAt: now,
         updatedAt: now,
       };
-      await upsertLinkedConversationDeletionSaga(createdConversationCleanupSaga);
+      await startLinkedConversationDeletionSaga(createdConversationCleanupSaga);
     }
 
     const repairedConversation = await repairArchitectPlanConversationScope({

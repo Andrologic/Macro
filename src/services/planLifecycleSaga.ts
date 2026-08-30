@@ -215,6 +215,12 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   if (saga.cleanupResources !== undefined && (
     !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
   )) throw new PlanLifecycleSagaCorruptionError();
+  const cleanupMayStillRun =
+    (saga.operation === 'archive' && (saga.phase === 'prepared' || saga.phase === 'metadata_written')) ||
+    (saga.operation === 'delete' && saga.phase === 'prepared');
+  if (cleanupMayStillRun && !Array.isArray(saga.cleanupResources)) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
   if (
     saga.operation === 'finalize' && (
       !Array.isArray(saga.finalizationRepositories) ||
@@ -310,6 +316,12 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
       if (saga.cleanupResources !== undefined && (
         !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
       )) throw new PlanLifecycleSagaCorruptionError();
+      const cleanupMayStillRun =
+        (saga.operation === 'archive' && (saga.phase === 'prepared' || saga.phase === 'metadata_written')) ||
+        (saga.operation === 'delete' && saga.phase === 'prepared');
+      if (cleanupMayStillRun && !Array.isArray(saga.cleanupResources)) {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
       if (
         saga.operation === 'finalize' && (
           !Array.isArray(saga.finalizationRepositories) ||
@@ -552,11 +564,22 @@ const mergeFinalizationRepositoryProgress = (
   });
 };
 
-export const upsertPlanLifecycleSaga = async (
+const persistPlanLifecycleSaga = async (
   saga: PlanLifecycleSaga,
-  transport: PlanLifecycleSagaTransport = defaultTransport,
+  transport: PlanLifecycleSagaTransport,
+  startNewGeneration: boolean,
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
+  if (startNewGeneration && saga.generation !== undefined) {
+    throw new StalePlanLifecycleSagaError();
+  }
+  const completionIdentity = { ...saga };
+  if (
+    !startNewGeneration &&
+    registryCompletesSaga(await loadCompletedRegistry(transport), completionIdentity)
+  ) {
+    throw new StalePlanLifecycleSagaError();
+  }
   if (!isDurableGeneration(saga.generation)) {
     saga.generation = await allocateDurableGeneration({
       settingKey: GENERATION_COUNTER_KEY,
@@ -565,7 +588,11 @@ export const upsertPlanLifecycleSaga = async (
     });
   }
   const generation = getPlanLifecycleSagaGeneration(saga);
-  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
+  const completedAfterAllocation = await loadCompletedRegistry(transport);
+  if (
+    (!startNewGeneration && registryCompletesSaga(completedAfterAllocation, completionIdentity)) ||
+    registryCompletesSaga(completedAfterAllocation, saga)
+  ) {
     throw new StalePlanLifecycleSagaError();
   }
   await loadPlanLifecycleSagas(transport);
@@ -582,6 +609,7 @@ export const upsertPlanLifecycleSaga = async (
       const existing = sagas.find((entry) => getPlanLifecycleSagaKey(entry) === sagaKey);
       let nextSaga = saga;
       if (existing) {
+        if (startNewGeneration) throw new StalePlanLifecycleSagaError();
         const existingGeneration = getPlanLifecycleSagaGeneration(existing);
         if (existingGeneration !== generation) {
           if (
@@ -622,7 +650,11 @@ export const upsertPlanLifecycleSaga = async (
     },
     transport,
   );
-  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
+  const completedAfterUpsert = await loadCompletedRegistry(transport);
+  if (
+    (!startNewGeneration && registryCompletesSaga(completedAfterUpsert, completionIdentity)) ||
+    registryCompletesSaga(completedAfterUpsert, saga)
+  ) {
     await updateSetting(
       SAGA_KEY,
       (current) => JSON.stringify(parsePlanLifecycleSagas(current).filter(
@@ -633,6 +665,16 @@ export const upsertPlanLifecycleSaga = async (
     throw new StalePlanLifecycleSagaError();
   }
 };
+
+export const startPlanLifecycleSaga = async (
+  saga: PlanLifecycleSaga,
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<void> => persistPlanLifecycleSaga(saga, transport, true);
+
+export const upsertPlanLifecycleSaga = async (
+  saga: PlanLifecycleSaga,
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<void> => persistPlanLifecycleSaga(saga, transport, false);
 
 export const removePlanLifecycleSaga = async (
   planId: string,
