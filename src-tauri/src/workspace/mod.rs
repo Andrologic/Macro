@@ -330,34 +330,50 @@ pub async fn validate_archived_task_cleanup_token(
 }
 
 struct WorkspaceFileLock {
-    path: PathBuf,
+    file: std::fs::File,
 }
 
 impl Drop for WorkspaceFileLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.path);
+        let _ = FileExt::unlock(&self.file);
     }
 }
 
 fn lock_workspace_state_file(metadata_root: &Path) -> Result<WorkspaceFileLock> {
+    lock_workspace_state_file_with_retry(metadata_root, 100, Duration::from_millis(25))
+}
+
+fn lock_workspace_state_file_with_retry(
+    metadata_root: &Path,
+    attempts: usize,
+    retry_delay: Duration,
+) -> Result<WorkspaceFileLock> {
     std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
         message: format!("Failed to create workspace metadata directory: {error}"),
     })?;
     let lock_path = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
-    for _ in 0..100 {
-        match std::fs::create_dir(&lock_path) {
-            Ok(()) => return Ok(WorkspaceFileLock { path: lock_path }),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let stale = std::fs::metadata(&lock_path)
-                    .and_then(|metadata| metadata.modified())
-                    .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
-                    .map(|elapsed| elapsed > Duration::from_secs(30))
-                    .unwrap_or(false);
-                if stale {
-                    let _ = std::fs::remove_dir(&lock_path);
-                    continue;
-                }
-                std::thread::sleep(Duration::from_millis(25));
+    for _ in 0..attempts {
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
+                std::thread::sleep(retry_delay);
+                continue;
+            }
+            Err(error) => {
+                return Err(BackendError::Filesystem {
+                    message: format!("Failed to open workspace state lock: {error}"),
+                })
+            }
+        };
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(WorkspaceFileLock { file }),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(retry_delay);
             }
             Err(error) => {
                 return Err(BackendError::Filesystem {
@@ -8536,6 +8552,41 @@ mod tests {
             .try_lock_exclusive()
             .expect("lock must become available after lease release");
         FileExt::unlock(&contender).expect("unlock contender");
+    }
+
+    #[test]
+    fn workspace_state_lock_uses_a_live_file_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let guard = lock_workspace_state_file_with_retry(&metadata_root, 1, Duration::ZERO)
+            .expect("acquire workspace state lock");
+        let lock_path = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
+        let contender = stdfs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open workspace state lock file");
+
+        assert!(contender.try_lock_exclusive().is_err());
+        drop(guard);
+        contender
+            .try_lock_exclusive()
+            .expect("workspace state lock must release with its owner");
+        FileExt::unlock(&contender).expect("unlock contender");
+        assert!(lock_path.is_file());
+    }
+
+    #[test]
+    fn workspace_state_lock_never_deletes_a_legacy_lock_directory() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let legacy_lock = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
+        stdfs::create_dir_all(&legacy_lock).expect("legacy lock directory");
+
+        let result = lock_workspace_state_file_with_retry(&metadata_root, 1, Duration::ZERO);
+
+        assert!(result.is_err(), "a legacy lock owner must fail closed");
+        assert!(legacy_lock.is_dir());
     }
 
     #[test]
