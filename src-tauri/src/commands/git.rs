@@ -2124,6 +2124,16 @@ fn normalize_git_path(path: &[u8]) -> Vec<u8> {
     path[..end].to_vec()
 }
 
+fn git_path_collision_key(path: &[u8], case_insensitive: bool) -> Vec<u8> {
+    if !case_insensitive {
+        return path.to_vec();
+    }
+    match std::str::from_utf8(path) {
+        Ok(path) => path.to_lowercase().into_bytes(),
+        Err(_) => path.iter().map(u8::to_ascii_lowercase).collect(),
+    }
+}
+
 fn git_path_is_same_or_descendant(path: &[u8], ancestor: &[u8]) -> bool {
     path == ancestor
         || (path.starts_with(ancestor)
@@ -2133,13 +2143,16 @@ fn git_path_is_same_or_descendant(path: &[u8], ancestor: &[u8]) -> bool {
 fn find_untracked_reset_collision(
     untracked_paths: &[Vec<u8>],
     target_paths: &[Vec<u8>],
+    case_insensitive: bool,
 ) -> Option<Vec<u8>> {
     untracked_paths.iter().find_map(|untracked| {
+        let untracked_key = git_path_collision_key(untracked, case_insensitive);
         target_paths
             .iter()
             .any(|target| {
-                git_path_is_same_or_descendant(untracked, target)
-                    || git_path_is_same_or_descendant(target, untracked)
+                let target_key = git_path_collision_key(target, case_insensitive);
+                git_path_is_same_or_descendant(&untracked_key, &target_key)
+                    || git_path_is_same_or_descendant(&target_key, &untracked_key)
             })
             .then(|| untracked.clone())
     })
@@ -2158,6 +2171,27 @@ async fn ensure_wsl_hard_reset_preserves_untracked(
     repo_path: &WslProjectPath,
     target_commit: &str,
 ) -> Result<()> {
+    let ignore_case = run_wsl_git_allow_failure(
+        repo_path,
+        &[
+            "config".to_string(),
+            "--bool".to_string(),
+            "--get".to_string(),
+            "core.ignorecase".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+    )
+    .await?;
+    let case_insensitive = match ignore_case.status.code() {
+        Some(0) => ignore_case.stdout_text().eq_ignore_ascii_case("true"),
+        Some(1) => false,
+        _ => {
+            return Err(wsl_git_failure(
+                &ignore_case,
+                "git path case-sensitivity preflight WSL failed",
+            ))
+        }
+    };
     let untracked = run_wsl_git_checked(
         repo_path,
         &[
@@ -2199,7 +2233,9 @@ async fn ensure_wsl_hard_reset_preserves_untracked(
     let mut untracked_paths = parse_nul_separated_git_paths(&untracked.stdout);
     untracked_paths.extend(parse_nul_separated_git_paths(&ignored.stdout));
     let target_paths = parse_nul_separated_git_paths(&target.stdout);
-    if let Some(path) = find_untracked_reset_collision(&untracked_paths, &target_paths) {
+    if let Some(path) =
+        find_untracked_reset_collision(&untracked_paths, &target_paths, case_insensitive)
+    {
         return Err(untracked_reset_collision_error(&path));
     }
     Ok(())
@@ -4111,7 +4147,15 @@ fn ensure_native_hard_reset_preserves_untracked(
 ) -> Result<()> {
     let untracked_paths = native_untracked_paths(repo)?;
     let target_paths = native_target_tree_paths(target)?;
-    if let Some(path) = find_untracked_reset_collision(&untracked_paths, &target_paths) {
+    let case_insensitive = cfg!(windows)
+        || repo
+            .config()
+            .ok()
+            .and_then(|config| config.get_bool("core.ignorecase").ok())
+            .unwrap_or(false);
+    if let Some(path) =
+        find_untracked_reset_collision(&untracked_paths, &target_paths, case_insensitive)
+    {
         return Err(untracked_reset_collision_error(&path));
     }
     Ok(())
@@ -17969,6 +18013,10 @@ mod tests {
     #[test]
     fn test_reset_repo_hard_rejects_untracked_file_and_directory_collisions() {
         let (temp, repo) = init_repo();
+        repo.config()
+            .unwrap()
+            .set_bool("core.ignorecase", true)
+            .unwrap();
         let initial_commit = repo.head().unwrap().target().unwrap().to_string();
         fs::write(temp.path().join("collision.txt"), "tracked target").unwrap();
         fs::create_dir_all(temp.path().join("target-directory")).unwrap();
@@ -17980,13 +18028,20 @@ mod tests {
         let target_commit = commit_repo(&repo, "feat: add reset targets", true).unwrap();
         reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
 
-        fs::write(repo.path().join("info/exclude"), "collision.txt\n").unwrap();
-        fs::write(temp.path().join("collision.txt"), "untracked file").unwrap();
+        fs::write(
+            repo.path().join("info/exclude"),
+            "collision.txt\nCOLLISION.txt\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("COLLISION.txt"), "untracked file").unwrap();
         let file_error = reset_repo(&repo, "hard", Some(target_commit.clone()))
             .expect_err("hard reset must reject an untracked file collision");
-        assert!(file_error.to_string().contains("collision.txt"));
+        assert!(file_error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("collision.txt"));
         assert_eq!(
-            fs::read_to_string(temp.path().join("collision.txt")).unwrap(),
+            fs::read_to_string(temp.path().join("COLLISION.txt")).unwrap(),
             "untracked file"
         );
         assert_eq!(
@@ -17994,7 +18049,7 @@ mod tests {
             initial_commit
         );
 
-        fs::remove_file(temp.path().join("collision.txt")).unwrap();
+        fs::remove_file(temp.path().join("COLLISION.txt")).unwrap();
         fs::create_dir_all(temp.path().join("target-directory/tracked.txt")).unwrap();
         fs::write(
             temp.path().join("target-directory/tracked.txt/local.txt"),
@@ -18023,15 +18078,32 @@ mod tests {
         let target = parse_nul_separated_git_paths(b"README.md\0target-directory/tracked.txt\0");
 
         assert_eq!(
-            find_untracked_reset_collision(&untracked, &target),
+            find_untracked_reset_collision(&untracked, &target, false),
             Some(b"target-directory/tracked.txt/local.txt".to_vec())
         );
         assert_eq!(
             find_untracked_reset_collision(
                 &parse_nul_separated_git_paths(b"target-directory/\0"),
                 &target,
+                false,
             ),
             Some(b"target-directory".to_vec())
+        );
+        assert_eq!(
+            find_untracked_reset_collision(
+                &parse_nul_separated_git_paths(b"FOO.txt\0"),
+                &parse_nul_separated_git_paths(b"foo.txt\0"),
+                true,
+            ),
+            Some(b"FOO.txt".to_vec())
+        );
+        assert_eq!(
+            find_untracked_reset_collision(
+                &parse_nul_separated_git_paths(b"FOO.txt\0"),
+                &parse_nul_separated_git_paths(b"foo.txt\0"),
+                false,
+            ),
+            None
         );
     }
 
