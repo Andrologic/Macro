@@ -1016,7 +1016,7 @@ describe('ChatZone', () => {
   };
 
   const clickButtonWithText = async (label: string) => {
-    const button = Array.from(requireContainer().querySelectorAll('button')).find(
+    const button = Array.from(document.body.querySelectorAll('button')).find(
       (candidate) => candidate.textContent?.trim() === label
     );
     if (!button) {
@@ -2367,13 +2367,13 @@ describe('ChatZone', () => {
       await previewDeferred.promise;
     });
 
-    expect(requireContainer().textContent).toContain('Revenir au point de contrôle du code ?');
-    expect(requireContainer().textContent).toContain('src/new-file.ts');
+    expect(document.body.textContent).toContain('Revenir au point de contrôle du code ?');
+    expect(document.body.textContent).toContain('src/new-file.ts');
     expect(chatState.editMessage).not.toHaveBeenCalled();
 
     await clickButtonWithText('Annuler');
 
-    expect(requireContainer().textContent).not.toContain('Revenir au point de contrôle du code ?');
+    expect(document.body.textContent).not.toContain('Revenir au point de contrôle du code ?');
     expect(requireContainer().querySelector('[data-chat-composer-editing="true"]')).not.toBeNull();
     expect(getComposerEditor().value).toBe('Edited message');
     expect(chatState.editMessage).not.toHaveBeenCalled();
@@ -2561,8 +2561,8 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    expect(requireContainer().textContent).toContain('Revenir au point de contrôle du code ?');
-    expect(requireContainer().textContent).toContain('src/new-file.ts');
+    expect(document.body.textContent).toContain('Revenir au point de contrôle du code ?');
+    expect(document.body.textContent).toContain('src/new-file.ts');
     expect(chatState.editMessage).not.toHaveBeenCalled();
     expect(chatState.restoreAgentCodeForReplay).not.toHaveBeenCalled();
   });
@@ -2601,7 +2601,7 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    const confirmButton = Array.from(requireContainer().querySelectorAll('button')).find(
+    const confirmButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent?.trim() === 'Restaurer et relancer'
     );
     expect(confirmButton).not.toBeNull();
