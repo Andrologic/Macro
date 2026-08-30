@@ -800,6 +800,11 @@ interface ProviderStore {
   deleteManualModel: (providerId: string, modelId: string) => Promise<void>;
   loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
   updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) => Promise<void>;
+  updateCopilotProvider: (
+    providerId: string,
+    updates: Partial<ProviderConfig>,
+    copilotSendTimeoutMs: number,
+  ) => Promise<void>;
   commitRestoredSelection: (
     selection: {
       providerId: string;
@@ -2336,6 +2341,91 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }));
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to update provider settings';
+        set({ lastError: message });
+        throw error;
+      }
+    }),
+
+  updateCopilotProvider: (providerId, updates, copilotSendTimeoutMs) =>
+    enqueueProviderMutation(providerId, async () => {
+      requireProviderConfigurationIpc();
+      providerConfigMutationVersion += 1;
+      startProviderSettingsRequest(providerId);
+      const previousSettings = get().providerSettingsById[providerId] ?? {
+        providerId,
+        filterFreeModels: false,
+        copilotSendTimeoutMs: null,
+      };
+      const nextSettings: ProviderSettings = {
+        ...previousSettings,
+        providerId,
+        copilotSendTimeoutMs,
+      };
+      const persistedUpdates: Partial<ProviderConfig> = { ...updates };
+      delete persistedUpdates.baseUrl;
+      delete persistedUpdates.apiKey;
+
+      try {
+        await tauriIpc.updateProviderSettings({
+          providerId,
+          copilotSendTimeoutMs,
+        });
+        try {
+          await ipcUpdateProviderConfig({
+            id: providerId,
+            name: persistedUpdates.name,
+            providerType: persistedUpdates.providerType,
+            baseUrl: undefined,
+            apiKey: undefined,
+            isLocal: persistedUpdates.isLocal,
+            isEnabled: persistedUpdates.isEnabled,
+          });
+        } catch (configError) {
+          try {
+            await tauriIpc.updateProviderSettings({
+              providerId,
+              copilotSendTimeoutMs: previousSettings.copilotSendTimeoutMs ?? null,
+            });
+          } catch (rollbackError) {
+            throw new Error(
+              `${getErrorMessage(configError, 'Failed to save provider')}. `
+              + `Failed to restore the Copilot timeout: ${getErrorMessage(rollbackError, 'unknown error')}`,
+            );
+          }
+          throw configError;
+        }
+
+        startProviderSettingsRequest(providerId);
+        set((state) => {
+          const providerConfigs = state.providerConfigs.map((provider) =>
+            provider.id === providerId
+              ? applyNativeToolCallingToProviderConfig({ ...provider, ...persistedUpdates })
+              : provider
+          );
+          const updatedProvider = providerConfigs.find((provider) => provider.id === providerId);
+          const providers = state.providers.map((provider) =>
+            provider.id === providerId
+              ? applyNativeToolCallingToProvider(
+                  {
+                    ...provider,
+                    name: persistedUpdates.name ?? provider.name,
+                    isEnabled: persistedUpdates.isEnabled ?? provider.isEnabled,
+                  },
+                  updatedProvider?.providerType,
+                )
+              : provider
+          );
+          return {
+            providerConfigs,
+            providerSettingsById: {
+              ...state.providerSettingsById,
+              [providerId]: nextSettings,
+            },
+            ...clearProviderReachability({ ...state, providers }, providerId),
+          };
+        });
+      } catch (error) {
+        const message = getErrorMessage(error, 'Failed to update Copilot provider');
         set({ lastError: message });
         throw error;
       }

@@ -10,6 +10,11 @@ const updateProviderSettingsMock = mock(async (
   _providerId: string,
   _updates: { copilotSendTimeoutMs?: number | null },
 ) => undefined);
+const updateCopilotProviderMock = mock(async (
+  _providerId: string,
+  _updates: Record<string, unknown>,
+  _copilotSendTimeoutMs: number,
+) => undefined);
 const createProviderConfigMock = mock(async () => undefined);
 const testConnectionMock = mock(async () => ({ success: true, message: 'ok' }));
 
@@ -120,6 +125,7 @@ const loadProvidersSettings = async () => {
       },
       updateProviderConfig: updateProviderConfigMock,
       updateProviderSettings: updateProviderSettingsMock,
+      updateCopilotProvider: updateCopilotProviderMock,
       createProviderConfig: createProviderConfigMock,
       deleteProviderConfig: mock(async () => undefined),
       startChatGptAuth: mock(async () => undefined),
@@ -228,6 +234,8 @@ describe('ProvidersSettings Copilot timeout', () => {
     updateProviderConfigMock.mockImplementation(async () => undefined);
     updateProviderSettingsMock.mockClear();
     updateProviderSettingsMock.mockImplementation(async () => undefined);
+    updateCopilotProviderMock.mockClear();
+    updateCopilotProviderMock.mockImplementation(async () => undefined);
     createProviderConfigMock.mockClear();
     testConnectionMock.mockClear();
     providerType = 'copilot';
@@ -278,25 +286,17 @@ describe('ProvidersSettings Copilot timeout', () => {
       );
     });
 
-    expect(updateProviderSettingsMock).toHaveBeenCalledWith('copilot', {
-      copilotSendTimeoutMs: 120_000,
-    });
-    expect(updateProviderConfigMock).toHaveBeenCalledWith(
+    expect(updateCopilotProviderMock).toHaveBeenCalledWith(
       'copilot',
-      expect.objectContaining({ baseUrl: 'copilot://cli', providerType: 'copilot' })
+      expect.objectContaining({ baseUrl: 'copilot://cli', providerType: 'copilot' }),
+      120_000,
     );
+    expect(updateProviderSettingsMock).not.toHaveBeenCalled();
+    expect(updateProviderConfigMock).not.toHaveBeenCalled();
   });
 
-  it('restores the previous Copilot timeout when the configuration save fails', async () => {
-    const calls: string[] = [];
-    updateProviderSettingsMock.mockImplementation(async (
-      _providerId: string,
-      updates: { copilotSendTimeoutMs?: number | null },
-    ) => {
-      calls.push(`timeout:${updates.copilotSendTimeoutMs}`);
-    });
-    updateProviderConfigMock.mockImplementationOnce(async () => {
-      calls.push('config');
+  it('keeps the Copilot editor open when the atomic save fails', async () => {
+    updateCopilotProviderMock.mockImplementationOnce(async () => {
       throw new Error('provider write failed');
     });
     const { ProvidersSettings } = await loadProvidersSettings();
@@ -321,11 +321,7 @@ describe('ProvidersSettings Copilot timeout', () => {
       await Promise.resolve();
     });
 
-    expect(calls).toEqual([
-      'timeout:120000',
-      'config',
-      'timeout:2700000',
-    ]);
+    expect(updateCopilotProviderMock).toHaveBeenCalledTimes(1);
     expect(container!.textContent).toContain('Save Provider');
   });
 

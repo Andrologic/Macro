@@ -24,12 +24,16 @@ export function useNativeMacWindowTheme(theme: Theme, enabled = true): void {
 
     void enqueueNativeThemeSync(async () => {
       try {
-        await Promise.all([
+        const results = await Promise.allSettled([
           savePreference(PREF_KEYS.NATIVE_MACOS_TITLEBAR_BG, titlebarTheme.nativeWindowBackground),
           savePreference(PREF_KEYS.NATIVE_MACOS_TITLEBAR_THEME, theme.type),
           windowSetBackgroundColor(titlebarTheme.nativeWindowBackground),
           windowSetTheme(theme.type),
         ]);
+        const failure = results.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected',
+        );
+        if (failure) throw failure.reason;
 
         if (!cancelled) {
           devLogger.log('[useNativeMacWindowTheme] Synced native macOS window theme', {

@@ -114,7 +114,7 @@ export const ProvidersSettings: React.FC = () => {
     copilotAuthStateByProvider,
     providerSettingsById,
     updateProviderConfig,
-    updateProviderSettings,
+    updateCopilotProvider,
     createProviderConfig,
     deleteProviderConfig,
     startChatGptAuth,
@@ -572,26 +572,11 @@ export const ProvidersSettings: React.FC = () => {
           const timeoutMinutes = normalizeTimeoutMinutesInput(
             editingProvider.copilotSendTimeoutMinutes
           );
-          const previousTimeout =
-            providerSettingsById[editingProvider.id]?.copilotSendTimeoutMs ?? null;
-          await updateProviderSettings(editingProvider.id, {
-            copilotSendTimeoutMs: timeoutMinutes * 60_000,
-          });
-          try {
-            await updateProviderConfig(editingProvider.id, configUpdates);
-          } catch (configError) {
-            try {
-              await updateProviderSettings(editingProvider.id, {
-                copilotSendTimeoutMs: previousTimeout,
-              });
-            } catch (rollbackError) {
-              throw new Error(
-                `${getErrorMessage(configError, 'Failed to save provider')}. `
-                + `Failed to restore the Copilot timeout: ${getErrorMessage(rollbackError, 'unknown error')}`,
-              );
-            }
-            throw configError;
-          }
+          await updateCopilotProvider(
+            editingProvider.id,
+            configUpdates,
+            timeoutMinutes * 60_000,
+          );
         } else {
           await updateProviderConfig(editingProvider.id, configUpdates);
         }

@@ -72,6 +72,12 @@ describe('useNativeMacWindowTheme', () => {
       releaseDarkWrite = resolve;
     });
     const appliedThemes: Array<'light' | 'dark'> = [];
+    let preferenceWrite = 0;
+    savePreferenceMock.mockClear();
+    savePreferenceMock.mockImplementation(async () => {
+      preferenceWrite += 1;
+      if (preferenceWrite === 1) throw new Error('preference unavailable');
+    });
     windowSetThemeMock.mockClear();
     windowSetThemeMock.mockImplementation(async (theme) => {
       if (theme === 'dark') await darkWrite;

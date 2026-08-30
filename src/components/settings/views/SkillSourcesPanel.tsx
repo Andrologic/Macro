@@ -110,7 +110,10 @@ export const SkillSourcesPanel: React.FC<{
                   checked={config.conventionalRoots?.[root] !== false}
                   disabled={busy}
                   onChange={(event) => void updateTopLevel('conventionalRoots', (currentValue: unknown) => {
-                    const current = asRecord<boolean>(currentValue);
+                    const current = {
+                      ...(config.conventionalRoots ?? {}),
+                      ...asRecord<boolean>(currentValue),
+                    };
                     return {
                       agents: current.agents !== false,
                       codex: current.codex !== false,
@@ -141,7 +144,7 @@ export const SkillSourcesPanel: React.FC<{
                   aria-label={`${id} path`}
                   onBlur={(event) => {
                     if (event.target.value !== root.path) void updateTopLevel('roots', (currentValue: unknown) => {
-                      const current = asRecord<SkillRoot>(currentValue);
+                      const current = { ...roots, ...asRecord<SkillRoot>(currentValue) };
                       return {
                         ...current,
                         [id]: { ...(current[id] ?? root), path: event.target.value },
@@ -154,7 +157,7 @@ export const SkillSourcesPanel: React.FC<{
                   defaultValue={root.priority ?? 0}
                   aria-label={`${id} priority`}
                   onBlur={(event) => void updateTopLevel('roots', (currentValue: unknown) => {
-                    const current = asRecord<SkillRoot>(currentValue);
+                    const current = { ...roots, ...asRecord<SkillRoot>(currentValue) };
                     return {
                       ...current,
                       [id]: { ...(current[id] ?? root), priority: Number(event.target.value) || 0 },
@@ -163,7 +166,7 @@ export const SkillSourcesPanel: React.FC<{
                 />
                 <button type="button" title={t('common.delete', 'Delete')} onClick={() => {
                   const next = (currentValue: unknown) => {
-                    const current = asRecord<SkillRoot>(currentValue);
+                    const current = { ...roots, ...asRecord<SkillRoot>(currentValue) };
                     const nextRoots = { ...current };
                     delete nextRoots[id];
                     return nextRoots;
@@ -180,6 +183,7 @@ export const SkillSourcesPanel: React.FC<{
               <Input value={newRootPath} onChange={(event) => setNewRootPath(event.target.value)} placeholder={projectId ? '${projectRoot}/.team/skills' : '${home}/.team/skills'} />
               <button type="button" disabled={busy || !newRootId.trim() || !newRootPath.trim()} onClick={() => {
                 void updateTopLevel('roots', (currentValue: unknown) => ({
+                  ...roots,
                   ...asRecord<SkillRoot>(currentValue),
                   [newRootId.trim()]: {
                     sourceType: 'local',
@@ -209,7 +213,10 @@ export const SkillSourcesPanel: React.FC<{
                   value={destination.scope}
                   disabled={projectId.length > 0}
                   onChange={(event) => void updateTopLevel('installDestinations', (currentValue: unknown) => {
-                    const current = asRecord<SkillDestination>(currentValue);
+                    const current = {
+                      ...destinations,
+                      ...asRecord<SkillDestination>(currentValue),
+                    };
                     return {
                       ...current,
                       [id]: {
@@ -228,7 +235,10 @@ export const SkillSourcesPanel: React.FC<{
                   aria-label={`${id} destination path`}
                   onBlur={(event) => {
                     if (event.target.value !== destination.path) void updateTopLevel('installDestinations', (currentValue: unknown) => {
-                      const current = asRecord<SkillDestination>(currentValue);
+                      const current = {
+                        ...destinations,
+                        ...asRecord<SkillDestination>(currentValue),
+                      };
                       return {
                         ...current,
                         [id]: { ...(current[id] ?? destination), path: event.target.value },
@@ -238,7 +248,10 @@ export const SkillSourcesPanel: React.FC<{
                 />
                 <button type="button" title={t('common.delete', 'Delete')} onClick={() => {
                   const next = (currentValue: unknown) => {
-                    const current = asRecord<SkillDestination>(currentValue);
+                    const current = {
+                      ...destinations,
+                      ...asRecord<SkillDestination>(currentValue),
+                    };
                     const nextDestinations = { ...current };
                     delete nextDestinations[id];
                     return nextDestinations;
@@ -255,6 +268,7 @@ export const SkillSourcesPanel: React.FC<{
               <Input value={newDestinationPath} onChange={(event) => setNewDestinationPath(event.target.value)} placeholder={projectId ? '.agents/skills' : '${home}/.agents/skills'} />
               <button type="button" disabled={busy || !newDestinationId.trim() || !newDestinationPath.trim()} onClick={() => {
                 void updateTopLevel('installDestinations', (currentValue: unknown) => ({
+                  ...destinations,
                   ...asRecord<SkillDestination>(currentValue),
                   [newDestinationId.trim()]: {
                     scope: projectId ? 'project' : 'user',
