@@ -9371,7 +9371,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       devLogger.warn("Scoped MCP servers are unavailable", {
         failures: scopedMcpRuntime.failures,
       });
-      notify.warning("Some MCP servers are unavailable", {
+      notify.warning(i18n.t(
+        "notifications.mcpServersUnavailable",
+        "Some MCP servers are unavailable",
+      ), {
         description: unavailableServers,
       });
     }

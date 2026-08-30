@@ -40,7 +40,17 @@
     "interrupted": "Start unterbrochen",
     "failedTitle": "Macro konnte den Start nicht abschließen.",
     "failedDescription": "Macro konnte die lokalen Daten nicht initialisieren. Sie können den Vorgang sicher wiederholen.",
-    "failedSteps": "Fehlgeschlagene Schritte"
+    "failedSteps": "Fehlgeschlagene Schritte",
+    "metadataRecovery": {
+      "restoredWithCommit": "@macro-Metadaten aus dem Verlauf wiederhergestellt ({{commit}})",
+      "restored": "@macro-Metadaten aus dem Verlauf wiederhergestellt",
+      "restoredDescription": "Macro hat den letzten gültigen Metadaten-Snapshot wiederhergestellt, bevor der Arbeitsbereich geladen wurde.",
+      "reconstructed": "@macro-Metadaten aus lokalen Projekten neu erstellt",
+      "reconstructedDescription": "Macro hat aus den bekannten lokalen Projekten einen minimalen Metadatenzustand neu erstellt.",
+      "skipped": "Automatische @macro-Wiederherstellung übersprungen",
+      "blockedConflictDescription": "Macro hat ungelöste Konflikte im Metadaten-Arbeitsverzeichnis gefunden und die Wiederherstellung nicht automatisch angewendet.",
+      "blockedDirtyDescription": "Macro hat lokale Änderungen im Metadaten-Arbeitsverzeichnis gefunden und die Wiederherstellung nicht automatisch angewendet."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "Eine Aufgabe läuft noch. Beim Schließen von Macro wird sie unterbrochen.",
@@ -2035,6 +2045,7 @@
   },
   "notifications": {
     "centerTitle": "Benachrichtigungen",
+    "mcpServersUnavailable": "Einige MCP-Server sind nicht verfügbar",
     "openCenter": "Benachrichtigungen öffnen",
     "closeCenter": "Benachrichtigungen schließen",
     "clearAll": "Alles löschen",

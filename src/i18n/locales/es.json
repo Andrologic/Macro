@@ -44,7 +44,17 @@
     "interrupted": "Inicio interrumpido",
     "failedTitle": "Macro no pudo completar el inicio.",
     "failedDescription": "Macro no pudo inicializar los datos locales. Puedes volver a intentarlo de forma segura.",
-    "failedSteps": "Pasos fallidos"
+    "failedSteps": "Pasos fallidos",
+    "metadataRecovery": {
+      "restoredWithCommit": "Metadatos de @macro restaurados desde el historial ({{commit}})",
+      "restored": "Metadatos de @macro restaurados desde el historial",
+      "restoredDescription": "Macro restauró la última instantánea válida de los metadatos antes de cargar el espacio de trabajo.",
+      "reconstructed": "Metadatos de @macro reconfigurados desde los proyectos locales",
+      "reconstructedDescription": "Macro reconstruyó un estado mínimo de los metadatos a partir de los proyectos locales conocidos.",
+      "skipped": "Se omitió la recuperación automática de @macro",
+      "blockedConflictDescription": "Macro encontró conflictos sin resolver en el espacio de trabajo de metadatos y no aplicó la recuperación automática.",
+      "blockedDirtyDescription": "Macro encontró cambios locales en el espacio de trabajo de metadatos y no aplicó la recuperación automática."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "Hay una tarea en curso. Cerrar Macro la interrumpirá.",
@@ -2039,6 +2049,7 @@
   },
   "notifications": {
     "centerTitle": "Notificaciones",
+    "mcpServersUnavailable": "Algunos servidores MCP no están disponibles",
     "openCenter": "Abrir notificaciones",
     "closeCenter": "Cerrar notificaciones",
     "clearAll": "Borrar todo",

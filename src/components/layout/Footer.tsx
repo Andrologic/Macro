@@ -1535,11 +1535,14 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       await openConflictAssistant({
         prompt: buildMacroConflictAssistantPrompt({ repositories }),
       });
-      notify.success(t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'));
+      notify.info(t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'), {
+        category: 'git_sync_attention_required',
+      });
       setShowConflictModal(false);
     } catch (error) {
       notify.error(t('footer.sync.aiConflictAssistantStartFailed', 'Failed to start AI assistant'), {
         description: toServiceError(error).message,
+        category: 'git_sync_attention_required',
       });
     }
   };
@@ -1947,9 +1950,9 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
         prompt: buildMacroConflictAssistantPrompt({ repositories }),
         internalAgentProfile: 'repo_auditor',
       });
-      notify.success(
+      notify.info(
         t('footer.sync.aiConflictAssistantStarted', 'AI conflict assistant started'),
-        { category: 'git_sync_completed' }
+        { category: 'git_sync_attention_required' }
       );
     } catch (error) {
       notify.error(

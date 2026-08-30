@@ -61,7 +61,17 @@
     "interrupted": "Startup interrupted",
     "failedTitle": "Macro could not finish booting.",
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",
-    "failedSteps": "Failed steps"
+    "failedSteps": "Failed steps",
+    "metadataRecovery": {
+      "restoredWithCommit": "Metadata @macro restored from history ({{commit}})",
+      "restored": "Metadata @macro restored from history",
+      "restoredDescription": "Macro restored the latest valid metadata snapshot before loading the workspace.",
+      "reconstructed": "Metadata @macro reconfigured from local projects",
+      "reconstructedDescription": "Macro rebuilt a minimal metadata state from locally known projects.",
+      "skipped": "Automatic @macro recovery skipped",
+      "blockedConflictDescription": "Macro found unresolved conflicts in the metadata worktree and did not apply recovery automatically.",
+      "blockedDirtyDescription": "Macro found local changes in the metadata worktree and did not apply recovery automatically."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
@@ -2101,6 +2111,7 @@
   },
   "notifications": {
     "centerTitle": "Notifications",
+    "mcpServersUnavailable": "Some MCP servers are unavailable",
     "openCenter": "Open notifications",
     "closeCenter": "Close notifications",
     "clearAll": "Clear all",

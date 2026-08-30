@@ -144,6 +144,7 @@ const StartupErrorScreen: React.FC<{
 // =============================================================================
 
 const App: React.FC = () => {
+  const { t } = useTranslation();
   const platformChrome = getPlatformChromeState();
   const titleBarLayout = getTitleBarLayout(platformChrome);
 
@@ -392,22 +393,34 @@ const App: React.FC = () => {
     if (metadataRecoveryReport.status === "restored_from_history") {
       notify.success(
         metadataRecoveryReport.restoredCommit
-          ? `Metadata @macro restored from history (${metadataRecoveryReport.restoredCommit})`
-          : "Metadata @macro restored from history",
+          ? t(
+              "startup.metadataRecovery.restoredWithCommit",
+              "Metadata @macro restored from history ({{commit}})",
+              { commit: metadataRecoveryReport.restoredCommit },
+            )
+          : t(
+              "startup.metadataRecovery.restored",
+              "Metadata @macro restored from history",
+            ),
         {
-          description:
-            metadataRecoveryReport.message ||
+          description: t(
+            "startup.metadataRecovery.restoredDescription",
             "Macro restored the latest valid metadata snapshot before loading the workspace.",
+          ),
         },
       );
       return;
     }
 
     if (metadataRecoveryReport.status === "reconstructed_from_hints") {
-      notify.info("Metadata @macro reconfigured from local projects", {
-        description:
-          metadataRecoveryReport.message ||
+      notify.info(t(
+        "startup.metadataRecovery.reconstructed",
+        "Metadata @macro reconfigured from local projects",
+      ), {
+        description: t(
+          "startup.metadataRecovery.reconstructedDescription",
           "Macro rebuilt a minimal metadata state from locally known projects.",
+        ),
       });
       return;
     }
@@ -416,13 +429,23 @@ const App: React.FC = () => {
       metadataRecoveryReport.status === "blocked_dirty" ||
       metadataRecoveryReport.status === "blocked_conflict"
     ) {
-      notify.warning("Automatic @macro recovery skipped", {
+      notify.warning(t(
+        "startup.metadataRecovery.skipped",
+        "Automatic @macro recovery skipped",
+      ), {
         description:
-          metadataRecoveryReport.message ||
-          "Macro detected local metadata blockers and did not apply recovery automatically.",
+          metadataRecoveryReport.status === "blocked_conflict"
+            ? t(
+                "startup.metadataRecovery.blockedConflictDescription",
+                "Macro found unresolved conflicts in the metadata worktree and did not apply recovery automatically.",
+              )
+            : t(
+                "startup.metadataRecovery.blockedDirtyDescription",
+                "Macro found local changes in the metadata worktree and did not apply recovery automatically.",
+              ),
       });
     }
-  }, [initStatus.critical, metadataRecoveryReport]);
+  }, [initStatus.critical, metadataRecoveryReport, t]);
 
   // ==========================================================================
   // RENDER
