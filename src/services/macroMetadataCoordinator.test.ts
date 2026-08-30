@@ -224,4 +224,37 @@ describe('macroMetadataCoordinator', () => {
 
     expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
   });
+
+  it('keeps a pending mutation when the metadata commit fails', async () => {
+    const commit = mock(async () => {
+      throw new Error('injected metadata commit failure');
+    });
+    const failingDeps = {
+      ...deps,
+      tauri: {
+        isTauriAvailable: () => true,
+        macroBranchCommitIfDirty: commit,
+      },
+    };
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'chat_synced',
+      importance: 'light',
+    }, failingDeps);
+
+    await expect(flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: ['/repos/web'],
+    }, failingDeps)).rejects.toThrow('injected metadata commit failure');
+
+    await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: ['/repos/web'],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledWith({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): sync project state',
+    });
+  });
 });

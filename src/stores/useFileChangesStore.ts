@@ -180,6 +180,7 @@ export interface FileDiffModalSession {
   isDirty: boolean;
   isSaving: boolean;
   isHydratingFullContext: boolean;
+  editRevision: string | null;
   directSnapshotId?: string;
   restoreRevision?: string;
 }
@@ -1349,6 +1350,7 @@ const buildDiffModalSession = (
   isDirty: false,
   isSaving: false,
   isHydratingFullContext: false,
+  editRevision: null,
   ...overrides,
 });
 
@@ -1419,6 +1421,10 @@ const resolveLatestDiffModalSessionAfterRefresh = ({
       lastLoadedModifiedContent: refreshedChange.modifiedContent,
       isSaving: false,
       isHydratingFullContext: false,
+      editRevision:
+        session.lastLoadedModifiedContent === refreshedChange.modifiedContent
+          ? session.editRevision
+          : null,
     },
     isDiffModalOpen: true,
   };
@@ -1512,7 +1518,11 @@ export const createFileChangesStore = (
       }
       activeReviewRequestIds.clear();
     };
-    const hydrateDiffModalFile = async (repositoryId: string, changeId: string) => {
+    const hydrateDiffModalFile = async (
+      repositoryId: string,
+      changeId: string,
+      hydrateFullContext: boolean,
+    ) => {
       const repository = get().getRepository(repositoryId);
       const change = get().getChange(repositoryId, changeId);
       if (!repository || !change) {
@@ -1540,8 +1550,8 @@ export const createFileChangesStore = (
       }));
 
       try {
-        let hydratedChange: FileChangeEntry;
-        if (repository.executionMode === 'direct') {
+        let hydratedChange = change;
+        if (hydrateFullContext && repository.executionMode === 'direct') {
           const task = ensureReviewTask(deps);
           const reviewRequestId = nextReviewRequestId('direct-file');
           try {
@@ -1562,7 +1572,7 @@ export const createFileChangesStore = (
           } finally {
             activeReviewRequestIds.delete(reviewRequestId);
           }
-        } else if (deps.tauri.gitReviewFile) {
+        } else if (hydrateFullContext && deps.tauri.gitReviewFile) {
           const reviewRequestId = nextReviewRequestId('file');
           try {
             const reviewFile = await deps.tauri.gitReviewFile({
@@ -1594,7 +1604,7 @@ export const createFileChangesStore = (
           } finally {
             activeReviewRequestIds.delete(reviewRequestId);
           }
-        } else {
+        } else if (hydrateFullContext) {
           const pair = await deps.tauri.gitReadFilePair({
             repoPath: repository.worktreePath,
             path: change.path,
@@ -1617,6 +1627,36 @@ export const createFileChangesStore = (
             validatedAddedLineNumbers: validatedStageDecorations.validatedAddedLineNumbers,
             requiresHydration: false,
           };
+        }
+
+        let editRevision: string | null = null;
+        if (hydratedChange.canEdit) {
+          const path = resolveChangeFilePath(repository.worktreePath, hydratedChange.path);
+          const workspaceOptions = { workspacePath: repository.worktreePath };
+          const exists = await deps.tauri.fsExists(path, workspaceOptions);
+          if (exists) {
+            const current = await deps.tauri.fsReadFileWithOptions({
+              path,
+              allowOutsideWorkspace: false,
+              ...workspaceOptions,
+            });
+            if (!current.revision) {
+              throw new Error(
+                `Cannot safely edit ${hydratedChange.path}: the loaded revision is unavailable. Reopen the diff and retry.`,
+              );
+            }
+            editRevision = current.revision;
+            hydratedChange = {
+              ...hydratedChange,
+              modifiedContent: current.content,
+            };
+          } else {
+            editRevision = 'absent';
+            hydratedChange = {
+              ...hydratedChange,
+              modifiedContent: '',
+            };
+          }
         }
 
         if (get().loadRequestId !== requestLoadId) {
@@ -1645,6 +1685,7 @@ export const createFileChangesStore = (
                   : hydratedChange.modifiedContent,
                 lastLoadedModifiedContent: hydratedChange.modifiedContent,
                 isHydratingFullContext: false,
+                editRevision,
               }
               : state.diffModalSession,
             lastError: null,
@@ -2032,8 +2073,14 @@ export const createFileChangesStore = (
       }),
       isDiffModalOpen: true,
     });
-    if (change.requiresHydration && !change.tooLarge && !change.isBinary) {
-      void hydrateDiffModalFile(repositoryId, changeId);
+    const shouldHydrateFullContext = Boolean(
+      change.requiresHydration && !change.tooLarge && !change.isBinary,
+    );
+    const shouldCaptureEditRevision = Boolean(
+      change.canEdit && !change.tooLarge && !change.isBinary,
+    );
+    if (shouldHydrateFullContext || shouldCaptureEditRevision) {
+      void hydrateDiffModalFile(repositoryId, changeId, shouldHydrateFullContext);
     }
   },
 
@@ -2505,26 +2552,14 @@ export const createFileChangesStore = (
 
     try {
       const path = resolveChangeFilePath(repository.worktreePath, change.path);
-      const workspaceOptions = {
-        workspacePath: repository.worktreePath,
-      };
-      const exists = await deps.tauri.fsExists(path, workspaceOptions);
-      let expectedRevision = 'absent';
-      if (exists) {
-        const current = await deps.tauri.fsReadFileWithOptions({
-          path,
-          allowOutsideWorkspace: false,
-          ...workspaceOptions,
-        });
-        if (!current.revision) {
-          throw new Error(
-            `Cannot safely save ${change.path}: the current revision is unavailable. Reload the diff and retry.`,
-          );
-        }
-        expectedRevision = current.revision;
+      const expectedRevision = session.editRevision;
+      if (!expectedRevision) {
+        throw new Error(
+          `Cannot safely save ${change.path}: the loaded revision is unavailable. Reopen the diff and retry.`,
+        );
       }
 
-      await deps.tauri.fsWriteFile({
+      const writeResult = await deps.tauri.fsWriteFile({
         path,
         content: nextContent,
         createDirs: true,
@@ -2552,6 +2587,7 @@ export const createFileChangesStore = (
             lastLoadedModifiedContent: nextContent,
             isDirty: false,
             isSaving: false,
+            editRevision: writeResult.revision ?? null,
           }
           : null,
       }));

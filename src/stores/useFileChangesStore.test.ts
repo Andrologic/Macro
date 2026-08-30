@@ -279,11 +279,28 @@ const gitReadFilePairMock = mock(async ({ repoPath, path }: { repoPath: string; 
   };
 });
 
-const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: string }) => {
+const fsWriteFileMock = mock(async ({
+  path,
+  content,
+  expectedRevision,
+}: {
+  path: string;
+  content: string;
+  expectedRevision?: string | null;
+}) => {
   const normalized = path.replace(/\\/g, '/');
   const isWorktreeA = normalized.startsWith(`${worktreeAPath}/`);
   const base = isWorktreeA ? worktreeAPath : worktreeBPath;
   const relative = normalized.slice(base.length + 1);
+  const current = currentFiles[base]?.[relative];
+  const actualRevision = current === undefined || current === null
+    ? 'absent'
+    : `revision:${current}`;
+  if (expectedRevision && expectedRevision !== actualRevision) {
+    throw Object.assign(new Error('The file changed after the diff loaded.'), {
+      code: 'REVISION_CONFLICT',
+    });
+  }
   currentFiles[base] ||= {};
   currentFiles[base][relative] = content;
   return {
@@ -291,6 +308,7 @@ const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: 
     bytes_written: content.length,
     created: false,
     skipped: false,
+    revision: `revision:${content}`,
   };
 });
 
@@ -2191,6 +2209,27 @@ describe('useFileChangesStore', () => {
     expect(session?.rightDraftContent).toContain('const value = 9;');
     expect(change?.modifiedContent).toContain('const value = 9;');
     expect(repository?.stats.pendingVisibleFileCount).toBe(1);
+  });
+
+  it('rejects a draft save when the file changed after the diff loaded', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 9;\nconsole.log(value);');
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const external = true;';
+
+    await expect(store.saveRightDraft()).rejects.toThrow(
+      'The file changed after the diff loaded.',
+    );
+
+    expect(fsWriteFileMock).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRevision: expect.stringContaining('revision:const value = 2;'),
+    }));
+    expect(currentFiles[worktreeAPath]['src/main.ts']).toBe('const external = true;');
+    expect(useFileChangesStore.getState().getDiffModalSession()?.isDirty).toBe(true);
   });
 
   it('stages visible changes in batch for a repository scope', async () => {

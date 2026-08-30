@@ -167,6 +167,7 @@ const buildSession = (overrides: Partial<FileDiffModalSession> = {}): FileDiffMo
   isDirty: false,
   isSaving: false,
   isHydratingFullContext: false,
+  editRevision: 'revision-1',
   ...overrides,
 });
 

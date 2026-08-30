@@ -269,18 +269,22 @@ export const flushMacroMetadata = async (
   for (const workspacePath of workspacePaths) {
     const pending = pendingMutations.get(workspacePath) ?? null;
     clearPendingTimer(pending ?? undefined);
-    pendingMutations.delete(workspacePath);
 
     if (!(await isWorkspaceGitActionable(workspacePath, deps?.isWorkspaceGitActionable))) {
+      if (pendingMutations.get(workspacePath) === pending) {
+        pendingMutations.delete(workspacePath);
+      }
       continue;
     }
 
-    results.push(
-      await tauri.macroBranchCommitIfDirty({
-        workspacePath,
-        message: messageForTrigger(request.trigger, pending, request.message),
-      })
-    );
+    const result = await tauri.macroBranchCommitIfDirty({
+      workspacePath,
+      message: messageForTrigger(request.trigger, pending, request.message),
+    });
+    results.push(result);
+    if (pendingMutations.get(workspacePath) === pending) {
+      pendingMutations.delete(workspacePath);
+    }
   }
 
   return results;
