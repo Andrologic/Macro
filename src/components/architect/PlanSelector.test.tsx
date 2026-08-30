@@ -1,7 +1,8 @@
 import { describe, expect, it, mock } from 'bun:test';
 import {
+  isPlanActivationSwitchRequestCurrent,
   recoverFailedPlanActivation,
-  resolvePlanActivationRequestIdentity,
+  resolvePlanActivationTargetBranch,
 } from './planActivationRecovery';
 
 interface VisibleAppState {
@@ -26,16 +27,31 @@ interface VisibleAppState {
 }
 
 describe('PlanSelector activation recovery', () => {
-  it('uses the catalog branch for both activation and failure identity', () => {
-    expect(resolvePlanActivationRequestIdentity({
-      planId: 'plan-b',
+  it('uses the catalog branch for activation', () => {
+    expect(resolvePlanActivationTargetBranch({
       exactCatalogBranch: 'release/2.0',
       unambiguousLegacyBranch: null,
       fallbackBranch: 'develop',
-    })).toEqual({
-      targetBranch: 'release/2.0',
-      locatorKey: 'plan:v1:release%2F2.0:plan-b',
-    });
+    })).toBe('release/2.0');
+  });
+
+  it('keeps the activation request current when hydration rewrites its branch', () => {
+    expect(isPlanActivationSwitchRequestCurrent({
+      activationSwitchRequestId: 8,
+      planId: 'plan-b',
+      currentSwitch: {
+        requestId: 8,
+        targetPlanId: 'plan-b',
+      },
+    })).toBe(true);
+    expect(isPlanActivationSwitchRequestCurrent({
+      activationSwitchRequestId: 8,
+      planId: 'plan-b',
+      currentSwitch: {
+        requestId: 9,
+        targetPlanId: 'plan-b',
+      },
+    })).toBe(false);
   });
 
   it('restores the exact visible state and reports the activation error', () => {

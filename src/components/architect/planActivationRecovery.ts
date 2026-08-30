@@ -1,5 +1,3 @@
-import { toPlanLocatorKey } from '../../services/durableIdentity';
-
 interface SelectionSnapshot {
   selectionRequestId: number;
 }
@@ -31,29 +29,30 @@ export type FailedPlanActivationRecoveryResult =
   | 'replica-repair-opened'
   | 'error-reported';
 
-interface ResolvePlanActivationRequestIdentityOptions {
-  planId: string;
+interface ResolvePlanActivationTargetBranchOptions {
   exactCatalogBranch?: string | null;
   unambiguousLegacyBranch?: string | null;
   fallbackBranch: string;
 }
 
-export const resolvePlanActivationRequestIdentity = ({
-  planId,
+export const resolvePlanActivationTargetBranch = ({
   exactCatalogBranch,
   unambiguousLegacyBranch,
   fallbackBranch,
-}: ResolvePlanActivationRequestIdentityOptions): {
-  targetBranch: string;
-  locatorKey: string;
-} => {
-  const targetBranch =
-    exactCatalogBranch ?? unambiguousLegacyBranch ?? fallbackBranch;
-  return {
-    targetBranch,
-    locatorKey: toPlanLocatorKey({ branchName: targetBranch, planId }),
+}: ResolvePlanActivationTargetBranchOptions): string =>
+  exactCatalogBranch ?? unambiguousLegacyBranch ?? fallbackBranch;
+
+export const isPlanActivationSwitchRequestCurrent = (input: {
+  activationSwitchRequestId: number | null;
+  planId: string;
+  currentSwitch: {
+    requestId: number;
+    targetPlanId: string | null;
   };
-};
+}): boolean =>
+  input.activationSwitchRequestId !== null &&
+  input.currentSwitch.requestId === input.activationSwitchRequestId &&
+  input.currentSwitch.targetPlanId === input.planId;
 
 export const restoreFailedPlanActivation = <
   TAppState,
