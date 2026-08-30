@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 import {
   __testables,
+  getModelContextCatalogStatus,
   lookupModelContextCatalogLimit,
   lookupModelReasoningCatalogCapability,
   refreshModelContextCatalog,
@@ -69,6 +70,37 @@ describe('modelContextCatalog', () => {
       outputTokens: 64_000,
       source: 'models_dev',
     });
+  });
+
+  it('matches a base model after removing both provider prefix and variant suffix', () => {
+    __testables.writeCachedCatalog({
+      fetchedAt: new Date().toISOString(),
+      providers: {
+        openrouter: {
+          id: 'openrouter',
+          models: {
+            model: {
+              id: 'model',
+              limit: { context: 128_000, output: 16_000 },
+            },
+          },
+        },
+      },
+    });
+
+    expect(lookupModelContextCatalogLimit({
+      providerType: 'openrouter',
+      modelId: 'provider/model:variant',
+    })).toMatchObject({
+      contextTokens: 128_000,
+      outputTokens: 16_000,
+    });
+    expect(__testables.getModelCandidates('provider/model:variant')).toEqual([
+      'provider/model:variant',
+      'model:variant',
+      'provider/model',
+      'model',
+    ]);
   });
 
   it('refreshes from Models.dev and stores the cache', async () => {
@@ -153,5 +185,22 @@ describe('modelContextCatalog', () => {
 
     expect(status.source).toBe('cache');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps reporting the snapshot after a network fallback without cache', async () => {
+    const fetchImpl = mock(async () => new Response('', { status: 503 }));
+
+    const refreshStatus = await refreshModelContextCatalog({
+      force: true,
+      fetchImpl: fetchImpl as never,
+    });
+
+    expect(refreshStatus.source).toBe('snapshot');
+    expect(getModelContextCatalogStatus()).toMatchObject({
+      lastFetchedAt: null,
+      source: 'snapshot',
+      stale: true,
+      error: 'Models.dev returned 503',
+    });
   });
 });
