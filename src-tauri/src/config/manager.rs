@@ -47,6 +47,16 @@ struct DurablePendingSensitiveChange {
     apply_modes: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DurableConfigPublication {
+    document: ConfigDocumentKind,
+    scope: ConfigScope,
+    previous_document: Value,
+    previous_etag: String,
+    proposed_etag: String,
+}
+
 #[derive(Default)]
 struct ConfigState {
     documents: BTreeMap<DocumentKey, StoredDocument>,
@@ -256,6 +266,7 @@ impl ConfigManager {
         let local_lock = self.document_lock(&key).await;
         let _local_guard = local_lock.lock().await;
         let _file_guard = lock_document_file_async(path.clone()).await?;
+        recover_config_publication(self.root(), &key, &path)?;
         let raw = fs::read(&path).map_err(|error| {
             ConfigApiError::new(
                 "config.document.read_failed",
@@ -849,13 +860,36 @@ impl ConfigManager {
             all_changed_paths: changed_paths.clone(),
             apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
         });
+        let durable_publication = (!needs_approval).then(|| DurableConfigPublication {
+            document: request.kind,
+            scope: request.scope.clone(),
+            previous_document: approved.clone(),
+            previous_etag: etag(&approved),
+            proposed_etag: new_etag.clone(),
+        });
         let pending_path = pending_document_path(self.root(), &key);
         let approved_path = approved_document_path(self.root(), &key);
+        let publication_path = publication_document_path(self.root(), &key);
         if let Some(pending) = &durable_pending {
             write_durable_pending(&pending_path, pending)?;
         }
+        if let Some(publication) = &durable_publication {
+            write_durable_config_publication(&publication_path, publication)?;
+        }
         if let Err(error) = atomic_write_json_locked(&stored.path, &proposed) {
-            if durable_pending.is_some() {
+            if let Some(publication) = &durable_publication {
+                rollback_config_publication(self.root(), &key, &stored.path, publication).map_err(
+                    |cleanup_error| {
+                        ConfigApiError::new(
+                            "config.document.write_failed_with_publication_rollback_failed",
+                            format!(
+                                "Impossible d’écrire {} : {error}. La publication préparée n’a pas pu être compensée : {}",
+                                stored.path.display(), cleanup_error.message
+                            ),
+                        )
+                    },
+                )?;
+            } else if durable_pending.is_some() {
                 remove_file_if_exists(&pending_path).map_err(|cleanup_error| {
                     ConfigApiError::new(
                         "config.document.write_failed_with_pending_cleanup_failed",
@@ -871,14 +905,30 @@ impl ConfigManager {
                 format!("Impossible d’écrire {} : {error}", stored.path.display()),
             ));
         }
-        if durable_pending.is_none() {
-            atomic_write_json(&approved_path, &proposed).map_err(|error| {
-                ConfigApiError::new(
-                    "config.approved.write_failed",
-                    format!("Impossible de promouvoir la configuration : {error}"),
-                )
-            })?;
-            remove_file_if_exists(&pending_path)?;
+        if let Some(publication) = &durable_publication {
+            let publication_result = write_approved_document(&approved_path, &proposed)
+                .map_err(|error| {
+                    ConfigApiError::new(
+                        "config.approved.write_failed",
+                        format!("Impossible de promouvoir la configuration : {error}"),
+                    )
+                })
+                .and_then(|()| remove_file_if_exists(&pending_path))
+                .and_then(|()| remove_file_if_exists(&publication_path));
+            if let Err(error) = publication_result {
+                rollback_config_publication(self.root(), &key, &stored.path, publication).map_err(
+                    |rollback_error| {
+                        ConfigApiError::new(
+                            "config.publication.failed_with_rollback_failed",
+                            format!(
+                                "{} La compensation durable a aussi échoué : {}",
+                                error.message, rollback_error.message
+                            ),
+                        )
+                    },
+                )?;
+                return Err(error);
+            }
         }
         let pending = durable_pending.as_ref().map(|entry| entry.pending.clone());
         let restart_required = !needs_approval && apply_modes.contains("restart");
@@ -1537,6 +1587,13 @@ fn pending_document_path(root: &Path, key: &DocumentKey) -> PathBuf {
         .join(key.kind.file_name())
 }
 
+fn publication_document_path(root: &Path, key: &DocumentKey) -> PathBuf {
+    root.join(".runtime")
+        .join("publications")
+        .join(runtime_scope_key(&key.scope))
+        .join(key.kind.file_name())
+}
+
 fn read_json_value(path: &Path) -> Result<Value, ConfigApiError> {
     let bytes = fs::read(path).map_err(|error| {
         ConfigApiError::new(
@@ -1621,6 +1678,109 @@ fn write_durable_pending(
             format!("Impossible de conserver la demande sensible : {error}"),
         )
     })
+}
+
+fn read_durable_config_publication(
+    path: &Path,
+) -> Result<Option<DurableConfigPublication>, ConfigApiError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let value = read_json_value(path)?;
+    serde_json::from_value(value).map(Some).map_err(|error| {
+        ConfigApiError::new(
+            "config.publication.invalid",
+            format!("Le journal de publication est invalide : {error}"),
+        )
+    })
+}
+
+fn write_durable_config_publication(
+    path: &Path,
+    publication: &DurableConfigPublication,
+) -> Result<(), ConfigApiError> {
+    let value = serde_json::to_value(publication).map_err(|error| {
+        ConfigApiError::new(
+            "config.publication.serialize_failed",
+            format!("Impossible de sérialiser le journal de publication : {error}"),
+        )
+    })?;
+    atomic_write_json(path, &value).map_err(|error| {
+        ConfigApiError::new(
+            "config.publication.write_failed",
+            format!("Impossible de préparer la publication de configuration : {error}"),
+        )
+    })
+}
+
+fn rollback_config_publication(
+    root: &Path,
+    key: &DocumentKey,
+    canonical_path: &Path,
+    publication: &DurableConfigPublication,
+) -> Result<(), ConfigApiError> {
+    if publication.document != key.kind
+        || publication.scope != key.scope
+        || etag(&publication.previous_document) != publication.previous_etag
+    {
+        return Err(ConfigApiError::new(
+            "config.publication.invalid",
+            "Le journal de publication ne correspond pas au document verrouillé.",
+        ));
+    }
+    let validation = validate_document(key.kind, &key.scope, &publication.previous_document);
+    if !validation.valid || validation.read_only {
+        return Err(ConfigApiError::new(
+            "config.publication.invalid",
+            "La version de restauration du journal n’est pas valide.",
+        )
+        .with_diagnostics(validation.diagnostics));
+    }
+    #[cfg(test)]
+    if canonical_path.with_extension("fail-rollback").exists() {
+        return Err(ConfigApiError::new(
+            "config.publication.rollback_failed",
+            "Échec injecté pendant la compensation de publication.",
+        ));
+    }
+    atomic_write_json_locked(canonical_path, &publication.previous_document).map_err(|error| {
+        ConfigApiError::new(
+            "config.publication.rollback_failed",
+            format!("Impossible de restaurer le document canonique : {error}"),
+        )
+    })?;
+    atomic_write_json(
+        &approved_document_path(root, key),
+        &publication.previous_document,
+    )
+    .map_err(|error| {
+        ConfigApiError::new(
+            "config.publication.rollback_failed",
+            format!("Impossible de restaurer la copie approuvée : {error}"),
+        )
+    })?;
+    remove_file_if_exists(&publication_document_path(root, key))
+}
+
+fn recover_config_publication(
+    root: &Path,
+    key: &DocumentKey,
+    canonical_path: &Path,
+) -> Result<(), ConfigApiError> {
+    let publication_path = publication_document_path(root, key);
+    let Some(publication) = read_durable_config_publication(&publication_path)? else {
+        return Ok(());
+    };
+    rollback_config_publication(root, key, canonical_path, &publication)
+}
+
+fn write_approved_document(path: &Path, value: &Value) -> Result<(), String> {
+    #[cfg(test)]
+    if path.with_extension("fail-write-once").exists() {
+        let _ = fs::remove_file(path.with_extension("fail-write-once"));
+        return Err("Échec injecté pendant l’écriture de la copie approuvée.".to_string());
+    }
+    atomic_write_json(path, value)
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), ConfigApiError> {
@@ -1899,6 +2059,117 @@ mod tests {
             .await
             .expect_err("etag conflict");
         assert_eq!(conflict.code, "config.etag.conflict");
+    }
+
+    #[tokio::test]
+    async fn non_sensitive_patch_rolls_back_when_approved_publication_fails() {
+        let (_temp, manager) = manager().await;
+        let document = manager
+            .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+            .await
+            .expect("settings");
+        let canonical_path = PathBuf::from(&document.file_path);
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Settings,
+            scope: ConfigScope::User,
+        };
+        let approved_path = approved_document_path(manager.root(), &key);
+        let previous = read_json_value(&canonical_path).expect("previous canonical document");
+        fs::write(approved_path.with_extension("fail-write-once"), b"fail")
+            .expect("inject approved publication failure");
+
+        let error = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Settings,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/language".to_string(),
+                    from: None,
+                    value: Some(json!("fr")),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect_err("approved publication must fail");
+
+        assert_eq!(error.code, "config.approved.write_failed");
+        assert_eq!(
+            read_json_value(&canonical_path).expect("rolled back canonical"),
+            previous
+        );
+        assert_eq!(
+            read_json_value(&approved_path).expect("rolled back approved"),
+            previous
+        );
+        assert!(!publication_document_path(manager.root(), &key).exists());
+    }
+
+    #[tokio::test]
+    async fn failed_non_sensitive_compensation_recovers_from_its_durable_journal() {
+        let (_temp, manager) = manager().await;
+        let root = manager.root().to_path_buf();
+        let document = manager
+            .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+            .await
+            .expect("settings");
+        let canonical_path = PathBuf::from(&document.file_path);
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Settings,
+            scope: ConfigScope::User,
+        };
+        let approved_path = approved_document_path(manager.root(), &key);
+        let publication_path = publication_document_path(manager.root(), &key);
+        let previous = read_json_value(&canonical_path).expect("previous canonical document");
+        fs::write(approved_path.with_extension("fail-write-once"), b"fail")
+            .expect("inject approved publication failure");
+        let rollback_failure = canonical_path.with_extension("fail-rollback");
+        fs::write(&rollback_failure, b"fail").expect("inject rollback failure");
+
+        let error = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Settings,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/language".to_string(),
+                    from: None,
+                    value: Some(json!("fr")),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect_err("publication and compensation must fail");
+
+        assert_eq!(error.code, "config.publication.failed_with_rollback_failed");
+        assert!(publication_path.exists());
+        assert_eq!(
+            read_json_value(&canonical_path).expect("uncompensated canonical")["language"],
+            json!("fr")
+        );
+
+        fs::remove_file(rollback_failure).expect("release rollback");
+        drop(manager);
+        let restarted = ConfigManager::initialize(root)
+            .await
+            .expect("recover publication");
+
+        assert_eq!(
+            read_json_value(&canonical_path).expect("recovered canonical"),
+            previous
+        );
+        assert_eq!(
+            read_json_value(&approved_path).expect("recovered approved"),
+            previous
+        );
+        assert!(!publication_path.exists());
+        let recovered = restarted
+            .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+            .await
+            .expect("recovered settings");
+        assert_eq!(recovered.value, previous);
     }
 
     #[tokio::test]
