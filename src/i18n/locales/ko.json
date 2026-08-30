@@ -1672,6 +1672,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "전략 미리보기를 취소하지 못했습니다.",
+    "strategyPreviewApplyError": "전략 미리보기를 적용하지 못했습니다.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "설계를 시작하려면 플랜을 선택하거나 만드세요.",
     "createFirstPlanToStart": "설계를 시작하려면 첫 번째 플랜을 만드세요.",

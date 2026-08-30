@@ -1677,6 +1677,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "No se pudo descartar la vista previa de la estrategia.",
+    "strategyPreviewApplyError": "No se pudo aplicar la vista previa de la estrategia.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Selecciona o crea un plan para empezar a diseñar.",
     "createFirstPlanToStart": "Crea tu primer plan para empezar a diseñar.",

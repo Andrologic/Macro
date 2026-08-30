@@ -1673,6 +1673,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "Die Strategievorschau konnte nicht verworfen werden.",
+    "strategyPreviewApplyError": "Die Strategievorschau konnte nicht angewendet werden.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Wähle oder erstelle einen Plan, um mit der Architektur zu beginnen.",
     "createFirstPlanToStart": "Erstelle deinen ersten Plan, um mit der Architektur zu beginnen.",

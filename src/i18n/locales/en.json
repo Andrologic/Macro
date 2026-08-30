@@ -1694,6 +1694,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "Failed to discard strategy preview.",
+    "strategyPreviewApplyError": "Failed to apply strategy preview.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Select or create a plan to start architecting.",
     "createFirstPlanToStart": "Create your first plan to start architecting.",
