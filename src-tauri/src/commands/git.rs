@@ -2090,13 +2090,14 @@ pub(crate) async fn wsl_git_reset(
         });
     }
     let resolved_commit = match commit {
-        Some(commit) => Some(wsl_resolve_commit_oid(repo_path, &commit, "reset commit").await?),
-        None => None,
+        Some(commit) => wsl_resolve_commit_oid(repo_path, &commit, "reset commit").await?,
+        None => wsl_resolve_commit_oid(repo_path, "HEAD", "reset commit").await?,
     };
-    let mut args = vec!["reset".to_string(), format!("--{}", reset_mode)];
-    if let Some(commit) = resolved_commit {
-        args.push(commit);
+    if reset_mode == "hard" {
+        ensure_wsl_hard_reset_preserves_untracked(repo_path, &resolved_commit).await?;
     }
+    let mut args = vec!["reset".to_string(), format!("--{}", reset_mode)];
+    args.push(resolved_commit);
     run_wsl_git_checked(
         repo_path,
         &args,
@@ -2104,6 +2105,103 @@ pub(crate) async fn wsl_git_reset(
         "git reset WSL failed",
     )
     .await?;
+    Ok(())
+}
+
+fn parse_nul_separated_git_paths(output: &[u8]) -> Vec<Vec<u8>> {
+    output
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(normalize_git_path)
+        .collect()
+}
+
+fn normalize_git_path(path: &[u8]) -> Vec<u8> {
+    let end = path
+        .iter()
+        .rposition(|byte| *byte != b'/')
+        .map_or(0, |index| index + 1);
+    path[..end].to_vec()
+}
+
+fn git_path_is_same_or_descendant(path: &[u8], ancestor: &[u8]) -> bool {
+    path == ancestor
+        || (path.starts_with(ancestor)
+            && path.get(ancestor.len()).is_some_and(|byte| *byte == b'/'))
+}
+
+fn find_untracked_reset_collision(
+    untracked_paths: &[Vec<u8>],
+    target_paths: &[Vec<u8>],
+) -> Option<Vec<u8>> {
+    untracked_paths.iter().find_map(|untracked| {
+        target_paths
+            .iter()
+            .any(|target| {
+                git_path_is_same_or_descendant(untracked, target)
+                    || git_path_is_same_or_descendant(target, untracked)
+            })
+            .then(|| untracked.clone())
+    })
+}
+
+fn untracked_reset_collision_error(path: &[u8]) -> BackendError {
+    BackendError::Git {
+        message: format!(
+            "Hard reset would overwrite untracked path '{}'; move or remove it before retrying",
+            String::from_utf8_lossy(path)
+        ),
+    }
+}
+
+async fn ensure_wsl_hard_reset_preserves_untracked(
+    repo_path: &WslProjectPath,
+    target_commit: &str,
+) -> Result<()> {
+    let untracked = run_wsl_git_checked(
+        repo_path,
+        &[
+            "ls-files".to_string(),
+            "--others".to_string(),
+            "--exclude-standard".to_string(),
+            "-z".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+        "git untracked-path preflight WSL failed",
+    )
+    .await?;
+    let ignored = run_wsl_git_checked(
+        repo_path,
+        &[
+            "ls-files".to_string(),
+            "--others".to_string(),
+            "--ignored".to_string(),
+            "--exclude-standard".to_string(),
+            "-z".to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+        "git ignored-path preflight WSL failed",
+    )
+    .await?;
+    let target = run_wsl_git_checked(
+        repo_path,
+        &[
+            "ls-tree".to_string(),
+            "-r".to_string(),
+            "--name-only".to_string(),
+            "-z".to_string(),
+            target_commit.to_string(),
+        ],
+        WSL_GIT_TIMEOUT,
+        "git reset target preflight WSL failed",
+    )
+    .await?;
+    let mut untracked_paths = parse_nul_separated_git_paths(&untracked.stdout);
+    untracked_paths.extend(parse_nul_separated_git_paths(&ignored.stdout));
+    let target_paths = parse_nul_separated_git_paths(&target.stdout);
+    if let Some(path) = find_untracked_reset_collision(&untracked_paths, &target_paths) {
+        return Err(untracked_reset_collision_error(&path));
+    }
     Ok(())
 }
 
@@ -3981,6 +4079,44 @@ pub(crate) fn restore_paths(
     Ok(())
 }
 
+fn native_target_tree_paths(target: &Commit<'_>) -> Result<Vec<Vec<u8>>> {
+    let tree = target.tree()?;
+    let mut paths = Vec::new();
+    tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() == Some(git2::ObjectType::Tree) {
+            return TreeWalkResult::Ok;
+        }
+        let mut path = root.as_bytes().to_vec();
+        path.extend_from_slice(entry.name_bytes());
+        paths.push(path);
+        TreeWalkResult::Ok
+    })?;
+    Ok(paths)
+}
+
+fn native_untracked_paths(repo: &Repository) -> Result<Vec<Vec<u8>>> {
+    let mut options = get_status_options();
+    options.include_ignored(true).recurse_ignored_dirs(true);
+    let statuses = repo.statuses(Some(&mut options))?;
+    Ok(statuses
+        .iter()
+        .filter(|entry| entry.status().is_wt_new() || entry.status().is_ignored())
+        .map(|entry| normalize_git_path(entry.path_bytes()))
+        .collect())
+}
+
+fn ensure_native_hard_reset_preserves_untracked(
+    repo: &Repository,
+    target: &Commit<'_>,
+) -> Result<()> {
+    let untracked_paths = native_untracked_paths(repo)?;
+    let target_paths = native_target_tree_paths(target)?;
+    if let Some(path) = find_untracked_reset_collision(&untracked_paths, &target_paths) {
+        return Err(untracked_reset_collision_error(&path));
+    }
+    Ok(())
+}
+
 pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) -> Result<()> {
     let target = if let Some(spec) = commit {
         resolve_commit(repo, &spec)?
@@ -4001,6 +4137,10 @@ pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) 
             )))
         }
     };
+
+    if reset_type == ResetType::Hard {
+        ensure_native_hard_reset_preserves_untracked(repo, &target)?;
+    }
 
     repo.reset(target.as_object(), reset_type, None)?;
     Ok(())
@@ -5631,10 +5771,10 @@ pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> 
     let tree = repo.find_tree(tree_id)?;
 
     let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-    if parent
+    let index_matches_parent = parent
         .as_ref()
-        .is_some_and(|parent| parent.tree_id() == tree_id)
-    {
+        .map_or_else(|| tree.len() == 0, |parent| parent.tree_id() == tree_id);
+    if index_matches_parent {
         return Err(BackendError::Git {
             message: "No staged changes to commit".to_string(),
         });
@@ -17428,6 +17568,25 @@ mod tests {
     }
 
     #[test]
+    fn test_git_commit_without_stage_all_rejects_untracked_only_root_commit() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = Repository::init(temp.path()).expect("init empty repo");
+        fs::write(temp.path().join("untracked.txt"), "untracked").expect("write untracked file");
+
+        let error = commit_repo(&repo, "feat: should not be empty", false)
+            .expect_err("untracked-only root commit must fail");
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "No staged changes to commit"
+        ));
+        assert!(
+            repo.head().is_err(),
+            "an empty root commit must not be created"
+        );
+    }
+
+    #[test]
     fn test_git_diff_working_tree() {
         let (temp, repo) = init_repo();
         fs::write(temp.path().join("README.md"), "updated").unwrap();
@@ -17804,6 +17963,75 @@ mod tests {
         assert_eq!(
             fs::read_to_string(untracked_path).unwrap(),
             "keep untracked"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_rejects_untracked_file_and_directory_collisions() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("collision.txt"), "tracked target").unwrap();
+        fs::create_dir_all(temp.path().join("target-directory")).unwrap();
+        fs::write(
+            temp.path().join("target-directory/tracked.txt"),
+            "tracked target",
+        )
+        .unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset targets", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "collision.txt\n").unwrap();
+        fs::write(temp.path().join("collision.txt"), "untracked file").unwrap();
+        let file_error = reset_repo(&repo, "hard", Some(target_commit.clone()))
+            .expect_err("hard reset must reject an untracked file collision");
+        assert!(file_error.to_string().contains("collision.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("collision.txt")).unwrap(),
+            "untracked file"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+
+        fs::remove_file(temp.path().join("collision.txt")).unwrap();
+        fs::create_dir_all(temp.path().join("target-directory/tracked.txt")).unwrap();
+        fs::write(
+            temp.path().join("target-directory/tracked.txt/local.txt"),
+            "untracked directory contents",
+        )
+        .unwrap();
+        let directory_error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject an untracked directory collision");
+        assert!(directory_error
+            .to_string()
+            .contains("target-directory/tracked.txt/local.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("target-directory/tracked.txt/local.txt")).unwrap(),
+            "untracked directory contents"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[test]
+    fn test_wsl_hard_reset_collision_preflight_uses_nul_delimited_paths() {
+        let untracked =
+            parse_nul_separated_git_paths(b"keep.txt\0target-directory/tracked.txt/local.txt\0");
+        let target = parse_nul_separated_git_paths(b"README.md\0target-directory/tracked.txt\0");
+
+        assert_eq!(
+            find_untracked_reset_collision(&untracked, &target),
+            Some(b"target-directory/tracked.txt/local.txt".to_vec())
+        );
+        assert_eq!(
+            find_untracked_reset_collision(
+                &parse_nul_separated_git_paths(b"target-directory/\0"),
+                &target,
+            ),
+            Some(b"target-directory".to_vec())
         );
     }
 

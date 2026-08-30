@@ -2456,6 +2456,58 @@ mod tests {
     }
 
     #[test]
+    fn test_ensure_branch_worktree_quarantines_existing_worktree_when_gitfile_is_missing() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let worktree_key = "integration-web-plan-missing-gitfile";
+        let ensured = state
+            .ensure_branch_worktree(
+                &repo,
+                worktree_key,
+                "plan/original",
+                None,
+                &["main".to_string()],
+            )
+            .expect("original branch worktree");
+        let preserved_file = ensured.worktree_path.join("uncommitted.txt");
+        fs::write(&preserved_file, "preserve me").expect("dirty worktree");
+        fs::remove_file(ensured.worktree_path.join(".git")).expect("remove worktree gitfile");
+
+        let repaired = state
+            .ensure_branch_worktree(
+                &repo,
+                worktree_key,
+                "plan/replacement",
+                None,
+                &["main".to_string()],
+            )
+            .expect("repair branch worktree");
+
+        assert_eq!(repaired.status, TaskWorktreeEnsureStatus::Repaired);
+        let parent = repaired.worktree_path.parent().expect("worktree parent");
+        let quarantined = fs::read_dir(parent)
+            .expect("read worktree parent")
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(
+                            "integration-integration-web-plan-missing-gitfile.invalid-",
+                        )
+                    })
+            })
+            .expect("quarantined worktree");
+        assert_eq!(
+            fs::read_to_string(quarantined.join("uncommitted.txt"))
+                .expect("preserved quarantined file"),
+            "preserve me"
+        );
+    }
+
+    #[test]
     fn test_ensure_branch_worktree_creates_local_fallback_from_origin() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());

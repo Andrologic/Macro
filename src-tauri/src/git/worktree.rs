@@ -541,6 +541,14 @@ fn remove_or_quarantine_path_for_repair(path: &Path, should_quarantine: bool) ->
     remove_path_if_present(path)
 }
 
+fn repair_requires_quarantine(
+    status: &TaskWorktreeStatus,
+    worktree_path: &Path,
+    is_dirty: Option<bool>,
+) -> bool {
+    *status == TaskWorktreeStatus::InvalidRepo || (worktree_path.exists() && is_dirty.is_none())
+}
+
 fn prune_worktree(repo: &Repository, worktree_name: &str) -> Result<bool> {
     let worktree = match repo.find_worktree(worktree_name) {
         Ok(worktree) => worktree,
@@ -924,7 +932,11 @@ impl GitState {
                     &inspection.worktree_path,
                     ManagedWorktreeKind::Task,
                 )?;
-                let should_quarantine = inspection.status == TaskWorktreeStatus::InvalidRepo;
+                let should_quarantine = repair_requires_quarantine(
+                    &inspection.status,
+                    &inspection.worktree_path,
+                    inspection.is_dirty,
+                );
                 if let Some(path) = inspection.registered_path.as_ref() {
                     let _ = remove_or_quarantine_path_for_repair(path, should_quarantine)?;
                 }
@@ -1223,7 +1235,11 @@ impl GitState {
                     &inspection.worktree_path,
                     ManagedWorktreeKind::Branch,
                 )?;
-                let should_quarantine = inspection.status == TaskWorktreeStatus::InvalidRepo;
+                let should_quarantine = repair_requires_quarantine(
+                    &inspection.status,
+                    &inspection.worktree_path,
+                    inspection.is_dirty,
+                );
                 if let Some(path) = inspection.registered_path.as_ref() {
                     let _ = remove_or_quarantine_path_for_repair(path, should_quarantine)?;
                 }
