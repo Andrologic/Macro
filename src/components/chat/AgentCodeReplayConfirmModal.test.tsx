@@ -75,18 +75,20 @@ describe('AgentCodeReplayConfirmModal', () => {
       );
     });
 
-    expect(container.textContent).toContain('modifié');
-    expect(container.textContent).toContain('src/modified.ts');
-    expect(container.textContent).toContain('créé');
-    expect(container.textContent).toContain('src/created.ts');
-    expect(container.textContent).toContain('supprimé');
-    expect(container.textContent).toContain('src/deleted.ts');
-    expect(container.textContent).toContain('Certains fichiers ont changé');
-    expect(container.textContent).toContain('changé');
-    expect(container.textContent).toContain(
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain('modifié');
+    expect(dialog?.textContent).toContain('src/modified.ts');
+    expect(dialog?.textContent).toContain('créé');
+    expect(dialog?.textContent).toContain('src/created.ts');
+    expect(dialog?.textContent).toContain('supprimé');
+    expect(dialog?.textContent).toContain('src/deleted.ts');
+    expect(dialog?.textContent).toContain('Certains fichiers ont changé');
+    expect(dialog?.textContent).toContain('changé');
+    expect(dialog?.textContent).toContain(
       'Seuls les fichiers suivis par les outils d’édition de Macro sont restaurés',
     );
-    expect(container.textContent).toContain(
+    expect(dialog?.textContent).toContain(
       'Les compactages de contexte après ce message seront recalculés',
     );
   });
