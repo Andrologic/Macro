@@ -4371,6 +4371,10 @@ type NativeHardResetTestHook = Box<dyn FnOnce() + Send>;
 static NATIVE_HARD_RESET_AFTER_PREFLIGHT_HOOKS: OnceLock<
     Mutex<HashMap<PathBuf, NativeHardResetTestHook>>,
 > = OnceLock::new();
+#[cfg(test)]
+static NATIVE_HARD_RESET_BEFORE_FINAL_RESET_HOOKS: OnceLock<
+    Mutex<HashMap<PathBuf, NativeHardResetTestHook>>,
+> = OnceLock::new();
 
 #[cfg(test)]
 fn install_native_hard_reset_after_preflight_hook(
@@ -4396,8 +4400,40 @@ fn run_native_hard_reset_after_preflight_hook(repo_root: &Path) {
     }
 }
 
+#[cfg(test)]
+fn install_native_hard_reset_before_final_reset_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_BEFORE_FINAL_RESET_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset final test hooks")
+        .insert(repo_root, Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_native_hard_reset_before_final_reset_hook(repo_root: &Path) -> bool {
+    let hook = NATIVE_HARD_RESET_BEFORE_FINAL_RESET_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset final test hooks")
+        .remove(repo_root);
+    if let Some(hook) = hook {
+        hook();
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(not(test))]
 fn run_native_hard_reset_after_preflight_hook(_repo_root: &Path) {}
+
+#[cfg(not(test))]
+fn run_native_hard_reset_before_final_reset_hook(_repo_root: &Path) -> bool {
+    false
+}
 
 fn remove_native_indexed_worktree_entries(
     repo: &Repository,
@@ -4458,10 +4494,30 @@ fn remove_native_indexed_worktree_entries(
             }
         }
     }
+    for path in native_target_tree_paths(target)? {
+        if !processed.insert(path.clone()) {
+            continue;
+        }
+        let relative = native_git_path(&path).ok_or_else(|| BackendError::Git {
+            message: format!(
+                "Hard reset cannot represent tracked path '{}'.",
+                String::from_utf8_lossy(&path)
+            ),
+        })?;
+        if fs::symlink_metadata(repo_root.join(&relative)).is_ok() {
+            restore_native_hard_reset_backups(repo_root, scratch, &backups)?;
+            return Err(untracked_reset_collision_error(&path));
+        }
+        backups.push(NativeHardResetBackup {
+            relative,
+            data: NativeHardResetBackupData::Absent,
+        });
+    }
     Ok(backups)
 }
 
 enum NativeHardResetBackupData {
+    Absent,
     File {
         scratch_name: OsString,
         permissions: cap_std::fs::Permissions,
@@ -4514,7 +4570,12 @@ fn remove_native_indexed_worktree_entry(
                         ),
                     })
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Some(NativeHardResetBackup {
+                        relative: relative.to_path_buf(),
+                        data: NativeHardResetBackupData::Absent,
+                    }))
+                }
                 Err(error) => {
                     return Err(BackendError::Io {
                         message: format!(
@@ -4529,7 +4590,12 @@ fn remove_native_indexed_worktree_entry(
 
     let metadata = match parent.symlink_metadata(file_name) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Some(NativeHardResetBackup {
+                relative: relative.to_path_buf(),
+                data: NativeHardResetBackupData::Absent,
+            }))
+        }
         Err(error) => {
             return Err(BackendError::Io {
                 message: format!(
@@ -4703,6 +4769,9 @@ fn restore_native_hard_reset_backups_impl(
             }
         })?;
     for backup in backups.iter().rev() {
+        if matches!(&backup.data, NativeHardResetBackupData::Absent) {
+            continue;
+        }
         let file_name = backup
             .relative
             .file_name()
@@ -4734,6 +4803,7 @@ fn restore_native_hard_reset_backups_impl(
             }
         }
         match &backup.data {
+            NativeHardResetBackupData::Absent => unreachable!("handled before path restoration"),
             NativeHardResetBackupData::File {
                 scratch_name,
                 permissions,
@@ -4855,6 +4925,388 @@ impl Drop for NativeHardResetCheckoutScratch {
     fn drop(&mut self) {
         if !self.1.load(Ordering::Relaxed) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+struct NativeHardResetRepositorySnapshot {
+    head_name: Option<String>,
+    head_oid: Oid,
+    index_backup: PathBuf,
+}
+
+fn capture_native_hard_reset_repository_snapshot(
+    repo: &Repository,
+    scratch: &NativeHardResetCheckoutScratch,
+) -> Result<NativeHardResetRepositorySnapshot> {
+    let head = repo.head().map_err(|error| BackendError::Git {
+        message: format!("Failed to capture HEAD before hard reset: {error}"),
+    })?;
+    let head_oid = head.target().ok_or_else(|| BackendError::Git {
+        message: "Cannot hard reset an unborn HEAD".to_string(),
+    })?;
+    let head_name = if repo.head_detached().unwrap_or(false) {
+        None
+    } else {
+        head.name().ok().map(str::to_string)
+    };
+    let index_path = repo.path().join("index");
+    let index_backup = scratch.0.join("index.backup");
+    fs::copy(&index_path, &index_backup).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to back up the Git index {} before hard reset: {error}",
+            index_path.display()
+        ),
+        source: error,
+    })?;
+    fs::write(
+        scratch.0.join("repository-state.txt"),
+        format!(
+            "head={head_oid}\nhead_name={}\nindex={}\n",
+            head_name.as_deref().unwrap_or("DETACHED"),
+            index_path.display()
+        ),
+    )
+    .map_err(|error| BackendError::Io {
+        message: format!("Failed to record hard reset recovery metadata: {error}"),
+        source: error,
+    })?;
+    Ok(NativeHardResetRepositorySnapshot {
+        head_name,
+        head_oid,
+        index_backup,
+    })
+}
+
+fn restore_native_hard_reset_head(
+    repo: &Repository,
+    snapshot: &NativeHardResetRepositorySnapshot,
+    reset_target: Oid,
+) -> Result<()> {
+    if let Some(head_name) = snapshot.head_name.as_deref() {
+        let current = repo
+            .refname_to_id(head_name)
+            .map_err(|error| BackendError::Git {
+                message: format!("Failed to inspect HEAD during hard reset rollback: {error}"),
+            })?;
+        if current != snapshot.head_oid && current != reset_target {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Hard reset rollback refused to overwrite concurrent update of {head_name}"
+                ),
+            });
+        }
+        repo.reference(
+            head_name,
+            snapshot.head_oid,
+            true,
+            "Macro hard reset rollback",
+        )?;
+        repo.set_head(head_name)?;
+    } else {
+        let current = repo.head()?.target().ok_or_else(|| BackendError::Git {
+            message: "Failed to inspect detached HEAD during hard reset rollback".to_string(),
+        })?;
+        if current != snapshot.head_oid && current != reset_target {
+            return Err(BackendError::Git {
+                message: "Hard reset rollback refused to overwrite concurrent detached HEAD update"
+                    .to_string(),
+            });
+        }
+        repo.set_head_detached(snapshot.head_oid)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_native_index_file(replacement: &Path, index_path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    let mut replaced = index_path.as_os_str().encode_wide().collect::<Vec<_>>();
+    replaced.push(0);
+    let mut replacement_wide = replacement.as_os_str().encode_wide().collect::<Vec<_>>();
+    replacement_wide.push(0);
+    if unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement_wide.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_native_index_file(replacement: &Path, index_path: &Path) -> std::io::Result<()> {
+    fs::rename(replacement, index_path)
+}
+
+fn restore_native_hard_reset_index(
+    repo: &Repository,
+    snapshot: &NativeHardResetRepositorySnapshot,
+) -> Result<()> {
+    let index_path = repo.path().join("index");
+    let index_lock = repo.path().join("index.lock");
+    let mut lock = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&index_lock)
+        .map_err(|error| BackendError::Io {
+            message: format!(
+                "Hard reset rollback could not reserve Git index lock {}: {error}",
+                index_lock.display()
+            ),
+            source: error,
+        })?;
+    let restore_result = (|| -> std::io::Result<()> {
+        let mut backup = fs::File::open(&snapshot.index_backup)?;
+        std::io::copy(&mut backup, &mut lock)?;
+        lock.sync_all()?;
+        drop(lock);
+        replace_native_index_file(&index_lock, &index_path)
+    })();
+    if restore_result.is_err() {
+        let _ = fs::remove_file(&index_lock);
+    }
+    restore_result.map_err(|error| BackendError::Io {
+        message: format!("Failed to restore Git index after hard reset: {error}"),
+        source: error,
+    })
+}
+
+#[cfg(unix)]
+fn native_capability_identity(metadata: &cap_std::fs::Metadata) -> Option<NativeFileIdentity> {
+    use cap_fs_ext::MetadataExt;
+    Some(NativeFileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn native_capability_identity(metadata: &cap_std::fs::Metadata) -> Option<NativeFileIdentity> {
+    use cap_fs_ext::MetadataExt;
+    Some(NativeFileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_capability_identity(_metadata: &cap_std::fs::Metadata) -> Option<NativeFileIdentity> {
+    None
+}
+
+fn open_native_worktree_parent(
+    worktree: &CapabilityDir,
+    relative: &Path,
+) -> Result<Option<CapabilityDir>> {
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain the hard reset worktree: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!("Invalid hard reset rollback path: {}", relative.display()),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                        message: format!(
+                            "Failed to open hard reset rollback path '{}': {error}",
+                            relative.display()
+                        ),
+                        source: error,
+                    })?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Ok(_) => {
+                    return Err(BackendError::Git {
+                        message: format!(
+                        "Hard reset rollback refused '{}' through a linked or non-directory parent",
+                        relative.display()
+                    ),
+                    })
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect hard reset rollback path '{}': {error}",
+                            relative.display()
+                        ),
+                        source: error,
+                    })
+                }
+            }
+        }
+    }
+    Ok(Some(parent))
+}
+
+fn remove_native_materialized_file(
+    worktree: &CapabilityDir,
+    relative: &Path,
+    expected_identity: NativeFileIdentity,
+) -> Result<()> {
+    let Some(parent) = open_native_worktree_parent(worktree, relative)? else {
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset rollback could not find materialized path '{}'",
+                relative.display()
+            ),
+        });
+    };
+    let file_name = relative.file_name().ok_or_else(|| BackendError::Git {
+        message: format!("Invalid hard reset rollback path: {}", relative.display()),
+    })?;
+    let quarantine_name = OsString::from(format!(
+        ".{}.macro-reset-rollback-{}",
+        file_name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    parent
+        .rename(file_name, &parent, &quarantine_name)
+        .map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to isolate hard reset rollback path '{}': {error}",
+                relative.display()
+            ),
+            source: error,
+        })?;
+    let metadata = parent
+        .symlink_metadata(&quarantine_name)
+        .map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to verify hard reset rollback path '{}': {error}",
+                relative.display()
+            ),
+            source: error,
+        })?;
+    if native_capability_identity(&metadata) != Some(expected_identity) {
+        if parent.symlink_metadata(file_name).is_err() {
+            let _ = parent.rename(&quarantine_name, &parent, file_name);
+        }
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset rollback refused to delete concurrently replaced path '{}'",
+                relative.display()
+            ),
+        });
+    }
+    let removal = if metadata.file_type().is_symlink() {
+        #[cfg(windows)]
+        {
+            if metadata.is_dir() {
+                parent.remove_dir(&quarantine_name)
+            } else {
+                parent.remove_file(&quarantine_name)
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            parent.remove_file(&quarantine_name)
+        }
+    } else {
+        parent.remove_file(&quarantine_name)
+    };
+    removal.map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to remove hard reset rollback path '{}': {error}",
+            relative.display()
+        ),
+        source: error,
+    })
+}
+
+fn capture_native_materialized_entries(
+    repo_root: &Path,
+    backups: &[NativeHardResetBackup],
+) -> HashMap<PathBuf, NativeFileIdentity> {
+    backups
+        .iter()
+        .filter_map(|backup| {
+            native_path_identity(&repo_root.join(&backup.relative))
+                .map(|identity| (backup.relative.clone(), identity))
+        })
+        .collect()
+}
+
+fn remove_native_materialized_entries(
+    repo_root: &Path,
+    backups: &[NativeHardResetBackup],
+    materialized: &HashMap<PathBuf, NativeFileIdentity>,
+) -> Result<()> {
+    let worktree =
+        CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open the hard reset worktree: {error}"),
+                source: error,
+            }
+        })?;
+    for backup in backups.iter().rev() {
+        let current_identity = native_path_identity(&repo_root.join(&backup.relative));
+        match (materialized.get(&backup.relative), current_identity) {
+            (Some(expected), Some(current)) if *expected == current => {
+                remove_native_materialized_file(&worktree, &backup.relative, *expected)?;
+            }
+            (None, _) if matches!(&backup.data, NativeHardResetBackupData::Absent) => {}
+            (None, None) => {}
+            _ => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Hard reset rollback refused concurrently changed path '{}'",
+                        backup.relative.display()
+                    ),
+                })
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rollback_native_hard_reset(
+    repo: &Repository,
+    repo_root: &Path,
+    reset_target: Oid,
+    scratch: &NativeHardResetCheckoutScratch,
+    snapshot: &NativeHardResetRepositorySnapshot,
+    backups: &[NativeHardResetBackup],
+    materialized: &HashMap<PathBuf, NativeFileIdentity>,
+    original_error: BackendError,
+) -> BackendError {
+    let mut rollback_errors = Vec::new();
+    if let Err(error) = remove_native_materialized_entries(repo_root, backups, materialized) {
+        rollback_errors.push(error.to_string());
+    }
+    if let Err(error) = restore_native_hard_reset_backups(repo_root, scratch, backups) {
+        rollback_errors.push(error.to_string());
+    }
+    if let Err(error) = restore_native_hard_reset_head(repo, snapshot, reset_target) {
+        rollback_errors.push(error.to_string());
+    }
+    if let Err(error) = restore_native_hard_reset_index(repo, snapshot) {
+        rollback_errors.push(error.to_string());
+    }
+    if rollback_errors.is_empty() {
+        original_error
+    } else {
+        scratch.retain();
+        BackendError::Git {
+            message: format!(
+                "{original_error}; hard reset rollback was incomplete and recovery data was retained at {}: {}",
+                scratch.0.display(),
+                rollback_errors.join("; ")
+            ),
         }
     }
 }
@@ -5051,6 +5503,7 @@ fn hard_reset_repo_preserving_untracked(repo: &Repository, target: &Commit<'_>) 
     run_native_hard_reset_after_preflight_hook(&repo_root);
 
     let scratch = NativeHardResetCheckoutScratch::create()?;
+    let repository_snapshot = capture_native_hard_reset_repository_snapshot(repo, &scratch)?;
     let backups = remove_native_indexed_worktree_entries(repo, &repo_root, target, &scratch)?;
     let checkout_conflicts = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
     let notified_conflicts = Arc::clone(&checkout_conflicts);
@@ -5082,23 +5535,85 @@ fn hard_reset_repo_preserving_untracked(repo: &Repository, target: &Commit<'_>) 
         match recover_native_case_sensitive_checkout_conflicts(repo, &repo_root, target, &conflicts)
         {
             Ok(true) => {
-                repo.reset(target.as_object(), ResetType::Mixed, None)?;
+                let materialized = capture_native_materialized_entries(&repo_root, &backups);
+                let reset_result = if run_native_hard_reset_before_final_reset_hook(&repo_root) {
+                    Err(BackendError::Git {
+                        message: "Injected hard reset finalization failure".to_string(),
+                    })
+                } else {
+                    repo.reset(target.as_object(), ResetType::Mixed, None)
+                        .map_err(BackendError::from)
+                };
+                if let Err(error) = reset_result {
+                    return Err(rollback_native_hard_reset(
+                        repo,
+                        &repo_root,
+                        target.id(),
+                        &scratch,
+                        &repository_snapshot,
+                        &backups,
+                        &materialized,
+                        BackendError::Git {
+                            message: format!(
+                                "Hard reset could not finalize repository state: {error}"
+                            ),
+                        },
+                    ));
+                }
                 return Ok(());
             }
             Ok(false) => {}
             Err(recovery_error) => {
-                restore_native_hard_reset_backups(&repo_root, &scratch, &backups)?;
-                return Err(recovery_error);
+                return Err(rollback_native_hard_reset(
+                    repo,
+                    &repo_root,
+                    target.id(),
+                    &scratch,
+                    &repository_snapshot,
+                    &backups,
+                    &HashMap::new(),
+                    recovery_error,
+                ));
             }
         }
-        restore_native_hard_reset_backups(&repo_root, &scratch, &backups)?;
-        return Err(BackendError::Git {
-            message: format!(
-                "Hard reset could not update tracked files without overwriting untracked data: {error}"
-            ),
-        });
+        return Err(rollback_native_hard_reset(
+            repo,
+            &repo_root,
+            target.id(),
+            &scratch,
+            &repository_snapshot,
+            &backups,
+            &HashMap::new(),
+            BackendError::Git {
+                message: format!(
+                    "Hard reset could not update tracked files without overwriting untracked data: {error}"
+                ),
+            },
+        ));
     }
-    repo.reset(target.as_object(), ResetType::Mixed, None)?;
+    let materialized = capture_native_materialized_entries(&repo_root, &backups);
+    let reset_result = if run_native_hard_reset_before_final_reset_hook(&repo_root) {
+        Err(BackendError::Git {
+            message: "Injected hard reset finalization failure".to_string(),
+        })
+    } else {
+        repo.reset(target.as_object(), ResetType::Mixed, None)
+            .map_err(BackendError::from)
+    };
+    if let Err(error) = reset_result {
+        return Err(rollback_native_hard_reset(
+            repo,
+            &repo_root,
+            target.id(),
+            &scratch,
+            &repository_snapshot,
+            &backups,
+            &materialized,
+            BackendError::Git {
+                message: format!("Hard reset could not finalize repository state: {error}"),
+            },
+        ));
+    }
     Ok(())
 }
 
@@ -19042,6 +19557,44 @@ mod tests {
             repo.head().unwrap().target().unwrap().to_string(),
             initial_commit
         );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_rolls_back_a_finalization_failure() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        fs::write(temp.path().join("target-only.txt"), "target only").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add final reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(temp.path().join("README.md"), "staged readme").unwrap();
+        add_paths(&repo, &["README.md".to_string()]).unwrap();
+        fs::write(temp.path().join("README.md"), "dirty readme").unwrap();
+        fs::write(temp.path().join("staged-only.txt"), "staged only").unwrap();
+        add_paths(&repo, &["staged-only.txt".to_string()]).unwrap();
+
+        install_native_hard_reset_before_final_reset_hook(repo_root(&repo).unwrap(), || {});
+        reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("injected finalization failure must roll back");
+
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        let readme = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(readme.index_content, "staged readme");
+        assert_eq!(readme.worktree_content, "dirty readme");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("staged-only.txt")).unwrap(),
+            "staged only"
+        );
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("staged-only.txt"), 0)
+            .is_some());
+        assert!(!temp.path().join("target-only.txt").exists());
     }
 
     #[cfg(windows)]
