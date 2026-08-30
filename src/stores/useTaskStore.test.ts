@@ -1221,6 +1221,86 @@ describe('useTaskStore merge workflow review loading', () => {
     ]);
   });
 
+  it('records an ambiguously removed worktree as removed after reinspection', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-ambiguous-worktree-removal',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      assigned_branch: 'feature/ambiguous-worktree-removal',
+      branch_name: 'feature/ambiguous-worktree-removal',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/ambiguous-worktree-removal',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/ambiguous-worktree-removal',
+        repoPath: '/repos/web',
+      }],
+    });
+    let worktreeExists = true;
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: '/repos/web/.macro/worktrees/ambiguous-worktree-removal',
+      branchName: params.branchName ?? null,
+      status: worktreeExists ? 'ready' as const : 'absent' as const,
+      isDirty: false,
+    }));
+    gitWorktreeRemoveMock.mockImplementation(async () => {
+      worktreeExists = false;
+      throw new Error('injected response loss after worktree removal');
+    });
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{ name: 'feature/ambiguous-worktree-removal', is_head: false, commit: 'abc123' }],
+      remote: [],
+      current: 'develop',
+    }));
+    gitBranchDeleteMock.mockImplementation(async () => {
+      throw new Error('injected branch cleanup failure');
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: {
+        'project-1::feature/ambiguous-worktree-removal':
+          '/repos/web/.macro/worktrees/ambiguous-worktree-removal',
+      },
+      refreshFromPlan: mock(async () => undefined),
+    });
+
+    try {
+      await useTaskStore.getState().archiveTask(task.id);
+    } finally {
+      gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+        taskId: params.taskId,
+        worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+        branchName: params.branchName ?? null,
+        status: 'ready' as const,
+        isDirty: false,
+      }));
+      gitWorktreeRemoveMock.mockImplementation(async () => ({
+        removed: true,
+        removedPath: '/repos/web/.macro/worktrees/task-1',
+      }));
+      gitBranchListMock.mockImplementation(async () => ({
+        local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
+        remote: [],
+        current: 'develop',
+      }));
+      gitBranchDeleteMock.mockImplementation(async () => undefined);
+    }
+
+    expect(gitWorktreeInspectMock).toHaveBeenCalledTimes(2);
+    expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]?.targets[0])
+      .toEqual(expect.objectContaining({
+        worktreeRemoved: true,
+        branchRemoved: false,
+        state: 'failed',
+        lastError: 'injected branch cleanup failure',
+      }));
+  });
+
   it('removes a clean archived worktree and its local branch without forcing either operation', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-clean-archive',
@@ -1275,6 +1355,76 @@ describe('useTaskStore merge workflow review loading', () => {
       branchName: 'feature/clean-archive',
       force: false,
     });
+    expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toBeUndefined();
+    expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('records an ambiguously removed branch as removed after relisting branches', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-ambiguous-branch-removal',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      assigned_branch: 'feature/ambiguous-branch-removal',
+      branch_name: 'feature/ambiguous-branch-removal',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/ambiguous-branch-removal',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/ambiguous-branch-removal',
+        repoPath: '/repos/web',
+      }],
+    });
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: '/repos/web/.macro/worktrees/ambiguous-branch-removal',
+      branchName: params.branchName ?? null,
+      status: 'absent' as const,
+      isDirty: false,
+    }));
+    let branchExists = true;
+    gitBranchListMock.mockImplementation(async () => ({
+      local: branchExists
+        ? [{ name: 'feature/ambiguous-branch-removal', is_head: false, commit: 'abc123' }]
+        : [],
+      remote: [],
+      current: 'develop',
+    }));
+    gitBranchDeleteMock.mockImplementation(async () => {
+      branchExists = false;
+      throw new Error('injected response loss after branch removal');
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: {
+        'project-1::feature/ambiguous-branch-removal':
+          '/repos/web/.macro/worktrees/ambiguous-branch-removal',
+      },
+      refreshFromPlan: mock(async () => undefined),
+    });
+
+    try {
+      await useTaskStore.getState().archiveTask(task.id);
+    } finally {
+      gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+        taskId: params.taskId,
+        worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+        branchName: params.branchName ?? null,
+        status: 'ready' as const,
+        isDirty: false,
+      }));
+      gitBranchListMock.mockImplementation(async () => ({
+        local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
+        remote: [],
+        current: 'develop',
+      }));
+      gitBranchDeleteMock.mockImplementation(async () => undefined);
+    }
+
+    expect(gitBranchListMock).toHaveBeenCalledTimes(2);
     expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toBeUndefined();
     expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([]);
   });

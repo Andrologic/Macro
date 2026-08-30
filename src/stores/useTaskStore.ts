@@ -783,13 +783,36 @@ const runArchivedTaskCleanup = async (
         }
       } catch (error) {
         const message = toServiceError(error).message;
-        saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
-          ...current,
-          state: 'failed',
-          lastError: message,
-        }));
-        await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
-        continue;
+        let inspectionAfterFailure: Awaited<ReturnType<typeof tauriIpc.gitWorktreeInspect>> | null = null;
+        try {
+          inspectionAfterFailure = await tauriIpc.gitWorktreeInspect({
+            repoPath: target.repoPath,
+            taskId: target.worktreeKey,
+            branchName: target.branchName,
+          });
+        } catch {
+          // Keep the original mutation error when the reconciliation read also fails.
+        }
+        if (inspectionAfterFailure?.status === 'absent') {
+          await assertCurrent?.(saga);
+          saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
+            ...current,
+            worktreeRemoved: true,
+            worktreePath: inspectionAfterFailure?.worktreePath || current.worktreePath,
+            state: 'pending',
+            lastError: undefined,
+          }));
+          await upsertArchivedTaskCleanupSaga(saga);
+        } else {
+          saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
+            ...current,
+            worktreePath: inspectionAfterFailure?.worktreePath || current.worktreePath,
+            state: 'failed',
+            lastError: message,
+          }));
+          await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
+          continue;
+        }
       }
     }
 
@@ -819,12 +842,31 @@ const runArchivedTaskCleanup = async (
       await upsertArchivedTaskCleanupSaga(saga);
     } catch (error) {
       const message = toServiceError(error).message;
-      saga = updateArchivedCleanupTarget(saga, currentTarget.worktreeKey, (current) => ({
-        ...current,
-        state: 'failed',
-        lastError: message,
-      }));
-      await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
+      let branchRemoved = false;
+      try {
+        const branches = await tauriIpc.gitBranchList(currentTarget.repoPath);
+        branchRemoved = !(branches.local || [])
+          .some((branch) => branch.name === currentTarget.branchName);
+      } catch {
+        // Keep the original mutation error when the reconciliation read also fails.
+      }
+      if (branchRemoved) {
+        await assertCurrent?.(saga);
+        saga = updateArchivedCleanupTarget(saga, currentTarget.worktreeKey, (current) => ({
+          ...current,
+          branchRemoved: true,
+          state: 'pending',
+          lastError: undefined,
+        }));
+        await upsertArchivedTaskCleanupSaga(saga);
+      } else {
+        saga = updateArchivedCleanupTarget(saga, currentTarget.worktreeKey, (current) => ({
+          ...current,
+          state: 'failed',
+          lastError: message,
+        }));
+        await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
+      }
     }
   }
 

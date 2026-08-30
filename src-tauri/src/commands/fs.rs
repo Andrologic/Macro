@@ -318,6 +318,26 @@ pub(crate) struct WorkspaceCapabilityTarget {
     validated_path: PathBuf,
 }
 
+struct CapabilityTempFileGuard {
+    directory: Arc<CapabilityDir>,
+    relative_path: PathBuf,
+}
+
+impl CapabilityTempFileGuard {
+    fn new(directory: Arc<CapabilityDir>, relative_path: PathBuf) -> Self {
+        Self {
+            directory,
+            relative_path,
+        }
+    }
+}
+
+impl Drop for CapabilityTempFileGuard {
+    fn drop(&mut self) {
+        let _ = self.directory.remove_file(&self.relative_path);
+    }
+}
+
 pub(crate) async fn open_workspace_capability_target_internal(
     workspace: &Path,
     path: String,
@@ -1707,6 +1727,7 @@ async fn write_file_with_capability_target(
 
     let temp_suffix = format!("tmp.{}", uuid::Uuid::new_v4());
     let temp_path = relative_path.with_extension(temp_suffix);
+    let _temp_guard = CapabilityTempFileGuard::new(directory.clone(), temp_path.clone());
     let resulting_mode = tokio::task::spawn_blocking({
         let directory = directory.clone();
         let temp_path = temp_path.clone();
@@ -1768,12 +1789,6 @@ async fn write_file_with_capability_target(
         if let Err(error) =
             validate_expected_revision(&display_path, expected_revision, latest_revision.as_deref())
         {
-            let _ = tokio::task::spawn_blocking({
-                let directory = directory.clone();
-                let temp_path = temp_path.clone();
-                move || directory.remove_file(&temp_path)
-            })
-            .await;
             return Err(error);
         }
     }
@@ -1788,7 +1803,7 @@ async fn write_file_with_capability_target(
         move || {
             if create_only {
                 directory.hard_link(&temp_path, &directory, &relative_path)?;
-                directory.remove_file(&temp_path)
+                Ok(())
             } else {
                 directory.rename(&temp_path, &directory, &relative_path)
             }
@@ -3330,6 +3345,20 @@ mod tests {
         TempDir::new().expect("Failed to create temp directory")
     }
 
+    fn assert_no_write_temp_file(workspace: &Path, file_stem: &str) {
+        let temp_prefix = format!("{file_stem}.tmp.");
+        let leftovers = fs::read_dir(workspace)
+            .expect("read workspace directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.starts_with(&temp_prefix))
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "guarded write left temporary files behind: {leftovers:?}"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn workspace_root_identity_matches_the_capability_directory() {
@@ -3913,6 +3942,91 @@ mod tests {
             fs::read_to_string(&path).expect("read guarded file"),
             "updated"
         );
+    }
+
+    #[tokio::test]
+    async fn guarded_write_cleans_temp_when_target_disappears_before_revalidation() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+        let path = workspace_path.join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let validated_path = path.canonicalize().expect("canonical guarded file");
+        let revision = content_revision(b"current");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_before_revalidation_hook(
+            validated_path.clone(),
+            reached.clone(),
+            release.clone(),
+        );
+
+        let write_workspace = workspace_path.clone();
+        let write_path = validated_path.clone();
+        let mut write = tokio::spawn(async move {
+            write_file_with_workspace_capability(
+                &write_workspace,
+                &write_path,
+                "guarded.txt",
+                b"updated",
+                Some(true),
+                Some(&revision),
+                None,
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut write => panic!("write finished before revalidation: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("write did not reach revalidation"),
+        }
+        fs::remove_file(&path).expect("remove target before revalidation");
+        release.wait().await;
+
+        write
+            .await
+            .expect("write task")
+            .expect_err("missing target must fail guarded revalidation");
+        assert_no_write_temp_file(&workspace_path, "guarded");
+    }
+
+    #[tokio::test]
+    async fn guarded_create_cleans_temp_when_atomic_publication_fails() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+        let path = workspace_path.join("new.txt");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_after_revalidation_hook(path.clone(), reached.clone(), release.clone());
+
+        let write_workspace = workspace_path.clone();
+        let write_path = path.clone();
+        let mut write = tokio::spawn(async move {
+            write_file_with_workspace_capability(
+                &write_workspace,
+                &write_path,
+                "new.txt",
+                b"created",
+                Some(true),
+                Some(EXPECTED_REVISION_ABSENT),
+                None,
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut write => panic!("write finished before publication: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("write did not reach publication"),
+        }
+        fs::create_dir(&path).expect("occupy target before publication");
+        release.wait().await;
+
+        write
+            .await
+            .expect("write task")
+            .expect_err("occupied target must fail atomic publication");
+        assert_no_write_temp_file(&workspace_path, "new");
     }
 
     #[tokio::test]
