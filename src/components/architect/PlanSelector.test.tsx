@@ -20,6 +20,14 @@ const flushRender = async () => {
   await Promise.resolve();
 };
 
+const createDeferred = <T,>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
 const buildPlan = (id: string, title: string): ArchitectPlanSummary => ({
   id,
   slug: id,
@@ -40,6 +48,7 @@ describe('PlanSelector', () => {
   const initialChatState = useChatStore.getState();
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
+  let appStoreUnsubscribe: (() => void) | null = null;
 
   beforeAll(async () => {
     installReactI18nextMock(createTranslationMock());
@@ -71,6 +80,8 @@ describe('PlanSelector', () => {
     document.body.innerHTML = '';
     root = null;
     container = null;
+    appStoreUnsubscribe?.();
+    appStoreUnsubscribe = null;
     useAppStore.setState(initialAppState, true);
     useChatStore.setState(initialChatState, true);
   });
@@ -122,9 +133,21 @@ describe('PlanSelector', () => {
         Chat: 'conversation-chat',
       },
       restoreStatus: 'ready' as const,
+      activeContextKey: 'Architect::plan::plan-a::develop::none::project-1',
+      selectionRequestId: 5,
       pendingArchitectPlanSwitchRequestId: null,
       lastError: 'Previous conversation warning',
     };
+    const staleConversationResolution = createDeferred<undefined>();
+    void staleConversationResolution.promise.then(() => {
+      const state = useChatStore.getState();
+      if (
+        state.selectionRequestId === 8 &&
+        state.activeContextKey === 'Architect::plan::plan-b::develop::none::project-1'
+      ) {
+        useChatStore.setState({ selectedConversationId: 'conversation-b' });
+      }
+    });
     const loadPlans = mock(async () => ({
       snapshot: {
         branchCatalogByBranch: {},
@@ -178,7 +201,9 @@ describe('PlanSelector', () => {
           Architect: null,
         },
         restoreStatus: 'resolving',
-        pendingArchitectPlanSwitchRequestId: 8,
+        activeContextKey: 'Architect::plan::plan-b::develop::none::project-1',
+        selectionRequestId: 8,
+        pendingArchitectPlanSwitchRequestId: null,
         lastError: null,
       });
       return false;
@@ -213,6 +238,23 @@ describe('PlanSelector', () => {
       activateArchitectPlan: activatePlan as never,
     });
     useChatStore.setState(previousChatVisibleState);
+    appStoreUnsubscribe = useAppStore.subscribe((nextState, previousState) => {
+      if (
+        previousState.activeArchitectPlanId === 'plan-b' &&
+        nextState.activeArchitectPlanId === 'plan-a'
+      ) {
+        useChatStore.setState({
+          selectedConversationId: null,
+          selectedConversationIdsByMode: {
+            ...useChatStore.getState().selectedConversationIdsByMode,
+            Architect: null,
+          },
+          restoreStatus: 'resolving',
+          pendingArchitectPlanSwitchRequestId: 7,
+          lastError: null,
+        });
+      }
+    });
 
     await act(async () => {
       root?.render(<PlanSelector />);
@@ -237,7 +279,31 @@ describe('PlanSelector', () => {
     expect(state.architectPlanSwitch).toEqual(previousSwitch);
     expect(state.planNodes).toEqual(previousNodes);
     expect(state.predictedBranches).toEqual(previousBranches);
-    expect(useChatStore.getState()).toMatchObject(previousChatVisibleState);
+    const chatState = useChatStore.getState();
+    expect({
+      selectedConversationId: chatState.selectedConversationId,
+      selectedConversationIdsByMode: chatState.selectedConversationIdsByMode,
+      restoreStatus: chatState.restoreStatus,
+      activeContextKey: chatState.activeContextKey,
+      pendingArchitectPlanSwitchRequestId: chatState.pendingArchitectPlanSwitchRequestId,
+      lastError: chatState.lastError,
+    }).toEqual({
+      selectedConversationId: previousChatVisibleState.selectedConversationId,
+      selectedConversationIdsByMode: previousChatVisibleState.selectedConversationIdsByMode,
+      restoreStatus: previousChatVisibleState.restoreStatus,
+      activeContextKey: previousChatVisibleState.activeContextKey,
+      pendingArchitectPlanSwitchRequestId:
+        previousChatVisibleState.pendingArchitectPlanSwitchRequestId,
+      lastError: previousChatVisibleState.lastError,
+    });
+    expect(chatState.selectionRequestId).toBeGreaterThan(8);
+
+    await act(async () => {
+      staleConversationResolution.resolve(undefined);
+      await staleConversationResolution.promise;
+      await flushRender();
+    });
+    expect(useChatStore.getState().selectedConversationId).toBe('conversation-a');
     expect(document.body.querySelector<HTMLButtonElement>('button')?.textContent).toContain('Plan A');
     expect(notifyErrorMock).toHaveBeenCalledWith('The selected plan is unavailable.');
   });

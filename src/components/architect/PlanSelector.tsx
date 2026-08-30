@@ -637,6 +637,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         selectedConversationId: state.selectedConversationId,
         selectedConversationIdsByMode: state.selectedConversationIdsByMode,
         restoreStatus: state.restoreStatus,
+        activeContextKey: state.activeContextKey,
+        selectionRequestId: state.selectionRequestId,
         pendingArchitectPlanSwitchRequestId: state.pendingArchitectPlanSwitchRequestId,
         lastError: state.lastError,
       };
@@ -699,14 +701,15 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
       setPlans(previousPlans);
       setActivePlanId(previousActivePlanId);
-      const currentChatState = useChatStore.getState();
-      if (
-        failedSwitch.requestId !== null &&
-        currentChatState.pendingArchitectPlanSwitchRequestId === failedSwitch.requestId
-      ) {
-        useChatStore.setState(previousChatVisibleState);
-      }
       useAppStore.setState(previousVisibleState);
+      useChatStore.setState((currentChatState) => ({
+        ...previousChatVisibleState,
+        selectionRequestId:
+          Math.max(
+            currentChatState.selectionRequestId,
+            previousChatVisibleState.selectionRequestId,
+          ) + 1,
+      }));
       if (openReplicaRepair(activationError, () => activatePlan(planId, planSummaryHint ?? null))) {
         return;
       }
