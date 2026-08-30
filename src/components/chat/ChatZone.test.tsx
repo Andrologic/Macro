@@ -948,7 +948,12 @@ describe('ChatZone', () => {
     return editor;
   };
 
-  const pasteComposerImage = async (): Promise<void> => {
+  const pasteComposerImage = async (options: {
+    text?: string;
+    html?: string;
+    imageSource?: 'items' | 'files' | 'both';
+    fileReaderFails?: boolean;
+  } = {}): Promise<Event> => {
     const initialFileReader = globalThis.FileReader;
     const initialImage = globalThis.Image;
     class TestFileReader {
@@ -958,6 +963,11 @@ describe('ChatZone', () => {
       onerror: ((event: ProgressEvent<FileReader>) => void) | null = null;
 
       readAsDataURL(): void {
+        if (options.fileReaderFails) {
+          this.error = new window.DOMException('Unreadable clipboard image');
+          this.onerror?.(new Event('error') as unknown as ProgressEvent<FileReader>);
+          return;
+        }
         this.result = 'data:image/png;base64,ZHJhZnQtaW1hZ2U=';
         this.onload?.(new Event('load') as unknown as ProgressEvent<FileReader>);
       }
@@ -976,13 +986,32 @@ describe('ChatZone', () => {
     globalThis.FileReader = TestFileReader as unknown as typeof FileReader;
     globalThis.Image = TestImage as unknown as typeof Image;
     const file = new File(['draft-image'], 'draft.png', { type: 'image/png' });
+    const imageSource = options.imageSource ?? 'both';
     const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+    const clipboardTextItems = [
+      options.text === undefined ? null : {
+        type: 'text/plain',
+        getAsFile: () => null,
+      },
+      options.html === undefined ? null : {
+        type: 'text/html',
+        getAsFile: () => null,
+      },
+    ].filter(Boolean);
     Object.defineProperty(pasteEvent, 'clipboardData', {
       value: {
-        items: [{
-          type: 'image/png',
-          getAsFile: () => file,
-        }],
+        items: [
+          ...(imageSource === 'items' || imageSource === 'both'
+            ? [{ type: 'image/png', getAsFile: () => file }]
+            : []),
+          ...clipboardTextItems,
+        ],
+        files: imageSource === 'files' || imageSource === 'both' ? [file] : [],
+        getData: (type: string) => {
+          if (type === 'text/plain') return options.text ?? '';
+          if (type === 'text/html') return options.html ?? '';
+          return '';
+        },
       },
     });
 
@@ -995,6 +1024,42 @@ describe('ChatZone', () => {
       globalThis.FileReader = initialFileReader;
       globalThis.Image = initialImage;
     }
+
+    return pasteEvent;
+  };
+
+  const pasteComposerText = async (
+    text: string,
+    options: { includeUnusableImage?: boolean } = {},
+  ): Promise<Event> => {
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: {
+        items: [
+          ...(options.includeUnusableImage
+            ? [{ type: 'image/png', getAsFile: () => null }]
+            : []),
+          { type: 'text/plain', getAsFile: () => null },
+        ],
+        files: [],
+        getData: (type: string) => type === 'text/plain' ? text : '',
+      },
+    });
+
+    await act(async () => {
+      const editor = getComposerEditor();
+      editor.dispatchEvent(pasteEvent);
+      if (!pasteEvent.defaultPrevented) {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
+          editor,
+          `${editor.value}${text}`,
+        );
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
+
+    return pasteEvent;
   };
 
   const clickSendButton = async () => {
@@ -1167,6 +1232,89 @@ describe('ChatZone', () => {
     expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
   });
 
+  it('inserts only the image when a paste contains image, text, and HTML', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Texte déjà présent.');
+
+    const pasteEvent = await pasteComposerImage({
+      text: 'Texte provenant du presse-papiers.',
+      html: '<p>Texte provenant du presse-papiers.</p>',
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(pasteEvent.cancelBubble).toBe(true);
+    expect(getComposerEditor().value).toBe('Texte déjà présent.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+  });
+
+  it('reads a pasted image from the clipboard files list when items has none', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const pasteEvent = await pasteComposerImage({ imageSource: 'files' });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+  });
+
+  it('handles an asynchronous pasted image read failure without inserting clipboard text', async () => {
+    const originalError = console.error;
+    const errorSpy = mock(() => undefined);
+    console.error = errorSpy as never;
+
+    try {
+      await act(async () => {
+        requireRoot().render(<ChatZone />);
+      });
+      await setComposerText('Texte existant.');
+
+      const pasteEvent = await pasteComposerImage({
+        text: 'Texte qui accompagne une image illisible.',
+        fileReaderFails: true,
+      });
+
+      expect(pasteEvent.defaultPrevented).toBe(true);
+      expect(getComposerEditor().value).toBe('Texte existant.');
+      expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Failed to parse pasted image:',
+        expect.any(window.DOMException),
+      );
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  it('keeps normal text paste behavior when the clipboard has no image', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Avant ');
+
+    const pasteEvent = await pasteComposerText('le collage.');
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(getComposerEditor().value).toBe('Avant le collage.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+  });
+
+  it('keeps text paste behavior when an advertised image cannot be read', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const pasteEvent = await pasteComposerText('Image indisponible, texte conservé.', {
+      includeUnusableImage: true,
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(getComposerEditor().value).toBe('Image indisponible, texte conservé.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+  });
+
   it('keeps the composer draft when an Implement kickoff is cancelled', async () => {
     appState = {
       ...appState,
@@ -1219,6 +1367,57 @@ describe('ChatZone', () => {
     expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
       'Conserver ces notes si le démarrage est annulé.',
     );
+  });
+
+  it('starts an Implement execution when the optional kickoff note is empty', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Start without notes',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Running',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/start-without-notes',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Start the task with its existing briefing.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(getComposerEditor().value).toBe('');
+    const kickoffButton = requireContainer().querySelector(
+      '[data-tour-id="implement-start-execution"]',
+    );
+    expect(kickoffButton).not.toBeNull();
+
+    await act(async () => {
+      kickoffButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(chatState.sendMessage).toHaveBeenCalledTimes(1);
+    expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'conv-1',
+      taskId: 'task-1',
+      content: expect.stringContaining('Start without notes'),
+    }));
   });
 
   it('restores the composer when a send fails before Macro accepts it', async () => {

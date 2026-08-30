@@ -29,6 +29,7 @@ import { cn } from '../../../utils/cn';
 import { Icon, type IconName } from '../../ui/Icon';
 import { $createMentionNode } from './MentionNode';
 import { $createGoalCommandNode } from './GoalCommandNode';
+import { isComposerCompositionEvent } from './composerSubmitKey';
 import {
   hasFileQueryIntent,
   rankSlashContextCandidates,
@@ -173,7 +174,13 @@ const formatFileLocation = (file: WorkspaceFileReference): string => {
   return file.projectName ? `${file.projectName}/${relativePath}` : file.path;
 };
 
-export const SlashContextMenuPlugin: React.FC = () => {
+interface SlashContextMenuPluginProps {
+  compositionActiveRef: React.RefObject<boolean>;
+}
+
+export const SlashContextMenuPlugin: React.FC<SlashContextMenuPluginProps> = ({
+  compositionActiveRef,
+}) => {
   const { t } = useTranslation();
   const [editor] = useLexicalComposerContext();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -626,6 +633,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
     return editor.registerCommand(
       KEY_ENTER_COMMAND,
       (event: KeyboardEvent | null) => {
+        if (!event || isComposerCompositionEvent(event, compositionActiveRef.current)) {
+          return false;
+        }
         event?.preventDefault();
         const item = menuItems[activeIndex];
         if (item && !item.disabled) {
@@ -635,7 +645,7 @@ export const SlashContextMenuPlugin: React.FC = () => {
       },
       COMMAND_PRIORITY_CRITICAL,
     );
-  }, [activeIndex, editor, insertItem, menuItems, trigger]);
+  }, [activeIndex, compositionActiveRef, editor, insertItem, menuItems, trigger]);
 
   useEffect(() => {
     if (!trigger) return undefined;
