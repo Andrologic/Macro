@@ -5011,6 +5011,21 @@ fn conflict_side_from_bytes(bytes: Option<&[u8]>) -> GitConflictFileSideDto {
     }
 }
 
+fn read_conflict_entry_bytes(
+    repo: &Repository,
+    entry: Option<&git2::IndexEntry>,
+) -> Result<Option<Vec<u8>>> {
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+
+    if entry.id == Oid::ZERO_SHA1 {
+        return Ok(None);
+    }
+
+    Ok(Some(repo.find_blob(entry.id)?.content().to_vec()))
+}
+
 fn read_conflict_entry_side(
     repo: &Repository,
     entry: Option<&git2::IndexEntry>,
@@ -5920,6 +5935,16 @@ pub(crate) fn write_git_conflict_resolution(
     content: &str,
     stage: bool,
 ) -> Result<()> {
+    write_git_conflict_resolution_bytes(repo, repo_root, relative_path, content.as_bytes(), stage)
+}
+
+fn write_git_conflict_resolution_bytes(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+    content: &[u8],
+    stage: bool,
+) -> Result<()> {
     let absolute_path = repo_root.join(relative_path);
     if let Some(parent) = absolute_path.parent() {
         fs::create_dir_all(parent).map_err(|error| BackendError::Io {
@@ -5949,21 +5974,49 @@ pub(crate) fn accept_git_conflict_side(
     relative_path: &Path,
     side: &str,
 ) -> Result<()> {
-    let conflict_file = read_git_conflict_file(repo, repo_root, relative_path)?;
-    let selected = match side {
-        "ours" => conflict_file.ours,
-        "theirs" => conflict_file.theirs,
-        other => {
-            return Err(BackendError::Validation(format!(
-                "Invalid conflict side: {}",
-                other
-            )))
+    if side != "ours" && side != "theirs" {
+        return Err(BackendError::Validation(format!(
+            "Invalid conflict side: {}",
+            side
+        )));
+    }
+
+    let mut index = repo.index()?;
+    index.read(true)?;
+    let conflicts = index.conflicts().map_err(|error| BackendError::Git {
+        message: error.to_string(),
+    })?;
+    let mut selected = None;
+    let mut found = false;
+    for conflict in conflicts {
+        let conflict = conflict.map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+        if !conflict_matches_path(&conflict, relative_path) {
+            continue;
         }
-    };
+
+        let entry = if side == "ours" {
+            conflict.our.as_ref()
+        } else {
+            conflict.their.as_ref()
+        };
+        selected = read_conflict_entry_bytes(repo, entry)?;
+        found = true;
+        break;
+    }
+    if !found {
+        return Err(BackendError::Git {
+            message: format!(
+                "No unresolved conflict found for {}",
+                relative_path.to_string_lossy()
+            ),
+        });
+    }
     let absolute_path = repo_root.join(relative_path);
 
-    if selected.exists {
-        write_git_conflict_resolution(repo, repo_root, relative_path, &selected.content, true)?;
+    if let Some(content) = selected {
+        write_git_conflict_resolution_bytes(repo, repo_root, relative_path, &content, true)?;
     } else {
         match fs::remove_file(&absolute_path) {
             Ok(_) => {}
@@ -17309,6 +17362,60 @@ mod tests {
             fs::read_to_string(temp.path().join("README.md")).unwrap(),
             "feature branch change"
         );
+    }
+
+    #[test]
+    fn test_accept_binary_conflict_side_preserves_selected_bytes() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let incoming = vec![0, 1, 2, 3, 4];
+        let current = vec![0, 5, 6, 7, 8];
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), &incoming).unwrap();
+        commit_repo(&repo, "feat: update binary readme on feature", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), &current).unwrap();
+        commit_repo(&repo, "feat: update binary readme on base", true).unwrap();
+
+        let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+        assert_eq!(result.status, "conflicted");
+        let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert!(file.is_binary);
+        assert!(file.theirs.content.is_empty());
+
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "ours").unwrap();
+
+        assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), current);
+        assert!(build_git_status(&repo).unwrap().conflicted_files.is_empty());
+    }
+
+    #[test]
+    fn test_accept_large_conflict_side_preserves_selected_bytes() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let incoming = vec![b'i'; MAX_CONFLICT_FILE_BYTES + 1];
+        let current = vec![b'c'; MAX_CONFLICT_FILE_BYTES + 1];
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), &incoming).unwrap();
+        commit_repo(&repo, "feat: update large readme on feature", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), &current).unwrap();
+        commit_repo(&repo, "feat: update large readme on base", true).unwrap();
+
+        let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+        assert_eq!(result.status, "conflicted");
+        let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert!(file.too_large);
+        assert!(file.theirs.content.is_empty());
+
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+
+        assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), incoming);
+        assert!(build_git_status(&repo).unwrap().conflicted_files.is_empty());
     }
 
     #[test]
