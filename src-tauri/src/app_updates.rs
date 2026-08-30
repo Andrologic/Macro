@@ -133,9 +133,11 @@ pub enum StagedUpdatePhase {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StagedUpdateManifest {
+    #[serde(default)]
+    pub generation: String,
     pub current_version: String,
     pub version: String,
     pub date: Option<String>,
@@ -209,10 +211,6 @@ fn read_manifest_file(path: &Path) -> Result<Option<StagedUpdateManifest>, Strin
     serde_json::from_str(&contents)
         .map(Some)
         .map_err(|error| format!("L'état de la mise à jour est illisible : {error}"))
-}
-
-fn read_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String> {
-    read_manifest_file(&manifest_path(app)?)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -425,9 +423,13 @@ fn read_update_generation_directory(directory: &Path) -> Result<String, String> 
 }
 
 fn invalidate_update_generation_directory(directory: &Path) -> Result<(), String> {
+    write_update_generation_directory(directory, &uuid::Uuid::new_v4().to_string())
+}
+
+fn write_update_generation_directory(directory: &Path, generation: &str) -> Result<(), String> {
     atomic_write(
         &directory.join(UPDATE_GENERATION_FILE),
-        uuid::Uuid::new_v4().to_string().as_bytes(),
+        generation.as_bytes(),
     )
 }
 
@@ -449,11 +451,12 @@ fn cleanup_staged_packages_except(directory: &Path, package_file: &str) {
     }
 }
 
+#[cfg(test)]
 fn publish_staged_update_directory(
     directory: &Path,
     manifest: &StagedUpdateManifest,
     bytes: &[u8],
-) -> Result<(), String> {
+) -> Result<StagedUpdateManifest, String> {
     publish_staged_update_directory_with_generation(directory, manifest, bytes, None)
 }
 
@@ -462,7 +465,7 @@ fn publish_staged_update_directory_with_generation(
     manifest: &StagedUpdateManifest,
     bytes: &[u8],
     expected_generation: Option<&str>,
-) -> Result<(), String> {
+) -> Result<StagedUpdateManifest, String> {
     let package_file = manifest.package_file.as_str();
     let valid_package_file = Path::new(package_file)
         .file_name()
@@ -482,12 +485,16 @@ fn publish_staged_update_directory_with_generation(
             return Err("UPDATE_STAGE_CANCELLED".to_string());
         }
     }
+    let next_generation = uuid::Uuid::new_v4().to_string();
+    let mut published_manifest = manifest.clone();
+    published_manifest.generation.clone_from(&next_generation);
     atomic_write(&directory.join(package_file), bytes)?;
     fail_after_package_publication(package_file)?;
-    write_manifest_file(&directory.join(MANIFEST_FILE), manifest)?;
+    write_manifest_file(&directory.join(MANIFEST_FILE), &published_manifest)?;
+    write_update_generation_directory(directory, &next_generation)?;
     pause_after_manifest_publication(package_file);
     cleanup_staged_packages_except(directory, package_file);
-    Ok(())
+    Ok(published_manifest)
 }
 
 fn clear_staged_update(app: &AppHandle) -> Result<(), String> {
@@ -497,14 +504,28 @@ fn clear_staged_update(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn read_manifest_recovering(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String> {
-    match read_manifest(app) {
-        Ok(manifest) => Ok(manifest),
+fn read_manifest_directory_recovering(
+    directory: &Path,
+) -> Result<Option<StagedUpdateManifest>, String> {
+    match read_manifest_file(&directory.join(MANIFEST_FILE)) {
+        Ok(Some(manifest)) => {
+            let current_generation = read_update_generation_directory(directory)?;
+            if manifest.generation.is_empty() || manifest.generation != current_generation {
+                clear_staged_update_directory(directory)?;
+                return Ok(None);
+            }
+            Ok(Some(manifest))
+        }
+        Ok(None) => Ok(None),
         Err(_) => {
-            clear_staged_update(app)?;
+            invalidate_and_clear_staged_update_directory(directory)?;
             Ok(None)
         }
     }
+}
+
+fn read_manifest_recovering(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String> {
+    read_manifest_directory_recovering(&update_dir(app)?)
 }
 
 fn installer_marker(name: &str) -> PathBuf {
@@ -679,6 +700,7 @@ pub async fn app_update_check_and_stage(
     let sha256 = package_digest(&bytes);
     let package_file = package_file_name(&update.version, &sha256);
     let manifest = StagedUpdateManifest {
+        generation: String::new(),
         current_version: update.current_version.clone(),
         version: update.version.clone(),
         date: update.date.map(|value| value.to_string()),
@@ -692,7 +714,7 @@ pub async fn app_update_check_and_stage(
         activation_attempts: 0,
         error: None,
     };
-    publish_staged_update_directory_with_generation(
+    let manifest = publish_staged_update_directory_with_generation(
         &update_directory,
         &manifest,
         &bytes,
@@ -930,10 +952,11 @@ mod tests {
         install_fail_after_package_publication, install_publication_after_manifest_hook,
         invalidate_and_clear_staged_update_directory, lock_update_directory, package_digest,
         package_file_name, publish_staged_update_directory,
-        publish_staged_update_directory_with_generation, read_manifest_file,
-        read_update_generation_directory, staged_update_belongs_to_current_install,
-        verify_update_signature, CleanShutdownMarker, DownloadProgressEvent, StagedUpdateManifest,
-        StagedUpdatePhase,
+        publish_staged_update_directory_with_generation, read_manifest_directory_recovering,
+        read_manifest_file, read_update_generation_directory,
+        staged_update_belongs_to_current_install, verify_update_signature,
+        write_update_generation_directory, CleanShutdownMarker, DownloadProgressEvent,
+        StagedUpdateManifest, StagedUpdatePhase,
     };
 
     const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
@@ -941,6 +964,7 @@ mod tests {
 
     fn manifest(from: &str, to: &str) -> StagedUpdateManifest {
         StagedUpdateManifest {
+            generation: String::new(),
             current_version: from.to_string(),
             version: to.to_string(),
             date: None,
@@ -1178,12 +1202,85 @@ mod tests {
         }
         release.wait();
 
-        assert_eq!(
+        assert!(matches!(
             publication.join().expect("publication thread"),
-            Err("UPDATE_STAGE_CANCELLED".to_string())
-        );
+            Err(error) if error == "UPDATE_STAGE_CANCELLED"
+        ));
         assert!(!directory.join(super::MANIFEST_FILE).exists());
         assert!(!directory.join("staged-update-1.1.0.bin").exists());
+    }
+
+    #[test]
+    fn successful_publication_fences_an_older_download() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let started_generation =
+            read_update_generation_directory(temp.path()).expect("initial generation");
+
+        let newer_bytes = b"newer download".to_vec();
+        let newer_digest = package_digest(&newer_bytes);
+        let mut newer_manifest = manifest("1.0.0", "1.2.0");
+        newer_manifest.package_file = package_file_name("1.2.0", &newer_digest);
+        newer_manifest.package_size = newer_bytes.len() as u64;
+        newer_manifest.sha256 = newer_digest;
+        let published = publish_staged_update_directory_with_generation(
+            temp.path(),
+            &newer_manifest,
+            &newer_bytes,
+            Some(&started_generation),
+        )
+        .expect("publish newer download");
+
+        let older_bytes = b"older slow download".to_vec();
+        let older_digest = package_digest(&older_bytes);
+        let mut older_manifest = manifest("1.0.0", "1.1.0");
+        older_manifest.package_file = package_file_name("1.1.0", &older_digest);
+        older_manifest.package_size = older_bytes.len() as u64;
+        older_manifest.sha256 = older_digest;
+        assert!(matches!(
+            publish_staged_update_directory_with_generation(
+                temp.path(),
+                &older_manifest,
+                &older_bytes,
+                Some(&started_generation),
+            ),
+            Err(error) if error == "UPDATE_STAGE_CANCELLED"
+        ));
+
+        assert_eq!(
+            read_update_generation_directory(temp.path()).expect("published generation"),
+            published.generation
+        );
+        let persisted = read_manifest_directory_recovering(temp.path())
+            .expect("read staged update")
+            .expect("newer update remains staged");
+        assert_eq!(persisted.version, "1.2.0");
+        assert_eq!(persisted.generation, published.generation);
+        assert!(!temp.path().join(&older_manifest.package_file).exists());
+    }
+
+    #[test]
+    fn generation_advance_hides_a_manifest_left_by_interrupted_discard() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bytes = b"abandoned staged update".to_vec();
+        let digest = package_digest(&bytes);
+        let mut staged_manifest = manifest("1.0.0", "1.1.0");
+        staged_manifest.package_file = package_file_name("1.1.0", &digest);
+        staged_manifest.package_size = bytes.len() as u64;
+        staged_manifest.sha256 = digest;
+        let published = publish_staged_update_directory(temp.path(), &staged_manifest, &bytes)
+            .expect("publish staged update");
+
+        let discarded_generation = uuid::Uuid::new_v4().to_string();
+        write_update_generation_directory(temp.path(), &discarded_generation)
+            .expect("persist discard generation before cleanup");
+        assert!(temp.path().join(super::MANIFEST_FILE).exists());
+        assert_ne!(published.generation, discarded_generation);
+
+        assert!(read_manifest_directory_recovering(temp.path())
+            .expect("recover interrupted discard")
+            .is_none());
+        assert!(!temp.path().join(super::MANIFEST_FILE).exists());
+        assert!(!temp.path().join(&staged_manifest.package_file).exists());
     }
 
     #[test]
