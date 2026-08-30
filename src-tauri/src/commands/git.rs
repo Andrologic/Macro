@@ -2154,8 +2154,8 @@ async fn wsl_hard_reset_preserving_untracked(
 set -u
 repo=$1
 target_commit=$2
-git_dir=$(git -C "$repo" rev-parse --absolute-git-dir) || exit $?
-recovery_root=$git_dir/macro-hard-reset-recovery
+git_common_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir) || exit $?
+recovery_root=$git_common_dir/macro-hard-reset-recovery
 if [[ -L $recovery_root ]]; then
   printf 'Hard reset recovery root must not be a symbolic link: %s\n' "$recovery_root" >&2
   exit 43
@@ -5169,7 +5169,7 @@ struct NativeHardResetCheckoutScratch {
 
 impl NativeHardResetCheckoutScratch {
     fn create(repo: &Repository) -> Result<Self> {
-        let root = repo.path().join("macro-hard-reset-recovery");
+        let root = repo.commondir().join("macro-hard-reset-recovery");
         fs::create_dir_all(&root).map_err(|error| BackendError::Io {
             message: format!(
                 "Failed to create the hard reset recovery root {}: {error}",
@@ -20281,6 +20281,58 @@ mod tests {
         assert!(
             retained,
             "the inode updated through the open handle must remain recoverable"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_recovery_survives_linked_worktree_removal() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        let worktree_temp = TempDir::new().unwrap();
+        let worktree_path = worktree_temp.path().join("linked-reset-worktree");
+        let add_output = run_git_command(
+            temp.path(),
+            &[
+                "worktree".to_string(),
+                "add".to_string(),
+                "-b".to_string(),
+                "recovery-check".to_string(),
+                worktree_path.to_string_lossy().into_owned(),
+                initial_commit,
+            ],
+        )
+        .unwrap();
+        assert!(add_output.success, "{}", add_output.stderr);
+
+        let worktree_repo = Repository::open(&worktree_path).unwrap();
+        fs::write(worktree_path.join("README.md"), "discarded worktree data").unwrap();
+        reset_repo(&worktree_repo, "hard", Some(target_commit)).unwrap();
+        let recovery_root = repo.commondir().join("macro-hard-reset-recovery");
+        let retained_path = fs::read_dir(&recovery_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("original/README.md"))
+            .find(|path| {
+                fs::read_to_string(path).is_ok_and(|contents| contents == "discarded worktree data")
+            })
+            .expect("the linked worktree recovery must use the common Git directory");
+        drop(worktree_repo);
+
+        let remove_output = run_git_command(
+            temp.path(),
+            &[
+                "worktree".to_string(),
+                "remove".to_string(),
+                worktree_path.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(remove_output.success, "{}", remove_output.stderr);
+        assert_eq!(
+            fs::read_to_string(retained_path).unwrap(),
+            "discarded worktree data"
         );
     }
 
