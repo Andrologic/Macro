@@ -187,10 +187,31 @@ fn is_managed_worktree_name(name: &str, kind: ManagedWorktreeKind) -> bool {
     }
 }
 
+fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
+    let mut cursor = path;
+    let mut missing_components = Vec::new();
+    loop {
+        if let Ok(mut canonical) = fs::canonicalize(cursor) {
+            for component in missing_components.iter().rev() {
+                canonical.push(component);
+            }
+            return canonical;
+        }
+        let Some(file_name) = cursor.file_name() else {
+            return path.to_path_buf();
+        };
+        missing_components.push(file_name.to_os_string());
+        let Some(parent) = cursor.parent() else {
+            return path.to_path_buf();
+        };
+        cursor = parent;
+    }
+}
+
 fn is_path_in_task_worktree_root(repo: &Repository, path: &Path) -> Result<bool> {
     let root = task_worktree_root(repo)?;
-    let canonical_root = fs::canonicalize(&root).unwrap_or(root);
-    let canonical_path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical_root = canonicalize_with_missing_tail(&root);
+    let canonical_path = canonicalize_with_missing_tail(path);
     Ok(canonical_path.starts_with(canonical_root))
 }
 
