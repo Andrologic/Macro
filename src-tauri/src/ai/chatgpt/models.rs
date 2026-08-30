@@ -161,7 +161,23 @@ pub(super) async fn recover_pending_disconnect_locked(
         return Err("Le journal de déconnexion ChatGPT cible un autre fournisseur.".to_string());
     }
 
-    secrets::delete_provider_secret(provider_id).map_err(|error| error.to_string())?;
+    if let Err(delete_error) = secrets::delete_provider_secret(provider_id) {
+        match secrets::reload_chatgpt_secret(provider_id) {
+            Ok(None) => {
+                warn!(
+                    provider_id = %provider_id,
+                    error = %delete_error,
+                    "ChatGPT secret deletion reported an error after the canonical secret was removed"
+                );
+            }
+            Ok(Some(_)) => return Err(delete_error.to_string()),
+            Err(read_error) => {
+                return Err(format!(
+                    "{delete_error} Impossible de vérifier l’état canonique du secret après l’échec : {read_error}"
+                ));
+            }
+        }
+    }
     let mut transaction = pool.begin().await.map_err(sqlx_error_to_string)?;
     let metadata = disconnected_metadata();
     let now = chrono::Utc::now().to_rfc3339();
@@ -231,6 +247,8 @@ where
         .await
         .map_err(db_error_to_string)?
         .ok_or_else(|| format!("Provider {provider_id} not found."))?;
+    let previous_secret = secrets::reload_chatgpt_secret(provider_id)
+        .map_err(|error| format!("Impossible de lire le secret ChatGPT canonique : {error}"))?;
     let previous_metadata = ProviderAuthMetadata {
         auth_status: provider.auth_status,
         auth_source: provider.auth_source,
@@ -241,6 +259,31 @@ where
     let disconnected_metadata = disconnected_metadata();
     prepare_disconnect(pool, provider_id, &disconnected_metadata).await?;
     if let Err(secret_error) = delete_secret(provider_id) {
+        match secrets::reload_chatgpt_secret(provider_id) {
+            Ok(None) => {
+                warn!(
+                    provider_id = %provider_id,
+                    error = %secret_error,
+                    "ChatGPT secret deletion reported an error after the canonical secret was removed"
+                );
+                finish_disconnect(pool, provider_id).await?;
+                return repository::get_provider_config(pool, provider_id)
+                    .await
+                    .map_err(db_error_to_string)?
+                    .ok_or_else(|| format!("Provider {provider_id} not found."));
+            }
+            Ok(Some(current_secret)) if previous_secret.as_ref() == Some(&current_secret) => {}
+            Ok(Some(_)) => {
+                return Err(format!(
+                    "{secret_error} Le secret ChatGPT a changé pendant la suppression. La déconnexion reste en attente et les métadonnées authentifiées n’ont pas été restaurées."
+                ));
+            }
+            Err(read_error) => {
+                return Err(format!(
+                    "{secret_error} Impossible de vérifier l’état canonique du secret après l’échec : {read_error}. La déconnexion reste en attente."
+                ));
+            }
+        }
         return match rollback_prepared_disconnect(
             pool,
             provider_id,
@@ -529,6 +572,16 @@ mod tests {
         format!("header.{payload}.signature")
     }
 
+    fn test_secret() -> ChatGptSecret {
+        ChatGptSecret {
+            access_token: test_access_token(),
+            refresh_token: "refresh-old".to_string(),
+            access_token_expires_at: Some("2100-01-01T00:00:00Z".to_string()),
+            account_id: Some("acct-old".to_string()),
+            auth_source: "browser".to_string(),
+        }
+    }
+
     async fn provider_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -598,7 +651,12 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_keeps_the_secret_when_the_sql_update_fails() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
         let pool = provider_pool().await;
+        let secret = test_secret();
+        crate::secrets::set_chatgpt_secret("chatgpt", &secret).expect("persist secret");
         sqlx::query(
             r#"
             CREATE TRIGGER reject_provider_disconnect
@@ -628,11 +686,20 @@ mod tests {
                 .expect("journal query")
                 .is_none()
         );
+        assert_eq!(
+            crate::secrets::reload_chatgpt_secret("chatgpt").expect("reload secret"),
+            Some(secret)
+        );
     }
 
     #[tokio::test]
     async fn disconnect_restores_sql_metadata_when_secret_deletion_fails() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
         let pool = provider_pool().await;
+        let secret = test_secret();
+        crate::secrets::set_chatgpt_secret("chatgpt", &secret).expect("persist secret");
 
         disconnect_auth_with_secret_delete(&pool, "chatgpt", |_| {
             Err("injected secret deletion failure".to_string())
@@ -663,18 +730,28 @@ mod tests {
             row.get::<Option<String>, _>("account_label").as_deref(),
             Some("user@example.com")
         );
+        assert_eq!(
+            crate::secrets::reload_chatgpt_secret("chatgpt").expect("reload secret"),
+            Some(secret)
+        );
     }
 
     #[tokio::test]
-    async fn concurrent_disconnects_cannot_restore_authenticated_metadata_after_success() {
+    async fn a_later_ambiguous_disconnect_cannot_restore_metadata_after_success() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
         let pool = provider_pool().await;
-        let success = disconnect_auth_with_secret_delete(&pool, "chatgpt", |_| Ok(()));
+        crate::secrets::set_chatgpt_secret("chatgpt", &test_secret()).expect("persist secret");
+        let success = disconnect_auth_with_secret_delete(&pool, "chatgpt", |provider_id| {
+            crate::secrets::delete_provider_secret(provider_id).map_err(|error| error.to_string())
+        });
         let failure = disconnect_auth_with_secret_delete(&pool, "chatgpt", |_| {
             Err("injected concurrent secret deletion failure".to_string())
         });
         let (success, failure) = tokio::join!(success, failure);
         assert!(success.is_ok());
-        assert!(failure.is_err());
+        assert!(failure.is_ok());
 
         let provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
             .await
@@ -682,6 +759,35 @@ mod tests {
             .expect("provider");
         assert_eq!(provider.auth_status.as_deref(), Some("unauthenticated"));
         assert!(provider.auth_source.is_none());
+    }
+
+    #[tokio::test]
+    async fn ambiguous_secret_delete_finishes_disconnect_when_canonical_secret_is_absent() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
+        let pool = provider_pool().await;
+        crate::secrets::set_chatgpt_secret("chatgpt", &test_secret()).expect("persist secret");
+
+        let provider = disconnect_auth_with_secret_delete(&pool, "chatgpt", |provider_id| {
+            crate::secrets::delete_provider_secret(provider_id)
+                .map_err(|error| error.to_string())?;
+            Err("injected error after durable secret deletion".to_string())
+        })
+        .await
+        .expect("canonical absence must finish the disconnect");
+
+        assert_eq!(provider.auth_status.as_deref(), Some("unauthenticated"));
+        assert!(provider.auth_source.is_none());
+        assert!(crate::secrets::reload_chatgpt_secret("chatgpt")
+            .expect("reload canonical secret")
+            .is_none());
+        assert!(
+            crate::db::repository::get_app_setting(&pool, &disconnect_journal_key("chatgpt"))
+                .await
+                .expect("journal query")
+                .is_none()
+        );
     }
 
     #[tokio::test]
