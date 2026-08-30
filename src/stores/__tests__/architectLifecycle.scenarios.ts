@@ -885,6 +885,8 @@ export const registerArchitectLifecycleScenarios = (
         chatMessagesLoaded: false,
         chatTranscriptRevision: 'revision-head-missing',
         chatMessageCount: 2,
+        replicaScopeKey: 'repo:C:/repos/project-a',
+        replicaProjectId: 'project-a',
         conversationId: 'plan-head-missing-conv',
         sharedConversation: false,
         targetBranch: 'develop',
@@ -894,7 +896,16 @@ export const registerArchitectLifecycleScenarios = (
       const { useChatStore } = await loadChatStore();
       await useChatStore.getState().initialize();
 
-      expect(getArchitectPlanChatTranscriptMock).toHaveBeenCalledWith('develop', plan.id);
+      expect(getArchitectPlanChatTranscriptMock).toHaveBeenCalledWith(
+        'develop',
+        plan.id,
+        {
+          replicaScopeKey: 'repo:C:/repos/project-a',
+          replicaProjectId: 'project-a',
+          expectedTranscriptRevision: 'revision-head-missing',
+          expectedMessageCount: 2,
+        },
+      );
       expect(importMessagesMock).toHaveBeenCalledWith(
         'plan-head-missing-conv',
         expect.arrayContaining([

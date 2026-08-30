@@ -210,7 +210,7 @@ const toBranchTaskOrder = (
     const branchNode = taskScoped ? nodeById.get(deduped[0]) : null;
     const branchKey = taskScoped && branchNode
       ? getNodeBranchKey(branchNode, planSlug)
-      : getLegacyPredictedBranchKey(branch, planSlug);
+      : `${branch.projectId}::${getLegacyPredictedBranchKey(branch, planSlug)}`;
 
     for (const taskId of deduped) {
       const node = nodeById.get(taskId);
@@ -250,20 +250,24 @@ const toBranchTaskOrder = (
       continue;
     }
     const branchIntent = getPlanNodeBranchIntent(node);
-    const branchKey = taskScoped
-      ? getNodeBranchKey(node, planSlug)
-      : getLegacyNodeBranchKey(node, planSlug);
+    const branchKeys = taskScoped
+      ? [getNodeBranchKey(node, planSlug)]
+      : (projectIds.length > 0 ? projectIds : ['unscoped']).map(
+          (projectId) => `${projectId}::${getLegacyNodeBranchKey(node, planSlug)}`,
+        );
     node.assignedBranch = node.assignedBranch ? normalizeBranchName(node.assignedBranch) : branchIntent.label;
     node.branchType = branchIntent.branchType;
     node.branchSlug = branchIntent.branchSlug;
 
-    if (!orderByBranch.has(branchKey)) {
-      orderByBranch.set(branchKey, []);
-    }
+    for (const branchKey of branchKeys) {
+      if (!orderByBranch.has(branchKey)) {
+        orderByBranch.set(branchKey, []);
+      }
 
-    const branchOrder = orderByBranch.get(branchKey)!;
-    if (!branchOrder.includes(node.id)) {
-      branchOrder.push(node.id);
+      const branchOrder = orderByBranch.get(branchKey)!;
+      if (!branchOrder.includes(node.id)) {
+        branchOrder.push(node.id);
+      }
     }
   }
 

@@ -1367,6 +1367,8 @@ fn summary_to_blank_head(
         conversation_id: None,
         shared_conversation: false,
         target_branch: summary.target_branch.clone(),
+        replica_scope_key: None,
+        replica_project_id: None,
         resolution_mode: "blank_fast_path".to_string(),
         chat_transcript_revision: None,
         chat_message_count: 0,
@@ -1391,6 +1393,17 @@ async fn load_head_snapshot(
     let Some(manifest) = manifest_opt else {
         return Ok(None);
     };
+    if sanitize_id(&plan.id) != plan_id
+        || sanitize_id(&manifest.plan_id) != plan_id
+        || normalize_branch_name(&manifest.target_branch) != branch_name
+    {
+        return Err(BackendError::Filesystem {
+            message: format!(
+                "Architect plan identity mismatch in scope '{}' for branch '{}' and plan '{}'",
+                scope_entry.scope.scope_key, branch_name, plan_id
+            ),
+        });
+    }
     if plan.status == "deleted" {
         return Ok(None);
     }
@@ -1582,6 +1595,8 @@ pub async fn activate_plan_head(
         conversation_id: conversation_id.clone(),
         shared_conversation,
         target_branch: normalized_branch,
+        replica_scope_key: Some(canonical_snapshot.scope.scope_key.clone()),
+        replica_project_id: canonical_snapshot.scope.project_id.clone(),
         resolution_mode: "full".to_string(),
         chat_transcript_revision: trim_to_option(Some(
             canonical_snapshot.manifest.content_hashes.chat.as_str(),
@@ -1596,6 +1611,11 @@ pub async fn activate_plan_chat(
     request: WorkspaceArchitectActivatePlanChatRequestDto,
 ) -> Result<Option<WorkspaceArchitectPlanTranscriptDto>> {
     let normalized_branch = normalize_branch_name(&request.branch_name);
+    let requested_scope_key = trim_to_option(request.replica_scope_key.as_deref());
+    let requested_project_id = trim_to_option(request.replica_project_id.as_deref());
+    let expected_transcript_revision =
+        trim_to_option(request.expected_transcript_revision.as_deref());
+    let expected_message_count = request.expected_message_count;
     let index = load_branch_index(workspace_path, metadata_root, &normalized_branch, &[]).await?;
     let effective_plan_id = resolve_effective_plan_id(&index, &request.plan_id);
     let Some(locators) = index.plan_locators_by_id.get(&effective_plan_id) else {
@@ -1603,6 +1623,20 @@ pub async fn activate_plan_chat(
     };
     let plan_id = sanitize_id(&effective_plan_id);
     let mut candidates = locators.clone();
+    if let Some(scope_key) = requested_scope_key.as_ref() {
+        candidates.retain(|locator| locator.scope.scope_key == *scope_key);
+    }
+    if let Some(project_id) = requested_project_id.as_ref() {
+        candidates.retain(|locator| locator.scope.project_id.as_ref() == Some(project_id));
+    }
+    if candidates.is_empty() {
+        return Err(BackendError::Filesystem {
+            message: format!(
+                "No transcript replica matches the requested scope for branch '{}' and plan '{}'",
+                normalized_branch, plan_id
+            ),
+        });
+    }
     candidates.sort_by(|left, right| {
         compare_scope_recency(
             Some(&right.summary.updated_at),
@@ -1622,6 +1656,37 @@ pub async fn activate_plan_chat(
                 .ok_or_else(|| BackendError::Filesystem {
                     message: format!("Missing {}", manifest_path.display()),
                 })?;
+            if sanitize_id(&manifest.plan_id) != plan_id
+                || normalize_branch_name(&manifest.target_branch) != normalized_branch
+            {
+                return Err(BackendError::Filesystem {
+                    message: format!(
+                        "Transcript manifest identity mismatch in scope '{}' for branch '{}' and plan '{}'",
+                        locator.scope.scope_key, normalized_branch, plan_id
+                    ),
+                });
+            }
+            let transcript_revision = trim_to_option(Some(manifest.content_hashes.chat.as_str()));
+            if expected_transcript_revision.is_some()
+                && transcript_revision != expected_transcript_revision
+            {
+                return Err(BackendError::RevisionConflict {
+                    message: format!(
+                        "Transcript revision changed in scope '{}' for branch '{}' and plan '{}'",
+                        locator.scope.scope_key, normalized_branch, plan_id
+                    ),
+                });
+            }
+            if expected_message_count.is_some()
+                && expected_message_count != Some(manifest.conversation.message_count)
+            {
+                return Err(BackendError::RevisionConflict {
+                    message: format!(
+                        "Transcript message count changed in scope '{}' for branch '{}' and plan '{}'",
+                        locator.scope.scope_key, normalized_branch, plan_id
+                    ),
+                });
+            }
             let messages = if manifest.conversation.message_count == 0 {
                 Vec::new()
             } else {
@@ -1637,17 +1702,17 @@ pub async fn activate_plan_chat(
                     ),
                 });
             }
-            Ok::<_, BackendError>((manifest, messages))
+            Ok::<_, BackendError>((manifest, transcript_revision, messages))
         }
         .await;
         match attempt {
-            Ok((manifest, messages)) => {
+            Ok((manifest, transcript_revision, messages)) => {
                 return Ok(Some(WorkspaceArchitectPlanTranscriptDto {
                     plan_id,
                     target_branch: normalized_branch,
-                    transcript_revision: trim_to_option(Some(
-                        manifest.content_hashes.chat.as_str(),
-                    )),
+                    replica_scope_key: Some(locator.scope.scope_key),
+                    replica_project_id: locator.scope.project_id,
+                    transcript_revision,
                     message_count: manifest.conversation.message_count,
                     messages,
                 }))
@@ -1780,6 +1845,73 @@ mod tests {
             revision: Some(2),
             ..WorkspaceArchitectPlanRecordDto::default()
         }
+    }
+
+    fn write_plan_replica(
+        metadata_root: &Path,
+        plan_id: &str,
+        project_id: &str,
+        summary_updated_at: &str,
+        plan_updated_at: &str,
+        chat_hash: &str,
+        conversation_id: &str,
+        message_content: &str,
+    ) {
+        let mut summary = plan_summary(plan_id, project_id);
+        summary.updated_at = summary_updated_at.to_string();
+        summary.conversation_id = Some(conversation_id.to_string());
+        write_json(
+            &architect_plan_index_path(metadata_root, "main"),
+            &ArchitectPlanIndexFile {
+                version: 3,
+                active_plan_id: Some(plan_id.to_string()),
+                plans: vec![summary],
+                reserved_plan_slugs: Vec::new(),
+            },
+        );
+
+        let mut plan = plan_record(plan_id, project_id);
+        plan.updated_at = plan_updated_at.to_string();
+        plan.conversation_id = Some(conversation_id.to_string());
+        let plan_dir = architect_plan_dir(metadata_root, "main", plan_id);
+        write_json(&plan_dir.join("plan.json"), &plan);
+        write_json(
+            &plan_dir.join("manifest.json"),
+            &ArchitectPlanManifestDto {
+                schema_version: 3,
+                plan_id: plan_id.to_string(),
+                target_branch: "main".to_string(),
+                status: "draft".to_string(),
+                expected_project_ids: vec![project_id.to_string()],
+                context_project_ids: Vec::new(),
+                revision: 2,
+                updated_at: plan_updated_at.to_string(),
+                content_hashes: ArchitectPlanContentHashesDto {
+                    plan: format!("plan-{project_id}"),
+                    chat: chat_hash.to_string(),
+                },
+                conversation: ArchitectPlanConversationSnapshotDto {
+                    conversation_id: Some(conversation_id.to_string()),
+                    title: Some(format!("Plan {project_id}")),
+                    message_count: 1,
+                    last_message_at: Some(plan_updated_at.to_string()),
+                },
+            },
+        );
+        std_fs::write(
+            plan_dir.join("chat.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::to_string(&WorkspaceArchitectChatMessageDto {
+                    id: format!("message-{project_id}"),
+                    role: "user".to_string(),
+                    content: message_content.to_string(),
+                    created_at: plan_updated_at.to_string(),
+                })
+                .expect("serialize chat message")
+            ),
+        )
+        .expect("write chat jsonl");
     }
 
     #[tokio::test]
@@ -2167,6 +2299,7 @@ mod tests {
             WorkspaceArchitectActivatePlanChatRequestDto {
                 branch_name: "main".to_string(),
                 plan_id: plan_id.to_string(),
+                ..WorkspaceArchitectActivatePlanChatRequestDto::default()
             },
         )
         .await
@@ -2175,6 +2308,100 @@ mod tests {
 
         assert_eq!(transcript.message_count, 1);
         assert_eq!(transcript.messages[0].content, "Explain the plan");
+    }
+
+    #[tokio::test]
+    async fn activates_head_and_transcript_from_the_same_project_replica() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let metadata_root = workspace.path().join("metadata");
+        std_fs::create_dir_all(&metadata_root).expect("create metadata root");
+        let project_a_path = workspace.path().join("project-a");
+        let project_b_path = workspace.path().join("project-b");
+        let _repo_a = init_repo(&project_a_path);
+        let _repo_b = init_repo(&project_b_path);
+        let project_a_metadata = GitState::new()
+            .resolve_macro_metadata_root(&project_a_path)
+            .expect("project A metadata root");
+        let project_b_metadata = GitState::new()
+            .resolve_macro_metadata_root(&project_b_path)
+            .expect("project B metadata root");
+        let project_a_id = "project-a";
+        let project_b_id = "project-b";
+        let plan_id = "shared-plan";
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![
+            project(
+                project_a_id,
+                project_a_path.to_str().expect("project A path string"),
+            ),
+            project(
+                project_b_id,
+                project_b_path.to_str().expect("project B path string"),
+            ),
+        ];
+        write_json(&metadata_root.join("workspace.json"), &state);
+
+        write_plan_replica(
+            &project_a_metadata,
+            plan_id,
+            project_a_id,
+            "2026-06-02T12:00:00.000Z",
+            "2026-06-02T10:00:00.000Z",
+            "chat-project-a",
+            "conversation-project-a",
+            "Transcript from project A",
+        );
+        write_plan_replica(
+            &project_b_metadata,
+            plan_id,
+            project_b_id,
+            "2026-06-02T11:00:00.000Z",
+            "2026-06-02T13:00:00.000Z",
+            "chat-project-b",
+            "conversation-project-b",
+            "Transcript from project B",
+        );
+
+        let activation = activate_plan_head(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectActivatePlanHeadRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                summary_hint: None,
+                scoped_project_ids_hint: vec![project_a_id.to_string(), project_b_id.to_string()],
+            },
+        )
+        .await
+        .expect("activate plan head")
+        .expect("activation payload");
+
+        assert_eq!(activation.plan.updated_at, "2026-06-02T13:00:00.000Z");
+        assert_eq!(activation.replica_project_id.as_deref(), Some(project_b_id));
+        assert_eq!(
+            activation.chat_transcript_revision.as_deref(),
+            Some("chat-project-b")
+        );
+
+        let transcript = activate_plan_chat(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectActivatePlanChatRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                replica_scope_key: activation.replica_scope_key.clone(),
+                replica_project_id: activation.replica_project_id.clone(),
+                expected_transcript_revision: activation.chat_transcript_revision.clone(),
+                expected_message_count: Some(activation.chat_message_count),
+            },
+        )
+        .await
+        .expect("activate matching chat")
+        .expect("chat transcript");
+
+        assert_eq!(transcript.replica_scope_key, activation.replica_scope_key);
+        assert_eq!(transcript.replica_project_id.as_deref(), Some(project_b_id));
+        assert_eq!(transcript.messages[0].content, "Transcript from project B");
     }
 
     #[tokio::test]

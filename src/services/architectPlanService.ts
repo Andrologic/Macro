@@ -308,6 +308,8 @@ export interface ArchitectPlanActivationPayload {
   chatMessagesLoaded?: boolean;
   chatTranscriptRevision?: string | null;
   chatMessageCount?: number;
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
   conversationId: string | null;
   sharedConversation: boolean;
   targetBranch: string;
@@ -4140,6 +4142,8 @@ const loadArchitectPlanActivationPayloadFromRuntime = async (
     chatMessagesLoaded: false,
     chatTranscriptRevision: head.chatTranscriptRevision,
     chatMessageCount: head.chatMessageCount,
+    replicaScopeKey: head.replicaScopeKey ?? null,
+    replicaProjectId: head.replicaProjectId ?? null,
     conversationId: head.conversationId,
     sharedConversation: head.sharedConversation,
     targetBranch: normalizeBranchName(head.targetBranch || branchName),
@@ -4148,9 +4152,17 @@ const loadArchitectPlanActivationPayloadFromRuntime = async (
   };
 };
 
+export interface ArchitectPlanChatTranscriptOptions {
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
+  expectedTranscriptRevision?: string | null;
+  expectedMessageCount?: number | null;
+}
+
 export const getArchitectPlanChatTranscript = async (
   branchName: string,
   planId: string,
+  options: ArchitectPlanChatTranscriptOptions = {},
   deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
 ): Promise<{
   messages: ArchitectPlanChatMessage[];
@@ -4168,15 +4180,31 @@ export const getArchitectPlanChatTranscript = async (
     deps,
   });
 
-  if (!persistedDirectPlan &&
+  if ((options.replicaScopeKey || !persistedDirectPlan) &&
       isWorkspaceArchitectRuntimeAvailable(deps) &&
       canUseWorkspaceArchitectRuntimeForScope(registrySnapshot)) {
     const transcript = await deps.tauri.workspaceArchitectActivatePlanChat({
       branchName: normalizedBranch,
       planId: safeId,
+      replicaScopeKey: options.replicaScopeKey,
+      replicaProjectId: options.replicaProjectId,
+      expectedTranscriptRevision: options.expectedTranscriptRevision,
+      expectedMessageCount: options.expectedMessageCount,
     });
     if (!transcript) {
       return null;
+    }
+    if (
+      (options.replicaScopeKey && transcript.replicaScopeKey !== options.replicaScopeKey) ||
+      (options.replicaProjectId && transcript.replicaProjectId !== options.replicaProjectId) ||
+      (options.expectedTranscriptRevision &&
+        transcript.transcriptRevision !== options.expectedTranscriptRevision) ||
+      (typeof options.expectedMessageCount === 'number' &&
+        transcript.messageCount !== options.expectedMessageCount)
+    ) {
+      throw new Error(
+        `Architect transcript identity changed for branch ${normalizedBranch} and plan ${safeId}.`,
+      );
     }
     return {
       messages: mapRuntimeArchitectChatMessages(transcript.messages),
@@ -6305,8 +6333,8 @@ export const createArchitectPlanService = (
     archiveArchitectPlan: (branchName, planId) => archiveArchitectPlan(branchName, planId, deps),
     getArchitectPlanChatMessages: (branchName, planId) =>
       getArchitectPlanChatMessages(branchName, planId, deps),
-    getArchitectPlanChatTranscript: (branchName, planId) =>
-      getArchitectPlanChatTranscript(branchName, planId, deps),
+    getArchitectPlanChatTranscript: (branchName, planId, options) =>
+      getArchitectPlanChatTranscript(branchName, planId, options, deps),
     saveArchitectPlanChatMessages: (branchName, planId, messages) =>
       saveArchitectPlanChatMessages(branchName, planId, messages, deps),
     syncArchitectPlanChatFromConversation: (params) => syncArchitectPlanChatFromConversation(params, deps),

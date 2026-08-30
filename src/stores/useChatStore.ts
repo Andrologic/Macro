@@ -12483,6 +12483,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     chatMessagesLoaded?: boolean;
     chatTranscriptRevision?: string | null;
     chatMessageCount?: number;
+    replicaScopeKey?: string | null;
+    replicaProjectId?: string | null;
   }): Promise<{
     conversationId: string | null;
     restoredTranscript: boolean;
@@ -12499,6 +12501,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       chatMessagesLoaded = chatMessagesHint !== undefined,
       chatTranscriptRevision = null,
       chatMessageCount,
+      replicaScopeKey = null,
+      replicaProjectId = null,
     } = params;
     const resolvedConversationId = conversationIdHint ?? plan.conversationId ?? null;
     const existingConversation = resolvedConversationId
@@ -12558,7 +12562,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         .dbGetArchitectPlanConversationSync(conversation.id)
         .catch(() => null);
       const conversationCount = conversation.message_count;
+      const headRevisionCanVerifyTranscript =
+        !replicaScopeKey || expectedTranscriptCount === 0 || chatTranscriptRevision !== null;
       const syncMatches =
+        headRevisionCanVerifyTranscript &&
         sync?.plan_id === plan.id &&
         sync.target_branch === targetBranch &&
         (sync.transcript_revision ?? null) === (chatTranscriptRevision ?? null) &&
@@ -12575,10 +12582,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const transcriptResult =
       chatMessagesLoaded === false
-        ? await getArchitectPlanChatTranscript(targetBranch, plan.id).catch(
-            () => null,
-          )
+        ? await getArchitectPlanChatTranscript(targetBranch, plan.id, {
+            replicaScopeKey,
+            replicaProjectId,
+            expectedTranscriptRevision: chatTranscriptRevision,
+            expectedMessageCount: expectedTranscriptCount,
+          })
         : null;
+    if (chatMessagesLoaded === false && !transcriptResult) {
+      throw new Error(
+        "Le transcript Architect correspondant à la tête du plan n’est plus disponible.",
+      );
+    }
     const transcript = transcriptResult?.messages ?? chatMessagesHint ?? [];
     const resolvedTranscriptRevision =
       transcriptResult?.transcriptRevision ?? chatTranscriptRevision ?? null;
@@ -13301,6 +13316,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             chatMessagesLoaded: activationPayload?.chatMessagesLoaded,
             chatTranscriptRevision: activationPayload?.chatTranscriptRevision,
             chatMessageCount: activationPayload?.chatMessageCount,
+            replicaScopeKey: activationPayload?.replicaScopeKey,
+            replicaProjectId: activationPayload?.replicaProjectId,
           });
           if (!isCurrentRequest()) return modeFallback(null);
           if (ensuredConversation.conversationId) {
