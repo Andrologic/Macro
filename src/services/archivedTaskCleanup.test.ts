@@ -53,7 +53,8 @@ describe('archivedTaskCleanup', () => {
 
     const persisted = JSON.parse(settings.get(CLEANUP_KEY) ?? '[]') as ArchivedTaskCleanupSaga[];
     expect(persisted.sort((left, right) => left.taskId.localeCompare(right.taskId))).toEqual([
-      saga('task-a'), saga('task-b'),
+      { ...saga('task-a'), generation: 1 },
+      { ...saga('task-b'), generation: 1 },
     ]);
   });
 
@@ -81,7 +82,7 @@ describe('archivedTaskCleanup', () => {
     const replacement = {
       ...saga('shared'),
       operationId: 'archive-replacement',
-      createdAt: '2026-08-30T00:00:01.000Z',
+      createdAt: '2020-01-01T00:00:00.000Z',
     };
 
     await upsertArchivedTaskCleanupSaga(obsolete, transport);
@@ -95,7 +96,14 @@ describe('archivedTaskCleanup', () => {
     await removeArchivedTaskCleanupSaga(replacement.taskId, replacement.operationId, transport);
     await expect(upsertArchivedTaskCleanupSaga(replacement, transport))
       .rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
-    expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([]);
+    const afterClockRollback = {
+      ...saga('shared'),
+      operationId: 'archive-after-clock-rollback',
+      createdAt: '2010-01-01T00:00:00.000Z',
+    };
+    await upsertArchivedTaskCleanupSaga(afterClockRollback, transport);
+    expect(afterClockRollback.generation).toBe(3);
+    expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([afterClockRollback]);
   });
 
   it('keeps durable high-water marks after more than 256 completed task identities', async () => {

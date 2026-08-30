@@ -158,17 +158,22 @@ describe('planLifecycleSaga', () => {
       createdAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:00:00.000Z',
     };
+    await upsertPlanLifecycleSaga(prepared, transport);
     const committed: PlanLifecycleSaga = {
       ...prepared,
       phase: 'metadata_committed',
       updatedAt: '2026-08-30T00:00:01.000Z',
     };
-    const generation = getPlanLifecycleSagaGeneration(prepared);
-
     await upsertPlanLifecycleSaga(committed, transport);
     await expect(upsertPlanLifecycleSaga(prepared, transport))
       .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
-    await removePlanLifecycleSaga('shared', 'archive', 'develop', generation, transport);
+    await removePlanLifecycleSaga(
+      'shared',
+      'archive',
+      'develop',
+      getPlanLifecycleSagaGeneration(committed),
+      transport,
+    );
     await expect(upsertPlanLifecycleSaga(committed, transport))
       .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
     expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([]);
@@ -217,5 +222,51 @@ describe('planLifecycleSaga', () => {
       highWatermarks?: Record<string, string>;
     };
     expect(Object.keys(registry.highWatermarks ?? {})).toHaveLength(520);
+  });
+
+  it('accepts a new plan generation when the wall clock moves backwards', async () => {
+    const values = new Map<string, string>();
+    const transport: PlanLifecycleSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const first: PlanLifecycleSaga = {
+      planId: 'clock-plan',
+      branchName: 'develop',
+      operation: 'archive',
+      phase: 'git_cleanup_complete',
+      createdAt: '2030-01-01T00:00:00.000Z',
+      updatedAt: '2030-01-01T00:00:00.000Z',
+    };
+    await upsertPlanLifecycleSaga(first, transport);
+    await removePlanLifecycleSaga(
+      first.planId,
+      first.operation,
+      first.branchName,
+      getPlanLifecycleSagaGeneration(first),
+      transport,
+    );
+    const second: PlanLifecycleSaga = {
+      ...first,
+      generation: undefined,
+      phase: 'prepared',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    };
+
+    await upsertPlanLifecycleSaga(second, transport);
+
+    expect(second.generation).toBe(2);
+    expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([second]);
   });
 });

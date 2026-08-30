@@ -3108,7 +3108,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               pending.taskId,
               pending.targetBranch,
               getLinkedDeletionSagaGeneration({
-                ...pending,
+                ...recoverySaga,
                 ownerType: 'task',
                 ownerId: pending.taskId,
               }),
@@ -3182,7 +3182,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             deletionSaga.taskId,
             deletionSaga.targetBranch,
             getLinkedDeletionSagaGeneration({
-              ...deletionSaga,
+              ...taskDeletedSaga,
               ownerType: 'task',
               ownerId: deletionSaga.taskId,
             }),

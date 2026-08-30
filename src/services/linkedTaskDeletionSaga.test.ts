@@ -159,13 +159,12 @@ describe('linkedTaskDeletionSaga', () => {
       createdAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:00:00.000Z',
     };
+    await sagaService.upsertLinkedConversationDeletionSaga(prepared, transport);
     const completed: LinkedConversationDeletionSaga = {
       ...prepared,
       phase: 'task_deleted',
       updatedAt: '2026-08-30T00:00:01.000Z',
     };
-    const generation = sagaService.getLinkedDeletionSagaGeneration(prepared);
-
     await sagaService.upsertLinkedConversationDeletionSaga(completed, transport);
     await expect(sagaService.upsertLinkedConversationDeletionSaga(prepared, transport))
       .rejects.toBeInstanceOf(sagaService.StaleLinkedTaskDeletionSagaError);
@@ -173,7 +172,7 @@ describe('linkedTaskDeletionSaga', () => {
       'task',
       'shared',
       'feature/shared',
-      generation,
+      sagaService.getLinkedDeletionSagaGeneration(completed),
       transport,
     );
     await expect(sagaService.upsertLinkedConversationDeletionSaga(completed, transport))
@@ -227,6 +226,53 @@ describe('linkedTaskDeletionSaga', () => {
     expect(Object.keys(registry.highWatermarks ?? {})).toHaveLength(520);
   });
 
+  it('accepts a new owner generation when the wall clock moves backwards', async () => {
+    const values = new Map<string, string>();
+    const transport: LinkedTaskDeletionSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const first: LinkedConversationDeletionSaga = {
+      ownerType: 'task',
+      ownerId: 'clock-task',
+      conversationId: 'clock-conversation',
+      phase: 'task_deleted',
+      targetBranch: 'feature/clock-task',
+      createdAt: '2030-01-01T00:00:00.000Z',
+      updatedAt: '2030-01-01T00:00:00.000Z',
+    };
+    await sagaService.upsertLinkedConversationDeletionSaga(first, transport);
+    await sagaService.removeLinkedConversationDeletionSaga(
+      first.ownerType,
+      first.ownerId,
+      first.targetBranch,
+      sagaService.getLinkedDeletionSagaGeneration(first),
+      transport,
+    );
+    const second: LinkedConversationDeletionSaga = {
+      ...first,
+      generation: undefined,
+      conversationId: 'clock-conversation-new',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      updatedAt: '2020-01-01T00:00:00.000Z',
+    };
+
+    await sagaService.upsertLinkedConversationDeletionSaga(second, transport);
+
+    expect(second.generation).toBe(2);
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([second]);
+  });
+
   it('keeps target checkpoints monotonic within one deletion generation', async () => {
     const values = new Map<string, string>();
     const transport: LinkedTaskDeletionSagaTransport = {
@@ -260,7 +306,7 @@ describe('linkedTaskDeletionSaga', () => {
       createdAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:00:00.000Z',
     };
-    await sagaService.upsertLinkedConversationDeletionSaga({
+    const transferred: LinkedConversationDeletionSaga = {
       ...pending,
       archivedCleanupOperationId: 'archive-generation',
       archivedCleanupCreatedAt: '2026-08-30T00:00:01.000Z',
@@ -280,9 +326,13 @@ describe('linkedTaskDeletionSaga', () => {
         },
       ],
       updatedAt: '2026-08-30T00:00:02.000Z',
-    }, transport);
+    };
+    await sagaService.upsertLinkedConversationDeletionSaga(transferred, transport);
     await sagaService.upsertLinkedConversationDeletionSaga({
-      ...pending,
+      ...transferred,
+      executionTargets: pending.executionTargets,
+      archivedCleanupOperationId: undefined,
+      archivedCleanupCreatedAt: undefined,
       updatedAt: '2026-08-30T00:00:01.000Z',
     }, transport);
 
