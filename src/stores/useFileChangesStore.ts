@@ -2603,9 +2603,9 @@ export const createFileChangesStore = (
           ...deriveReviewState(repositories),
           diffModalSession: {
             ...state.diffModalSession,
-            rightDraftContent: nextContent,
+            rightDraftContent: state.diffModalSession.rightDraftContent,
             lastLoadedModifiedContent: nextContent,
-            isDirty: false,
+            isDirty: state.diffModalSession.rightDraftContent !== nextContent,
             isSaving: false,
             editRevision: revision,
           },

@@ -2410,6 +2410,53 @@ describe('useFileChangesStore', () => {
     expect(fsWriteFileMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps text entered while an earlier draft save is still pending', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision) break;
+      await Promise.resolve();
+    }
+    const savedContent = 'const savedWhileTyping = true;\n';
+    const newerDraft = 'const typedBeforeSaveReturned = true;\n';
+    let releaseWrite!: () => void;
+    let markWriteStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    const writeReleased = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    fsWriteFileMock.mockImplementationOnce(async ({ content }) => {
+      markWriteStarted();
+      await writeReleased;
+      currentFiles[worktreeAPath]['src/main.ts'] = content;
+      return {
+        path: `${worktreeAPath}/src/main.ts`,
+        bytes_written: content.length,
+        created: false,
+        skipped: false,
+        revision: `revision:${content}`,
+      };
+    });
+
+    store.updateRightDraft(savedContent);
+    const pendingSave = store.saveRightDraft();
+    await writeStarted;
+    store.updateRightDraft(newerDraft);
+    releaseWrite();
+    await pendingSave;
+
+    const session = useFileChangesStore.getState().diffModalSession;
+    expect(currentFiles[worktreeAPath]['src/main.ts']).toBe(savedContent);
+    expect(session?.rightDraftContent).toBe(newerDraft);
+    expect(session?.lastLoadedModifiedContent).toBe(savedContent);
+    expect(session?.editRevision).toBe(`revision:${savedContent}`);
+    expect(session?.isDirty).toBe(true);
+    expect(session?.isSaving).toBe(false);
+  });
+
   it('rejects a draft save when the file changed after the diff loaded', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
