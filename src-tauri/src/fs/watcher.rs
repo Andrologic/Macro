@@ -9,7 +9,7 @@ use notify::{
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, Mutex};
@@ -18,13 +18,13 @@ use tracing::{debug, error, info, warn};
 /// File system watcher that monitors workspace changes and emits events
 pub struct FsWatcher {
     /// The underlying notify watcher
-    _watcher: RecommendedWatcher,
+    _watcher: Arc<StdMutex<RecommendedWatcher>>,
     /// Workspace path being watched
     #[allow(dead_code)]
     workspace: PathBuf,
-    /// Number of paths registered with the watcher
+    /// Paths registered with the watcher
     #[allow(dead_code)]
-    watched_path_count: usize,
+    watched_paths: Arc<StdMutex<HashSet<PathBuf>>>,
     /// Channel sender for debouncing
     #[allow(dead_code)]
     debounce_tx: mpsc::Sender<Event>,
@@ -63,6 +63,10 @@ impl FsWatcher {
         for path in &watch_plan.watch_paths {
             watcher.watch(path, RecursiveMode::NonRecursive)?;
         }
+        let watched_paths = Arc::new(StdMutex::new(
+            watch_plan.watch_paths.iter().cloned().collect(),
+        ));
+        let watcher = Arc::new(StdMutex::new(watcher));
 
         info!(
             "File system watcher started for {:?}: watching {} directories, skipped {} ignored directories",
@@ -73,14 +77,23 @@ impl FsWatcher {
 
         // Spawn the debounce task using Tauri's async runtime
         let workspace_clone = workspace.clone();
+        let task_watcher = watcher.clone();
+        let task_watched_paths = watched_paths.clone();
         let debounce_handle = tauri::async_runtime::spawn(async move {
-            debounce_task(debounce_rx, app_handle, workspace_clone).await;
+            debounce_task(
+                debounce_rx,
+                app_handle,
+                workspace_clone,
+                task_watcher,
+                task_watched_paths,
+            )
+            .await;
         });
 
         Ok(FsWatcher {
             _watcher: watcher,
             workspace,
-            watched_path_count: watch_plan.watch_paths.len(),
+            watched_paths,
             debounce_tx,
             _debounce_handle: debounce_handle,
         })
@@ -150,11 +163,66 @@ fn collect_watch_paths(
     }
 }
 
+fn discover_unwatched_directories(
+    event: &Event,
+    workspace: &Path,
+    watched_paths: &HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut discovered = Vec::new();
+    let mut ignored_dir_count = 0;
+    for path in &event.paths {
+        if !path.starts_with(workspace) || !path.is_dir() || should_ignore_path(path, workspace) {
+            continue;
+        }
+        collect_watch_paths(path, workspace, &mut discovered, &mut ignored_dir_count);
+    }
+    discovered.retain(|path| !watched_paths.contains(path));
+    discovered.sort();
+    discovered.dedup();
+    discovered
+}
+
+fn register_new_directories(
+    event: &Event,
+    workspace: &Path,
+    watcher: &Arc<StdMutex<RecommendedWatcher>>,
+    watched_paths: &Arc<StdMutex<HashSet<PathBuf>>>,
+) {
+    let mut watched = match watched_paths.lock() {
+        Ok(watched) => watched,
+        Err(_) => {
+            warn!("File system watcher path registry is poisoned");
+            return;
+        }
+    };
+    let discovered = discover_unwatched_directories(event, workspace, &watched);
+    if discovered.is_empty() {
+        return;
+    }
+    let mut watcher = match watcher.lock() {
+        Ok(watcher) => watcher,
+        Err(_) => {
+            warn!("File system watcher is poisoned");
+            return;
+        }
+    };
+    for path in discovered {
+        match watcher.watch(&path, RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                watched.insert(path);
+            }
+            Err(error) => warn!("Failed to watch new directory {:?}: {}", path, error),
+        }
+    }
+}
+
 /// Debounce task that collects events and emits them to the frontend
 async fn debounce_task(
     rx: Arc<Mutex<mpsc::Receiver<Event>>>,
     app_handle: AppHandle,
     workspace: PathBuf,
+    watcher: Arc<StdMutex<RecommendedWatcher>>,
+    watched_paths: Arc<StdMutex<HashSet<PathBuf>>>,
 ) {
     let debounce_duration = Duration::from_millis(300);
     let mut pending_events: Vec<Event> = Vec::new();
@@ -165,6 +233,7 @@ async fn debounce_task(
 
         match tokio::time::timeout(debounce_duration, rx_guard.recv()).await {
             Ok(Some(event)) => {
+                register_new_directories(&event, &workspace, &watcher, &watched_paths);
                 // Process the event
                 let mut keep_event = false;
                 for path in &event.paths {
@@ -455,5 +524,27 @@ mod tests {
         assert!(!watched.iter().any(|path| path.starts_with("node_modules")));
         assert!(!watched.iter().any(|path| path.starts_with("target")));
         assert_eq!(plan.ignored_dir_count, 3);
+    }
+
+    #[test]
+    fn test_new_directory_event_extends_non_recursive_watch_plan() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path();
+        std::fs::create_dir_all(workspace.join("src")).expect("src");
+        let initial = build_watch_plan(workspace);
+        let watched = initial.watch_paths.into_iter().collect::<HashSet<_>>();
+        let created = workspace.join("generated");
+        std::fs::create_dir_all(created.join("nested")).expect("new nested directory");
+        std::fs::create_dir_all(created.join("node_modules/pkg")).expect("ignored directory");
+        let event = Event::new(EventKind::Create(notify::event::CreateKind::Folder))
+            .add_path(created.clone());
+
+        let discovered = discover_unwatched_directories(&event, workspace, &watched);
+
+        assert!(discovered.contains(&created));
+        assert!(discovered.contains(&created.join("nested")));
+        assert!(!discovered
+            .iter()
+            .any(|path| path.starts_with(created.join("node_modules"))));
     }
 }
