@@ -816,6 +816,7 @@ describe('useProviderStore secret resolution', () => {
     updateProviderSettingsMock.mockImplementationOnce(async () => firstWrite);
     const providerStore = await loadProviderStore();
     await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
 
     const first = providerStore.useProviderStore.getState().updateProviderSettings(
       'provider-openai',
@@ -825,8 +826,7 @@ describe('useProviderStore secret resolution', () => {
       'provider-openai',
       { copilotSendTimeoutMs: 240_000 },
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushAsyncWork();
 
     expect(updateProviderSettingsMock).toHaveBeenCalledTimes(1);
     releaseFirstWrite?.();
@@ -848,6 +848,7 @@ describe('useProviderStore secret resolution', () => {
     updateProviderConfigMock.mockImplementationOnce(async () => firstWrite);
     const providerStore = await loadProviderStore();
     await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
 
     const first = providerStore.useProviderStore.getState().updateProviderConfig(
       'provider-openai',
@@ -857,8 +858,7 @@ describe('useProviderStore secret resolution', () => {
       'provider-openai',
       { name: 'Second name' },
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushAsyncWork();
 
     expect(updateProviderConfigMock).toHaveBeenCalledTimes(1);
     releaseFirstWrite?.();
@@ -915,8 +915,7 @@ describe('useProviderStore secret resolution', () => {
       { name: 'Second Copilot', providerType: 'copilot', isLocal: false },
       240_000,
     );
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushAsyncWork();
 
     expect(calls).toEqual(['timeout:120000']);
     releaseFirstTimeout?.();
@@ -934,7 +933,7 @@ describe('useProviderStore secret resolution', () => {
       .toMatchObject({ copilotSendTimeoutMs: 240_000 });
   });
 
-  it('restores the previous Copilot timeout when the configuration write fails', async () => {
+  it('restores the persisted Copilot timeout when the configuration write fails', async () => {
     const providerStore = await loadProviderStore();
     await providerStore.useProviderStore.getState().loadProviderConfigs();
     await flushAsyncWork();
@@ -946,7 +945,7 @@ describe('useProviderStore secret resolution', () => {
         'provider-openai': {
           providerId: 'provider-openai',
           filterFreeModels: false,
-          copilotSendTimeoutMs: 1_800_000,
+          copilotSendTimeoutMs: null,
         },
       },
     }));
@@ -966,6 +965,85 @@ describe('useProviderStore secret resolution', () => {
       { providerId: 'provider-openai', copilotSendTimeoutMs: 120_000 },
       { providerId: 'provider-openai', copilotSendTimeoutMs: 1_800_000 },
     ]);
+    expect(providerStore.useProviderStore.getState().providerConfigs[0]?.name).toBe('OpenAI');
+    expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
+      .toMatchObject({ copilotSendTimeoutMs: 1_800_000 });
+  });
+
+  it('queues a settings reload behind a failed Copilot save and its compensation', async () => {
+    const providerStore = await loadProviderStore();
+    await providerStore.useProviderStore.getState().loadProviderConfigs();
+    await flushAsyncWork();
+
+    let backendTimeoutMs = 1_800_000;
+    let settingsReadCount = 0;
+    let releaseReload!: () => void;
+    const reloadGate = new Promise<void>((resolve) => {
+      releaseReload = resolve;
+    });
+    getProviderSettingsMock.mockClear();
+    getProviderSettingsMock.mockImplementation(async () => {
+      settingsReadCount += 1;
+      if (settingsReadCount === 2) {
+        await reloadGate;
+      }
+      return {
+        provider_id: 'provider-openai',
+        filter_free_models: false,
+        copilot_send_timeout_ms: backendTimeoutMs,
+      };
+    });
+    updateProviderSettingsMock.mockClear();
+    updateProviderSettingsMock.mockImplementation(async (params) => {
+      backendTimeoutMs = params.copilotSendTimeoutMs ?? 0;
+    });
+    updateProviderConfigMock.mockClear();
+    let rejectConfig!: (error: Error) => void;
+    const blockedConfigWrite = new Promise<void>((_resolve, reject) => {
+      rejectConfig = reject;
+    });
+    let markConfigStarted!: () => void;
+    const configStarted = new Promise<void>((resolve) => {
+      markConfigStarted = resolve;
+    });
+    updateProviderConfigMock.mockImplementationOnce(async () => {
+      markConfigStarted();
+      return blockedConfigWrite;
+    });
+
+    const save = providerStore.useProviderStore.getState().updateCopilotProvider(
+      'provider-openai',
+      { name: 'Unsaved Copilot', providerType: 'copilot', isLocal: false },
+      120_000,
+    );
+    const saveResult = save.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await configStarted;
+
+    const timeoutDuringConfigWrite = backendTimeoutMs;
+    const reload = providerStore.useProviderStore.getState().loadProviderSettings(
+      'provider-openai',
+    );
+    await flushAsyncWork();
+    const readsBeforeRollback = getProviderSettingsMock.mock.calls.length;
+
+    rejectConfig(new Error('config failed'));
+    const saveError = await saveResult;
+    await flushAsyncWork();
+
+    const timeoutAfterRollback = backendTimeoutMs;
+    const readsAfterRollback = getProviderSettingsMock.mock.calls.length;
+    releaseReload();
+    await reload;
+
+    expect(saveError).toBeInstanceOf(Error);
+    expect((saveError as Error).message).toBe('config failed');
+    expect(timeoutDuringConfigWrite).toBe(120_000);
+    expect(readsBeforeRollback).toBe(1);
+    expect(timeoutAfterRollback).toBe(1_800_000);
+    expect(readsAfterRollback).toBe(2);
     expect(providerStore.useProviderStore.getState().providerConfigs[0]?.name).toBe('OpenAI');
     expect(providerStore.useProviderStore.getState().providerSettingsById['provider-openai'])
       .toMatchObject({ copilotSendTimeoutMs: 1_800_000 });

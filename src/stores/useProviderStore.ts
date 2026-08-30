@@ -2265,49 +2265,50 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
-  loadProviderSettings: async (providerId: string) => {
-    const requestVersion = startProviderSettingsRequest(providerId);
-    if (ipcIsTauriAvailable()) {
-      try {
-        const settings = await ipcGetProviderSettings(providerId);
-        const normalized: ProviderSettings = {
-          providerId: settings.provider_id,
-          filterFreeModels: settings.filter_free_models,
-          copilotSendTimeoutMs: settings.copilot_send_timeout_ms,
-        };
-        if (
-          providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
-          !get().providerConfigs.some((provider) => provider.id === providerId)
-        ) {
-          return get().providerSettingsById[providerId] ?? null;
+  loadProviderSettings: (providerId: string) =>
+    enqueueProviderMutation(providerId, async () => {
+      const requestVersion = startProviderSettingsRequest(providerId);
+      if (ipcIsTauriAvailable()) {
+        try {
+          const settings = await ipcGetProviderSettings(providerId);
+          const normalized: ProviderSettings = {
+            providerId,
+            filterFreeModels: settings.filter_free_models,
+            copilotSendTimeoutMs: settings.copilot_send_timeout_ms,
+          };
+          if (
+            providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
+            !get().providerConfigs.some((provider) => provider.id === providerId)
+          ) {
+            return get().providerSettingsById[providerId] ?? null;
+          }
+          set((state) => ({
+            providerSettingsById: { ...state.providerSettingsById, [providerId]: normalized },
+          }));
+          return normalized;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to load provider settings';
+          set({ lastError: message });
+          return null;
         }
-        set((state) => ({
-          providerSettingsById: { ...state.providerSettingsById, [providerId]: normalized },
-        }));
-        return normalized;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to load provider settings';
-        set({ lastError: message });
-        return null;
       }
-    }
 
-    const fallback: ProviderSettings = {
-      providerId,
-      filterFreeModels: false,
-      copilotSendTimeoutMs: null,
-    };
-    if (
-      providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
-      !get().providerConfigs.some((provider) => provider.id === providerId)
-    ) {
-      return get().providerSettingsById[providerId] ?? null;
-    }
-    set((state) => ({
-      providerSettingsById: { ...state.providerSettingsById, [providerId]: fallback },
-    }));
-    return fallback;
-  },
+      const fallback: ProviderSettings = {
+        providerId,
+        filterFreeModels: false,
+        copilotSendTimeoutMs: null,
+      };
+      if (
+        providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
+        !get().providerConfigs.some((provider) => provider.id === providerId)
+      ) {
+        return get().providerSettingsById[providerId] ?? null;
+      }
+      set((state) => ({
+        providerSettingsById: { ...state.providerSettingsById, [providerId]: fallback },
+      }));
+      return fallback;
+    }),
 
   updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) =>
     enqueueProviderMutation(providerId, async () => {
@@ -2351,10 +2352,17 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       requireProviderConfigurationIpc();
       providerConfigMutationVersion += 1;
       startProviderSettingsRequest(providerId);
-      const previousSettings = get().providerSettingsById[providerId] ?? {
+      let persistedSettings: Awaited<ReturnType<typeof ipcGetProviderSettings>>;
+      try {
+        persistedSettings = await ipcGetProviderSettings(providerId);
+      } catch (error) {
+        set({ lastError: getErrorMessage(error, 'Failed to load provider settings') });
+        throw error;
+      }
+      const previousSettings: ProviderSettings = {
         providerId,
-        filterFreeModels: false,
-        copilotSendTimeoutMs: null,
+        filterFreeModels: persistedSettings.filter_free_models,
+        copilotSendTimeoutMs: persistedSettings.copilot_send_timeout_ms,
       };
       const nextSettings: ProviderSettings = {
         ...previousSettings,
@@ -2392,6 +2400,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               + `Failed to restore the Copilot timeout: ${getErrorMessage(rollbackError, 'unknown error')}`,
             );
           }
+          startProviderSettingsRequest(providerId);
+          set((state) => ({
+            providerSettingsById: {
+              ...state.providerSettingsById,
+              [providerId]: previousSettings,
+            },
+          }));
           throw configError;
         }
 
