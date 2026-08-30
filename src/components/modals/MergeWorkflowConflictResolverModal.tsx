@@ -7,6 +7,7 @@ import {
   gitStatus,
   gitWriteConflictResolution,
   type GitConflictFileDto,
+  type GitConflictFileSideDto,
 } from '../../services/tauriIpc';
 import { toServiceError } from '../../services/contracts/errors';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -143,6 +144,32 @@ const getNonRenderableFileMessage = (
     );
   }
   return translate('implement.noTextualDiff', 'No textual diff is available for this file.');
+};
+
+const formatFileSize = (sizeBytes: number): string => {
+  if (sizeBytes < 1_024) return `${sizeBytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = sizeBytes / 1_024;
+  let unitIndex = 0;
+  while (value >= 1_024 && unitIndex < units.length - 1) {
+    value /= 1_024;
+    unitIndex += 1;
+  }
+  return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} ${units[unitIndex]}`;
+};
+
+const getConflictSideDescription = (
+  side: GitConflictFileSideDto,
+  translate: ReturnType<typeof useTranslation>['t']
+): string => {
+  if (!side.exists) return translate('implement.conflictSideAbsent', 'Absent');
+  const type = side.isBinary
+    ? translate('implement.binaryFileType', 'Binary')
+    : translate('implement.textFileType', 'Text');
+  const limit = side.tooLarge
+    ? ` · ${translate('implement.overEditorLimit', 'over editor limit')}`
+    : '';
+  return `${type} · ${formatFileSize(side.sizeBytes)}${limit}`;
 };
 
 const withTimeout = async <T,>(
@@ -764,11 +791,51 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
               </div>
             ) : !canRenderFile ? (
               <div className="absolute inset-0 z-10 flex items-center justify-center p-6">
-                <div className="max-w-lg rounded-xl border border-border bg-card px-4 py-4 text-center shadow-sm">
+                <div className="w-full max-w-xl rounded-xl border border-border bg-card px-5 py-5 shadow-sm">
                   <Icon name="file-text" size={24} className="mx-auto mb-3 text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-center text-sm font-medium text-foreground">
                     {getNonRenderableFileMessage(currentFile, t)}
                   </p>
+                  {currentFile && (
+                    <div className="mt-5 overflow-hidden rounded-lg border border-border/70 text-xs">
+                      {([
+                        ['base', t('implement.conflictBase', 'Common ancestor'), currentFile.base],
+                        ['ours', t('implement.conflictCurrent', 'Current'), currentFile.ours],
+                        ['theirs', t('implement.conflictIncoming', 'Incoming'), currentFile.theirs],
+                        ['worktree', t('implement.conflictWorktree', 'Working copy'), currentFile.worktree],
+                      ] as const).map(([key, label, side]) => (
+                        <div
+                          key={key}
+                          className="grid grid-cols-[minmax(8rem,0.8fr)_minmax(10rem,1fr)] gap-3 border-b border-border/60 px-3 py-2.5 last:border-b-0"
+                        >
+                          <span className="font-medium text-foreground">{label}</span>
+                          <span className="text-right text-muted-foreground">
+                            {getConflictSideDescription(side, t)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleUseSide('ours')}
+                      disabled={isBusy || !selectedPath}
+                    >
+                      {t('implement.chooseCurrentVersion', 'Choose current version')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={() => void handleUseSide('theirs')}
+                      disabled={isBusy || !selectedPath}
+                    >
+                      {t('implement.chooseIncomingVersion', 'Choose incoming version')}
+                    </Button>
+                  </div>
                 </div>
               </div>
             ) : resultContainsConflictMarkers ? (
@@ -855,12 +922,16 @@ export const MergeWorkflowConflictResolverModal: React.FC<MergeWorkflowConflictR
               </Button>
               {!allFilesResolved && (
                 <>
-                  <Button variant="secondary" size="sm" onClick={() => void handleUseSide('ours')} disabled={isBusy || !selectedPath}>
-                    {t('implement.useAllCurrent', 'Use all current')}
-                  </Button>
-                  <Button variant="secondary" size="sm" onClick={() => void handleUseSide('theirs')} disabled={isBusy || !selectedPath}>
-                    {t('implement.useAllIncoming', 'Use all incoming')}
-                  </Button>
+                  {canRenderFile && (
+                    <>
+                      <Button variant="secondary" size="sm" onClick={() => void handleUseSide('ours')} disabled={isBusy || !selectedPath}>
+                        {t('implement.useAllCurrent', 'Use all current')}
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => void handleUseSide('theirs')} disabled={isBusy || !selectedPath}>
+                        {t('implement.useAllIncoming', 'Use all incoming')}
+                      </Button>
+                    </>
+                  )}
                   {isDraftDirty && (
                     <Button variant="ghost" size="sm" onClick={handleResetDraft} disabled={isBusy || !canRenderFile}>
                       {t('implement.resetDraft', 'Reset draft')}

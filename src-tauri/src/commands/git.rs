@@ -512,6 +512,9 @@ pub struct GitStartMergeResolutionDto {
 pub struct GitConflictFileSideDto {
     pub exists: bool,
     pub content: String,
+    pub size_bytes: usize,
+    pub is_binary: bool,
+    pub too_large: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -4995,19 +4998,32 @@ fn conflict_side_from_bytes(bytes: Option<&[u8]>) -> GitConflictFileSideDto {
         return GitConflictFileSideDto {
             exists: false,
             content: String::new(),
+            size_bytes: 0,
+            is_binary: false,
+            too_large: false,
         };
     };
 
-    if bytes.len() > MAX_CONFLICT_FILE_BYTES || has_binary_marker(bytes) {
+    let size_bytes = bytes.len();
+    let is_binary = has_binary_marker(bytes);
+    let too_large = size_bytes > MAX_CONFLICT_FILE_BYTES;
+
+    if too_large || is_binary {
         return GitConflictFileSideDto {
             exists: true,
             content: String::new(),
+            size_bytes,
+            is_binary,
+            too_large,
         };
     }
 
     GitConflictFileSideDto {
         exists: true,
         content: String::from_utf8_lossy(bytes).to_string(),
+        size_bytes,
+        is_binary,
+        too_large,
     }
 }
 
@@ -5035,6 +5051,9 @@ fn read_conflict_entry_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -5046,6 +5065,9 @@ fn read_conflict_entry_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -5080,6 +5102,9 @@ fn read_worktree_conflict_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -17294,6 +17319,9 @@ mod tests {
 
         let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
         assert_eq!(file.base.content, "hello");
+        assert_eq!(file.base.size_bytes, 5);
+        assert!(!file.base.is_binary);
+        assert!(!file.base.too_large);
         assert_eq!(file.ours.content, "base branch change");
         assert_eq!(file.theirs.content, "feature branch change");
         assert!(file.worktree.content.contains("<<<<<<<"));
@@ -17384,6 +17412,9 @@ mod tests {
         let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
         assert!(file.is_binary);
         assert!(file.theirs.content.is_empty());
+        assert_eq!(file.theirs.size_bytes, incoming.len());
+        assert!(file.theirs.is_binary);
+        assert!(!file.theirs.too_large);
 
         accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "ours").unwrap();
 
@@ -17411,6 +17442,9 @@ mod tests {
         let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
         assert!(file.too_large);
         assert!(file.theirs.content.is_empty());
+        assert_eq!(file.theirs.size_bytes, incoming.len());
+        assert!(!file.theirs.is_binary);
+        assert!(file.theirs.too_large);
 
         accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
 

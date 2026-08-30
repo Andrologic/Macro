@@ -484,6 +484,9 @@ export interface GitStartMergeResolutionDto {
 export interface GitConflictFileSideDto {
   exists: boolean;
   content: string;
+  sizeBytes: number;
+  isBinary: boolean;
+  tooLarge: boolean;
 }
 
 export interface GitConflictFileDto {
