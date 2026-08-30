@@ -161,6 +161,28 @@ describe('taskTodoToolService', () => {
     );
   });
 
+  it('clears an existing description when task_todo_update receives an empty description', () => {
+    const updated = applyTaskTodoOperations(
+      [
+        {
+          id: 'todo-1',
+          title: 'Wire API',
+          description: 'Old details',
+          status: 'pending',
+        },
+      ],
+      [{ action: 'update', todo_id: 'todo-1', description: '   ' }],
+    );
+
+    expect(updated).toEqual([
+      {
+        id: 'todo-1',
+        title: 'Wire API',
+        status: 'pending',
+      },
+    ]);
+  });
+
   it('loads open completion todos from the plan instead of the task snapshot', async () => {
     const openTodos = await loadOpenTaskTodosForCompletion(
       createTask({ todos: [{ id: 'todo-1', title: 'Snapshot says done', status: 'done' }] }),

@@ -5,6 +5,7 @@ import {
   mergeTaskProjectCommandRegistry,
   normalizeTaskProjectCommandPath,
   resolveTaskProjectCommandRegistry,
+  saveTaskProjectCommandDrafts,
 } from './taskProjectCommands';
 import type { ConfigSnapshot } from '../types/generated/config';
 
@@ -19,6 +20,15 @@ const configSnapshot = (): ConfigSnapshot => ({
           projectPath: 'C:/dev/api',
           command: 'global command',
           openTerminalOnRun: true,
+          updatedAt: '2026-03-24T00:00:00.000Z',
+        },
+        'C:/dev/worker': {
+          projectId: 'worker',
+          projectName: 'Worker',
+          projectPath: 'C:/dev/worker',
+          command: 'bun test:worker',
+          worktreeSetupCommand: '',
+          openTerminalOnRun: false,
           updatedAt: '2026-03-24T00:00:00.000Z',
         },
       },
@@ -156,5 +166,39 @@ describe('taskProjectCommands', () => {
 
     expect(requestedScopes).toEqual([['api']]);
     expect(getTaskProjectCommand(registry, 'C:/dev/api')?.command).toBe('bun test:api');
+  });
+
+  it('preserves commands owned by another project group when saving scoped drafts', async () => {
+    const patches: Array<{ kind: string; key: string; value: unknown }> = [];
+
+    const saved = await saveTaskProjectCommandDrafts(
+      [
+        {
+          projectId: 'api',
+          projectName: 'API',
+          projectPath: 'C:/dev/api',
+          command: 'bun test:api:updated',
+          worktreeSetupCommand: '',
+          openTerminalOnRun: true,
+        },
+      ],
+      {
+        snapshotLoader: async () => configSnapshot(),
+        patcher: async (kind, key, value) => {
+          patches.push({ kind, key, value });
+          return {} as never;
+        },
+      },
+    );
+
+    expect(getTaskProjectCommand(saved, 'C:/dev/api')?.command).toBe('bun test:api:updated');
+    expect(getTaskProjectCommand(saved, 'C:/dev/worker')?.command).toBe('bun test:worker');
+    expect(patches).toEqual([
+      {
+        kind: 'tools',
+        key: 'projectCommands',
+        value: saved.commandsByProjectPath,
+      },
+    ]);
   });
 });

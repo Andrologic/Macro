@@ -92,6 +92,17 @@ interface ToolsProjectCommandsDocument extends Record<string, unknown> {
   projectCommands?: Record<string, TaskProjectCommandEntry>;
 }
 
+const resolveUserTaskProjectCommandRegistry = (
+  snapshot: ConfigSnapshot,
+): TaskProjectCommandRegistry => {
+  const tools = isRecord(snapshot.effective.tools) ? snapshot.effective.tools : {};
+  const document = tools as ToolsProjectCommandsDocument;
+  return normalizeRegistry({
+    version: TASK_PROJECT_COMMANDS_VERSION,
+    commandsByProjectPath: document.projectCommands ?? {},
+  });
+};
+
 export const mergeTaskProjectCommandRegistry = (
   current: TaskProjectCommandRegistry,
   drafts: TaskProjectCommandDraft[]
@@ -163,17 +174,30 @@ export const loadTaskProjectCommandRegistry = async (
 };
 
 export const saveTaskProjectCommandDrafts = async (
-  drafts: TaskProjectCommandDraft[]
+  drafts: TaskProjectCommandDraft[],
+  dependencies: {
+    snapshotLoader?: (projectIds: string[]) => Promise<ConfigSnapshot>;
+    patcher?: typeof patchUserConfigTopLevel;
+  } = {},
 ): Promise<TaskProjectCommandRegistry> => {
-  const projectIds = drafts
-    .map((draft) => draft.projectId?.trim() ?? '')
-    .filter(Boolean);
+  const projectIds = normalizeProjectIds(
+    drafts.map((draft) => draft.projectId?.trim() ?? ''),
+  );
+  const snapshot = await (dependencies.snapshotLoader ?? configurationGetSnapshot)(projectIds);
+  const userRegistry = resolveUserTaskProjectCommandRegistry(snapshot);
+  const scopedRegistry = resolveTaskProjectCommandRegistry(snapshot, projectIds);
   const nextRegistry = mergeTaskProjectCommandRegistry(
-    await loadTaskProjectCommandRegistry(projectIds),
+    {
+      version: TASK_PROJECT_COMMANDS_VERSION,
+      commandsByProjectPath: {
+        ...userRegistry.commandsByProjectPath,
+        ...scopedRegistry.commandsByProjectPath,
+      },
+    },
     drafts
   );
 
-  await patchUserConfigTopLevel(
+  await (dependencies.patcher ?? patchUserConfigTopLevel)(
     'tools',
     'projectCommands',
     nextRegistry.commandsByProjectPath,

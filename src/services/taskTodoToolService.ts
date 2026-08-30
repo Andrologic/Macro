@@ -254,8 +254,9 @@ export const applyTaskTodoOperations = (
         const status = Object.prototype.hasOwnProperty.call(operation, 'status')
           ? normalizeOperationStatus(operation.status, operationLabel)
           : todo.status;
+        const { description: _previousDescription, ...todoWithoutDescription } = todo;
         return {
-          ...todo,
+          ...todoWithoutDescription,
           title,
           ...(description ? { description } : {}),
           status,
