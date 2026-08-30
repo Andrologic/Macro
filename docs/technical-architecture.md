@@ -1040,6 +1040,8 @@ Trois surfaces doivent rester distinguées :
 
 Le tool host et le kernel headless partagent le contrat de validation du bearer token afin d'éviter une dérive de leur authentification, mais restent deux serveurs, deux cycles de vie et deux surfaces HTTP distincts.
 
+Les builds de débogage peuvent aussi démarrer le bridge navigateur vendored `tauri-remote-ui`. Ce bridge reste local et interne. Son arrêt signale les connexions déjà acceptées, envoie une fermeture WebSocket, puis attend leurs tâches dans un délai borné. Un démarrage qui échoue après l'ouverture du listener compense les ressources déjà créées avant de renvoyer l'erreur.
+
 ### 16.1 Rôle du kernel headless
 
 Le prototype de kernel headless est une version sans GUI du backend Macro.
@@ -1075,6 +1077,8 @@ Cette API couvre au minimum :
 - `POST /api/v1/workspaces/{workspace_id}/skills/get`
 - `POST /api/v1/workspaces/{workspace_id}/skills/read-resource`
 - `POST /api/v1/workspaces/{workspace_id}/skills/run-script`
+
+Pour les routes préfixées par `/workspaces/{workspace_id}`, `workspace_id` désigne un identifiant de projet enregistré dans les métadonnées du workspace principal. Le kernel résout cet identifiant dans son registre autoritaire, puis exécute la commande avec le chemin canonique correspondant. Un identifiant vide ou inconnu est refusé sans fallback vers le workspace principal.
 
 Cette surface HTTP est une fondation expérimentale incomplète. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
 
