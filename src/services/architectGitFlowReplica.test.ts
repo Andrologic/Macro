@@ -211,6 +211,17 @@ const gitPullMock = mock(async () => ({
   output: 'Already up to date.',
 }));
 const gitMergeMock = mock(async () => 'merge-ok');
+const gitGuardedMergeStateMock = mock(async (params: { expectedIntoCommit: string }) => ({
+  status: gitMergeMock.mock.calls.length > 0 ? 'integrated' as const : 'pending' as const,
+  targetCommit: params.expectedIntoCommit,
+}));
+const gitPrepareGuardedBranchSyncMock = mock(async (params: { expectedBranchCommit: string }) => ({
+  targetCommit: params.expectedBranchCommit,
+}));
+const gitGuardedBranchSyncMock = mock(async (params: { syncTargetCommit: string }) => ({
+  status: 'integrated' as const,
+  targetCommit: params.syncTargetCommit,
+}));
 const gitBranchListMock = mock(async () => ({
   current: 'develop',
   local: [
@@ -340,6 +351,9 @@ const registerModuleMocks = () => {
     gitMergeCheck: gitMergeCheckMock,
     gitPull: gitPullMock,
     gitMerge: gitMergeMock,
+    gitGuardedMergeState: gitGuardedMergeStateMock,
+    gitPrepareGuardedBranchSync: gitPrepareGuardedBranchSyncMock,
+    gitGuardedBranchSync: gitGuardedBranchSyncMock,
     gitBranchList: gitBranchListMock,
     gitBranchDelete: gitBranchDeleteMock,
     gitCheckout: gitCheckoutMock,
@@ -406,6 +420,9 @@ describe('architectGitFlowService replica integration', () => {
     gitMergeCheckMock.mockClear();
     gitPullMock.mockClear();
     gitMergeMock.mockClear();
+    gitGuardedMergeStateMock.mockClear();
+    gitPrepareGuardedBranchSyncMock.mockClear();
+    gitGuardedBranchSyncMock.mockClear();
     gitBranchListMock.mockClear();
     gitBranchDeleteMock.mockClear();
     gitCheckoutMock.mockClear();
@@ -434,6 +451,9 @@ describe('architectGitFlowService replica integration', () => {
         gitMergeCheck: gitMergeCheckMock,
         gitPull: gitPullMock,
         gitMerge: gitMergeMock,
+        gitGuardedMergeState: gitGuardedMergeStateMock,
+        gitPrepareGuardedBranchSync: gitPrepareGuardedBranchSyncMock,
+        gitGuardedBranchSync: gitGuardedBranchSyncMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
         gitCheckout: gitCheckoutMock,
@@ -479,7 +499,9 @@ describe('architectGitFlowService replica integration', () => {
     expect(result.plan.projectIds).toEqual(['web']);
     expect(result.plan.predictedBranches).toHaveLength(1);
     expect(gitStatusMock).toHaveBeenCalled();
-    expect(gitPullMock).toHaveBeenCalledTimes(1);
+    expect(gitPullMock).not.toHaveBeenCalled();
+    expect(gitPrepareGuardedBranchSyncMock).toHaveBeenCalledTimes(1);
+    expect(gitGuardedBranchSyncMock).toHaveBeenCalledTimes(1);
     expect(gitMergeCheckMock).toHaveBeenCalled();
     expect(gitMergeMock).toHaveBeenCalledTimes(1);
     expect(gitBranchDeleteMock).toHaveBeenCalled();
@@ -516,6 +538,9 @@ describe('architectGitFlowService replica integration', () => {
         gitMergeCheck: gitMergeCheckMock,
         gitPull: gitPullMock,
         gitMerge: gitMergeMock,
+        gitGuardedMergeState: gitGuardedMergeStateMock,
+        gitPrepareGuardedBranchSync: gitPrepareGuardedBranchSyncMock,
+        gitGuardedBranchSync: gitGuardedBranchSyncMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
         gitCheckout: gitCheckoutMock,
