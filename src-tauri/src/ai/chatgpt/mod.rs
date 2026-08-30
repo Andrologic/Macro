@@ -9,6 +9,7 @@ pub(crate) mod types;
 mod tests;
 
 pub use auth::{cancel_auth, start_browser_auth};
+pub(crate) use models::recover_auth_mutations;
 pub use models::{disconnect_auth, sync_models};
 pub use stream::{cancel_stream, stream_chat};
 pub use types::AiChatRequest;

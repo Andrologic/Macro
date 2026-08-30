@@ -94,6 +94,7 @@ pub(super) async fn ensure_fresh_secret(
     provider_id: &str,
 ) -> Result<ChatGptSecret, String> {
     let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    super::models::recover_pending_disconnect_locked(pool, provider_id).await?;
     sync_local_provider_secret_metadata(pool, provider_id).await?;
 
     let secret = secrets::get_chatgpt_secret(provider_id)
@@ -126,6 +127,7 @@ pub(super) async fn force_refresh_secret(
     _secret: &ChatGptSecret,
 ) -> Result<ChatGptSecret, String> {
     let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    super::models::recover_pending_disconnect_locked(pool, provider_id).await?;
     let current = secrets::get_chatgpt_secret(provider_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "ChatGPT is not linked. Use Connect with ChatGPT first.".to_string())?;
@@ -269,6 +271,9 @@ pub(super) async fn persist_chatgpt_session(
     account_label: Option<String>,
 ) -> Result<ProviderConfig, PersistChatGptSessionError> {
     let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    super::models::recover_pending_disconnect_locked(pool, provider_id)
+        .await
+        .map_err(PersistChatGptSessionError::Metadata)?;
     let metadata = build_provider_auth_metadata(secret, plan_type, account_label)
         .map_err(PersistChatGptSessionError::Metadata)?;
     debug!(

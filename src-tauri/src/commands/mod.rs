@@ -353,7 +353,15 @@ pub async fn db_retry_initialize(
 
     pool.set_initializing();
     match crate::db::init_db(&app).await {
-        Ok(sqlite_pool) => pool.set_ready(sqlite_pool),
+        Ok(sqlite_pool) => {
+            if let Err(error) = crate::ai::chatgpt::recover_auth_mutations(&sqlite_pool).await {
+                pool.set_failed(error.clone());
+                return Err(command_error(format!(
+                    "Database authentication recovery failed: {error}"
+                )));
+            }
+            pool.set_ready(sqlite_pool);
+        }
         Err(error) => {
             let message = error.to_string();
             pool.set_failed(message.clone());

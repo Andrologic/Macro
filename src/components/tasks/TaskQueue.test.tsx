@@ -1347,13 +1347,29 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('compensates an ambiguous draft creation failure and still removes the conversation', async () => {
+  it('preserves the conversation while ambiguous draft cleanup remains durable and unconfirmed', async () => {
     const directProject = {
       ...makeProject('project-folder', '/tmp/project-folder', 'Folder project'),
       directEdit: true,
       gitSetupState: 'not_git' as const,
     };
     seedTasks([]);
+    const appSettings = new Map<string, string>();
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = appSettings.get(key);
+        return value === undefined
+          ? null
+          : { key, value_json: value, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_set_app_setting') {
+        const valueJson = String(payload?.valueJson ?? '');
+        appSettings.set(key, valueJson);
+        return { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      return undefined;
+    }));
     const createConversation = mock(async () => ({ id: 'conversation-created' }));
     const selectConversation = mock(async () => true);
     const deleteConversation = mock(async () => undefined);
@@ -1413,7 +1429,17 @@ describe('TaskQueue', () => {
     const taskId = createManualFeatureDraft.mock.calls[0]?.[0]?.taskId;
     expect(taskId).toEqual(expect.stringContaining('manual-feature-'));
     expect(deleteManualFeatureDraft).toHaveBeenCalledWith(taskId);
-    expect(deleteConversation).toHaveBeenCalledWith('conversation-created', { mode: 'implement' });
+    expect(deleteConversation).not.toHaveBeenCalled();
+    expect(JSON.parse(appSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        taskId,
+        conversationId: 'conversation-created',
+        phase: 'task_deleting',
+        draft: true,
+        executionTargets: [],
+        lastError: expect.stringContaining('injected durable draft cleanup failure'),
+      }),
+    ]);
     expect(notifyMock.error.mock.calls.some(([, options]) =>
       String(options?.description ?? '').includes('injected durable draft cleanup failure')
     )).toBe(true);

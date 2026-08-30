@@ -1847,6 +1847,43 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
+  it('deletes the conversation only after restart confirms an ambiguous draft is absent', async () => {
+    dbAppSettings.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: 'manual-task-ambiguous-create',
+        conversationId: 'conv-ambiguous-create',
+        phase: 'task_deleting',
+        draft: true,
+        executionTargets: [],
+        createdAt: '2026-08-30T00:00:00.000Z',
+        updatedAt: '2026-08-30T00:00:00.000Z',
+      }]),
+    );
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [],
+      plans: [],
+      hasStandaloneTasks: false,
+      source: 'empty' as const,
+    }));
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+
+    expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+    expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(
+      'conv-ambiguous-create',
+    );
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
   it('deletes a surviving direct task before removing its checkpoint during recovery', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-direct-recovery',

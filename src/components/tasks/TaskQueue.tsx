@@ -86,6 +86,11 @@ import { toServiceError } from '../../services/contracts/errors';
 import { SearchBar } from '../ui/SearchBar';
 import { filterTasksByQuery } from './taskQueueSearch';
 import type { ArchivedTaskCleanupSaga } from '../../services/archivedTaskCleanup';
+import {
+  removeLinkedTaskDeletionSaga,
+  upsertLinkedTaskDeletionSaga,
+  type LinkedTaskDeletionSaga,
+} from '../../services/linkedTaskDeletionSaga';
 
 const ConfirmPromptModal = React.lazy(() =>
   import('../ui/ConfirmPromptModal').then((module) => ({
@@ -920,6 +925,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     setPendingTaskId(taskId);
     let conversationId: string | null = null;
     let draftCreationStarted = false;
+    let cleanupSaga: LinkedTaskDeletionSaga | null = null;
 
     try {
       setSelectedTask(taskId);
@@ -930,6 +936,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         targetGroupId
       );
       conversationId = conversation.id;
+      const now = new Date().toISOString();
+      const preparedCleanupSaga: LinkedTaskDeletionSaga = {
+        taskId,
+        conversationId: conversation.id,
+        phase: 'task_deleting',
+        draft: true,
+        executionTargets: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await upsertLinkedTaskDeletionSaga(preparedCleanupSaga);
+      cleanupSaga = preparedCleanupSaga;
       draftCreationStarted = true;
       await createManualFeatureDraft({
         taskId,
@@ -958,24 +976,55 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       if (!(await selectConversation(conversation.id))) {
         throw new Error('Impossible de sélectionner la nouvelle conversation.');
       }
+      await removeLinkedTaskDeletionSaga(taskId);
+      cleanupSaga = null;
       setShowCreateTaskDialog(false);
     } catch (error) {
       const cleanupErrors: string[] = [];
+      let taskAbsenceConfirmed = !draftCreationStarted;
       if (draftCreationStarted) {
         try {
           await deleteManualFeatureDraft(taskId);
+          taskAbsenceConfirmed = true;
         } catch (cleanupFailure) {
           cleanupErrors.push(
             `La tâche créée n'a pas pu être nettoyée : ${toServiceError(cleanupFailure).message}`,
           );
         }
       }
-      if (conversationId) {
+      if (conversationId && taskAbsenceConfirmed) {
         try {
+          if (cleanupSaga) {
+            cleanupSaga = {
+              ...cleanupSaga,
+              phase: 'task_deleted',
+              updatedAt: new Date().toISOString(),
+              lastError: undefined,
+            };
+            await upsertLinkedTaskDeletionSaga(cleanupSaga);
+          }
           await deleteConversation(conversationId, { mode: 'implement' });
+          if (cleanupSaga) {
+            await removeLinkedTaskDeletionSaga(taskId);
+            cleanupSaga = null;
+          }
         } catch (cleanupFailure) {
           cleanupErrors.push(
             `La conversation créée n'a pas pu être nettoyée : ${toServiceError(cleanupFailure).message}`,
+          );
+        }
+      } else if (conversationId && cleanupSaga) {
+        const lastError = cleanupErrors.at(-1);
+        try {
+          cleanupSaga = {
+            ...cleanupSaga,
+            updatedAt: new Date().toISOString(),
+            lastError,
+          };
+          await upsertLinkedTaskDeletionSaga(cleanupSaga);
+        } catch (journalFailure) {
+          cleanupErrors.push(
+            `Le nettoyage en attente n'a pas pu être mis à jour : ${toServiceError(journalFailure).message}`,
           );
         }
       }

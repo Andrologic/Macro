@@ -2239,40 +2239,6 @@ pub async fn update_provider_auth_metadata(
     Ok(())
 }
 
-pub async fn compare_and_swap_provider_auth_metadata(
-    pool: &SqlitePool,
-    provider_id: &str,
-    expected: &ProviderAuthMetadata,
-    replacement: &ProviderAuthMetadata,
-) -> DbResult<bool> {
-    let now = chrono::Utc::now().to_rfc3339();
-    let result = sqlx::query(
-        r#"
-        UPDATE provider_configs
-        SET auth_status = ?, auth_source = ?, plan_type = ?, account_label = ?,
-            token_expires_at = ?, updated_at = ?
-        WHERE id = ?
-          AND auth_status IS ? AND auth_source IS ? AND plan_type IS ?
-          AND account_label IS ? AND token_expires_at IS ?
-        "#,
-    )
-    .bind(&replacement.auth_status)
-    .bind(&replacement.auth_source)
-    .bind(&replacement.plan_type)
-    .bind(&replacement.account_label)
-    .bind(&replacement.token_expires_at)
-    .bind(&now)
-    .bind(provider_id)
-    .bind(&expected.auth_status)
-    .bind(&expected.auth_source)
-    .bind(&expected.plan_type)
-    .bind(&expected.account_label)
-    .bind(&expected.token_expires_at)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() == 1)
-}
-
 // ============ SPEECH PROVIDER CONFIGS ============
 
 pub async fn list_models_by_provider(

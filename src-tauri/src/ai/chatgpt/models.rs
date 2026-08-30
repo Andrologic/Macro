@@ -10,8 +10,202 @@ use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderConfig, ProviderM
 use crate::db::repository;
 use crate::secrets::{self, ChatGptSecret};
 use reqwest::header::{ACCEPT, AUTHORIZATION};
-use sqlx::SqlitePool;
+use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
 use tracing::{debug, error, info, warn};
+
+const DISCONNECT_JOURNAL_PREFIX: &str = "chatgpt.auth_disconnect:";
+
+fn sqlx_error_to_string(error: sqlx::Error) -> String {
+    error.to_string()
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DurableDisconnectIntent {
+    provider_id: String,
+    created_at: String,
+}
+
+fn disconnect_journal_key(provider_id: &str) -> String {
+    format!("{DISCONNECT_JOURNAL_PREFIX}{provider_id}")
+}
+
+fn disconnected_metadata() -> ProviderAuthMetadata {
+    ProviderAuthMetadata {
+        auth_status: Some("unauthenticated".to_string()),
+        auth_source: None,
+        plan_type: None,
+        account_label: None,
+        token_expires_at: None,
+    }
+}
+
+async fn prepare_disconnect(
+    pool: &SqlitePool,
+    provider_id: &str,
+    metadata: &ProviderAuthMetadata,
+) -> Result<(), String> {
+    let intent = serde_json::to_string(&DurableDisconnectIntent {
+        provider_id: provider_id.to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })
+    .map_err(|error| error.to_string())?;
+    let journal_key = disconnect_journal_key(provider_id);
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut transaction = pool.begin().await.map_err(sqlx_error_to_string)?;
+    sqlx::query(
+        r#"
+        INSERT INTO app_settings (key, value_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(&journal_key)
+    .bind(intent)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(sqlx_error_to_string)?;
+    let updated = sqlx::query(
+        r#"
+        UPDATE provider_configs
+        SET auth_status = ?, auth_source = ?, plan_type = ?, account_label = ?,
+            token_expires_at = ?, updated_at = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(&metadata.auth_status)
+    .bind(&metadata.auth_source)
+    .bind(&metadata.plan_type)
+    .bind(&metadata.account_label)
+    .bind(&metadata.token_expires_at)
+    .bind(&now)
+    .bind(provider_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(sqlx_error_to_string)?;
+    if updated.rows_affected() != 1 {
+        return Err(format!("Provider {provider_id} not found."));
+    }
+    transaction.commit().await.map_err(sqlx_error_to_string)
+}
+
+async fn rollback_prepared_disconnect(
+    pool: &SqlitePool,
+    provider_id: &str,
+    expected: &ProviderAuthMetadata,
+    previous: &ProviderAuthMetadata,
+) -> Result<bool, String> {
+    let mut transaction = pool.begin().await.map_err(sqlx_error_to_string)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let restored = sqlx::query(
+        r#"
+        UPDATE provider_configs
+        SET auth_status = ?, auth_source = ?, plan_type = ?, account_label = ?,
+            token_expires_at = ?, updated_at = ?
+        WHERE id = ?
+          AND auth_status IS ? AND auth_source IS ? AND plan_type IS ?
+          AND account_label IS ? AND token_expires_at IS ?
+        "#,
+    )
+    .bind(&previous.auth_status)
+    .bind(&previous.auth_source)
+    .bind(&previous.plan_type)
+    .bind(&previous.account_label)
+    .bind(&previous.token_expires_at)
+    .bind(&now)
+    .bind(provider_id)
+    .bind(&expected.auth_status)
+    .bind(&expected.auth_source)
+    .bind(&expected.plan_type)
+    .bind(&expected.account_label)
+    .bind(&expected.token_expires_at)
+    .execute(&mut *transaction)
+    .await
+    .map_err(sqlx_error_to_string)?;
+    if restored.rows_affected() == 1 {
+        sqlx::query("DELETE FROM app_settings WHERE key = ?")
+            .bind(disconnect_journal_key(provider_id))
+            .execute(&mut *transaction)
+            .await
+            .map_err(sqlx_error_to_string)?;
+    }
+    transaction.commit().await.map_err(sqlx_error_to_string)?;
+    Ok(restored.rows_affected() == 1)
+}
+
+async fn finish_disconnect(pool: &SqlitePool, provider_id: &str) -> Result<(), String> {
+    sqlx::query("DELETE FROM app_settings WHERE key = ?")
+        .bind(disconnect_journal_key(provider_id))
+        .execute(pool)
+        .await
+        .map_err(sqlx_error_to_string)?;
+    Ok(())
+}
+
+pub(super) async fn recover_pending_disconnect_locked(
+    pool: &SqlitePool,
+    provider_id: &str,
+) -> Result<(), String> {
+    let journal_key = disconnect_journal_key(provider_id);
+    let Some(setting) = repository::get_app_setting(pool, &journal_key)
+        .await
+        .map_err(db_error_to_string)?
+    else {
+        return Ok(());
+    };
+    let intent: DurableDisconnectIntent = serde_json::from_str(&setting.value_json)
+        .map_err(|error| format!("Le journal de déconnexion ChatGPT est invalide : {error}"))?;
+    if intent.provider_id != provider_id {
+        return Err("Le journal de déconnexion ChatGPT cible un autre fournisseur.".to_string());
+    }
+
+    secrets::delete_provider_secret(provider_id).map_err(|error| error.to_string())?;
+    let mut transaction = pool.begin().await.map_err(sqlx_error_to_string)?;
+    let metadata = disconnected_metadata();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"
+        UPDATE provider_configs
+        SET auth_status = ?, auth_source = ?, plan_type = ?, account_label = ?,
+            token_expires_at = ?, updated_at = ?
+        WHERE id = ?
+        "#,
+    )
+    .bind(&metadata.auth_status)
+    .bind(&metadata.auth_source)
+    .bind(&metadata.plan_type)
+    .bind(&metadata.account_label)
+    .bind(&metadata.token_expires_at)
+    .bind(&now)
+    .bind(provider_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(sqlx_error_to_string)?;
+    sqlx::query("DELETE FROM app_settings WHERE key = ?")
+        .bind(&journal_key)
+        .execute(&mut *transaction)
+        .await
+        .map_err(sqlx_error_to_string)?;
+    transaction.commit().await.map_err(sqlx_error_to_string)
+}
+
+pub(crate) async fn recover_auth_mutations(pool: &SqlitePool) -> Result<(), String> {
+    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    let rows = sqlx::query("SELECT value_json FROM app_settings WHERE key LIKE ?")
+        .bind(format!("{DISCONNECT_JOURNAL_PREFIX}%"))
+        .fetch_all(pool)
+        .await
+        .map_err(sqlx_error_to_string)?;
+    for row in rows {
+        let value_json: String = row.get("value_json");
+        let intent: DurableDisconnectIntent = serde_json::from_str(&value_json)
+            .map_err(|error| format!("Le journal de déconnexion ChatGPT est invalide : {error}"))?;
+        recover_pending_disconnect_locked(pool, &intent.provider_id).await?;
+    }
+    Ok(())
+}
 
 pub async fn disconnect_auth(
     pool: &SqlitePool,
@@ -32,6 +226,7 @@ where
     F: FnOnce(&str) -> Result<(), String>,
 {
     let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    recover_pending_disconnect_locked(pool, provider_id).await?;
     let provider = repository::get_provider_config(pool, provider_id)
         .await
         .map_err(db_error_to_string)?
@@ -43,18 +238,10 @@ where
         account_label: provider.account_label,
         token_expires_at: provider.token_expires_at,
     };
-    let disconnected_metadata = ProviderAuthMetadata {
-        auth_status: Some("unauthenticated".to_string()),
-        auth_source: None,
-        plan_type: None,
-        account_label: None,
-        token_expires_at: None,
-    };
-    repository::update_provider_auth_metadata(pool, provider_id, &disconnected_metadata)
-        .await
-        .map_err(db_error_to_string)?;
+    let disconnected_metadata = disconnected_metadata();
+    prepare_disconnect(pool, provider_id, &disconnected_metadata).await?;
     if let Err(secret_error) = delete_secret(provider_id) {
-        return match repository::compare_and_swap_provider_auth_metadata(
+        return match rollback_prepared_disconnect(
             pool,
             provider_id,
             &disconnected_metadata,
@@ -68,10 +255,11 @@ where
             )),
             Err(rollback_error) => Err(format!(
                 "{secret_error} La restauration des métadonnées d’authentification a aussi échoué : {}",
-                db_error_to_string(rollback_error)
+                rollback_error
             )),
         };
     }
+    finish_disconnect(pool, provider_id).await?;
 
     repository::get_provider_config(pool, provider_id)
         .await
@@ -310,8 +498,13 @@ pub(super) fn model_supports_plan(entry: &ModelsCacheEntry, plan_type: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::disconnect_auth_with_secret_delete;
-    use crate::ai::chatgpt::session::{install_persist_after_secret_hook, persist_chatgpt_session};
+    use super::{
+        disconnect_auth_with_secret_delete, disconnect_journal_key, disconnected_metadata,
+        prepare_disconnect, recover_auth_mutations,
+    };
+    use crate::ai::chatgpt::session::{
+        ensure_fresh_secret, install_persist_after_secret_hook, persist_chatgpt_session,
+    };
     use crate::secrets::ChatGptSecret;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
@@ -366,6 +559,18 @@ mod tests {
         .expect("provider schema");
         sqlx::query(
             r#"
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("app settings schema");
+        sqlx::query(
+            r#"
             INSERT INTO provider_configs (
                 id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
                 auth_status, auth_source, plan_type, account_label, token_expires_at,
@@ -416,6 +621,12 @@ mod tests {
         .expect_err("SQL update must fail");
 
         assert!(!*deleted.lock().expect("delete flag"));
+        assert!(
+            crate::db::repository::get_app_setting(&pool, &disconnect_journal_key("chatgpt"))
+                .await
+                .expect("journal query")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -534,6 +745,83 @@ mod tests {
         assert!(crate::secrets::get_chatgpt_secret("chatgpt")
             .expect("read final secret")
             .is_none());
+        let provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
+            .await
+            .expect("provider query")
+            .expect("provider");
+        assert_eq!(provider.auth_status.as_deref(), Some("unauthenticated"));
+        assert!(provider.auth_source.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_disconnect_is_recovered_before_a_secret_can_restore_authentication() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
+        let pool = provider_pool().await;
+        let secret = ChatGptSecret {
+            access_token: test_access_token(),
+            refresh_token: "refresh-old".to_string(),
+            access_token_expires_at: Some("2100-01-01T00:00:00Z".to_string()),
+            account_id: Some("acct-old".to_string()),
+            auth_source: "browser".to_string(),
+        };
+        crate::secrets::set_chatgpt_secret("chatgpt", &secret).expect("persist residual secret");
+        prepare_disconnect(&pool, "chatgpt", &disconnected_metadata())
+            .await
+            .expect("prepare durable disconnect");
+
+        let error = ensure_fresh_secret(&pool, "chatgpt")
+            .await
+            .expect_err("pending disconnect must hide and remove the residual secret");
+
+        assert!(error.contains("not linked"));
+        assert!(crate::secrets::get_chatgpt_secret("chatgpt")
+            .expect("read secret")
+            .is_none());
+        assert!(
+            crate::db::repository::get_app_setting(&pool, &disconnect_journal_key("chatgpt"))
+                .await
+                .expect("journal query")
+                .is_none()
+        );
+        let provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
+            .await
+            .expect("provider query")
+            .expect("provider");
+        assert_eq!(provider.auth_status.as_deref(), Some("unauthenticated"));
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_closes_a_disconnect_after_the_secret_was_deleted() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
+        let pool = provider_pool().await;
+        let secret = ChatGptSecret {
+            access_token: test_access_token(),
+            refresh_token: "refresh-old".to_string(),
+            access_token_expires_at: Some("2100-01-01T00:00:00Z".to_string()),
+            account_id: Some("acct-old".to_string()),
+            auth_source: "browser".to_string(),
+        };
+        crate::secrets::set_chatgpt_secret("chatgpt", &secret).expect("persist secret");
+        prepare_disconnect(&pool, "chatgpt", &disconnected_metadata())
+            .await
+            .expect("prepare durable disconnect");
+        crate::secrets::delete_provider_secret("chatgpt")
+            .expect("simulate durable secret deletion");
+
+        recover_auth_mutations(&pool)
+            .await
+            .expect("finish startup recovery");
+
+        assert!(
+            crate::db::repository::get_app_setting(&pool, &disconnect_journal_key("chatgpt"))
+                .await
+                .expect("journal query")
+                .is_none()
+        );
         let provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
             .await
             .expect("provider query")
