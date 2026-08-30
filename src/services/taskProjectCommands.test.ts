@@ -168,8 +168,13 @@ describe('taskProjectCommands', () => {
     expect(getTaskProjectCommand(registry, 'C:/dev/api')?.command).toBe('bun test:api');
   });
 
-  it('preserves commands owned by another project group when saving scoped drafts', async () => {
+  it('preserves another project command saved after the scoped snapshot was loaded', async () => {
     const patches: Array<{ kind: string; key: string; value: unknown }> = [];
+    const snapshot = configSnapshot();
+    const effectiveTools = snapshot.effective.tools as {
+      projectCommands: Record<string, unknown>;
+    };
+    delete effectiveTools.projectCommands['C:/dev/worker'];
 
     const saved = await saveTaskProjectCommandDrafts(
       [
@@ -183,8 +188,19 @@ describe('taskProjectCommands', () => {
         },
       ],
       {
-        snapshotLoader: async () => configSnapshot(),
-        patcher: async (kind, key, value) => {
+        snapshotLoader: async () => snapshot,
+        updater: async (kind, key, updateValue) => {
+          const value = updateValue({
+            'C:/dev/worker': {
+              projectId: 'worker',
+              projectName: 'Worker',
+              projectPath: 'C:/dev/worker',
+              command: 'bun test:worker',
+              worktreeSetupCommand: '',
+              openTerminalOnRun: false,
+              updatedAt: '2026-03-24T00:00:00.000Z',
+            },
+          });
           patches.push({ kind, key, value });
           return {} as never;
         },

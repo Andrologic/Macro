@@ -32,3 +32,27 @@ export const patchUserConfigTopLevel = async (
     }],
   });
 };
+
+export const updateUserConfigTopLevel = async (
+  kind: ConfigDocumentKind,
+  key: string,
+  updateValue: (currentValue: unknown) => unknown,
+  source: ConfigChangeSource = 'userInterface',
+): Promise<ConfigPatchResult> => {
+  const store = useConfigStore.getState();
+  const document = await store.getDocument(kind);
+  const documentValue = document.value && typeof document.value === 'object' && !Array.isArray(document.value)
+    ? document.value as Record<string, unknown>
+    : {};
+  return store.patch({
+    kind,
+    expectedEtag: document.etag,
+    source,
+    patch: [{
+      op: 'add',
+      path: `/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`,
+      value: updateValue(documentValue[key]),
+      from: null,
+    }],
+  });
+};
