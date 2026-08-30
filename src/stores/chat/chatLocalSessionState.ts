@@ -207,10 +207,11 @@ export const saveUnsavedAssistantResponseToStorage = (
   const existing = loadUnsavedAssistantResponsesFromStorage().filter(
     (candidate) => candidate.id !== message.id,
   );
-  const failedMessage: ChatMessage = {
+  const failedMessage = parseUnsavedAssistantResponse({
     ...message,
     persistence_state: "failed",
-  };
+  });
+  if (!failedMessage) return false;
   return writeUnsavedAssistantResponsesToStorage(
     [...existing, failedMessage]
       .sort(

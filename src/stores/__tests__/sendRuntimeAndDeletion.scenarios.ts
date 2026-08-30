@@ -450,7 +450,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
       );
     });
 
-    it('deletes the latest unsaved assistant response and unblocks the conversation', async () => {
+    it('deletes an unsaved assistant turn with later steering messages and unblocks the conversation', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';
       const userMessage: ChatMessage = {
@@ -472,6 +472,15 @@ export const registerSendRuntimeAndDeletionScenarios = (
         persistence_state: 'failed',
         persistence_error: 'SQLite indisponible',
       };
+      const steeringMessage: ChatMessage = {
+        id: 'steer-1',
+        turn_id: 'turn-1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user',
+        content: 'Ajoute aussi les détails du journal.',
+        timestamp: '2026-08-30T08:02:00.000Z',
+      };
       window.localStorage.setItem(
         'macro_chat_unsaved_assistant_responses_v1',
         JSON.stringify({ 'assistant-1': assistantMessage }),
@@ -479,8 +488,8 @@ export const registerSendRuntimeAndDeletionScenarios = (
 
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(createIdleChatStoreState({
-        conversations: [{ ...createConversation('chat-conv'), message_count: 2 }],
-        messages: [userMessage, assistantMessage],
+        conversations: [{ ...createConversation('chat-conv'), message_count: 3 }],
+        messages: [userMessage, assistantMessage, steeringMessage],
         selectedConversationId: 'chat-conv',
         selectedConversationIdsByMode: { Chat: 'chat-conv' },
         conversationRuntimeById: {

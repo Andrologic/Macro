@@ -16234,15 +16234,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         (message) => message.id === messageId,
       );
       const previousMessage = orderedMessages[targetIndex - 1];
+      const messagesToRemove = orderedMessages.slice(targetIndex);
+      const targetTurnId = getMessageTurnId(assistantMessage);
+      const hasLaterUnrelatedTurn = messagesToRemove
+        .slice(1)
+        .some((message) => getMessageTurnId(message) !== targetTurnId);
       if (
-        targetIndex !== orderedMessages.length - 1 ||
-        !previousMessage
+        targetIndex <= 0 ||
+        !previousMessage ||
+        hasLaterUnrelatedTurn
       ) {
         throw buildSendError(
-          "Only the latest unsaved assistant response can be deleted.",
+          "Only the latest unsaved assistant turn can be deleted.",
         );
       }
-
       try {
         await deletePersistedMessagesAfter(
           chatPersistenceAdapters,
@@ -16256,28 +16261,62 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       set((state) => {
-        const nextMessages = state.messages.filter(
-          (message) => message.id !== messageId,
+        const currentConversationMessages = sortMessagesChronologically(
+          getConversationMessagesFromState(
+            state,
+            assistantMessage.conversation_id,
+          ),
         );
-        const nextConversationMessages = getConversationMessagesFromState(
-          state,
-          assistantMessage.conversation_id,
-        ).filter((message) => message.id !== messageId);
+        const currentAnchorIndex = currentConversationMessages.findIndex(
+          (message) => message.id === previousMessage.id,
+        );
+        const retainedConversationMessages = currentAnchorIndex >= 0
+          ? currentConversationMessages.slice(0, currentAnchorIndex + 1)
+          : orderedMessages.slice(0, targetIndex);
+        const retainedMessageIds = new Set(
+          retainedConversationMessages.map((message) => message.id),
+        );
+        const removedMessageIds = new Set(
+          currentConversationMessages
+            .filter((message) => !retainedMessageIds.has(message.id))
+            .map((message) => message.id),
+        );
+        const nextMessages = state.messages.filter(
+          (message) => !removedMessageIds.has(message.id),
+        );
         const rebuilt = buildMessageState(nextMessages);
-        const lastMessage = nextConversationMessages.at(-1);
+        const nextMessageImages = Object.fromEntries(
+          Object.entries(state.messageImagesByMessageId).filter(
+            ([candidateMessageId]) => !removedMessageIds.has(candidateMessageId),
+          ),
+        );
+        saveMessageImagesToStorage(nextMessageImages);
+        const nextQuestionnaireDrafts = clearQuestionnaireDraftsForConversations(
+          state.questionnaireDraftsByConversationId,
+          [assistantMessage.conversation_id],
+        );
+        saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
+        const lastMessage = retainedConversationMessages.at(-1);
         return {
           messages: rebuilt.messages,
           messagesByConversationId: {
             ...state.messagesByConversationId,
             ...rebuilt.messagesByConversationId,
-            [assistantMessage.conversation_id]: nextConversationMessages,
+            [assistantMessage.conversation_id]: retainedConversationMessages,
           },
           messageIndexById: rebuilt.messageIndexById,
+          messageImagesByMessageId: nextMessageImages,
+          questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+          skillTurnFeedbackByMessageId: Object.fromEntries(
+            Object.entries(state.skillTurnFeedbackByMessageId).filter(
+              ([candidateMessageId]) => !removedMessageIds.has(candidateMessageId),
+            ),
+          ),
           conversations: state.conversations.map((conversation) =>
             conversation.id === assistantMessage.conversation_id
               ? {
                   ...conversation,
-                  message_count: nextConversationMessages.length,
+                  message_count: retainedConversationMessages.length,
                   last_message: lastMessage?.content ?? "",
                   updated_at: new Date().toISOString(),
                 }
@@ -16292,8 +16331,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       useCitationsStore.getState().pruneConversationCitations(
         assistantMessage.conversation_id,
-        orderedMessages
-          .filter((message) => message.id !== messageId)
+        get()
+          .getConversationMessages(assistantMessage.conversation_id)
           .map((message) => message.id),
       );
       queueMicrotask(() => {
