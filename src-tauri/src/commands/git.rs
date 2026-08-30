@@ -17,8 +17,9 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
 use chrono::{DateTime, Utc};
 use git2::{
-    BranchType, Commit, ConfigLevel, DiffFormat, DiffStatsFormat, Oid, Repository, RepositoryState,
-    ResetType, StashFlags, Status, StatusEntry, TreeWalkMode, TreeWalkResult,
+    BranchType, CheckoutNotificationType, Commit, ConfigLevel, DiffFormat, DiffStatsFormat, Oid,
+    Repository, RepositoryState, ResetType, StashFlags, Status, StatusEntry, TreeWalkMode,
+    TreeWalkResult,
 };
 use serde::Serialize;
 use sha1::Sha1;
@@ -56,6 +57,8 @@ const NATIVE_GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_GIT_COMMAND_OUTPUT_BYTES: u64 = 256 * 1024;
 static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(windows)]
+static HARD_RESET_CHECKOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 struct GitReviewCancellationRegistry {
     active: HashMap<String, Arc<AtomicBool>>,
@@ -2094,7 +2097,7 @@ pub(crate) async fn wsl_git_reset(
         None => wsl_resolve_commit_oid(repo_path, "HEAD", "reset commit").await?,
     };
     if reset_mode == "hard" {
-        ensure_wsl_hard_reset_preserves_untracked(repo_path, &resolved_commit).await?;
+        return wsl_hard_reset_preserving_untracked(repo_path, &resolved_commit).await;
     }
     let mut args = vec!["reset".to_string(), format!("--{}", reset_mode)];
     args.push(resolved_commit);
@@ -2138,12 +2141,12 @@ fn untracked_reset_collision_error(path: &[u8]) -> BackendError {
     }
 }
 
-async fn ensure_wsl_hard_reset_preserves_untracked(
+async fn wsl_hard_reset_preserving_untracked(
     repo_path: &WslProjectPath,
     target_commit: &str,
 ) -> Result<()> {
     const COLLISION_EXIT_CODE: i32 = 42;
-    let collision_probe = run_wsl_command_allow_failure(
+    let hard_reset = run_wsl_command_allow_failure(
         repo_path,
         "bash",
         &[
@@ -2157,6 +2160,7 @@ trap 'rm -rf -- "$scratch"' EXIT
 
 git -C "$repo" ls-files --others --exclude-standard -z > "$scratch/untracked" || exit $?
 git -C "$repo" ls-files --others --ignored --exclude-standard -z >> "$scratch/untracked" || exit $?
+git -C "$repo" ls-files -z > "$scratch/indexed" || exit $?
 git -C "$repo" ls-tree -r --name-only -z "$target_commit" > "$scratch/target" || exit $?
 mapfile -d '' -t untracked_paths < "$scratch/untracked"
 mapfile -d '' -t target_paths < "$scratch/target"
@@ -2216,30 +2220,38 @@ for untracked in "${untracked_paths[@]}"; do
     untracked_prefix=${untracked_prefix%/*}
   done
 done
+
+while IFS= read -r -d '' indexed; do
+  indexed_path=$repo/$indexed
+  if [[ -L $indexed_path || -f $indexed_path ]]; then
+    rm -f -- "$indexed_path" || exit $?
+  fi
+done < "$scratch/indexed"
+
+git -C "$repo" read-tree --reset "$target_commit" || exit $?
+git -C "$repo" checkout-index --all || exit $?
+git -C "$repo" reset --soft "$target_commit" || exit $?
 "#
             .to_string(),
-            "macro-git-reset-preflight".to_string(),
+            "macro-git-hard-reset".to_string(),
             repo_path.linux_path.clone(),
             target_commit.to_string(),
         ],
-        WSL_GIT_TIMEOUT,
+        WSL_GIT_MUTATION_TIMEOUT,
     )
     .await?;
 
-    match collision_probe.status.code() {
+    match hard_reset.status.code() {
         Some(0) => Ok(()),
         Some(COLLISION_EXIT_CODE) => {
-            let path = collision_probe
+            let path = hard_reset
                 .stdout
                 .split(|byte| *byte == 0)
                 .next()
                 .unwrap_or_default();
             Err(untracked_reset_collision_error(path))
         }
-        _ => Err(wsl_git_failure(
-            &collision_probe,
-            "git untracked-path preflight WSL failed",
-        )),
+        _ => Err(wsl_git_failure(&hard_reset, "git hard reset WSL failed")),
     }
 }
 
@@ -4287,6 +4299,451 @@ fn ensure_native_hard_reset_preserves_untracked(
     Ok(())
 }
 
+#[cfg(test)]
+type NativeHardResetTestHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static NATIVE_HARD_RESET_AFTER_PREFLIGHT_HOOKS: OnceLock<
+    Mutex<HashMap<PathBuf, NativeHardResetTestHook>>,
+> = OnceLock::new();
+
+#[cfg(test)]
+fn install_native_hard_reset_after_preflight_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_AFTER_PREFLIGHT_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset test hooks")
+        .insert(repo_root, Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_native_hard_reset_after_preflight_hook(repo_root: &Path) {
+    let hook = NATIVE_HARD_RESET_AFTER_PREFLIGHT_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset test hooks")
+        .remove(repo_root);
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn run_native_hard_reset_after_preflight_hook(_repo_root: &Path) {}
+
+fn remove_native_indexed_worktree_entries(
+    repo: &Repository,
+    repo_root: &Path,
+    target: &Commit<'_>,
+) -> Result<()> {
+    let worktree =
+        CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open the hard reset worktree: {error}"),
+                source: error,
+            }
+        })?;
+    let target_tree = target.tree()?;
+    let mut processed = HashSet::new();
+    for entry in repo.index()?.iter() {
+        let path = entry.path;
+        if !processed.insert(path.clone()) {
+            continue;
+        }
+        let relative = native_git_path(&path).ok_or_else(|| BackendError::Git {
+            message: format!(
+                "Hard reset cannot represent tracked path '{}'.",
+                String::from_utf8_lossy(&path)
+            ),
+        })?;
+        let target_matches_index = target_tree.get_path(&relative).is_ok_and(|target_entry| {
+            target_entry.id() == entry.id && target_entry.filemode() as u32 == entry.mode
+        });
+        let worktree_is_clean = repo.status_file(&relative).is_ok_and(|status| {
+            !status.intersects(
+                Status::WT_NEW
+                    | Status::WT_MODIFIED
+                    | Status::WT_DELETED
+                    | Status::WT_RENAMED
+                    | Status::WT_TYPECHANGE
+                    | Status::CONFLICTED,
+            )
+        });
+        if target_matches_index && worktree_is_clean {
+            continue;
+        }
+        remove_native_indexed_worktree_entry(
+            &worktree,
+            &relative,
+            &String::from_utf8_lossy(&path),
+        )?;
+    }
+    Ok(())
+}
+
+fn remove_native_indexed_worktree_entry(
+    worktree: &CapabilityDir,
+    relative: &Path,
+    display_path: &str,
+) -> Result<()> {
+    let file_name = relative.file_name().ok_or_else(|| BackendError::Git {
+        message: format!("Invalid tracked path during hard reset: {display_path}"),
+    })?;
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain the hard reset worktree: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!("Invalid tracked path during hard reset: {display_path}"),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                        message: format!(
+                            "Failed to open a tracked hard reset directory '{display_path}': {error}"
+                        ),
+                        source: error,
+                    })?;
+                }
+                Ok(_) => {
+                    return Err(BackendError::Git {
+                        message: format!(
+                            "Hard reset refused tracked path '{display_path}' through a linked or non-directory parent."
+                        ),
+                    })
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect tracked hard reset path '{display_path}': {error}"
+                        ),
+                        source: error,
+                    })
+                }
+            }
+        }
+    }
+
+    let metadata = match parent.symlink_metadata(file_name) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!(
+                    "Failed to inspect tracked hard reset path '{display_path}': {error}"
+                ),
+                source: error,
+            })
+        }
+    };
+    let removal = if metadata.file_type().is_symlink() {
+        #[cfg(windows)]
+        {
+            if metadata.is_dir() {
+                parent.remove_dir(file_name)
+            } else {
+                parent.remove_file(file_name)
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            parent.remove_file(file_name)
+        }
+    } else if metadata.is_file() {
+        parent.remove_file(file_name)
+    } else {
+        return Ok(());
+    };
+    removal.map_err(|error| BackendError::Io {
+        message: format!("Failed to remove tracked hard reset path '{display_path}': {error}"),
+        source: error,
+    })
+}
+
+#[cfg(windows)]
+struct NativeHardResetCheckoutScratch(PathBuf);
+
+#[cfg(windows)]
+impl NativeHardResetCheckoutScratch {
+    fn create() -> Result<Self> {
+        let root = std::env::temp_dir();
+        for _ in 0..32 {
+            let sequence = HARD_RESET_CHECKOUT_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!(
+                "macro-hard-reset-{}-{sequence}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to create a temporary hard reset directory: {error}"
+                        ),
+                        source: error,
+                    })
+                }
+            }
+        }
+        Err(BackendError::Io {
+            message: "Failed to reserve a temporary hard reset directory".to_string(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "temporary hard reset directory names are exhausted",
+            ),
+        })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for NativeHardResetCheckoutScratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(windows)]
+fn create_native_hard_reset_file_without_overwrite(
+    worktree: &CapabilityDir,
+    relative: &Path,
+    source: &Path,
+) -> Result<()> {
+    let display_path = relative.to_string_lossy().replace('\\', "/");
+    let file_name = relative.file_name().ok_or_else(|| BackendError::Git {
+        message: format!("Invalid tracked path during hard reset: {display_path}"),
+    })?;
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain the hard reset worktree: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!("Invalid tracked path during hard reset: {display_path}"),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => return Err(untracked_reset_collision_error(display_path.as_bytes())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match parent.create_dir(segment) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(error) => {
+                            return Err(BackendError::Io {
+                                message: format!(
+                                    "Failed to create a tracked hard reset directory '{display_path}': {error}"
+                                ),
+                                source: error,
+                            })
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect a tracked hard reset directory '{display_path}': {error}"
+                        ),
+                        source: error,
+                    })
+                }
+            }
+            parent = parent.open_dir(segment).map_err(|error| BackendError::Git {
+                message: format!(
+                    "Hard reset refused tracked path '{display_path}' through a linked or replaced directory: {error}"
+                ),
+            })?;
+        }
+    }
+
+    let source_metadata = fs::symlink_metadata(source).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to inspect temporary hard reset file '{}': {error}",
+            source.display()
+        ),
+        source: error,
+    })?;
+    if source_metadata.file_type().is_symlink() {
+        let link_target = fs::read_link(source).map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to read temporary hard reset link '{}': {error}",
+                source.display()
+            ),
+            source: error,
+        })?;
+        return parent
+            .symlink_file(link_target, file_name)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    untracked_reset_collision_error(display_path.as_bytes())
+                }
+                _ => BackendError::Io {
+                    message: format!(
+                        "Failed to create tracked hard reset link '{display_path}': {error}"
+                    ),
+                    source: error,
+                },
+            });
+    }
+    if !source_metadata.is_file() {
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset produced an unsupported temporary entry for '{display_path}'"
+            ),
+        });
+    }
+
+    let mut source_file = fs::File::open(source).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to open temporary hard reset file '{}': {error}",
+            source.display()
+        ),
+        source: error,
+    })?;
+    let mut options = CapabilityOpenOptions::new();
+    options.write(true).create_new(true);
+    let mut destination =
+        parent
+            .open_with(file_name, &options)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    untracked_reset_collision_error(display_path.as_bytes())
+                }
+                _ => BackendError::Io {
+                    message: format!(
+                        "Failed to create tracked hard reset file '{display_path}': {error}"
+                    ),
+                    source: error,
+                },
+            })?;
+    std::io::copy(&mut source_file, &mut destination).map_err(|error| BackendError::Io {
+        message: format!("Failed to write tracked hard reset file '{display_path}': {error}"),
+        source: error,
+    })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn recover_native_case_sensitive_checkout_conflicts(
+    repo: &Repository,
+    repo_root: &Path,
+    target: &Commit<'_>,
+    conflicts: &[PathBuf],
+) -> Result<bool> {
+    if conflicts.is_empty() {
+        return Ok(false);
+    }
+
+    let target_paths = native_target_tree_paths(target)?;
+    let untracked_paths = native_untracked_paths(repo)?;
+    if find_native_untracked_reset_collision(repo_root, &untracked_paths, &target_paths).is_some() {
+        return Ok(false);
+    }
+
+    let mut conflict_paths = Vec::new();
+    let mut seen = HashSet::new();
+    for conflict in conflicts {
+        let Some(display_path) = conflict.to_str().map(|path| path.replace('\\', "/")) else {
+            return Ok(false);
+        };
+        let path_bytes = display_path.as_bytes();
+        if !target_paths
+            .iter()
+            .any(|target_path| target_path == path_bytes)
+            || fs::symlink_metadata(repo_root.join(conflict)).is_ok()
+            || !untracked_paths.iter().any(|untracked| {
+                untracked != path_bytes && untracked.eq_ignore_ascii_case(path_bytes)
+            })
+        {
+            return Ok(false);
+        }
+        if seen.insert(conflict.clone()) {
+            conflict_paths.push(conflict.clone());
+        }
+    }
+
+    let scratch = NativeHardResetCheckoutScratch::create()?;
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.force().target_dir(&scratch.0);
+    for conflict in &conflict_paths {
+        checkout.path(conflict);
+    }
+    repo.checkout_tree(target.as_object(), Some(&mut checkout))?;
+
+    let worktree =
+        CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open the hard reset worktree: {error}"),
+                source: error,
+            }
+        })?;
+    for conflict in &conflict_paths {
+        create_native_hard_reset_file_without_overwrite(
+            &worktree,
+            conflict,
+            &scratch.0.join(conflict),
+        )?;
+    }
+    Ok(true)
+}
+
+fn hard_reset_repo_preserving_untracked(repo: &Repository, target: &Commit<'_>) -> Result<()> {
+    let repo_root = repo_root(repo)?;
+    ensure_native_hard_reset_preserves_untracked(repo, target)?;
+    run_native_hard_reset_after_preflight_hook(&repo_root);
+
+    remove_native_indexed_worktree_entries(repo, &repo_root, target)?;
+    let checkout_conflicts = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+    let notified_conflicts = Arc::clone(&checkout_conflicts);
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout
+        .safe()
+        .recreate_missing(true)
+        .overwrite_ignored(false)
+        .notify_on(CheckoutNotificationType::CONFLICT)
+        .notify(move |why, path, _, _, _| {
+            if why.is_conflict() {
+                if let Some(path) = path {
+                    notified_conflicts
+                        .lock()
+                        .expect("lock hard reset checkout conflicts")
+                        .push(path.to_path_buf());
+                }
+            }
+            true
+        });
+    let checkout_result = repo.checkout_tree(target.as_object(), Some(&mut checkout));
+    drop(checkout);
+    if let Err(error) = checkout_result {
+        let conflicts = checkout_conflicts
+            .lock()
+            .expect("lock hard reset checkout conflicts")
+            .clone();
+        #[cfg(windows)]
+        if recover_native_case_sensitive_checkout_conflicts(repo, &repo_root, target, &conflicts)? {
+            repo.reset(target.as_object(), ResetType::Mixed, None)?;
+            return Ok(());
+        }
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset could not update tracked files without overwriting untracked data: {error}"
+            ),
+        });
+    }
+    repo.reset(target.as_object(), ResetType::Mixed, None)?;
+    Ok(())
+}
+
 pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) -> Result<()> {
     let target = if let Some(spec) = commit {
         resolve_commit(repo, &spec)?
@@ -4309,7 +4766,7 @@ pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) 
     };
 
     if reset_type == ResetType::Hard {
-        ensure_native_hard_reset_preserves_untracked(repo, &target)?;
+        return hard_reset_repo_preserving_untracked(repo, &target);
     }
 
     repo.reset(target.as_object(), reset_type, None)?;
@@ -18117,6 +18574,10 @@ mod tests {
         index.add_path(Path::new("README.md")).unwrap();
         index.write().unwrap();
         fs::write(&file_path, "worktree dirty change").unwrap();
+        let staged_only_path = temp.path().join("staged-only.txt");
+        fs::write(&staged_only_path, "discard staged addition").unwrap();
+        index.add_path(Path::new("staged-only.txt")).unwrap();
+        index.write().unwrap();
         let untracked_path = temp.path().join("untracked.txt");
         fs::write(&untracked_path, "keep untracked").unwrap();
 
@@ -18130,6 +18591,10 @@ mod tests {
         let pair = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
         assert_eq!(pair.index_content, "hello");
         assert_eq!(pair.worktree_content, "hello");
+        assert!(
+            !staged_only_path.exists(),
+            "hard reset must discard staged additions that are absent from the target"
+        );
         assert_eq!(
             fs::read_to_string(untracked_path).unwrap(),
             "keep untracked"
@@ -18182,6 +18647,34 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path().join("target-directory/tracked.txt/local.txt")).unwrap(),
             "untracked directory contents"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_preserves_collision_created_after_preflight() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        let collision_path = temp.path().join("late-collision.txt");
+        fs::write(&collision_path, "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add late reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+        fs::write(repo.path().join("info/exclude"), "late-collision.txt\n").unwrap();
+
+        let hook_collision_path = collision_path.clone();
+        install_native_hard_reset_after_preflight_hook(repo_root(&repo).unwrap(), move || {
+            fs::write(hook_collision_path, "concurrent untracked file").unwrap();
+        });
+
+        reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("checkout must refuse a collision created after the preflight");
+
+        assert_eq!(
+            fs::read_to_string(collision_path).unwrap(),
+            "concurrent untracked file"
         );
         assert_eq!(
             repo.head().unwrap().target().unwrap().to_string(),
