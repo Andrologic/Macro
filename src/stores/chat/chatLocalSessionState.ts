@@ -29,6 +29,7 @@ const MAX_COMPOSER_DRAFT_IMAGE_DATA_URL_LENGTH = 10_000_000;
 const MAX_COMPOSER_DRAFT_CONTEXT_REFS = 50;
 const MAX_UNSAVED_ASSISTANT_RESPONSES = 25;
 const MAX_UNSAVED_ASSISTANT_CONTENT_LENGTH = 4_000_000;
+const MAX_UNSAVED_ASSISTANT_STORAGE_LENGTH = 4_000_000;
 const MAX_SHORT_FIELD_LENGTH = 4_096;
 
 export interface PersistedComposerDraft {
@@ -41,6 +42,17 @@ const hasLocalStorage = (): boolean => typeof window !== "undefined";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const serializeBoundedUnsavedAssistantJson = (value: unknown): string | null => {
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized.length <= MAX_UNSAVED_ASSISTANT_STORAGE_LENGTH
+      ? serialized
+      : null;
+  } catch {
+    return null;
+  }
+};
 
 const isBoundedString = (value: unknown, maxLength = MAX_SHORT_FIELD_LENGTH): value is string =>
   typeof value === "string" && value.length <= maxLength;
@@ -129,7 +141,9 @@ const isPersistedContextReference = (
 };
 
 const parseUnsavedAssistantResponse = (value: unknown): ChatMessage | null => {
-  if (!isRecord(value)) return null;
+  if (!isRecord(value) || serializeBoundedUnsavedAssistantJson(value) === null) {
+    return null;
+  }
   if (
     !isBoundedString(value.id) ||
     !isBoundedString(value.task_id) ||
@@ -171,6 +185,7 @@ export const loadUnsavedAssistantResponsesFromStorage = (): ChatMessage[] => {
       UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
     );
     if (!raw) return [];
+    if (raw.length > MAX_UNSAVED_ASSISTANT_STORAGE_LENGTH) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!isRecord(parsed)) return [];
     return Object.values(parsed)
@@ -191,10 +206,11 @@ const writeUnsavedAssistantResponsesToStorage = (
       window.localStorage.removeItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY);
       return true;
     }
-    window.localStorage.setItem(
-      UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
-      JSON.stringify(Object.fromEntries(messages.map((message) => [message.id, message]))),
+    const serialized = serializeBoundedUnsavedAssistantJson(
+      Object.fromEntries(messages.map((message) => [message.id, message])),
     );
+    if (serialized === null) return false;
+    window.localStorage.setItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY, serialized);
     return true;
   } catch {
     return false;

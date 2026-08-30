@@ -193,6 +193,25 @@ describe("chatLocalSessionState", () => {
     ).toBeNull();
   });
 
+  it("rejects a recovery record whose combined serialized fields exceed the limit", () => {
+    const message: ChatMessage = {
+      id: "assistant-combined-too-large",
+      task_id: "",
+      conversation_id: "conv-1",
+      role: "assistant",
+      content: "x".repeat(2_100_000),
+      hidden_context: "y".repeat(2_100_000),
+      timestamp: "2026-08-30T08:00:00.000Z",
+      persistence_state: "failed",
+      persistence_error: "SQLite indisponible",
+    };
+
+    expect(saveUnsavedAssistantResponseToStorage(message)).toBe(false);
+    expect(
+      window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY),
+    ).toBeNull();
+  });
+
   it("restores an interrupted retry as failed and prunes deleted conversations", () => {
     window.localStorage.setItem(
       UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
