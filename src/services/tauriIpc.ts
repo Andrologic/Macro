@@ -1175,6 +1175,8 @@ export interface WorkspaceArchitectPlanActivationHeadDto {
   conversationId: string | null;
   sharedConversation: boolean;
   targetBranch: string;
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
   resolutionMode: string;
   chatTranscriptRevision: string | null;
   chatMessageCount: number;
@@ -1190,6 +1192,8 @@ export interface WorkspaceArchitectChatMessageDto {
 export interface WorkspaceArchitectPlanTranscriptDto {
   planId: string;
   targetBranch: string;
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
   transcriptRevision: string | null;
   messageCount: number;
   messages: WorkspaceArchitectChatMessageDto[];
@@ -2943,7 +2947,19 @@ export async function workspaceArchitectActivatePlanHead(params: {
 export async function workspaceArchitectActivatePlanChat(params: {
   branchName: string;
   planId: string;
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
+  expectedTranscriptRevision?: string | null;
+  expectedMessageCount?: number | null;
 }): Promise<WorkspaceArchitectPlanTranscriptDto | null> {
+  const request = {
+    branchName: params.branchName,
+    planId: params.planId,
+    replicaScopeKey: params.replicaScopeKey ?? null,
+    replicaProjectId: params.replicaProjectId ?? null,
+    expectedTranscriptRevision: params.expectedTranscriptRevision ?? null,
+    expectedMessageCount: params.expectedMessageCount ?? null,
+  };
   if (!isTauriAvailable() && isRemoteBackendAvailable()) {
     const config = resolveRemoteConfig();
     if (config) {
@@ -2951,7 +2967,7 @@ export async function workspaceArchitectActivatePlanChat(params: {
         `${getWorkspaceBasePath(config)}/architect/plans/activate-chat`,
         {
           method: "POST",
-          body: JSON.stringify(params),
+          body: JSON.stringify(request),
         },
       );
     }
@@ -2959,7 +2975,7 @@ export async function workspaceArchitectActivatePlanChat(params: {
   return invoke<WorkspaceArchitectPlanTranscriptDto | null>(
     "workspace_architect_activate_plan_chat",
     {
-      request: params,
+      request,
     },
   );
 }

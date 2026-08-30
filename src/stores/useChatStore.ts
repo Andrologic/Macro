@@ -1427,7 +1427,7 @@ const getStrictTranscriptFingerprint = (
 ): string => {
   const trimmedId = message.id.trim();
   if (trimmedId.length > 0) {
-    return `id:${trimmedId}`;
+    return `id:${trimmedId}:${message.role}:${message.content}:${message.createdAt}`;
   }
   return `f:${message.role}:${message.content}:${message.createdAt}`;
 };
@@ -12696,6 +12696,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     chatMessagesLoaded?: boolean;
     chatTranscriptRevision?: string | null;
     chatMessageCount?: number;
+    replicaScopeKey?: string | null;
+    replicaProjectId?: string | null;
   }): Promise<{
     conversationId: string | null;
     restoredTranscript: boolean;
@@ -12712,7 +12714,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       chatMessagesLoaded = chatMessagesHint !== undefined,
       chatTranscriptRevision = null,
       chatMessageCount,
+      replicaScopeKey = null,
+      replicaProjectId = null,
     } = params;
+    const hasExactReplicaIdentity = Boolean(replicaScopeKey || replicaProjectId);
     const resolvedConversationId = conversationIdHint ?? plan.conversationId ?? null;
     const existingConversation = resolvedConversationId
       ? (get().conversations.find(
@@ -12761,37 +12766,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? Math.max(0, Math.floor(chatMessageCount))
         : (chatMessagesHint?.length ?? 0);
 
-    if (
-      chatMessagesLoaded === false &&
-      !sharedConversation &&
-      !createdConversation &&
-      tauriIpc.isTauriAvailable()
-    ) {
-      const sync = await tauriIpc
-        .dbGetArchitectPlanConversationSync(conversation.id)
-        .catch(() => null);
-      const conversationCount = conversation.message_count;
-      const syncMatches =
-        sync?.plan_id === plan.id &&
-        sync.target_branch === targetBranch &&
-        (sync.transcript_revision ?? null) === (chatTranscriptRevision ?? null) &&
-        sync.message_count === expectedTranscriptCount &&
-        conversationCount === expectedTranscriptCount;
-      if (syncMatches) {
-        return {
-          conversationId: conversation.id,
-          restoredTranscript: false,
-          createdConversation: false,
-        };
-      }
-    }
-
     const transcriptResult =
       chatMessagesLoaded === false
-        ? await getArchitectPlanChatTranscript(targetBranch, plan.id).catch(
-            () => null,
-          )
+        ? await getArchitectPlanChatTranscript(targetBranch, plan.id, {
+            replicaScopeKey,
+            replicaProjectId,
+            expectedTranscriptRevision: chatTranscriptRevision,
+            expectedMessageCount: expectedTranscriptCount,
+          })
         : null;
+    if (chatMessagesLoaded === false && !transcriptResult) {
+      throw new Error(
+        "Le transcript Architect correspondant à la tête du plan n’est plus disponible.",
+      );
+    }
     const transcript = transcriptResult?.messages ?? chatMessagesHint ?? [];
     const resolvedTranscriptRevision =
       transcriptResult?.transcriptRevision ?? chatTranscriptRevision ?? null;
@@ -12838,19 +12826,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
     } else if (transcriptState.relation === "metadata_prefix") {
-      await syncArchitectMetadataFromDb({
-        branchName: targetBranch,
-        planId: plan.id,
-        conversationId: conversation.id,
-        reason: transcriptState.relation,
-      });
-      await upsertArchitectConversationSync({
-        conversationId: conversation.id,
-        planId: plan.id,
-        targetBranch,
-        transcriptRevision: null,
-        messageCount: localMessages.length,
-      });
+      if (!hasExactReplicaIdentity) {
+        await syncArchitectMetadataFromDb({
+          branchName: targetBranch,
+          planId: plan.id,
+          conversationId: conversation.id,
+          reason: transcriptState.relation,
+        });
+        await upsertArchitectConversationSync({
+          conversationId: conversation.id,
+          planId: plan.id,
+          targetBranch,
+          transcriptRevision: null,
+          messageCount: localMessages.length,
+        });
+      } else {
+        logArchitectTranscriptEvent("warn", "architect_local_transcript_ahead", {
+          planId: plan.id,
+          conversationId: conversation.id,
+          dbCount: transcriptState.dbCount,
+          metadataCount: transcriptState.metadataCount,
+        });
+        throw new Error(
+          "Le transcript local est plus récent que la réplique Architect active. La conversation reste désélectionnée et les métadonnées ne sont pas modifiées.",
+        );
+      }
     } else if (transcriptState.relation === "diverged") {
       logArchitectTranscriptEvent("warn", "architect_transcript_diverged", {
         planId: plan.id,
@@ -12858,6 +12858,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         dbCount: transcriptState.dbCount,
         metadataCount: transcriptState.metadataCount,
       });
+      if (hasExactReplicaIdentity) {
+        throw new Error(
+          "Le transcript local diverge de la réplique Architect active. La conversation reste désélectionnée pour éviter d’afficher un contenu incohérent.",
+        );
+      }
       await syncArchitectMetadataFromDb({
         branchName: targetBranch,
         planId: plan.id,
@@ -13435,12 +13440,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? "app_store"
           : "service";
         if (!isCurrentRequest()) return modeFallback(null);
-        const activePlan =
-          activationPayload?.plan ??
-          (await getArchitectPlan(
-            targetBranch,
-            appState.activeArchitectPlanId,
-          ));
+        if (!activationPayload) {
+          throw new Error(
+            "Le runtime Architect n’a trouvé aucune tête de plan cohérente pour l’activation demandée.",
+          );
+        }
+        const activePlan = activationPayload.plan;
         if (!isCurrentRequest()) return modeFallback(null);
         if (activePlan && activePlan.status !== "deleted") {
           const fallbackProjectId =
@@ -13547,6 +13552,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             chatMessagesLoaded: activationPayload?.chatMessagesLoaded,
             chatTranscriptRevision: activationPayload?.chatTranscriptRevision,
             chatMessageCount: activationPayload?.chatMessageCount,
+            replicaScopeKey: activationPayload?.replicaScopeKey,
+            replicaProjectId: activationPayload?.replicaProjectId,
           });
           if (!isCurrentRequest()) return modeFallback(null);
           if (ensuredConversation.conversationId) {
@@ -13582,6 +13589,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             error: toServiceError(error).message,
           },
         );
+        if (mode === "Architect" && appState.activeArchitectPlanId) {
+          throw error;
+        }
       }
     }
 
@@ -14647,6 +14657,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch (error) {
         const normalized = toServiceError(error);
         if (isCurrentRequest()) {
+          if (mode === "Architect" && useAppStore.getState().activeArchitectPlanId) {
+            clearConversationSelection(mode);
+          }
           set({
             restoreStatus: "error",
             pendingArchitectPlanSwitchRequestId: null,

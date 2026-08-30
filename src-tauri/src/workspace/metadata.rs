@@ -330,6 +330,8 @@ pub struct WorkspaceArchitectPlanActivationHeadDto {
     pub conversation_id: Option<String>,
     pub shared_conversation: bool,
     pub target_branch: String,
+    pub replica_scope_key: Option<String>,
+    pub replica_project_id: Option<String>,
     pub resolution_mode: String,
     pub chat_transcript_revision: Option<String>,
     pub chat_message_count: usize,
@@ -340,6 +342,8 @@ pub struct WorkspaceArchitectPlanActivationHeadDto {
 pub struct WorkspaceArchitectPlanTranscriptDto {
     pub plan_id: String,
     pub target_branch: String,
+    pub replica_scope_key: Option<String>,
+    pub replica_project_id: Option<String>,
     pub transcript_revision: Option<String>,
     pub message_count: usize,
     pub messages: Vec<WorkspaceArchitectChatMessageDto>,
@@ -369,6 +373,10 @@ pub struct WorkspaceArchitectActivatePlanHeadRequestDto {
 pub struct WorkspaceArchitectActivatePlanChatRequestDto {
     pub branch_name: String,
     pub plan_id: String,
+    pub replica_scope_key: Option<String>,
+    pub replica_project_id: Option<String>,
+    pub expected_transcript_revision: Option<String>,
+    pub expected_message_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
