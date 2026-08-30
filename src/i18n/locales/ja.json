@@ -39,7 +39,17 @@
     "interrupted": "起動が中断されました",
     "failedTitle": "Macro は起動を完了できませんでした。",
     "failedDescription": "Macro はローカルデータを初期化できませんでした。安全に再試行できます。",
-    "failedSteps": "失敗した手順"
+    "failedSteps": "失敗した手順",
+    "metadataRecovery": {
+      "restoredWithCommit": "履歴から @macro メタデータを復元しました ({{commit}})",
+      "restored": "履歴から @macro メタデータを復元しました",
+      "restoredDescription": "ワークスペースを読み込む前に、最新の有効なメタデータのスナップショットを復元しました。",
+      "reconstructed": "ローカルプロジェクトから @macro メタデータを再構成しました",
+      "reconstructedDescription": "既知のローカルプロジェクトから最小限のメタデータ状態を再構築しました。",
+      "skipped": "@macro の自動復元をスキップしました",
+      "blockedConflictDescription": "メタデータのワークツリーに未解決の競合があるため、自動復元を適用しませんでした。",
+      "blockedDirtyDescription": "メタデータのワークツリーにローカル変更があるため、自動復元を適用しませんでした。"
+    }
   },
   "shutdown": {
     "activeWorkSingle": "実行中のタスクがあります。Macro を閉じると中断されます。",
@@ -2029,6 +2039,7 @@
   },
   "notifications": {
     "centerTitle": "通知",
+    "mcpServersUnavailable": "一部の MCP サーバーを利用できません",
     "openCenter": "通知を開く",
     "closeCenter": "通知を閉じる",
     "clearAll": "すべてクリア",

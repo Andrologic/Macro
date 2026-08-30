@@ -132,6 +132,10 @@ let gitFastForwardMock: ReturnType<typeof mock>;
 let gitRestorePathsMock: ReturnType<typeof mock>;
 let gitResetMock: ReturnType<typeof mock>;
 let openConflictAssistantMock: ReturnType<typeof mock>;
+let notifyErrorMock: ReturnType<typeof mock>;
+let notifySuccessMock: ReturnType<typeof mock>;
+let notifyInfoMock: ReturnType<typeof mock>;
+let notifyActionRequiredMock: ReturnType<typeof mock>;
 let openFolderMock: ReturnType<typeof mock>;
 let windowConfirmSpy: ReturnType<typeof mock> | null = null;
 let macroBranchEnsureMock: ReturnType<typeof mock>;
@@ -408,10 +412,10 @@ const loadFooter = async () => {
 
   mock.module('../ui/toastService', () => ({
     notify: {
-      error: mock(() => undefined),
-      success: mock(() => undefined),
-      info: mock(() => undefined),
-      actionRequired: mock(() => undefined),
+      error: notifyErrorMock,
+      success: notifySuccessMock,
+      info: notifyInfoMock,
+      actionRequired: notifyActionRequiredMock,
     },
   }));
 
@@ -580,6 +584,10 @@ describe('Footer', () => {
     gitRestorePathsMock = mock(async () => undefined);
     gitResetMock = mock(async () => undefined);
     openConflictAssistantMock = mock(async () => 'conversation-id');
+    notifyErrorMock = mock(() => undefined);
+    notifySuccessMock = mock(() => undefined);
+    notifyInfoMock = mock(() => undefined);
+    notifyActionRequiredMock = mock(() => undefined);
     openFolderMock = mock(async () => null);
     windowConfirmSpy = null;
     macroBranchEnsureMock = mock(async (params?: { workspacePath?: string | null }) =>
@@ -1375,6 +1383,20 @@ describe('Footer', () => {
     expect(options).toBeDefined();
     expect(typeof options?.prompt).toBe('string');
     expect(options.prompt.length).toBeGreaterThan(0);
+    expect(notifyInfoMock).toHaveBeenCalledWith(
+      'AI conflict assistant started',
+      { category: 'git_sync_attention_required' }
+    );
+    expect(
+      notifySuccessMock.mock.calls.some((call) =>
+        call.some((argument) =>
+          typeof argument === 'object' &&
+          argument !== null &&
+          'category' in argument &&
+          argument.category === 'git_sync_completed'
+        )
+      )
+    ).toBe(false);
     expect(container?.textContent ?? '').not.toContain('Conflicts detected');
   });
 
