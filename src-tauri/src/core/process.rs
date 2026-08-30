@@ -167,6 +167,18 @@ impl ContainedBackgroundProcess {
         let containment_id = next_containment_id();
         #[cfg(unix)]
         command.env(CONTAINMENT_ID_ENV, &containment_id);
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.as_std_mut().pre_exec(|| {
+                    if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         let child = command.spawn()?;
@@ -626,6 +638,48 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1_200)).await;
 
         assert!(!marker.exists(), "setsid descendant escaped containment");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn contained_process_terminates_a_double_fork_with_cleared_environment() {
+        use super::{background_contained_tokio_command, ContainedBackgroundProcess};
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let setsid_available = std::process::Command::new("sh")
+            .args(["-c", "command -v setsid >/dev/null 2>&1"])
+            .status()
+            .expect("probe setsid")
+            .success();
+        if !setsid_available {
+            return;
+        }
+
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let marker = temp.path().join("escaped-cleared-environment.txt");
+        let marker_arg = marker.to_string_lossy().replace('\'', "'\\''");
+        let script = format!(
+            "setsid -f env -i /bin/sh -c 'sleep 1; printf survived > \"$1\"' sh '{marker_arg}' & sleep 30"
+        );
+        let mut command = background_contained_tokio_command("sh");
+        command
+            .args(["-c", &script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut process = ContainedBackgroundProcess::spawn(command).expect("spawn parent");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        process
+            .terminate_with_grace(Duration::ZERO)
+            .await
+            .expect("terminate double-forked process tree");
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+
+        assert!(
+            !marker.exists(),
+            "double-forked descendant with a cleared environment escaped containment"
+        );
     }
 
     #[test]
