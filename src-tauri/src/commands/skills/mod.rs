@@ -9,6 +9,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+#[cfg(test)]
+use std::sync::{Arc, Barrier, LazyLock, Mutex};
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
@@ -1432,8 +1434,10 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
         .map_err(|error| command_error(format!("Failed to create skill destination: {}", error)))?;
     for entry in fs::read_dir(source)
         .map_err(|error| command_error(format!("Failed to read skill source: {}", error)))?
-        .flatten()
     {
+        let entry = entry.map_err(|error| {
+            command_error(format!("Failed to read a skill source entry: {}", error))
+        })?;
         let source_path = entry.path();
         let relative = source_path
             .strip_prefix(source)
@@ -1463,6 +1467,225 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
         }
     }
     Ok(())
+}
+
+fn validate_installable_skill_file(path: &Path) -> CommandResult<()> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| command_error("Selected folder does not contain SKILL.md."))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(command_error(
+            "Selected folder must contain a real SKILL.md file.",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_installable_skill_error(parsed: &ParsedSkillFile) -> crate::commands::CommandError {
+    let details = parsed
+        .diagnostics
+        .iter()
+        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+        .collect::<Vec<_>>()
+        .join(" ");
+    command_error(format!(
+        "Selected skill is not AgentSkills spec-compliant. {}",
+        details
+    ))
+}
+
+struct InstallableSkillSource {
+    parsed: ParsedSkillFile,
+    skill_file_contents: Vec<u8>,
+}
+
+fn read_installable_skill_source(source: &Path) -> CommandResult<InstallableSkillSource> {
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|error| command_error(format!("Failed to inspect selected folder: {}", error)))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(command_error("Selected path must be a real skill folder."));
+    }
+
+    let skill_file = source.join(SKILL_FILE);
+    validate_installable_skill_file(&skill_file)?;
+    let parsed = parse_skill_file(&skill_file);
+    if !parsed.is_valid || !parsed.spec_compliant {
+        return Err(invalid_installable_skill_error(&parsed));
+    }
+    let skill_file_contents = fs::read(&skill_file)
+        .map_err(|error| command_error(format!("Failed to read selected SKILL.md: {}", error)))?;
+    Ok(InstallableSkillSource {
+        parsed,
+        skill_file_contents,
+    })
+}
+
+struct SkillInstallStaging {
+    root: PathBuf,
+}
+
+impl Drop for SkillInstallStaging {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[cfg(windows)]
+fn atomic_publish_skill_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn atomic_publish_skill_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn atomic_publish_skill_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let destination = CString::new(destination.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    if unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(
+    windows,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+compile_error!("Atomic skill publication is unsupported on this platform.");
+
+#[cfg(test)]
+#[derive(Clone)]
+struct SkillInstallTestBarrier {
+    reached: Arc<Barrier>,
+    resume: Arc<Barrier>,
+}
+
+#[cfg(test)]
+static SKILL_INSTALL_TEST_BARRIERS: LazyLock<Mutex<HashMap<PathBuf, SkillInstallTestBarrier>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+fn wait_for_skill_install_test_barrier(source: &Path) {
+    let barrier = SKILL_INSTALL_TEST_BARRIERS
+        .lock()
+        .expect("lock skill install test barriers")
+        .remove(source);
+    if let Some(barrier) = barrier {
+        barrier.reached.wait();
+        barrier.resume.wait();
+    }
+}
+
+#[cfg(not(test))]
+fn wait_for_skill_install_test_barrier(_source: &Path) {}
+
+fn install_skill_from_local_source(
+    source: &Path,
+    destination_base: &Path,
+    source_descriptor: SkillSourceDto,
+) -> CommandResult<SkillManifestDto> {
+    let initial = read_installable_skill_source(source)?;
+    fs::create_dir_all(destination_base)
+        .map_err(|error| command_error(format!("Failed to create skill destination: {}", error)))?;
+
+    let destination = destination_base.join(&initial.parsed.name);
+    if destination.exists() {
+        return Err(command_error(format!(
+            "A skill already exists at {}.",
+            destination.display()
+        )));
+    }
+
+    let staging_root =
+        destination_base.join(format!(".macro-skill-install-{}", Uuid::new_v4().simple()));
+    fs::create_dir(&staging_root).map_err(|error| {
+        command_error(format!(
+            "Failed to create skill installation staging folder: {}",
+            error
+        ))
+    })?;
+    let staging = SkillInstallStaging { root: staging_root };
+    let staged_skill = staging.root.join(&initial.parsed.name);
+
+    wait_for_skill_install_test_barrier(source);
+    copy_dir_recursive(source, &staged_skill)?;
+
+    let copied = read_installable_skill_source(&staged_skill)?;
+    if copied.skill_file_contents != initial.skill_file_contents {
+        return Err(command_error(
+            "Selected SKILL.md changed during installation. Try again.",
+        ));
+    }
+    if copied.parsed.name != initial.parsed.name {
+        return Err(command_error(
+            "Selected skill name changed during installation. Try again.",
+        ));
+    }
+
+    atomic_publish_skill_directory(&staged_skill, &destination).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists || destination.exists() {
+            command_error(format!(
+                "A skill already exists at {}.",
+                destination.display()
+            ))
+        } else {
+            command_error(format!("Failed to publish installed skill: {}", error))
+        }
+    })?;
+
+    Ok(build_manifest(&destination, source_descriptor))
 }
 
 fn resolve_workspace_cwd(
@@ -1553,39 +1776,9 @@ pub async fn skills_install_from_local_path(
     source_path: String,
 ) -> CommandResult<SkillManifestDto> {
     let source = PathBuf::from(source_path.trim());
-    let metadata = fs::symlink_metadata(&source)
-        .map_err(|error| command_error(format!("Failed to inspect selected folder: {}", error)))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(command_error("Selected path must be a real skill folder."));
-    }
-    if !source.join(SKILL_FILE).is_file() {
-        return Err(command_error("Selected folder does not contain SKILL.md."));
-    }
-    let parsed = parse_skill_file(&source.join(SKILL_FILE));
-    if !parsed.is_valid || !parsed.spec_compliant {
-        let details = parsed
-            .diagnostics
-            .iter()
-            .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
-            .collect::<Vec<_>>()
-            .join(" ");
-        return Err(command_error(format!(
-            "Selected skill is not AgentSkills spec-compliant. {}",
-            details
-        )));
-    }
-
     let (destination_base, source_descriptor) =
         resolve_configured_destination(manager.inner(), "global", None, None, &[]).await?;
-    let destination = destination_base.join(&parsed.name);
-    if destination.exists() {
-        return Err(command_error(format!(
-            "A skill already exists at {}.",
-            destination.display()
-        )));
-    }
-    copy_dir_recursive(&source, &destination)?;
-    Ok(build_manifest(&destination, source_descriptor))
+    install_skill_from_local_source(&source, &destination_base, source_descriptor)
 }
 
 async fn resolve_configured_destination(
@@ -2115,6 +2308,19 @@ mod tests {
         .expect("write skill");
     }
 
+    fn local_install_source(destination_base: &Path) -> SkillSourceDto {
+        SkillSourceDto {
+            kind: "global".to_string(),
+            namespace: "agents".to_string(),
+            root_id: "agents".to_string(),
+            priority: 500,
+            project_id: None,
+            project_name: None,
+            root_path: destination_base.to_string_lossy().to_string(),
+            skill_root_path: destination_base.to_string_lossy().to_string(),
+        }
+    }
+
     #[test]
     fn parses_valid_skill_frontmatter() {
         let dir = tempdir().expect("tempdir");
@@ -2151,6 +2357,111 @@ mod tests {
         assert_eq!(parsed.description, "Closed at EOF");
         assert!(parsed.diagnostics.is_empty());
         assert!(parsed.body.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symbolic_skill_file_before_installation() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("linked-skill");
+        fs::create_dir_all(&skill_dir).expect("create skill directory");
+        let target = dir.path().join("real-skill.md");
+        fs::write(
+            &target,
+            "---\nname: linked-skill\ndescription: Linked manifest\n---\n",
+        )
+        .expect("write target manifest");
+        symlink(&target, skill_dir.join(SKILL_FILE)).expect("create skill manifest symlink");
+
+        let error = validate_installable_skill_file(&skill_dir.join(SKILL_FILE))
+            .expect_err("symbolic SKILL.md must be rejected");
+        assert!(error.message.contains("real SKILL.md"));
+    }
+
+    #[test]
+    fn stages_valid_skill_before_publishing_it() {
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("source").join("staged-skill");
+        let destination_base = dir.path().join("destination");
+        write_skill(&source, "staged-skill");
+        fs::create_dir_all(source.join("references")).expect("create references");
+        fs::write(source.join("references/info.md"), "copied").expect("write reference");
+
+        let installed = install_skill_from_local_source(
+            &source,
+            &destination_base,
+            local_install_source(&destination_base),
+        )
+        .expect("install skill");
+
+        assert_eq!(installed.name, "staged-skill");
+        assert!(installed.is_valid);
+        assert_eq!(
+            fs::read_to_string(destination_base.join("staged-skill/references/info.md"))
+                .expect("read installed reference"),
+            "copied"
+        );
+        assert!(fs::read_dir(&destination_base)
+            .expect("read destination")
+            .flatten()
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".macro-skill-install-")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_skill_file_replaced_by_symlink_during_staged_install() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("source").join("racing-skill");
+        let destination_base = dir.path().join("destination");
+        write_skill(&source, "racing-skill");
+        let replacement = dir.path().join("replacement-skill.md");
+        fs::copy(source.join(SKILL_FILE), &replacement).expect("copy replacement manifest");
+
+        let reached = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        SKILL_INSTALL_TEST_BARRIERS
+            .lock()
+            .expect("lock skill install test barriers")
+            .insert(
+                source.clone(),
+                SkillInstallTestBarrier {
+                    reached: Arc::clone(&reached),
+                    resume: Arc::clone(&resume),
+                },
+            );
+
+        let source_for_install = source.clone();
+        let destination_for_install = destination_base.clone();
+        let install = std::thread::spawn(move || {
+            install_skill_from_local_source(
+                &source_for_install,
+                &destination_for_install,
+                local_install_source(&destination_for_install),
+            )
+        });
+
+        reached.wait();
+        fs::remove_file(source.join(SKILL_FILE)).expect("remove checked manifest");
+        symlink(&replacement, source.join(SKILL_FILE)).expect("replace manifest with symlink");
+        resume.wait();
+
+        let error = install
+            .join()
+            .expect("join install thread")
+            .expect_err("racing symlink must fail installation");
+        assert!(error.message.contains("SKILL.md"));
+        assert!(!destination_base.join("racing-skill").exists());
+        assert!(fs::read_dir(&destination_base)
+            .expect("read destination")
+            .next()
+            .is_none());
     }
 
     #[test]

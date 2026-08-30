@@ -3338,7 +3338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pruning_an_empty_provider_catalog_removes_only_discovered_models() {
+    async fn replacing_with_an_empty_provider_catalog_removes_only_discovered_models() {
         let (_temp_dir, pool) = test_pool().await;
         upsert_provider_config_by_id(
             &pool,
@@ -3371,9 +3371,9 @@ mod tests {
             .expect("insert model");
         }
 
-        prune_provider_models(&pool, "provider-openai", &[])
+        replace_discovered_provider_models(&pool, "provider-openai", &[])
             .await
-            .expect("prune empty catalog");
+            .expect("replace with empty catalog");
 
         let rows = sqlx::query("SELECT model_id FROM ai_models ORDER BY model_id")
             .fetch_all(&pool)
