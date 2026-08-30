@@ -18,11 +18,13 @@ let currentSagaJson = malformedSagaJson;
 mock.module('./tauriIpc', () => ({
   ...actualTauriIpc,
   isTauriAvailable: () => true,
-  dbGetAppSetting: async () => ({
-    key: 'pendingLinkedTaskDeletions:v1',
-    value_json: currentSagaJson,
-    updated_at: '2026-08-12T00:00:00.000Z',
-  }),
+  dbGetAppSetting: async (key: string) => key === 'pendingLinkedTaskDeletions:v1'
+    ? {
+        key,
+        value_json: currentSagaJson,
+        updated_at: '2026-08-12T00:00:00.000Z',
+      }
+    : null,
 }));
 
 const sagaService = await import('./linkedTaskDeletionSaga');
@@ -93,6 +95,7 @@ describe('linkedTaskDeletionSaga', () => {
     const transport = (): LinkedTaskDeletionSagaTransport => ({
       isTauriAvailable: () => true,
       dbGetAppSetting: async (key) => {
+        if (key !== 'pendingLinkedTaskDeletions:v1') return null;
         const valueJson = persisted;
         if (persisted === null && initialReads < 2) {
           initialReads += 1;
@@ -103,7 +106,8 @@ describe('linkedTaskDeletionSaga', () => {
           ? null
           : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
       },
-      dbCompareAndSwapAppSetting: async ({ expectedValueJson, valueJson }) => {
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if (key !== 'pendingLinkedTaskDeletions:v1') return { applied: true };
         if (persisted !== expectedValueJson) return { applied: false };
         persisted = valueJson;
         return { applied: true };
@@ -128,5 +132,52 @@ describe('linkedTaskDeletionSaga', () => {
       expect.objectContaining({ ownerId: 'first' }),
       expect.objectContaining({ ownerId: 'second' }),
     ]));
+  });
+
+  it('rejects stale progress and completion for the same owner generation', async () => {
+    const values = new Map<string, string>();
+    const transport: LinkedTaskDeletionSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const prepared: LinkedConversationDeletionSaga = {
+      ownerType: 'task',
+      ownerId: 'shared',
+      conversationId: 'conversation-shared',
+      phase: 'prepared',
+      targetBranch: 'feature/shared',
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    };
+    const completed: LinkedConversationDeletionSaga = {
+      ...prepared,
+      phase: 'task_deleted',
+      updatedAt: '2026-08-30T00:00:01.000Z',
+    };
+    const generation = sagaService.getLinkedDeletionSagaGeneration(prepared);
+
+    await sagaService.upsertLinkedConversationDeletionSaga(completed, transport);
+    await expect(sagaService.upsertLinkedConversationDeletionSaga(prepared, transport))
+      .rejects.toBeInstanceOf(sagaService.StaleLinkedTaskDeletionSagaError);
+    await sagaService.removeLinkedConversationDeletionSaga(
+      'task',
+      'shared',
+      'feature/shared',
+      generation,
+      transport,
+    );
+    await expect(sagaService.upsertLinkedConversationDeletionSaga(completed, transport))
+      .rejects.toBeInstanceOf(sagaService.StaleLinkedTaskDeletionSagaError);
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 });

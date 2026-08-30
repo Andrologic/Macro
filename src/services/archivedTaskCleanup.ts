@@ -1,7 +1,9 @@
 import * as tauriIpc from './tauriIpc';
 
 const CLEANUP_KEY = 'pendingArchivedTaskCleanups:v1';
+const COMPLETED_CLEANUP_KEY = 'completedArchivedTaskCleanups:v1';
 const MAX_CAS_ATTEMPTS = 32;
+const MAX_COMPLETED_GENERATIONS = 256;
 
 export interface ArchivedTaskCleanupJournalTransport {
   isTauriAvailable: () => boolean;
@@ -10,6 +12,13 @@ export interface ArchivedTaskCleanupJournalTransport {
 }
 
 const defaultTransport: ArchivedTaskCleanupJournalTransport = tauriIpc;
+
+export class StaleArchivedTaskCleanupError extends Error {
+  constructor() {
+    super('Cette génération de nettoyage de tâche archivée n’est plus active.');
+    this.name = 'StaleArchivedTaskCleanupError';
+  }
+}
 
 export type ArchivedTaskCleanupTargetState = 'pending' | 'dirty' | 'failed';
 
@@ -86,7 +95,41 @@ export const loadArchivedTaskCleanupSagas = async (
 ): Promise<ArchivedTaskCleanupSaga[]> => {
   if (!transport.isTauriAvailable()) return [];
   const setting = await transport.dbGetAppSetting(CLEANUP_KEY);
-  return parseCleanupSagas(setting?.value_json);
+  const completed = await loadCompletedGenerations(transport);
+  return parseCleanupSagas(setting?.value_json).filter((saga) => !completed.has(saga.operationId));
+};
+
+const parseCompletedGenerations = (value: string | null | undefined): string[] => {
+  if (!value) return [];
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'string')) {
+    throw new Error('Le registre des générations de nettoyage terminées est corrompu.');
+  }
+  return parsed;
+};
+
+const loadCompletedGenerations = async (
+  transport: ArchivedTaskCleanupJournalTransport,
+): Promise<Set<string>> => new Set(parseCompletedGenerations(
+  (await transport.dbGetAppSetting(COMPLETED_CLEANUP_KEY))?.value_json,
+));
+
+const updateSetting = async (
+  key: string,
+  mutation: (currentValue: string | null) => string,
+  transport: ArchivedTaskCleanupJournalTransport,
+): Promise<void> => {
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const setting = await transport.dbGetAppSetting(key);
+    const expectedValueJson = setting?.value_json ?? null;
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key,
+      expectedValueJson,
+      valueJson: mutation(expectedValueJson),
+    });
+    if (result.applied) return;
+  }
+  throw new Error(`Conflit persistant pendant la mise à jour du réglage ${key}.`);
 };
 
 const mutateArchivedTaskCleanupSagas = async (
@@ -108,25 +151,72 @@ const mutateArchivedTaskCleanupSagas = async (
   throw new Error('Conflit persistant pendant la mise à jour du journal de nettoyage des tâches archivées.');
 };
 
+const mergeCleanupSagaProgress = (
+  current: ArchivedTaskCleanupSaga,
+  incoming: ArchivedTaskCleanupSaga,
+): ArchivedTaskCleanupSaga => ({
+  ...incoming,
+  targets: incoming.targets.map((target) => {
+    const persisted = current.targets.find((candidate) => candidate.worktreeKey === target.worktreeKey);
+    if (!persisted) return target;
+    const worktreeRemoved = persisted.worktreeRemoved || target.worktreeRemoved;
+    const branchRemoved = persisted.branchRemoved || target.branchRemoved;
+    return {
+      ...target,
+      worktreePath: target.worktreePath ?? persisted.worktreePath,
+      worktreeRemoved,
+      branchRemoved,
+      state: worktreeRemoved && branchRemoved ? 'pending' : target.state,
+      lastError: worktreeRemoved && branchRemoved ? undefined : target.lastError,
+    };
+  }),
+});
+
 export const upsertArchivedTaskCleanupSaga = async (
   saga: ArchivedTaskCleanupSaga,
   transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
 ): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  if ((await loadCompletedGenerations(transport)).has(saga.operationId)) {
+    throw new StaleArchivedTaskCleanupError();
+  }
   await mutateArchivedTaskCleanupSagas(
-    (current) => [
-      ...current.filter((entry) => entry.taskId !== saga.taskId),
-      saga,
-    ],
+    (current) => {
+      const existing = current.find((entry) => entry.taskId === saga.taskId);
+      if (existing && existing.operationId !== saga.operationId) {
+        if (existing.createdAt >= saga.createdAt) throw new StaleArchivedTaskCleanupError();
+        return [...current.filter((entry) => entry.taskId !== saga.taskId), saga];
+      }
+      const next = existing ? mergeCleanupSagaProgress(existing, saga) : saga;
+      return [...current.filter((entry) => entry.taskId !== saga.taskId), next];
+    },
     transport,
   );
+  if ((await loadCompletedGenerations(transport)).has(saga.operationId)) {
+    await mutateArchivedTaskCleanupSagas(
+      (current) => current.filter((entry) => entry.operationId !== saga.operationId),
+      transport,
+    );
+    throw new StaleArchivedTaskCleanupError();
+  }
 };
 
 export const removeArchivedTaskCleanupSaga = async (
   taskId: string,
+  operationId: string,
   transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
 ): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  await updateSetting(
+    COMPLETED_CLEANUP_KEY,
+    (value) => JSON.stringify([
+      ...parseCompletedGenerations(value).filter((entry) => entry !== operationId),
+      operationId,
+    ].slice(-MAX_COMPLETED_GENERATIONS)),
+    transport,
+  );
   await mutateArchivedTaskCleanupSagas(
-    (current) => current.filter((entry) => entry.taskId !== taskId),
+    (current) => current.filter((entry) => entry.taskId !== taskId || entry.operationId !== operationId),
     transport,
   );
 };

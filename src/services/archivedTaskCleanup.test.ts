@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  removeArchivedTaskCleanupSaga,
+  StaleArchivedTaskCleanupError,
   upsertArchivedTaskCleanupSaga,
   type ArchivedTaskCleanupJournalTransport,
   type ArchivedTaskCleanupSaga,
@@ -53,5 +55,46 @@ describe('archivedTaskCleanup', () => {
     expect(persisted.sort((left, right) => left.taskId.localeCompare(right.taskId))).toEqual([
       saga('task-a'), saga('task-b'),
     ]);
+  });
+
+  it('does not let an obsolete generation overwrite, remove, or resurrect its replacement', async () => {
+    const settings = new Map<string, string>();
+    const transport: ArchivedTaskCleanupJournalTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const value = settings.get(key);
+        return value === undefined
+          ? null
+          : { key, value_json: value, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((settings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        settings.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const obsolete = {
+      ...saga('shared'),
+      operationId: 'archive-obsolete',
+      createdAt: '2026-08-30T00:00:00.000Z',
+    };
+    const replacement = {
+      ...saga('shared'),
+      operationId: 'archive-replacement',
+      createdAt: '2026-08-30T00:00:01.000Z',
+    };
+
+    await upsertArchivedTaskCleanupSaga(obsolete, transport);
+    await upsertArchivedTaskCleanupSaga(replacement, transport);
+    await expect(upsertArchivedTaskCleanupSaga(obsolete, transport))
+      .rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
+    await removeArchivedTaskCleanupSaga(obsolete.taskId, obsolete.operationId, transport);
+
+    expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([replacement]);
+
+    await removeArchivedTaskCleanupSaga(replacement.taskId, replacement.operationId, transport);
+    await expect(upsertArchivedTaskCleanupSaga(replacement, transport))
+      .rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
+    expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([]);
   });
 });

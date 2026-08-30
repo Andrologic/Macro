@@ -3,7 +3,9 @@ import { toPlanLocatorKey } from './durableIdentity';
 
 const SAGA_KEY = 'pendingPlanLifecycles:v1';
 const SAGA_QUARANTINE_KEY = 'pendingPlanLifecyclesQuarantine:v1';
+const COMPLETED_SAGA_KEY = 'completedPlanLifecycles:v1';
 const MAX_CAS_ATTEMPTS = 32;
+const MAX_COMPLETED_GENERATIONS = 512;
 
 export interface PlanLifecycleSagaTransport {
   isTauriAvailable: () => boolean;
@@ -12,6 +14,13 @@ export interface PlanLifecycleSagaTransport {
 }
 
 const defaultTransport: PlanLifecycleSagaTransport = tauriIpc;
+
+export class StalePlanLifecycleSagaError extends Error {
+  constructor() {
+    super('Cette génération du cycle de vie du plan n’est plus active.');
+    this.name = 'StalePlanLifecycleSagaError';
+  }
+}
 
 export type PlanLifecycleOperation = 'archive' | 'delete';
 export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
@@ -31,6 +40,10 @@ export interface PlanLifecycleSaga {
 export const getPlanLifecycleSagaKey = (
   saga: Pick<PlanLifecycleSaga, 'branchName' | 'planId' | 'operation'>,
 ): string => `${toPlanLocatorKey(saga)}:${saga.operation}`;
+
+export const getPlanLifecycleSagaGeneration = (
+  saga: Pick<PlanLifecycleSaga, 'branchName' | 'planId' | 'operation' | 'createdAt'>,
+): string => `${getPlanLifecycleSagaKey(saga)}:${saga.createdAt}`;
 
 export class PlanLifecycleSagaCorruptionError extends Error {
   constructor() {
@@ -157,6 +170,21 @@ const parseUnknownArray = (value: string | null): unknown[] => {
   }
 };
 
+const parseCompletedGenerations = (value: string | null | undefined): string[] => {
+  if (!value) return [];
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'string')) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
+  return parsed;
+};
+
+const loadCompletedGenerations = async (
+  transport: PlanLifecycleSagaTransport,
+): Promise<Set<string>> => new Set(parseCompletedGenerations(
+  (await transport.dbGetAppSetting(COMPLETED_SAGA_KEY))?.value_json,
+));
+
 const updateSetting = async (
   key: string,
   mutation: (value: string | null) => string,
@@ -195,7 +223,10 @@ export const loadPlanLifecycleSagas = async (
     const setting = await transport.dbGetAppSetting(SAGA_KEY);
     const expectedValueJson = setting?.value_json ?? null;
     const journal = parsePlanLifecycleSagaJournal(expectedValueJson);
-    if (journal.quarantined.length === 0) return journal.sagas;
+    if (journal.quarantined.length === 0) {
+      const completed = await loadCompletedGenerations(transport);
+      return journal.sagas.filter((saga) => !completed.has(getPlanLifecycleSagaGeneration(saga)));
+    }
 
     await appendQuarantine(journal.quarantined, transport);
     const result = await transport.dbCompareAndSwapAppSetting({
@@ -203,7 +234,10 @@ export const loadPlanLifecycleSagas = async (
       expectedValueJson,
       valueJson: JSON.stringify(journal.sagas),
     });
-    if (result.applied) return journal.sagas;
+    if (result.applied) {
+      const completed = await loadCompletedGenerations(transport);
+      return journal.sagas.filter((saga) => !completed.has(getPlanLifecycleSagaGeneration(saga)));
+    }
   }
   throw new Error('Conflit persistant pendant la normalisation du journal du cycle de vie des plans.');
 };
@@ -213,26 +247,66 @@ export const upsertPlanLifecycleSaga = async (
   transport: PlanLifecycleSagaTransport = defaultTransport,
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
+  const generation = getPlanLifecycleSagaGeneration(saga);
+  if ((await loadCompletedGenerations(transport)).has(generation)) {
+    throw new StalePlanLifecycleSagaError();
+  }
   await loadPlanLifecycleSagas(transport);
   const sagaKey = getPlanLifecycleSagaKey(saga);
+  const phaseOrder: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
+    archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
+    delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
+  };
   await updateSetting(
     SAGA_KEY,
-    (current) => JSON.stringify([
-      ...parsePlanLifecycleSagas(current).filter((entry) => getPlanLifecycleSagaKey(entry) !== sagaKey),
-      saga,
-    ]),
+    (current) => {
+      const sagas = parsePlanLifecycleSagas(current);
+      const existing = sagas.find((entry) => getPlanLifecycleSagaKey(entry) === sagaKey);
+      if (existing) {
+        const existingGeneration = getPlanLifecycleSagaGeneration(existing);
+        if (existingGeneration !== generation) {
+          if (existing.createdAt >= saga.createdAt) throw new StalePlanLifecycleSagaError();
+        } else if (phaseOrder[saga.operation].indexOf(existing.phase) > phaseOrder[saga.operation].indexOf(saga.phase)) {
+          throw new StalePlanLifecycleSagaError();
+        }
+      }
+      return JSON.stringify([
+        ...sagas.filter((entry) => getPlanLifecycleSagaKey(entry) !== sagaKey),
+        saga,
+      ]);
+    },
     transport,
   );
+  if ((await loadCompletedGenerations(transport)).has(generation)) {
+    await updateSetting(
+      SAGA_KEY,
+      (current) => JSON.stringify(parsePlanLifecycleSagas(current).filter(
+        (entry) => getPlanLifecycleSagaGeneration(entry) !== generation,
+      )),
+      transport,
+    );
+    throw new StalePlanLifecycleSagaError();
+  }
 };
 
 export const removePlanLifecycleSaga = async (
   planId: string,
   operation: PlanLifecycleOperation,
   branchName?: string,
+  generation?: string,
   transport: PlanLifecycleSagaTransport = defaultTransport,
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
+  if (!generation) throw new Error('La génération du cycle de vie du plan est requise.');
   await loadPlanLifecycleSagas(transport);
+  await updateSetting(
+    COMPLETED_SAGA_KEY,
+    (value) => JSON.stringify([
+      ...parseCompletedGenerations(value).filter((entry) => entry !== generation),
+      generation,
+    ].slice(-MAX_COMPLETED_GENERATIONS)),
+    transport,
+  );
   await updateSetting(
     SAGA_KEY,
     (value) => {
@@ -241,7 +315,8 @@ export const removePlanLifecycleSaga = async (
       if (!branchName && matches.length > 1) return JSON.stringify(current);
       return JSON.stringify(current.filter((entry) =>
         entry.planId !== planId || entry.operation !== operation ||
-        (branchName !== undefined && entry.branchName !== branchName)
+        (branchName !== undefined && entry.branchName !== branchName) ||
+        getPlanLifecycleSagaGeneration(entry) !== generation
       ));
     },
     transport,

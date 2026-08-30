@@ -39,6 +39,8 @@ import {
 } from './architectPlanKinds';
 import { toServiceError } from './contracts/errors';
 import {
+  StalePlanLifecycleSagaError,
+  getPlanLifecycleSagaGeneration,
   loadPlanLifecycleSagas,
   removePlanLifecycleSaga,
   upsertPlanLifecycleSaga,
@@ -830,7 +832,11 @@ export const archivePlanAndCleanupBranches = async (params: {
   repoPath?: string;
   keepSaga?: boolean;
   requireMetadataCommit?: boolean;
-}): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> =>
+}): Promise<{
+  plan: ArchitectPlanRecord;
+  cleanup: CleanupPlanRepositoryResult[];
+  lifecycleSaga: PlanLifecycleSaga;
+}> =>
   getDefaultArchitectGitFlowService().archivePlanAndCleanupBranches(params);
 
 export const restorePlanAndProvisionBranches = async (params: {
@@ -1651,7 +1657,11 @@ export const createArchitectGitFlowService = (
     repoPath?: string;
     keepSaga?: boolean;
     requireMetadataCommit?: boolean;
-  }): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> => {
+  }): Promise<{
+    plan: ArchitectPlanRecord;
+    cleanup: CleanupPlanRepositoryResult[];
+    lifecycleSaga: PlanLifecycleSaga;
+  }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
     if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
       throw new Error(`Plan ${params.planId} cannot be archived.`);
@@ -1667,10 +1677,20 @@ export const createArchitectGitFlowService = (
     const cleanup = await cleanupPlanBranchesWithDeps(archived, params.repoPath);
     const cleanedSaga = { ...saga, phase: 'git_cleanup_complete' as const, updatedAt: new Date().toISOString() };
     await upsertPlanLifecycleSaga(cleanedSaga);
+    const lifecycleSaga: PlanLifecycleSaga = params.requireMetadataCommit
+      ? { ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() }
+      : cleanedSaga;
     if (params.requireMetadataCommit) {
-      await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
-    } else if (!params.keepSaga) await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
-    return { plan: archived, cleanup };
+      await upsertPlanLifecycleSaga(lifecycleSaga);
+    } else if (!params.keepSaga) {
+      await removePlanLifecycleSaga(
+        plan.id,
+        'archive',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(lifecycleSaga),
+      );
+    }
+    return { plan: archived, cleanup, lifecycleSaga };
   };
 
   const restorePlanAndProvisionBranchesWithDeps = async (params: {
@@ -1682,8 +1702,18 @@ export const createArchitectGitFlowService = (
     if (!plan || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
+    const pendingArchiveSaga = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === plan.id && saga.branchName === params.branchName && saga.operation === 'archive',
+    );
     if (plan.status !== 'archived') {
-      await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+      if (pendingArchiveSaga) {
+        await removePlanLifecycleSaga(
+          plan.id,
+          'archive',
+          params.branchName,
+          getPlanLifecycleSagaGeneration(pendingArchiveSaga),
+        );
+      }
       return plan;
     }
 
@@ -1696,11 +1726,25 @@ export const createArchitectGitFlowService = (
         await rollbackProvisionResultWithDeps(provision).catch(() => undefined);
         throw error;
       }
-      await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+      if (pendingArchiveSaga) {
+        await removePlanLifecycleSaga(
+          plan.id,
+          'archive',
+          params.branchName,
+          getPlanLifecycleSagaGeneration(pendingArchiveSaga),
+        );
+      }
       return restored;
     }
     const restored = await deps.restoreArchitectPlan(params.branchName, params.planId);
-    await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+    if (pendingArchiveSaga) {
+      await removePlanLifecycleSaga(
+        plan.id,
+        'archive',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(pendingArchiveSaga),
+      );
+    }
     return restored;
   };
 
@@ -1791,7 +1835,7 @@ export const createArchitectGitFlowService = (
       status: 'completed',
       setActive: false,
     });
-    const { plan: archivedPlan, cleanup } = await archivePlanAndCleanupBranchesWithDeps({
+    const { plan: archivedPlan, cleanup, lifecycleSaga } = await archivePlanAndCleanupBranchesWithDeps({
       branchName: params.branchName,
       planId: plan.id,
       repoPath: params.repoPath,
@@ -1803,11 +1847,16 @@ export const createArchitectGitFlowService = (
       commitMessage: `chore(metadata): finalize architect plan ${plan.id}`,
     });
     await upsertPlanLifecycleSaga({
-      planId: plan.id, branchName: params.branchName, operation: 'archive', phase: 'metadata_committed',
-      conversationId: plan.conversationId ?? null, requiresMetadataCommit: true,
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      ...lifecycleSaga,
+      phase: 'metadata_committed',
+      updatedAt: new Date().toISOString(),
     });
-    await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+    await removePlanLifecycleSaga(
+      plan.id,
+      'archive',
+      params.branchName,
+      getPlanLifecycleSagaGeneration(lifecycleSaga),
+    );
 
     return {
       plan: archivedPlan,
@@ -1832,6 +1881,9 @@ export const createArchitectGitFlowService = (
     }
 
     const crudCapabilities = getArchitectPlanCrudCapabilities(plan);
+    const pendingDeleteSaga = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === params.planId && saga.branchName === params.branchName && saga.operation === 'delete',
+    );
 
     if (plan.status === 'deleted') {
       await deps.deleteArchitectPlan({
@@ -1840,7 +1892,14 @@ export const createArchitectGitFlowService = (
         hardDelete: params.hardDelete !== false,
       });
 
-      await removePlanLifecycleSaga(params.planId, 'delete', params.branchName);
+      if (pendingDeleteSaga) {
+        await removePlanLifecycleSaga(
+          params.planId,
+          'delete',
+          params.branchName,
+          getPlanLifecycleSagaGeneration(pendingDeleteSaga),
+        );
+      }
       return {
         deletedBranches: [],
         deletedWorktreeKeys: [],
@@ -1866,7 +1925,12 @@ export const createArchitectGitFlowService = (
         hardDelete: params.hardDelete !== false,
       });
 
-      await removePlanLifecycleSaga(params.planId, 'delete', params.branchName);
+      await removePlanLifecycleSaga(
+        params.planId,
+        'delete',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(saga),
+      );
       return {
         deletedBranches: [],
         deletedWorktreeKeys: [],
@@ -1883,7 +1947,12 @@ export const createArchitectGitFlowService = (
       hardDelete: params.hardDelete ?? true,
     });
     await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_deleted', updatedAt: new Date().toISOString() });
-    await removePlanLifecycleSaga(params.planId, 'delete', params.branchName);
+    await removePlanLifecycleSaga(
+      params.planId,
+      'delete',
+      params.branchName,
+      getPlanLifecycleSagaGeneration(saga),
+    );
 
     return {
       deletedBranches: repositories.flatMap((repository) => repository.deletedBranches),
@@ -1897,45 +1966,50 @@ export const createArchitectGitFlowService = (
   const resumePlanLifecycleSagasWithDeps = async (): Promise<void> => {
     const pending = await loadPlanLifecycleSagas();
     for (const saga of pending) {
+      let currentSaga = saga;
       try {
         const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
         if (saga.operation === 'archive') {
           if (saga.phase === 'metadata_commit_pending') {
             await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
-            await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_committed', updatedAt: new Date().toISOString() });
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
+            currentSaga = { ...saga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
+            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
             continue;
           }
           if (saga.phase === 'metadata_committed') {
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
+            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
             continue;
           }
           if (!plan) {
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
+            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
             continue;
           }
           const archived = plan.status === 'archived'
             ? plan
             : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
-          await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
+          currentSaga = { ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
           await cleanupPlanBranchesWithDeps(archived);
-          const cleanedSaga = { ...saga, phase: 'git_cleanup_complete' as const, updatedAt: new Date().toISOString() };
-          await upsertPlanLifecycleSaga(cleanedSaga);
+          currentSaga = { ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
           if (saga.requiresMetadataCommit) {
-            await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
+            currentSaga = { ...currentSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
             await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
-            await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() });
+            currentSaga = { ...currentSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
           }
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
           continue;
         }
         if (!plan) {
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
           continue;
         }
         if (plan.status === 'deleted') {
           await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
           continue;
         }
         const capabilities = getArchitectPlanCrudCapabilities(plan);
@@ -1944,12 +2018,22 @@ export const createArchitectGitFlowService = (
         }
         if (capabilities.deleteRequiresCleanup) {
           await cleanupPlanBranchesWithDeps(plan);
-          await upsertPlanLifecycleSaga({ ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() });
+          currentSaga = { ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
         }
         await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
-        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
+        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
       } catch (error) {
-        await upsertPlanLifecycleSaga({ ...saga, updatedAt: new Date().toISOString(), lastError: toServiceError(error).message });
+        if (error instanceof StalePlanLifecycleSagaError) continue;
+        try {
+          await upsertPlanLifecycleSaga({
+            ...currentSaga,
+            updatedAt: new Date().toISOString(),
+            lastError: toServiceError(error).message,
+          });
+        } catch (journalError) {
+          if (!(journalError instanceof StalePlanLifecycleSagaError)) throw journalError;
+        }
       }
     }
   };

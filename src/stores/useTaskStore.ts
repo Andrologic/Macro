@@ -12,7 +12,11 @@ import { isAppShutdownGateActive } from '../services/appShutdownGate';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { isConversationRuntimeActive } from './chat/chatRuntimeState';
-import { removePlanLifecycleSaga, upsertPlanLifecycleSaga } from '../services/planLifecycleSaga';
+import {
+  getPlanLifecycleSagaGeneration,
+  removePlanLifecycleSaga,
+  upsertPlanLifecycleSaga,
+} from '../services/planLifecycleSaga';
 import { getTaskBusinessId, resolveTaskReference, toPlanLocatorKey } from '../services/durableIdentity';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
@@ -23,6 +27,7 @@ import {
 import { getLocalProjectContextState } from '../services/localProjectContext';
 import * as tauriIpc from '../services/tauriIpc';
 import {
+  getLinkedDeletionSagaGeneration,
   loadLinkedTaskDeletionSagas,
   removeLinkedTaskDeletionSaga,
   upsertLinkedTaskDeletionSaga,
@@ -890,7 +895,7 @@ const runArchivedTaskCleanup = async (
   }
 
   if (archivedTaskCleanupIsComplete(saga)) {
-    await removeArchivedTaskCleanupSaga(saga.taskId);
+    await removeArchivedTaskCleanupSaga(saga.taskId, saga.operationId);
     return null;
   }
   return {
@@ -2955,7 +2960,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             };
             await upsertLinkedTaskDeletionSaga(recoverySaga);
             recoverySaga = await resumeLinkedTaskGitCleanup(recoverySaga);
-            await removeLinkedTaskDeletionSaga(pending.taskId, pending.targetBranch);
+            await removeLinkedTaskDeletionSaga(
+              pending.taskId,
+              pending.targetBranch,
+              getLinkedDeletionSagaGeneration({
+                ...pending,
+                ownerType: 'task',
+                ownerId: pending.taskId,
+              }),
+            );
           } catch (error) {
             const message = toServiceError(error).message;
             await upsertLinkedTaskDeletionSaga({
@@ -3019,7 +3032,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               .completeLinkedTaskConversationDeletion(pending.conversationId)
           : true;
         if (completed) {
-          await removeLinkedTaskDeletionSaga(pending.taskId, pending.targetBranch);
+          await removeLinkedTaskDeletionSaga(
+            pending.taskId,
+            pending.targetBranch,
+            getLinkedDeletionSagaGeneration({
+              ...pending,
+              ownerType: 'task',
+              ownerId: pending.taskId,
+            }),
+          );
         } else {
           await upsertLinkedTaskDeletionSaga({
             ...taskDeletedSaga,
@@ -3521,7 +3542,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         };
         await upsertLinkedTaskDeletionSaga(revertSaga);
         revertSaga = await resumeLinkedTaskGitCleanup(revertSaga);
-        await removeLinkedTaskDeletionSaga(existingTask.id, DIRECT_DRAFT_REVERT_SAGA_TARGET);
+        await removeLinkedTaskDeletionSaga(
+          existingTask.id,
+          DIRECT_DRAFT_REVERT_SAGA_TARGET,
+          getLinkedDeletionSagaGeneration({
+            ...revertSaga,
+            ownerType: 'task',
+            ownerId: existingTask.id,
+          }),
+        );
       } else {
         for (const target of gitTargets) {
           await tauriIpc.gitWorktreeRemove({
@@ -3769,7 +3798,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
         if (!archiveToken) {
           if (preparedCleanup) {
-            await removeArchivedTaskCleanupSaga(taskId).catch(() => undefined);
+            await removeArchivedTaskCleanupSaga(taskId, preparedCleanup.operationId).catch(() => undefined);
           }
           throw error;
         }
@@ -3955,8 +3984,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     try {
+      const cleanupGeneration = get().archivedTaskCleanupByTaskId[taskId]
+        ?? (await loadArchivedTaskCleanupSagas()).find((candidate) => candidate.taskId === taskId)
+        ?? null;
       await tauriIpc.workspaceRestoreManualFeature(taskId);
-      await removeArchivedTaskCleanupSaga(taskId);
+      if (cleanupGeneration) {
+        await removeArchivedTaskCleanupSaga(taskId, cleanupGeneration.operationId);
+      }
       set((state) => ({
         archivedTaskCleanupByTaskId: Object.fromEntries(
           Object.entries(state.archivedTaskCleanupByTaskId).filter(
@@ -4191,7 +4225,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               .completeLinkedTaskConversationDeletion(task.conversation_id)
           : true;
         if (linkedConversationCleanupCompleted && !sagaPersistenceError) {
-          await removeLinkedTaskDeletionSaga(task.id, taskDeletedSaga.targetBranch);
+          await removeLinkedTaskDeletionSaga(
+            task.id,
+            taskDeletedSaga.targetBranch,
+            getLinkedDeletionSagaGeneration({
+              ...taskDeletedSaga,
+              ownerType: 'task',
+              ownerId: task.id,
+            }),
+          );
         } else if (!linkedConversationCleanupCompleted) {
           await upsertLinkedTaskDeletionSaga({
             ...taskDeletedSaga,
@@ -5333,18 +5375,31 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           status: 'completed',
           setActive: false,
         });
-        const { plan: archivedPlan, cleanup } = await archivePlanAndCleanupBranches({ branchName, planId: plan.id, requireMetadataCommit: true });
+        const {
+          plan: archivedPlan,
+          cleanup,
+          lifecycleSaga,
+        } = await archivePlanAndCleanupBranches({
+          branchName,
+          planId: plan.id,
+          requireMetadataCommit: true,
+        });
         await commitArchitectPlanMetadata({
           branchName,
           planId: task.plan_id,
           commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
         });
         await upsertPlanLifecycleSaga({
-          planId: plan.id, branchName, operation: 'archive', phase: 'metadata_committed',
-          conversationId: plan.conversationId ?? null, requiresMetadataCommit: true,
-          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          ...lifecycleSaga,
+          phase: 'metadata_committed',
+          updatedAt: new Date().toISOString(),
         });
-        await removePlanLifecycleSaga(plan.id, 'archive', branchName);
+        await removePlanLifecycleSaga(
+          plan.id,
+          'archive',
+          branchName,
+          getPlanLifecycleSagaGeneration(lifecycleSaga),
+        );
         await get().refreshFromPlan();
         await persistRuntime(null);
         get().clearPlanRuntimeState({

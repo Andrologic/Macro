@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import {
   getPlanLifecycleSagaKey,
+  getPlanLifecycleSagaGeneration,
   parsePlanLifecycleSagaJournal,
   parsePlanLifecycleSagas,
+  removePlanLifecycleSaga,
+  StalePlanLifecycleSagaError,
   upsertPlanLifecycleSaga,
   type PlanLifecycleSaga,
   type PlanLifecycleSagaTransport,
@@ -129,5 +132,45 @@ describe('planLifecycleSaga', () => {
       expect.objectContaining({ planId: 'first' }),
       expect.objectContaining({ planId: 'second' }),
     ]));
+  });
+
+  it('rejects phase regression and resurrection for the same plan generation', async () => {
+    const values = new Map<string, string>();
+    const transport: PlanLifecycleSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const prepared: PlanLifecycleSaga = {
+      planId: 'shared',
+      branchName: 'develop',
+      operation: 'archive',
+      phase: 'prepared',
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    };
+    const committed: PlanLifecycleSaga = {
+      ...prepared,
+      phase: 'metadata_committed',
+      updatedAt: '2026-08-30T00:00:01.000Z',
+    };
+    const generation = getPlanLifecycleSagaGeneration(prepared);
+
+    await upsertPlanLifecycleSaga(committed, transport);
+    await expect(upsertPlanLifecycleSaga(prepared, transport))
+      .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
+    await removePlanLifecycleSaga('shared', 'archive', 'develop', generation, transport);
+    await expect(upsertPlanLifecycleSaga(committed, transport))
+      .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
+    expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([]);
   });
 });

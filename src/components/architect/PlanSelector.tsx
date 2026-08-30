@@ -80,10 +80,12 @@ import {
 } from './planSelectorEvents';
 import { useChatStore } from '../../stores/useChatStore';
 import {
+  getLinkedDeletionSagaGeneration,
   removeLinkedConversationDeletionSaga,
   upsertLinkedConversationDeletionSaga,
 } from '../../services/linkedTaskDeletionSaga';
 import {
+  getPlanLifecycleSagaGeneration,
   removePlanLifecycleSaga,
   upsertPlanLifecycleSaga,
 } from '../../services/planLifecycleSaga';
@@ -994,7 +996,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         );
       }
       const archiveSagaNow = new Date().toISOString();
-      await upsertPlanLifecycleSaga({
+      const archiveSaga = {
         planId: plan.id,
         branchName: storageBranch,
         operation: 'archive',
@@ -1002,19 +1004,22 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         conversationId: latestPlan.conversationId ?? null,
         createdAt: archiveSagaNow,
         updatedAt: archiveSagaNow,
-      });
+      } as const;
+      await upsertPlanLifecycleSaga(archiveSaga);
       archivedPlan = await archiveArchitectPlan(storageBranch, plan.id);
       await upsertPlanLifecycleSaga({
-        planId: plan.id,
-        branchName: storageBranch,
-        operation: 'archive',
+        ...archiveSaga,
         phase: 'metadata_written',
         conversationId: archivedPlan.conversationId ?? null,
-        createdAt: archiveSagaNow,
         updatedAt: new Date().toISOString(),
       });
       const cleanup = await cleanupPlanBranches(archivedPlan);
-      await removePlanLifecycleSaga(plan.id, 'archive', storageBranch);
+      await removePlanLifecycleSaga(
+        plan.id,
+        'archive',
+        storageBranch,
+        getPlanLifecycleSagaGeneration(archiveSaga),
+      );
       taskStore.clearPlanRuntimeState({
         planId: plan.id,
         deletedWorktreeKeys: cleanup.flatMap((repository) =>
@@ -1087,6 +1092,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     let keepDeleteDialogOpen = false;
     let releasePlanMutation: (() => void) | null = null;
     let linkedConversationCleanupPending = false;
+    let linkedConversationCleanupGeneration: string | null = null;
     try {
       const deletedPlanId = planToDelete.id;
       const taskStore = useTaskStore.getState();
@@ -1107,7 +1113,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
       if (currentPlan.conversationId) {
         const now = new Date().toISOString();
-        await upsertLinkedConversationDeletionSaga({
+        const linkedDeletionSaga = {
           ownerType: 'plan',
           ownerId: deletedPlanId,
           conversationId: currentPlan.conversationId,
@@ -1115,7 +1121,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
           targetBranch: storageBranch,
           createdAt: now,
           updatedAt: now,
-        });
+        } as const;
+        linkedConversationCleanupGeneration = getLinkedDeletionSagaGeneration(linkedDeletionSaga);
+        await upsertLinkedConversationDeletionSaga(linkedDeletionSaga);
       }
       const cleanup = await deletePlanAndCleanupBranches({
         branchName: storageBranch,
@@ -1144,7 +1152,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
             )
           );
         }
-        await removeLinkedConversationDeletionSaga('plan', deletedPlanId, storageBranch);
+        await removeLinkedConversationDeletionSaga(
+          'plan',
+          deletedPlanId,
+          storageBranch,
+          linkedConversationCleanupGeneration ?? undefined,
+        );
       }
       notify.success(t('architect.planSelector.toastPlanDeleted', 'Plan deleted'));
       await refreshPlanSelectorAfterMutation({

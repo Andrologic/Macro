@@ -317,9 +317,11 @@ import {
 } from "../services/agentCodeCheckpoints";
 import {
   LinkedConversationDeletionSagaCorruptionError,
+  getLinkedDeletionSagaGeneration,
   loadLinkedConversationDeletionSagas,
   removeLinkedConversationDeletionSaga,
   upsertLinkedConversationDeletionSaga,
+  type LinkedConversationDeletionSaga,
 } from "../services/linkedTaskDeletionSaga";
 import { applyEditingStrategyToToolIds } from "../services/aiEditingStrategy";
 import {
@@ -6580,21 +6582,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const beginStandaloneConversationDeletionSaga = async (
     conversationId: string,
-  ): Promise<void> => {
-    await upsertLinkedConversationDeletionSaga({
+  ): Promise<string> => {
+    const now = new Date().toISOString();
+    const saga: LinkedConversationDeletionSaga = {
       ownerType: "conversation",
       ownerId: conversationId,
       conversationId,
       phase: "task_deleted",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+      createdAt: now,
+      updatedAt: now,
+    };
+    await upsertLinkedConversationDeletionSaga(saga);
+    return getLinkedDeletionSagaGeneration(saga);
   };
 
   const completeStandaloneConversationDeletionSaga = async (
     conversationId: string,
+    generation: string,
   ): Promise<void> => {
-    await removeLinkedConversationDeletionSaga("conversation", conversationId);
+    await removeLinkedConversationDeletionSaga(
+      "conversation",
+      conversationId,
+      undefined,
+      generation,
+    );
   };
 
   const hydrateConversationToolboxStateIfAvailable = async (
@@ -12510,6 +12521,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       existingConversation && !sharedConversation ? existingConversation : null;
     let createdConversation = false;
     let createdConversationId: string | null = null;
+    let createdConversationCleanupSaga: LinkedConversationDeletionSaga | null = null;
     let restoredTranscript = false;
 
     try {
@@ -12523,15 +12535,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       createdConversation = true;
       createdConversationId = conversation.id;
-      await upsertLinkedConversationDeletionSaga({
+      const now = new Date().toISOString();
+      createdConversationCleanupSaga = {
         ownerType: "plan",
         ownerId: plan.id,
         conversationId: conversation.id,
         phase: "plan_conversation_created",
         targetBranch,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+        createdAt: now,
+        updatedAt: now,
+      };
+      await upsertLinkedConversationDeletionSaga(createdConversationCleanupSaga);
     }
 
     const repairedConversation = await repairArchitectPlanConversationScope({
@@ -12685,7 +12699,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (createdConversation) {
       try {
-        await removeLinkedConversationDeletionSaga("plan", plan.id);
+        if (!createdConversationCleanupSaga) {
+          throw new Error('Génération de création de conversation introuvable.');
+        }
+        await removeLinkedConversationDeletionSaga(
+          "plan",
+          plan.id,
+          targetBranch,
+          getLinkedDeletionSagaGeneration(createdConversationCleanupSaga),
+        );
       } catch (error) {
         // The persisted guard is safe to leave behind: bootstrap verifies the
         // plan binding before deciding whether it is a cleanup candidate.
@@ -12701,16 +12723,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       deletedConversationIds.add(conversationId);
       const lastError = toServiceError(error).message;
       try {
-        await upsertLinkedConversationDeletionSaga({
-          ownerType: "plan",
-          ownerId: plan.id,
-          conversationId,
+        createdConversationCleanupSaga = {
+          ...(createdConversationCleanupSaga ?? {
+            ownerType: "plan",
+            ownerId: plan.id,
+            conversationId,
+            targetBranch,
+            createdAt: new Date().toISOString(),
+          }),
           phase: "task_deleted",
-          targetBranch,
-          createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           lastError,
-        });
+        };
+        await upsertLinkedConversationDeletionSaga(createdConversationCleanupSaga);
       } catch (sagaError) {
         console.error(
           "Plan conversation cleanup guard could not be updated",
@@ -12722,23 +12747,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await deleteConversationToolboxStateIfAvailable(conversationId);
         applyLocalConversationRemoval([conversationId]);
         try {
-          await removeLinkedConversationDeletionSaga("plan", plan.id);
+          if (!createdConversationCleanupSaga) {
+            throw new Error('Génération de création de conversation introuvable.');
+          }
+          await removeLinkedConversationDeletionSaga(
+            "plan",
+            plan.id,
+            targetBranch,
+            getLinkedDeletionSagaGeneration(createdConversationCleanupSaga),
+          );
         } catch (sagaError) {
           console.error("Plan conversation cleanup guard remains pending", sagaError);
         }
       } catch (cleanupError) {
         const cleanupMessage = toServiceError(cleanupError).message;
         try {
-          await upsertLinkedConversationDeletionSaga({
-            ownerType: "plan",
-            ownerId: plan.id,
-            conversationId,
+          createdConversationCleanupSaga = {
+            ...(createdConversationCleanupSaga ?? {
+              ownerType: "plan",
+              ownerId: plan.id,
+              conversationId,
+              targetBranch,
+              createdAt: new Date().toISOString(),
+            }),
             phase: "task_deleted",
-            targetBranch,
-            createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             lastError: cleanupMessage,
-          });
+          };
+          await upsertLinkedConversationDeletionSaga(createdConversationCleanupSaga);
         } catch (sagaError) {
           throw new Error(
             `Impossible d’annuler la conversation créée pour le plan : ${cleanupMessage}; le journal de reprise a aussi échoué : ${toServiceError(sagaError).message}`,
@@ -12946,12 +12982,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         try {
           const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
           if (plan?.conversationId === saga.conversationId) {
-            await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+            await removeLinkedConversationDeletionSaga(
+              saga.ownerType,
+              saga.ownerId,
+              saga.targetBranch,
+              getLinkedDeletionSagaGeneration(saga),
+            );
             continue;
           }
           await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
           await deleteConversationToolboxStateIfAvailable(saga.conversationId);
-          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+          await removeLinkedConversationDeletionSaga(
+            saga.ownerType,
+            saga.ownerId,
+            saga.targetBranch,
+            getLinkedDeletionSagaGeneration(saga),
+          );
           completedPendingConversationDeletionIds.add(saga.conversationId);
         } catch (error) {
           console.error(
@@ -12977,7 +13023,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
           await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
           await deleteConversationToolboxStateIfAvailable(saga.conversationId);
-          await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+          await removeLinkedConversationDeletionSaga(
+            saga.ownerType,
+            saga.ownerId,
+            saga.targetBranch,
+            getLinkedDeletionSagaGeneration(saga),
+          );
           completedPendingConversationDeletionIds.add(saga.conversationId);
         } catch (error) {
           console.error("Plan conversation deletion remains pending", saga.conversationId, error);
@@ -12993,7 +13044,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
         await deleteConversationToolboxStateIfAvailable(saga.conversationId);
-        await removeLinkedConversationDeletionSaga(saga.ownerType, saga.ownerId);
+        await removeLinkedConversationDeletionSaga(
+          saga.ownerType,
+          saga.ownerId,
+          saga.targetBranch,
+          getLinkedDeletionSagaGeneration(saga),
+        );
         completedPendingConversationDeletionIds.add(saga.conversationId);
       } catch (error) {
         console.error("Plan conversation deletion remains pending", saga.conversationId, error);
@@ -14536,9 +14592,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingConversationDeletionIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
+      let deletionSagaGeneration: string;
       try {
         await prepareConversationReplayForDeletion(conversationId);
-        await beginStandaloneConversationDeletionSaga(conversationId);
+        deletionSagaGeneration = await beginStandaloneConversationDeletionSaga(conversationId);
       } catch (error) {
         deletedConversationIds.delete(conversationId);
         pendingConversationDeletionIds.delete(conversationId);
@@ -14548,7 +14605,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await deletePersistedConversation(chatPersistenceAdapters, conversationId);
       } catch (error) {
         try {
-          await completeStandaloneConversationDeletionSaga(conversationId);
+          await completeStandaloneConversationDeletionSaga(conversationId, deletionSagaGeneration);
           deletedConversationIds.delete(conversationId);
         } catch (sagaError) {
           set({
@@ -14573,7 +14630,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       if (!cleanupFailures.some((failure) => failure.startsWith("toolbox"))) {
         await runCleanup("journal de nettoyage", () =>
-          completeStandaloneConversationDeletionSaga(conversationId),
+          completeStandaloneConversationDeletionSaga(conversationId, deletionSagaGeneration),
         );
       }
       conversationCompactionStateCache.delete(conversationId);
@@ -14622,10 +14679,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         latestConversationSessionIdByConversationId.delete(conversationId);
         completionPersistenceOwnersByConversationId.delete(conversationId);
       });
+      const deletionSagaGenerations = new Map<string, string>();
       try {
         for (const conversationId of uniqueIds) {
           await prepareConversationReplayForDeletion(conversationId);
-          await beginStandaloneConversationDeletionSaga(conversationId);
+          deletionSagaGenerations.set(
+            conversationId,
+            await beginStandaloneConversationDeletionSaga(conversationId),
+          );
         }
       } catch (error) {
         uniqueIds.forEach((conversationId) => {
@@ -14664,7 +14725,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             )
             .map(async (conversationId) => {
               try {
-                await completeStandaloneConversationDeletionSaga(conversationId);
+                const generation = deletionSagaGenerations.get(conversationId);
+                if (!generation) throw new Error('Génération de suppression liée introuvable.');
+                await completeStandaloneConversationDeletionSaga(conversationId, generation);
               } catch (error) {
                 cleanupFailures.push(
                   `journal de nettoyage ${conversationId}: ${toServiceError(error).message}`,
@@ -14694,7 +14757,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           await Promise.all(
             uniqueIds.map(async (conversationId) => {
               try {
-                await completeStandaloneConversationDeletionSaga(conversationId);
+                const generation = deletionSagaGenerations.get(conversationId);
+                if (!generation) throw new Error('Génération de suppression liée introuvable.');
+                await completeStandaloneConversationDeletionSaga(conversationId, generation);
                 deletedConversationIds.delete(conversationId);
               } catch (sagaError) {
                 set({

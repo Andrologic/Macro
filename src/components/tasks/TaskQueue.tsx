@@ -87,6 +87,7 @@ import { SearchBar } from '../ui/SearchBar';
 import { filterTasksByQuery } from './taskQueueSearch';
 import type { ArchivedTaskCleanupSaga } from '../../services/archivedTaskCleanup';
 import {
+  getLinkedDeletionSagaGeneration,
   removeLinkedTaskDeletionSaga,
   upsertLinkedTaskDeletionSaga,
   type LinkedTaskDeletionSaga,
@@ -976,7 +977,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       if (!(await selectConversation(conversation.id))) {
         throw new Error('Impossible de sélectionner la nouvelle conversation.');
       }
-      await removeLinkedTaskDeletionSaga(taskId);
+      await removeLinkedTaskDeletionSaga(
+        taskId,
+        undefined,
+        getLinkedDeletionSagaGeneration({
+          ...preparedCleanupSaga,
+          ownerType: 'task',
+          ownerId: taskId,
+        }),
+      );
       cleanupSaga = null;
       setShowCreateTaskDialog(false);
     } catch (error) {
@@ -1005,7 +1014,15 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           }
           await deleteConversation(conversationId, { mode: 'implement' });
           if (cleanupSaga) {
-            await removeLinkedTaskDeletionSaga(taskId);
+            await removeLinkedTaskDeletionSaga(
+              taskId,
+              cleanupSaga.targetBranch,
+              getLinkedDeletionSagaGeneration({
+                ...cleanupSaga,
+                ownerType: 'task',
+                ownerId: taskId,
+              }),
+            );
             cleanupSaga = null;
           }
         } catch (cleanupFailure) {
