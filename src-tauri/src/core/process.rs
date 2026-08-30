@@ -3,6 +3,11 @@ use std::io;
 use std::process::ExitStatus;
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 #[cfg(windows)]
@@ -124,6 +129,10 @@ pub fn is_known_visible_terminal_app_id(app_id: &str) -> bool {
 
 pub const DEFAULT_TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const HARD_REAP_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(unix)]
+const CONTAINMENT_ID_ENV: &str = "MACRO_PROCESS_CONTAINMENT_ID";
+#[cfg(unix)]
+static NEXT_CONTAINMENT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(windows)]
 type JobObjectHandle = OwnedHandle;
@@ -145,6 +154,8 @@ pub struct ContainedBackgroundProcess {
     child: tokio::process::Child,
     #[cfg(unix)]
     process_group_id: Option<u32>,
+    #[cfg(unix)]
+    containment_id: String,
     #[cfg(windows)]
     job_object: JobObjectHandle,
 }
@@ -152,6 +163,10 @@ pub struct ContainedBackgroundProcess {
 impl ContainedBackgroundProcess {
     pub fn spawn(mut command: tokio::process::Command) -> io::Result<Self> {
         apply_background_containment(&mut command);
+        #[cfg(unix)]
+        let containment_id = next_containment_id();
+        #[cfg(unix)]
+        command.env(CONTAINMENT_ID_ENV, &containment_id);
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         let child = command.spawn()?;
@@ -175,6 +190,8 @@ impl ContainedBackgroundProcess {
             child,
             #[cfg(unix)]
             process_group_id,
+            #[cfg(unix)]
+            containment_id,
             #[cfg(windows)]
             job_object,
         })
@@ -239,28 +256,23 @@ impl ContainedBackgroundProcess {
 
     #[cfg(unix)]
     async fn terminate_unix(&mut self, grace_period: Duration) -> io::Result<ExitStatus> {
-        let mut graceful_status = None;
-        if !grace_period.is_zero() {
-            if let Some(process_group_id) = self.process_group_id {
-                signal_process_group(process_group_id, libc::SIGTERM);
-            }
-            if let Ok(status) = tokio::time::timeout(grace_period, self.child.wait()).await {
-                graceful_status = Some(status?);
-            }
+        let process_ids = suspend_unix_process_tree(self.process_group_id, &self.containment_id);
+        for process_id in process_ids {
+            signal_process(process_id, libc::SIGKILL);
         }
-        // The leader may exit while a detached descendant ignores SIGTERM. Always
-        // close the original group before returning a graceful leader status.
         if let Some(process_group_id) = self.process_group_id {
             signal_process_group(process_group_id, libc::SIGKILL);
         }
-        if let Some(status) = graceful_status {
-            return Ok(status);
-        }
-        match tokio::time::timeout(HARD_REAP_TIMEOUT, self.child.wait()).await {
+        let reap_timeout = if grace_period.is_zero() {
+            HARD_REAP_TIMEOUT
+        } else {
+            grace_period
+        };
+        match tokio::time::timeout(reap_timeout, self.child.wait()).await {
             Ok(status) => status,
             Err(_) => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "contained process group did not exit after SIGKILL",
+                "contained process tree did not exit after SIGKILL",
             )),
         }
     }
@@ -308,6 +320,143 @@ fn signal_process_group(process_group_id: u32, signal: i32) {
     let _ = unsafe { libc::kill(-(process_group_id as libc::pid_t), signal) };
 }
 
+#[cfg(unix)]
+fn signal_process(process_id: u32, signal: i32) {
+    let _ = unsafe { libc::kill(process_id as libc::pid_t, signal) };
+}
+
+#[cfg(unix)]
+fn next_containment_id() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_CONTAINMENT_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+#[cfg(unix)]
+fn parse_unix_process_table(output: &str) -> Vec<(u32, u32)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let process_id = fields.next()?.parse().ok()?;
+            let parent_id = fields.next()?.parse().ok()?;
+            Some((process_id, parent_id))
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn read_unix_process_table() -> io::Result<Vec<(u32, u32)>> {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-axo", "pid=,ppid="])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(
+            "ps failed while reading process descendants",
+        ));
+    }
+    Ok(parse_unix_process_table(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[cfg(unix)]
+fn descendant_process_ids(root_id: u32, table: &[(u32, u32)]) -> HashSet<u32> {
+    let mut children_by_parent = HashMap::<u32, Vec<u32>>::new();
+    for &(process_id, parent_id) in table {
+        children_by_parent
+            .entry(parent_id)
+            .or_default()
+            .push(process_id);
+    }
+    let mut descendants = HashSet::new();
+    let mut pending = vec![root_id];
+    while let Some(parent_id) = pending.pop() {
+        if let Some(children) = children_by_parent.get(&parent_id) {
+            for &child_id in children {
+                if descendants.insert(child_id) {
+                    pending.push(child_id);
+                }
+            }
+        }
+    }
+    descendants
+}
+
+#[cfg(target_os = "linux")]
+fn processes_with_containment_id(containment_id: &str) -> HashSet<u32> {
+    let expected = format!("{CONTAINMENT_ID_ENV}={containment_id}").into_bytes();
+    let own_process_id = std::process::id();
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let process_id = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            if process_id == own_process_id {
+                return None;
+            }
+            let environment = std::fs::read(entry.path().join("environ")).ok()?;
+            environment
+                .split(|byte| *byte == 0)
+                .any(|value| value == expected)
+                .then_some(process_id)
+        })
+        .collect()
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn processes_with_containment_id(containment_id: &str) -> HashSet<u32> {
+    let expected = format!("{CONTAINMENT_ID_ENV}={containment_id}");
+    let own_process_id = std::process::id();
+    let Ok(output) = std::process::Command::new("/bin/ps")
+        .args(["-axeww", "-o", "pid=,command="])
+        .output()
+    else {
+        return HashSet::new();
+    };
+    if !output.status.success() {
+        return HashSet::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let split_at = line.find(char::is_whitespace)?;
+            let process_id = line[..split_at].parse::<u32>().ok()?;
+            (process_id != own_process_id && line[split_at..].contains(&expected))
+                .then_some(process_id)
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn suspend_unix_process_tree(root_id: Option<u32>, containment_id: &str) -> Vec<u32> {
+    if let Some(root_id) = root_id {
+        signal_process_group(root_id, libc::SIGSTOP);
+    }
+    let mut process_ids = root_id.into_iter().collect::<HashSet<_>>();
+    for _ in 0..8 {
+        let previous_len = process_ids.len();
+        if let (Some(root_id), Ok(table)) = (root_id, read_unix_process_table()) {
+            process_ids.extend(descendant_process_ids(root_id, &table));
+        }
+        process_ids.extend(processes_with_containment_id(containment_id));
+        for &process_id in &process_ids {
+            signal_process(process_id, libc::SIGSTOP);
+        }
+        if process_ids.len() == previous_len {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let mut process_ids = process_ids.into_iter().collect::<Vec<_>>();
+    process_ids.sort_unstable();
+    process_ids
+}
+
 #[cfg(windows)]
 fn attach_child_to_job_object(child: &tokio::process::Child) -> io::Result<JobObjectHandle> {
     use std::mem::size_of_val;
@@ -351,6 +500,11 @@ impl Drop for ContainedBackgroundProcess {
         #[cfg(unix)]
         {
             if matches!(self.child.try_wait(), Ok(None)) {
+                for process_id in
+                    suspend_unix_process_tree(self.process_group_id, &self.containment_id)
+                {
+                    signal_process(process_id, libc::SIGKILL);
+                }
                 if let Some(process_group_id) = self.process_group_id {
                     signal_process_group(process_group_id, libc::SIGKILL);
                 }
@@ -424,6 +578,54 @@ mod tests {
             .expect("terminate job");
         tokio::time::sleep(Duration::from_millis(1_000)).await;
         assert!(!marker.exists(), "descendant escaped its Windows job");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_process_table_finds_nested_descendants() {
+        let table = super::parse_unix_process_table("10 1\n11 10\n12 11\n20 1\n");
+        let descendants = super::descendant_process_ids(10, &table);
+
+        assert_eq!(descendants, [11, 12].into_iter().collect());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn contained_process_terminates_a_setsid_descendant() {
+        use super::{background_contained_tokio_command, ContainedBackgroundProcess};
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let setsid_available = std::process::Command::new("sh")
+            .args(["-c", "command -v setsid >/dev/null 2>&1"])
+            .status()
+            .expect("probe setsid")
+            .success();
+        if !setsid_available {
+            return;
+        }
+
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let marker = temp.path().join("escaped-descendant.txt");
+        let marker_arg = marker.to_string_lossy().replace('\'', "'\\''");
+        let script = format!(
+            "setsid sh -c 'sleep 1; printf survived > \"$1\"' sh '{marker_arg}' & sleep 30"
+        );
+        let mut command = background_contained_tokio_command("sh");
+        command
+            .args(["-c", &script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut process = ContainedBackgroundProcess::spawn(command).expect("spawn parent");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        process
+            .terminate_with_grace(Duration::ZERO)
+            .await
+            .expect("terminate contained process tree");
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+
+        assert!(!marker.exists(), "setsid descendant escaped containment");
     }
 
     #[test]
