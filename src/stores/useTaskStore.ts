@@ -3736,10 +3736,22 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           mergedAt: options?.mergedAt ?? null,
         });
       } catch (error) {
-        if (preparedCleanup) {
-          await removeArchivedTaskCleanupSaga(taskId).catch(() => undefined);
+        let durableArchiveConfirmed = false;
+        try {
+          const catalog = await tauriIpc.workspaceListTasks();
+          durableArchiveConfirmed = Boolean(
+            catalog.tasks.find((candidate) => candidate.id === taskId)?.archived_at,
+          );
+        } catch {
+          // The mutation outcome remains ambiguous. Keep the prepared cleanup for recovery.
+          throw error;
         }
-        throw error;
+        if (!durableArchiveConfirmed) {
+          if (preparedCleanup) {
+            await removeArchivedTaskCleanupSaga(taskId).catch(() => undefined);
+          }
+          throw error;
+        }
       }
 
       let remainingCleanup: ArchivedTaskCleanupSaga | null = null;

@@ -89,6 +89,12 @@ const directCheckpointRemoveMock = mock(async () => true);
 const workspaceDeleteManualFeatureDraftMock = mock(async () => true);
 const workspaceDeleteManualFeatureMock = mock(async () => undefined);
 const workspaceArchiveManualFeatureMock = mock(async () => undefined);
+const workspaceListTasksMock = mock(async (): ReturnType<typeof actualTauriIpc.workspaceListTasks> => ({
+  tasks: [],
+  plans: [],
+  hasStandaloneTasks: false,
+  source: 'empty',
+}));
 const workspaceRestoreManualFeatureMock = mock(async () => undefined);
 const dbAppSettings = new Map<string, string>();
 const dbGetAppSettingMock = mock(async (key: string) => {
@@ -277,6 +283,7 @@ mock.module('../services/tauriIpc', () => ({
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
+  workspaceListTasks: workspaceListTasksMock,
   workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
@@ -310,6 +317,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
+  workspaceListTasks: workspaceListTasksMock,
   workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
@@ -898,6 +906,14 @@ describe('useTaskStore merge workflow review loading', () => {
   workspaceDeleteManualFeatureDraftMock.mockImplementation(async () => true);
     workspaceDeleteManualFeatureMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
+    workspaceArchiveManualFeatureMock.mockImplementation(async () => undefined);
+    workspaceListTasksMock.mockClear();
+    workspaceListTasksMock.mockImplementation(async () => ({
+      tasks: [],
+      plans: [],
+      hasStandaloneTasks: false,
+      source: 'empty',
+    }));
     workspaceRevertManualFeatureToDraftMock.mockClear();
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
     persistArchitectPlanMergeWorkflowSessionMock.mockClear();
@@ -1219,6 +1235,111 @@ describe('useTaskStore merge workflow review loading', () => {
         })],
       }),
     ]);
+  });
+
+  it('continues archived worktree cleanup when the archive response is lost', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-archive-response-loss',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      assigned_branch: 'feature/archive-response-loss',
+      branch_name: 'feature/archive-response-loss',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/archive-response-loss',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/archive-response-loss',
+        repoPath: '/repos/web',
+      }],
+    });
+    workspaceArchiveManualFeatureMock.mockImplementation(async () => {
+      throw new Error('injected archive response loss');
+    });
+    workspaceListTasksMock.mockImplementation(async () => ({
+      tasks: [{ ...task, archived_at: '2026-08-30T10:00:00.000Z' }],
+      plans: [],
+      hasStandaloneTasks: true,
+      source: 'mixed',
+    }));
+    gitWorktreeRemoveMock.mockImplementation(async () => {
+      throw new Error('injected cleanup failure after confirmed archive');
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: {
+        'project-1::feature/archive-response-loss':
+          '/repos/web/.macro/worktrees/archive-response-loss',
+      },
+      refreshFromPlan: mock(async () => undefined),
+    });
+
+    try {
+      await useTaskStore.getState().archiveTask(task.id);
+    } finally {
+      gitWorktreeRemoveMock.mockImplementation(async () => ({
+        removed: true,
+        removedPath: '/repos/web/.macro/worktrees/task-1',
+      }));
+    }
+
+    expect(workspaceListTasksMock).toHaveBeenCalledTimes(1);
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
+    expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id])
+      .toEqual(expect.objectContaining({
+        taskId: task.id,
+        targets: [expect.objectContaining({
+          worktreeRemoved: false,
+          state: 'failed',
+          lastError: 'injected cleanup failure after confirmed archive',
+        })],
+      }));
+  });
+
+  it('keeps the prepared cleanup when archive reconciliation also fails', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-archive-reconciliation-failure',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      assigned_branch: 'feature/archive-reconciliation-failure',
+      branch_name: 'feature/archive-reconciliation-failure',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/archive-reconciliation-failure',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/archive-reconciliation-failure',
+        repoPath: '/repos/web',
+      }],
+    });
+    workspaceArchiveManualFeatureMock.mockImplementation(async () => {
+      throw new Error('injected archive response loss');
+    });
+    workspaceListTasksMock.mockImplementation(async () => {
+      throw new Error('injected archive reconciliation failure');
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: {
+        'project-1::feature/archive-reconciliation-failure':
+          '/repos/web/.macro/worktrees/archive-reconciliation-failure',
+      },
+      refreshFromPlan: mock(async () => undefined),
+    });
+
+    await expect(useTaskStore.getState().archiveTask(task.id))
+      .rejects.toThrow('injected archive response loss');
+
+    expect(workspaceListTasksMock).toHaveBeenCalledTimes(1);
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]'))
+      .toEqual([expect.objectContaining({ taskId: task.id })]);
   });
 
   it('records an ambiguously removed worktree as removed after reinspection', async () => {
