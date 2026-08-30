@@ -245,6 +245,13 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
         .map((citation) => [citation.id, citation]),
     );
     try {
+      const pendingPersistence = citationPersistenceTailsByConversationId.get(conversationId);
+      if (pendingPersistence) {
+        await pendingPersistence.catch(() => undefined);
+      }
+      if (citationHydrationRequestIdsByConversationId.get(conversationId) !== requestId) {
+        return;
+      }
       const loaded = (await tauriIpc.listConversationCitations(conversationId))
         .map(mapDbCitation)
         .filter((citation): citation is Citation => Boolean(citation));
@@ -528,6 +535,9 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
 
   removeCitation: (id) => {
     const removed = get().citations.find((citation) => citation.id === id);
+    if (removed) {
+      invalidateCitationHydration(removed.conversationId);
+    }
     set((state) => ({
       citations: state.citations.filter((c) => c.id !== id),
     }));
@@ -558,6 +568,9 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
       .filter((citation) =>
         citation.conversationId === conversationId && !keepSet.has(citation.messageId),
       );
+    if (removed.length > 0) {
+      invalidateCitationHydration(conversationId);
+    }
     set((state) => ({
       citations: state.citations.filter((citation) =>
         citation.conversationId !== conversationId || keepSet.has(citation.messageId),
@@ -576,6 +589,9 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
         citation.scope === 'source' &&
         !keepSet.has(citation.messageId),
     );
+    if (removed.length > 0) {
+      invalidateCitationHydration(conversationId);
+    }
     set((state) => ({
       citations: state.citations.filter((c) => {
         if (c.conversationId !== conversationId) return true;

@@ -238,6 +238,57 @@ describe('useCitationsStore', () => {
     expect(useCitationsStore.getState().citations).toEqual([]);
   });
 
+  it('does not restore a citation added and removed during the same hydration', async () => {
+    let finishHydration: ((citations: DbConversationCitation[]) => void) | undefined;
+    listConversationCitationsMock.mockImplementationOnce(
+      () => new Promise<DbConversationCitation[]>((resolve) => {
+        finishHydration = resolve;
+      }),
+    );
+
+    const hydration = useCitationsStore
+      .getState()
+      .hydrateConversationCitations('chat-conv');
+    await Promise.resolve();
+    const citationId = useCitationsStore.getState().addCitation({
+      type: 'file',
+      scope: 'context',
+      source: 'temporary.md',
+      title: 'temporary.md',
+      path: 'temporary.md',
+      messageId: 'message-temporary',
+      conversationId: 'chat-conv',
+    });
+    useCitationsStore.getState().removeCitation(citationId);
+    finishHydration?.([
+      {
+        id: citationId,
+        conversation_id: 'chat-conv',
+        message_id: 'message-temporary',
+        type: 'file',
+        scope: 'context',
+        source: 'temporary.md',
+        title: 'temporary.md',
+        snippet: null,
+        content: null,
+        url: null,
+        favicon: null,
+        path: 'temporary.md',
+        language: null,
+        size_bytes: null,
+        kind: null,
+        reason: null,
+        created_at: '2026-07-04T12:00:00Z',
+        updated_at: '2026-07-04T12:01:00Z',
+      },
+    ]);
+    await hydration;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(deleteConversationCitationMock).toHaveBeenCalledWith(citationId);
+    expect(useCitationsStore.getState().citations).toEqual([]);
+  });
+
   it('loads full citation content lazily when requested', async () => {
     listConversationCitationsMock.mockImplementationOnce(async () => [
       {
