@@ -27,7 +27,7 @@ pub struct FsWatcher {
     watched_paths: Arc<StdMutex<HashSet<PathBuf>>>,
     /// Channel sender for debouncing
     #[allow(dead_code)]
-    debounce_tx: mpsc::Sender<Event>,
+    debounce_tx: mpsc::UnboundedSender<Event>,
     /// Handle to the debounce task
     _debounce_handle: tauri::async_runtime::JoinHandle<()>,
 }
@@ -45,7 +45,7 @@ impl FsWatcher {
         workspace: PathBuf,
         app_handle: AppHandle,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let (debounce_tx, debounce_rx) = mpsc::channel::<Event>(100);
+        let (debounce_tx, debounce_rx) = mpsc::unbounded_channel::<Event>();
         let debounce_rx = Arc::new(Mutex::new(debounce_rx));
 
         // Create the notify watcher
@@ -53,7 +53,7 @@ impl FsWatcher {
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
-                    let _ = tx.try_send(event);
+                    let _ = tx.send(event);
                 }
             },
             Config::default().with_poll_interval(Duration::from_millis(100)),
@@ -216,9 +216,74 @@ fn register_new_directories(
     }
 }
 
+fn removed_directory_roots(event: &Event) -> Vec<&Path> {
+    match &event.kind {
+        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
+            event.paths.iter().map(PathBuf::as_path).collect()
+        }
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => event
+            .paths
+            .first()
+            .map(PathBuf::as_path)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn unregister_removed_directories(
+    event: &Event,
+    watcher: &Arc<StdMutex<RecommendedWatcher>>,
+    watched_paths: &Arc<StdMutex<HashSet<PathBuf>>>,
+) {
+    let removed_roots = removed_directory_roots(event);
+    if removed_roots.is_empty() {
+        return;
+    }
+
+    let removed_paths = {
+        let mut watched = match watched_paths.lock() {
+            Ok(watched) => watched,
+            Err(_) => {
+                warn!("File system watcher path registry is poisoned");
+                return;
+            }
+        };
+        let removed = watched
+            .iter()
+            .filter(|watched_path| {
+                removed_roots
+                    .iter()
+                    .any(|root| *watched_path == *root || watched_path.starts_with(root))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in &removed {
+            watched.remove(path);
+        }
+        removed
+    };
+
+    if removed_paths.is_empty() {
+        return;
+    }
+    let mut watcher = match watcher.lock() {
+        Ok(watcher) => watcher,
+        Err(_) => {
+            warn!("File system watcher is poisoned");
+            return;
+        }
+    };
+    for path in removed_paths {
+        if let Err(error) = watcher.unwatch(&path) {
+            debug!("Failed to unwatch removed directory {:?}: {}", path, error);
+        }
+    }
+}
+
 /// Debounce task that collects events and emits them to the frontend
 async fn debounce_task(
-    rx: Arc<Mutex<mpsc::Receiver<Event>>>,
+    rx: Arc<Mutex<mpsc::UnboundedReceiver<Event>>>,
     app_handle: AppHandle,
     workspace: PathBuf,
     watcher: Arc<StdMutex<RecommendedWatcher>>,
@@ -233,6 +298,7 @@ async fn debounce_task(
 
         match tokio::time::timeout(debounce_duration, rx_guard.recv()).await {
             Ok(Some(event)) => {
+                unregister_removed_directories(&event, &watcher, &watched_paths);
                 register_new_directories(&event, &workspace, &watcher, &watched_paths);
                 // Process the event
                 let mut keep_event = false;
@@ -335,6 +401,7 @@ fn should_ignore_path(path: &Path, workspace: &Path) -> bool {
                     | "venv"
                     | ".codex"
                     | ".kilo"
+                    | ".macro"
                     | ".macro-worktrees"
                     | "__pycache__"
                     | ".cache"
@@ -502,6 +569,7 @@ mod tests {
         let workspace = temp.path();
         std::fs::create_dir_all(workspace.join("src/nested")).expect("src");
         std::fs::create_dir_all(workspace.join(".codex/worktrees/generated")).expect(".codex");
+        std::fs::create_dir_all(workspace.join(".macro/worktrees/generated")).expect(".macro");
         std::fs::create_dir_all(workspace.join("node_modules/pkg")).expect("node_modules");
         std::fs::create_dir_all(workspace.join("target/debug")).expect("target");
 
@@ -521,9 +589,10 @@ mod tests {
         assert!(watched.iter().any(|path| path == "src"));
         assert!(watched.iter().any(|path| path == "src/nested"));
         assert!(!watched.iter().any(|path| path.starts_with(".codex")));
+        assert!(!watched.iter().any(|path| path.starts_with(".macro")));
         assert!(!watched.iter().any(|path| path.starts_with("node_modules")));
         assert!(!watched.iter().any(|path| path.starts_with("target")));
-        assert_eq!(plan.ignored_dir_count, 3);
+        assert_eq!(plan.ignored_dir_count, 4);
     }
 
     #[test]
@@ -536,6 +605,7 @@ mod tests {
         let created = workspace.join("generated");
         std::fs::create_dir_all(created.join("nested")).expect("new nested directory");
         std::fs::create_dir_all(created.join("node_modules/pkg")).expect("ignored directory");
+        std::fs::create_dir_all(created.join(".macro/worktrees/task")).expect("macro worktrees");
         let event = Event::new(EventKind::Create(notify::event::CreateKind::Folder))
             .add_path(created.clone());
 
@@ -546,5 +616,90 @@ mod tests {
         assert!(!discovered
             .iter()
             .any(|path| path.starts_with(created.join("node_modules"))));
+        assert!(!discovered
+            .iter()
+            .any(|path| path.starts_with(created.join(".macro"))));
+    }
+
+    #[test]
+    fn test_removed_directory_is_registered_again_after_recreation() {
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().to_path_buf();
+        let recreated = workspace.join("recreated");
+        std::fs::create_dir_all(&recreated).expect("initial directory");
+
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut raw_watcher = RecommendedWatcher::new(
+            move |result: Result<Event, notify::Error>| {
+                if let Ok(event) = result {
+                    let _ = event_tx.send(event);
+                }
+            },
+            Config::default().with_poll_interval(Duration::from_millis(50)),
+        )
+        .expect("watcher");
+        raw_watcher
+            .watch(&workspace, RecursiveMode::NonRecursive)
+            .expect("watch workspace");
+        raw_watcher
+            .watch(&recreated, RecursiveMode::NonRecursive)
+            .expect("watch initial directory");
+        let watcher = Arc::new(StdMutex::new(raw_watcher));
+        let watched_paths = Arc::new(StdMutex::new(HashSet::from([
+            workspace.clone(),
+            recreated.clone(),
+        ])));
+
+        std::fs::remove_dir_all(&recreated).expect("remove watched directory");
+        let delete_deadline = Instant::now() + Duration::from_secs(5);
+        while watched_paths
+            .lock()
+            .expect("watched paths")
+            .contains(&recreated)
+        {
+            let remaining = delete_deadline
+                .checked_duration_since(Instant::now())
+                .expect("remove event before deadline");
+            let event = event_rx
+                .recv_timeout(remaining)
+                .expect("receive remove event");
+            unregister_removed_directories(&event, &watcher, &watched_paths);
+            register_new_directories(&event, &workspace, &watcher, &watched_paths);
+        }
+
+        std::fs::create_dir_all(&recreated).expect("recreate directory");
+        let create_deadline = Instant::now() + Duration::from_secs(5);
+        while !watched_paths
+            .lock()
+            .expect("watched paths")
+            .contains(&recreated)
+        {
+            let remaining = create_deadline
+                .checked_duration_since(Instant::now())
+                .expect("create event before deadline");
+            let event = event_rx
+                .recv_timeout(remaining)
+                .expect("receive create event");
+            unregister_removed_directories(&event, &watcher, &watched_paths);
+            register_new_directories(&event, &workspace, &watcher, &watched_paths);
+        }
+
+        let nested_file = recreated.join("after-recreate.txt");
+        std::fs::write(&nested_file, "watched").expect("write nested file");
+        let file_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = file_deadline
+                .checked_duration_since(Instant::now())
+                .expect("nested event before deadline");
+            let event = event_rx
+                .recv_timeout(remaining)
+                .expect("receive nested file event");
+            if event.paths.iter().any(|path| path == &nested_file) {
+                break;
+            }
+        }
     }
 }
