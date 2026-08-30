@@ -4677,6 +4677,24 @@ fn restore_native_hard_reset_backups(
     scratch: &NativeHardResetCheckoutScratch,
     backups: &[NativeHardResetBackup],
 ) -> Result<()> {
+    let result = restore_native_hard_reset_backups_impl(repo_root, scratch, backups);
+    if let Err(error) = result {
+        scratch.retain();
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset rollback failed; recovery data was retained at {}: {error}",
+                scratch.0.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn restore_native_hard_reset_backups_impl(
+    repo_root: &Path,
+    scratch: &NativeHardResetCheckoutScratch,
+    backups: &[NativeHardResetBackup],
+) -> Result<()> {
     let worktree =
         CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
             BackendError::Io {
@@ -4795,7 +4813,7 @@ fn restore_native_hard_reset_backups(
     Ok(())
 }
 
-struct NativeHardResetCheckoutScratch(PathBuf);
+struct NativeHardResetCheckoutScratch(PathBuf, AtomicBool);
 
 impl NativeHardResetCheckoutScratch {
     fn create() -> Result<Self> {
@@ -4807,7 +4825,7 @@ impl NativeHardResetCheckoutScratch {
                 std::process::id()
             ));
             match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self(path)),
+                Ok(()) => return Ok(Self(path, AtomicBool::new(false))),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
                     return Err(BackendError::Io {
@@ -4827,11 +4845,17 @@ impl NativeHardResetCheckoutScratch {
             ),
         })
     }
+
+    fn retain(&self) {
+        self.1.store(true, Ordering::Relaxed);
+    }
 }
 
 impl Drop for NativeHardResetCheckoutScratch {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        if !self.1.load(Ordering::Relaxed) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 }
 
