@@ -3,7 +3,6 @@ import * as tauriIpc from './tauriIpc';
 const CLEANUP_KEY = 'pendingArchivedTaskCleanups:v1';
 const COMPLETED_CLEANUP_KEY = 'completedArchivedTaskCleanups:v1';
 const MAX_CAS_ATTEMPTS = 32;
-const MAX_COMPLETED_GENERATIONS = 256;
 
 export interface ArchivedTaskCleanupJournalTransport {
   isTauriAvailable: () => boolean;
@@ -95,24 +94,61 @@ export const loadArchivedTaskCleanupSagas = async (
 ): Promise<ArchivedTaskCleanupSaga[]> => {
   if (!transport.isTauriAvailable()) return [];
   const setting = await transport.dbGetAppSetting(CLEANUP_KEY);
-  const completed = await loadCompletedGenerations(transport);
-  return parseCleanupSagas(setting?.value_json).filter((saga) => !completed.has(saga.operationId));
+  const completed = await loadCompletedRegistry(transport);
+  return parseCleanupSagas(setting?.value_json).filter((saga) => !registryCompletesSaga(completed, saga));
 };
 
-const parseCompletedGenerations = (value: string | null | undefined): string[] => {
-  if (!value) return [];
+interface CompletedArchivedCleanupRegistry {
+  version: 2;
+  highWatermarks: Record<string, { operationId: string; createdAt: string }>;
+  legacyOperationIds: string[];
+}
+
+const emptyCompletedRegistry = (): CompletedArchivedCleanupRegistry => ({
+  version: 2,
+  highWatermarks: {},
+  legacyOperationIds: [],
+});
+
+const isCompletedWatermark = (
+  value: unknown,
+): value is { operationId: string; createdAt: string } => Boolean(
+  value && typeof value === 'object' &&
+  typeof (value as { operationId?: unknown }).operationId === 'string' &&
+  typeof (value as { createdAt?: unknown }).createdAt === 'string'
+);
+
+const parseCompletedRegistry = (value: string | null | undefined): CompletedArchivedCleanupRegistry => {
+  if (!value) return emptyCompletedRegistry();
   const parsed: unknown = JSON.parse(value);
-  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'string')) {
+  if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string')) {
+    return { ...emptyCompletedRegistry(), legacyOperationIds: parsed };
+  }
+  if (!parsed || typeof parsed !== 'object') {
     throw new Error('Le registre des générations de nettoyage terminées est corrompu.');
   }
-  return parsed;
+  const registry = parsed as Partial<CompletedArchivedCleanupRegistry>;
+  if (
+    registry.version !== 2 || !registry.highWatermarks || typeof registry.highWatermarks !== 'object' ||
+    !Object.values(registry.highWatermarks).every(isCompletedWatermark) ||
+    !Array.isArray(registry.legacyOperationIds) ||
+    !registry.legacyOperationIds.every((entry) => typeof entry === 'string')
+  ) throw new Error('Le registre des générations de nettoyage terminées est corrompu.');
+  return registry as CompletedArchivedCleanupRegistry;
 };
 
-const loadCompletedGenerations = async (
+const loadCompletedRegistry = async (
   transport: ArchivedTaskCleanupJournalTransport,
-): Promise<Set<string>> => new Set(parseCompletedGenerations(
+): Promise<CompletedArchivedCleanupRegistry> => parseCompletedRegistry(
   (await transport.dbGetAppSetting(COMPLETED_CLEANUP_KEY))?.value_json,
-));
+);
+
+const registryCompletesSaga = (
+  registry: CompletedArchivedCleanupRegistry,
+  saga: ArchivedTaskCleanupSaga,
+): boolean => registry.legacyOperationIds.includes(saga.operationId) ||
+  registry.highWatermarks[saga.taskId]?.operationId === saga.operationId ||
+  (registry.highWatermarks[saga.taskId]?.createdAt ?? '') >= saga.createdAt;
 
 const updateSetting = async (
   key: string,
@@ -177,7 +213,7 @@ export const upsertArchivedTaskCleanupSaga = async (
   transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
-  if ((await loadCompletedGenerations(transport)).has(saga.operationId)) {
+  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
     throw new StaleArchivedTaskCleanupError();
   }
   await mutateArchivedTaskCleanupSagas(
@@ -192,7 +228,7 @@ export const upsertArchivedTaskCleanupSaga = async (
     },
     transport,
   );
-  if ((await loadCompletedGenerations(transport)).has(saga.operationId)) {
+  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
     await mutateArchivedTaskCleanupSagas(
       (current) => current.filter((entry) => entry.operationId !== saga.operationId),
       transport,
@@ -207,12 +243,26 @@ export const removeArchivedTaskCleanupSaga = async (
   transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
+  const currentSetting = await transport.dbGetAppSetting(CLEANUP_KEY);
+  const completedSaga = parseCleanupSagas(currentSetting?.value_json).find(
+    (entry) => entry.taskId === taskId && entry.operationId === operationId,
+  );
   await updateSetting(
     COMPLETED_CLEANUP_KEY,
-    (value) => JSON.stringify([
-      ...parseCompletedGenerations(value).filter((entry) => entry !== operationId),
-      operationId,
-    ].slice(-MAX_COMPLETED_GENERATIONS)),
+    (value) => {
+      const registry = parseCompletedRegistry(value);
+      if (!completedSaga) return JSON.stringify(registry);
+      const current = registry.highWatermarks[taskId];
+      return JSON.stringify({
+        ...registry,
+        highWatermarks: {
+          ...registry.highWatermarks,
+          [taskId]: current && current.createdAt > completedSaga.createdAt
+            ? current
+            : { operationId, createdAt: completedSaga.createdAt },
+        },
+      });
+    },
     transport,
   );
   await mutateArchivedTaskCleanupSagas(

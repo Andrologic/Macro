@@ -97,4 +97,36 @@ describe('archivedTaskCleanup', () => {
       .rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
     expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([]);
   });
+
+  it('keeps durable high-water marks after more than 256 completed task identities', async () => {
+    const settings = new Map<string, string>();
+    const transport: ArchivedTaskCleanupJournalTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const value = settings.get(key);
+        return value === undefined
+          ? null
+          : { key, value_json: value, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((settings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        settings.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    let first!: ArchivedTaskCleanupSaga;
+    for (let index = 0; index < 264; index += 1) {
+      const completed = saga(`task-${index}`);
+      first ??= completed;
+      await upsertArchivedTaskCleanupSaga(completed, transport);
+      await removeArchivedTaskCleanupSaga(completed.taskId, completed.operationId, transport);
+    }
+
+    await expect(upsertArchivedTaskCleanupSaga(first, transport))
+      .rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
+    const registry = JSON.parse(settings.get('completedArchivedTaskCleanups:v1') ?? '{}') as {
+      highWatermarks?: Record<string, unknown>;
+    };
+    expect(Object.keys(registry.highWatermarks ?? {})).toHaveLength(264);
+  });
 });

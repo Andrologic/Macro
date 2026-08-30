@@ -173,4 +173,49 @@ describe('planLifecycleSaga', () => {
       .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
     expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([]);
   });
+
+  it('keeps durable high-water marks after more than 512 completed plan identities', async () => {
+    const values = new Map<string, string>();
+    const transport: PlanLifecycleSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    let first!: PlanLifecycleSaga;
+    for (let index = 0; index < 520; index += 1) {
+      const completed: PlanLifecycleSaga = {
+        planId: `plan-${index}`,
+        branchName: `feature/plan-${index}`,
+        operation: 'archive',
+        phase: 'git_cleanup_complete',
+        createdAt: '2026-08-30T00:00:00.000Z',
+        updatedAt: '2026-08-30T00:00:01.000Z',
+      };
+      first ??= completed;
+      await upsertPlanLifecycleSaga(completed, transport);
+      await removePlanLifecycleSaga(
+        completed.planId,
+        completed.operation,
+        completed.branchName,
+        getPlanLifecycleSagaGeneration(completed),
+        transport,
+      );
+    }
+
+    await expect(upsertPlanLifecycleSaga(first, transport))
+      .rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
+    const registry = JSON.parse(values.get('completedPlanLifecycles:v1') ?? '{}') as {
+      highWatermarks?: Record<string, string>;
+    };
+    expect(Object.keys(registry.highWatermarks ?? {})).toHaveLength(520);
+  });
 });

@@ -3,7 +3,6 @@ import * as tauriIpc from './tauriIpc';
 const SAGA_KEY = 'pendingLinkedTaskDeletions:v1';
 const COMPLETED_SAGA_KEY = 'completedLinkedTaskDeletions:v1';
 const MAX_CAS_ATTEMPTS = 32;
-const MAX_COMPLETED_GENERATIONS = 512;
 
 export interface LinkedTaskDeletionSagaTransport {
   isTauriAvailable: () => boolean;
@@ -169,26 +168,54 @@ export const loadLinkedConversationDeletionSagas = async (
 ): Promise<LinkedConversationDeletionSaga[]> => {
   if (!transport.isTauriAvailable()) return [];
   const setting = await transport.dbGetAppSetting(SAGA_KEY);
-  const completed = await loadCompletedGenerations(transport);
+  const completed = await loadCompletedRegistry(transport);
   return parseSagas(setting?.value_json).filter(
-    (saga) => !completed.has(getLinkedDeletionSagaGeneration(saga)),
+    (saga) => !registryCompletesSaga(completed, saga),
   );
 };
 
-const parseCompletedGenerations = (value: string | null | undefined): string[] => {
-  if (!value) return [];
+interface CompletedLinkedDeletionRegistry {
+  version: 2;
+  highWatermarks: Record<string, string>;
+  legacyGenerations: string[];
+}
+
+const emptyCompletedRegistry = (): CompletedLinkedDeletionRegistry => ({
+  version: 2,
+  highWatermarks: {},
+  legacyGenerations: [],
+});
+
+const parseCompletedRegistry = (value: string | null | undefined): CompletedLinkedDeletionRegistry => {
+  if (!value) return emptyCompletedRegistry();
   const parsed: unknown = JSON.parse(value);
-  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'string')) {
+  if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string')) {
+    return { ...emptyCompletedRegistry(), legacyGenerations: parsed };
+  }
+  if (!parsed || typeof parsed !== 'object') {
     throw new LinkedConversationDeletionSagaCorruptionError(value);
   }
-  return parsed;
+  const registry = parsed as Partial<CompletedLinkedDeletionRegistry>;
+  if (
+    registry.version !== 2 || !registry.highWatermarks || typeof registry.highWatermarks !== 'object' ||
+    !Object.values(registry.highWatermarks).every((entry) => typeof entry === 'string') ||
+    !Array.isArray(registry.legacyGenerations) ||
+    !registry.legacyGenerations.every((entry) => typeof entry === 'string')
+  ) throw new LinkedConversationDeletionSagaCorruptionError(value);
+  return registry as CompletedLinkedDeletionRegistry;
 };
 
-const loadCompletedGenerations = async (
+const loadCompletedRegistry = async (
   transport: LinkedTaskDeletionSagaTransport,
-): Promise<Set<string>> => new Set(parseCompletedGenerations(
+): Promise<CompletedLinkedDeletionRegistry> => parseCompletedRegistry(
   (await transport.dbGetAppSetting(COMPLETED_SAGA_KEY))?.value_json,
-));
+);
+
+const registryCompletesSaga = (
+  registry: CompletedLinkedDeletionRegistry,
+  saga: LinkedConversationDeletionSaga,
+): boolean => registry.legacyGenerations.includes(getLinkedDeletionSagaGeneration(saga)) ||
+  (registry.highWatermarks[getLinkedDeletionSagaKey(saga)] ?? '') >= saga.createdAt;
 
 const updateSetting = async (
   key: string,
@@ -294,7 +321,7 @@ export const upsertLinkedConversationDeletionSaga = async (
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
   const generation = getLinkedDeletionSagaGeneration(saga);
-  if ((await loadCompletedGenerations(transport)).has(generation)) {
+  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
     throw new StaleLinkedTaskDeletionSagaError();
   }
   await mutateLinkedConversationDeletionSagas(
@@ -318,7 +345,7 @@ export const upsertLinkedConversationDeletionSaga = async (
     },
     transport,
   );
-  if ((await loadCompletedGenerations(transport)).has(generation)) {
+  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
     await mutateLinkedConversationDeletionSagas(
       (current) => current.filter(
         (entry) => getLinkedDeletionSagaGeneration(entry) !== generation,
@@ -338,12 +365,25 @@ export const removeLinkedConversationDeletionSaga = async (
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
   if (!generation) throw new Error('La génération de suppression liée est requise.');
+  const sagaKey = getLinkedDeletionSagaKey({ ownerType, ownerId, targetBranch });
+  const generationPrefix = `${sagaKey}:`;
+  if (!generation.startsWith(generationPrefix) || generation.length === generationPrefix.length) {
+    throw new Error('La génération de suppression liée ne correspond pas à son identité.');
+  }
+  const completedAt = generation.slice(generationPrefix.length);
   await updateSetting(
     COMPLETED_SAGA_KEY,
-    (value) => JSON.stringify([
-      ...parseCompletedGenerations(value).filter((entry) => entry !== generation),
-      generation,
-    ].slice(-MAX_COMPLETED_GENERATIONS)),
+    (value) => {
+      const registry = parseCompletedRegistry(value);
+      const current = registry.highWatermarks[sagaKey];
+      return JSON.stringify({
+        ...registry,
+        highWatermarks: {
+          ...registry.highWatermarks,
+          [sagaKey]: current && current > completedAt ? current : completedAt,
+        },
+      });
+    },
     transport,
   );
   await mutateLinkedConversationDeletionSagas((current) => {

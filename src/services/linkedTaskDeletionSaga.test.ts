@@ -181,6 +181,52 @@ describe('linkedTaskDeletionSaga', () => {
     expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
+  it('keeps durable high-water marks after more than 512 completed owner identities', async () => {
+    const values = new Map<string, string>();
+    const transport: LinkedTaskDeletionSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    let first!: LinkedConversationDeletionSaga;
+    for (let index = 0; index < 520; index += 1) {
+      const completed: LinkedConversationDeletionSaga = {
+        ownerType: 'task',
+        ownerId: `task-${index}`,
+        conversationId: `conversation-${index}`,
+        phase: 'task_deleted',
+        targetBranch: `feature/task-${index}`,
+        createdAt: '2026-08-30T00:00:00.000Z',
+        updatedAt: '2026-08-30T00:00:01.000Z',
+      };
+      first ??= completed;
+      await sagaService.upsertLinkedConversationDeletionSaga(completed, transport);
+      await sagaService.removeLinkedConversationDeletionSaga(
+        completed.ownerType,
+        completed.ownerId,
+        completed.targetBranch,
+        sagaService.getLinkedDeletionSagaGeneration(completed),
+        transport,
+      );
+    }
+
+    await expect(sagaService.upsertLinkedConversationDeletionSaga(first, transport))
+      .rejects.toBeInstanceOf(sagaService.StaleLinkedTaskDeletionSagaError);
+    const registry = JSON.parse(values.get('completedLinkedTaskDeletions:v1') ?? '{}') as {
+      highWatermarks?: Record<string, string>;
+    };
+    expect(Object.keys(registry.highWatermarks ?? {})).toHaveLength(520);
+  });
+
   it('keeps target checkpoints monotonic within one deletion generation', async () => {
     const values = new Map<string, string>();
     const transport: LinkedTaskDeletionSagaTransport = {

@@ -5,7 +5,6 @@ const SAGA_KEY = 'pendingPlanLifecycles:v1';
 const SAGA_QUARANTINE_KEY = 'pendingPlanLifecyclesQuarantine:v1';
 const COMPLETED_SAGA_KEY = 'completedPlanLifecycles:v1';
 const MAX_CAS_ATTEMPTS = 32;
-const MAX_COMPLETED_GENERATIONS = 512;
 
 export interface PlanLifecycleSagaTransport {
   isTauriAvailable: () => boolean;
@@ -199,20 +198,46 @@ const parseUnknownArray = (value: string | null): unknown[] => {
   }
 };
 
-const parseCompletedGenerations = (value: string | null | undefined): string[] => {
-  if (!value) return [];
+interface CompletedPlanLifecycleRegistry {
+  version: 2;
+  highWatermarks: Record<string, string>;
+  legacyGenerations: string[];
+}
+
+const emptyCompletedRegistry = (): CompletedPlanLifecycleRegistry => ({
+  version: 2,
+  highWatermarks: {},
+  legacyGenerations: [],
+});
+
+const parseCompletedRegistry = (value: string | null | undefined): CompletedPlanLifecycleRegistry => {
+  if (!value) return emptyCompletedRegistry();
   const parsed: unknown = JSON.parse(value);
-  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === 'string')) {
-    throw new PlanLifecycleSagaCorruptionError();
+  if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string')) {
+    return { ...emptyCompletedRegistry(), legacyGenerations: parsed };
   }
-  return parsed;
+  if (!parsed || typeof parsed !== 'object') throw new PlanLifecycleSagaCorruptionError();
+  const registry = parsed as Partial<CompletedPlanLifecycleRegistry>;
+  if (
+    registry.version !== 2 || !registry.highWatermarks || typeof registry.highWatermarks !== 'object' ||
+    !Object.values(registry.highWatermarks).every((entry) => typeof entry === 'string') ||
+    !Array.isArray(registry.legacyGenerations) ||
+    !registry.legacyGenerations.every((entry) => typeof entry === 'string')
+  ) throw new PlanLifecycleSagaCorruptionError();
+  return registry as CompletedPlanLifecycleRegistry;
 };
 
-const loadCompletedGenerations = async (
+const loadCompletedRegistry = async (
   transport: PlanLifecycleSagaTransport,
-): Promise<Set<string>> => new Set(parseCompletedGenerations(
+): Promise<CompletedPlanLifecycleRegistry> => parseCompletedRegistry(
   (await transport.dbGetAppSetting(COMPLETED_SAGA_KEY))?.value_json,
-));
+);
+
+const registryCompletesSaga = (
+  registry: CompletedPlanLifecycleRegistry,
+  saga: PlanLifecycleSaga,
+): boolean => registry.legacyGenerations.includes(getPlanLifecycleSagaGeneration(saga)) ||
+  (registry.highWatermarks[getPlanLifecycleSagaKey(saga)] ?? '') >= saga.createdAt;
 
 const updateSetting = async (
   key: string,
@@ -253,8 +278,8 @@ export const loadPlanLifecycleSagas = async (
     const expectedValueJson = setting?.value_json ?? null;
     const journal = parsePlanLifecycleSagaJournal(expectedValueJson);
     if (journal.quarantined.length === 0) {
-      const completed = await loadCompletedGenerations(transport);
-      return journal.sagas.filter((saga) => !completed.has(getPlanLifecycleSagaGeneration(saga)));
+      const completed = await loadCompletedRegistry(transport);
+      return journal.sagas.filter((saga) => !registryCompletesSaga(completed, saga));
     }
 
     await appendQuarantine(journal.quarantined, transport);
@@ -264,8 +289,8 @@ export const loadPlanLifecycleSagas = async (
       valueJson: JSON.stringify(journal.sagas),
     });
     if (result.applied) {
-      const completed = await loadCompletedGenerations(transport);
-      return journal.sagas.filter((saga) => !completed.has(getPlanLifecycleSagaGeneration(saga)));
+      const completed = await loadCompletedRegistry(transport);
+      return journal.sagas.filter((saga) => !registryCompletesSaga(completed, saga));
     }
   }
   throw new Error('Conflit persistant pendant la normalisation du journal du cycle de vie des plans.');
@@ -277,7 +302,7 @@ export const upsertPlanLifecycleSaga = async (
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
   const generation = getPlanLifecycleSagaGeneration(saga);
-  if ((await loadCompletedGenerations(transport)).has(generation)) {
+  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
     throw new StalePlanLifecycleSagaError();
   }
   await loadPlanLifecycleSagas(transport);
@@ -312,7 +337,7 @@ export const upsertPlanLifecycleSaga = async (
     },
     transport,
   );
-  if ((await loadCompletedGenerations(transport)).has(generation)) {
+  if (registryCompletesSaga(await loadCompletedRegistry(transport), saga)) {
     await updateSetting(
       SAGA_KEY,
       (current) => JSON.stringify(parsePlanLifecycleSagas(current).filter(
@@ -333,13 +358,26 @@ export const removePlanLifecycleSaga = async (
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
   if (!generation) throw new Error('La génération du cycle de vie du plan est requise.');
+  const sagaKey = getPlanLifecycleSagaKey({ planId, operation, branchName: branchName ?? '' });
+  const generationPrefix = `${sagaKey}:`;
+  if (!generation.startsWith(generationPrefix) || generation.length === generationPrefix.length) {
+    throw new Error('La génération du cycle de vie du plan ne correspond pas à son identité.');
+  }
+  const completedAt = generation.slice(generationPrefix.length);
   await loadPlanLifecycleSagas(transport);
   await updateSetting(
     COMPLETED_SAGA_KEY,
-    (value) => JSON.stringify([
-      ...parseCompletedGenerations(value).filter((entry) => entry !== generation),
-      generation,
-    ].slice(-MAX_COMPLETED_GENERATIONS)),
+    (value) => {
+      const registry = parseCompletedRegistry(value);
+      const current = registry.highWatermarks[sagaKey];
+      return JSON.stringify({
+        ...registry,
+        highWatermarks: {
+          ...registry.highWatermarks,
+          [sagaKey]: current && current > completedAt ? current : completedAt,
+        },
+      });
+    },
     transport,
   );
   await updateSetting(
