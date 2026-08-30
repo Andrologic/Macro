@@ -179,9 +179,14 @@ create_dirs=$2
 expected_revision=$3
 requested_mode=$4
 tmp=$5
+lock_path=$6
 dir=$(dirname -- "$p")
 cleanup_tmp() { rm -f -- "$tmp"; }
 trap cleanup_tmp EXIT HUP INT TERM
+lock_dir=$(dirname -- "$lock_path")
+mkdir -p -- "$lock_dir" || exit 10
+exec 9>"$lock_path" || exit 10
+flock -x 9 || exit 10
 if [ "$create_dirs" = "1" ]; then
   mkdir -p -- "$dir"
 elif [ ! -d "$dir" ]; then
@@ -337,6 +342,11 @@ fn wsl_write_temp_path(target_path: &str) -> Result<String, BackendError> {
         "{parent}{joiner}.macro-write-{}.tmp",
         uuid::Uuid::new_v4()
     ))
+}
+
+fn wsl_write_lock_path(target_path: &str) -> String {
+    let digest = Sha256::digest(target_path.as_bytes());
+    format!("/tmp/macro-write-locks/{digest:x}.lock")
 }
 
 #[cfg(test)]
@@ -1151,6 +1161,7 @@ async fn write_wsl_file_internal_with_revision(
     }
     .to_string();
     let temp_path = wsl_write_temp_path(&canonical_target.linux_path)?;
+    let lock_path = wsl_write_lock_path(&canonical_target.linux_path);
     let mut temp_guard = WslWriteTempGuard::new(canonical_target.clone(), temp_path.clone());
     let output_result = run_wsl_shell_with_stdin(
         &canonical_target,
@@ -1173,6 +1184,7 @@ async fn write_wsl_file_internal_with_revision(
                 .map(|mode| format!("{:o}", mode))
                 .unwrap_or_default(),
             temp_path,
+            lock_path,
         ],
         content_bytes.clone(),
         WSL_FS_WRITE_TIMEOUT,
@@ -3490,7 +3502,17 @@ mod tests {
     #[test]
     fn wsl_write_script_guards_both_publication_modes() {
         assert!(WSL_WRITE_FILE_SCRIPT.contains("tmp=$5"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("lock_path=$6"));
         assert!(WSL_WRITE_FILE_SCRIPT.contains("trap cleanup_tmp EXIT HUP INT TERM"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("exec 9>\"$lock_path\" || exit 10"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("flock -x 9 || exit 10"));
+        let lock_index = WSL_WRITE_FILE_SCRIPT
+            .find("flock -x 9")
+            .expect("WSL publication lock");
+        let first_target_read = WSL_WRITE_FILE_SCRIPT
+            .find("if [ -d \"$p\" ]")
+            .expect("first target read");
+        assert!(lock_index < first_target_read);
         assert!(WSL_WRITE_FILE_SCRIPT.contains("(umask 077; set -C; : > \"$tmp\") || exit 6"));
         assert!(!WSL_WRITE_FILE_SCRIPT.contains("mktemp"));
         assert!(WSL_WRITE_FILE_SCRIPT.contains("cat > \"$tmp\" || { rm -f -- \"$tmp\"; exit 7; }"));
@@ -3499,6 +3521,80 @@ mod tests {
         assert!(WSL_WRITE_FILE_SCRIPT
             .contains("mv -fT -- \"$tmp\" \"$p\" || { rm -f -- \"$tmp\"; exit 9; }"));
         assert!(!WSL_WRITE_FILE_SCRIPT.contains("mv -f -- \"$tmp\" \"$p\""));
+    }
+
+    #[test]
+    fn wsl_write_lock_path_is_stable_and_target_scoped() {
+        let first = wsl_write_lock_path("/workspace/src/file.txt");
+        assert_eq!(first, wsl_write_lock_path("/workspace/src/file.txt"));
+        assert_ne!(first, wsl_write_lock_path("/workspace/src/other.txt"));
+        assert!(first.starts_with("/tmp/macro-write-locks/"));
+        assert!(first.ends_with(".lock"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn independent_wsl_write_producers_allow_exactly_one_revision_winner() {
+        let temp = TempDir::new().expect("temp dir");
+        let target = temp.path().join("guarded.txt");
+        fs::write(&target, "current").expect("seed target");
+        let revision = content_revision(b"current");
+        let lock_path = temp.path().join("guarded.lock");
+
+        let spawn_producer = |content: &'static [u8], temp_name: &str| {
+            let temp_path = temp.path().join(temp_name);
+            let mut child = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(WSL_WRITE_FILE_SCRIPT)
+                .arg("macro-wsl-write-test")
+                .arg(&target)
+                .arg("1")
+                .arg(&revision)
+                .arg("")
+                .arg(&temp_path)
+                .arg(&lock_path)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn independent producer");
+            child
+                .stdin
+                .take()
+                .expect("producer stdin")
+                .write_all(content)
+                .expect("write producer content");
+            child
+        };
+
+        let first = spawn_producer(b"first", "first.tmp");
+        let second = spawn_producer(b"second", "second.tmp");
+        let first_output = first.wait_with_output().expect("wait for first producer");
+        let second_output = second.wait_with_output().expect("wait for second producer");
+        assert!(first_output.status.success());
+        assert!(second_output.status.success());
+        let outputs = [
+            String::from_utf8(first_output.stdout).expect("first producer output"),
+            String::from_utf8(second_output.stdout).expect("second producer output"),
+        ];
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|output| output.contains("skipped=0"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|output| output.contains("revision_conflict actual="))
+                .count(),
+            1
+        );
+        let final_content = fs::read_to_string(&target).expect("read winning content");
+        assert!(final_content == "first" || final_content == "second");
+        assert!(!temp.path().join("first.tmp").exists());
+        assert!(!temp.path().join("second.tmp").exists());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
