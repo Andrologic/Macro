@@ -179,7 +179,7 @@ const safeParseCatalog = (raw: string | null): CachedCatalog | null => {
 };
 
 const readCachedCatalog = (): CachedCatalog | null => {
-  if (loadedCatalog) return loadedCatalog;
+  if (loadedCatalog && loadedCatalogSource !== 'snapshot') return loadedCatalog;
   if (typeof window === 'undefined' || !window.localStorage) return null;
   loadedCatalog = safeParseCatalog(window.localStorage.getItem(STORAGE_KEY));
   loadedCatalogSource = loadedCatalog ? 'cache' : null;
