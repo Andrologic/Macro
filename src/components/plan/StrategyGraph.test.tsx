@@ -102,6 +102,7 @@ type AppStoreState = {
   predictedBranches: unknown[];
   strategyMutationPreview: {
     planId: string;
+    targetBranch: string;
     status: 'valid' | 'blocked';
     autoProvisionBranches: boolean;
     frozenNodes: Array<{ id: string; title: string; reason: 'started' | 'completed' | 'dependency_locked' }>;
@@ -2228,6 +2229,7 @@ describe('StrategyGraph', () => {
       },
       strategyMutationPreview: {
         planId: 'plan-1',
+        targetBranch: 'develop',
         status: 'valid',
         autoProvisionBranches: true,
         frozenNodes: [{ id: 'task-1', title: 'Architect node', reason: 'started' }],
@@ -2268,6 +2270,50 @@ describe('StrategyGraph', () => {
     expect(notifySuccessMock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not expose a strategy preview from another branch replica', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Release plan',
+        description: 'Release branch state',
+        status: 'in_progress',
+        targetBranch: 'release/2.0',
+      },
+      strategyMutationPreview: {
+        planId: 'plan-1',
+        targetBranch: 'develop',
+        status: 'valid',
+        autoProvisionBranches: false,
+        frozenNodes: [],
+        rewrittenPendingNodes: [{ id: 'task-2', title: 'Develop-only rewrite' }],
+        newNodes: [],
+        removedPendingNodes: [],
+        conflicts: [],
+      },
+    });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    expect(document.body.textContent).not.toContain('Regeneration preview');
+    expect(document.body.textContent).not.toContain('Develop-only rewrite');
+    expect(
+      Array.from(document.querySelectorAll('button')).some((button) =>
+        button.textContent?.includes('Apply regeneration')
+      )
+    ).toBe(false);
+    expect(
+      Array.from(document.querySelectorAll('button')).some(
+        (button) => button.textContent?.trim() === 'Discard'
+      )
+    ).toBe(false);
+    expect(applyStrategyMutationPreviewMock).not.toHaveBeenCalled();
+    expect(persistArchitectPlanStrategyPreviewMock).not.toHaveBeenCalled();
+  });
+
   it('keeps direct execution modes when discarding a strategy preview', async () => {
     seedStores('Pending');
     useAppStore.setState({
@@ -2281,6 +2327,7 @@ describe('StrategyGraph', () => {
       },
       strategyMutationPreview: {
         planId: 'plan-1',
+        targetBranch: 'develop',
         status: 'valid',
         autoProvisionBranches: false,
         frozenNodes: [],
@@ -2320,6 +2367,7 @@ describe('StrategyGraph', () => {
     seedStores('Pending');
     const preview: NonNullable<AppStoreState['strategyMutationPreview']> = {
       planId: 'plan-1',
+      targetBranch: 'develop',
       status: 'valid',
       autoProvisionBranches: false,
       frozenNodes: [],
@@ -2364,6 +2412,7 @@ describe('StrategyGraph', () => {
     seedStores('Pending');
     const discardedPreview: NonNullable<AppStoreState['strategyMutationPreview']> = {
       planId: 'plan-1',
+      targetBranch: 'develop',
       status: 'valid',
       autoProvisionBranches: false,
       frozenNodes: [],
@@ -2374,6 +2423,7 @@ describe('StrategyGraph', () => {
     };
     const newerPreview: NonNullable<AppStoreState['strategyMutationPreview']> = {
       ...discardedPreview,
+      targetBranch: 'release/2.0',
       rewrittenPendingNodes: [{ id: 'task-3', title: 'Newer release rewrite' }],
     };
     const persistenceDeferred = createDeferred<undefined>();
@@ -2447,6 +2497,7 @@ describe('StrategyGraph', () => {
     };
     const preview: NonNullable<AppStoreState['strategyMutationPreview']> = {
       planId: 'plan-1',
+      targetBranch: 'develop',
       status: 'valid',
       autoProvisionBranches: false,
       frozenNodes: [],
@@ -2518,6 +2569,7 @@ describe('StrategyGraph', () => {
     seedStores('Pending');
     const originalPreview: NonNullable<AppStoreState['strategyMutationPreview']> = {
       planId: 'plan-1',
+      targetBranch: 'develop',
       status: 'valid',
       autoProvisionBranches: false,
       frozenNodes: [],
@@ -2582,6 +2634,7 @@ describe('StrategyGraph', () => {
     }];
     const releasePreview: NonNullable<AppStoreState['strategyMutationPreview']> = {
       ...originalPreview,
+      targetBranch: 'release/2.0',
       rewrittenPendingNodes: [{ id: 'release-task', title: 'Release rewrite' }],
     };
     act(() => {

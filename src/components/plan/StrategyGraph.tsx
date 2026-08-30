@@ -83,7 +83,7 @@ const matchesPlanLocator = (
 ): boolean => {
   if (context?.id !== planId) return false;
   try {
-    return resolveTargetBranch(context.targetBranch) === targetBranch;
+    return resolveTargetBranch(context.targetBranch) === resolveTargetBranch(targetBranch);
   } catch {
     return false;
   }
@@ -744,7 +744,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     () =>
       strategyMutationPreview &&
       activePlanContext &&
-      strategyMutationPreview.planId === activePlanContext.id
+      matchesPlanLocator(
+        activePlanContext,
+        strategyMutationPreview.planId,
+        strategyMutationPreview.targetBranch,
+      )
         ? strategyMutationPreview
         : null,
     [activePlanContext, strategyMutationPreview]
@@ -985,6 +989,20 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
 
   const handleDiscardStrategyPreview = useCallback(async () => {
     if (!activeStrategyMutationPreview || !activePlanContext?.id) return;
+    const currentStateAtStart = useAppStore.getState();
+    if (
+      currentStateAtStart.strategyMutationPreview !== activeStrategyMutationPreview ||
+      !matchesPlanLocator(
+        currentStateAtStart.activePlanContext,
+        activeStrategyMutationPreview.planId,
+        activeStrategyMutationPreview.targetBranch,
+      )
+    ) {
+      return;
+    }
+    const operationTargetBranch = resolveTargetBranch(
+      activeStrategyMutationPreview.targetBranch,
+    );
     const operationId = strategyPreviewOperationGate.begin();
     const discardedPreview = activeStrategyMutationPreview;
     const previousVisibleState = {
@@ -1002,7 +1020,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     );
     try {
       await persistArchitectPlanStrategyPreview({
-        branchName: targetBranch,
+        branchName: operationTargetBranch,
         plan: {
           id: activePlanContext.id,
           projectId: projectIds[0],
@@ -1015,7 +1033,11 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       const currentState = useAppStore.getState();
       if (
         strategyPreviewOperationGate.isCurrent(operationId) &&
-        matchesPlanLocator(currentState.activePlanContext, activePlanContext.id, targetBranch) &&
+        matchesPlanLocator(
+          currentState.activePlanContext,
+          activePlanContext.id,
+          operationTargetBranch,
+        ) &&
         currentState.activePlanContext === previousVisibleState.activePlanContext &&
         currentState.planNodes === previousVisibleState.planNodes &&
         currentState.predictedBranches === previousVisibleState.predictedBranches &&
@@ -1036,12 +1058,25 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     predictedBranches,
     setStrategyMutationPreview,
     strategyPreviewOperationGate,
-    targetBranch,
     t,
   ]);
 
   const handleApplyStrategyPreview = useCallback(async () => {
     if (!activeStrategyMutationPreview || !activePlanContext || isApplyingStrategyPreview) return;
+    const currentStateAtStart = useAppStore.getState();
+    if (
+      currentStateAtStart.strategyMutationPreview !== activeStrategyMutationPreview ||
+      !matchesPlanLocator(
+        currentStateAtStart.activePlanContext,
+        activeStrategyMutationPreview.planId,
+        activeStrategyMutationPreview.targetBranch,
+      )
+    ) {
+      return;
+    }
+    const operationTargetBranch = resolveTargetBranch(
+      activeStrategyMutationPreview.targetBranch,
+    );
     const operationId = strategyPreviewOperationGate.begin();
     const previousVisibleState = {
       activePlanContext,
@@ -1062,7 +1097,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         !matchesPlanLocator(
           currentState.activePlanContext,
           previousVisibleState.activePlanContext.id,
-          targetBranch,
+          operationTargetBranch,
         ) ||
         currentState.activePlanContext !== previousVisibleState.activePlanContext ||
         currentState.planNodes !== previousVisibleState.planNodes ||
@@ -1097,7 +1132,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         predictedBranches: nextPredictedBranches,
       };
       await persistArchitectPlanStrategyPreview({
-        branchName: targetBranch,
+        branchName: operationTargetBranch,
         plan: updatedPlan,
         preview: null,
       });
@@ -1115,7 +1150,7 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
         matchesPlanLocator(
           currentState.activePlanContext,
           previousVisibleState.activePlanContext.id,
-          targetBranch,
+          operationTargetBranch,
         ) &&
         currentState.activePlanContext === appliedVisibleState.activePlanContext &&
         currentState.planNodes === appliedVisibleState.planNodes &&
@@ -1143,7 +1178,6 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     setPredictedBranches,
     setStrategyMutationPreview,
     strategyPreviewOperationGate,
-    targetBranch,
     isApplyingStrategyPreview,
     planNodes,
     predictedBranches,

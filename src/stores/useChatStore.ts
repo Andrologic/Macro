@@ -1132,6 +1132,7 @@ interface ChatStore {
     groupId?: string | null,
   ) => Promise<Conversation>;
   beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
+  invalidateConversationResolution: () => void;
   ensureArchitectConversationForPlan: (params: {
     plan: ArchitectPlanRecord;
     targetBranch: string;
@@ -1468,6 +1469,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let contextSelectionUnsubscribe: (() => void) | null = null;
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
   let hydrationPromise: Promise<void> | null = null;
+  let conversationResolutionGeneration = 0;
   const messageLoadPromisesByConversationId = new Map<string, Promise<void>>();
   const checkpointMutationQueuesByConversationId = new Map<string, Promise<void>>();
   const deletedConversationIds = new Set<string>();
@@ -14183,6 +14185,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       beginArchitectPlanSwitchSelection(params);
     },
 
+    invalidateConversationResolution: () => {
+      conversationResolutionGeneration += 1;
+      set((state) => ({
+        selectionRequestId: state.selectionRequestId + 1,
+        pendingArchitectPlanSwitchRequestId: null,
+      }));
+    },
+
     ensureArchitectConversationForPlan: async ({
       plan,
       targetBranch,
@@ -14231,7 +14241,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     ensureConversationForCurrentMode: async () => {
+      const resolutionGeneration = conversationResolutionGeneration;
       await waitForHydration();
+      if (resolutionGeneration !== conversationResolutionGeneration) {
+        return get().selectedConversationId;
+      }
 
       let appState = useAppStore.getState();
       if (appState.mode === "Implement") {
@@ -14254,6 +14268,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           appState.setSelectedTask(null);
           appState = useAppStore.getState();
         }
+      }
+      if (resolutionGeneration !== conversationResolutionGeneration) {
+        return get().selectedConversationId;
       }
       const mode = appState.mode;
       const contextKey = buildChatContextKey(appState);

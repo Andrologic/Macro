@@ -701,7 +701,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
       setPlans(previousPlans);
       setActivePlanId(previousActivePlanId);
+      useChatStore.getState().invalidateConversationResolution();
       useAppStore.setState(previousVisibleState);
+      useChatStore.getState().invalidateConversationResolution();
       useChatStore.setState((currentChatState) => ({
         ...previousChatVisibleState,
         selectionRequestId:

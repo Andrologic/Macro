@@ -2909,6 +2909,35 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     mock.restore();
   });
 
+  it('cancels a queued conversation resolution before it allocates a request id', async () => {
+    const { useChatStore } = await loadChatStore();
+    useChatStore.setState({
+      selectedConversationId: 'conversation-a',
+      selectedConversationIdsByMode: { Architect: 'conversation-a' },
+      hydrationStatus: 'ready',
+      restoreStatus: 'ready',
+      activeContextKey: 'Architect::plan::plan-a::develop::group-1::project-1',
+      selectionRequestId: 5,
+      pendingArchitectPlanSwitchRequestId: null,
+      lastError: 'Previous conversation warning',
+    });
+
+    const queuedResolution = useChatStore.getState().ensureConversationForCurrentMode();
+    useChatStore.getState().invalidateConversationResolution();
+    await queuedResolution;
+
+    const state = useChatStore.getState();
+    expect(state.selectedConversationId).toBe('conversation-a');
+    expect(state.selectedConversationIdsByMode.Architect).toBe('conversation-a');
+    expect(state.restoreStatus).toBe('ready');
+    expect(state.activeContextKey).toBe(
+      'Architect::plan::plan-a::develop::group-1::project-1'
+    );
+    expect(state.selectionRequestId).toBe(6);
+    expect(state.pendingArchitectPlanSwitchRequestId).toBeNull();
+    expect(state.lastError).toBe('Previous conversation warning');
+  });
+
   it('kills an active terminal_run when its conversation generation is stopped', async () => {
     const { useChatStore, onToolCall } = await startImplementToolConversation(
       'Lance les tests dans le terminal.',
