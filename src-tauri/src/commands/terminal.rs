@@ -32,6 +32,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
+#[cfg(all(windows, test))]
+use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
 
 const DEFAULT_TERMINAL_COLS: u16 = 120;
 const DEFAULT_TERMINAL_ROWS: u16 = 32;
@@ -3808,21 +3810,23 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         let descendant_pid = descendant_pid.expect("readable descendant pid file");
+        let descendant_handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, descendant_pid) };
+        assert!(
+            !descendant_handle.is_null(),
+            "open descendant process {descendant_pid}: {}",
+            std::io::Error::last_os_error()
+        );
 
         job.terminate().expect("terminate Windows Job Object");
         tokio::time::timeout(Duration::from_secs(5), child.wait())
             .await
             .expect("job root should exit")
             .expect("wait for job root");
-        let output = background_tokio_command("tasklist")
-            .args(["/FI", &format!("PID eq {descendant_pid}"), "/NH"])
-            .output()
-            .await
-            .expect("query descendant process");
-        let listing = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            !listing.contains(&descendant_pid.to_string()),
-            "descendant process {descendant_pid} survived: {listing}"
+        let wait_result = unsafe { WaitForSingleObject(descendant_handle, 5_000) };
+        unsafe { CloseHandle(descendant_handle) };
+        assert_eq!(
+            wait_result, WAIT_OBJECT_0,
+            "descendant process {descendant_pid} did not exit before the timeout"
         );
     }
 
