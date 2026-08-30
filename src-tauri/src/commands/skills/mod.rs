@@ -26,6 +26,7 @@ const LOWERCASE_SKILL_FILE: &str = "skill.md";
 const AGENTS_SKILLS_DIR: &str = ".agents/skills";
 const RESOURCE_MAX_BYTES: u64 = 512 * 1024;
 const SCRIPT_OUTPUT_MAX_CHARS: usize = 20_000;
+const SCRIPT_OUTPUT_TRUNCATION_MARKER: &str = "\n[truncated]";
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const MAX_DISCOVERY_DEPTH: usize = 6;
@@ -1433,8 +1434,21 @@ fn truncate_chars(value: String, max_chars: usize) -> (String, bool) {
     if value.chars().count() <= max_chars {
         return (value, false);
     }
-    let mut truncated = value.chars().take(max_chars).collect::<String>();
-    truncated.push_str("\n[truncated]");
+    let marker_chars = SCRIPT_OUTPUT_TRUNCATION_MARKER.chars().count();
+    if marker_chars >= max_chars {
+        return (
+            SCRIPT_OUTPUT_TRUNCATION_MARKER
+                .chars()
+                .take(max_chars)
+                .collect(),
+            true,
+        );
+    }
+    let mut truncated = value
+        .chars()
+        .take(max_chars - marker_chars)
+        .collect::<String>();
+    truncated.push_str(SCRIPT_OUTPUT_TRUNCATION_MARKER);
     (truncated, true)
 }
 
@@ -1467,16 +1481,15 @@ fn append_skill_timeout_message(stderr: String, timeout_ms: u64) -> (String, boo
         return (message, false);
     }
     let separator = "\n";
-    let reserved_chars = message.chars().count() + separator.chars().count();
-    let stderr_limit = SCRIPT_OUTPUT_MAX_CHARS.saturating_sub(reserved_chars);
-    let stderr_was_truncated = stderr.chars().count() > stderr_limit;
+    let untruncated_chars =
+        stderr.chars().count() + separator.chars().count() + message.chars().count();
+    if untruncated_chars <= SCRIPT_OUTPUT_MAX_CHARS {
+        return (format!("{stderr}{separator}{message}"), false);
+    }
+    let suffix = format!("{SCRIPT_OUTPUT_TRUNCATION_MARKER}{separator}{message}");
+    let stderr_limit = SCRIPT_OUTPUT_MAX_CHARS.saturating_sub(suffix.chars().count());
     let stderr = stderr.chars().take(stderr_limit).collect::<String>();
-    let marker = if stderr_was_truncated {
-        "\n[truncated]\n"
-    } else {
-        separator
-    };
-    (format!("{stderr}{marker}{message}"), stderr_was_truncated)
+    (format!("{stderr}{suffix}"), true)
 }
 
 fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
@@ -2116,6 +2129,29 @@ async fn run_skill_script_with_manifest(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn truncation_marker_is_included_in_output_limit() {
+        let (output, truncated) = truncate_chars(
+            "x".repeat(SCRIPT_OUTPUT_MAX_CHARS + 1),
+            SCRIPT_OUTPUT_MAX_CHARS,
+        );
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.ends_with(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn timeout_message_and_marker_are_included_in_output_limit() {
+        let (output, truncated) =
+            append_skill_timeout_message("x".repeat(SCRIPT_OUTPUT_MAX_CHARS), 1_000);
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.contains(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+        assert!(output.ends_with("Skill script timed out after 1000 ms."));
+    }
 
     async fn test_skills_list(
         project_roots: Vec<SkillProjectRootDto>,
@@ -3092,7 +3128,7 @@ mod tests {
         assert!(noisy_timeout.truncated);
         assert!(noisy_timeout.stdout.ends_with("[truncated]"));
         assert!(
-            noisy_timeout.stdout.chars().count() <= SCRIPT_OUTPUT_MAX_CHARS + 12,
+            noisy_timeout.stdout.chars().count() <= SCRIPT_OUTPUT_MAX_CHARS,
             "timed out stdout exceeded its bounded response"
         );
 
