@@ -178,7 +178,10 @@ p=$1
 create_dirs=$2
 expected_revision=$3
 requested_mode=$4
+tmp=$5
 dir=$(dirname -- "$p")
+cleanup_tmp() { rm -f -- "$tmp"; }
+trap cleanup_tmp EXIT HUP INT TERM
 if [ "$create_dirs" = "1" ]; then
   mkdir -p -- "$dir"
 elif [ ! -d "$dir" ]; then
@@ -193,7 +196,7 @@ created=0
 if [ ! -e "$p" ]; then created=1; fi
 current_mode=''
 if [ "$created" = "0" ]; then current_mode=$(stat -c '%a' -- "$p") || exit 7; fi
-tmp=$(mktemp "$dir/.macro-write.XXXXXX") || exit 6
+(umask 077; set -C; : > "$tmp") || exit 6
 cat > "$tmp" || { rm -f -- "$tmp"; exit 7; }
 if [ -n "$requested_mode" ]; then
   chmod "$requested_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
@@ -263,6 +266,10 @@ static WRITE_AFTER_REVALIDATION_HOOKS: LazyLock<
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static WSL_WRITE_TEMP_CLEANUP_HOOK: LazyLock<Mutex<Option<std::sync::mpsc::Sender<String>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
 pub(crate) fn install_write_before_revalidation_hook(
     path: PathBuf,
     reached: Arc<Barrier>,
@@ -315,6 +322,89 @@ async fn pause_after_write_revalidation(path: &Path) {
 
 #[cfg(not(test))]
 async fn pause_after_write_revalidation(_path: &Path) {}
+
+fn wsl_write_temp_path(target_path: &str) -> Result<String, BackendError> {
+    let separator = target_path.rfind('/').ok_or_else(|| {
+        BackendError::Validation(format!("Invalid WSL write target: {target_path}"))
+    })?;
+    let parent = if separator == 0 {
+        "/"
+    } else {
+        &target_path[..separator]
+    };
+    let joiner = if parent.ends_with('/') { "" } else { "/" };
+    Ok(format!(
+        "{parent}{joiner}.macro-write-{}.tmp",
+        uuid::Uuid::new_v4()
+    ))
+}
+
+#[cfg(test)]
+fn install_wsl_write_temp_cleanup_hook(sender: std::sync::mpsc::Sender<String>) {
+    *WSL_WRITE_TEMP_CLEANUP_HOOK
+        .lock()
+        .expect("WSL write cleanup hook mutex") = Some(sender);
+}
+
+async fn cleanup_wsl_write_temp(
+    target: &WslProjectPath,
+    temp_path: &str,
+) -> Result<(), BackendError> {
+    #[cfg(test)]
+    if let Some(sender) = WSL_WRITE_TEMP_CLEANUP_HOOK
+        .lock()
+        .expect("WSL write cleanup hook mutex")
+        .take()
+    {
+        let _ = sender.send(temp_path.to_string());
+        return Ok(());
+    }
+    run_wsl_shell(
+        target,
+        "rm -f -- \"$1\"",
+        &[temp_path.to_string()],
+        WSL_FS_TIMEOUT,
+    )
+    .await
+    .map(|_| ())
+}
+
+struct WslWriteTempGuard {
+    target: WslProjectPath,
+    temp_path: String,
+    armed: bool,
+}
+
+impl WslWriteTempGuard {
+    fn new(target: WslProjectPath, temp_path: String) -> Self {
+        Self {
+            target,
+            temp_path,
+            armed: true,
+        }
+    }
+
+    async fn cleanup(&mut self) -> Result<(), BackendError> {
+        let result = cleanup_wsl_write_temp(&self.target, &self.temp_path).await;
+        if result.is_ok() {
+            self.armed = false;
+        }
+        result
+    }
+}
+
+impl Drop for WslWriteTempGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let target = self.target.clone();
+        let temp_path = self.temp_path.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = cleanup_wsl_write_temp(&target, &temp_path).await;
+        });
+    }
+}
 
 fn validate_unix_mode(mode: Option<u32>) -> Result<Option<u32>, BackendError> {
     match mode {
@@ -1060,7 +1150,9 @@ async fn write_wsl_file_internal_with_revision(
         "0"
     }
     .to_string();
-    let output = run_wsl_shell_with_stdin(
+    let temp_path = wsl_write_temp_path(&canonical_target.linux_path)?;
+    let mut temp_guard = WslWriteTempGuard::new(canonical_target.clone(), temp_path.clone());
+    let output_result = run_wsl_shell_with_stdin(
         &canonical_target,
         WSL_WRITE_FILE_SCRIPT,
         &[
@@ -1080,11 +1172,29 @@ async fn write_wsl_file_internal_with_revision(
             unix_mode
                 .map(|mode| format!("{:o}", mode))
                 .unwrap_or_default(),
+            temp_path,
         ],
         content_bytes.clone(),
         WSL_FS_WRITE_TIMEOUT,
     )
-    .await?;
+    .await;
+    let cleanup_result = temp_guard.cleanup().await;
+    let output = match output_result {
+        Ok(output) => {
+            cleanup_result?;
+            output
+        }
+        Err(error) => {
+            if let Err(cleanup_error) = cleanup_result {
+                tracing::warn!(
+                    temp_path = %temp_guard.temp_path,
+                    %cleanup_error,
+                    "Impossible de nettoyer le fichier temporaire WSL après un échec d’écriture"
+                );
+            }
+            return Err(error);
+        }
+    };
     let stdout = output.stdout_text();
     if let Some(actual) = stdout
         .lines()
@@ -3379,12 +3489,45 @@ mod tests {
 
     #[test]
     fn wsl_write_script_guards_both_publication_modes() {
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("tmp=$5"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("trap cleanup_tmp EXIT HUP INT TERM"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("(umask 077; set -C; : > \"$tmp\") || exit 6"));
+        assert!(!WSL_WRITE_FILE_SCRIPT.contains("mktemp"));
         assert!(WSL_WRITE_FILE_SCRIPT.contains("cat > \"$tmp\" || { rm -f -- \"$tmp\"; exit 7; }"));
         assert!(WSL_WRITE_FILE_SCRIPT.contains("if ! ln -- \"$tmp\" \"$p\"; then"));
         assert!(WSL_WRITE_FILE_SCRIPT.contains("revision_conflict actual=%s"));
         assert!(WSL_WRITE_FILE_SCRIPT
             .contains("mv -fT -- \"$tmp\" \"$p\" || { rm -f -- \"$tmp\"; exit 9; }"));
         assert!(!WSL_WRITE_FILE_SCRIPT.contains("mv -f -- \"$tmp\" \"$p\""));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_a_wsl_temp_guard_schedules_rust_cleanup() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        install_wsl_write_temp_cleanup_hook(sender);
+        let target = WslProjectPath {
+            distro: "TestDistro".to_string(),
+            linux_path: "/workspace/file.txt".to_string(),
+            original_path: r"\\wsl.localhost\TestDistro\workspace\file.txt".to_string(),
+            unc_path: r"\\wsl.localhost\TestDistro\workspace\file.txt".to_string(),
+        };
+        let temp_path = "/workspace/.macro-write-cancelled.tmp".to_string();
+
+        drop(WslWriteTempGuard::new(target, temp_path.clone()));
+
+        let cleaned =
+            tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(5)))
+                .await
+                .expect("cleanup observer task")
+                .expect("cleanup scheduled after guard drop");
+        assert_eq!(cleaned, temp_path);
+    }
+
+    #[test]
+    fn wsl_temp_path_stays_next_to_its_target() {
+        let temp_path = wsl_write_temp_path("/workspace/src/file.txt").expect("temp path");
+        assert!(temp_path.starts_with("/workspace/src/.macro-write-"));
+        assert!(temp_path.ends_with(".tmp"));
     }
 
     #[cfg(windows)]
