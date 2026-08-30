@@ -174,6 +174,45 @@ fn branch_worktree_path(repo: &Repository, worktree_key: &str) -> Result<PathBuf
     )))
 }
 
+#[derive(Clone, Copy)]
+enum ManagedWorktreeKind {
+    Task,
+    Branch,
+}
+
+fn is_managed_worktree_name(name: &str, kind: ManagedWorktreeKind) -> bool {
+    match kind {
+        ManagedWorktreeKind::Task => name.starts_with("task"),
+        ManagedWorktreeKind::Branch => name.starts_with("macro-integration-"),
+    }
+}
+
+fn is_path_in_task_worktree_root(repo: &Repository, path: &Path) -> Result<bool> {
+    let root = task_worktree_root(repo)?;
+    let canonical_root = fs::canonicalize(&root).unwrap_or(root);
+    let canonical_path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    Ok(canonical_path.starts_with(canonical_root))
+}
+
+fn ensure_managed_worktree_ownership(
+    repo: &Repository,
+    worktree_name: &str,
+    path: &Path,
+    kind: ManagedWorktreeKind,
+) -> Result<()> {
+    if is_managed_worktree_name(worktree_name, kind) && is_path_in_task_worktree_root(repo, path)? {
+        return Ok(());
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "Refusing to modify worktree '{}' at {} because Macro does not own that path",
+            worktree_name,
+            path.display()
+        ),
+    })
+}
+
 fn current_branch_name(repo: &Repository) -> Option<String> {
     repo.head()
         .ok()
@@ -571,6 +610,7 @@ fn find_ready_worktree_for_branch(
     task_id: &str,
     branch_name: &str,
     excluded_worktree_name: &str,
+    kind: ManagedWorktreeKind,
 ) -> Result<Option<TaskWorktreeInspection>> {
     let worktree_names = repo.worktrees().map_err(|e| BackendError::Git {
         message: format!("Failed to list registered worktrees: {}", e),
@@ -595,6 +635,11 @@ fn find_ready_worktree_for_branch(
         };
 
         let candidate_path = worktree.path().to_path_buf();
+        if !is_managed_worktree_name(candidate_name, kind)
+            || !is_path_in_task_worktree_root(repo, &candidate_path)?
+        {
+            continue;
+        }
         let inspection =
             inspect_registered_worktree(repo, task_id, candidate_name.to_string(), candidate_path)?;
 
@@ -766,9 +811,13 @@ impl GitState {
         };
 
         if let Some(branch_name) = branch_name {
-            if let Some(branch_worktree) =
-                find_ready_worktree_for_branch(repo, task_id, branch_name, &absent.worktree_name)?
-            {
+            if let Some(branch_worktree) = find_ready_worktree_for_branch(
+                repo,
+                task_id,
+                branch_name,
+                &absent.worktree_name,
+                ManagedWorktreeKind::Task,
+            )? {
                 return Ok(branch_worktree);
             }
         }
@@ -816,6 +865,12 @@ impl GitState {
 
         match inspection.status {
             TaskWorktreeStatus::Ready => {
+                ensure_managed_worktree_ownership(
+                    repo,
+                    &inspection.worktree_name,
+                    &inspection.worktree_path,
+                    ManagedWorktreeKind::Task,
+                )?;
                 ensure_task_worktree_gitignore_rule(repo, workdir, preferred_commit_branch)?;
                 self.register_worktree(task_id, inspection.worktree_path.clone());
                 return Ok(TaskWorktreeEnsureResult {
@@ -834,6 +889,20 @@ impl GitState {
             TaskWorktreeStatus::StaleRegistration
             | TaskWorktreeStatus::OrphanPath
             | TaskWorktreeStatus::InvalidRepo => {
+                if inspection.is_dirty.unwrap_or(false) {
+                    return Err(BackendError::GitRepositoryNotClean {
+                        message: format!(
+                            "Worktree {} has uncommitted changes",
+                            inspection.worktree_path.display()
+                        ),
+                    });
+                }
+                ensure_managed_worktree_ownership(
+                    repo,
+                    &inspection.worktree_name,
+                    &inspection.worktree_path,
+                    ManagedWorktreeKind::Task,
+                )?;
                 let should_quarantine = inspection.status == TaskWorktreeStatus::InvalidRepo;
                 if let Some(path) = inspection.registered_path.as_ref() {
                     let _ = remove_or_quarantine_path_for_repair(path, should_quarantine)?;
@@ -1053,9 +1122,13 @@ impl GitState {
             });
         }
 
-        if let Some(branch_worktree) =
-            find_ready_worktree_for_branch(repo, worktree_key, branch_name, &worktree_name)?
-        {
+        if let Some(branch_worktree) = find_ready_worktree_for_branch(
+            repo,
+            worktree_key,
+            branch_name,
+            &worktree_name,
+            ManagedWorktreeKind::Branch,
+        )? {
             return Ok(branch_inspection_from_task(branch_worktree));
         }
 
@@ -1089,6 +1162,12 @@ impl GitState {
 
         match inspection.status {
             TaskWorktreeStatus::Ready if inspection.branch_name.as_deref() == Some(branch_name) => {
+                ensure_managed_worktree_ownership(
+                    repo,
+                    &inspection.worktree_name,
+                    &inspection.worktree_path,
+                    ManagedWorktreeKind::Branch,
+                )?;
                 ensure_task_worktree_gitignore_rule(
                     repo,
                     workdir,
@@ -1109,6 +1188,20 @@ impl GitState {
             | TaskWorktreeStatus::StaleRegistration
             | TaskWorktreeStatus::OrphanPath
             | TaskWorktreeStatus::InvalidRepo => {
+                if inspection.is_dirty.unwrap_or(false) {
+                    return Err(BackendError::GitRepositoryNotClean {
+                        message: format!(
+                            "Worktree {} has uncommitted changes",
+                            inspection.worktree_path.display()
+                        ),
+                    });
+                }
+                ensure_managed_worktree_ownership(
+                    repo,
+                    &inspection.worktree_name,
+                    &inspection.worktree_path,
+                    ManagedWorktreeKind::Branch,
+                )?;
                 let should_quarantine = inspection.status == TaskWorktreeStatus::InvalidRepo;
                 if let Some(path) = inspection.registered_path.as_ref() {
                     let _ = remove_or_quarantine_path_for_repair(path, should_quarantine)?;
@@ -1230,6 +1323,14 @@ impl GitState {
         force: bool,
     ) -> Result<BranchWorktreeRemoveResult> {
         let inspection = self.inspect_branch_worktree(repo, worktree_key, branch_name)?;
+        if inspection.status != TaskWorktreeStatus::Absent {
+            ensure_managed_worktree_ownership(
+                repo,
+                &inspection.worktree_name,
+                &inspection.worktree_path,
+                ManagedWorktreeKind::Branch,
+            )?;
+        }
         if !force && inspection.is_dirty.unwrap_or(false) {
             return Err(BackendError::GitRepositoryNotClean {
                 message: format!(
@@ -1265,6 +1366,14 @@ impl GitState {
         branch_name: Option<&str>,
     ) -> Result<TaskWorktreeRemoveResult> {
         let inspection = self.inspect_task_worktree_internal(repo, task_id, branch_name)?;
+        if inspection.status != TaskWorktreeStatus::Absent {
+            ensure_managed_worktree_ownership(
+                repo,
+                &inspection.worktree_name,
+                &inspection.worktree_path,
+                ManagedWorktreeKind::Task,
+            )?;
+        }
         if !force && inspection.is_dirty.unwrap_or(false) {
             return Err(BackendError::GitRepositoryNotClean {
                 message: format!(

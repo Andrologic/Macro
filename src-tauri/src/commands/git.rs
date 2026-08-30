@@ -1990,6 +1990,26 @@ pub(crate) async fn wsl_git_commit(
     validate_commit_message(message)?;
     if stage_all {
         wsl_git_add(repo_path, &[".".to_string()]).await?;
+    } else {
+        let staged = run_wsl_git_allow_failure(
+            repo_path,
+            &[
+                "diff".to_string(),
+                "--cached".to_string(),
+                "--quiet".to_string(),
+            ],
+            WSL_GIT_TIMEOUT,
+        )
+        .await?;
+        match staged.status.code() {
+            Some(0) => {
+                return Err(BackendError::Git {
+                    message: "No staged changes to commit".to_string(),
+                })
+            }
+            Some(1) => {}
+            _ => return Err(wsl_git_failure(&staged, "git staged diff WSL failed")),
+        }
     }
     run_wsl_git_checked(
         repo_path,
@@ -3973,15 +3993,7 @@ pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) 
     let reset_type = match mode {
         "soft" => ResetType::Soft,
         "mixed" => ResetType::Mixed,
-        "hard" => {
-            let status = repo.statuses(Some(&mut get_status_options()))?;
-            if !status.is_empty() {
-                return Err(BackendError::GitRepositoryNotClean {
-                    message: "Hard reset requires a clean working tree".to_string(),
-                });
-            }
-            ResetType::Hard
-        }
+        "hard" => ResetType::Hard,
         other => {
             return Err(BackendError::Validation(format!(
                 "Invalid reset mode: {}",
@@ -5618,11 +5630,19 @@ pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> 
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
 
+    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    if parent
+        .as_ref()
+        .is_some_and(|parent| parent.tree_id() == tree_id)
+    {
+        return Err(BackendError::Git {
+            message: "No staged changes to commit".to_string(),
+        });
+    }
+
     let signature = repo
         .signature()
         .unwrap_or_else(|_| git2::Signature::now("Macro", "macro@local").unwrap());
-
-    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
 
     let oid = if let Some(parent) = parent {
         repo.commit(
@@ -6829,7 +6849,7 @@ pub async fn git_restore_paths(
 }
 
 #[tauri::command]
-/// Reset the repository to a given commit.
+/// Reset HEAD and optionally the index and tracked working files to a commit.
 pub async fn git_reset(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
@@ -17394,6 +17414,20 @@ mod tests {
     }
 
     #[test]
+    fn test_git_commit_without_stage_all_rejects_unstaged_only_change() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join("README.md"), "unstaged change").unwrap();
+
+        let error = commit_repo(&repo, "fix: should not be empty", false)
+            .expect_err("unstaged-only commit must fail before git commit");
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "No staged changes to commit"
+        ));
+    }
+
+    #[test]
     fn test_git_diff_working_tree() {
         let (temp, repo) = init_repo();
         fs::write(temp.path().join("README.md"), "updated").unwrap();
@@ -17733,7 +17767,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reset_repo_hard() {
+    fn test_reset_repo_hard_discards_tracked_changes_and_preserves_untracked_files() {
         let (temp, repo) = init_repo();
         let initial_commit = repo.head().unwrap().target().unwrap().to_string();
 
@@ -17747,10 +17781,30 @@ mod tests {
         let parent = repo.head().unwrap().peel_to_commit().unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
             .unwrap();
+        drop(parent);
+        drop(tree);
 
-        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+        fs::write(&file_path, "staged dirty change").unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        index.write().unwrap();
+        fs::write(&file_path, "worktree dirty change").unwrap();
+        let untracked_path = temp.path().join("untracked.txt");
+        fs::write(&untracked_path, "keep untracked").unwrap();
+
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
         let contents = fs::read_to_string(&file_path).unwrap();
         assert_eq!(contents, "hello");
+        let pair = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(pair.index_content, "hello");
+        assert_eq!(pair.worktree_content, "hello");
+        assert_eq!(
+            fs::read_to_string(untracked_path).unwrap(),
+            "keep untracked"
+        );
     }
 
     #[test]

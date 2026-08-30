@@ -10,7 +10,6 @@ use git2::{
 };
 
 use crate::core::error::{BackendError, Result};
-use crate::core::process::background_command;
 
 pub mod repo;
 mod worktree;
@@ -499,70 +498,6 @@ fn ensure_local_branch_available(repo: &Repository, branch_name: &str) -> Result
     Ok(())
 }
 
-fn commit_gitignore_rule_with_cli(workdir: &Path) -> Result<()> {
-    let mut add_command = background_command("git");
-    add_command
-        .current_dir(workdir)
-        .args(["add", "--", ".gitignore"]);
-    let add_output = add_command.output().map_err(|e| BackendError::Io {
-        message: e.to_string(),
-        source: e,
-    })?;
-    if !add_output.status.success() {
-        return Err(BackendError::Git {
-            message: String::from_utf8_lossy(&add_output.stderr)
-                .trim()
-                .to_string(),
-        });
-    }
-
-    let mut diff_command = background_command("git");
-    diff_command
-        .current_dir(workdir)
-        .args(["diff", "--cached", "--quiet", "--", ".gitignore"]);
-    let diff_output = diff_command.output().map_err(|e| BackendError::Io {
-        message: e.to_string(),
-        source: e,
-    })?;
-    if diff_output.status.code() == Some(0) {
-        return Ok(());
-    }
-    if diff_output.status.code() != Some(1) {
-        return Err(BackendError::Git {
-            message: String::from_utf8_lossy(&diff_output.stderr)
-                .trim()
-                .to_string(),
-        });
-    }
-
-    let mut commit_command = background_command("git");
-    commit_command.current_dir(workdir).args([
-        "-c",
-        "user.name=Macro",
-        "-c",
-        "user.email=macro@local",
-        "commit",
-        "-m",
-        TASK_WORKTREE_GITIGNORE_COMMIT_MESSAGE,
-        "--",
-        ".gitignore",
-    ]);
-    let commit_output = commit_command.output().map_err(|e| BackendError::Io {
-        message: e.to_string(),
-        source: e,
-    })?;
-
-    if !commit_output.status.success() {
-        return Err(BackendError::Git {
-            message: String::from_utf8_lossy(&commit_output.stderr)
-                .trim()
-                .to_string(),
-        });
-    }
-
-    Ok(())
-}
-
 fn render_gitignore_with_rule(content: &str) -> Option<String> {
     let mut next = content.to_string();
     if append_task_worktree_gitignore_rule(&mut next) {
@@ -662,6 +597,144 @@ fn commit_gitignore_rule_to_branch(repo: &Repository, branch_name: &str) -> Resu
     })?;
 
     Ok(true)
+}
+
+fn restore_gitignore_snapshot(
+    repo: &Repository,
+    worktree_path: &Path,
+    original_index_entry: Option<&git2::IndexEntry>,
+    original_worktree_content: Option<&str>,
+) {
+    if let Ok(mut index) = repo.index() {
+        match original_index_entry {
+            Some(entry) => {
+                let _ = index.add(entry);
+            }
+            None => {
+                let _ = index.remove_path(Path::new(".gitignore"));
+            }
+        }
+        let _ = index.write();
+    }
+
+    match original_worktree_content {
+        Some(content) => {
+            let _ = fs::write(worktree_path, content);
+        }
+        None => {
+            let _ = fs::remove_file(worktree_path);
+        }
+    }
+}
+
+fn copy_index_entry(entry: &git2::IndexEntry) -> git2::IndexEntry {
+    git2::IndexEntry {
+        ctime: entry.ctime,
+        mtime: entry.mtime,
+        dev: entry.dev,
+        ino: entry.ino,
+        mode: entry.mode,
+        uid: entry.uid,
+        gid: entry.gid,
+        file_size: entry.file_size,
+        id: entry.id,
+        flags: entry.flags,
+        flags_extended: entry.flags_extended,
+        path: entry.path.clone(),
+    }
+}
+
+fn commit_current_branch_gitignore_rule_preserving_user_index(
+    repo: &Repository,
+    workdir: &Path,
+    branch_name: &str,
+) -> Result<()> {
+    let (parent_commit, head_content) = read_branch_gitignore(repo, branch_name)?;
+    let head_has_gitignore = parent_commit
+        .tree()
+        .map_err(|e| BackendError::Git {
+            message: format!("Failed to read tree for branch '{}': {}", branch_name, e),
+        })?
+        .get_name(".gitignore")
+        .is_some();
+    let Some(next_head_content) = render_gitignore_with_rule(&head_content) else {
+        let _ = ensure_task_worktree_rule_in_file(&workdir.join(".gitignore"))?;
+        return Ok(());
+    };
+
+    let gitignore_relative = Path::new(".gitignore");
+    let gitignore_path = workdir.join(gitignore_relative);
+    let original_worktree_content = if gitignore_path.exists() {
+        Some(
+            fs::read_to_string(&gitignore_path).map_err(|e| BackendError::Io {
+                message: e.to_string(),
+                source: e,
+            })?,
+        )
+    } else {
+        None
+    };
+    let mut next_worktree_content = original_worktree_content.clone().unwrap_or_default();
+    append_task_worktree_gitignore_rule(&mut next_worktree_content);
+
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        return Err(BackendError::GitRepositoryNotClean {
+            message: "Cannot update .gitignore while the Git index has conflicts".to_string(),
+        });
+    }
+    let original_index_entry = index.get_path(gitignore_relative, 0);
+    if let Some(mut next_entry) = original_index_entry.as_ref().map(copy_index_entry) {
+        let blob = repo
+            .find_blob(next_entry.id)
+            .map_err(|e| BackendError::Git {
+                message: format!("Failed to read staged .gitignore: {}", e),
+            })?;
+        let mut next_index_content = String::from_utf8(blob.content().to_vec())
+            .map_err(|e| BackendError::Validation(e.to_string()))?;
+        append_task_worktree_gitignore_rule(&mut next_index_content);
+        next_entry.id = repo.blob(next_index_content.as_bytes())?;
+        next_entry.file_size = u32::try_from(next_index_content.len()).unwrap_or(u32::MAX);
+        index.add(&next_entry)?;
+    } else if !head_has_gitignore {
+        let blob_id = repo.blob(next_head_content.as_bytes())?;
+        index.add(&git2::IndexEntry {
+            ctime: git2::IndexTime::new(0, 0),
+            mtime: git2::IndexTime::new(0, 0),
+            dev: 0,
+            ino: 0,
+            mode: 0o100644,
+            uid: 0,
+            gid: 0,
+            file_size: u32::try_from(next_head_content.len()).unwrap_or(u32::MAX),
+            id: blob_id,
+            flags: 0,
+            flags_extended: 0,
+            path: b".gitignore".to_vec(),
+        })?;
+    }
+
+    let update_result = (|| -> Result<()> {
+        index.write()?;
+        fs::write(&gitignore_path, &next_worktree_content).map_err(|e| BackendError::Io {
+            message: e.to_string(),
+            source: e,
+        })?;
+        let _ = commit_gitignore_rule_to_branch(repo, branch_name)?;
+        Ok(())
+    })();
+
+    if let Err(error) = update_result {
+        restore_gitignore_snapshot(
+            repo,
+            &gitignore_path,
+            original_index_entry.as_ref(),
+            original_worktree_content.as_deref(),
+        );
+        return Err(error);
+    }
+
+    Ok(())
 }
 
 fn ensure_metadata_branch_exists(repo: &Repository) -> Result<()> {
@@ -813,10 +886,11 @@ fn ensure_task_worktree_gitignore_rule(
     };
 
     if detection.current_branch.as_deref() == Some(commit_branch.as_str()) {
-        if ensure_task_worktree_rule_in_file(&workdir.join(".gitignore"))? {
-            commit_gitignore_rule_with_cli(workdir)?;
-        }
-        return Ok(());
+        return commit_current_branch_gitignore_rule_preserving_user_index(
+            repo,
+            workdir,
+            &commit_branch,
+        );
     }
 
     let _ = commit_gitignore_rule_to_branch(repo, &commit_branch)?;
@@ -1378,6 +1452,10 @@ mod tests {
             fs::read_to_string(temp.path().join(".gitignore")).expect("read gitignore"),
             format!("{TASK_WORKTREE_GITIGNORE_RULE}\n")
         );
+        assert!(repo
+            .statuses(Some(&mut repo::get_status_options()))
+            .expect("clean status after internal gitignore commit")
+            .is_empty());
     }
 
     #[test]
@@ -1676,6 +1754,74 @@ mod tests {
         assert!(fs::read_to_string(repo.path().join("info").join("exclude"))
             .expect("read exclude")
             .contains(TASK_WORKTREE_GITIGNORE_RULE));
+    }
+
+    #[test]
+    fn test_internal_gitignore_commit_preserves_staged_user_change() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let gitignore_path = temp.path().join(".gitignore");
+        fs::write(&gitignore_path, "base\n").expect("baseline gitignore");
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(Path::new(".gitignore"))
+            .expect("stage baseline gitignore");
+        index.write().expect("write baseline index");
+        let tree_id = index.write_tree().expect("baseline tree");
+        let tree = repo.find_tree(tree_id).expect("baseline tree object");
+        let parent = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("baseline parent");
+        let signature = Signature::now("Tester", "tester@example.com").expect("signature");
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "chore: add gitignore",
+            &tree,
+            &[&parent],
+        )
+        .expect("baseline commit");
+        drop(parent);
+        drop(tree);
+
+        fs::write(&gitignore_path, "base\nuser staged\n").expect("staged user change");
+        index
+            .add_path(Path::new(".gitignore"))
+            .expect("stage user change");
+        index.write().expect("write user index");
+        fs::write(&gitignore_path, "base\nuser staged\nuser unstaged\n")
+            .expect("unstaged user change");
+
+        GitState::new()
+            .ensure_task_worktree(
+                &repo,
+                "preserve-index",
+                "task-preserve-index",
+                None,
+                None,
+                &[],
+            )
+            .expect("ensure task worktree");
+
+        assert_eq!(
+            read_branch_file(&repo, "main", ".gitignore").as_deref(),
+            Some("base\n/.macro/\n")
+        );
+        let index = repo.index().expect("updated index");
+        let staged_entry = index
+            .get_path(Path::new(".gitignore"), 0)
+            .expect("staged gitignore");
+        let staged_blob = repo.find_blob(staged_entry.id).expect("staged blob");
+        assert_eq!(
+            std::str::from_utf8(staged_blob.content()).expect("utf8 staged gitignore"),
+            "base\nuser staged\n/.macro/\n"
+        );
+        assert_eq!(
+            fs::read_to_string(gitignore_path).expect("working gitignore"),
+            "base\nuser staged\nuser unstaged\n/.macro/\n"
+        );
     }
 
     #[test]
@@ -2133,6 +2279,41 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_task_worktree_refuses_registered_path_outside_macro_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let external = TempDir::new().expect("external temp dir");
+        let repo = init_repo(temp.path());
+        let head = repo
+            .head()
+            .and_then(|reference| reference.peel_to_commit())
+            .expect("head commit");
+        repo.branch("feature/external-owner", &head, false)
+            .expect("external branch");
+        drop(head);
+        let reference = repo
+            .find_reference("refs/heads/feature/external-owner")
+            .expect("external branch reference");
+        let external_path = external.path().join("user-worktree");
+        let mut options = WorktreeAddOptions::new();
+        options.reference(Some(&reference));
+        repo.worktree("taskexternal-ownership", &external_path, Some(&options))
+            .expect("external worktree");
+
+        let error = GitState::new()
+            .remove_task_worktree(
+                &repo,
+                "external-ownership",
+                true,
+                Some("feature/external-owner"),
+            )
+            .expect_err("external worktree must be preserved");
+
+        assert!(matches!(error, BackendError::Git { .. }));
+        assert!(external_path.exists());
+        assert!(repo.find_worktree("taskexternal-ownership").is_ok());
+    }
+
+    #[test]
     fn test_ensure_task_worktree_checks_out_stable_branch_when_primary_branch_checked_out() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());
@@ -2235,6 +2416,43 @@ mod tests {
             BackendError::GitRepositoryNotClean { .. } => {}
             other => panic!("expected GitRepositoryNotClean, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_ensure_branch_worktree_preserves_dirty_worktree_on_branch_mismatch() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let ensured = state
+            .ensure_branch_worktree(
+                &repo,
+                "integration-web-plan-dirty-repair",
+                "plan/original",
+                None,
+                &["main".to_string()],
+            )
+            .expect("original branch worktree");
+        let dirty_file = ensured.worktree_path.join("uncommitted.txt");
+        fs::write(&dirty_file, "preserve me").expect("dirty worktree");
+
+        let error = state
+            .ensure_branch_worktree(
+                &repo,
+                "integration-web-plan-dirty-repair",
+                "plan/replacement",
+                None,
+                &["main".to_string()],
+            )
+            .expect_err("dirty worktree repair must fail");
+
+        assert!(matches!(error, BackendError::GitRepositoryNotClean { .. }));
+        assert_eq!(
+            fs::read_to_string(dirty_file).expect("preserved dirty file"),
+            "preserve me"
+        );
+        assert!(repo
+            .find_worktree("macro-integration-integration-web-plan-dirty-repair")
+            .is_ok());
     }
 
     #[test]
