@@ -172,6 +172,82 @@ const MAX_FILE_SEARCH_RESULTS: usize = 100;
 const MAX_FILE_SEARCH_CANDIDATES: usize = 600;
 const WSL_FS_TIMEOUT: Duration = Duration::from_secs(5);
 const WSL_FS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+const WSL_WRITE_FILE_SCRIPT: &str = r#"
+p=$1
+create_dirs=$2
+expected_revision=$3
+requested_mode=$4
+dir=$(dirname -- "$p")
+if [ "$create_dirs" = "1" ]; then
+  mkdir -p -- "$dir"
+elif [ ! -d "$dir" ]; then
+  printf 'Parent directory not found: %s\n' "$dir" >&2
+  exit 4
+fi
+if [ -d "$p" ]; then
+  printf 'Path is a directory: %s\n' "$p" >&2
+  exit 5
+fi
+created=0
+if [ ! -e "$p" ]; then created=1; fi
+current_mode=''
+if [ "$created" = "0" ]; then current_mode=$(stat -c '%a' -- "$p") || exit 7; fi
+tmp=$(mktemp "$dir/.macro-write.XXXXXX") || exit 6
+cat > "$tmp" || { rm -f -- "$tmp"; exit 7; }
+if [ -n "$requested_mode" ]; then
+  chmod "$requested_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+elif [ -n "$current_mode" ]; then
+  chmod "$current_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+fi
+if [ -z "$requested_mode" ] && [ "$(head -c 2 -- "$tmp")" = '#!' ]; then
+  chmod a+x -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+fi
+tmp_mode=$(stat -c '%a' -- "$tmp") || { rm -f -- "$tmp"; exit 8; }
+if [ -n "$expected_revision" ]; then
+  actual_revision=unavailable
+  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+    actual_revision=absent
+  elif [ -f "$p" ]; then
+    actual_line=$(sha256sum -- "$p") || { rm -f -- "$tmp"; exit 7; }
+    actual_revision=${actual_line%% *}
+  fi
+  if [ "$expected_revision" = "absent" ]; then
+    revision_matches=$([ "$actual_revision" = "absent" ] && printf '1' || printf '0')
+  else
+    revision_matches=$([ "$actual_revision" = "$expected_revision" ] && printf '1' || printf '0')
+  fi
+  if [ "$revision_matches" != "1" ]; then
+    rm -f -- "$tmp"
+    printf 'revision_conflict actual=%s\n' "$actual_revision"
+    exit 0
+  fi
+fi
+if [ "$created" = "0" ] && [ "$current_mode" = "$tmp_mode" ] && cmp -s "$tmp" "$p"; then
+  rm -f -- "$tmp"
+  printf 'created=0 skipped=1 mode=%s\n' "$current_mode"
+  exit 0
+fi
+if [ "$expected_revision" = "absent" ]; then
+  if ! ln -- "$tmp" "$p"; then
+    rm -f -- "$tmp"
+    if [ -e "$p" ] || [ -L "$p" ]; then
+      actual_revision=unavailable
+      if [ -f "$p" ]; then
+        actual_line=$(sha256sum -- "$p") || exit 7
+        actual_revision=${actual_line%% *}
+      fi
+      printf 'revision_conflict actual=%s\n' "$actual_revision"
+      exit 0
+    fi
+    exit 9
+  fi
+  rm -f -- "$tmp" || exit 9
+else
+  mv -fT -- "$tmp" "$p" || { rm -f -- "$tmp"; exit 9; }
+fi
+printf 'created=%s skipped=0 mode=%s\n' "$created" "$tmp_mode"
+"#;
 const DIRECTORY_LIST_LIMIT: usize = 20_000;
 const WSL_DEFAULT_RECURSIVE_DEPTH: u32 = 8;
 const WSL_MAX_RECURSIVE_DEPTH: u32 = 32;
@@ -984,67 +1060,9 @@ async fn write_wsl_file_internal_with_revision(
         "0"
     }
     .to_string();
-    let script = r#"
-p=$1
-create_dirs=$2
-expected_revision=$3
-requested_mode=$4
-dir=$(dirname -- "$p")
-if [ "$create_dirs" = "1" ]; then
-  mkdir -p -- "$dir"
-elif [ ! -d "$dir" ]; then
-  printf 'Parent directory not found: %s\n' "$dir" >&2
-  exit 4
-fi
-if [ -d "$p" ]; then
-  printf 'Path is a directory: %s\n' "$p" >&2
-  exit 5
-fi
-created=0
-if [ ! -e "$p" ]; then created=1; fi
-current_mode=''
-if [ "$created" = "0" ]; then current_mode=$(stat -c '%a' -- "$p") || exit 7; fi
-tmp=$(mktemp "$dir/.macro-write.XXXXXX") || exit 6
-cat > "$tmp"
-if [ -n "$requested_mode" ]; then
-  chmod "$requested_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
-elif [ -n "$current_mode" ]; then
-  chmod "$current_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
-fi
-if [ -z "$requested_mode" ] && [ "$(head -c 2 -- "$tmp")" = '#!' ]; then
-  chmod a+x -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
-fi
-tmp_mode=$(stat -c '%a' -- "$tmp") || { rm -f -- "$tmp"; exit 8; }
-if [ -n "$expected_revision" ]; then
-  actual_revision=unavailable
-  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
-    actual_revision=absent
-  elif [ -f "$p" ]; then
-    actual_line=$(sha256sum -- "$p") || { rm -f -- "$tmp"; exit 7; }
-    actual_revision=${actual_line%% *}
-  fi
-  if [ "$expected_revision" = "absent" ]; then
-    revision_matches=$([ "$actual_revision" = "absent" ] && printf '1' || printf '0')
-  else
-    revision_matches=$([ "$actual_revision" = "$expected_revision" ] && printf '1' || printf '0')
-  fi
-  if [ "$revision_matches" != "1" ]; then
-    rm -f -- "$tmp"
-    printf 'revision_conflict actual=%s\n' "$actual_revision"
-    exit 0
-  fi
-fi
-if [ "$created" = "0" ] && [ "$current_mode" = "$tmp_mode" ] && cmp -s "$tmp" "$p"; then
-  rm -f -- "$tmp"
-  printf 'created=0 skipped=1 mode=%s\n' "$current_mode"
-  exit 0
-fi
-mv -f -- "$tmp" "$p"
-printf 'created=%s skipped=0 mode=%s\n' "$created" "$tmp_mode"
-"#;
     let output = run_wsl_shell_with_stdin(
         &canonical_target,
-        script,
+        WSL_WRITE_FILE_SCRIPT,
         &[
             canonical_target.linux_path.clone(),
             create_dirs_flag,
@@ -3357,6 +3375,16 @@ mod tests {
             leftovers.is_empty(),
             "guarded write left temporary files behind: {leftovers:?}"
         );
+    }
+
+    #[test]
+    fn wsl_write_script_guards_both_publication_modes() {
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("cat > \"$tmp\" || { rm -f -- \"$tmp\"; exit 7; }"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("if ! ln -- \"$tmp\" \"$p\"; then"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("revision_conflict actual=%s"));
+        assert!(WSL_WRITE_FILE_SCRIPT
+            .contains("mv -fT -- \"$tmp\" \"$p\" || { rm -f -- \"$tmp\"; exit 9; }"));
+        assert!(!WSL_WRITE_FILE_SCRIPT.contains("mv -f -- \"$tmp\" \"$p\""));
     }
 
     #[cfg(windows)]
