@@ -4643,6 +4643,19 @@ pub async fn db_delete_messages_after(
 }
 
 #[tauri::command]
+pub async fn db_delete_conversation_turn(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    turn_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_turn(&pool, &conversation_id, &turn_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
 pub async fn db_trim_conversation_replay(
     pool: State<'_, DbPool>,
     conversation_id: String,

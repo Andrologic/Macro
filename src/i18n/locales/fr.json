@@ -467,6 +467,11 @@
   "chat": {
     "newChat": "Nouvelle discussion",
     "newConversation": "Nouvelle conversation",
+    "unsavedAssistant": {
+      "label": "Non enregistrée",
+      "saving": "Enregistrement de la réponse...",
+      "description": "Macro n'a pas pu enregistrer cette réponse. Réessayez ou supprimez-la avant d'envoyer un autre message."
+    },
     "loadingConversation": "Restaurer la conversation...",
     "showHistory": "Afficher l'historique",
     "hideHistory": "Masquer l'historique",

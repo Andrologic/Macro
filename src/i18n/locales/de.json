@@ -447,6 +447,11 @@
   "chat": {
     "newChat": "Neuer Chat",
     "newConversation": "Neues Gespräch",
+    "unsavedAssistant": {
+      "label": "Nicht gespeichert",
+      "saving": "Antwort wird gespeichert...",
+      "description": "Macro konnte diese Antwort nicht speichern. Versuche es erneut oder lösche sie, bevor du eine weitere Nachricht sendest."
+    },
     "loadingConversation": "Konversation wird wiederhergestellt...",
     "showHistory": "Geschichte anzeigen",
     "hideHistory": "Geschichte ausblenden",

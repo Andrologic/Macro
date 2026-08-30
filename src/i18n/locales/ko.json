@@ -446,6 +446,11 @@
   "chat": {
     "newChat": "새 채팅",
     "newConversation": "새로운 대화",
+    "unsavedAssistant": {
+      "label": "저장되지 않음",
+      "saving": "응답 저장 중...",
+      "description": "Macro가 이 응답을 저장하지 못했습니다. 다음 메시지를 보내기 전에 다시 시도하거나 삭제하세요."
+    },
     "loadingConversation": "대화를 복원하는 중...",
     "showHistory": "기록 표시",
     "hideHistory": "기록 숨기기",

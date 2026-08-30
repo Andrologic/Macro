@@ -405,6 +405,8 @@ interface ChatMessageRowProps {
   ) => void;
   onEditCancel: () => void;
   onCopy: (content: string, messageId: string) => Promise<void>;
+  onRetryPersistence: (messageId: string) => Promise<void>;
+  onDeleteUnsavedResponse: (messageId: string) => Promise<void>;
   onEditStart: (message: ChatMessage) => void;
   onRegenerate: (messageId: string, content: string) => Promise<void>;
   skillTurnFeedback?: SkillTurnFeedback | null;
@@ -734,6 +736,8 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
   onOpenImagePreview,
   onEditCancel,
   onCopy,
+  onRetryPersistence,
+  onDeleteUnsavedResponse,
   onEditStart,
   onRegenerate,
   skillTurnFeedback,
@@ -758,6 +762,10 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
     message.role === 'assistant' &&
     (message.content.trim().length > 0 ||
       (showToolTraces && (message.tool_traces?.length ?? 0) > 0));
+  const hasAssistantPersistenceFailure =
+    message.role === 'assistant' &&
+    (message.persistence_state === 'failed' || message.persistence_state === 'retrying');
+  const isRetryingAssistantPersistence = message.persistence_state === 'retrying';
 
   return (
     <div
@@ -793,7 +801,9 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             isEditing
               ? 'p-2'
               : message.role === 'assistant'
-                ? hasAssistantCompletionNotice
+                ? hasAssistantPersistenceFailure
+                  ? 'p-2 pb-2'
+                  : hasAssistantCompletionNotice
                   ? 'p-2 pb-10'
                   : 'p-2 pb-6'
                 : isArchitectActionMessage
@@ -833,6 +843,67 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
                     completionReason={message.completion_reason}
                     hasPreviousContent={hasAssistantVisibleBody}
                   />
+                  {hasAssistantPersistenceFailure && (
+                    <div
+                      data-chat-unsaved-assistant-response={message.persistence_state}
+                      role="status"
+                      className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs"
+                    >
+                      <div className="flex items-start gap-2">
+                        <Icon
+                          name={isRetryingAssistantPersistence ? 'loader' : 'triangle-alert'}
+                          size={13}
+                          className={cn(
+                            'mt-0.5 shrink-0 text-amber-600 dark:text-amber-300',
+                            isRetryingAssistantPersistence && 'animate-spin',
+                          )}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-amber-800 dark:text-amber-200">
+                            {isRetryingAssistantPersistence
+                              ? t('chat.unsavedAssistant.saving', 'Saving response...')
+                              : t('chat.unsavedAssistant.label', 'Not saved')}
+                          </div>
+                          {!isRetryingAssistantPersistence && (
+                            <div className="mt-0.5 break-words text-muted-foreground">
+                              {message.persistence_error || t(
+                                'chat.unsavedAssistant.description',
+                                'Macro could not save this response. Retry or remove it before sending another message.',
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void onRetryPersistence(message.id)}
+                          disabled={isRetryingAssistantPersistence}
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-wait disabled:opacity-50"
+                        >
+                          <Icon name="refresh-cw" size={11} />
+                          {t('common.retry', 'Retry')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onCopy(message.content, message.id)}
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-medium text-foreground transition-colors hover:bg-accent"
+                        >
+                          <Icon name="copy" size={11} />
+                          {t('common.copy', 'Copy')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteUnsavedResponse(message.id)}
+                          disabled={isRetryingAssistantPersistence}
+                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-2 font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-wait disabled:opacity-50"
+                        >
+                          <Icon name="trash" size={11} />
+                          {t('common.delete', 'Delete')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : architectActionMessage ? (
                 <ArchitectActionMessage action={architectActionMessage} />
@@ -912,7 +983,7 @@ const ChatMessageRowBase: React.FC<ChatMessageRowProps> = ({
             </div>
           )}
 
-          {message.role === 'assistant' && !isEditing && (
+          {message.role === 'assistant' && !isEditing && !hasAssistantPersistenceFailure && (
             <div className="absolute bottom-1 right-2 flex items-center gap-1">
               <button
                 onClick={() => void onCopy(message.content, message.id)}
@@ -958,6 +1029,8 @@ const MemoizedChatMessageRow = React.memo(
     prev.isHighlighted === next.isHighlighted &&
     prev.assistantActivity === next.assistantActivity &&
     prev.showToolTraces === next.showToolTraces &&
+    prev.onRetryPersistence === next.onRetryPersistence &&
+    prev.onDeleteUnsavedResponse === next.onDeleteUnsavedResponse &&
     prev.skillTurnFeedback === next.skillTurnFeedback &&
     prev.standaloneLaunchProgress === next.standaloneLaunchProgress
 );
@@ -1071,6 +1144,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     submitDuringActiveTurn = async () => 'steered' as const,
     clearLastError,
     clearConversationRuntimeError,
+    retryAssistantPersistence,
+    deleteUnsavedAssistantResponse,
     editMessage,
     getAgentCodeReplayPreview,
     restoreAgentCodeForReplay,
@@ -1130,6 +1205,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     submitDuringActiveTurn: state.submitDuringActiveTurn,
     clearLastError: state.clearLastError,
     clearConversationRuntimeError: state.clearConversationRuntimeError,
+    retryAssistantPersistence: state.retryAssistantPersistence,
+    deleteUnsavedAssistantResponse: state.deleteUnsavedAssistantResponse,
     editMessage: state.editMessage,
     getAgentCodeReplayPreview: state.getAgentCodeReplayPreview,
     restoreAgentCodeForReplay: state.restoreAgentCodeForReplay,
@@ -1274,6 +1351,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
   );
+  const hasUnsavedAssistantResponse = useMemo(
+    () =>
+      currentMessages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          (message.persistence_state === 'failed' ||
+            message.persistence_state === 'retrying'),
+      ),
+    [currentMessages],
+  );
   const activeStandaloneLaunchProgress = selectedConversationId
     ? standaloneTaskLaunchByConversationId[selectedConversationId]
     : undefined;
@@ -1332,6 +1419,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isContextStreaming = selectedConversationRuntime.phase === 'streaming';
   const isPreparingSend = selectedConversationRuntime.phase === 'preparing';
   const isBusySending = isContextStreaming || isPreparingSend;
+  const isPersistingAssistantResponse =
+    selectedConversationRuntime.phase === 'persisting';
+  const isConversationMutationPending =
+    isBusySending || isPersistingAssistantResponse;
   const isManualCompacting = manualCompactionPhase !== 'idle';
   const isActiveContextCompacting = isRuntimeCompacting || isManualCompacting;
   const isContextOverflowRecovering =
@@ -1511,11 +1602,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const isTranscriptActivityActive =
     isContextStreaming ||
     isPreparingSend ||
+    isPersistingAssistantResponse ||
     isContextOverflowRecovering ||
     Boolean(activeTranscriptProgressPhase);
 
   const handleManualCompaction = useCallback(async () => {
-    if (!selectedConversationId || isManualCompacting || isBusySending) {
+    if (
+      !selectedConversationId ||
+      isManualCompacting ||
+      isConversationMutationPending
+    ) {
       return;
     }
     setManualCompactionPhase('analyzing');
@@ -1550,7 +1646,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
   }, [
     compactConversationNow,
-    isBusySending,
+    isConversationMutationPending,
     isManualCompacting,
     refreshConversationContextDiagnostics,
     selectedConversationId,
@@ -1951,6 +2047,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isSelectedTaskDependencyBlocked ||
     isConversationArchivePending ||
     isSelectedConversationArchived ||
+    isPersistingAssistantResponse ||
+    hasUnsavedAssistantResponse ||
     Boolean(activeQuestionnaire) ||
     Boolean(activePendingToolApproval);
   const selectedGlobalProject = useMemo(
@@ -2197,7 +2295,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     isModeProjectWorkspaceMissing ||
     !activeArchitectPlanId ||
     isConversationPending ||
-    isBusySending ||
+    isConversationMutationPending ||
     isStrategyMutationLocked;
   const architectButtonActions = useMemo(() => buildArchitectButtonActions(t), [t]);
   const architectStrategyProgressButton = useMemo<ArchitectToolbarButton | null>(() => {
@@ -2438,7 +2536,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     goalObjective?: string;
   }): Promise<boolean> => {
     if (!runtimeCapabilities.implementExecution) return false;
-    if (mode !== 'Implement' || !selectedTask || isBusySending || isConversationPending) return false;
+    if (
+      mode !== 'Implement' ||
+      !selectedTask ||
+      isConversationMutationPending ||
+      isConversationPending
+    ) return false;
     if (!selectedTaskRequiresKickoff) return false;
     if (selectedTask.draft) return false;
     if (!selectedProviderId || !selectedModelId) return false;
@@ -2569,7 +2672,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerDraftContextKey,
     getComposerDraftForContext,
     isConversationPending,
-    isBusySending,
+    isConversationMutationPending,
     mode,
     migrateComposerDraftContext,
     selectedModelId,
@@ -2994,7 +3097,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       composerEditSession ||
       activeQuestionnaire ||
       activePendingToolApproval ||
-      isBusySending
+      isConversationMutationPending
     ) {
       return;
     }
@@ -3030,7 +3133,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     composerImages,
     goalComposerEditSession,
     inputValue,
-    isBusySending,
+    isConversationMutationPending,
     resetPromptHistoryNavigation,
     saveComposerDraftForContext,
     selectedConversationId,
@@ -3151,7 +3254,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleQuestionnaireAnswer = async (answer: string) => {
-    if (!selectedConversationId || isBusySending || isConversationPending) return;
+    if (
+      !selectedConversationId ||
+      isConversationMutationPending ||
+      isConversationPending
+    ) return;
     const recorded = recordActiveQuestionnaireAnswer(
       selectedConversationId,
       answer,
@@ -3171,12 +3278,21 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleQuestionnaireStepChange = (stepIndex: number) => {
-    if (!activeQuestionnaire || isBusySending || isConversationPending) return;
+    if (
+      !activeQuestionnaire ||
+      isConversationMutationPending ||
+      isConversationPending
+    ) return;
     setActiveQuestionnaireStep(activeQuestionnaire.conversationId, stepIndex);
   };
 
   const sendArchitectButtonAction = async (actionId: ArchitectStrategyProgressAction) => {
-    if (mode !== 'Architect' || !activeArchitectPlanId || isBusySending || isConversationPending) return;
+    if (
+      mode !== 'Architect' ||
+      !activeArchitectPlanId ||
+      isConversationMutationPending ||
+      isConversationPending
+    ) return;
     if (isStrategyMutationLocked) return;
     const conversationId = await ensureConversation();
     if (!conversationId) return;
@@ -3200,7 +3316,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (
       composerEditSession ||
       goalComposerEditSession ||
-      isBusySending ||
+      isConversationMutationPending ||
       activePendingToolApproval
     ) {
       return;
@@ -3290,6 +3406,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     setCopiedMessageId(messageId);
     setTimeout(() => setCopiedMessageId(null), 2000);
   };
+
+  const handleRetryAssistantPersistence = useCallback(async (messageId: string) => {
+    try {
+      await retryAssistantPersistence(messageId);
+    } catch {
+      // The message card keeps the updated persistence error visible.
+    }
+  }, [retryAssistantPersistence]);
+
+  const handleDeleteUnsavedAssistantResponse = useCallback(async (messageId: string) => {
+    try {
+      await deleteUnsavedAssistantResponse(messageId);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : String(error));
+    }
+  }, [deleteUnsavedAssistantResponse]);
 
   const handleRegenerate = async (messageId: string, content: string) => {
     await requestReplay({
@@ -3503,7 +3635,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   compactionStatus={activeCompactionStatus}
                   isCompacting={isActiveContextCompacting}
                   activityLabel={manualCompactionActivityLabel}
-                  canCompactNow={!isBusySending && !isManualCompacting}
+                  canCompactNow={!isConversationMutationPending && !isManualCompacting}
                   manualCompactionDisabledReason={manualCompactionDisabledReason}
                   manualCompactionFeedback={manualCompactionFeedback}
                   onRefresh={() => {
@@ -3656,6 +3788,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     onOpenImagePreview={openImagePreview}
                     onEditCancel={handleEditCancel}
                     onCopy={handleCopy}
+                    onRetryPersistence={handleRetryAssistantPersistence}
+                    onDeleteUnsavedResponse={handleDeleteUnsavedAssistantResponse}
                     onEditStart={handleEditStart}
                     onRegenerate={handleRegenerate}
                     skillTurnFeedback={skillTurnFeedbackByMessageId[message.id]}
@@ -3895,7 +4029,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     type="button"
                     onClick={() => void sendComposerMessage()}
                     data-tour-id="implement-start-execution"
-                    disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isBusySending}
+                    disabled={!canStartImplementExecution || !selectedProviderId || !selectedModelId || isConversationMutationPending}
                     title={
                       !runtimeCapabilities.implementExecution
                         ? t(
@@ -3906,7 +4040,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     }
                     className={cn(
                       'inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors shrink-0',
-                      canStartImplementExecution && selectedProviderId && selectedModelId && !isBusySending
+                      canStartImplementExecution && selectedProviderId && selectedModelId && !isConversationMutationPending
                         ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                         : 'bg-muted text-muted-foreground cursor-not-allowed'
                     )}

@@ -62,6 +62,8 @@ export type MockMessage = {
     }>;
   };
   completion_reason?: 'completed' | 'tool_turn_limit' | 'post_tool_empty_fallback';
+  persistence_state?: 'failed' | 'retrying';
+  persistence_error?: string;
 };
 
 export type MockChatState = {
@@ -167,6 +169,8 @@ export type MockChatState = {
   submitDuringActiveTurn: ReturnType<typeof mock>;
   clearLastError: ReturnType<typeof mock>;
   clearConversationRuntimeError: ReturnType<typeof mock>;
+  retryAssistantPersistence: ReturnType<typeof mock>;
+  deleteUnsavedAssistantResponse: ReturnType<typeof mock>;
   editMessage: ReturnType<typeof mock>;
   getAgentCodeReplayPreview: ReturnType<typeof mock>;
   restoreAgentCodeForReplay: ReturnType<typeof mock>;
@@ -808,6 +812,8 @@ const resetState = () => {
     submitDuringActiveTurn: mock(async () => 'steered'),
     clearLastError: mock(() => undefined),
     clearConversationRuntimeError: mock(() => undefined),
+    retryAssistantPersistence: mock(async () => undefined),
+    deleteUnsavedAssistantResponse: mock(async () => undefined),
     editMessage: mock(async () => undefined),
     getAgentCodeReplayPreview: mock(async () => null),
     restoreAgentCodeForReplay: mock(async () => undefined),
@@ -2779,6 +2785,57 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Stop');
     expect(requireContainer().querySelector('[data-tour-id="chat-send-button"]')).not.toBeNull();
     expect(getComposerEditor().hasAttribute('disabled')).toBe(false);
+  });
+
+  it('shows recovery actions and disables the composer for an unsaved assistant response', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour Macro' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse conservée localement',
+          persistence_state: 'failed',
+          persistence_error: 'SQLite indisponible',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const recoveryCard = requireContainer().querySelector(
+      '[data-chat-unsaved-assistant-response="failed"]',
+    );
+    expect(recoveryCard).not.toBeNull();
+    expect(recoveryCard?.textContent).toContain('Not saved');
+    expect(recoveryCard?.textContent).toContain('SQLite indisponible');
+    expect(recoveryCard?.textContent).toContain('Retry');
+    expect(recoveryCard?.textContent).toContain('Copy');
+    expect(recoveryCard?.textContent).toContain('Delete');
+    expect(getComposerEditor().hasAttribute('disabled')).toBe(true);
+
+    const retryButton = Array.from(recoveryCard?.querySelectorAll('button') ?? [])
+      .find((button) => button.textContent?.includes('Retry'));
+    await act(async () => {
+      retryButton?.click();
+      await Promise.resolve();
+    });
+    expect(chatState.retryAssistantPersistence).toHaveBeenCalledWith(
+      'msg-assistant-1',
+    );
+
+    const deleteButton = Array.from(recoveryCard?.querySelectorAll('button') ?? [])
+      .find((button) => button.textContent?.includes('Delete'));
+    await act(async () => {
+      deleteButton?.click();
+      await Promise.resolve();
+    });
+    expect(chatState.deleteUnsavedAssistantResponse).toHaveBeenCalledWith(
+      'msg-assistant-1',
+    );
   });
 
   it('renders live context diagnostics while a visible conversation is streaming', async () => {

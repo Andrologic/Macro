@@ -193,6 +193,7 @@ import {
   createAssistantPlaceholderMessage,
   createUserMessage,
   deleteConversation as deletePersistedConversation,
+  deleteConversationTurn as deletePersistedConversationTurn,
   deleteConversations as deletePersistedConversations,
   deleteMessagesAfter as deletePersistedMessagesAfter,
   loadChatBootstrapSnapshot,
@@ -371,13 +372,17 @@ import {
 } from "./chat/chatMessageState";
 import {
   EMPTY_MESSAGE_IMAGES,
+  clearUnsavedAssistantResponsesForConversations,
   clearQuestionnaireDraftsForConversations,
   loadComposerDraftsFromStorage,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
+  loadUnsavedAssistantResponsesFromStorage,
+  removeUnsavedAssistantResponseFromStorage,
   saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
+  saveUnsavedAssistantResponseToStorage,
   setActiveQuestionnaireDraftStep,
   setQuestionnaireDraftForConversation,
   type MessageImageAttachment,
@@ -1116,6 +1121,8 @@ interface ChatStore {
         | "provider_turn_state"
         | "context_refs"
         | "completion_reason"
+        | "persistence_state"
+        | "persistence_error"
       >
     >,
   ) => void;
@@ -1218,6 +1225,8 @@ interface ChatStore {
   ) => Promise<"steered" | "queued">;
   stopConversationStream: (conversationId: string) => void;
   clearConversationRuntimeError: (conversationId: string) => void;
+  retryAssistantPersistence: (messageId: string) => Promise<void>;
+  deleteUnsavedAssistantResponse: (messageId: string) => Promise<void>;
   stopStreaming: () => void;
   getAgentCodeReplayPreview: (
     messageId: string,
@@ -1343,6 +1352,60 @@ const toComparableChatMessage = (
   content: message.content,
   createdAt: message.timestamp,
 });
+
+const serializeAssistantPersistenceValue = (value: unknown): string => {
+  try {
+    return JSON.stringify(value ?? null);
+  } catch {
+    return "__unserializable__";
+  }
+};
+
+const assistantPersistencePayloadMatches = (
+  persisted: ChatMessage,
+  recovered: ChatMessage,
+): boolean =>
+  persisted.content === recovered.content &&
+  persisted.hidden_context === recovered.hidden_context &&
+  serializeAssistantPersistenceValue(persisted.tool_traces) ===
+    serializeAssistantPersistenceValue(recovered.tool_traces) &&
+  serializeAssistantPersistenceValue(persisted.provider_input_items) ===
+    serializeAssistantPersistenceValue(recovered.provider_input_items) &&
+  serializeAssistantPersistenceValue(persisted.provider_turn_state) ===
+    serializeAssistantPersistenceValue(recovered.provider_turn_state) &&
+  persisted.completion_reason === recovered.completion_reason;
+
+const mergeRecoveredAssistantResponses = (
+  persistedMessages: ChatMessage[],
+  recoveredMessages: ChatMessage[],
+): { messages: ChatMessage[]; reconciledMessageIds: string[] } => {
+  if (recoveredMessages.length === 0) {
+    return { messages: persistedMessages, reconciledMessageIds: [] };
+  }
+
+  const recoveredById = new Map(
+    recoveredMessages.map((message) => [message.id, message]),
+  );
+  const reconciledMessageIds: string[] = [];
+  const merged = persistedMessages.map((message) => {
+    const recovered = recoveredById.get(message.id);
+    if (!recovered) return message;
+    recoveredById.delete(message.id);
+    if (assistantPersistencePayloadMatches(message, recovered)) {
+      reconciledMessageIds.push(message.id);
+      return message;
+    }
+    return recovered;
+  });
+
+  return {
+    messages: sortMessagesChronologically([
+      ...merged,
+      ...recoveredById.values(),
+    ]),
+    reconciledMessageIds,
+  };
+};
 
 const resolveConversationQuestionnaireFromState = (
   state: Pick<
@@ -1477,6 +1540,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const pendingSteersByConversationId = new Map<string, StreamMessage[]>();
   const queuedSubmissionsByConversationId = new Map<string, ComposerSubmissionPayload[]>();
   const drainingQueuedConversationIds = new Set<string>();
+  const toolboxPersistenceTailsByConversationId = new Map<string, Promise<void>>();
   const completionPersistenceOwnersByConversationId = new Map<
     string,
     { sessionId: string; turnId: string | null; assistantMessageId: string }
@@ -2624,12 +2688,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
     messages: ChatMessage[],
   ) => {
+    const recoveredMessages = get()
+      .getConversationMessages(conversationId)
+      .filter((message) => message.persistence_state !== undefined);
+    const mergedConversation = mergeRecoveredAssistantResponses(
+      messages,
+      recoveredMessages,
+    );
+    mergedConversation.reconciledMessageIds.forEach((messageId) => {
+      removeUnsavedAssistantResponseFromStorage(messageId);
+    });
     set((state) => {
       const nextMessages = [
         ...state.messages.filter(
           (message) => message.conversation_id !== conversationId,
         ),
-        ...messages,
+        ...mergedConversation.messages,
       ];
       return {
         ...buildMessageState(nextMessages),
@@ -2760,12 +2834,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const buildSendError = (message: string): Error => new Error(message);
 
+  const hasUnsavedAssistantResponse = (conversationId: string): boolean =>
+    get()
+      .getConversationMessages(conversationId)
+      .some(
+        (message) =>
+          message.role === "assistant" &&
+          (message.persistence_state === "failed" ||
+            message.persistence_state === "retrying"),
+      );
+
   const assertConversationRuntimeAvailableForSend = (conversationId: string) => {
     if (
       deletedConversationIds.has(conversationId) ||
       !get().conversations.some((conversation) => conversation.id === conversationId)
     ) {
       throw buildSendError("This conversation is no longer available.");
+    }
+    if (hasUnsavedAssistantResponse(conversationId)) {
+      throw buildSendError(
+        "Save or delete the unsaved assistant response before sending another message.",
+      );
     }
     const runtime = getConversationRuntimeSnapshot(
       get().conversationRuntimeById,
@@ -2819,6 +2908,66 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? { lastError: options.globalLastError ?? null }
         : {}),
     }));
+  };
+
+  const markAssistantPersistenceFailure = (params: {
+    assistantMessage: ChatMessage;
+    message: string;
+    sessionId?: string | null;
+    turnId?: string | null;
+  }): string => {
+    const failedAssistant: ChatMessage = {
+      ...params.assistantMessage,
+      persistence_state: "failed",
+      persistence_error: params.message,
+    };
+    const recoverySaved = saveUnsavedAssistantResponseToStorage(failedAssistant);
+    const displayedMessage = recoverySaved
+      ? params.message
+      : `${params.message} Macro could not create a local recovery copy. Copy the response before closing the app.`;
+
+    get().updateMessageFields(params.assistantMessage.id, {
+      persistence_state: "failed",
+      persistence_error: displayedMessage,
+    });
+    setConversationRuntime(
+      params.assistantMessage.conversation_id,
+      {
+        phase: "error",
+        sessionId: params.sessionId ?? null,
+        turnId: params.turnId ?? params.assistantMessage.turn_id ?? null,
+        assistantMessageId: params.assistantMessage.id,
+        abortController: null,
+        lastError: displayedMessage,
+        lastErrorOrigin: "macro",
+        lastErrorDisplayTarget: "composer",
+      },
+      { globalLastError: displayedMessage },
+    );
+    return displayedMessage;
+  };
+
+  const clearAssistantPersistenceError = (
+    conversationId: string,
+    messageId: string,
+  ): void => {
+    const runtime = getConversationRuntimeSnapshot(
+      get().conversationRuntimeById,
+      conversationId,
+    );
+    if (
+      runtime.phase === "error" &&
+      runtime.assistantMessageId === messageId &&
+      runtime.lastErrorOrigin === "macro"
+    ) {
+      setConversationRuntime(
+        conversationId,
+        null,
+        get().lastError === runtime.lastError
+          ? { globalLastError: null }
+          : undefined,
+      );
+    }
   };
 
   const standaloneTaskLaunchSteps: StandaloneTaskLaunchStep[] = [
@@ -3034,6 +3183,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     clearConversationSecurityState(conversationId);
     clearLiveStreamContextEstimate(conversationId);
     if (!isConversationRuntimeActive(runtime)) {
+      return;
+    }
+    if (
+      runtime.phase === "persisting" &&
+      !deletedConversationIds.has(conversationId)
+    ) {
       return;
     }
 
@@ -6525,6 +6680,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
+  const enqueueToolboxPersistence = (
+    conversationId: string,
+    operation: () => Promise<void>,
+  ): Promise<void> => {
+    const previous = toolboxPersistenceTailsByConversationId.get(conversationId);
+    const persistence = (previous ? previous.catch(() => undefined) : Promise.resolve())
+      .then(operation);
+    toolboxPersistenceTailsByConversationId.set(conversationId, persistence);
+    void persistence.then(
+      () => {
+        if (toolboxPersistenceTailsByConversationId.get(conversationId) === persistence) {
+          toolboxPersistenceTailsByConversationId.delete(conversationId);
+        }
+      },
+      () => {
+        if (toolboxPersistenceTailsByConversationId.get(conversationId) === persistence) {
+          toolboxPersistenceTailsByConversationId.delete(conversationId);
+        }
+      },
+    );
+    return persistence;
+  };
+
+  const waitForToolboxPersistence = async (conversationId: string): Promise<void> => {
+    while (true) {
+      const pending = toolboxPersistenceTailsByConversationId.get(conversationId);
+      if (!pending) return;
+      await pending.catch(() => undefined);
+    }
+  };
+
   const persistComposerContextRefsForConversation = (
     conversationId: string | null | undefined,
     refs: ContextReference[],
@@ -6532,7 +6718,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (!conversationId || !tauriIpc.isTauriAvailable()) return;
 
     const persistedRefs = persistableContextRefs(refs) ?? [];
-    const persist = async () => {
+    const persistence = enqueueToolboxPersistence(conversationId, async () => {
       if (persistedRefs.length === 0) {
         if (typeof tauriIpc.deleteConversationToolboxState === "function") {
           await tauriIpc.deleteConversationToolboxState(conversationId);
@@ -6546,9 +6732,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           timestamp: new Date().toISOString(),
         });
       }
-    };
+    });
 
-    void persist().catch((error) => {
+    void persistence.catch((error) => {
       console.warn("[chat] Failed to persist toolbox state:", error);
     });
   };
@@ -6575,7 +6761,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   ): Promise<void> => {
     if (!tauriIpc.isTauriAvailable()) return;
     if (typeof tauriIpc.deleteConversationToolboxState !== "function") return;
-    await tauriIpc.deleteConversationToolboxState(conversationId);
+    await enqueueToolboxPersistence(conversationId, () =>
+      tauriIpc.deleteConversationToolboxState(conversationId),
+    );
   };
 
   const beginStandaloneConversationDeletionSaga = async (
@@ -6607,8 +6795,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
     try {
+      await waitForToolboxPersistence(conversationId);
+      const revisionBeforeRead = composerContextRefsRevision;
       const record = await tauriIpc.getConversationToolboxState(conversationId);
-      if (get().selectedConversationId !== conversationId) {
+      if (
+        get().selectedConversationId !== conversationId ||
+        composerContextRefsRevision !== revisionBeforeRead
+      ) {
         return;
       }
       const persistedRefs = parsePersistedContextRefsJson(
@@ -7966,6 +8159,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
     discardComposerDraftsForConversationIds(conversationIds);
+    clearUnsavedAssistantResponsesForConversations(conversationIds);
     clearPendingArchitectConversationsForConversationIds(conversationIds);
     clearGitStageCommitChallengesForConversations(conversationIds);
     clearAssistantTurnContextsForConversations(conversationIds);
@@ -9002,6 +9196,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
     if (drainingQueuedConversationIds.has(conversationId)) return;
+    if (hasUnsavedAssistantResponse(conversationId)) return;
     const runtime = getConversationRuntimeSnapshot(
       get().conversationRuntimeById,
       conversationId,
@@ -11529,7 +11724,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           updateConversationRuntimeIfSessionMatches(
             conversationId,
             params.sessionId,
-            () => null,
+            (runtime) => ({
+              ...runtime,
+              phase: "persisting",
+              abortController: null,
+              lastError: null,
+              lastErrorOrigin: null,
+              lastErrorDisplayTarget: null,
+            }),
           );
         },
         clearLiveStreamContextEstimate,
@@ -11573,26 +11775,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
             completionOwner?.sessionId !== sessionId ||
             completionOwner.turnId !== turnId ||
             completionOwner.assistantMessageId !== assistantMessageId ||
-            currentRuntime.phase !== "idle"
+            currentRuntime.phase !== "persisting" ||
+            currentRuntime.sessionId !== sessionId ||
+            currentRuntime.turnId !== turnId ||
+            currentRuntime.assistantMessageId !== assistantMessageId
           ) {
             return;
           }
           completionPersistenceOwnersByConversationId.delete(conversationId);
-          setConversationRuntime(
-            conversationId,
-            {
-              phase: "error",
-              sessionId,
-              turnId,
-              assistantMessageId,
-              abortController: null,
-              lastError: message,
-              lastErrorOrigin: "macro",
-              lastErrorDisplayTarget: "composer",
-            },
-            { globalLastError: message },
+          const assistantMessage = findChatMessageInState(
+            get(),
+            assistantMessageId,
           );
-          set({ sendState: "error" });
+          if (!assistantMessage || assistantMessage.role !== "assistant") {
+            return;
+          }
+          markAssistantPersistenceFailure({
+            assistantMessage,
+            message,
+            sessionId,
+            turnId,
+          });
         },
         clearCompletionPersistenceOwnership: ({
           conversationId,
@@ -11608,6 +11811,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
             completionOwner.assistantMessageId === assistantMessageId
           ) {
             completionPersistenceOwnersByConversationId.delete(conversationId);
+            updateConversationRuntimeIfSessionMatches(
+              conversationId,
+              sessionId,
+              (runtime) =>
+                runtime.phase === "persisting" &&
+                runtime.turnId === turnId &&
+                runtime.assistantMessageId === assistantMessageId
+                  ? null
+                  : runtime,
+            );
           }
         },
         maybeMarkImplementTaskFailedAfterStreamError,
@@ -13020,13 +13233,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
         !pendingConversationIds.has(conversation.id) &&
         !replayRecoveryBlockedConversationIds.has(conversation.id),
     );
-    const visibleMessages = messages.filter(
+    const visibleConversationIds = new Set(
+      visibleConversations.map((conversation) => conversation.id),
+    );
+    const persistedVisibleMessages = messages.filter(
       (message) =>
         !pendingConversationIds.has(message.conversation_id) &&
         !replayRecoveryBlockedConversationIds.has(message.conversation_id),
     );
+    const recoveredAssistantResponses =
+      loadUnsavedAssistantResponsesFromStorage().filter((message) =>
+        visibleConversationIds.has(message.conversation_id),
+      );
+    const recoveredMerge = mergeRecoveredAssistantResponses(
+      persistedVisibleMessages,
+      recoveredAssistantResponses,
+    );
+    recoveredMerge.reconciledMessageIds.forEach((messageId) => {
+      removeUnsavedAssistantResponseFromStorage(messageId);
+    });
+    const visibleMessages = recoveredMerge.messages;
+    const hydratedVisibleConversations = visibleConversations.map(
+      (conversation) => {
+        const conversationMessages = visibleMessages.filter(
+          (message) => message.conversation_id === conversation.id,
+        );
+        const latestMessage = conversationMessages.at(-1);
+        if (!latestMessage?.persistence_state) return conversation;
+        return {
+          ...conversation,
+          message_count: Math.max(
+            conversation.message_count,
+            conversationMessages.length,
+          ),
+          last_message: latestMessage.content,
+          updated_at: latestMessage.timestamp,
+        };
+      },
+    );
 
-    pruneConversationSelections(visibleConversations);
+    pruneConversationSelections(hydratedVisibleConversations);
 
     const loadedImages = loadMessageImagesFromStorage();
     const archivedConversationPreference = await loadPreference<unknown>(
@@ -13040,12 +13286,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         )
       : EMPTY_STRING_SET;
     const composerDraftsByContextKey = restorePersistedComposerDrafts(
-      visibleConversations,
+      hydratedVisibleConversations,
       archivedConversationIds,
     );
 
     set({
-      conversations: visibleConversations,
+      conversations: hydratedVisibleConversations,
       ...buildMessageState(visibleMessages),
       messageLoadStatusByConversationId: Object.fromEntries(
         Array.from(loadedConversationIds)
@@ -14536,6 +14782,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       pendingConversationDeletionIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
+      stopConversationRuntimeLocally(conversationId);
       try {
         await prepareConversationReplayForDeletion(conversationId);
         await beginStandaloneConversationDeletionSaga(conversationId);
@@ -14567,7 +14814,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
           cleanupFailures.push(`${label}: ${toServiceError(error).message}`);
         }
       };
-      stopConversationRuntimeLocally(conversationId);
       await runCleanup("toolbox", () =>
         deleteConversationToolboxStateIfAvailable(conversationId),
       );
@@ -14621,6 +14867,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         pendingConversationDeletionIds.add(conversationId);
         latestConversationSessionIdByConversationId.delete(conversationId);
         completionPersistenceOwnersByConversationId.delete(conversationId);
+        stopConversationRuntimeLocally(conversationId);
       });
       try {
         for (const conversationId of uniqueIds) {
@@ -14639,9 +14886,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       try {
         await deletePersistedConversations(chatPersistenceAdapters, uniqueIds);
         persistedDeletionCommitted = true;
-        uniqueIds.forEach((conversationId) => {
-          stopConversationRuntimeLocally(conversationId);
-        });
         const cleanupFailures: string[] = [];
         await Promise.all(
           uniqueIds.map(async (conversationId) => {
@@ -14716,6 +14960,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       deletedConversationIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
+      stopConversationRuntimeLocally(conversationId);
       try {
         await prepareConversationReplayForDeletion(conversationId);
       } catch (error) {
@@ -15917,6 +16162,182 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       setConversationRuntime(conversationId, null);
+    },
+
+    retryAssistantPersistence: async (messageId) => {
+      const assistantMessage = findChatMessageInState(get(), messageId);
+      if (
+        !assistantMessage ||
+        assistantMessage.role !== "assistant" ||
+        assistantMessage.persistence_state !== "failed"
+      ) {
+        throw buildSendError("This assistant response is not waiting to be saved.");
+      }
+
+      get().updateMessageFields(messageId, {
+        persistence_state: "retrying",
+      });
+      try {
+        await persistAssistantCompletionResult(chatPersistenceAdapters, {
+          assistantMessageId: messageId,
+          persistedAssistant: assistantMessage,
+          result: {
+            visibleContent: assistantMessage.content,
+            hiddenContext: assistantMessage.hidden_context,
+            providerInputItems: assistantMessage.provider_input_items,
+            providerTurnState: assistantMessage.provider_turn_state,
+            toolTraces: assistantMessage.tool_traces ?? [],
+            completionReason: assistantMessage.completion_reason,
+          },
+        });
+      } catch (error) {
+        const normalized = toServiceError(error);
+        const message = normalized.message.startsWith(
+          "Failed to save assistant response:",
+        )
+          ? normalized.message
+          : `Failed to save assistant response: ${normalized.message}`;
+        const displayedMessage = markAssistantPersistenceFailure({
+          assistantMessage,
+          message,
+        });
+        throw buildSendError(displayedMessage);
+      }
+
+      removeUnsavedAssistantResponseFromStorage(messageId);
+      get().updateMessageFields(messageId, {
+        persistence_state: undefined,
+        persistence_error: undefined,
+      });
+      clearAssistantPersistenceError(
+        assistantMessage.conversation_id,
+        messageId,
+      );
+      queueMicrotask(() => {
+        void drainQueuedSubmissions(assistantMessage.conversation_id);
+      });
+    },
+
+    deleteUnsavedAssistantResponse: async (messageId) => {
+      const assistantMessage = findChatMessageInState(get(), messageId);
+      if (
+        !assistantMessage ||
+        assistantMessage.role !== "assistant" ||
+        assistantMessage.persistence_state !== "failed"
+      ) {
+        throw buildSendError("This assistant response cannot be deleted here.");
+      }
+
+      const orderedMessages = sortMessagesChronologically(
+        get().getConversationMessages(assistantMessage.conversation_id),
+      );
+      const targetIndex = orderedMessages.findIndex(
+        (message) => message.id === messageId,
+      );
+      const targetTurnId = getMessageTurnId(assistantMessage);
+      const turnStartIndex = targetTurnId
+        ? orderedMessages.findIndex(
+            (message) => getMessageTurnId(message) === targetTurnId,
+          )
+        : -1;
+      const hasLaterUnrelatedTurn = orderedMessages
+        .slice(turnStartIndex)
+        .some((message) => getMessageTurnId(message) !== targetTurnId);
+      if (
+        targetIndex < 0 ||
+        !targetTurnId ||
+        turnStartIndex < 0 ||
+        turnStartIndex > targetIndex ||
+        hasLaterUnrelatedTurn
+      ) {
+        throw buildSendError(
+          "Only the latest unsaved assistant turn can be deleted.",
+        );
+      }
+      try {
+        await deletePersistedConversationTurn(
+          chatPersistenceAdapters,
+          assistantMessage.conversation_id,
+          targetTurnId,
+        );
+      } catch (error) {
+        throw buildSendError(
+          `Failed to delete the unsaved assistant response: ${toServiceError(error).message}`,
+        );
+      }
+
+      set((state) => {
+        const currentConversationMessages = sortMessagesChronologically(
+          getConversationMessagesFromState(
+            state,
+            assistantMessage.conversation_id,
+          ),
+        );
+        const retainedConversationMessages = currentConversationMessages.filter(
+          (message) => getMessageTurnId(message) !== targetTurnId,
+        );
+        const removedMessageIds = new Set(
+          currentConversationMessages
+            .filter((message) => getMessageTurnId(message) === targetTurnId)
+            .map((message) => message.id),
+        );
+        const nextMessages = state.messages.filter(
+          (message) => !removedMessageIds.has(message.id),
+        );
+        const rebuilt = buildMessageState(nextMessages);
+        const nextMessageImages = Object.fromEntries(
+          Object.entries(state.messageImagesByMessageId).filter(
+            ([candidateMessageId]) => !removedMessageIds.has(candidateMessageId),
+          ),
+        );
+        saveMessageImagesToStorage(nextMessageImages);
+        const nextQuestionnaireDrafts = clearQuestionnaireDraftsForConversations(
+          state.questionnaireDraftsByConversationId,
+          [assistantMessage.conversation_id],
+        );
+        saveQuestionnaireDraftsToStorage(nextQuestionnaireDrafts);
+        const lastMessage = retainedConversationMessages.at(-1);
+        return {
+          messages: rebuilt.messages,
+          messagesByConversationId: {
+            ...state.messagesByConversationId,
+            ...rebuilt.messagesByConversationId,
+            [assistantMessage.conversation_id]: retainedConversationMessages,
+          },
+          messageIndexById: rebuilt.messageIndexById,
+          messageImagesByMessageId: nextMessageImages,
+          questionnaireDraftsByConversationId: nextQuestionnaireDrafts,
+          skillTurnFeedbackByMessageId: Object.fromEntries(
+            Object.entries(state.skillTurnFeedbackByMessageId).filter(
+              ([candidateMessageId]) => !removedMessageIds.has(candidateMessageId),
+            ),
+          ),
+          conversations: state.conversations.map((conversation) =>
+            conversation.id === assistantMessage.conversation_id
+              ? {
+                  ...conversation,
+                  message_count: retainedConversationMessages.length,
+                  last_message: lastMessage?.content ?? "",
+                  updated_at: new Date().toISOString(),
+                }
+              : conversation,
+          ),
+        };
+      });
+      removeUnsavedAssistantResponseFromStorage(messageId);
+      clearAssistantPersistenceError(
+        assistantMessage.conversation_id,
+        messageId,
+      );
+      useCitationsStore.getState().pruneConversationCitations(
+        assistantMessage.conversation_id,
+        get()
+          .getConversationMessages(assistantMessage.conversation_id)
+          .map((message) => message.id),
+      );
+      queueMicrotask(() => {
+        void drainQueuedSubmissions(assistantMessage.conversation_id);
+      });
     },
 
     stopStreaming: () => {

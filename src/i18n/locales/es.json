@@ -451,6 +451,11 @@
   "chat": {
     "newChat": "Nuevo chat",
     "newConversation": "Nueva conversación",
+    "unsavedAssistant": {
+      "label": "Sin guardar",
+      "saving": "Guardando respuesta...",
+      "description": "Macro no pudo guardar esta respuesta. Vuelve a intentarlo o elimínala antes de enviar otro mensaje."
+    },
     "loadingConversation": "Restaurando la conversación...",
     "showHistory": "Mostrar historial",
     "hideHistory": "Ocultar historial",

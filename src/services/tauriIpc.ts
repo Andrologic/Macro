@@ -484,6 +484,9 @@ export interface GitStartMergeResolutionDto {
 export interface GitConflictFileSideDto {
   exists: boolean;
   content: string;
+  sizeBytes: number;
+  isBinary: boolean;
+  tooLarge: boolean;
 }
 
 export interface GitConflictFileDto {
@@ -1730,6 +1733,13 @@ export async function deleteMessagesAfter(
   afterMessageId: string,
 ): Promise<void> {
   return invoke("db_delete_messages_after", { conversationId, afterMessageId });
+}
+
+export async function deleteConversationTurn(
+  conversationId: string,
+  turnId: string,
+): Promise<void> {
+  return invoke("db_delete_conversation_turn", { conversationId, turnId });
 }
 
 export async function dbTrimConversationReplay(params: {

@@ -446,6 +446,11 @@
   "chat": {
     "newChat": "新しいチャット",
     "newConversation": "新しい会話",
+    "unsavedAssistant": {
+      "label": "未保存",
+      "saving": "回答を保存しています...",
+      "description": "Macro はこの回答を保存できませんでした。次のメッセージを送る前に、再試行するか削除してください。"
+    },
     "loadingConversation": "会話を復元しています...",
     "showHistory": "番組履歴",
     "hideHistory": "履歴を隠す",
