@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 
 const FOCUSABLE_SELECTOR = [
@@ -10,8 +10,29 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
-const openDialogs = new Set<HTMLElement>();
+interface OpenDialogEntry {
+  depth: number;
+  order: number;
+}
+
+const DialogStackDepthContext = createContext(0);
+const openDialogs = new Map<HTMLElement, OpenDialogEntry>();
+let nextDialogOrder = 0;
 const backgroundAttributes = new Map<HTMLElement, { inert: boolean; ariaHidden: string | null }>();
+
+const getTopmostDialog = (): HTMLElement | null => {
+  let topmost: [HTMLElement, OpenDialogEntry] | null = null;
+  for (const entry of openDialogs.entries()) {
+    if (
+      !topmost ||
+      entry[1].depth > topmost[1].depth ||
+      (entry[1].depth === topmost[1].depth && entry[1].order > topmost[1].order)
+    ) {
+      topmost = entry;
+    }
+  }
+  return topmost?.[0] ?? null;
+};
 
 const getFocusableElements = (container: HTMLElement): HTMLElement[] =>
   Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
@@ -21,7 +42,7 @@ const getFocusableElements = (container: HTMLElement): HTMLElement[] =>
 const synchronizeBackgroundInertness = (): void => {
   if (typeof document === 'undefined') return;
 
-  const topmostDialog = Array.from(openDialogs).at(-1) ?? null;
+  const topmostDialog = getTopmostDialog();
   for (const child of Array.from(document.body.children).filter(
     (candidate): candidate is HTMLElement => candidate instanceof HTMLElement
   )) {
@@ -70,6 +91,7 @@ export const Dialog: React.FC<DialogProps> = ({
   ariaDescribedBy,
 }) => {
   const titleId = useId();
+  const stackDepth = useContext(DialogStackDepthContext);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -87,17 +109,20 @@ export const Dialog: React.FC<DialogProps> = ({
     previousFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    openDialogs.add(root);
+    openDialogs.set(root, {
+      depth: stackDepth,
+      order: ++nextDialogOrder,
+    });
     synchronizeBackgroundInertness();
 
     const focusInitialElement = () => {
-      if (openDialogs.size === 0 || Array.from(openDialogs).at(-1) !== root) return;
+      if (getTopmostDialog() !== root) return;
       (initialFocusRef?.current ?? getFocusableElements(panel)[0] ?? panel).focus();
     };
     queueMicrotask(focusInitialElement);
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (Array.from(openDialogs).at(-1) !== root) return;
+      if (getTopmostDialog() !== root) return;
 
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -132,31 +157,34 @@ export const Dialog: React.FC<DialogProps> = ({
       openDialogs.delete(root);
       synchronizeBackgroundInertness();
       previousFocusRef.current?.focus();
+      if (openDialogs.size === 0) nextDialogOrder = 0;
     };
-  }, [initialFocusRef]);
+  }, [initialFocusRef, stackDepth]);
 
   return createPortal(
-    <div
-      ref={rootRef}
-      data-macro-dialog-root
-      className={backdropClassName}
-      onClick={(event) => {
-        if (closeOnBackdropClick && event.target === event.currentTarget) onClose();
-      }}
-    >
+    <DialogStackDepthContext.Provider value={stackDepth + 1}>
       <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={ariaDescribedBy}
-        tabIndex={-1}
-        className={panelClassName}
+        ref={rootRef}
+        data-macro-dialog-root
+        className={backdropClassName}
+        onClick={(event) => {
+          if (closeOnBackdropClick && event.target === event.currentTarget) onClose();
+        }}
       >
-        <h2 id={titleId} className="sr-only">{title}</h2>
-        {children}
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          aria-describedby={ariaDescribedBy}
+          tabIndex={-1}
+          className={panelClassName}
+        >
+          <h2 id={titleId} className="sr-only">{title}</h2>
+          {children}
+        </div>
       </div>
-    </div>,
+    </DialogStackDepthContext.Provider>,
     document.body
   );
 };
