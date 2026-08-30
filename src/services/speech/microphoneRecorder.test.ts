@@ -26,6 +26,12 @@ class FakeMediaRecorder extends EventTarget {
   }
 }
 
+class DelayedStopMediaRecorder extends FakeMediaRecorder {
+  override stop(): void {
+    this.state = 'inactive';
+  }
+}
+
 describe('MicrophoneRecorder', () => {
   const stopTrack = mock(() => undefined);
   const getUserMedia = mock(async () => ({
@@ -121,6 +127,28 @@ describe('MicrophoneRecorder', () => {
     resolvePermission?.({ getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream);
 
     await expect(startPromise).rejects.toThrow('cancelled');
+    expect(stopTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles stop when cancellation happens before MediaRecorder emits its stop event', async () => {
+    Object.defineProperty(globalThis, 'MediaRecorder', {
+      configurable: true,
+      value: DelayedStopMediaRecorder,
+    });
+    const recorder = new MicrophoneRecorder();
+    await recorder.start(30);
+
+    const stopping = recorder.stop();
+    recorder.cancel();
+    const outcome = await Promise.race([
+      stopping.then(
+        () => 'resolved',
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 50)),
+    ]);
+
+    expect(outcome).toBe('Microphone recording cancelled.');
     expect(stopTrack).toHaveBeenCalledTimes(1);
   });
 });
