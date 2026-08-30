@@ -37,11 +37,11 @@ use std::ffi::OsStr;
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::{watch, Mutex as AsyncMutex, OwnedMutexGuard};
-use tokio::time::timeout;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 const WORKSPACE_STATE_BACKUP_FILE: &str = "workspace.json.bak";
@@ -650,6 +650,7 @@ fn empty_git_flow_detection() -> ProjectGitFlowDetectionDto {
     }
 }
 
+#[cfg(test)]
 fn project_operation_cancelled_error() -> BackendError {
     BackendError::Validation("Project operation cancelled.".to_string())
 }
@@ -672,39 +673,31 @@ fn wsl_git_unavailable_error(distro: &str, stderr: &str) -> BackendError {
 async fn wait_for_wsl_command(
     mut command: tokio::process::Command,
     timeout_duration: Duration,
-    mut cancel_rx: Option<watch::Receiver<bool>>,
+    cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<std::process::Output> {
-    command.kill_on_drop(true);
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let child = command.spawn().map_err(|error| BackendError::Git {
         message: format!("Failed to start WSL command: {}", error),
     })?;
-
-    let wait_future = child.wait_with_output();
-    tokio::pin!(wait_future);
-
-    if let Some(cancel_rx) = cancel_rx.as_mut() {
-        tokio::select! {
-            result = timeout(timeout_duration, &mut wait_future) => {
-                result.map_err(|_| BackendError::Git {
-                    message: "Git detection timed out. Check WSL or add the project as read-only.".to_string(),
-                })?.map_err(|error| BackendError::Git {
-                    message: format!("Failed to run WSL command: {}", error),
-                })
-            }
-            _ = cancel_rx.changed() => {
-                Err(project_operation_cancelled_error())
-            }
-        }
-    } else {
-        timeout(timeout_duration, &mut wait_future)
-            .await
-            .map_err(|_| BackendError::Git {
+    match crate::project_path::wait_for_wsl_child_with_cancellation(
+        child,
+        None,
+        Duration::from_secs(30),
+        timeout_duration,
+        cancel_rx,
+    )
+    .await
+    {
+        Err(BackendError::Git { message }) if message.contains("timed out") => {
+            Err(BackendError::Git {
                 message: "Git detection timed out. Check WSL or add the project as read-only."
                     .to_string(),
-            })?
-            .map_err(|error| BackendError::Git {
-                message: format!("Failed to run WSL command: {}", error),
             })
+        }
+        result => result,
     }
 }
 

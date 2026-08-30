@@ -1,6 +1,6 @@
 use crate::commands::{command_error, CommandResult};
 use crate::config::{ConfigDocumentKind, ConfigManager, SkillsDocument};
-use crate::core::process::background_tokio_command;
+use crate::core::process::{background_contained_tokio_command, ContainedBackgroundProcess};
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
@@ -14,6 +14,7 @@ use std::sync::{Arc, Barrier, LazyLock, Mutex};
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
+use tokio::io::AsyncReadExt;
 use tokio::time::timeout;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
@@ -27,6 +28,8 @@ const LOWERCASE_SKILL_FILE: &str = "skill.md";
 const AGENTS_SKILLS_DIR: &str = ".agents/skills";
 const RESOURCE_MAX_BYTES: u64 = 512 * 1024;
 const SCRIPT_OUTPUT_MAX_CHARS: usize = 20_000;
+const SCRIPT_OUTPUT_TRUNCATION_MARKER: &str = "\n[truncated]";
+const SCRIPT_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const MAX_DISCOVERY_DEPTH: usize = 6;
@@ -34,6 +37,16 @@ const MAX_DISCOVERY_DIRS: usize = 2_000;
 const MAX_SKILL_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
 const MAX_COMPATIBILITY_LENGTH: usize = 500;
+
+struct SkillRunTempDir(Option<PathBuf>);
+
+impl Drop for SkillRunTempDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
 
 const FRONTMATTER_FIELDS: &[&str] = &[
     "name",
@@ -1420,13 +1433,104 @@ fn resolve_resource_path(
     Ok(target_canonical)
 }
 
+fn truncate_with_marker(value: String, max_chars: usize) -> String {
+    let marker_chars = SCRIPT_OUTPUT_TRUNCATION_MARKER.chars().count();
+    if marker_chars >= max_chars {
+        return SCRIPT_OUTPUT_TRUNCATION_MARKER
+            .chars()
+            .take(max_chars)
+            .collect();
+    }
+    let mut truncated = value
+        .chars()
+        .take(max_chars - marker_chars)
+        .collect::<String>();
+    truncated.push_str(SCRIPT_OUTPUT_TRUNCATION_MARKER);
+    truncated
+}
+
 fn truncate_chars(value: String, max_chars: usize) -> (String, bool) {
     if value.chars().count() <= max_chars {
         return (value, false);
     }
-    let mut truncated = value.chars().take(max_chars).collect::<String>();
-    truncated.push_str("\n[truncated]");
-    (truncated, true)
+    (truncate_with_marker(value, max_chars), true)
+}
+
+fn finalize_bounded_skill_output(raw: String, discarded: bool) -> (String, bool) {
+    let (output, char_truncated) = truncate_chars(raw, SCRIPT_OUTPUT_MAX_CHARS);
+    if discarded && !char_truncated {
+        return (truncate_with_marker(output, SCRIPT_OUTPUT_MAX_CHARS), true);
+    }
+    (output, discarded || char_truncated)
+}
+
+async fn read_bounded_skill_output<R>(mut reader: R) -> std::io::Result<(String, bool)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let byte_limit = SCRIPT_OUTPUT_MAX_CHARS.saturating_mul(4);
+    let mut retained = Vec::with_capacity(byte_limit);
+    let mut discarded = false;
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = byte_limit.saturating_sub(retained.len());
+        let keep = remaining.min(read);
+        retained.extend_from_slice(&buffer[..keep]);
+        discarded |= keep < read;
+    }
+    let raw = String::from_utf8_lossy(&retained).into_owned();
+    Ok(finalize_bounded_skill_output(raw, discarded))
+}
+
+async fn finish_skill_output_tasks(
+    mut stdout_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
+    mut stderr_task: tokio::task::JoinHandle<std::io::Result<(String, bool)>>,
+    drain_timeout: Duration,
+) -> CommandResult<((String, bool), (String, bool))> {
+    let joined = timeout(drain_timeout, async {
+        tokio::join!(&mut stdout_task, &mut stderr_task)
+    })
+    .await;
+    match joined {
+        Ok((stdout, stderr)) => {
+            let stdout = stdout
+                .map_err(|error| command_error(format!("Failed to join skill stdout: {error}")))?
+                .map_err(|error| command_error(format!("Failed to read skill stdout: {error}")))?;
+            let stderr = stderr
+                .map_err(|error| command_error(format!("Failed to join skill stderr: {error}")))?
+                .map_err(|error| command_error(format!("Failed to read skill stderr: {error}")))?;
+            Ok((stdout, stderr))
+        }
+        Err(_) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            let marker = SCRIPT_OUTPUT_TRUNCATION_MARKER
+                .trim_start_matches('\n')
+                .to_string();
+            Ok(((marker.clone(), true), (marker, true)))
+        }
+    }
+}
+
+fn append_skill_timeout_message(stderr: String, timeout_ms: u64) -> (String, bool) {
+    let message = format!("Skill script timed out after {} ms.", timeout_ms);
+    if stderr.is_empty() {
+        return (message, false);
+    }
+    let separator = "\n";
+    let untruncated_chars =
+        stderr.chars().count() + separator.chars().count() + message.chars().count();
+    if untruncated_chars <= SCRIPT_OUTPUT_MAX_CHARS {
+        return (format!("{stderr}{separator}{message}"), false);
+    }
+    let suffix = format!("{SCRIPT_OUTPUT_TRUNCATION_MARKER}{separator}{message}");
+    let stderr_limit = SCRIPT_OUTPUT_MAX_CHARS.saturating_sub(suffix.chars().count());
+    let stderr = stderr.chars().take(stderr_limit).collect::<String>();
+    (format!("{stderr}{suffix}"), true)
 }
 
 fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
@@ -2144,7 +2248,7 @@ async fn run_skill_script_with_manifest(
     };
     command_args.extend(args);
 
-    let mut temp_run_dir: Option<PathBuf> = None;
+    let mut temp_run_dir = SkillRunTempDir(None);
     let run_cwd = if allow_workspace {
         resolve_workspace_cwd(workspace_path, &project_roots)?
     } else {
@@ -2152,11 +2256,11 @@ async fn run_skill_script_with_manifest(
         fs::create_dir_all(&path).map_err(|error| {
             command_error(format!("Failed to create skill run directory: {}", error))
         })?;
-        temp_run_dir = Some(path.clone());
+        temp_run_dir.0 = Some(path.clone());
         path
     };
 
-    let mut command = background_tokio_command(program);
+    let mut command = background_contained_tokio_command(program);
     command
         .args(command_args)
         .current_dir(run_cwd)
@@ -2164,7 +2268,6 @@ async fn run_skill_script_with_manifest(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear();
-    command.kill_on_drop(true);
     let preserved_env_vars = if cfg!(windows) {
         ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"].as_slice()
     } else {
@@ -2176,41 +2279,74 @@ async fn run_skill_script_with_manifest(
         }
     }
 
-    let result = timeout(Duration::from_millis(timeout_ms), command.output()).await;
-    let response = match result {
-        Ok(Ok(output)) => {
-            let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
-            let (stdout, stdout_truncated) = truncate_chars(stdout_raw, SCRIPT_OUTPUT_MAX_CHARS);
-            let (stderr, stderr_truncated) = truncate_chars(stderr_raw, SCRIPT_OUTPUT_MAX_CHARS);
-            Ok(SkillScriptRunResponse {
-                skill_id,
-                script_path,
-                stdout,
-                stderr,
-                exit_code: output.status.code(),
-                timed_out: false,
-                truncated: stdout_truncated || stderr_truncated,
-            })
+    let mut process = ContainedBackgroundProcess::spawn(command)
+        .map_err(|error| command_error(format!("Failed to run skill script: {}", error)))?;
+    let stdout_pipe = process
+        .take_stdout()
+        .ok_or_else(|| command_error("Failed to capture skill script stdout."))?;
+    let stderr_pipe = process
+        .take_stderr()
+        .ok_or_else(|| command_error("Failed to capture skill script stderr."))?;
+    let stdout_task = tokio::spawn(read_bounded_skill_output(stdout_pipe));
+    let stderr_task = tokio::spawn(read_bounded_skill_output(stderr_pipe));
+    let wait_result = timeout(Duration::from_millis(timeout_ms), process.wait()).await;
+    let timed_out = wait_result.is_err();
+    let status = match wait_result {
+        Ok(Ok(status)) => Some(status),
+        Ok(Err(error)) => {
+            let _ = process.terminate_with_grace(Duration::ZERO).await;
+            return Err(command_error(format!(
+                "Failed to wait for skill script: {}",
+                error
+            )));
         }
-        Ok(Err(error)) => Err(command_error(format!(
-            "Failed to run skill script: {}",
-            error
-        ))),
-        Err(_) => Ok(SkillScriptRunResponse {
+        Err(_) => {
+            process
+                .terminate_with_grace(Duration::ZERO)
+                .await
+                .map_err(|error| {
+                    command_error(format!("Failed to stop timed out skill script: {}", error))
+                })?;
+            None
+        }
+    };
+    if status.is_some() {
+        process
+            .terminate_with_grace(Duration::ZERO)
+            .await
+            .map_err(|error| {
+                command_error(format!(
+                    "Failed to reap skill script descendants: {}",
+                    error
+                ))
+            })?;
+    }
+    let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+        finish_skill_output_tasks(stdout_task, stderr_task, SCRIPT_OUTPUT_DRAIN_TIMEOUT).await?;
+
+    let response = if timed_out {
+        let (stderr, timeout_message_truncated) = append_skill_timeout_message(stderr, timeout_ms);
+        Ok(SkillScriptRunResponse {
             skill_id,
             script_path,
-            stdout: String::new(),
-            stderr: format!("Skill script timed out after {} ms.", timeout_ms),
+            stdout,
+            stderr,
             exit_code: None,
             timed_out: true,
-            truncated: false,
-        }),
+            truncated: stdout_truncated || stderr_truncated || timeout_message_truncated,
+        })
+    } else {
+        let status = status.expect("completed skill script status");
+        Ok(SkillScriptRunResponse {
+            skill_id,
+            script_path,
+            stdout,
+            stderr,
+            exit_code: status.code(),
+            timed_out: false,
+            truncated: stdout_truncated || stderr_truncated,
+        })
     };
-
-    if let Some(path) = temp_run_dir {
-        let _ = fs::remove_dir_all(path);
-    }
 
     response
 }
@@ -2219,6 +2355,58 @@ async fn run_skill_script_with_manifest(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn truncation_marker_is_included_in_output_limit() {
+        let (output, truncated) = truncate_chars(
+            "x".repeat(SCRIPT_OUTPUT_MAX_CHARS + 1),
+            SCRIPT_OUTPUT_MAX_CHARS,
+        );
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.ends_with(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn timeout_message_and_marker_are_included_in_output_limit() {
+        let (output, truncated) =
+            append_skill_timeout_message("x".repeat(SCRIPT_OUTPUT_MAX_CHARS), 1_000);
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.contains(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+        assert!(output.ends_with("Skill script timed out after 1000 ms."));
+    }
+
+    #[tokio::test]
+    async fn discarded_multibyte_output_keeps_a_truncation_marker() {
+        let input = "😀".repeat(SCRIPT_OUTPUT_MAX_CHARS + 1).into_bytes();
+        let (output, truncated) = read_bounded_skill_output(input.as_slice())
+            .await
+            .expect("read bounded multibyte output");
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.ends_with(SCRIPT_OUTPUT_TRUNCATION_MARKER));
+    }
+
+    #[tokio::test]
+    async fn output_drain_timeout_aborts_inherited_pipe_readers() {
+        let stdout_task =
+            tokio::spawn(async { std::future::pending::<std::io::Result<(String, bool)>>().await });
+        let stderr_task = tokio::spawn(async { Ok(("stderr".to_string(), false)) });
+
+        let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+            finish_skill_output_tasks(stdout_task, stderr_task, Duration::from_millis(10))
+                .await
+                .expect("bounded output drain");
+
+        assert!(stdout_truncated);
+        assert!(stderr_truncated);
+        assert_eq!(stdout, "[truncated]");
+        assert_eq!(stderr, "[truncated]");
+    }
 
     async fn test_skills_list(
         project_roots: Vec<SkillProjectRootDto>,
@@ -3226,13 +3414,50 @@ mod tests {
         #[cfg(windows)]
         let (noisy_script_path, noisy_script_content) = (
             "scripts/noisy.cmd",
-            "@echo off\r\npowershell -NoProfile -Command \"$Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(30000, 25); Write-Host -NoNewline ('x' * 21050)\"\r\n",
+            "@echo off\r\ntype \"%~dp0noisy-payload.txt\"\r\n",
         );
         #[cfg(not(windows))]
-        let (noisy_script_path, noisy_script_content) =
-            ("scripts/noisy.sh", "printf 'x%.0s' {1..21050}\n");
+        let (noisy_script_path, noisy_script_content) = (
+            "scripts/noisy.sh",
+            "cat \"$(dirname \"$0\")/noisy-payload.txt\"\n",
+        );
+        #[cfg(windows)]
+        let (noisy_timeout_script_path, noisy_timeout_script_content) = (
+            "scripts/noisy-timeout.cmd",
+            "@echo off\r\ntype \"%~dp0noisy-payload.txt\"\r\nping -n 6 127.0.0.1 >nul\r\n",
+        );
+        #[cfg(not(windows))]
+        let (noisy_timeout_script_path, noisy_timeout_script_content) = (
+            "scripts/noisy-timeout.sh",
+            "cat \"$(dirname \"$0\")/noisy-payload.txt\"\nsleep 5\n",
+        );
+        #[cfg(windows)]
+        let (descendant_script_path, descendant_script_content) = (
+            "scripts/descendant.cmd",
+            "@echo off\r\nstart \"\" /B powershell.exe -NoProfile -Command \"Start-Sleep -Milliseconds 1500; Set-Content -LiteralPath '%~1' -Value survived\"\r\npowershell.exe -NoProfile -Command \"Start-Sleep -Seconds 10\"\r\n",
+        );
+        #[cfg(not(windows))]
+        let (descendant_script_path, descendant_script_content) = (
+            "scripts/descendant.sh",
+            "if command -v setsid >/dev/null 2>&1; then\n  setsid sh -c 'sleep 1.5; printf survived > \"$1\"' sh \"$1\" &\nelse\n  (sleep 1.5; printf survived > \"$1\") &\nfi\nsleep 10\n",
+        );
         fs::write(skill_dir.join(slow_script_path), slow_script_content).expect("write slow");
         fs::write(skill_dir.join(noisy_script_path), noisy_script_content).expect("write noisy");
+        fs::write(
+            skill_dir.join(noisy_timeout_script_path),
+            noisy_timeout_script_content,
+        )
+        .expect("write noisy timeout");
+        fs::write(
+            skill_dir.join("scripts/noisy-payload.txt"),
+            "x".repeat(100_000),
+        )
+        .expect("write noisy payload");
+        fs::write(
+            skill_dir.join(descendant_script_path),
+            descendant_script_content,
+        )
+        .expect("write descendant script");
         let project_roots = vec![SkillProjectRootDto {
             project_id: "p1".to_string(),
             project_name: "Project".to_string(),
@@ -3267,6 +3492,44 @@ mod tests {
             timed_out.stdout, timed_out.stderr, timed_out.exit_code
         );
         assert!(timed_out.stderr.contains("timed out"));
+
+        let noisy_timeout = test_skills_run_script(
+            skill_id.clone(),
+            noisy_timeout_script_path.to_string(),
+            vec![],
+            Some(1_000),
+            false,
+            None,
+            project_roots.clone(),
+        )
+        .await
+        .expect("noisy timeout response");
+        assert!(noisy_timeout.timed_out);
+        assert!(noisy_timeout.truncated);
+        assert!(noisy_timeout.stdout.ends_with("[truncated]"));
+        assert!(
+            noisy_timeout.stdout.chars().count() <= SCRIPT_OUTPUT_MAX_CHARS,
+            "timed out stdout exceeded its bounded response"
+        );
+
+        let descendant_marker = project.path().join("descendant-survived.txt");
+        let descendant_timeout = test_skills_run_script(
+            skill_id.clone(),
+            descendant_script_path.to_string(),
+            vec![descendant_marker.to_string_lossy().to_string()],
+            Some(1_000),
+            false,
+            None,
+            project_roots.clone(),
+        )
+        .await
+        .expect("descendant timeout response");
+        assert!(descendant_timeout.timed_out);
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        assert!(
+            !descendant_marker.exists(),
+            "skill script descendant survived timeout"
+        );
 
         let truncated = test_skills_run_script(
             skill_id,
