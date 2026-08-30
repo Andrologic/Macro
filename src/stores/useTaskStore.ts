@@ -618,6 +618,66 @@ const assertLifecycleGitTargetsSafe = async (
   }
 };
 
+const mergeArchivedCleanupIntoLinkedDeletion = (
+  saga: LinkedTaskDeletionSaga,
+  cleanup: ArchivedTaskCleanupSaga,
+): LinkedTaskDeletionSaga => {
+  const linkedTargets = saga.executionTargets ?? [];
+  const cleanupByWorktreeKey = new Map(
+    cleanup.targets.map((target) => [target.worktreeKey, target] as const),
+  );
+  const mergedTargets = linkedTargets.map((target) => {
+    const archivedTarget = cleanupByWorktreeKey.get(target.worktreeKey);
+    if (!archivedTarget || target.cleanupKind === 'direct') return target;
+    cleanupByWorktreeKey.delete(target.worktreeKey);
+    return {
+      ...target,
+      repoPath: archivedTarget.repoPath,
+      branchName: archivedTarget.branchName,
+      branchExisted: true,
+      worktreeRemoved: target.worktreeRemoved || archivedTarget.worktreeRemoved,
+      branchRemoved: target.branchRemoved || archivedTarget.branchRemoved,
+      cleanupKind: 'git' as const,
+    };
+  });
+  for (const target of cleanupByWorktreeKey.values()) {
+    mergedTargets.push({
+      worktreeKey: target.worktreeKey,
+      repoPath: target.repoPath,
+      branchName: target.branchName,
+      branchExisted: true,
+      worktreeRemoved: target.worktreeRemoved,
+      branchRemoved: target.branchRemoved,
+      cleanupKind: 'git',
+    });
+  }
+  return {
+    ...saga,
+    archivedCleanupOperationId: cleanup.operationId,
+    archivedCleanupCreatedAt: cleanup.createdAt,
+    executionTargets: mergedTargets,
+    updatedAt: new Date().toISOString(),
+  };
+};
+
+const transferArchivedCleanupToLinkedDeletion = async (
+  initialSaga: LinkedTaskDeletionSaga,
+): Promise<LinkedTaskDeletionSaga> => {
+  let saga = initialSaga;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const cleanup = (await loadArchivedTaskCleanupSagas()).find(
+      (candidate) => candidate.taskId === saga.taskId,
+    );
+    if (!cleanup) return saga;
+    saga = mergeArchivedCleanupIntoLinkedDeletion(saga, cleanup);
+    await upsertLinkedTaskDeletionSaga(saga);
+    await removeArchivedTaskCleanupSaga(cleanup.taskId, cleanup.operationId);
+  }
+  throw new Error(
+    'Le nettoyage de la tâche archivée change trop souvent pour être transféré vers sa suppression.',
+  );
+};
+
 const resumeLinkedTaskGitCleanup = async (
   saga: LinkedTaskDeletionSaga,
 ): Promise<LinkedTaskDeletionSaga> => {
@@ -2996,21 +3056,23 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         if (pending.phase === 'prepared' && taskStillExists) {
           continue;
         }
+        let deletionSaga = pending;
         if (pending.phase === 'task_deleting') {
           try {
+            deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
             if (taskStillExists) {
-              if (pending.draft) {
-                await deleteManualFeatureDraftDurably(pending.taskId);
+              if (deletionSaga.draft) {
+                await deleteManualFeatureDraftDurably(deletionSaga.taskId);
               } else {
-                await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
+                await tauriIpc.workspaceDeleteManualFeature(deletionSaga.taskId);
               }
             }
-            const resumed = await resumeLinkedTaskGitCleanup(pending);
-            pending.executionTargets = resumed.executionTargets;
+            deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
+            deletionSaga = await resumeLinkedTaskGitCleanup(deletionSaga);
           } catch (error) {
             const message = toServiceError(error).message;
             await upsertLinkedTaskDeletionSaga({
-              ...pending,
+              ...deletionSaga,
               updatedAt: new Date().toISOString(),
               lastError: message,
             });
@@ -3021,24 +3083,24 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           }
         }
         const taskDeletedSaga: LinkedTaskDeletionSaga = {
-          ...pending,
+          ...deletionSaga,
           phase: 'task_deleted',
           updatedAt: new Date().toISOString(),
         };
         await upsertLinkedTaskDeletionSaga(taskDeletedSaga);
-        const completed = pending.conversationId
+        const completed = deletionSaga.conversationId
           ? await useChatStore
               .getState()
-              .completeLinkedTaskConversationDeletion(pending.conversationId)
+              .completeLinkedTaskConversationDeletion(deletionSaga.conversationId)
           : true;
         if (completed) {
           await removeLinkedTaskDeletionSaga(
-            pending.taskId,
-            pending.targetBranch,
+            deletionSaga.taskId,
+            deletionSaga.targetBranch,
             getLinkedDeletionSagaGeneration({
-              ...pending,
+              ...deletionSaga,
               ownerType: 'task',
-              ownerId: pending.taskId,
+              ownerId: deletionSaga.taskId,
             }),
           );
         } else {
@@ -4146,11 +4208,24 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           updatedAt: new Date().toISOString(),
         };
         await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
+        linkedConversationSaga = await transferArchivedCleanupToLinkedDeletion(
+          linkedConversationSaga,
+        );
+        set((state) => ({
+          archivedTaskCleanupByTaskId: Object.fromEntries(
+            Object.entries(state.archivedTaskCleanupByTaskId).filter(
+              ([candidateTaskId]) => candidateTaskId !== taskId,
+            ),
+          ),
+        }));
         if (task.draft) {
           await deleteManualFeatureDraftDurably(taskId);
         } else {
           await tauriIpc.workspaceDeleteManualFeature(taskId);
         }
+        linkedConversationSaga = await transferArchivedCleanupToLinkedDeletion(
+          linkedConversationSaga,
+        );
         linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
       } else {
         if (task.draft) {

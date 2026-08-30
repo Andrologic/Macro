@@ -1728,6 +1728,90 @@ describe('useTaskStore merge workflow review loading', () => {
     }
   });
 
+  it('transfers archived cleanup progress before deleting the task from another client', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-delete-archived-cleanup',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      archived_at: '2026-08-30T00:00:00.000Z',
+      conversation_id: 'conversation-delete-archived-cleanup',
+      assigned_branch: 'feature/delete-archived-cleanup',
+      branch_name: 'feature/delete-archived-cleanup',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/delete-archived-cleanup',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/delete-archived-cleanup',
+        repoPath: '/repos/web',
+      }],
+    });
+    const cleanup = {
+      operationId: 'cleanup-delete-operation',
+      taskId: task.id,
+      archiveToken: task.archived_at,
+      targets: [{
+        worktreeKey: 'project-1::feature/delete-archived-cleanup',
+        repoPath: '/repos/web',
+        branchName: 'feature/delete-archived-cleanup',
+        worktreePath: '/repos/web/.macro/worktrees/delete-archived-cleanup',
+        worktreeRemoved: true,
+        branchRemoved: false,
+        state: 'pending' as const,
+      }],
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:01.000Z',
+    };
+    dbAppSettings.set('pendingArchivedTaskCleanups:v1', JSON.stringify([cleanup]));
+    const mutationOrder: string[] = [];
+    dbCompareAndSwapAppSettingMock.mockImplementation(async (params: {
+      key: string;
+      expectedValueJson: string | null;
+      valueJson: string;
+    }) => {
+      if ((dbAppSettings.get(params.key) ?? null) !== params.expectedValueJson) {
+        return { applied: false };
+      }
+      dbAppSettings.set(params.key, params.valueJson);
+      if (
+        params.key === 'pendingLinkedTaskDeletions:v1' &&
+        params.valueJson.includes('"archivedCleanupOperationId":"cleanup-delete-operation"')
+      ) {
+        mutationOrder.push('linked-transfer');
+      }
+      if (params.key === 'completedArchivedTaskCleanups:v1') {
+        mutationOrder.push('archive-tombstone');
+      }
+      return { applied: true };
+    });
+    workspaceDeleteManualFeatureMock.mockImplementation(async () => {
+      mutationOrder.push('task-delete');
+    });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      archivedTaskCleanupByTaskId: { [task.id]: cleanup },
+      refreshFromPlan: mock(async () => undefined),
+      lastError: null,
+    });
+    await useTaskStore.getState().deleteTask(task.id);
+
+    expect(mutationOrder.indexOf('linked-transfer')).toBeGreaterThanOrEqual(0);
+    expect(mutationOrder.indexOf('archive-tombstone')).toBeGreaterThan(
+      mutationOrder.indexOf('linked-transfer'),
+    );
+    expect(mutationOrder.indexOf('task-delete')).toBeGreaterThan(
+      mutationOrder.indexOf('archive-tombstone'),
+    );
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([]);
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+    expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toBeUndefined();
+  });
+
   it('blocks deletion while the linked conversation is still running', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-running-conversation',

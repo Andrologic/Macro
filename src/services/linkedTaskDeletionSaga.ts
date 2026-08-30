@@ -49,6 +49,8 @@ export interface LinkedConversationDeletionSaga {
   phase: LinkedConversationDeletionPhase;
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
+  archivedCleanupOperationId?: string;
+  archivedCleanupCreatedAt?: string;
   targetBranch?: string;
   revertTitle?: string | null;
   revertDescription?: string | null;
@@ -63,6 +65,8 @@ export interface LinkedTaskDeletionSaga {
   phase: LinkedConversationDeletionPhase;
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
+  archivedCleanupOperationId?: string;
+  archivedCleanupCreatedAt?: string;
   targetBranch?: string;
   revertTitle?: string | null;
   revertDescription?: string | null;
@@ -137,7 +141,14 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
           candidate.phase !== 'draft_reverted' &&
           candidate.phase !== 'plan_conversation_created' &&
           candidate.phase !== 'plan_deleting') ||
-        !isAllowedOwnerPhase(ownerType, candidate.phase)
+        !isAllowedOwnerPhase(ownerType, candidate.phase) ||
+        (
+          candidate.archivedCleanupOperationId !== undefined &&
+          typeof candidate.archivedCleanupOperationId !== 'string'
+        ) || (
+          candidate.archivedCleanupCreatedAt !== undefined &&
+          typeof candidate.archivedCleanupCreatedAt !== 'string'
+        )
       ) {
         throw new LinkedConversationDeletionSagaCorruptionError(value);
       }
@@ -221,6 +232,62 @@ const phaseRank = (phase: LinkedConversationDeletionPhase): number => {
   return 2;
 };
 
+const mergeTargetProgress = (
+  persisted: LinkedTaskDeletionTarget[] | undefined,
+  incoming: LinkedTaskDeletionTarget[] | undefined,
+  preferIncomingDetails: boolean,
+): LinkedTaskDeletionTarget[] | undefined => {
+  if (!incoming) return persisted;
+  if (!persisted) return incoming;
+  const incomingKeys = new Set(incoming.map((target) => target.worktreeKey));
+  return [
+    ...incoming.map((target) => {
+      const current = persisted.find((candidate) => candidate.worktreeKey === target.worktreeKey);
+      if (!current) return target;
+      const details = preferIncomingDetails ? target : current;
+      return {
+        ...details,
+        branchExisted: current.branchExisted || target.branchExisted,
+        worktreeRemoved: current.worktreeRemoved || target.worktreeRemoved,
+        branchRemoved: current.branchRemoved || target.branchRemoved,
+        checkpointRemoved: current.checkpointRemoved || target.checkpointRemoved,
+      };
+    }),
+    ...persisted.filter((target) => !incomingKeys.has(target.worktreeKey)),
+  ];
+};
+
+const mergeSameGenerationProgress = (
+  persisted: LinkedConversationDeletionSaga,
+  incoming: LinkedConversationDeletionSaga,
+): LinkedConversationDeletionSaga => {
+  const incomingTransfersNewerCleanup = Boolean(
+    incoming.archivedCleanupOperationId && (
+      !persisted.archivedCleanupOperationId ||
+      incoming.archivedCleanupOperationId === persisted.archivedCleanupOperationId ||
+      Boolean(
+        incoming.archivedCleanupCreatedAt &&
+        persisted.archivedCleanupCreatedAt &&
+        incoming.archivedCleanupCreatedAt > persisted.archivedCleanupCreatedAt
+      )
+    )
+  );
+  return {
+    ...incoming,
+    executionTargets: mergeTargetProgress(
+      persisted.executionTargets,
+      incoming.executionTargets,
+      incomingTransfersNewerCleanup,
+    ),
+    archivedCleanupOperationId: incomingTransfersNewerCleanup
+      ? incoming.archivedCleanupOperationId
+      : persisted.archivedCleanupOperationId,
+    archivedCleanupCreatedAt: incomingTransfersNewerCleanup
+      ? incoming.archivedCleanupCreatedAt
+      : persisted.archivedCleanupCreatedAt,
+  };
+};
+
 export const upsertLinkedConversationDeletionSaga = async (
   saga: LinkedConversationDeletionSaga,
   transport: LinkedTaskDeletionSagaTransport = defaultTransport,
@@ -241,9 +308,12 @@ export const upsertLinkedConversationDeletionSaga = async (
           throw new StaleLinkedTaskDeletionSagaError();
         }
       }
+      const next = existing && getLinkedDeletionSagaGeneration(existing) === generation
+        ? mergeSameGenerationProgress(existing, saga)
+        : saga;
       return [
         ...current.filter((entry) => !hasSameOwnerIdentity(entry, saga)),
-        saga,
+        next,
       ];
     },
     transport,
@@ -296,6 +366,8 @@ export const loadLinkedTaskDeletionSagas = async (
           phase: saga.phase,
           draft: saga.draft,
           executionTargets: saga.executionTargets,
+          archivedCleanupOperationId: saga.archivedCleanupOperationId,
+          archivedCleanupCreatedAt: saga.archivedCleanupCreatedAt,
           targetBranch: saga.targetBranch,
           revertTitle: saga.revertTitle,
           revertDescription: saga.revertDescription,

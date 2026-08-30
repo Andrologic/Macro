@@ -2744,10 +2744,11 @@ pub async fn delete_manual_feature(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<()> {
+    let normalized_task_id = task_id.trim();
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
-    let normalized_task_id = task_id.trim();
     state
         .manual_features
         .retain(|feature| feature.id != normalized_task_id);
@@ -11141,7 +11142,7 @@ mod tests {
             .await
             .expect("join restore")
             .expect("restore feature");
-        let _stale_cleanup_guard =
+        let stale_cleanup_guard =
             lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
                 .await
                 .expect("reacquire cleanup guard");
@@ -11157,6 +11158,34 @@ mod tests {
             Err(BackendError::Validation(message))
                 if message.contains("la tâche archivée a changé")
         ));
+
+        let delete_workspace_path = workspace_path.clone();
+        let delete_metadata_root = metadata_root.clone();
+        let mut delete = tokio::spawn(async move {
+            delete_manual_feature(
+                &delete_workspace_path,
+                &delete_metadata_root,
+                "manual-task-cleanup-race",
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut delete)
+                .await
+                .is_err()
+        );
+        drop(stale_cleanup_guard);
+        delete
+            .await
+            .expect("join delete")
+            .expect("delete after cleanup lock release");
+        let persisted = load_or_create_state(&workspace_path, &metadata_root)
+            .await
+            .expect("load state after delete");
+        assert!(!persisted
+            .manual_features
+            .iter()
+            .any(|feature| feature.id == "manual-task-cleanup-race"));
     }
 
     #[tokio::test]

@@ -180,4 +180,78 @@ describe('linkedTaskDeletionSaga', () => {
       .rejects.toBeInstanceOf(sagaService.StaleLinkedTaskDeletionSagaError);
     expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
+
+  it('keeps target checkpoints monotonic within one deletion generation', async () => {
+    const values = new Map<string, string>();
+    const transport: LinkedTaskDeletionSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+    const pending: LinkedConversationDeletionSaga = {
+      ownerType: 'task',
+      ownerId: 'checkpoint-task',
+      conversationId: 'checkpoint-conversation',
+      phase: 'task_deleting',
+      targetBranch: 'feature/checkpoint-task',
+      executionTargets: [{
+        worktreeKey: 'project-1::feature/checkpoint-task',
+        repoPath: '/repos/web',
+        branchName: 'feature/checkpoint-task',
+        branchExisted: true,
+        worktreeRemoved: false,
+        branchRemoved: false,
+      }],
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    };
+    await sagaService.upsertLinkedConversationDeletionSaga({
+      ...pending,
+      archivedCleanupOperationId: 'archive-generation',
+      archivedCleanupCreatedAt: '2026-08-30T00:00:01.000Z',
+      executionTargets: [
+        ...(pending.executionTargets ?? []).map((target) => ({
+          ...target,
+          repoPath: '/repos/current-web',
+          worktreeRemoved: true,
+        })),
+        {
+          worktreeKey: 'project-2::feature/checkpoint-task',
+          repoPath: '/repos/api',
+          branchName: 'feature/checkpoint-task',
+          branchExisted: true,
+          worktreeRemoved: false,
+          branchRemoved: false,
+        },
+      ],
+      updatedAt: '2026-08-30T00:00:02.000Z',
+    }, transport);
+    await sagaService.upsertLinkedConversationDeletionSaga({
+      ...pending,
+      updatedAt: '2026-08-30T00:00:01.000Z',
+    }, transport);
+
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        archivedCleanupOperationId: 'archive-generation',
+        archivedCleanupCreatedAt: '2026-08-30T00:00:01.000Z',
+        executionTargets: [
+          expect.objectContaining({
+            repoPath: '/repos/current-web',
+            worktreeRemoved: true,
+          }),
+          expect.objectContaining({ repoPath: '/repos/api' }),
+        ],
+      }),
+    ]);
+  });
 });
