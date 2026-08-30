@@ -468,6 +468,11 @@
   "chat": {
     "newChat": "New Chat",
     "newConversation": "New Conversation",
+    "unsavedAssistant": {
+      "label": "Not saved",
+      "saving": "Saving response...",
+      "description": "Macro could not save this response. Retry or remove it before sending another message."
+    },
     "loadingConversation": "Restoring conversation...",
     "showHistory": "Show history",
     "hideHistory": "Hide history",

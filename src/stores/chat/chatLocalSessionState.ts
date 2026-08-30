@@ -1,4 +1,5 @@
 import type {
+  ChatMessage,
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
   PersistedContextReference,
@@ -18,12 +19,16 @@ export const EMPTY_MESSAGE_IMAGES: MessageImageAttachment[] = [];
 const MESSAGE_IMAGES_STORAGE_KEY = "macro_chat_message_images";
 const QUESTIONNAIRE_DRAFTS_STORAGE_KEY = "macro_chat_questionnaire_drafts";
 export const COMPOSER_DRAFTS_STORAGE_KEY = "macro_chat_composer_drafts_v1";
+export const UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY =
+  "macro_chat_unsaved_assistant_responses_v1";
 
 const MAX_COMPOSER_DRAFTS = 50;
 const MAX_COMPOSER_DRAFT_TEXT_LENGTH = 200_000;
 const MAX_COMPOSER_DRAFT_IMAGES = 10;
 const MAX_COMPOSER_DRAFT_IMAGE_DATA_URL_LENGTH = 10_000_000;
 const MAX_COMPOSER_DRAFT_CONTEXT_REFS = 50;
+const MAX_UNSAVED_ASSISTANT_RESPONSES = 25;
+const MAX_UNSAVED_ASSISTANT_CONTENT_LENGTH = 4_000_000;
 const MAX_SHORT_FIELD_LENGTH = 4_096;
 
 export interface PersistedComposerDraft {
@@ -40,13 +45,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isBoundedString = (value: unknown, maxLength = MAX_SHORT_FIELD_LENGTH): value is string =>
   typeof value === "string" && value.length <= maxLength;
 
-const isOptionalBoundedString = (value: unknown): value is string | undefined =>
-  value === undefined || isBoundedString(value);
+const isOptionalBoundedString = (
+  value: unknown,
+  maxLength = MAX_SHORT_FIELD_LENGTH,
+): value is string | undefined =>
+  value === undefined || isBoundedString(value, maxLength);
 
 const isOptionalNullableBoundedString = (
   value: unknown,
+  maxLength = MAX_SHORT_FIELD_LENGTH,
 ): value is string | null | undefined =>
-  value === undefined || value === null || isBoundedString(value);
+  value === undefined || value === null || isBoundedString(value, maxLength);
 
 const isFinitePositiveDimension = (value: unknown): value is number | undefined =>
   value === undefined ||
@@ -116,6 +125,119 @@ const isPersistedContextReference = (
   return (
     (value.location === undefined || isSkillLocation(value.location)) &&
     (value.source === undefined || isSkillSource(value.source))
+  );
+};
+
+const parseUnsavedAssistantResponse = (value: unknown): ChatMessage | null => {
+  if (!isRecord(value)) return null;
+  if (
+    !isBoundedString(value.id) ||
+    !isBoundedString(value.task_id) ||
+    !isBoundedString(value.conversation_id) ||
+    value.role !== "assistant" ||
+    !isBoundedString(value.content, MAX_UNSAVED_ASSISTANT_CONTENT_LENGTH) ||
+    !isBoundedString(value.timestamp, 128) ||
+    !isOptionalNullableBoundedString(value.turn_id) ||
+    !isOptionalBoundedString(
+      value.hidden_context,
+      MAX_UNSAVED_ASSISTANT_CONTENT_LENGTH,
+    ) ||
+    !isOptionalBoundedString(value.persistence_error) ||
+    (value.tool_traces !== undefined && !Array.isArray(value.tool_traces)) ||
+    (value.provider_input_items !== undefined && !Array.isArray(value.provider_input_items)) ||
+    (value.provider_turn_state !== undefined && !isRecord(value.provider_turn_state)) ||
+    (value.context_refs !== undefined &&
+      (!Array.isArray(value.context_refs) ||
+        !value.context_refs.every(isPersistedContextReference)))
+  ) {
+    return null;
+  }
+
+  return {
+    ...(value as unknown as ChatMessage),
+    role: "assistant",
+    persistence_state: "failed",
+    persistence_error:
+      typeof value.persistence_error === "string" && value.persistence_error.trim()
+        ? value.persistence_error
+        : "This response has not been saved.",
+  };
+};
+
+export const loadUnsavedAssistantResponsesFromStorage = (): ChatMessage[] => {
+  if (!hasLocalStorage()) return [];
+  try {
+    const raw = window.localStorage.getItem(
+      UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
+    );
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return [];
+    return Object.values(parsed)
+      .slice(0, MAX_UNSAVED_ASSISTANT_RESPONSES)
+      .map(parseUnsavedAssistantResponse)
+      .filter((message): message is ChatMessage => message !== null);
+  } catch {
+    return [];
+  }
+};
+
+const writeUnsavedAssistantResponsesToStorage = (
+  messages: ChatMessage[],
+): boolean => {
+  if (!hasLocalStorage()) return false;
+  try {
+    if (messages.length === 0) {
+      window.localStorage.removeItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY);
+      return true;
+    }
+    window.localStorage.setItem(
+      UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(messages.map((message) => [message.id, message]))),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const saveUnsavedAssistantResponseToStorage = (
+  message: ChatMessage,
+): boolean => {
+  const existing = loadUnsavedAssistantResponsesFromStorage().filter(
+    (candidate) => candidate.id !== message.id,
+  );
+  const failedMessage: ChatMessage = {
+    ...message,
+    persistence_state: "failed",
+  };
+  return writeUnsavedAssistantResponsesToStorage(
+    [...existing, failedMessage]
+      .sort(
+        (left, right) =>
+          new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
+      )
+      .slice(-MAX_UNSAVED_ASSISTANT_RESPONSES),
+  );
+};
+
+export const removeUnsavedAssistantResponseFromStorage = (
+  messageId: string,
+): boolean =>
+  writeUnsavedAssistantResponsesToStorage(
+    loadUnsavedAssistantResponsesFromStorage().filter(
+      (message) => message.id !== messageId,
+    ),
+  );
+
+export const clearUnsavedAssistantResponsesForConversations = (
+  conversationIds: string[],
+): boolean => {
+  const ids = new Set(conversationIds);
+  return writeUnsavedAssistantResponsesToStorage(
+    loadUnsavedAssistantResponsesFromStorage().filter(
+      (message) => !ids.has(message.conversation_id),
+    ),
   );
 };
 
