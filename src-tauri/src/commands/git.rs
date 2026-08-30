@@ -57,7 +57,6 @@ const NATIVE_GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_GIT_COMMAND_OUTPUT_BYTES: u64 = 256 * 1024;
 static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
-#[cfg(windows)]
 static HARD_RESET_CHECKOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 struct GitReviewCancellationRegistry {
@@ -2156,7 +2155,52 @@ set -u
 repo=$1
 target_commit=$2
 scratch=$(mktemp -d) || exit $?
-trap 'rm -rf -- "$scratch"' EXIT
+mutation_started=0
+transaction_complete=0
+keep_scratch=0
+
+rollback_reset() {
+  rollback_failed=0
+  if [[ -n ${original_head-} ]]; then
+    git -C "$repo" update-ref HEAD "$original_head" >/dev/null 2>&1 || rollback_failed=1
+  fi
+  if [[ -n ${index_path-} && -f $scratch/index.backup ]]; then
+    cp -- "$scratch/index.backup" "$index_path" || rollback_failed=1
+  fi
+  if declare -p materialized_paths >/dev/null 2>&1; then
+    for (( rollback_index=${#materialized_paths[@]} - 1; rollback_index >= 0; rollback_index-- )); do
+      materialized=${materialized_paths[$rollback_index]}
+      expected_id=${materialized_ids[$rollback_index]}
+      current_id=$(stat -c '%d:%i' -- "$repo/$materialized" 2>/dev/null) || current_id=
+      if [[ -n $expected_id && $current_id == "$expected_id" ]]; then
+        rm -f -- "$repo/$materialized" || rollback_failed=1
+      elif [[ -n $current_id ]]; then
+        rollback_failed=1
+      fi
+    done
+  fi
+  if [[ -f $scratch/worktree.tar ]]; then
+    tar -C "$repo" --keep-old-files -xf "$scratch/worktree.tar" || rollback_failed=1
+  fi
+  if (( rollback_failed != 0 )); then
+    keep_scratch=1
+    printf 'Hard reset rollback data retained at %s\n' "$scratch" >&2
+    return 1
+  fi
+}
+
+cleanup_reset() {
+  original_status=$?
+  trap - EXIT
+  if (( mutation_started != 0 && transaction_complete == 0 )); then
+    rollback_reset || original_status=1
+  fi
+  if (( keep_scratch == 0 )); then
+    rm -rf -- "$scratch"
+  fi
+  exit "$original_status"
+}
+trap cleanup_reset EXIT
 
 git -C "$repo" ls-files --others --exclude-standard -z > "$scratch/untracked" || exit $?
 git -C "$repo" ls-files --others --ignored --exclude-standard -z >> "$scratch/untracked" || exit $?
@@ -2221,6 +2265,19 @@ for untracked in "${untracked_paths[@]}"; do
   done
 done
 
+original_head=$(git -C "$repo" rev-parse HEAD) || exit $?
+index_path=$(git -C "$repo" rev-parse --path-format=absolute --git-path index) || exit $?
+cp -- "$index_path" "$scratch/index.backup" || exit $?
+: > "$scratch/present-indexed"
+while IFS= read -r -d '' indexed; do
+  indexed_path=$repo/$indexed
+  if [[ -L $indexed_path || -f $indexed_path ]]; then
+    printf '%s\0' "$indexed" >> "$scratch/present-indexed"
+  fi
+done < "$scratch/indexed"
+tar -C "$repo" --null --verbatim-files-from -cf "$scratch/worktree.tar" -T "$scratch/present-indexed" || exit $?
+
+mutation_started=1
 while IFS= read -r -d '' indexed; do
   indexed_path=$repo/$indexed
   if [[ -L $indexed_path || -f $indexed_path ]]; then
@@ -2229,8 +2286,16 @@ while IFS= read -r -d '' indexed; do
 done < "$scratch/indexed"
 
 git -C "$repo" read-tree --reset "$target_commit" || exit $?
-git -C "$repo" checkout-index --all || exit $?
+materialized_paths=()
+materialized_ids=()
+for target in "${target_paths[@]}"; do
+  git -C "$repo" checkout-index -- "$target" || exit $?
+  materialized_paths+=("$target")
+  materialized_id=$(stat -c '%d:%i' -- "$repo/$target" 2>/dev/null) || materialized_id=
+  materialized_ids+=("$materialized_id")
+done
 git -C "$repo" reset --soft "$target_commit" || exit $?
+transaction_complete=1
 "#
             .to_string(),
             "macro-git-hard-reset".to_string(),
@@ -4338,7 +4403,8 @@ fn remove_native_indexed_worktree_entries(
     repo: &Repository,
     repo_root: &Path,
     target: &Commit<'_>,
-) -> Result<()> {
+    scratch: &NativeHardResetCheckoutScratch,
+) -> Result<Vec<NativeHardResetBackup>> {
     let worktree =
         CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
             BackendError::Io {
@@ -4348,6 +4414,7 @@ fn remove_native_indexed_worktree_entries(
         })?;
     let target_tree = target.tree()?;
     let mut processed = HashSet::new();
+    let mut backups = Vec::new();
     for entry in repo.index()?.iter() {
         let path = entry.path;
         if !processed.insert(path.clone()) {
@@ -4375,20 +4442,48 @@ fn remove_native_indexed_worktree_entries(
         if target_matches_index && worktree_is_clean {
             continue;
         }
-        remove_native_indexed_worktree_entry(
+        let removal = remove_native_indexed_worktree_entry(
             &worktree,
             &relative,
             &String::from_utf8_lossy(&path),
-        )?;
+            scratch,
+            backups.len(),
+        );
+        match removal {
+            Ok(Some(backup)) => backups.push(backup),
+            Ok(None) => {}
+            Err(error) => {
+                restore_native_hard_reset_backups(repo_root, scratch, &backups)?;
+                return Err(error);
+            }
+        }
     }
-    Ok(())
+    Ok(backups)
+}
+
+enum NativeHardResetBackupData {
+    File {
+        scratch_name: OsString,
+        permissions: cap_std::fs::Permissions,
+    },
+    Symlink {
+        target: PathBuf,
+        is_directory: bool,
+    },
+}
+
+struct NativeHardResetBackup {
+    relative: PathBuf,
+    data: NativeHardResetBackupData,
 }
 
 fn remove_native_indexed_worktree_entry(
     worktree: &CapabilityDir,
     relative: &Path,
     display_path: &str,
-) -> Result<()> {
+    scratch: &NativeHardResetCheckoutScratch,
+    backup_index: usize,
+) -> Result<Option<NativeHardResetBackup>> {
     let file_name = relative.file_name().ok_or_else(|| BackendError::Git {
         message: format!("Invalid tracked path during hard reset: {display_path}"),
     })?;
@@ -4419,7 +4514,7 @@ fn remove_native_indexed_worktree_entry(
                         ),
                     })
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                 Err(error) => {
                     return Err(BackendError::Io {
                         message: format!(
@@ -4434,7 +4529,7 @@ fn remove_native_indexed_worktree_entry(
 
     let metadata = match parent.symlink_metadata(file_name) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(BackendError::Io {
                 message: format!(
@@ -4444,6 +4539,48 @@ fn remove_native_indexed_worktree_entry(
             })
         }
     };
+    let data = if metadata.file_type().is_symlink() {
+        let target = parent
+            .read_link_contents(file_name)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to back up tracked hard reset link '{display_path}': {error}"
+                ),
+                source: error,
+            })?;
+        NativeHardResetBackupData::Symlink {
+            target,
+            is_directory: metadata.is_dir(),
+        }
+    } else if metadata.is_file() {
+        let scratch_name = OsString::from(format!("worktree-backup-{backup_index}"));
+        let mut source = parent.open(file_name).map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to open tracked hard reset path '{display_path}' for backup: {error}"
+            ),
+            source: error,
+        })?;
+        let mut destination =
+            fs::File::create(scratch.0.join(&scratch_name)).map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to create tracked hard reset backup for '{display_path}': {error}"
+                ),
+                source: error,
+            })?;
+        std::io::copy(&mut source, &mut destination).map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to copy tracked hard reset backup for '{display_path}': {error}"
+            ),
+            source: error,
+        })?;
+        NativeHardResetBackupData::File {
+            scratch_name,
+            permissions: metadata.permissions(),
+        }
+    } else {
+        return Ok(None);
+    };
+
     let removal = if metadata.file_type().is_symlink() {
         #[cfg(windows)]
         {
@@ -4457,21 +4594,209 @@ fn remove_native_indexed_worktree_entry(
         {
             parent.remove_file(file_name)
         }
-    } else if metadata.is_file() {
-        parent.remove_file(file_name)
     } else {
-        return Ok(());
+        parent.remove_file(file_name)
     };
     removal.map_err(|error| BackendError::Io {
         message: format!("Failed to remove tracked hard reset path '{display_path}': {error}"),
         source: error,
-    })
+    })?;
+    Ok(Some(NativeHardResetBackup {
+        relative: relative.to_path_buf(),
+        data,
+    }))
 }
 
-#[cfg(windows)]
+fn open_or_create_native_worktree_parent(
+    worktree: &CapabilityDir,
+    relative: &Path,
+) -> Result<CapabilityDir> {
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain the hard reset worktree: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Invalid tracked path during hard reset: {}",
+                        relative.display()
+                    ),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(BackendError::Git {
+                        message: format!(
+                        "Hard reset rollback refused '{}' through a linked or non-directory parent",
+                        relative.display()
+                    ),
+                    })
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match parent.create_dir(segment) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(error) => {
+                            return Err(BackendError::Io {
+                                message: format!(
+                                    "Failed to recreate hard reset parent for '{}': {error}",
+                                    relative.display()
+                                ),
+                                source: error,
+                            })
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect hard reset rollback path '{}': {error}",
+                            relative.display()
+                        ),
+                        source: error,
+                    })
+                }
+            }
+            parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to open hard reset rollback parent for '{}': {error}",
+                    relative.display()
+                ),
+                source: error,
+            })?;
+        }
+    }
+    Ok(parent)
+}
+
+fn restore_native_hard_reset_backups(
+    repo_root: &Path,
+    scratch: &NativeHardResetCheckoutScratch,
+    backups: &[NativeHardResetBackup],
+) -> Result<()> {
+    let worktree =
+        CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to reopen the hard reset worktree: {error}"),
+                source: error,
+            }
+        })?;
+    for backup in backups.iter().rev() {
+        let file_name = backup
+            .relative
+            .file_name()
+            .ok_or_else(|| BackendError::Git {
+                message: format!(
+                    "Invalid tracked rollback path: {}",
+                    backup.relative.display()
+                ),
+            })?;
+        let parent = open_or_create_native_worktree_parent(&worktree, &backup.relative)?;
+        match parent.symlink_metadata(file_name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Hard reset rollback refused to overwrite path '{}' created concurrently",
+                        backup.relative.display()
+                    ),
+                })
+            }
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!(
+                        "Failed to inspect hard reset rollback path '{}': {error}",
+                        backup.relative.display()
+                    ),
+                    source: error,
+                })
+            }
+        }
+        match &backup.data {
+            NativeHardResetBackupData::File {
+                scratch_name,
+                permissions,
+            } => {
+                let mut source = fs::File::open(scratch.0.join(scratch_name)).map_err(|error| {
+                    BackendError::Io {
+                        message: format!(
+                            "Failed to open hard reset rollback data for '{}': {error}",
+                            backup.relative.display()
+                        ),
+                        source: error,
+                    }
+                })?;
+                let mut options = CapabilityOpenOptions::new();
+                options.write(true).create_new(true);
+                let mut destination =
+                    parent
+                        .open_with(file_name, &options)
+                        .map_err(|error| BackendError::Io {
+                            message: format!(
+                                "Failed to recreate hard reset rollback path '{}': {error}",
+                                backup.relative.display()
+                            ),
+                            source: error,
+                        })?;
+                if let Err(error) = std::io::copy(&mut source, &mut destination) {
+                    drop(destination);
+                    let _ = parent.remove_file(file_name);
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to restore hard reset rollback path '{}': {error}",
+                            backup.relative.display()
+                        ),
+                        source: error,
+                    });
+                }
+                destination
+                    .set_permissions(permissions.clone())
+                    .map_err(|error| BackendError::Io {
+                        message: format!(
+                            "Failed to restore permissions for '{}': {error}",
+                            backup.relative.display()
+                        ),
+                        source: error,
+                    })?;
+            }
+            NativeHardResetBackupData::Symlink {
+                target,
+                is_directory,
+            } => {
+                #[cfg(windows)]
+                let restored = if *is_directory {
+                    parent.symlink_dir(target, file_name)
+                } else {
+                    parent.symlink_file(target, file_name)
+                };
+                #[cfg(unix)]
+                let restored = {
+                    let _ = is_directory;
+                    parent.symlink_contents(target, file_name)
+                };
+                #[cfg(not(any(unix, windows)))]
+                let restored = Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "symbolic link rollback is unsupported",
+                ));
+                restored.map_err(|error| BackendError::Io {
+                    message: format!(
+                        "Failed to restore hard reset link '{}': {error}",
+                        backup.relative.display()
+                    ),
+                    source: error,
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 struct NativeHardResetCheckoutScratch(PathBuf);
 
-#[cfg(windows)]
 impl NativeHardResetCheckoutScratch {
     fn create() -> Result<Self> {
         let root = std::env::temp_dir();
@@ -4504,7 +4829,6 @@ impl NativeHardResetCheckoutScratch {
     }
 }
 
-#[cfg(windows)]
 impl Drop for NativeHardResetCheckoutScratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -4702,7 +5026,8 @@ fn hard_reset_repo_preserving_untracked(repo: &Repository, target: &Commit<'_>) 
     ensure_native_hard_reset_preserves_untracked(repo, target)?;
     run_native_hard_reset_after_preflight_hook(&repo_root);
 
-    remove_native_indexed_worktree_entries(repo, &repo_root, target)?;
+    let scratch = NativeHardResetCheckoutScratch::create()?;
+    let backups = remove_native_indexed_worktree_entries(repo, &repo_root, target, &scratch)?;
     let checkout_conflicts = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
     let notified_conflicts = Arc::clone(&checkout_conflicts);
     let mut checkout = git2::build::CheckoutBuilder::new();
@@ -4730,10 +5055,19 @@ fn hard_reset_repo_preserving_untracked(repo: &Repository, target: &Commit<'_>) 
             .expect("lock hard reset checkout conflicts")
             .clone();
         #[cfg(windows)]
-        if recover_native_case_sensitive_checkout_conflicts(repo, &repo_root, target, &conflicts)? {
-            repo.reset(target.as_object(), ResetType::Mixed, None)?;
-            return Ok(());
+        match recover_native_case_sensitive_checkout_conflicts(repo, &repo_root, target, &conflicts)
+        {
+            Ok(true) => {
+                repo.reset(target.as_object(), ResetType::Mixed, None)?;
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(recovery_error) => {
+                restore_native_hard_reset_backups(&repo_root, &scratch, &backups)?;
+                return Err(recovery_error);
+            }
         }
+        restore_native_hard_reset_backups(&repo_root, &scratch, &backups)?;
         return Err(BackendError::Git {
             message: format!(
                 "Hard reset could not update tracked files without overwriting untracked data: {error}"
@@ -18663,6 +18997,7 @@ mod tests {
         let target_commit = commit_repo(&repo, "feat: add late reset target", true).unwrap();
         reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
         fs::write(repo.path().join("info/exclude"), "late-collision.txt\n").unwrap();
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
 
         let hook_collision_path = collision_path.clone();
         install_native_hard_reset_after_preflight_hook(repo_root(&repo).unwrap(), move || {
@@ -18676,6 +19011,9 @@ mod tests {
             fs::read_to_string(collision_path).unwrap(),
             "concurrent untracked file"
         );
+        let readme = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(readme.index_content, "hello");
+        assert_eq!(readme.worktree_content, "dirty tracked worktree");
         assert_eq!(
             repo.head().unwrap().target().unwrap().to_string(),
             initial_commit
