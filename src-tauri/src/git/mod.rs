@@ -325,15 +325,24 @@ fn collect_git_admin_dirs_without_opening(workspace_path: &Path) -> Vec<PathBuf>
 pub fn find_existing_macro_metadata_worktree_root(workspace_path: &Path) -> Option<PathBuf> {
     collect_git_admin_dirs_without_opening(workspace_path)
         .into_iter()
-        .map(|git_dir| git_dir.join(MACRO_WORKTREE_DIR_NAME))
-        .find(|candidate| candidate.join(".git").exists())
-        .map(|candidate| std::fs::canonicalize(&candidate).unwrap_or(candidate))
+        .find_map(|git_dir| {
+            let candidate = git_dir.join(MACRO_WORKTREE_DIR_NAME);
+            if !candidate.join(".git").exists() {
+                return None;
+            }
+            let canonical_git_dir = std::fs::canonicalize(&git_dir).ok()?;
+            let canonical_candidate = std::fs::canonicalize(&candidate).ok()?;
+            canonical_candidate
+                .starts_with(canonical_git_dir)
+                .then_some(canonical_candidate)
+        })
 }
 
 pub(crate) fn repair_existing_macro_metadata_worktree(
     repo: &Repository,
 ) -> Result<Option<MacroMetadataWorktreeEnsureResult>> {
     let worktree_path = repo.path().join(MACRO_WORKTREE_DIR_NAME);
+    worktree::ensure_macro_metadata_worktree_ownership(repo, &worktree_path)?;
     if !worktree_path.join(".git").exists() {
         return Ok(None);
     }
@@ -676,6 +685,7 @@ fn commit_current_branch_gitignore_rule_preserving_user_index(
     };
     let mut next_worktree_content = original_worktree_content.clone().unwrap_or_default();
     append_task_worktree_gitignore_rule(&mut next_worktree_content);
+    let preserve_worktree_deletion = head_has_gitignore && original_worktree_content.is_none();
 
     let mut index = repo.index()?;
     if index.has_conflicts() {
@@ -716,10 +726,12 @@ fn commit_current_branch_gitignore_rule_preserving_user_index(
 
     let update_result = (|| -> Result<()> {
         index.write()?;
-        fs::write(&gitignore_path, &next_worktree_content).map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
+        if !preserve_worktree_deletion {
+            fs::write(&gitignore_path, &next_worktree_content).map_err(|e| BackendError::Io {
+                message: e.to_string(),
+                source: e,
+            })?;
+        }
         let _ = commit_gitignore_rule_to_branch(repo, branch_name)?;
         Ok(())
     })();
@@ -989,16 +1001,16 @@ impl GitState {
         &self,
         repo: &Repository,
     ) -> Result<MacroMetadataWorktreeEnsureResult> {
-        ensure_metadata_branch_exists(repo)?;
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
         })?;
-        ensure_task_worktree_gitignore_rule(repo, workdir, None)?;
-
         let git_dir = repo.path();
         let worktree_path = git_dir.join(MACRO_WORKTREE_DIR_NAME);
+        worktree::ensure_macro_metadata_worktree_ownership(repo, &worktree_path)?;
 
         if worktree_path.join(".git").exists() {
+            ensure_metadata_branch_exists(repo)?;
+            ensure_task_worktree_gitignore_rule(repo, workdir, None)?;
             let mut repaired_after_move = false;
             if Repository::open(&worktree_path).is_err() {
                 repaired_after_move = worktree::repair_gitfile_worktree_links(
@@ -1041,28 +1053,25 @@ impl GitState {
 
         match repo.find_worktree(MACRO_WORKTREE_NAME) {
             Ok(worktree) => {
+                let registered_path = worktree.path().to_path_buf();
+                worktree::ensure_macro_metadata_worktree_ownership(repo, &registered_path)?;
                 let mut prune_opts = git2::WorktreePruneOptions::new();
                 prune_opts.valid(true);
                 let _ = worktree.prune(Some(&mut prune_opts));
             }
             Err(err) if err.code() == ErrorCode::NotFound => {}
             Err(err) => {
-                let admin_path = git_dir.join("worktrees").join(MACRO_WORKTREE_NAME);
-                if admin_path.exists() {
-                    fs::remove_dir_all(&admin_path).map_err(|e| BackendError::Io {
-                        message: e.to_string(),
-                        source: e,
-                    })?;
-                } else {
-                    return Err(BackendError::Git {
-                        message: format!(
-                            "Failed to inspect metadata worktree registration '{}': {}",
-                            MACRO_WORKTREE_NAME, err
-                        ),
-                    });
-                }
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Failed to inspect metadata worktree registration '{}': {}. Macro left its administrative files untouched.",
+                        MACRO_WORKTREE_NAME, err
+                    ),
+                });
             }
         }
+
+        ensure_metadata_branch_exists(repo)?;
+        ensure_task_worktree_gitignore_rule(repo, workdir, None)?;
 
         let reference = repo
             .find_reference(&format!("refs/heads/{}", MACRO_BRANCH_NAME))
@@ -1099,6 +1108,10 @@ impl GitState {
         workspace_path: &Path,
     ) -> Result<MacroMetadataWorktreeEnsureResult> {
         let cache_key = canonicalize_for_cache(workspace_path);
+        let repo = self.open_repo(workspace_path)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
         let mut metadata_roots =
             self.inner
                 .metadata_roots
@@ -1107,40 +1120,15 @@ impl GitState {
                     message: "Failed to lock git metadata root cache".to_string(),
                 })?;
         if let Some(cached) = metadata_roots.get(&cache_key).cloned() {
-            if cached.worktree_path.exists() {
+            if worktree::ensure_macro_metadata_worktree_ownership(&repo, &cached.worktree_path)
+                .is_ok()
+                && Repository::open(&cached.worktree_path).is_ok()
+            {
                 return Ok(cached);
             }
             metadata_roots.remove(&cache_key);
-            tracing::warn!(action = "macro_metadata_root_cache_evicted", workspace_path = %workspace_path.display(), missing_path = %cached.worktree_path.display());
+            tracing::warn!(action = "macro_metadata_root_cache_evicted", workspace_path = %workspace_path.display(), invalid_path = %cached.worktree_path.display());
         }
-
-        let repo = match self.open_repo(workspace_path) {
-            Ok(repo) => repo,
-            Err(error) => {
-                if let Some(worktree_path) =
-                    find_existing_macro_metadata_worktree_root(workspace_path)
-                {
-                    migrate_legacy_metadata_layout(&worktree_path)?;
-                    ensure_metadata_gitignore_override(&worktree_path)?;
-                    let ensured = MacroMetadataWorktreeEnsureResult {
-                        worktree_path,
-                        repaired_after_move: false,
-                    };
-                    metadata_roots.insert(cache_key, ensured.clone());
-                    tracing::debug!(
-                        action = "macro_metadata_root_existing_worktree_without_repo_open",
-                        workspace_path = %workspace_path.display(),
-                        metadata_root = %ensured.worktree_path.display(),
-                        reason = %error
-                    );
-                    return Ok(ensured);
-                }
-                return Err(error);
-            }
-        };
-        let repo = repo.lock().map_err(|_| BackendError::Internal {
-            message: "Failed to lock repository".to_string(),
-        })?;
         let ensured = self.ensure_macro_metadata_worktree_with_status(&repo)?;
         metadata_roots.insert(cache_key, ensured.clone());
         Ok(ensured)
@@ -1165,8 +1153,14 @@ impl GitState {
             message: "Bare repositories are not supported for Macro project reset".to_string(),
         })?;
         let task_worktree_root = workdir.join(LEGACY_METADATA_DIR_NAME).join("worktrees");
-        let canonical_task_root =
-            std::fs::canonicalize(&task_worktree_root).unwrap_or(task_worktree_root.clone());
+        let owns_task_worktree_root =
+            worktree::is_macro_owned_task_worktree_root(&repo, &task_worktree_root)?;
+        if !owns_task_worktree_root && task_worktree_root.exists() {
+            result.warnings.push(format!(
+                "Macro left task worktree root {} untouched because it resolves outside the repository",
+                task_worktree_root.display()
+            ));
+        }
 
         let worktree_names = repo.worktrees().map_err(|e| BackendError::Git {
             message: format!("Failed to list registered worktrees: {}", e),
@@ -1184,9 +1178,9 @@ impl GitState {
                 }
             };
             let worktree_path = worktree.path().to_path_buf();
-            let canonical_worktree_path =
-                std::fs::canonicalize(&worktree_path).unwrap_or(worktree_path.clone());
-            if canonical_worktree_path.starts_with(&canonical_task_root) {
+            if owns_task_worktree_root
+                && worktree::is_macro_owned_worktree_path(&repo, worktree_name, &worktree_path)?
+            {
                 if remove_macro_path_if_present(&worktree_path)? {
                     result.removed_task_worktrees += 1;
                 }
@@ -1201,33 +1195,49 @@ impl GitState {
             }
         }
 
-        if remove_macro_path_if_present(&task_worktree_root)? && result.removed_task_worktrees == 0
+        if owns_task_worktree_root
+            && remove_macro_path_if_present(&task_worktree_root)?
+            && result.removed_task_worktrees == 0
         {
             result.removed_task_worktrees = 1;
         }
 
         if let Ok(mut cache) = self.inner.worktrees.lock() {
-            cache.retain(|_, path| {
-                let canonical_path =
-                    std::fs::canonicalize(path.as_path()).unwrap_or_else(|_| path.clone());
-                !canonical_path.starts_with(&canonical_task_root)
-            });
+            cache.clear();
         }
 
         let metadata_worktree_path = repo.path().join(MACRO_WORKTREE_DIR_NAME);
+        let owns_metadata_worktree =
+            worktree::ensure_macro_metadata_worktree_ownership(&repo, &metadata_worktree_path)
+                .is_ok();
+        if !owns_metadata_worktree && metadata_worktree_path.exists() {
+            result.warnings.push(format!(
+                "Macro left metadata worktree path {} untouched because it resolves outside the Git directory",
+                metadata_worktree_path.display()
+            ));
+        }
         match repo.find_worktree(MACRO_WORKTREE_NAME) {
             Ok(metadata_worktree) => {
                 let registered_path = metadata_worktree.path().to_path_buf();
-                let removed_registered_path = remove_macro_path_if_present(&registered_path)?;
-                let mut prune_opts = git2::WorktreePruneOptions::new();
-                prune_opts.valid(true);
-                if let Err(err) = metadata_worktree.prune(Some(&mut prune_opts)) {
+                if worktree::ensure_macro_metadata_worktree_ownership(&repo, &registered_path)
+                    .is_ok()
+                {
+                    let removed_registered_path = remove_macro_path_if_present(&registered_path)?;
+                    let mut prune_opts = git2::WorktreePruneOptions::new();
+                    prune_opts.valid(true);
+                    if let Err(err) = metadata_worktree.prune(Some(&mut prune_opts)) {
+                        result.warnings.push(format!(
+                            "Failed to prune Macro metadata worktree '{}': {}",
+                            MACRO_WORKTREE_NAME, err
+                        ));
+                    }
+                    result.removed_metadata_worktree = removed_registered_path;
+                } else {
                     result.warnings.push(format!(
-                        "Failed to prune Macro metadata worktree '{}': {}",
-                        MACRO_WORKTREE_NAME, err
+                        "Macro left registered metadata worktree {} untouched because Macro does not own that path",
+                        registered_path.display()
                     ));
                 }
-                result.removed_metadata_worktree = removed_registered_path;
             }
             Err(err) if err.code() == ErrorCode::NotFound => {}
             Err(err) => {
@@ -1238,12 +1248,23 @@ impl GitState {
             }
         }
 
-        if remove_macro_path_if_present(&metadata_worktree_path)? {
+        if owns_metadata_worktree && remove_macro_path_if_present(&metadata_worktree_path)? {
             result.removed_metadata_worktree = true;
         }
 
-        if remove_macro_path_if_present(&workdir.join(LEGACY_METADATA_DIR_NAME))? {
+        let project_artifact_root = workdir.join(LEGACY_METADATA_DIR_NAME);
+        let owns_project_artifact_root =
+            worktree::is_macro_owned_project_artifact_root(&repo, &project_artifact_root)?;
+        let can_remove_project_artifact_root =
+            owns_project_artifact_root && (owns_task_worktree_root || !task_worktree_root.exists());
+        if can_remove_project_artifact_root && remove_macro_path_if_present(&project_artifact_root)?
+        {
             result.removed_metadata_worktree = true;
+        } else if project_artifact_root.exists() && !can_remove_project_artifact_root {
+            result.warnings.push(format!(
+                "Macro left project artifact root {} untouched because it resolves outside the repository",
+                project_artifact_root.display()
+            ));
         }
 
         match repo.find_branch(MACRO_BRANCH_NAME, BranchType::Local) {
@@ -1354,6 +1375,24 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    #[cfg(windows)]
+    fn link_directory(link: &Path, target: &Path) {
+        let link = PathBuf::from(link.to_string_lossy().replace('/', "\\"));
+        let target = PathBuf::from(target.to_string_lossy().replace('/', "\\"));
+        let status = crate::core::process::background_command("cmd")
+            .args(["/d", "/c", "mklink /J"])
+            .arg(&link)
+            .arg(&target)
+            .status()
+            .expect("create Windows junction");
+        assert!(status.success(), "mklink /J must create the test junction");
+    }
+
+    #[cfg(unix)]
+    fn link_directory(link: &Path, target: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("create directory symlink");
+    }
+
     fn init_repo(path: &Path) -> Repository {
         let mut opts = RepositoryInitOptions::new();
         opts.initial_head("main");
@@ -1459,6 +1498,45 @@ mod tests {
     }
 
     #[test]
+    fn test_worktree_creation_rejects_a_root_linked_outside_the_repository() {
+        let temp = TempDir::new().expect("temp dir");
+        let external = TempDir::new().expect("external temp dir");
+        let repo = init_repo(temp.path());
+        let macro_root = temp.path().join(LEGACY_METADATA_DIR_NAME);
+        fs::create_dir_all(&macro_root).expect("create Macro root");
+        link_directory(&macro_root.join("worktrees"), external.path());
+        let state = GitState::new();
+
+        state
+            .ensure_task_worktree(
+                &repo,
+                "linked-create",
+                "feature/linked-create",
+                None,
+                None,
+                &[],
+            )
+            .expect_err("task worktree creation outside the repository must fail");
+        state
+            .ensure_branch_worktree(&repo, "linked-branch", "plan/linked-branch", None, &[])
+            .expect_err("branch worktree creation outside the repository must fail");
+
+        assert!(
+            fs::read_dir(external.path())
+                .expect("read external directory")
+                .next()
+                .is_none(),
+            "Macro must not create anything in the linked external root"
+        );
+        assert!(repo
+            .find_branch("feature/linked-create", BranchType::Local)
+            .is_err());
+        assert!(repo
+            .find_branch("plan/linked-branch", BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
     fn test_ensure_task_worktree_appends_gitignore_rule() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());
@@ -1549,6 +1627,34 @@ mod tests {
     }
 
     #[test]
+    fn test_ensure_macro_metadata_worktree_refuses_external_registration() {
+        let temp = TempDir::new().expect("temp dir");
+        let external = TempDir::new().expect("external temp dir");
+        let repo = init_repo(temp.path());
+        ensure_metadata_branch_exists(&repo).expect("metadata branch");
+        let reference = repo
+            .find_reference(&format!("refs/heads/{MACRO_BRANCH_NAME}"))
+            .expect("metadata branch reference");
+        let external_path = external.path().join("user-metadata-worktree");
+        let mut options = WorktreeAddOptions::new();
+        options.reference(Some(&reference));
+        repo.worktree(MACRO_WORKTREE_NAME, &external_path, Some(&options))
+            .expect("external metadata worktree");
+        fs::write(external_path.join("user-note.txt"), "preserve me")
+            .expect("dirty external metadata worktree");
+
+        GitState::new()
+            .ensure_macro_metadata_worktree_with_status(&repo)
+            .expect_err("external metadata registration must be refused");
+
+        assert_eq!(
+            fs::read_to_string(external_path.join("user-note.txt")).expect("preserved user file"),
+            "preserve me"
+        );
+        assert!(repo.find_worktree(MACRO_WORKTREE_NAME).is_ok());
+    }
+
+    #[test]
     fn test_ensure_macro_metadata_worktree_repairs_after_project_rename() {
         let temp = TempDir::new().expect("temp dir");
         let original_path = temp.path().join("lplr-app");
@@ -1584,6 +1690,31 @@ mod tests {
             fs::read_to_string(ensured.worktree_path.join(".git")).expect("read repaired gitfile");
         assert!(!gitfile.contains("lplr-app"));
         assert!(!gitfile.contains(&original_path.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_cached_metadata_worktree_rejects_external_link_replacement() {
+        let temp = TempDir::new().expect("temp dir");
+        let external = TempDir::new().expect("external temp dir");
+        drop(init_repo(temp.path()));
+        let state = GitState::new();
+        let ensured = state
+            .resolve_macro_metadata_root_with_status(temp.path())
+            .expect("initial metadata worktree");
+        fs::remove_dir_all(&ensured.worktree_path).expect("remove cached metadata worktree");
+        fs::write(external.path().join(".gitignore"), "preserve external\n")
+            .expect("write external marker");
+        link_directory(&ensured.worktree_path, external.path());
+
+        state
+            .resolve_macro_metadata_root_with_status(temp.path())
+            .expect_err("linked cache replacement must be refused");
+
+        assert_eq!(
+            fs::read_to_string(external.path().join(".gitignore"))
+                .expect("preserved external marker"),
+            "preserve external\n"
+        );
     }
 
     #[test]
@@ -1821,6 +1952,67 @@ mod tests {
         assert_eq!(
             fs::read_to_string(gitignore_path).expect("working gitignore"),
             "base\nuser staged\nuser unstaged\n/.macro/\n"
+        );
+    }
+
+    #[test]
+    fn test_internal_gitignore_commit_preserves_unstaged_file_deletion() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let gitignore_path = temp.path().join(".gitignore");
+        fs::write(&gitignore_path, "base\n").expect("baseline gitignore");
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(Path::new(".gitignore"))
+            .expect("stage baseline gitignore");
+        index.write().expect("write baseline index");
+        let tree_id = index.write_tree().expect("baseline tree");
+        let tree = repo.find_tree(tree_id).expect("baseline tree object");
+        let parent = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("baseline parent");
+        let signature = Signature::now("Tester", "tester@example.com").expect("signature");
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "chore: add gitignore",
+            &tree,
+            &[&parent],
+        )
+        .expect("baseline commit");
+        drop(parent);
+        drop(tree);
+        fs::remove_file(&gitignore_path).expect("delete working gitignore");
+
+        GitState::new()
+            .ensure_task_worktree(
+                &repo,
+                "preserve-deletion",
+                "task-preserve-deletion",
+                None,
+                None,
+                &[],
+            )
+            .expect("ensure task worktree");
+
+        assert_eq!(
+            read_branch_file(&repo, "main", ".gitignore").as_deref(),
+            Some("base\n/.macro/\n")
+        );
+        assert!(
+            !gitignore_path.exists(),
+            "the user's unstaged deletion must remain visible"
+        );
+        let index = repo.index().expect("updated index");
+        let staged_entry = index
+            .get_path(Path::new(".gitignore"), 0)
+            .expect("tracked gitignore");
+        let staged_blob = repo.find_blob(staged_entry.id).expect("staged blob");
+        assert_eq!(
+            std::str::from_utf8(staged_blob.content()).expect("utf8 staged gitignore"),
+            "base\n/.macro/\n"
         );
     }
 
@@ -2100,6 +2292,77 @@ mod tests {
             .find_branch(MACRO_BRANCH_NAME, BranchType::Local)
             .is_err());
         assert!(temp.path().join("README.md").exists());
+    }
+
+    #[test]
+    fn test_debug_reset_leaves_linked_and_external_worktrees_untouched() {
+        let temp = TempDir::new().expect("temp dir");
+        let external = TempDir::new().expect("external temp dir");
+        let repo = init_repo(temp.path());
+        let head = repo
+            .head()
+            .and_then(|reference| reference.peel_to_commit())
+            .expect("head commit");
+        repo.branch("feature/external-debug", &head, false)
+            .expect("external task branch");
+        drop(head);
+        let task_reference = repo
+            .find_reference("refs/heads/feature/external-debug")
+            .expect("external task reference");
+        let macro_root = temp.path().join(LEGACY_METADATA_DIR_NAME);
+        let external_task_root = external.path().join("task-root");
+        fs::create_dir_all(&macro_root).expect("create Macro root");
+        fs::create_dir_all(&external_task_root).expect("create external task root");
+        link_directory(&macro_root.join("worktrees"), &external_task_root);
+        let external_task_path = macro_root.join("worktrees").join("taskexternal-debug");
+        let mut task_options = WorktreeAddOptions::new();
+        task_options.reference(Some(&task_reference));
+        repo.worktree(
+            "taskexternal-debug",
+            &external_task_path,
+            Some(&task_options),
+        )
+        .expect("external task worktree");
+        fs::write(external_task_path.join("user-task.txt"), "preserve task")
+            .expect("dirty external task worktree");
+
+        ensure_metadata_branch_exists(&repo).expect("metadata branch");
+        let metadata_reference = repo
+            .find_reference(&format!("refs/heads/{MACRO_BRANCH_NAME}"))
+            .expect("metadata branch reference");
+        let external_metadata_path = external.path().join("user-metadata");
+        let mut metadata_options = WorktreeAddOptions::new();
+        metadata_options.reference(Some(&metadata_reference));
+        repo.worktree(
+            MACRO_WORKTREE_NAME,
+            &external_metadata_path,
+            Some(&metadata_options),
+        )
+        .expect("external metadata worktree");
+        fs::write(
+            external_metadata_path.join("user-metadata.txt"),
+            "preserve metadata",
+        )
+        .expect("dirty external metadata worktree");
+
+        let report = GitState::new()
+            .debug_reset_macro_project_artifacts(temp.path())
+            .expect("debug reset");
+
+        assert!(!report.warnings.is_empty());
+        assert_eq!(
+            fs::read_to_string(external_task_path.join("user-task.txt"))
+                .expect("preserved task file"),
+            "preserve task"
+        );
+        assert_eq!(
+            fs::read_to_string(external_metadata_path.join("user-metadata.txt"))
+                .expect("preserved metadata file"),
+            "preserve metadata"
+        );
+        assert!(repo.find_worktree("taskexternal-debug").is_ok());
+        assert!(repo.find_worktree(MACRO_WORKTREE_NAME).is_ok());
+        assert!(macro_root.exists());
     }
 
     #[test]

@@ -210,19 +210,35 @@ fn canonicalize_with_missing_tail(path: &Path) -> PathBuf {
 
 fn is_path_in_task_worktree_root(repo: &Repository, path: &Path) -> Result<bool> {
     let root = task_worktree_root(repo)?;
-    let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
-        message: "Bare repositories are not supported for worktrees".to_string(),
-    })?;
-    let canonical_workdir = canonicalize_with_missing_tail(workdir);
-    let canonical_root = canonicalize_with_missing_tail(&root);
-    if !canonical_root.starts_with(&canonical_workdir) {
+    if !is_macro_owned_task_worktree_root(repo, &root)? {
         return Ok(false);
     }
+    let canonical_root = canonicalize_with_missing_tail(&root);
     let canonical_path = canonicalize_with_missing_tail(path);
     Ok(canonical_path.starts_with(canonical_root))
 }
 
-fn is_macro_owned_worktree_path(
+pub(crate) fn is_macro_owned_task_worktree_root(repo: &Repository, path: &Path) -> Result<bool> {
+    let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+        message: "Bare repositories are not supported for worktrees".to_string(),
+    })?;
+    let canonical_workdir = canonicalize_with_missing_tail(workdir);
+    let canonical_expected = canonicalize_with_missing_tail(&task_worktree_root(repo)?);
+    Ok(canonical_expected.starts_with(&canonical_workdir)
+        && canonicalize_with_missing_tail(path) == canonical_expected)
+}
+
+pub(crate) fn is_macro_owned_project_artifact_root(repo: &Repository, path: &Path) -> Result<bool> {
+    let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+        message: "Bare repositories are not supported for worktrees".to_string(),
+    })?;
+    let canonical_workdir = canonicalize_with_missing_tail(workdir);
+    let canonical_expected = canonicalize_with_missing_tail(&workdir.join(".macro"));
+    Ok(canonical_expected.starts_with(&canonical_workdir)
+        && canonicalize_with_missing_tail(path) == canonical_expected)
+}
+
+pub(crate) fn is_macro_owned_worktree_path(
     repo: &Repository,
     worktree_name: &str,
     path: &Path,
@@ -250,6 +266,22 @@ fn is_macro_metadata_worktree_path(repo: &Repository, worktree_name: &str, path:
         canonicalize_with_missing_tail(&repo.path().join(super::MACRO_WORKTREE_DIR_NAME));
     canonical_expected.starts_with(&canonical_git_dir)
         && canonicalize_with_missing_tail(path) == canonical_expected
+}
+
+pub(crate) fn ensure_macro_metadata_worktree_ownership(
+    repo: &Repository,
+    path: &Path,
+) -> Result<()> {
+    if is_macro_metadata_worktree_path(repo, super::MACRO_WORKTREE_NAME, path) {
+        return Ok(());
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "Refusing to modify Macro metadata worktree at {} because Macro does not own that path",
+            path.display()
+        ),
+    })
 }
 
 fn ensure_managed_worktree_ownership(
@@ -482,9 +514,12 @@ pub(crate) fn repair_gitfile_worktree_links(
     worktree_name: &str,
     worktree_path: &Path,
 ) -> Result<bool> {
-    if !is_macro_metadata_worktree_path(repo, worktree_name, worktree_path)
-        && !is_macro_owned_worktree_path(repo, worktree_name, worktree_path)?
-    {
+    let owned = if worktree_name == super::MACRO_WORKTREE_NAME {
+        ensure_macro_metadata_worktree_ownership(repo, worktree_path).is_ok()
+    } else {
+        is_macro_owned_worktree_path(repo, worktree_name, worktree_path)?
+    };
+    if !owned {
         return Err(BackendError::Git {
             message: format!(
                 "Refusing to repair worktree '{}' at {} because Macro does not own that path",
@@ -1049,6 +1084,13 @@ impl GitState {
             }
         }
 
+        let worktree_path = task_worktree_path(repo, task_id)?;
+        ensure_managed_worktree_ownership(
+            repo,
+            &inspection.worktree_name,
+            &worktree_path,
+            ManagedWorktreeKind::Task,
+        )?;
         let worktree_root = task_worktree_root(repo)?;
         fs::create_dir_all(&worktree_root).map_err(|e| BackendError::Io {
             message: e.to_string(),
@@ -1079,7 +1121,6 @@ impl GitState {
         release_branch_from_primary_workdir(repo, branch_name, fallback_branches)?;
         ensure_task_worktree_gitignore_rule(repo, workdir, preferred_commit_branch)?;
 
-        let worktree_path = task_worktree_path(repo, task_id)?;
         let reference = repo
             .find_reference(&format!("refs/heads/{}", branch_name))
             .map_err(|e| BackendError::Git {
@@ -1369,6 +1410,13 @@ impl GitState {
             }
         }
 
+        let worktree_path = branch_worktree_path(repo, worktree_key)?;
+        ensure_managed_worktree_ownership(
+            repo,
+            &inspection.worktree_name,
+            &worktree_path,
+            ManagedWorktreeKind::Branch,
+        )?;
         let worktree_root = task_worktree_root(repo)?;
         fs::create_dir_all(&worktree_root).map_err(|e| BackendError::Io {
             message: e.to_string(),
@@ -1404,7 +1452,6 @@ impl GitState {
             fallback_branches.first().map(String::as_str),
         )?;
 
-        let worktree_path = branch_worktree_path(repo, worktree_key)?;
         let reference = repo
             .find_reference(&format!("refs/heads/{}", branch_name))
             .map_err(|e| BackendError::Git {
