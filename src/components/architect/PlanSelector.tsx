@@ -90,6 +90,7 @@ import {
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
 import { toPlanLocatorKey } from '../../services/durableIdentity';
+import { recoverFailedPlanActivation } from './planActivationRecovery';
 
 interface PlanSelectorProps {
   className?: string;
@@ -701,26 +702,30 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       }
       setPlans(previousPlans);
       setActivePlanId(previousActivePlanId);
-      useChatStore.getState().invalidateConversationResolution();
-      useAppStore.setState(previousVisibleState);
-      useChatStore.getState().invalidateConversationResolution();
-      useChatStore.setState((currentChatState) => ({
-        ...previousChatVisibleState,
-        selectionRequestId:
-          Math.max(
-            currentChatState.selectionRequestId,
-            previousChatVisibleState.selectionRequestId,
-          ) + 1,
-      }));
-      if (openReplicaRepair(activationError, () => activatePlan(planId, planSummaryHint ?? null))) {
+      const recoveryResult = recoverFailedPlanActivation({
+        previousAppState: previousVisibleState,
+        previousChatState: previousChatVisibleState,
+        invalidateConversationResolution: () =>
+          useChatStore.getState().invalidateConversationResolution(),
+        restoreAppState: (state) => useAppStore.setState(state),
+        getChatSelectionRequestId: () =>
+          useChatStore.getState().selectionRequestId,
+        restoreChatState: (state) => useChatStore.setState(state),
+        error: activationError,
+        openReplicaRepair: (error) =>
+          openReplicaRepair(error, () =>
+            activatePlan(planId, planSummaryHint ?? null)),
+        resolveErrorMessage: (error) =>
+          resolveOperationMessage(
+            error,
+            t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.'),
+          ),
+        setError,
+        notifyError: (message) => notify.error(message),
+      });
+      if (recoveryResult === 'replica-repair-opened') {
         return;
       }
-      const message = resolveOperationMessage(
-        activationError,
-        t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.')
-      );
-      setError(message);
-      notify.error(message);
     } finally {
       if (activationRequestIdRef.current === requestId) {
         setIsActivating(null);
