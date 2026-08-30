@@ -4,6 +4,11 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 #[cfg(unix)]
+use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+
+#[cfg(unix)]
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,6 +142,46 @@ static NEXT_CONTAINMENT_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(windows)]
 type JobObjectHandle = OwnedHandle;
 
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct UnixContainmentMarker {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl UnixContainmentMarker {
+    fn create(containment_id: &str) -> io::Result<Self> {
+        use std::os::fd::AsRawFd;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("macro-process-{containment_id}-{nonce}.lock"));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+            let error = io::Error::last_os_error();
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(Self { file, path })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for UnixContainmentMarker {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 pub fn background_contained_tokio_command(program: impl AsRef<OsStr>) -> tokio::process::Command {
     let mut command = background_tokio_command(program);
     apply_background_containment(&mut command);
@@ -156,6 +201,8 @@ pub struct ContainedBackgroundProcess {
     process_group_id: Option<u32>,
     #[cfg(unix)]
     containment_id: String,
+    #[cfg(target_os = "macos")]
+    containment_marker: UnixContainmentMarker,
     #[cfg(windows)]
     job_object: JobObjectHandle,
 }
@@ -167,6 +214,23 @@ impl ContainedBackgroundProcess {
         let containment_id = next_containment_id();
         #[cfg(unix)]
         command.env(CONTAINMENT_ID_ENV, &containment_id);
+        #[cfg(target_os = "macos")]
+        let containment_marker = {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::process::CommandExt;
+
+            let marker = UnixContainmentMarker::create(&containment_id)?;
+            let marker_descriptor = marker.file.as_raw_fd();
+            unsafe {
+                command.as_std_mut().pre_exec(move || {
+                    if libc::fcntl(marker_descriptor, libc::F_SETFD, 0) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            marker
+        };
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::process::CommandExt;
@@ -201,6 +265,8 @@ impl ContainedBackgroundProcess {
             process_group_id,
             #[cfg(unix)]
             containment_id,
+            #[cfg(target_os = "macos")]
+            containment_marker,
             #[cfg(windows)]
             job_object,
         })
@@ -229,6 +295,18 @@ impl ContainedBackgroundProcess {
     #[cfg(unix)]
     pub fn unix_process_group_id(&self) -> Option<u32> {
         self.process_group_id
+    }
+
+    #[cfg(unix)]
+    fn containment_marker_path(&self) -> Option<&Path> {
+        #[cfg(target_os = "macos")]
+        {
+            Some(&self.containment_marker.path)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
     }
 
     pub async fn wait(&mut self) -> io::Result<ExitStatus> {
@@ -265,7 +343,11 @@ impl ContainedBackgroundProcess {
 
     #[cfg(unix)]
     async fn terminate_unix(&mut self, grace_period: Duration) -> io::Result<ExitStatus> {
-        let process_ids = suspend_unix_process_tree(self.process_group_id, &self.containment_id);
+        let process_ids = suspend_unix_process_tree(
+            self.process_group_id,
+            &self.containment_id,
+            self.containment_marker_path(),
+        );
         for process_id in process_ids {
             signal_process(process_id, libc::SIGKILL);
         }
@@ -345,27 +427,68 @@ fn next_containment_id() -> String {
 
 #[cfg(target_os = "linux")]
 fn install_linux_process_supervisor() -> io::Result<()> {
-    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } == -1 {
+    let mut status_pipe = [-1; 2];
+    if unsafe { libc::pipe2(status_pipe.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
         return Err(io::Error::last_os_error());
     }
 
-    let command_process_id = unsafe { libc::fork() };
-    if command_process_id == -1 {
+    let supervisor_process_id = unsafe { libc::fork() };
+    if supervisor_process_id == -1 {
+        unsafe {
+            libc::close(status_pipe[0]);
+            libc::close(status_pipe[1]);
+        }
         return Err(io::Error::last_os_error());
     }
-    if command_process_id == 0 {
-        return Ok(());
+    if supervisor_process_id == 0 {
+        unsafe {
+            libc::close(status_pipe[0]);
+        }
+        if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let command_process_id = unsafe { libc::fork() };
+        if command_process_id == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if command_process_id == 0 {
+            unsafe {
+                libc::close(status_pipe[1]);
+            }
+            return Ok(());
+        }
+
+        close_linux_file_descriptors_except(status_pipe[1]);
+        supervise_linux_command(command_process_id, status_pipe[1]);
     }
 
-    close_linux_supervisor_file_descriptors();
-    let mut command_status = 0;
-    let mut command_status_known = false;
+    unsafe {
+        libc::close(status_pipe[1]);
+    }
+    close_linux_file_descriptors_except(status_pipe[0]);
+    let command_status = read_linux_command_status(status_pipe[0]);
+    unsafe {
+        libc::close(status_pipe[0]);
+    }
+    exit_linux_process_with_status(command_status)
+}
+
+#[cfg(target_os = "linux")]
+fn supervise_linux_command(command_process_id: libc::pid_t, status_descriptor: i32) -> ! {
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+    let mut command_status_reported = false;
     loop {
         let mut status = 0;
         let waited = unsafe { libc::waitpid(-1, &mut status, 0) };
         if waited == command_process_id {
-            command_status = status;
-            command_status_known = true;
+            write_linux_command_status(status_descriptor, status);
+            unsafe {
+                libc::close(status_descriptor);
+            }
+            command_status_reported = true;
             continue;
         }
         if waited >= 0 {
@@ -375,28 +498,79 @@ fn install_linux_process_supervisor() -> io::Result<()> {
         let error = io::Error::last_os_error();
         match error.raw_os_error() {
             Some(libc::EINTR) => continue,
-            Some(libc::ECHILD) if command_status_known => {
-                exit_linux_supervisor_with_status(command_status)
-            }
+            Some(libc::ECHILD) if command_status_reported => unsafe { libc::_exit(0) },
             _ => unsafe { libc::_exit(1) },
         }
     }
 }
 
 #[cfg(target_os = "linux")]
-fn close_linux_supervisor_file_descriptors() {
-    let closed = unsafe { libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) };
-    if closed == 0 {
-        return;
+fn read_linux_command_status(descriptor: i32) -> i32 {
+    let mut status = 0_i32;
+    let mut read_bytes = 0_usize;
+    while read_bytes < std::mem::size_of::<i32>() {
+        let result = unsafe {
+            libc::read(
+                descriptor,
+                (&mut status as *mut i32 as *mut u8).add(read_bytes) as *mut _,
+                std::mem::size_of::<i32>() - read_bytes,
+            )
+        };
+        if result > 0 {
+            read_bytes += result as usize;
+            continue;
+        }
+        if result == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        unsafe { libc::_exit(1) }
     }
+    status
+}
 
-    for descriptor in 3..65_536 {
-        let _ = unsafe { libc::close(descriptor) };
+#[cfg(target_os = "linux")]
+fn write_linux_command_status(descriptor: i32, status: i32) {
+    let mut written_bytes = 0_usize;
+    while written_bytes < std::mem::size_of::<i32>() {
+        let result = unsafe {
+            libc::write(
+                descriptor,
+                (&status as *const i32 as *const u8).add(written_bytes) as *const _,
+                std::mem::size_of::<i32>() - written_bytes,
+            )
+        };
+        if result > 0 {
+            written_bytes += result as usize;
+            continue;
+        }
+        if result == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        return;
     }
 }
 
 #[cfg(target_os = "linux")]
-fn exit_linux_supervisor_with_status(status: i32) -> ! {
+fn close_linux_file_descriptors_except(preserved_descriptor: i32) {
+    let close_range = |first: u32, last: u32| {
+        first > last || unsafe { libc::syscall(libc::SYS_close_range, first, last, 0_u32) } == 0
+    };
+    let lower_closed =
+        preserved_descriptor <= 0 || close_range(0, (preserved_descriptor - 1) as u32);
+    let upper_closed = close_range((preserved_descriptor + 1) as u32, u32::MAX);
+    if lower_closed && upper_closed {
+        return;
+    }
+
+    for descriptor in 0..65_536 {
+        if descriptor != preserved_descriptor {
+            let _ = unsafe { libc::close(descriptor) };
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn exit_linux_process_with_status(status: i32) -> ! {
     if libc::WIFEXITED(status) {
         unsafe { libc::_exit(libc::WEXITSTATUS(status)) }
     }
@@ -412,22 +586,35 @@ fn exit_linux_supervisor_with_status(status: i32) -> ! {
 }
 
 #[cfg(unix)]
-fn parse_unix_process_table(output: &str) -> Vec<(u32, u32)> {
+#[derive(Clone, Copy)]
+struct UnixProcessRecord {
+    process_id: u32,
+    parent_id: u32,
+    process_group_id: u32,
+}
+
+#[cfg(unix)]
+fn parse_unix_process_table(output: &str) -> Vec<UnixProcessRecord> {
     output
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let process_id = fields.next()?.parse().ok()?;
             let parent_id = fields.next()?.parse().ok()?;
-            Some((process_id, parent_id))
+            let process_group_id = fields.next()?.parse().ok()?;
+            Some(UnixProcessRecord {
+                process_id,
+                parent_id,
+                process_group_id,
+            })
         })
         .collect()
 }
 
 #[cfg(unix)]
-fn read_unix_process_table() -> io::Result<Vec<(u32, u32)>> {
+fn read_unix_process_table() -> io::Result<Vec<UnixProcessRecord>> {
     let output = std::process::Command::new("/bin/ps")
-        .args(["-axo", "pid=,ppid="])
+        .args(["-axo", "pid=,ppid=,pgid="])
         .output()?;
     if !output.status.success() {
         return Err(io::Error::other(
@@ -440,13 +627,13 @@ fn read_unix_process_table() -> io::Result<Vec<(u32, u32)>> {
 }
 
 #[cfg(unix)]
-fn descendant_process_ids(root_id: u32, table: &[(u32, u32)]) -> HashSet<u32> {
+fn descendant_process_ids(root_id: u32, table: &[UnixProcessRecord]) -> HashSet<u32> {
     let mut children_by_parent = HashMap::<u32, Vec<u32>>::new();
-    for &(process_id, parent_id) in table {
+    for record in table {
         children_by_parent
-            .entry(parent_id)
+            .entry(record.parent_id)
             .or_default()
-            .push(process_id);
+            .push(record.process_id);
     }
     let mut descendants = HashSet::new();
     let mut pending = vec![root_id];
@@ -484,6 +671,34 @@ fn processes_with_containment_id(containment_id: &str) -> HashSet<u32> {
         .collect()
 }
 
+#[cfg(target_os = "macos")]
+fn processes_with_containment_marker(marker_path: Option<&Path>) -> HashSet<u32> {
+    let Some(marker_path) = marker_path else {
+        return HashSet::new();
+    };
+    let own_process_id = std::process::id();
+    let Ok(output) = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-n", "-P", "-F", "p", "--"])
+        .arg(marker_path)
+        .output()
+    else {
+        return HashSet::new();
+    };
+    if !output.status.success() {
+        return HashSet::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix('p')?.parse::<u32>().ok())
+        .filter(|process_id| *process_id != own_process_id)
+        .collect()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn processes_with_containment_marker(_marker_path: Option<&Path>) -> HashSet<u32> {
+    HashSet::new()
+}
+
 #[cfg(all(unix, not(target_os = "linux")))]
 fn processes_with_containment_id(containment_id: &str) -> HashSet<u32> {
     let expected = format!("{CONTAINMENT_ID_ENV}={containment_id}");
@@ -510,17 +725,33 @@ fn processes_with_containment_id(containment_id: &str) -> HashSet<u32> {
 }
 
 #[cfg(unix)]
-fn suspend_unix_process_tree(root_id: Option<u32>, containment_id: &str) -> Vec<u32> {
+fn suspend_unix_process_tree(
+    root_id: Option<u32>,
+    containment_id: &str,
+    containment_marker_path: Option<&Path>,
+) -> Vec<u32> {
     if let Some(root_id) = root_id {
         signal_process_group(root_id, libc::SIGSTOP);
     }
     let mut process_ids = root_id.into_iter().collect::<HashSet<_>>();
     for _ in 0..8 {
         let previous_len = process_ids.len();
-        if let (Some(root_id), Ok(table)) = (root_id, read_unix_process_table()) {
-            process_ids.extend(descendant_process_ids(root_id, &table));
-        }
         process_ids.extend(processes_with_containment_id(containment_id));
+        process_ids.extend(processes_with_containment_marker(containment_marker_path));
+        if let Ok(table) = read_unix_process_table() {
+            if let Some(process_group_id) = root_id {
+                process_ids.extend(
+                    table
+                        .iter()
+                        .filter(|record| record.process_group_id == process_group_id)
+                        .map(|record| record.process_id),
+                );
+            }
+            let roots = process_ids.iter().copied().collect::<Vec<_>>();
+            for root in roots {
+                process_ids.extend(descendant_process_ids(root, &table));
+            }
+        }
         for &process_id in &process_ids {
             signal_process(process_id, libc::SIGSTOP);
         }
@@ -576,15 +807,15 @@ impl Drop for ContainedBackgroundProcess {
     fn drop(&mut self) {
         #[cfg(unix)]
         {
-            if matches!(self.child.try_wait(), Ok(None)) {
-                for process_id in
-                    suspend_unix_process_tree(self.process_group_id, &self.containment_id)
-                {
-                    signal_process(process_id, libc::SIGKILL);
-                }
-                if let Some(process_group_id) = self.process_group_id {
-                    signal_process_group(process_group_id, libc::SIGKILL);
-                }
+            for process_id in suspend_unix_process_tree(
+                self.process_group_id,
+                &self.containment_id,
+                self.containment_marker_path(),
+            ) {
+                signal_process(process_id, libc::SIGKILL);
+            }
+            if let Some(process_group_id) = self.process_group_id {
+                signal_process_group(process_group_id, libc::SIGKILL);
             }
         }
         #[cfg(windows)]
@@ -660,7 +891,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unix_process_table_finds_nested_descendants() {
-        let table = super::parse_unix_process_table("10 1\n11 10\n12 11\n20 1\n");
+        let table = super::parse_unix_process_table("10 1 10\n11 10 10\n12 11 12\n20 1 20\n");
         let descendants = super::descendant_process_ids(10, &table);
 
         assert_eq!(descendants, [11, 12].into_iter().collect());
@@ -707,6 +938,28 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
+    async fn contained_process_wait_preserves_the_command_exit_status() {
+        use super::{background_contained_tokio_command, ContainedBackgroundProcess};
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        let mut command = background_contained_tokio_command("sh");
+        command
+            .args(["-c", "exit 23"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut process = ContainedBackgroundProcess::spawn(command).expect("spawn command");
+        let status = tokio::time::timeout(Duration::from_secs(1), process.wait())
+            .await
+            .expect("wait must return after the command exits")
+            .expect("wait for command status");
+
+        assert_eq!(status.code(), Some(23));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
     async fn contained_process_terminates_a_double_fork_with_cleared_environment() {
         use super::{background_contained_tokio_command, ContainedBackgroundProcess};
         use std::process::Stdio;
@@ -737,14 +990,11 @@ mod tests {
         // The shell and setsid launcher both exit before this delay. The
         // per-command subreaper remains alive while the daemon is running.
         tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(
-            process
-                .child
-                .try_wait()
-                .expect("query supervisor")
-                .is_none(),
-            "the containment supervisor exited before its adopted daemon"
-        );
+        let status = tokio::time::timeout(Duration::from_secs(1), process.wait())
+            .await
+            .expect("wait must return after the command exits")
+            .expect("wait for command status");
+        assert!(status.success(), "the command status must be preserved");
         process
             .terminate_with_grace(Duration::ZERO)
             .await
