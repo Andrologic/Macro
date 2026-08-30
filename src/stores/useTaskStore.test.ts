@@ -113,6 +113,17 @@ const dbSetAppSettingMock = mock(async (params: { key: string; valueJson: string
     updated_at: '2026-08-12T00:00:00.000Z',
   };
 });
+const dbCompareAndSwapAppSettingMock = mock(async (params: {
+  key: string;
+  expectedValueJson: string | null;
+  valueJson: string;
+}) => {
+  if ((dbAppSettings.get(params.key) ?? null) !== params.expectedValueJson) {
+    return { applied: false };
+  }
+  dbAppSettings.set(params.key, params.valueJson);
+  return { applied: true };
+});
 const workspaceRevertManualFeatureToDraftMock = mock(async () => ({
   id: 'task-1',
   conversationId: 'conv-1',
@@ -282,6 +293,7 @@ mock.module('../services/tauriIpc', () => ({
   directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
+  dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
@@ -316,6 +328,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
+  dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
@@ -439,6 +452,7 @@ beforeEach(() => {
   chatStoreRuntimeById = {};
   dbGetAppSettingMock.mockClear();
   dbSetAppSettingMock.mockClear();
+  dbCompareAndSwapAppSettingMock.mockClear();
   completeLinkedTaskConversationDeletionMock.mockClear();
   completeLinkedTaskConversationDeletionImpl = null;
   runWorktreeSetupCommandMock.mockClear();

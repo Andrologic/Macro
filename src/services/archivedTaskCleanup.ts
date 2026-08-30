@@ -1,6 +1,15 @@
 import * as tauriIpc from './tauriIpc';
 
 const CLEANUP_KEY = 'pendingArchivedTaskCleanups:v1';
+const MAX_CAS_ATTEMPTS = 32;
+
+export interface ArchivedTaskCleanupJournalTransport {
+  isTauriAvailable: () => boolean;
+  dbGetAppSetting: typeof tauriIpc.dbGetAppSetting;
+  dbCompareAndSwapAppSetting: typeof tauriIpc.dbCompareAndSwapAppSetting;
+}
+
+const defaultTransport: ArchivedTaskCleanupJournalTransport = tauriIpc;
 
 export type ArchivedTaskCleanupTargetState = 'pending' | 'dirty' | 'failed';
 
@@ -72,57 +81,54 @@ const parseCleanupSagas = (value: string | null | undefined): ArchivedTaskCleanu
   });
 };
 
-export const loadArchivedTaskCleanupSagas = async (): Promise<ArchivedTaskCleanupSaga[]> => {
-  if (!tauriIpc.isTauriAvailable()) return [];
-  const setting = await tauriIpc.dbGetAppSetting(CLEANUP_KEY);
+export const loadArchivedTaskCleanupSagas = async (
+  transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
+): Promise<ArchivedTaskCleanupSaga[]> => {
+  if (!transport.isTauriAvailable()) return [];
+  const setting = await transport.dbGetAppSetting(CLEANUP_KEY);
   return parseCleanupSagas(setting?.value_json);
 };
 
-const saveArchivedTaskCleanupSagas = async (
-  sagas: ArchivedTaskCleanupSaga[],
+const mutateArchivedTaskCleanupSagas = async (
+  mutate: (current: ArchivedTaskCleanupSaga[]) => ArchivedTaskCleanupSaga[],
+  transport: ArchivedTaskCleanupJournalTransport,
 ): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable()) return;
-  await tauriIpc.dbSetAppSetting({
-    key: CLEANUP_KEY,
-    valueJson: JSON.stringify(sagas),
-  });
-};
-
-let pendingMutation: Promise<void> = Promise.resolve();
-
-const serializeMutation = async <T>(operation: () => Promise<T>): Promise<T> => {
-  const previous = pendingMutation;
-  let release!: () => void;
-  pendingMutation = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous.catch(() => undefined);
-  try {
-    return await operation();
-  } finally {
-    release();
+  if (!transport.isTauriAvailable()) return;
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const setting = await transport.dbGetAppSetting(CLEANUP_KEY);
+    const currentValue = setting?.value_json ?? null;
+    const nextValue = JSON.stringify(mutate(parseCleanupSagas(currentValue)));
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key: CLEANUP_KEY,
+      expectedValueJson: currentValue,
+      valueJson: nextValue,
+    });
+    if (result.applied) return;
   }
+  throw new Error('Conflit persistant pendant la mise à jour du journal de nettoyage des tâches archivées.');
 };
 
 export const upsertArchivedTaskCleanupSaga = async (
   saga: ArchivedTaskCleanupSaga,
+  transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
 ): Promise<void> => {
-  await serializeMutation(async () => {
-    const current = await loadArchivedTaskCleanupSagas();
-    await saveArchivedTaskCleanupSagas([
+  await mutateArchivedTaskCleanupSagas(
+    (current) => [
       ...current.filter((entry) => entry.taskId !== saga.taskId),
       saga,
-    ]);
-  });
+    ],
+    transport,
+  );
 };
 
-export const removeArchivedTaskCleanupSaga = async (taskId: string): Promise<void> => {
-  await serializeMutation(async () => {
-    const current = await loadArchivedTaskCleanupSagas();
-    await saveArchivedTaskCleanupSagas(
-      current.filter((entry) => entry.taskId !== taskId),
-    );
-  });
+export const removeArchivedTaskCleanupSaga = async (
+  taskId: string,
+  transport: ArchivedTaskCleanupJournalTransport = defaultTransport,
+): Promise<void> => {
+  await mutateArchivedTaskCleanupSagas(
+    (current) => current.filter((entry) => entry.taskId !== taskId),
+    transport,
+  );
 };
 
 export const archivedTaskCleanupIsComplete = (
