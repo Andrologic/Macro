@@ -32,6 +32,7 @@ import {
   removeLinkedTaskDeletionSaga,
   upsertLinkedTaskDeletionSaga,
   type LinkedTaskDeletionSaga,
+  type LinkedTaskDeletionTarget,
 } from '../services/linkedTaskDeletionSaga';
 import {
   archivedTaskCleanupIsComplete,
@@ -618,6 +619,63 @@ const assertLifecycleGitTargetsSafe = async (
   }
 };
 
+interface DurableTaskGitCleanupIdentity {
+  branchExisted: boolean;
+  expectedCommit: string | null;
+  expectedWorktreePath: string | null;
+  worktreeRemoved: boolean;
+}
+
+const captureDurableTaskGitCleanupIdentities = async (
+  targets: Array<TaskExecutionTarget & { repoPath: string }>,
+): Promise<Map<string, DurableTaskGitCleanupIdentity>> => new Map(
+  await Promise.all(targets.map(async (target) => {
+    const inspection = await tauriIpc.gitWorktreeInspect({
+      repoPath: target.repoPath,
+      taskId: target.worktreeKey,
+      branchName: target.branchName,
+    });
+    const branches = await tauriIpc.gitBranchList(target.repoPath);
+    const branch = branches.local.find((candidate) => candidate.name === target.branchName);
+    const worktreeRemoved = inspection.status === 'absent';
+    if (!worktreeRemoved && !branch) {
+      throw new Error(
+        `Impossible de préparer le nettoyage de ${target.branchName} : son worktree existe sans branche locale vérifiable.`,
+      );
+    }
+    if (inspection.status === 'invalid_repo') {
+      throw new Error(
+        `Impossible de préparer le nettoyage de ${target.branchName} : le dépôt Git n'est pas valide.`,
+      );
+    }
+    return [target.worktreeKey, {
+      branchExisted: Boolean(branch),
+      expectedCommit: branch?.commit ?? null,
+      expectedWorktreePath: worktreeRemoved ? null : inspection.worktreePath,
+      worktreeRemoved,
+    }] as const;
+  })),
+);
+
+const assertDurableTaskGitCleanupIdentity = (
+  target: Pick<LinkedTaskDeletionTarget, 'branchName' | 'branchExisted' | 'branchRemoved' | 'expectedCommit' |
+    'expectedWorktreePath' | 'worktreeRemoved'>,
+): void => {
+  if (!target.worktreeRemoved && (
+    typeof target.expectedCommit !== 'string' ||
+    typeof target.expectedWorktreePath !== 'string'
+  )) {
+    throw new Error(
+      `Le journal de suppression de ${target.branchName} ne contient pas l'identité Git du worktree. La suppression reste bloquée.`,
+    );
+  }
+  if (target.branchExisted && !target.branchRemoved && typeof target.expectedCommit !== 'string') {
+    throw new Error(
+      `Le journal de suppression de ${target.branchName} ne contient pas l'identité du commit. La suppression reste bloquée.`,
+    );
+  }
+};
+
 const mergeArchivedCleanupIntoLinkedDeletion = (
   saga: LinkedTaskDeletionSaga,
   cleanup: ArchivedTaskCleanupSaga,
@@ -634,7 +692,9 @@ const mergeArchivedCleanupIntoLinkedDeletion = (
       ...target,
       repoPath: archivedTarget.repoPath,
       branchName: archivedTarget.branchName,
-      branchExisted: true,
+      branchExisted: archivedTarget.branchExisted ?? true,
+      expectedCommit: archivedTarget.expectedCommit,
+      expectedWorktreePath: archivedTarget.expectedWorktreePath,
       worktreeRemoved: target.worktreeRemoved || archivedTarget.worktreeRemoved,
       branchRemoved: target.branchRemoved || archivedTarget.branchRemoved,
       cleanupKind: 'git' as const,
@@ -645,7 +705,9 @@ const mergeArchivedCleanupIntoLinkedDeletion = (
       worktreeKey: target.worktreeKey,
       repoPath: target.repoPath,
       branchName: target.branchName,
-      branchExisted: true,
+      branchExisted: target.branchExisted ?? true,
+      expectedCommit: target.expectedCommit,
+      expectedWorktreePath: target.expectedWorktreePath,
       worktreeRemoved: target.worktreeRemoved,
       branchRemoved: target.branchRemoved,
       cleanupKind: 'git',
@@ -715,6 +777,7 @@ const resumeLinkedTaskGitCleanup = async (
       }
       continue;
     }
+    assertDurableTaskGitCleanupIdentity(target);
     if (!target.worktreeRemoved) {
       const inspectWorktree = () =>
         tauriIpc.gitWorktreeInspect({
@@ -730,6 +793,8 @@ const resumeLinkedTaskGitCleanup = async (
             taskId: target.worktreeKey,
             force: false,
             branchName: target.branchName,
+            expectedCommit: target.expectedCommit,
+            expectedWorktreePath: target.expectedWorktreePath,
           });
         } catch (error) {
           inspection = await inspectWorktree();
@@ -763,6 +828,7 @@ const resumeLinkedTaskGitCleanup = async (
             repoPath: updatedTarget.repoPath,
             branchName: updatedTarget.branchName,
             force: false,
+            expectedCommit: updatedTarget.expectedCommit,
           });
         } catch (error) {
           if (await branchExists()) {
@@ -818,6 +884,21 @@ const runArchivedTaskCleanup = async (
     return saga;
   }
   for (const target of saga.targets) {
+    try {
+      assertDurableTaskGitCleanupIdentity({
+        ...target,
+        branchExisted: target.branchExisted ?? true,
+      });
+    } catch (error) {
+      const message = toServiceError(error).message;
+      saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
+        ...current,
+        state: 'failed',
+        lastError: message,
+      }));
+      await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
+      continue;
+    }
     if (!target.worktreeRemoved) {
       try {
         const inspection = await tauriIpc.gitWorktreeInspect({
@@ -853,6 +934,8 @@ const runArchivedTaskCleanup = async (
             branchName: target.branchName,
             archiveTaskId: saga.taskId,
             archiveToken: saga.archiveToken,
+            expectedCommit: target.expectedCommit,
+            expectedWorktreePath: target.expectedWorktreePath,
           });
           saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
             ...current,
@@ -915,6 +998,7 @@ const runArchivedTaskCleanup = async (
           force: false,
           archiveTaskId: saga.taskId,
           archiveToken: saga.archiveToken,
+          expectedCommit: currentTarget.expectedCommit,
         });
       }
       saga = updateArchivedCleanupTarget(saga, currentTarget.worktreeKey, (current) => ({
@@ -3540,14 +3624,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ),
       );
       await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
-      const branchSnapshots = new Map(
-        await Promise.all(
-          gitTargets.map(async (target) => [
-            target.worktreeKey,
-            await tauriIpc.gitBranchList(target.repoPath),
-          ] as const),
-        ),
-      );
+      const cleanupIdentities = await captureDurableTaskGitCleanupIdentities(gitTargets);
       let revertSaga: LinkedTaskDeletionSaga | null = null;
       if (directTargets.length > 0) {
         const now = new Date().toISOString();
@@ -3573,15 +3650,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
                 checkpointId: directCheckpointIds.get(target.worktreeKey),
               };
             }
+            const identity = cleanupIdentities.get(target.worktreeKey)!;
             return {
               worktreeKey: target.worktreeKey,
               repoPath: target.repoPath,
               branchName: target.branchName,
-              branchExisted: (branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
-                (branch) => branch.name === target.branchName,
-              ),
-              worktreeRemoved: false,
-              branchRemoved: false,
+              branchExisted: identity.branchExisted,
+              expectedCommit: identity.expectedCommit,
+              expectedWorktreePath: identity.expectedWorktreePath,
+              worktreeRemoved: identity.worktreeRemoved,
+              branchRemoved: !identity.branchExisted,
               cleanupKind: 'git' as const,
             };
           }),
@@ -3615,20 +3693,22 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         );
       } else {
         for (const target of gitTargets) {
+          const identity = cleanupIdentities.get(target.worktreeKey)!;
           await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
             force: false,
             branchName: target.branchName,
+            expectedCommit: identity.expectedCommit,
+            expectedWorktreePath: identity.expectedWorktreePath,
           });
 
-          if ((branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
-            (branch) => branch.name === target.branchName,
-          )) {
+          if (identity.branchExisted) {
             await tauriIpc.gitBranchDelete({
               repoPath: target.repoPath,
               branchName: target.branchName,
               force: false,
+              expectedCommit: identity.expectedCommit,
             });
           }
         }
@@ -3818,21 +3898,28 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           isGitExecutionTarget(target) &&
           !isRepositoryRootTarget(target),
       );
+      const cleanupIdentities = await captureDurableTaskGitCleanupIdentities(gitTargets);
       const now = new Date().toISOString();
       const preparedCleanup: ArchivedTaskCleanupSaga | null = gitTargets.length > 0
         ? {
           operationId: crypto.randomUUID(),
           taskId,
           archiveToken: null,
-          targets: gitTargets.map((target) => ({
-            worktreeKey: target.worktreeKey,
-            repoPath: target.repoPath,
-            branchName: target.branchName,
-            worktreePath: get().branchWorktrees[target.worktreeKey] ?? null,
-            worktreeRemoved: false,
-            branchRemoved: false,
-            state: 'pending',
-          })),
+          targets: gitTargets.map((target) => {
+            const identity = cleanupIdentities.get(target.worktreeKey)!;
+            return {
+              worktreeKey: target.worktreeKey,
+              repoPath: target.repoPath,
+              branchName: target.branchName,
+              branchExisted: identity.branchExisted,
+              expectedCommit: identity.expectedCommit,
+              expectedWorktreePath: identity.expectedWorktreePath,
+              worktreePath: identity.expectedWorktreePath,
+              worktreeRemoved: identity.worktreeRemoved,
+              branchRemoved: !identity.branchExisted,
+              state: 'pending',
+            };
+          }),
           createdAt: now,
           updatedAt: now,
         }
@@ -4147,14 +4234,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ),
       );
       await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
-      const branchSnapshots = new Map(
-        await Promise.all(
-          gitTargets.map(async (target) => [
-            target.worktreeKey,
-            await tauriIpc.gitBranchList(target.repoPath),
-          ] as const),
-        ),
-      );
+      const cleanupIdentities = await captureDurableTaskGitCleanupIdentities(gitTargets);
       linkedConversationSaga = {
             taskId: task.id,
             conversationId: task.conversation_id ?? '',
@@ -4185,15 +4265,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
                   cleanupKind: 'git' as const,
                 };
               }
+              const identity = cleanupIdentities.get(target.worktreeKey)!;
               return {
                 worktreeKey: target.worktreeKey,
                 repoPath: target.repoPath,
                 branchName: target.branchName,
-                branchExisted: (branchSnapshots.get(target.worktreeKey)?.local ?? []).some(
-                  (branch) => branch.name === target.branchName,
-                ),
-                worktreeRemoved: false,
-                branchRemoved: false,
+                branchExisted: identity.branchExisted,
+                expectedCommit: identity.expectedCommit,
+                expectedWorktreePath: identity.expectedWorktreePath,
+                worktreeRemoved: identity.worktreeRemoved,
+                branchRemoved: !identity.branchExisted,
                 cleanupKind: 'git' as const,
               };
             }),
@@ -4234,18 +4315,21 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           await tauriIpc.workspaceDeleteManualFeature(taskId);
         }
         for (const target of gitTargets) {
+          const identity = cleanupIdentities.get(target.worktreeKey)!;
           await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
             force: false,
             branchName: target.branchName,
+            expectedCommit: identity.expectedCommit,
+            expectedWorktreePath: identity.expectedWorktreePath,
           });
-          const branches = branchSnapshots.get(target.worktreeKey) ?? { local: [] };
-          if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+          if (identity.branchExisted) {
             await tauriIpc.gitBranchDelete({
               repoPath: target.repoPath,
               branchName: target.branchName,
               force: false,
+              expectedCommit: identity.expectedCommit,
             });
           }
         }

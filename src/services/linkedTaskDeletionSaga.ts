@@ -34,6 +34,8 @@ export interface LinkedTaskDeletionTarget {
   repoPath: string;
   branchName: string;
   branchExisted: boolean;
+  expectedCommit?: string | null;
+  expectedWorktreePath?: string | null;
   worktreeRemoved: boolean;
   branchRemoved: boolean;
   cleanupKind?: 'git' | 'direct';

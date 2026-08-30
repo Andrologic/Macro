@@ -25,6 +25,9 @@ export interface ArchivedTaskCleanupTarget {
   worktreeKey: string;
   repoPath: string;
   branchName: string;
+  branchExisted?: boolean;
+  expectedCommit?: string | null;
+  expectedWorktreePath?: string | null;
   worktreePath: string | null;
   worktreeRemoved: boolean;
   branchRemoved: boolean;
@@ -48,6 +51,17 @@ const isCleanupTarget = (value: unknown): value is ArchivedTaskCleanupTarget => 
   return typeof target.worktreeKey === 'string' &&
     typeof target.repoPath === 'string' &&
     typeof target.branchName === 'string' &&
+    (target.branchExisted === undefined || typeof target.branchExisted === 'boolean') &&
+    (
+      target.expectedCommit === undefined ||
+      typeof target.expectedCommit === 'string' ||
+      target.expectedCommit === null
+    ) &&
+    (
+      target.expectedWorktreePath === undefined ||
+      typeof target.expectedWorktreePath === 'string' ||
+      target.expectedWorktreePath === null
+    ) &&
     (typeof target.worktreePath === 'string' || target.worktreePath === null) &&
     typeof target.worktreeRemoved === 'boolean' &&
     typeof target.branchRemoved === 'boolean' &&
@@ -199,6 +213,9 @@ const mergeCleanupSagaProgress = (
     const branchRemoved = persisted.branchRemoved || target.branchRemoved;
     return {
       ...target,
+      branchExisted: target.branchExisted ?? persisted.branchExisted,
+      expectedCommit: target.expectedCommit ?? persisted.expectedCommit,
+      expectedWorktreePath: target.expectedWorktreePath ?? persisted.expectedWorktreePath,
       worktreePath: target.worktreePath ?? persisted.worktreePath,
       worktreeRemoved,
       branchRemoved,

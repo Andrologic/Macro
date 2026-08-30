@@ -83,7 +83,9 @@ const gitBranchListMock = mock(async () => ({
   remote: [],
   current: 'develop',
 }));
-const gitBranchDeleteMock = mock(async () => undefined);
+const gitBranchDeleteMock = mock(async (
+  _params?: Parameters<typeof actualTauriIpc.gitBranchDelete>[0],
+) => undefined);
 const directCheckpointResolveIdMock = mock(async () => 'task-checkpoint-0000000000000001');
 const directCheckpointRemoveMock = mock(async () => true);
 const workspaceDeleteManualFeatureDraftMock = mock(async () => true);
@@ -1296,6 +1298,11 @@ describe('useTaskStore merge workflow review loading', () => {
     gitWorktreeRemoveMock.mockImplementation(async () => {
       throw new Error('injected cleanup failure after confirmed archive');
     });
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{ name: 'feature/archive-response-loss', is_head: false, commit: 'archive-response-sha' }],
+      remote: [],
+      current: 'develop',
+    }));
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({
       tasks: [task],
@@ -1352,6 +1359,15 @@ describe('useTaskStore merge workflow review loading', () => {
     workspaceListTasksMock.mockImplementation(async () => {
       throw new Error('injected archive reconciliation failure');
     });
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{
+        name: 'feature/archive-reconciliation-failure',
+        is_head: false,
+        commit: 'archive-reconciliation-sha',
+      }],
+      remote: [],
+      current: 'develop',
+    }));
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({
       tasks: [task],
@@ -1441,7 +1457,7 @@ describe('useTaskStore merge workflow review loading', () => {
       gitBranchDeleteMock.mockImplementation(async () => undefined);
     }
 
-    expect(gitWorktreeInspectMock).toHaveBeenCalledTimes(2);
+    expect(gitWorktreeInspectMock).toHaveBeenCalledTimes(3);
     expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]?.targets[0])
       .toEqual(expect.objectContaining({
         worktreeRemoved: true,
@@ -1501,6 +1517,8 @@ describe('useTaskStore merge workflow review loading', () => {
       branchName: 'feature/clean-archive',
       archiveTaskId: task.id,
       archiveToken: '2026-08-30T10:00:00.000Z',
+      expectedCommit: 'abc123',
+      expectedWorktreePath: '/repos/web/.macro/worktrees/project-1::feature/clean-archive',
     });
     expect(gitBranchDeleteMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
@@ -1508,6 +1526,7 @@ describe('useTaskStore merge workflow review loading', () => {
       force: false,
       archiveTaskId: task.id,
       archiveToken: '2026-08-30T10:00:00.000Z',
+      expectedCommit: 'abc123',
     });
     expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toBeUndefined();
     expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([]);
@@ -1578,7 +1597,7 @@ describe('useTaskStore merge workflow review loading', () => {
       gitBranchDeleteMock.mockImplementation(async () => undefined);
     }
 
-    expect(gitBranchListMock).toHaveBeenCalledTimes(2);
+    expect(gitBranchListMock).toHaveBeenCalledTimes(3);
     expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toBeUndefined();
     expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([]);
   });
@@ -1607,6 +1626,11 @@ describe('useTaskStore merge workflow review loading', () => {
       branchName: params.branchName ?? null,
       status: 'ready' as const,
       isDirty: true,
+    }));
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{ name: 'feature/dirty-archive', is_head: false, commit: 'dirty-archive-sha' }],
+      remote: [],
+      current: 'develop',
     }));
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({
@@ -1687,6 +1711,9 @@ describe('useTaskStore merge workflow review loading', () => {
         worktreeKey: 'project-1::feature/cleanup-race',
         repoPath: '/repos/web',
         branchName: 'feature/cleanup-race',
+        branchExisted: true,
+        expectedCommit: 'cleanup-race-sha',
+        expectedWorktreePath: '/repos/web/.macro/worktrees/cleanup-race',
         worktreePath: '/repos/web/.macro/worktrees/cleanup-race',
         worktreeRemoved: false,
         branchRemoved: false,
@@ -1756,6 +1783,9 @@ describe('useTaskStore merge workflow review loading', () => {
         worktreeKey: 'project-1::feature/delete-archived-cleanup',
         repoPath: '/repos/web',
         branchName: 'feature/delete-archived-cleanup',
+        branchExisted: true,
+        expectedCommit: 'delete-archived-cleanup-sha',
+        expectedWorktreePath: '/repos/web/.macro/worktrees/delete-archived-cleanup',
         worktreePath: '/repos/web/.macro/worktrees/delete-archived-cleanup',
         worktreeRemoved: true,
         branchRemoved: false,
@@ -1764,6 +1794,15 @@ describe('useTaskStore merge workflow review loading', () => {
       createdAt: '2026-08-30T00:00:00.000Z',
       updatedAt: '2026-08-30T00:00:01.000Z',
     };
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{
+        name: 'feature/delete-archived-cleanup',
+        is_head: false,
+        commit: 'delete-archived-cleanup-sha',
+      }],
+      remote: [],
+      current: 'develop',
+    }));
     dbAppSettings.set('pendingArchivedTaskCleanups:v1', JSON.stringify([cleanup]));
     const mutationOrder: string[] = [];
     dbCompareAndSwapAppSettingMock.mockImplementation(async (params: {
@@ -2237,6 +2276,8 @@ describe('useTaskStore merge workflow review loading', () => {
           repoPath: '/repos/web',
           branchName: 'feature/missing-after-crash',
           branchExisted: true,
+          expectedCommit: 'abc123',
+          expectedWorktreePath: '/repos/web/.macro/worktrees/project-1::feature/missing-after-crash',
           worktreeRemoved: false,
           branchRemoved: false,
         }],
@@ -2274,6 +2315,84 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
+  it('preserves a same-name branch recreated after deletion but before the journal checkpoint', async () => {
+    const taskId = 'manual-task-recreated-branch';
+    const conversationId = 'conv-recreated-branch';
+    const branchName = 'feature/recreated-after-crash';
+    const originalCommit = '1111111111111111111111111111111111111111';
+    const recreatedCommit = '2222222222222222222222222222222222222222';
+    let currentCommit: string | null = recreatedCommit;
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      branchName: params.branchName ?? null,
+      status: 'absent' as const,
+      isDirty: false,
+    }));
+    gitBranchListMock.mockImplementation(async () => ({
+      local: currentCommit
+        ? [{ name: branchName, is_head: false, commit: currentCommit }]
+        : [],
+      remote: [],
+      current: 'develop',
+    }));
+    gitBranchDeleteMock.mockImplementation(async (params) => {
+      if (params?.expectedCommit !== currentCommit) {
+        throw new Error('Refusing to delete branch because its durable identity changed');
+      }
+      currentCommit = null;
+    });
+    dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify([{
+      taskId,
+      conversationId,
+      phase: 'task_deleting',
+      draft: false,
+      executionTargets: [{
+        worktreeKey: 'project-1::feature/recreated-after-crash',
+        repoPath: '/repos/web',
+        branchName,
+        branchExisted: true,
+        expectedCommit: originalCommit,
+        expectedWorktreePath: '/repos/web/.macro/worktrees/project-1::feature/recreated-after-crash',
+        worktreeRemoved: true,
+        branchRemoved: false,
+      }],
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    }]));
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [],
+      plans: [],
+      hasStandaloneTasks: false,
+      source: 'empty' as const,
+    }));
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+      gitBranchDeleteMock.mockImplementation(async () => undefined);
+    }
+
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith(expect.objectContaining({
+      repoPath: '/repos/web',
+      branchName,
+      expectedCommit: originalCommit,
+    }));
+    expect(currentCommit).toBe(recreatedCommit);
+    expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalledWith(conversationId);
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')[0])
+      .toEqual(expect.objectContaining({
+        taskId,
+        lastError: 'Refusing to delete branch because its durable identity changed',
+      }));
+  });
+
   it('resumes only the remaining Git cleanup targets after a partial worktree failure', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-git-retry',
@@ -2301,6 +2420,14 @@ describe('useTaskStore merge workflow review loading', () => {
       ],
     });
     let worktreeAttempts = 0;
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [
+        { name: 'feature/git-retry-one', is_head: false, commit: 'git-retry-one-sha' },
+        { name: 'feature/git-retry-two', is_head: false, commit: 'git-retry-two-sha' },
+      ],
+      remote: [],
+      current: 'develop',
+    }));
     gitWorktreeRemoveMock.mockImplementation(async () => {
       worktreeAttempts += 1;
       if (worktreeAttempts === 2) {
@@ -3813,12 +3940,15 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
       taskId: 'project-1::feature/quick-export',
       force: false,
       branchName: 'feature/quick-export',
+      expectedCommit: 'abc123',
+      expectedWorktreePath: '/repos/web/.macro/worktrees/project-1::feature/quick-export',
     });
     expect(gitBranchListMock).toHaveBeenCalledWith('/repos/web');
     expect(gitBranchDeleteMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
       branchName: 'feature/quick-export',
       force: false,
+      expectedCommit: 'abc123',
     });
     expect(workspaceRevertManualFeatureToDraftMock).toHaveBeenCalledWith({
       taskId: 'task-1',
