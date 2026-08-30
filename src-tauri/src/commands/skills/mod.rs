@@ -1430,26 +1430,35 @@ fn resolve_resource_path(
     Ok(target_canonical)
 }
 
-fn truncate_chars(value: String, max_chars: usize) -> (String, bool) {
-    if value.chars().count() <= max_chars {
-        return (value, false);
-    }
+fn truncate_with_marker(value: String, max_chars: usize) -> String {
     let marker_chars = SCRIPT_OUTPUT_TRUNCATION_MARKER.chars().count();
     if marker_chars >= max_chars {
-        return (
-            SCRIPT_OUTPUT_TRUNCATION_MARKER
-                .chars()
-                .take(max_chars)
-                .collect(),
-            true,
-        );
+        return SCRIPT_OUTPUT_TRUNCATION_MARKER
+            .chars()
+            .take(max_chars)
+            .collect();
     }
     let mut truncated = value
         .chars()
         .take(max_chars - marker_chars)
         .collect::<String>();
     truncated.push_str(SCRIPT_OUTPUT_TRUNCATION_MARKER);
-    (truncated, true)
+    truncated
+}
+
+fn truncate_chars(value: String, max_chars: usize) -> (String, bool) {
+    if value.chars().count() <= max_chars {
+        return (value, false);
+    }
+    (truncate_with_marker(value, max_chars), true)
+}
+
+fn finalize_bounded_skill_output(raw: String, discarded: bool) -> (String, bool) {
+    let (output, char_truncated) = truncate_chars(raw, SCRIPT_OUTPUT_MAX_CHARS);
+    if discarded && !char_truncated {
+        return (truncate_with_marker(output, SCRIPT_OUTPUT_MAX_CHARS), true);
+    }
+    (output, discarded || char_truncated)
 }
 
 async fn read_bounded_skill_output<R>(mut reader: R) -> std::io::Result<(String, bool)>
@@ -1471,8 +1480,7 @@ where
         discarded |= keep < read;
     }
     let raw = String::from_utf8_lossy(&retained).into_owned();
-    let (output, char_truncated) = truncate_chars(raw, SCRIPT_OUTPUT_MAX_CHARS);
-    Ok((output, discarded || char_truncated))
+    Ok(finalize_bounded_skill_output(raw, discarded))
 }
 
 fn append_skill_timeout_message(stderr: String, timeout_ms: u64) -> (String, bool) {
@@ -2151,6 +2159,18 @@ mod tests {
         assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
         assert!(output.contains(SCRIPT_OUTPUT_TRUNCATION_MARKER));
         assert!(output.ends_with("Skill script timed out after 1000 ms."));
+    }
+
+    #[tokio::test]
+    async fn discarded_multibyte_output_keeps_a_truncation_marker() {
+        let input = "😀".repeat(SCRIPT_OUTPUT_MAX_CHARS + 1).into_bytes();
+        let (output, truncated) = read_bounded_skill_output(input.as_slice())
+            .await
+            .expect("read bounded multibyte output");
+
+        assert!(truncated);
+        assert_eq!(output.chars().count(), SCRIPT_OUTPUT_MAX_CHARS);
+        assert!(output.ends_with(SCRIPT_OUTPUT_TRUNCATION_MARKER));
     }
 
     async fn test_skills_list(
