@@ -372,6 +372,7 @@ impl RpcServer {
 
         let app_handle = self.app.clone();
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+        let (activation_sender, activation_receiver) = watch::channel(false);
         // Every server generation owns its registry. A previous shutdown may
         // still be awaiting old connections after the Tauri state lock is
         // released, so reusing its registry would let it drain a new start.
@@ -381,6 +382,7 @@ impl RpcServer {
             if let Err(err) = run_hyper_server(
                 listener,
                 app_handle,
+                activation_receiver,
                 shutdown_receiver,
                 server_connection_tasks,
             )
@@ -389,7 +391,8 @@ impl RpcServer {
                 log::error!("Hyper server for Remote UI exited with error: {err}");
             }
         });
-        let pending = PendingServerStart::new(shutdown_sender, handle, connection_tasks);
+        let pending =
+            PendingServerStart::new(activation_sender, shutdown_sender, handle, connection_tasks);
 
         let setup_result: crate::Result<()> = (|| {
             let window_label = self.remote_ui_config.primary_window_label().to_owned();
@@ -491,6 +494,7 @@ impl RpcServer {
 }
 
 struct PendingServerStart {
+    activation_sender: Option<watch::Sender<bool>>,
     shutdown_sender: Option<watch::Sender<bool>>,
     http_server_thread: Option<JoinHandle<()>>,
     connection_tasks: Arc<ConnectionTaskRegistry>,
@@ -498,11 +502,13 @@ struct PendingServerStart {
 
 impl PendingServerStart {
     fn new(
+        activation_sender: watch::Sender<bool>,
         shutdown_sender: watch::Sender<bool>,
         http_server_thread: JoinHandle<()>,
         connection_tasks: Arc<ConnectionTaskRegistry>,
     ) -> Self {
         Self {
+            activation_sender: Some(activation_sender),
             shutdown_sender: Some(shutdown_sender),
             http_server_thread: Some(http_server_thread),
             connection_tasks,
@@ -510,6 +516,7 @@ impl PendingServerStart {
     }
 
     async fn abort(mut self) {
+        self.activation_sender.take();
         if let Some(sender) = self.shutdown_sender.take() {
             let _ = sender.send(true);
         }
@@ -524,6 +531,9 @@ impl PendingServerStart {
     }
 
     fn commit(mut self, server: &mut RpcServer, actual_port: u16) {
+        if let Some(sender) = self.activation_sender.take() {
+            let _ = sender.send(true);
+        }
         server.shutdown_sender = self.shutdown_sender.take();
         server.http_server_thread = self.http_server_thread.take();
         server.connection_tasks = self.connection_tasks.clone();
@@ -534,6 +544,7 @@ impl PendingServerStart {
 
 impl Drop for PendingServerStart {
     fn drop(&mut self) {
+        self.activation_sender.take();
         if let Some(sender) = self.shutdown_sender.take() {
             let _ = sender.send(true);
         }
@@ -595,9 +606,13 @@ fn server_shutdown_close_message() -> Message {
 async fn run_hyper_server(
     listener: TcpListener,
     app_handle: Arc<AppHandle>,
+    mut activation: watch::Receiver<bool>,
     mut shutdown: watch::Receiver<bool>,
     connection_tasks: Arc<ConnectionTaskRegistry>,
 ) -> std::io::Result<()> {
+    if !await_start_activation(&mut activation).await {
+        return Ok(());
+    }
     loop {
         let accepted = tokio::select! {
             result = listener.accept() => result?,
@@ -634,6 +649,10 @@ async fn run_hyper_server(
         connection_tasks.register(handle).await;
     }
     Ok(())
+}
+
+async fn await_start_activation(activation: &mut watch::Receiver<bool>) -> bool {
+    *activation.borrow() || (activation.changed().await.is_ok() && *activation.borrow())
 }
 
 /// Build the list of `http://<ip>:<port>` URLs the server is reachable on.
@@ -889,11 +908,11 @@ fn websocket_credentials_match(
 #[cfg(test)]
 mod tests {
     use super::{
-        close_replaced_ws, confined_asset_path, remove_ws_handle_if_current,
-        replace_connection_task_registry, transfer_ws_ownership, websocket_credentials_match,
-        with_current_ws_owner, ConnectionTaskRegistry, PendingServerStart, RemoteUiShutdown,
-        WindowLabel, WsSink, SERVER_SHUTDOWN_CLOSE_CODE, SERVER_SHUTDOWN_CLOSE_REASON,
-        SESSION_REPLACED_CLOSE_CODE, SESSION_REPLACED_CLOSE_REASON,
+        await_start_activation, close_replaced_ws, confined_asset_path,
+        remove_ws_handle_if_current, replace_connection_task_registry, transfer_ws_ownership,
+        websocket_credentials_match, with_current_ws_owner, ConnectionTaskRegistry,
+        PendingServerStart, RemoteUiShutdown, WindowLabel, WsSink, SERVER_SHUTDOWN_CLOSE_CODE,
+        SERVER_SHUTDOWN_CLOSE_REASON, SESSION_REPLACED_CLOSE_CODE, SESSION_REPLACED_CLOSE_REASON,
     };
     use futures::{SinkExt, StreamExt};
     use http_body_util::Full;
@@ -974,11 +993,16 @@ mod tests {
             .expect("bind partial-start listener");
         let address = listener.local_addr().expect("partial-start address");
         let task_alive = Arc::new(AtomicBool::new(true));
+        let connection_accepted = Arc::new(AtomicBool::new(false));
+        let accepted = connection_accepted.clone();
         let alive = TaskAlive(task_alive.clone());
+        let (activation_sender, mut activation_receiver) = watch::channel(false);
         let server_task = tauri::async_runtime::spawn(async move {
             let _alive = alive;
-            let _listener = listener;
-            std::future::pending::<()>().await;
+            if await_start_activation(&mut activation_receiver).await {
+                let _ = listener.accept().await;
+                accepted.store(true, Ordering::SeqCst);
+            }
         });
         let connection_tasks = Arc::new(ConnectionTaskRegistry::default());
         let connection_alive = Arc::new(AtomicBool::new(true));
@@ -990,16 +1014,27 @@ mod tests {
             }))
             .await;
         let (shutdown_sender, _) = watch::channel(false);
-        let pending =
-            PendingServerStart::new(shutdown_sender, server_task, connection_tasks.clone());
+        let pending = PendingServerStart::new(
+            activation_sender,
+            shutdown_sender,
+            server_task,
+            connection_tasks.clone(),
+        );
         let injected_setup_result: crate::Result<()> = Err(crate::Error::PrimaryWindowNotFound(
             "injected-late-failure".to_string(),
         ));
+        let pending_client = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect while startup is still pending");
+        tokio::task::yield_now().await;
+        assert!(!connection_accepted.load(Ordering::SeqCst));
         if injected_setup_result.is_err() {
             pending.abort().await;
         }
+        drop(pending_client);
 
         assert!(!task_alive.load(Ordering::SeqCst));
+        assert!(!connection_accepted.load(Ordering::SeqCst));
         assert!(!connection_alive.load(Ordering::SeqCst));
         assert!(connection_tasks.is_empty().await);
         let rebound = tokio::net::TcpListener::bind(address)
