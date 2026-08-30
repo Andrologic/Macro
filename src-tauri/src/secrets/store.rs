@@ -1,3 +1,4 @@
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -10,6 +11,7 @@ use tracing::warn;
 const SECRET_FILE_NAME: &str = "provider-secrets.json";
 const SECRET_FILE_VERSION: u8 = 2;
 const SECRET_MIGRATION_FILE_NAME: &str = "provider-secrets.migration-pending.json";
+const SECRET_LOCK_FILE_NAME: &str = "provider-secrets.lock";
 
 static SECRET_STORE_PATH: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
 static STORE_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -212,6 +214,24 @@ impl LocalSecretStore {
         Ok(())
     }
 
+    fn quarantine_migration_journal(&self) -> Result<PathBuf, SecretError> {
+        let journal_path = self.migration_journal_path();
+        let quarantined_path = journal_path.with_file_name(format!(
+            "{SECRET_MIGRATION_FILE_NAME}.conflict-{}-{}",
+            unix_timestamp_millis(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::rename(&journal_path, &quarantined_path)?;
+        sync_parent_directory(&journal_path)?;
+        warn!(
+            canonical_path = %self.path.display(),
+            journal_path = %journal_path.display(),
+            quarantined_path = %quarantined_path.display(),
+            "quarantined a secret migration journal after the canonical store diverged"
+        );
+        Ok(quarantined_path)
+    }
+
     fn recover_pending_migration(&self) -> Result<(), SecretError> {
         let journal_path = self.migration_journal_path();
         if !journal_path.exists() {
@@ -244,10 +264,11 @@ impl LocalSecretStore {
             )
             .into());
         }
-        if canonical_digest != journal.source_sha256 {
-            write_private_file_atomically(&self.path, &backup, || Ok(()))?;
+        if canonical_digest == journal.source_sha256 {
+            self.remove_migration_journal()?;
+        } else {
+            self.quarantine_migration_journal()?;
         }
-        self.remove_migration_journal()?;
         Ok(())
     }
 
@@ -279,6 +300,36 @@ impl LocalSecretStore {
         self.remove_migration_journal()?;
         Ok(())
     }
+}
+
+fn lock_store_file(store: &LocalSecretStore) -> Result<std::fs::File, SecretError> {
+    let parent = store.path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "secret store path has no parent directory",
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let lock_path = parent.join(SECRET_LOCK_FILE_NAME);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)?;
+    set_private_file_permissions(&lock_path)?;
+    file.lock_exclusive()?;
+    Ok(file)
+}
+
+#[cfg(test)]
+pub(super) fn with_test_store_file_lock<T>(
+    store: &LocalSecretStore,
+    operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
+) -> Result<T, SecretError> {
+    let file = lock_store_file(store)?;
+    let result = operation(store);
+    let unlock_result = FileExt::unlock(&file);
+    result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from))
 }
 
 fn serialize_provider_secrets(data: &ProviderSecretsFile) -> Result<Vec<u8>, SecretError> {
@@ -620,6 +671,7 @@ pub(super) fn init_store(app_data_dir: &Path) -> Result<(), SecretError> {
     *SECRET_STORE_PATH.lock().expect("secret store path lock") = Some(path.clone());
     let store = LocalSecretStore::new(path);
     let _guard = STORE_MUTEX.lock().expect("secret store lock");
+    let file_guard = lock_store_file(&store)?;
     store.recover_pending_migration()?;
     let data = store.read_file()?;
     if data.version < SECRET_FILE_VERSION && store.path.exists() {
@@ -627,6 +679,7 @@ pub(super) fn init_store(app_data_dir: &Path) -> Result<(), SecretError> {
     } else if !store.path.exists() {
         store.write_file(&data)?;
     }
+    FileExt::unlock(&file_guard)?;
     Ok(())
 }
 
@@ -645,7 +698,10 @@ pub(super) fn with_store_lock<T>(
 ) -> Result<T, SecretError> {
     let store = default_store()?;
     let _guard = STORE_MUTEX.lock().expect("secret store lock");
-    operation(&store)
+    let file_guard = lock_store_file(&store)?;
+    let result = operation(&store);
+    let unlock_result = FileExt::unlock(&file_guard);
+    result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from))
 }
 
 pub(super) fn read_provider_secret(provider_id: &str) -> Result<Option<String>, SecretError> {
