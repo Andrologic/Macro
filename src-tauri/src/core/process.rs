@@ -836,6 +836,73 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    #[cfg(target_os = "macos")]
+    const MACOS_DOUBLE_FORK_HELPER_ENV: &str = "MACRO_TEST_DOUBLE_FORK_MARKER";
+    #[cfg(target_os = "macos")]
+    const MACOS_DOUBLE_FORK_ARGV0_PREFIX: &str = "macro-double-fork-marker=";
+    #[cfg(target_os = "macos")]
+    const MACOS_DOUBLE_FORK_TEST_NAME: &str =
+        "core::process::tests::contained_process_terminates_a_macos_double_fork_with_cleared_environment";
+
+    #[cfg(target_os = "macos")]
+    fn macos_double_fork_reexec_marker() -> Option<std::path::PathBuf> {
+        std::env::args()
+            .next()?
+            .strip_prefix(MACOS_DOUBLE_FORK_ARGV0_PREFIX)
+            .map(std::path::PathBuf::from)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_macos_double_fork_helper_if_requested() -> bool {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let Ok(marker) = std::env::var(MACOS_DOUBLE_FORK_HELPER_ENV) else {
+            return false;
+        };
+        let executable = std::env::current_exe().expect("current test executable");
+        let executable = CString::new(executable.as_os_str().as_bytes()).expect("executable path");
+        let helper_argv0 = CString::new(format!("{MACOS_DOUBLE_FORK_ARGV0_PREFIX}{marker}"))
+            .expect("helper marker argument");
+        let test_name = CString::new(MACOS_DOUBLE_FORK_TEST_NAME).expect("test name");
+        let exact = CString::new("--exact").expect("exact argument");
+        let nocapture = CString::new("--nocapture").expect("nocapture argument");
+        let arguments = [
+            helper_argv0.as_ptr(),
+            test_name.as_ptr(),
+            exact.as_ptr(),
+            nocapture.as_ptr(),
+            std::ptr::null(),
+        ];
+        let empty_environment = [std::ptr::null()];
+
+        unsafe {
+            let session_child = libc::fork();
+            if session_child == -1 {
+                libc::_exit(111);
+            }
+            if session_child != 0 {
+                return true;
+            }
+            if libc::setsid() == -1 {
+                libc::_exit(112);
+            }
+            let daemon = libc::fork();
+            if daemon == -1 {
+                libc::_exit(113);
+            }
+            if daemon != 0 {
+                libc::_exit(0);
+            }
+            libc::execve(
+                executable.as_ptr(),
+                arguments.as_ptr(),
+                empty_environment.as_ptr(),
+            );
+            libc::_exit(114);
+        }
+    }
+
     #[test]
     fn background_visibility_maps_to_hidden_windows_flag() {
         assert_eq!(
@@ -1004,6 +1071,51 @@ mod tests {
         assert!(
             !marker.exists(),
             "double-forked descendant with a cleared environment escaped containment"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn contained_process_terminates_a_macos_double_fork_with_cleared_environment() {
+        use super::{background_contained_tokio_command, ContainedBackgroundProcess};
+        use std::process::Stdio;
+        use std::time::Duration;
+
+        if let Some(marker) = macos_double_fork_reexec_marker() {
+            std::thread::sleep(Duration::from_secs(1));
+            std::fs::write(marker, "survived").expect("write escaped daemon marker");
+            return;
+        }
+        if spawn_macos_double_fork_helper_if_requested() {
+            return;
+        }
+
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let marker = temp.path().join("escaped-macos-double-fork.txt");
+        let mut command = background_contained_tokio_command(
+            std::env::current_exe().expect("current test executable"),
+        );
+        command
+            .args([MACOS_DOUBLE_FORK_TEST_NAME, "--exact", "--nocapture"])
+            .env(MACOS_DOUBLE_FORK_HELPER_ENV, &marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut process = ContainedBackgroundProcess::spawn(command).expect("spawn helper");
+        let status = tokio::time::timeout(Duration::from_secs(1), process.wait())
+            .await
+            .expect("wait must return after the helper exits")
+            .expect("wait for helper status");
+        assert!(status.success(), "the helper status must be preserved");
+        process
+            .terminate_with_grace(Duration::ZERO)
+            .await
+            .expect("terminate macOS double-forked process tree");
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+
+        assert!(
+            !marker.exists(),
+            "macOS double-forked descendant with a cleared environment escaped containment"
         );
     }
 
