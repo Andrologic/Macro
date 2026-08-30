@@ -1465,6 +1465,17 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> CommandResult<()> {
     Ok(())
 }
 
+fn validate_installable_skill_file(path: &Path) -> CommandResult<()> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| command_error("Selected folder does not contain SKILL.md."))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(command_error(
+            "Selected folder must contain a real SKILL.md file.",
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_workspace_cwd(
     workspace_path: Option<String>,
     project_roots: &[SkillProjectRootDto],
@@ -1558,10 +1569,9 @@ pub async fn skills_install_from_local_path(
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(command_error("Selected path must be a real skill folder."));
     }
-    if !source.join(SKILL_FILE).is_file() {
-        return Err(command_error("Selected folder does not contain SKILL.md."));
-    }
-    let parsed = parse_skill_file(&source.join(SKILL_FILE));
+    let skill_file = source.join(SKILL_FILE);
+    validate_installable_skill_file(&skill_file)?;
+    let parsed = parse_skill_file(&skill_file);
     if !parsed.is_valid || !parsed.spec_compliant {
         let details = parsed
             .diagnostics
@@ -2151,6 +2161,27 @@ mod tests {
         assert_eq!(parsed.description, "Closed at EOF");
         assert!(parsed.diagnostics.is_empty());
         assert!(parsed.body.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symbolic_skill_file_before_installation() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("tempdir");
+        let skill_dir = dir.path().join("linked-skill");
+        fs::create_dir_all(&skill_dir).expect("create skill directory");
+        let target = dir.path().join("real-skill.md");
+        fs::write(
+            &target,
+            "---\nname: linked-skill\ndescription: Linked manifest\n---\n",
+        )
+        .expect("write target manifest");
+        symlink(&target, skill_dir.join(SKILL_FILE)).expect("create skill manifest symlink");
+
+        let error = validate_installable_skill_file(&skill_dir.join(SKILL_FILE))
+            .expect_err("symbolic SKILL.md must be rejected");
+        assert!(error.message.contains("real SKILL.md"));
     }
 
     #[test]
