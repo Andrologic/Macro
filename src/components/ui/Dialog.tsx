@@ -55,6 +55,7 @@ export interface DialogProps {
   panelClassName?: string;
   initialFocusRef?: React.RefObject<HTMLElement | null>;
   closeOnBackdropClick?: boolean;
+  ariaDescribedBy?: string;
 }
 
 /** A portal dialog with keyboard focus management and an inert application background. */
@@ -66,6 +67,7 @@ export const Dialog: React.FC<DialogProps> = ({
   panelClassName = 'flex w-full justify-center',
   initialFocusRef,
   closeOnBackdropClick = false,
+  ariaDescribedBy,
 }) => {
   const titleId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -100,6 +102,7 @@ export const Dialog: React.FC<DialogProps> = ({
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
+        event.stopImmediatePropagation();
         onCloseRef.current();
         return;
       }
@@ -146,6 +149,7 @@ export const Dialog: React.FC<DialogProps> = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={ariaDescribedBy}
         tabIndex={-1}
         className={panelClassName}
       >

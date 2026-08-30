@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Dialog } from './Dialog';
+import { ConfirmPromptModal } from './ConfirmPromptModal';
 
 describe('Dialog', () => {
   let root: Root | null = null;
@@ -111,5 +112,65 @@ describe('Dialog', () => {
     });
     expect(document.activeElement).toBe(trigger);
     expect(document.body.querySelector('[inert]')).toBeNull();
+  });
+
+  it('closes only a nested confirmation when Escape is pressed', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeOuter = mock(() => undefined);
+    const cancelConfirmation = mock(() => undefined);
+
+    const NestedConfirmation = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [confirmationOpen, setConfirmationOpen] = useState(false);
+      return outerOpen ? (
+        <Dialog
+          title="Parent modal"
+          onClose={() => {
+            closeOuter();
+            setOuterOpen(false);
+          }}
+        >
+          <button type="button" onClick={() => setConfirmationOpen(true)}>
+            Open confirmation
+          </button>
+          <ConfirmPromptModal
+            isOpen={confirmationOpen}
+            title="Nested confirmation"
+            onCancel={() => {
+              cancelConfirmation();
+              setConfirmationOpen(false);
+            }}
+            onConfirm={() => undefined}
+          />
+        </Dialog>
+      ) : null;
+    };
+
+    await act(async () => {
+      root?.render(<NestedConfirmation />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Open confirmation')
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(cancelConfirmation).toHaveBeenCalledTimes(1);
+    expect(closeOuter).not.toHaveBeenCalled();
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
   });
 });

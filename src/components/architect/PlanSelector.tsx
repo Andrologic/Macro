@@ -617,6 +617,30 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     planId: string,
     planSummaryHint?: ArchitectPlanSummary | null
   ) => {
+    const previousPlans = plans;
+    const previousActivePlanId = activePlanId;
+    const previousVisibleState = (() => {
+      const state = useAppStore.getState();
+      return {
+        activeArchitectPlanId: state.activeArchitectPlanId,
+        activePlanContext: state.activePlanContext,
+        architectPlanSwitch: state.architectPlanSwitch,
+        pendingArchitectPlanActivationPayload: state.pendingArchitectPlanActivationPayload,
+        planNodes: state.planNodes,
+        predictedBranches: state.predictedBranches,
+        strategyMutationPreview: state.strategyMutationPreview,
+      };
+    })();
+    const previousChatVisibleState = (() => {
+      const state = useChatStore.getState();
+      return {
+        selectedConversationId: state.selectedConversationId,
+        selectedConversationIdsByMode: state.selectedConversationIdsByMode,
+        restoreStatus: state.restoreStatus,
+        pendingArchitectPlanSwitchRequestId: state.pendingArchitectPlanSwitchRequestId,
+        lastError: state.lastError,
+      };
+    })();
     const planBranch = planSummaryHint?.targetBranch || targetBranch;
     const locatorKey = toPlanLocatorKey({ branchName: planBranch, planId });
     const requestId = ++activationRequestIdRef.current;
@@ -663,6 +687,26 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (!isCurrentActivationRequest(requestId, requestContext)) {
         return;
       }
+      const failedSwitch = useAppStore.getState().architectPlanSwitch;
+      const failedSwitchLocator = failedSwitch.targetPlanId
+        ? toPlanLocatorKey({
+            branchName: failedSwitch.targetBranch ?? planBranch,
+            planId: failedSwitch.targetPlanId,
+          })
+        : null;
+      if (failedSwitchLocator !== locatorKey) {
+        return;
+      }
+      setPlans(previousPlans);
+      setActivePlanId(previousActivePlanId);
+      const currentChatState = useChatStore.getState();
+      if (
+        failedSwitch.requestId !== null &&
+        currentChatState.pendingArchitectPlanSwitchRequestId === failedSwitch.requestId
+      ) {
+        useChatStore.setState(previousChatVisibleState);
+      }
+      useAppStore.setState(previousVisibleState);
       if (openReplicaRepair(activationError, () => activatePlan(planId, planSummaryHint ?? null))) {
         return;
       }
@@ -671,6 +715,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.')
       );
       setError(message);
+      notify.error(message);
     } finally {
       if (activationRequestIdRef.current === requestId) {
         setIsActivating(null);

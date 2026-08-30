@@ -1678,6 +1678,8 @@
     "strategyPreviewNew": "Nouvelles tâches",
     "strategyPreviewRemoved": "Suppressions en attente",
     "strategyPreviewConflicts": "Conflits",
+    "strategyPreviewDiscardError": "Impossible d'abandonner l'aperçu de stratégie.",
+    "strategyPreviewApplyError": "Impossible d'appliquer l'aperçu de stratégie.",
     "applyStrategyPreview": "Appliquer la régénération",
     "selectPlanToStart": "Sélectionnez ou créez un plan pour démarrer l’architecture.",
     "createFirstPlanToStart": "Créez votre premier plan pour démarrer l’architecture.",
