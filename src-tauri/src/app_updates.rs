@@ -8,6 +8,7 @@ use std::{
     fs,
     io::{Cursor, Write},
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -21,6 +22,7 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALLER_CLOSE_REQUEST_FILE: &str = "macro-installer-close.request";
 const INSTALLER_CLOSE_ACCEPTED_FILE: &str = "macro-installer-close.accepted";
 const INSTALLER_CLOSE_CANCELLED_FILE: &str = "macro-installer-close.cancelled";
+static UPDATE_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -113,25 +115,88 @@ fn read_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let _write_guard = UPDATE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let parent = path
         .parent()
         .ok_or_else(|| "Le chemin de mise à jour est invalide.".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Impossible de créer le cache des mises à jour : {error}"))?;
-    let temporary = path.with_extension("part");
-    {
-        let mut file = fs::File::create(&temporary)
-            .map_err(|error| format!("Impossible de préparer la mise à jour : {error}"))?;
-        file.write_all(bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|error| format!("Impossible d'enregistrer la mise à jour : {error}"))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.part",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("staged-update"),
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| {
+        {
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)
+                .map_err(|error| format!("Impossible de préparer la mise à jour : {error}"))?;
+            file.write_all(bytes)
+                .and_then(|_| file.sync_all())
+                .map_err(|error| format!("Impossible d'enregistrer la mise à jour : {error}"))?;
+        }
+        replace_file_atomically(&temporary, path)
+            .map_err(|error| format!("Impossible de finaliser la mise à jour : {error}"))?;
+        sync_parent_directory(parent).map_err(|error| {
+            format!("Impossible de synchroniser le cache des mises à jour : {error}")
+        })
+    })();
+    if temporary.exists() {
+        let _ = fs::remove_file(&temporary);
     }
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| format!("Impossible de remplacer l'ancienne mise à jour : {error}"))?;
+    result
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
-    fs::rename(&temporary, path)
-        .map_err(|error| format!("Impossible de finaliser la mise à jour : {error}"))
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
+    fs::rename(source, destination)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<(), std::io::Error> {
+    fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 fn write_manifest(app: &AppHandle, manifest: &StagedUpdateManifest) -> Result<(), String> {
@@ -665,9 +730,9 @@ mod tests {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
     use super::{
-        clean_shutdown_matches, clear_staged_update_directory, package_digest, read_manifest_file,
-        staged_update_belongs_to_current_install, verify_update_signature, CleanShutdownMarker,
-        DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
+        atomic_write, clean_shutdown_matches, clear_staged_update_directory, package_digest,
+        read_manifest_file, staged_update_belongs_to_current_install, verify_update_signature,
+        CleanShutdownMarker, DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
     };
 
     const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
@@ -772,6 +837,35 @@ mod tests {
         assert!(!marker_path.exists());
 
         std::fs::remove_dir(&directory).unwrap();
+    }
+
+    #[test]
+    fn concurrent_atomic_writes_do_not_share_a_partial_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("staged-update.bin");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut writers = Vec::new();
+        for value in 0_u8..8 {
+            let target = target.clone();
+            let barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                let bytes = vec![value; 256 * 1024];
+                barrier.wait();
+                atomic_write(&target, &bytes)
+            }));
+        }
+
+        for writer in writers {
+            writer.join().expect("writer thread").expect("atomic write");
+        }
+
+        let persisted = std::fs::read(&target).expect("persisted update");
+        assert_eq!(persisted.len(), 256 * 1024);
+        assert!(persisted.iter().all(|byte| *byte == persisted[0]));
+        assert!(std::fs::read_dir(temp.path())
+            .expect("update directory")
+            .flatten()
+            .all(|entry| !entry.file_name().to_string_lossy().ends_with(".part")));
     }
 
     #[cfg(target_os = "windows")]

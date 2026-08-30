@@ -16,7 +16,31 @@ pub async fn disconnect_auth(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> Result<ProviderConfig, String> {
-    secrets::delete_provider_secret(provider_id).map_err(|error| error.to_string())?;
+    disconnect_auth_with_secret_delete(pool, provider_id, |provider_id| {
+        secrets::delete_provider_secret(provider_id).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+async fn disconnect_auth_with_secret_delete<F>(
+    pool: &SqlitePool,
+    provider_id: &str,
+    delete_secret: F,
+) -> Result<ProviderConfig, String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    let provider = repository::get_provider_config(pool, provider_id)
+        .await
+        .map_err(db_error_to_string)?
+        .ok_or_else(|| format!("Provider {provider_id} not found."))?;
+    let previous_metadata = ProviderAuthMetadata {
+        auth_status: provider.auth_status,
+        auth_source: provider.auth_source,
+        plan_type: provider.plan_type,
+        account_label: provider.account_label,
+        token_expires_at: provider.token_expires_at,
+    };
     repository::update_provider_auth_metadata(
         pool,
         provider_id,
@@ -30,6 +54,21 @@ pub async fn disconnect_auth(
     )
     .await
     .map_err(db_error_to_string)?;
+    if let Err(secret_error) = delete_secret(provider_id) {
+        return match repository::update_provider_auth_metadata(
+            pool,
+            provider_id,
+            &previous_metadata,
+        )
+        .await
+        {
+            Ok(()) => Err(secret_error),
+            Err(rollback_error) => Err(format!(
+                "{secret_error} La restauration des métadonnées d’authentification a aussi échoué : {}",
+                db_error_to_string(rollback_error)
+            )),
+        };
+    }
 
     repository::get_provider_config(pool, provider_id)
         .await
@@ -264,4 +303,129 @@ pub(super) fn model_supports_plan(entry: &ModelsCacheEntry, plan_type: &str) -> 
                 .any(|plan| plan.trim().eq_ignore_ascii_case(plan_type))
         })
         .unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::disconnect_auth_with_secret_delete;
+    use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
+    use std::sync::{Arc, Mutex};
+
+    async fn provider_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("provider pool");
+        sqlx::query(
+            r#"
+            CREATE TABLE provider_configs (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider_type TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                has_stored_api_key INTEGER NOT NULL,
+                is_enabled INTEGER NOT NULL,
+                is_local INTEGER NOT NULL,
+                auth_status TEXT,
+                auth_source TEXT,
+                plan_type TEXT,
+                account_label TEXT,
+                token_expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("provider schema");
+        sqlx::query(
+            r#"
+            INSERT INTO provider_configs (
+                id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
+                auth_status, auth_source, plan_type, account_label, token_expires_at,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 0, 1, 0, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind("chatgpt")
+        .bind("ChatGPT")
+        .bind("chatgpt")
+        .bind("https://chatgpt.com/backend-api")
+        .bind("authenticated")
+        .bind("browser")
+        .bind("plus")
+        .bind("user@example.com")
+        .bind("2026-09-01T00:00:00Z")
+        .bind("2026-08-30T00:00:00Z")
+        .bind("2026-08-30T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("provider row");
+        pool
+    }
+
+    #[tokio::test]
+    async fn disconnect_keeps_the_secret_when_the_sql_update_fails() {
+        let pool = provider_pool().await;
+        sqlx::query(
+            r#"
+            CREATE TRIGGER reject_provider_disconnect
+            BEFORE UPDATE ON provider_configs
+            BEGIN
+                SELECT RAISE(FAIL, 'injected provider update failure');
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("failure trigger");
+        let deleted = Arc::new(Mutex::new(false));
+        let deleted_for_call = deleted.clone();
+
+        disconnect_auth_with_secret_delete(&pool, "chatgpt", move |_| {
+            *deleted_for_call.lock().expect("delete flag") = true;
+            Ok(())
+        })
+        .await
+        .expect_err("SQL update must fail");
+
+        assert!(!*deleted.lock().expect("delete flag"));
+    }
+
+    #[tokio::test]
+    async fn disconnect_restores_sql_metadata_when_secret_deletion_fails() {
+        let pool = provider_pool().await;
+
+        disconnect_auth_with_secret_delete(&pool, "chatgpt", |_| {
+            Err("injected secret deletion failure".to_string())
+        })
+        .await
+        .expect_err("secret deletion must fail");
+
+        let row = sqlx::query(
+            "SELECT auth_status, auth_source, plan_type, account_label FROM provider_configs WHERE id = ?",
+        )
+        .bind("chatgpt")
+        .fetch_one(&pool)
+        .await
+        .expect("restored provider");
+        assert_eq!(
+            row.get::<Option<String>, _>("auth_status").as_deref(),
+            Some("authenticated")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("auth_source").as_deref(),
+            Some("browser")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("plan_type").as_deref(),
+            Some("plus")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("account_label").as_deref(),
+            Some("user@example.com")
+        );
+    }
 }

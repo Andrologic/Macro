@@ -1080,8 +1080,9 @@ pub async fn delete_messages_after(
     after_message_id: &str,
 ) -> DbResult<()> {
     let mut transaction = pool.begin().await?;
-    let row = sqlx::query("SELECT created_at FROM messages WHERE id = ?")
+    let row = sqlx::query("SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?")
         .bind(after_message_id)
+        .bind(conversation_id)
         .fetch_one(&mut *transaction)
         .await?;
 
@@ -3693,6 +3694,51 @@ mod tests {
             .expect("conversation");
         assert_eq!(refreshed.message_count, 1);
         assert_eq!(refreshed.last_message.as_deref(), Some("Keep me"));
+    }
+
+    #[tokio::test]
+    async fn delete_messages_after_rejects_an_anchor_from_another_conversation() {
+        let (_temp_dir, pool) = test_pool().await;
+        let first = create_test_conversation(&pool, "First").await;
+        let second = create_test_conversation(&pool, "Second").await;
+        import_messages(
+            &pool,
+            &first.id,
+            vec![ImportMessageInput {
+                id: "first-message".to_string(),
+                turn_id: None,
+                role: "user".to_string(),
+                content: "Keep first".to_string(),
+                created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                completion_reason: None,
+            }],
+        )
+        .await
+        .expect("import first message");
+        import_messages(
+            &pool,
+            &second.id,
+            vec![ImportMessageInput {
+                id: "second-message".to_string(),
+                turn_id: None,
+                role: "user".to_string(),
+                content: "Foreign anchor".to_string(),
+                created_at: "2026-03-19T00:01:00.000Z".to_string(),
+                completion_reason: None,
+            }],
+        )
+        .await
+        .expect("import second message");
+
+        delete_messages_after(&pool, &first.id, "second-message")
+            .await
+            .expect_err("foreign anchor must be rejected");
+
+        let remaining = list_messages(&pool, &first.id)
+            .await
+            .expect("list first messages");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "first-message");
     }
 
     #[tokio::test]

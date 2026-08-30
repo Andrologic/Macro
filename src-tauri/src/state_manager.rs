@@ -90,26 +90,32 @@ impl StateManager {
         self.ensure_writable()?;
         validate_state_key(&key)?;
         let mut snapshot = self.snapshot.write().await;
-        snapshot.values.insert(key, value);
-        self.persist(&snapshot).await?;
-        Ok(snapshot.clone())
+        let mut next = snapshot.clone();
+        next.values.insert(key, value);
+        self.persist(&next).await?;
+        *snapshot = next.clone();
+        Ok(next)
     }
 
     pub async fn delete(&self, key: &str) -> Result<StateSnapshot, String> {
         self.ensure_writable()?;
         validate_state_key(key)?;
         let mut snapshot = self.snapshot.write().await;
-        snapshot.values.remove(key);
-        self.persist(&snapshot).await?;
-        Ok(snapshot.clone())
+        let mut next = snapshot.clone();
+        next.values.remove(key);
+        self.persist(&next).await?;
+        *snapshot = next.clone();
+        Ok(next)
     }
 
     pub async fn clear(&self) -> Result<StateSnapshot, String> {
         self.ensure_writable()?;
         let mut snapshot = self.snapshot.write().await;
-        snapshot.values.clear();
-        self.persist(&snapshot).await?;
-        Ok(snapshot.clone())
+        let mut next = snapshot.clone();
+        next.values.clear();
+        self.persist(&next).await?;
+        *snapshot = next.clone();
+        Ok(next)
     }
 
     fn ensure_writable(&self) -> Result<(), String> {
@@ -194,5 +200,28 @@ mod tests {
 
         assert!(error.contains("lecture seule"));
         assert_eq!(fs::read(&path).expect("preserved state"), original);
+    }
+
+    #[tokio::test]
+    async fn failed_persistence_does_not_publish_the_candidate_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(STATE_FILE_NAME);
+        let manager = StateManager::initialize(temp.path()).expect("state manager");
+        manager
+            .set("kept".to_string(), json!(true))
+            .await
+            .expect("seed state");
+
+        fs::remove_file(&path).expect("remove state file");
+        fs::create_dir(&path).expect("block the atomic replacement");
+
+        manager
+            .set("uncommitted".to_string(), json!(true))
+            .await
+            .expect_err("persistence must fail");
+
+        let snapshot = manager.snapshot().await;
+        assert_eq!(snapshot.values.get("kept"), Some(&json!(true)));
+        assert!(!snapshot.values.contains_key("uncommitted"));
     }
 }

@@ -833,13 +833,6 @@ impl ConfigManager {
         let needs_approval =
             request.source != ConfigChangeSource::UserInterface && !sensitive_paths.is_empty();
         let new_etag = etag(&proposed);
-        atomic_write_json_locked(&stored.path, &proposed).map_err(|error| {
-            ConfigApiError::new(
-                "config.document.write_failed",
-                format!("Impossible d’écrire {} : {error}", stored.path.display()),
-            )
-        })?;
-
         let durable_pending = needs_approval.then(|| DurablePendingSensitiveChange {
             pending: PendingSensitiveConfigChange {
                 id: Uuid::new_v4().to_string(),
@@ -860,7 +853,25 @@ impl ConfigManager {
         let approved_path = approved_document_path(self.root(), &key);
         if let Some(pending) = &durable_pending {
             write_durable_pending(&pending_path, pending)?;
-        } else {
+        }
+        if let Err(error) = atomic_write_json_locked(&stored.path, &proposed) {
+            if durable_pending.is_some() {
+                remove_file_if_exists(&pending_path).map_err(|cleanup_error| {
+                    ConfigApiError::new(
+                        "config.document.write_failed_with_pending_cleanup_failed",
+                        format!(
+                            "Impossible d’écrire {} : {error}. La demande sensible préparée n’a pas pu être retirée : {}",
+                            stored.path.display(), cleanup_error.message
+                        ),
+                    )
+                })?;
+            }
+            return Err(ConfigApiError::new(
+                "config.document.write_failed",
+                format!("Impossible d’écrire {} : {error}", stored.path.display()),
+            ));
+        }
+        if durable_pending.is_none() {
             atomic_write_json(&approved_path, &proposed).map_err(|error| {
                 ConfigApiError::new(
                     "config.approved.write_failed",
@@ -1585,6 +1596,13 @@ fn write_durable_pending(
     path: &Path,
     pending: &DurablePendingSensitiveChange,
 ) -> Result<(), ConfigApiError> {
+    #[cfg(test)]
+    if path.with_extension("fail-write").exists() {
+        return Err(ConfigApiError::new(
+            "config.pending.write_failed",
+            "Échec injecté pendant l’écriture de la demande sensible.",
+        ));
+    }
     let value = serde_json::to_value(pending).map_err(|error| {
         ConfigApiError::new(
             "config.pending.serialize_failed",
@@ -2008,6 +2026,54 @@ mod tests {
             snapshot.effective["tools"].get("riskLevel"),
             Some(&json!("yolo"))
         );
+    }
+
+    #[tokio::test]
+    async fn sensitive_patch_keeps_the_document_unchanged_when_pending_write_fails() {
+        let (_temp, manager) = manager().await;
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("tools");
+        let document_path = PathBuf::from(&document.file_path);
+        let original = fs::read(&document_path).expect("original tools document");
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: ConfigScope::User,
+        };
+        let pending_path = pending_document_path(manager.root(), &key);
+        fs::create_dir_all(pending_path.parent().expect("pending parent"))
+            .expect("create pending parent");
+        fs::write(pending_path.with_extension("fail-write"), b"fail")
+            .expect("inject pending write failure");
+
+        let error = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: document.etag.clone(),
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/riskLevel".to_string(),
+                    from: None,
+                    value: Some(json!("yolo")),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .expect_err("pending write must fail");
+
+        assert_eq!(error.code, "config.pending.write_failed");
+        assert_eq!(
+            fs::read(&document_path).expect("unchanged document"),
+            original
+        );
+        let current = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("current tools document");
+        assert_eq!(current.etag, document.etag);
+        assert!(manager.list_pending_changes().await.is_empty());
     }
 
     #[tokio::test]
