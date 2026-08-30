@@ -1,6 +1,7 @@
 #[cfg(target_os = "windows")]
 use crate::core::process::background_command;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use fs2::FileExt;
 use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -18,6 +19,7 @@ const UPDATE_DIRECTORY: &str = "app-updates";
 const MANIFEST_FILE: &str = "staged-update.json";
 const CLEAN_SHUTDOWN_FILE: &str = "clean-shutdown.json";
 const UPDATE_GENERATION_FILE: &str = "stage-generation";
+const UPDATE_LOCK_FILE: &str = "update-state.lock";
 const MAX_ACTIVATION_ATTEMPTS: u8 = 2;
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALLER_CLOSE_REQUEST_FILE: &str = "macro-installer-close.request";
@@ -45,6 +47,20 @@ fn lock_update_state() -> std::sync::MutexGuard<'static, ()> {
     UPDATE_STATE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_update_directory(directory: &Path) -> Result<fs::File, String> {
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("Impossible de préparer le verrou des mises à jour : {error}"))?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(directory.join(UPDATE_LOCK_FILE))
+        .map_err(|error| format!("Impossible d'ouvrir le verrou des mises à jour : {error}"))?;
+    file.lock_exclusive()
+        .map_err(|error| format!("Impossible de verrouiller les mises à jour : {error}"))?;
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -459,6 +475,7 @@ fn publish_staged_update_directory_with_generation(
     }
 
     let _state_guard = lock_update_state();
+    let _file_guard = lock_update_directory(directory)?;
     if let Some(expected_generation) = expected_generation {
         let current_generation = read_update_generation_directory(directory)?;
         if current_generation != expected_generation {
@@ -528,6 +545,7 @@ fn verified_package(app: &AppHandle, manifest: &StagedUpdateManifest) -> Result<
 
 fn mark_clean_shutdown(app: &AppHandle) -> Result<(), String> {
     let _state_guard = lock_update_state();
+    let _file_guard = lock_update_directory(&update_dir(app)?)?;
     let marker_path = clean_shutdown_path(&app)?;
     let Some(manifest) = read_manifest_recovering(&app)? else {
         return remove_file_if_present(&marker_path);
@@ -552,6 +570,7 @@ pub fn app_update_exit_after_clean_shutdown(app: AppHandle) -> Result<(), String
 #[tauri::command]
 pub fn app_exit_cleanly(app: AppHandle) -> Result<(), String> {
     let _state_guard = lock_update_state();
+    let _file_guard = lock_update_directory(&update_dir(&app)?)?;
     remove_file_if_present(&clean_shutdown_path(&app)?)?;
     app.exit(0);
     Ok(())
@@ -580,6 +599,7 @@ fn consume_matching_clean_shutdown(
 #[tauri::command]
 pub fn app_update_status(app: AppHandle) -> Result<AppUpdateSnapshot, String> {
     let _state_guard = lock_update_state();
+    let _file_guard = lock_update_directory(&update_dir(&app)?)?;
     cleanup_installer_artifacts(&app);
     let current_version = app.package_info().version.to_string();
     let mut update = read_manifest_recovering(&app)?;
@@ -605,6 +625,7 @@ pub async fn app_update_check_and_stage(
     let update_directory = update_dir(&app)?;
     let stage_generation = {
         let _state_guard = lock_update_state();
+        let _file_guard = lock_update_directory(&update_directory)?;
         read_update_generation_directory(&update_directory)?
     };
     let mut builder = app
@@ -617,6 +638,7 @@ pub async fn app_update_check_and_stage(
     let updater = builder.build().map_err(|error| error.to_string())?;
     let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
         let _state_guard = lock_update_state();
+        let _file_guard = lock_update_directory(&update_directory)?;
         return Ok(AppUpdateSnapshot {
             current_version,
             update: read_manifest_recovering(&app)?,
@@ -686,6 +708,7 @@ pub async fn app_update_check_and_stage(
 #[tauri::command]
 pub fn app_update_discard(app: AppHandle) -> Result<(), String> {
     let _state_guard = lock_update_state();
+    let _file_guard = lock_update_directory(&update_dir(&app)?)?;
     clear_staged_update(&app)
 }
 
@@ -699,6 +722,7 @@ pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, Stri
         return Ok(false);
     }
     let _state_guard = lock_update_state();
+    let _file_guard = lock_update_directory(&update_dir(app)?)?;
     let Some(mut manifest) = read_manifest_recovering(app)? else {
         return Ok(false);
     };
@@ -904,11 +928,12 @@ mod tests {
     use super::{
         atomic_write, clean_shutdown_matches, clear_staged_update_directory,
         install_fail_after_package_publication, install_publication_after_manifest_hook,
-        invalidate_and_clear_staged_update_directory, package_digest, package_file_name,
-        publish_staged_update_directory, publish_staged_update_directory_with_generation,
-        read_manifest_file, read_update_generation_directory,
-        staged_update_belongs_to_current_install, verify_update_signature, CleanShutdownMarker,
-        DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
+        invalidate_and_clear_staged_update_directory, lock_update_directory, package_digest,
+        package_file_name, publish_staged_update_directory,
+        publish_staged_update_directory_with_generation, read_manifest_file,
+        read_update_generation_directory, staged_update_belongs_to_current_install,
+        verify_update_signature, CleanShutdownMarker, DownloadProgressEvent, StagedUpdateManifest,
+        StagedUpdatePhase,
     };
 
     const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
@@ -1148,6 +1173,7 @@ mod tests {
         reached.wait();
         {
             let _state_guard = super::lock_update_state();
+            let _file_guard = lock_update_directory(&directory).expect("lock update directory");
             invalidate_and_clear_staged_update_directory(&directory).expect("discard update");
         }
         release.wait();
@@ -1158,6 +1184,46 @@ mod tests {
         );
         assert!(!directory.join(super::MANIFEST_FILE).exists());
         assert!(!directory.join("staged-update-1.1.0.bin").exists());
+    }
+
+    #[test]
+    fn update_directory_lock_child() {
+        let Ok(directory) = std::env::var("MACRO_TEST_UPDATE_LOCK_DIRECTORY") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::write(directory.join("child-started"), b"started").expect("signal child start");
+        let _guard = lock_update_directory(&directory).expect("child update lock");
+        std::fs::write(directory.join("child-acquired"), b"acquired")
+            .expect("signal child acquisition");
+    }
+
+    #[test]
+    fn update_directory_lock_serializes_an_independent_process() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let guard = lock_update_directory(temp.path()).expect("parent update lock");
+        let mut child =
+            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args([
+                    "--exact",
+                    "app_updates::tests::update_directory_lock_child",
+                    "--nocapture",
+                ])
+                .env("MACRO_TEST_UPDATE_LOCK_DIRECTORY", temp.path())
+                .spawn()
+                .expect("spawn independent updater client");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !temp.path().join("child-started").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(temp.path().join("child-started").exists());
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!temp.path().join("child-acquired").exists());
+
+        drop(guard);
+        let status = child.wait().expect("wait for independent updater client");
+        assert!(status.success());
+        assert!(temp.path().join("child-acquired").exists());
     }
 
     #[test]
