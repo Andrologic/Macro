@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 const FOCUSABLE_SELECTOR = [
@@ -12,8 +12,10 @@ const FOCUSABLE_SELECTOR = [
 
 interface OpenDialogEntry {
   order: number;
+  zIndex: number;
 }
 
+const ParentDialogZIndexContext = createContext<number | null>(null);
 const openDialogs = new Map<HTMLElement, OpenDialogEntry>();
 let nextDialogOrder = 0;
 const backgroundAttributes = new Map<HTMLElement, { inert: boolean; ariaHidden: string | null }>();
@@ -21,11 +23,26 @@ const backgroundAttributes = new Map<HTMLElement, { inert: boolean; ariaHidden: 
 const getTopmostDialog = (): HTMLElement | null => {
   let topmost: [HTMLElement, OpenDialogEntry] | null = null;
   for (const entry of openDialogs.entries()) {
-    if (!topmost || entry[1].order > topmost[1].order) {
+    if (
+      !topmost ||
+      entry[1].zIndex > topmost[1].zIndex ||
+      (entry[1].zIndex === topmost[1].zIndex && entry[1].order > topmost[1].order)
+    ) {
       topmost = entry;
     }
   }
   return topmost?.[0] ?? null;
+};
+
+const readDialogZIndex = (className: string): number => {
+  let zIndex = 0;
+  for (const token of className.split(/\s+/)) {
+    const arbitraryMatch = /^z-\[(-?\d+)\]$/.exec(token);
+    const scaleMatch = /^z-(-?\d+)$/.exec(token);
+    const parsed = arbitraryMatch?.[1] ?? scaleMatch?.[1];
+    if (parsed !== undefined) zIndex = Number(parsed);
+  }
+  return zIndex;
 };
 
 const getFocusableElements = (container: HTMLElement): HTMLElement[] =>
@@ -105,6 +122,11 @@ export const Dialog: React.FC<DialogProps> = ({
 }) => {
   const titleId = useId();
   const [dialogOrder] = useState(() => ++nextDialogOrder);
+  const parentDialogZIndex = useContext(ParentDialogZIndexContext);
+  const requestedZIndex = readDialogZIndex(backdropClassName);
+  const effectiveZIndex = parentDialogZIndex === null
+    ? requestedZIndex
+    : Math.max(requestedZIndex, parentDialogZIndex + 1);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -124,6 +146,7 @@ export const Dialog: React.FC<DialogProps> = ({
       : null;
     openDialogs.set(root, {
       order: dialogOrder,
+      zIndex: effectiveZIndex,
     });
     synchronizeBackgroundInertness();
 
@@ -170,30 +193,33 @@ export const Dialog: React.FC<DialogProps> = ({
       synchronizeBackgroundInertness();
       restoreFocusAfterDialogClose(previousFocusRef.current);
     };
-  }, [dialogOrder, initialFocusRef]);
+  }, [dialogOrder, effectiveZIndex, initialFocusRef]);
 
   return createPortal(
-    <div
-      ref={rootRef}
-      data-macro-dialog-root
-      className={backdropClassName}
-      onClick={(event) => {
-        if (closeOnBackdropClick && event.target === event.currentTarget) onClose();
-      }}
-    >
+    <ParentDialogZIndexContext.Provider value={effectiveZIndex}>
       <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={ariaDescribedBy}
-        tabIndex={-1}
-        className={panelClassName}
+        ref={rootRef}
+        data-macro-dialog-root
+        className={backdropClassName}
+        style={{ zIndex: effectiveZIndex }}
+        onClick={(event) => {
+          if (closeOnBackdropClick && event.target === event.currentTarget) onClose();
+        }}
       >
-        <h2 id={titleId} className="sr-only">{title}</h2>
-        {children}
+        <div
+          ref={panelRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          aria-describedby={ariaDescribedBy}
+          tabIndex={-1}
+          className={panelClassName}
+        >
+          <h2 id={titleId} className="sr-only">{title}</h2>
+          {children}
+        </div>
       </div>
-    </div>,
+    </ParentDialogZIndexContext.Provider>,
     document.body
   );
 };

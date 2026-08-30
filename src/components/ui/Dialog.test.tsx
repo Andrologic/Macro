@@ -127,6 +127,7 @@ describe('Dialog', () => {
       return outerOpen ? (
         <Dialog
           title="Parent modal"
+          backdropClassName="fixed inset-0 z-[95] flex items-center justify-center"
           onClose={() => {
             closeOuter();
             setOuterOpen(false);
@@ -159,6 +160,11 @@ describe('Dialog', () => {
       await Promise.resolve();
     });
     expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+    const initialDialogRoots = document.body.querySelectorAll<HTMLElement>(
+      '[data-macro-dialog-root]',
+    );
+    expect(initialDialogRoots[0]?.style.zIndex).toBe('95');
+    expect(initialDialogRoots[1]?.style.zIndex).toBe('96');
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', {
