@@ -256,6 +256,40 @@ else
 fi
 printf 'created=%s skipped=0 mode=%s\n' "$created" "$tmp_mode"
 "#;
+const WSL_DELETE_PATH_SCRIPT: &str = r#"
+p=$1
+recursive=$2
+expected_revision=$3
+lock_path=$4
+lock_dir=$(dirname -- "$lock_path")
+mkdir -p -- "$lock_dir" || exit 10
+exec 9>"$lock_path" || exit 10
+flock -x 9 || exit 10
+if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+  if [ -n "$expected_revision" ]; then
+    printf 'revision_conflict actual=absent\n'
+    exit 0
+  fi
+  printf 'Path not found: %s\n' "$p" >&2
+  exit 4
+fi
+if [ -n "$expected_revision" ]; then
+  actual_revision=unavailable
+  if [ -f "$p" ]; then
+    actual_line=$(sha256sum -- "$p") || exit 7
+    actual_revision=${actual_line%% *}
+  fi
+  if [ "$expected_revision" = "absent" ] || [ "$actual_revision" != "$expected_revision" ]; then
+    printf 'revision_conflict actual=%s\n' "$actual_revision"
+    exit 0
+  fi
+fi
+if [ -d "$p" ] && [ ! -L "$p" ]; then
+  if [ "$recursive" = "1" ]; then rm -rf -- "$p"; else rmdir -- "$p"; fi
+else
+  rm -f -- "$p"
+fi
+"#;
 const DIRECTORY_LIST_LIMIT: usize = 20_000;
 const WSL_DEFAULT_RECURSIVE_DEPTH: u32 = 8;
 const WSL_MAX_RECURSIVE_DEPTH: u32 = 32;
@@ -1438,38 +1472,10 @@ async fn delete_wsl_path_internal_with_revision(
         None
     };
     let recursive_flag = if recursive.unwrap_or(false) { "1" } else { "0" }.to_string();
-    let script = r#"
-p=$1
-recursive=$2
-expected_revision=$3
-if [ ! -e "$p" ] && [ ! -L "$p" ]; then
-  if [ -n "$expected_revision" ]; then
-    printf 'revision_conflict actual=absent\n'
-    exit 0
-  fi
-  printf 'Path not found: %s\n' "$p" >&2
-  exit 4
-fi
-if [ -n "$expected_revision" ]; then
-  actual_revision=unavailable
-  if [ -f "$p" ]; then
-    actual_line=$(sha256sum -- "$p") || exit 7
-    actual_revision=${actual_line%% *}
-  fi
-  if [ "$expected_revision" = "absent" ] || [ "$actual_revision" != "$expected_revision" ]; then
-    printf 'revision_conflict actual=%s\n' "$actual_revision"
-    exit 0
-  fi
-fi
-if [ -d "$p" ] && [ ! -L "$p" ]; then
-  if [ "$recursive" = "1" ]; then rm -rf -- "$p"; else rmdir -- "$p"; fi
-else
-  rm -f -- "$p"
-fi
-"#;
+    let lock_path = wsl_write_lock_path(&canonical_target.linux_path);
     let output = run_wsl_shell(
         &canonical_target,
-        script,
+        WSL_DELETE_PATH_SCRIPT,
         &[
             resolved.linux_path.clone(),
             recursive_flag,
@@ -1484,6 +1490,7 @@ fi
                 })
                 .unwrap_or_default()
                 .to_string(),
+            lock_path,
         ],
         WSL_FS_WRITE_TIMEOUT,
     )
@@ -3097,6 +3104,19 @@ async fn delete_path_internal_with_revision_impl(
     } else {
         None
     };
+    let _guarded_delete_lock = if expected_revision.is_some() {
+        Some(
+            tokio::task::spawn_blocking({
+                let validated_path = validated_path.clone();
+                move || acquire_guarded_write_lock(&validated_path)
+            })
+            .await
+            .map_err(capability_task_error)?
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?,
+        )
+    } else {
+        None
+    };
     if expected_revision.is_some() {
         let actual_revision = match read_file_internal(workspace, path.clone(), Some(false)).await {
             Ok(current) => Some(current.revision),
@@ -3530,6 +3550,62 @@ mod tests {
         assert_ne!(first, wsl_write_lock_path("/workspace/src/other.txt"));
         assert!(first.starts_with("/tmp/macro-write-locks/"));
         assert!(first.ends_with(".lock"));
+    }
+
+    #[test]
+    fn wsl_delete_script_locks_before_revision_validation() {
+        assert!(WSL_DELETE_PATH_SCRIPT.contains("lock_path=$4"));
+        assert!(WSL_DELETE_PATH_SCRIPT.contains("exec 9>\"$lock_path\" || exit 10"));
+        let lock_index = WSL_DELETE_PATH_SCRIPT
+            .find("flock -x 9")
+            .expect("WSL deletion lock");
+        let first_target_read = WSL_DELETE_PATH_SCRIPT
+            .find("if [ ! -e \"$p\" ]")
+            .expect("first target read");
+        let revision_read = WSL_DELETE_PATH_SCRIPT
+            .find("sha256sum -- \"$p\"")
+            .expect("revision read");
+        assert!(lock_index < first_target_read);
+        assert!(lock_index < revision_read);
+    }
+
+    #[tokio::test]
+    async fn guarded_delete_revalidates_after_the_stable_lock_is_acquired() {
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("guarded-delete.txt");
+        fs::write(&target, b"original").expect("seed guarded target");
+        let revision = content_revision(b"original");
+        let validated_target = validate_path(&target, workspace.path()).expect("validate target");
+        let stable_lock = acquire_guarded_write_lock(&validated_target).expect("hold stable lock");
+        let workspace_path = workspace.path().to_path_buf();
+        let target_path = target.to_string_lossy().to_string();
+        let mut deletion = tokio::spawn(async move {
+            delete_path_internal_with_revision(
+                &workspace_path,
+                target_path,
+                Some(false),
+                Some(&revision),
+            )
+            .await
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(75), &mut deletion)
+                .await
+                .is_err()
+        );
+        fs::write(&target, b"replacement").expect("replace target while delete waits");
+        drop(stable_lock);
+
+        let error = deletion
+            .await
+            .expect("join guarded delete")
+            .expect_err("the replacement must fail revision validation");
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            fs::read(&target).expect("replacement remains"),
+            b"replacement"
+        );
     }
 
     #[cfg(target_os = "linux")]
