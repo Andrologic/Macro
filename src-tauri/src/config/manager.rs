@@ -1280,19 +1280,25 @@ impl ConfigManager {
             )
             .with_document(to_document(&key, &stored)));
         }
-        if etag(&approved) != durable.approved_etag {
+        let approved_matches_proposal = approved == durable.pending.proposed_document
+            && etag(&approved) == durable.pending.proposed_etag;
+        if !approved_matches_proposal && etag(&approved) != durable.approved_etag {
             return Err(ConfigApiError::new(
                 "config.pending.baseline_conflict",
                 "La copie approuvée a changé depuis la demande d’approbation.",
             ));
         }
-        let approved_path = approved_document_path(self.root(), &key);
-        atomic_write_json(&approved_path, &durable.pending.proposed_document).map_err(|error| {
-            ConfigApiError::new(
-                "config.approved.write_failed",
-                format!("Impossible de promouvoir la configuration approuvée : {error}"),
-            )
-        })?;
+        if !approved_matches_proposal {
+            let approved_path = approved_document_path(self.root(), &key);
+            atomic_write_json(&approved_path, &durable.pending.proposed_document).map_err(
+                |error| {
+                    ConfigApiError::new(
+                        "config.approved.write_failed",
+                        format!("Impossible de promouvoir la configuration approuvée : {error}"),
+                    )
+                },
+            )?;
+        }
         remove_file_if_exists(&pending_document_path(self.root(), &key))?;
 
         let mut state = self.state.write().await;
@@ -1618,6 +1624,13 @@ fn write_durable_pending(
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), ConfigApiError> {
+    #[cfg(test)]
+    if path.with_extension("fail-remove").exists() {
+        return Err(ConfigApiError::new(
+            "config.runtime.remove_failed",
+            "Échec injecté pendant la suppression du journal runtime.",
+        ));
+    }
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -2189,6 +2202,63 @@ mod tests {
             snapshot.effective["tools"].get("riskLevel"),
             Some(&json!("yolo"))
         );
+    }
+
+    #[tokio::test]
+    async fn accepted_sensitive_change_retries_pending_cleanup_after_promotion() {
+        let (_temp, manager) = manager().await;
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("tools");
+        let pending = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/riskLevel".to_string(),
+                    from: None,
+                    value: Some(json!("yolo")),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .expect("pending")
+            .pending_change
+            .expect("pending change");
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: ConfigScope::User,
+        };
+        let pending_path = pending_document_path(manager.root(), &key);
+        let failure_marker = pending_path.with_extension("fail-remove");
+        fs::write(&failure_marker, b"fail").expect("inject pending cleanup failure");
+
+        let error = manager
+            .accept_pending_change(&pending.id)
+            .await
+            .expect_err("pending cleanup must fail after promotion");
+        assert_eq!(error.code, "config.runtime.remove_failed");
+        assert_eq!(
+            read_json_value(&approved_document_path(manager.root(), &key))
+                .expect("promoted baseline")["riskLevel"],
+            json!("yolo")
+        );
+        assert!(pending_path.exists());
+        assert_eq!(manager.list_pending_changes().await.len(), 1);
+
+        fs::remove_file(failure_marker).expect("release pending cleanup");
+        manager
+            .accept_pending_change(&pending.id)
+            .await
+            .expect("resume accepted pending cleanup");
+
+        assert!(!pending_path.exists());
+        assert!(manager.list_pending_changes().await.is_empty());
+        let snapshot = manager.get_snapshot(&[]).await.expect("snapshot");
+        assert_eq!(snapshot.effective["tools"]["riskLevel"], json!("yolo"));
     }
 
     #[tokio::test]
