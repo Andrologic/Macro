@@ -2167,31 +2167,62 @@ fn untracked_reset_collision_error(path: &[u8]) -> BackendError {
     }
 }
 
+fn parse_wsl_case_sensitivity_probe(value: &str) -> Result<bool> {
+    match value {
+        "insensitive" => Ok(true),
+        "sensitive" => Ok(false),
+        // Bare repositories have no worktree paths to protect. For any other
+        // unusual layout, a conservative comparison is safer than overwriting.
+        "unknown" => Ok(true),
+        _ => Err(BackendError::Git {
+            message: "git filesystem case-sensitivity preflight WSL returned an invalid result"
+                .to_string(),
+        }),
+    }
+}
+
 async fn ensure_wsl_hard_reset_preserves_untracked(
     repo_path: &WslProjectPath,
     target_commit: &str,
 ) -> Result<()> {
-    let ignore_case = run_wsl_git_allow_failure(
+    let case_probe = run_wsl_command_allow_failure(
         repo_path,
+        "bash",
         &[
-            "config".to_string(),
-            "--bool".to_string(),
-            "--get".to_string(),
-            "core.ignorecase".to_string(),
+            "-c".to_string(),
+            r#"
+repo=$1
+primary=$repo/.git
+alternate=$repo/.GIT
+if [[ ! -e $primary ]]; then
+  printf unknown
+  exit 0
+fi
+primary_id=$(stat -Lc '%d:%i' -- "$primary") || exit $?
+alternate_id=$(stat -Lc '%d:%i' -- "$alternate" 2>/dev/null) || {
+  printf sensitive
+  exit 0
+}
+if [[ $primary_id == "$alternate_id" ]]; then
+  printf insensitive
+else
+  printf sensitive
+fi
+"#
+            .to_string(),
+            "macro-git-case-probe".to_string(),
+            repo_path.linux_path.clone(),
         ],
         WSL_GIT_TIMEOUT,
     )
     .await?;
-    let case_insensitive = match ignore_case.status.code() {
-        Some(0) => ignore_case.stdout_text().eq_ignore_ascii_case("true"),
-        Some(1) => false,
-        _ => {
-            return Err(wsl_git_failure(
-                &ignore_case,
-                "git path case-sensitivity preflight WSL failed",
-            ))
-        }
-    };
+    if !case_probe.status.success() {
+        return Err(wsl_git_failure(
+            &case_probe,
+            "git filesystem case-sensitivity preflight WSL failed",
+        ));
+    }
+    let case_insensitive = parse_wsl_case_sensitivity_probe(&case_probe.stdout_text())?;
     let untracked = run_wsl_git_checked(
         repo_path,
         &[
@@ -18105,6 +18136,10 @@ mod tests {
             ),
             None
         );
+        assert!(parse_wsl_case_sensitivity_probe("insensitive").unwrap());
+        assert!(!parse_wsl_case_sensitivity_probe("sensitive").unwrap());
+        assert!(parse_wsl_case_sensitivity_probe("unknown").unwrap());
+        assert!(parse_wsl_case_sensitivity_probe("invalid").is_err());
     }
 
     #[test]
