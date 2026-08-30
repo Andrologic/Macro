@@ -34,6 +34,21 @@ mock.module('./tauriIpc', () => ({
       persistedPlanLifecycleSagas = valueJson;
     }
   },
+  dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }: {
+    key: string;
+    expectedValueJson: string | null;
+    valueJson: string;
+  }) => {
+    if (key !== 'pendingPlanLifecycles:v1') return { applied: true };
+    if (persistedPlanLifecycleSagas !== expectedValueJson) return { applied: false };
+    if (failPlanLifecycleSave) {
+      const error = failPlanLifecycleSave;
+      failPlanLifecycleSave = null;
+      throw error;
+    }
+    persistedPlanLifecycleSagas = valueJson;
+    return { applied: true };
+  },
 }));
 
 const {

@@ -1094,6 +1094,15 @@ const dbSetAppSettingMock = mock(async ({ key, valueJson }: {
 }) => {
   appSettingValues.set(key, valueJson);
 });
+const dbCompareAndSwapAppSettingMock = mock(async ({ key, expectedValueJson, valueJson }: {
+  key: string;
+  expectedValueJson: string | null;
+  valueJson: string;
+}) => {
+  if ((appSettingValues.get(key) ?? null) !== expectedValueJson) return { applied: false };
+  appSettingValues.set(key, valueJson);
+  return { applied: true };
+});
 const dbDeleteAppSettingMock = mock(async (key: string) =>
   appSettingValues.delete(key)
 );
@@ -1846,6 +1855,7 @@ const registerUseChatStoreMocks = async () => {
     deleteConversations: deleteConversationsMock,
     dbGetAppSetting: dbGetAppSettingMock,
     dbSetAppSetting: dbSetAppSettingMock,
+    dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
     dbDeleteAppSetting: dbDeleteAppSettingMock,
     gitBranchList: gitBranchListMock,
     getChatBootstrapSnapshot: getChatBootstrapSnapshotMock,
@@ -2763,6 +2773,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appSettingValues.clear();
     dbGetAppSettingMock.mockClear();
     dbSetAppSettingMock.mockClear();
+    dbCompareAndSwapAppSettingMock.mockClear();
     dbDeleteAppSettingMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanChatMessagesMock.mockClear();

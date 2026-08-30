@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { LinkedConversationDeletionSaga, LinkedTaskDeletionSagaTransport } from './linkedTaskDeletionSaga';
 
 const actualTauriIpc = await import('./tauriIpc');
 
@@ -80,5 +81,52 @@ describe('linkedTaskDeletionSaga', () => {
     await expect(sagaService.loadLinkedConversationDeletionSagas()).rejects.toMatchObject({
       name: 'LinkedConversationDeletionSagaCorruptionError',
     });
+  });
+
+  it('preserves concurrent updates from independent journal clients', async () => {
+    let persisted: string | null = null;
+    let initialReads = 0;
+    let releaseInitialReads!: () => void;
+    const initialReadsReleased = new Promise<void>((resolve) => {
+      releaseInitialReads = resolve;
+    });
+    const transport = (): LinkedTaskDeletionSagaTransport => ({
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = persisted;
+        if (persisted === null && initialReads < 2) {
+          initialReads += 1;
+          if (initialReads === 2) releaseInitialReads();
+          await initialReadsReleased;
+        }
+        return valueJson === null
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ expectedValueJson, valueJson }) => {
+        if (persisted !== expectedValueJson) return { applied: false };
+        persisted = valueJson;
+        return { applied: true };
+      },
+    });
+    const saga = (ownerId: string): LinkedConversationDeletionSaga => ({
+      ownerType: 'task',
+      ownerId,
+      conversationId: `conversation-${ownerId}`,
+      phase: 'prepared',
+      targetBranch: `feature/${ownerId}`,
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    });
+
+    await Promise.all([
+      sagaService.upsertLinkedConversationDeletionSaga(saga('first'), transport()),
+      sagaService.upsertLinkedConversationDeletionSaga(saga('second'), transport()),
+    ]);
+
+    expect(JSON.parse(persisted ?? '[]')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ownerId: 'first' }),
+      expect.objectContaining({ ownerId: 'second' }),
+    ]));
   });
 });

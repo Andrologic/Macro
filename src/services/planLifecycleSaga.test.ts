@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'bun:test';
-import { getPlanLifecycleSagaKey, parsePlanLifecycleSagaJournal, parsePlanLifecycleSagas } from './planLifecycleSaga';
+import {
+  getPlanLifecycleSagaKey,
+  parsePlanLifecycleSagaJournal,
+  parsePlanLifecycleSagas,
+  upsertPlanLifecycleSaga,
+  type PlanLifecycleSaga,
+  type PlanLifecycleSagaTransport,
+} from './planLifecycleSaga';
 
 const serializeSaga = (overrides: Record<string, unknown> = {}) => JSON.stringify([{
   planId: 'plan-1',
@@ -70,5 +77,57 @@ describe('planLifecycleSaga', () => {
     expect(journal.quarantined).toHaveLength(1);
     expect(journal.quarantined[0]?.entry).toEqual(invalidRoot);
     expect(journal.quarantined[0]?.reason).toContain('tableau était attendu');
+  });
+
+  it('preserves concurrent lifecycle updates from independent clients', async () => {
+    const values = new Map<string, string>();
+    let mutationReads = 0;
+    let releaseMutationReads!: () => void;
+    const mutationReadsReleased = new Promise<void>((resolve) => {
+      releaseMutationReads = resolve;
+    });
+    const transport = (): PlanLifecycleSagaTransport => {
+      let primaryReads = 0;
+      return {
+        isTauriAvailable: () => true,
+        dbGetAppSetting: async (key) => {
+          const valueJson = values.get(key);
+          if (key === 'pendingPlanLifecycles:v1') {
+            primaryReads += 1;
+            if (primaryReads === 2) {
+              mutationReads += 1;
+              if (mutationReads === 2) releaseMutationReads();
+              await mutationReadsReleased;
+            }
+          }
+          return valueJson === undefined
+            ? null
+            : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+        },
+        dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+          if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+          values.set(key, valueJson);
+          return { applied: true };
+        },
+      };
+    };
+    const saga = (planId: string): PlanLifecycleSaga => ({
+      planId,
+      branchName: `feature/${planId}`,
+      operation: 'archive',
+      phase: 'prepared',
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    });
+
+    await Promise.all([
+      upsertPlanLifecycleSaga(saga('first'), transport()),
+      upsertPlanLifecycleSaga(saga('second'), transport()),
+    ]);
+
+    expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ planId: 'first' }),
+      expect.objectContaining({ planId: 'second' }),
+    ]));
   });
 });

@@ -3,6 +3,15 @@ import { toPlanLocatorKey } from './durableIdentity';
 
 const SAGA_KEY = 'pendingPlanLifecycles:v1';
 const SAGA_QUARANTINE_KEY = 'pendingPlanLifecyclesQuarantine:v1';
+const MAX_CAS_ATTEMPTS = 32;
+
+export interface PlanLifecycleSagaTransport {
+  isTauriAvailable: () => boolean;
+  dbGetAppSetting: typeof tauriIpc.dbGetAppSetting;
+  dbCompareAndSwapAppSetting: typeof tauriIpc.dbCompareAndSwapAppSetting;
+}
+
+const defaultTransport: PlanLifecycleSagaTransport = tauriIpc;
 
 export type PlanLifecycleOperation = 'archive' | 'delete';
 export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
@@ -138,50 +147,103 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
   }
 };
 
-let tail = Promise.resolve();
-const mutate = async <T>(operation: () => Promise<T>): Promise<T> => {
-  const previous = tail;
-  let release!: () => void;
-  tail = new Promise<void>((resolve) => { release = resolve; });
-  await previous.catch(() => undefined);
-  try { return await operation(); } finally { release(); }
-};
-
-export const loadPlanLifecycleSagas = async (): Promise<PlanLifecycleSaga[]> => {
-  if (!tauriIpc.isTauriAvailable()) return [];
-  const journal = parsePlanLifecycleSagaJournal((await tauriIpc.dbGetAppSetting(SAGA_KEY))?.value_json);
-  if (journal.quarantined.length > 0) {
-    await tauriIpc.dbSetAppSetting({
-      key: SAGA_QUARANTINE_KEY,
-      valueJson: JSON.stringify(journal.quarantined),
-    });
+const parseUnknownArray = (value: string | null): unknown[] => {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [value];
   }
-  return journal.sagas;
 };
 
-const save = async (sagas: PlanLifecycleSaga[]): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable()) return;
-  await tauriIpc.dbSetAppSetting({ key: SAGA_KEY, valueJson: JSON.stringify(sagas) });
+const updateSetting = async (
+  key: string,
+  mutation: (value: string | null) => string,
+  transport: PlanLifecycleSagaTransport,
+): Promise<void> => {
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const expectedValueJson = (await transport.dbGetAppSetting(key))?.value_json ?? null;
+    const valueJson = mutation(expectedValueJson);
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key,
+      expectedValueJson,
+      valueJson,
+    });
+    if (result.applied) return;
+  }
+  throw new Error(`Conflit persistant pendant la mise à jour du réglage ${key}.`);
 };
 
-export const upsertPlanLifecycleSaga = async (saga: PlanLifecycleSaga): Promise<void> => mutate(async () => {
-  const current = await loadPlanLifecycleSagas();
+const appendQuarantine = async (
+  entries: PlanLifecycleSagaQuarantineEntry[],
+  transport: PlanLifecycleSagaTransport,
+): Promise<void> => {
+  if (entries.length === 0) return;
+  await updateSetting(
+    SAGA_QUARANTINE_KEY,
+    (current) => JSON.stringify([...parseUnknownArray(current), ...entries]),
+    transport,
+  );
+};
+
+export const loadPlanLifecycleSagas = async (
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<PlanLifecycleSaga[]> => {
+  if (!transport.isTauriAvailable()) return [];
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const setting = await transport.dbGetAppSetting(SAGA_KEY);
+    const expectedValueJson = setting?.value_json ?? null;
+    const journal = parsePlanLifecycleSagaJournal(expectedValueJson);
+    if (journal.quarantined.length === 0) return journal.sagas;
+
+    await appendQuarantine(journal.quarantined, transport);
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key: SAGA_KEY,
+      expectedValueJson,
+      valueJson: JSON.stringify(journal.sagas),
+    });
+    if (result.applied) return journal.sagas;
+  }
+  throw new Error('Conflit persistant pendant la normalisation du journal du cycle de vie des plans.');
+};
+
+export const upsertPlanLifecycleSaga = async (
+  saga: PlanLifecycleSaga,
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  await loadPlanLifecycleSagas(transport);
   const sagaKey = getPlanLifecycleSagaKey(saga);
-  await save([...current.filter((entry) =>
-    getPlanLifecycleSagaKey(entry) !== sagaKey
-  ), saga]);
-});
+  await updateSetting(
+    SAGA_KEY,
+    (current) => JSON.stringify([
+      ...parsePlanLifecycleSagas(current).filter((entry) => getPlanLifecycleSagaKey(entry) !== sagaKey),
+      saga,
+    ]),
+    transport,
+  );
+};
 
 export const removePlanLifecycleSaga = async (
   planId: string,
   operation: PlanLifecycleOperation,
   branchName?: string,
-): Promise<void> => mutate(async () => {
-  const current = await loadPlanLifecycleSagas();
-  const matches = current.filter((entry) => entry.planId === planId && entry.operation === operation);
-  if (!branchName && matches.length > 1) return;
-  await save(current.filter((entry) =>
-    entry.planId !== planId || entry.operation !== operation ||
-    (branchName !== undefined && entry.branchName !== branchName)
-  ));
-});
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  await loadPlanLifecycleSagas(transport);
+  await updateSetting(
+    SAGA_KEY,
+    (value) => {
+      const current = parsePlanLifecycleSagas(value);
+      const matches = current.filter((entry) => entry.planId === planId && entry.operation === operation);
+      if (!branchName && matches.length > 1) return JSON.stringify(current);
+      return JSON.stringify(current.filter((entry) =>
+        entry.planId !== planId || entry.operation !== operation ||
+        (branchName !== undefined && entry.branchName !== branchName)
+      ));
+    },
+    transport,
+  );
+};

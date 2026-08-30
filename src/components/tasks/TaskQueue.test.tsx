@@ -19,6 +19,7 @@ let useTaskStore!: typeof UseTaskStoreHook;
 let TaskQueueComponent!: typeof import('./TaskQueue').TaskQueue;
 let importCounter = 0;
 let virtualListRowKeys: Array<Array<string | number>> = [];
+let taskQueueAppSettings = new Map<string, string>();
 let notifyMock!: {
   info: ReturnType<typeof mock>;
   success: ReturnType<typeof mock>;
@@ -409,7 +410,28 @@ describe('TaskQueue', () => {
   };
 
   beforeEach(async () => {
-    installTauriRuntimeMock();
+    taskQueueAppSettings = new Map<string, string>();
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined
+          ? null
+          : { key, value_json: value, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_set_app_setting') {
+        const valueJson = String(payload?.valueJson ?? '');
+        taskQueueAppSettings.set(key, valueJson);
+        return { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        const expectedValueJson = payload?.expectedValueJson ?? null;
+        if ((taskQueueAppSettings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
+      return undefined;
+    }));
     await loadTaskQueueModules();
     initialAppState = useAppStore.getState();
     initialChatState = useChatStore.getState();
@@ -1368,6 +1390,12 @@ describe('TaskQueue', () => {
         appSettings.set(key, valueJson);
         return { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00Z' };
       }
+      if (command === 'db_compare_and_swap_app_setting') {
+        const expectedValueJson = payload?.expectedValueJson ?? null;
+        if ((appSettings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        appSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
       return undefined;
     }));
     const createConversation = mock(async () => ({ id: 'conversation-created' }));
@@ -1503,7 +1531,7 @@ describe('TaskQueue', () => {
       }],
       branches: [],
     };
-    installTauriRuntimeMock(mock(async (command) => {
+    installTauriRuntimeMock(mock(async (command, payload) => {
       if (command === 'git_task_start_points') {
         return gitTaskStartPoints;
       }
@@ -1518,6 +1546,24 @@ describe('TaskQueue', () => {
           unstaged: 0,
           untracked: 0,
         };
+      }
+      if (command === 'db_get_app_setting') {
+        const key = String(payload?.key ?? '');
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined
+          ? null
+          : {
+              key,
+              value_json: value,
+              updated_at: '2026-08-30T00:00:00Z',
+            };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        const key = String(payload?.key ?? '');
+        const expectedValueJson = payload?.expectedValueJson ?? null;
+        if ((taskQueueAppSettings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
       }
       return undefined;
     }));

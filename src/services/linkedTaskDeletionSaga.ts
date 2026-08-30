@@ -1,6 +1,15 @@
 import * as tauriIpc from './tauriIpc';
 
 const SAGA_KEY = 'pendingLinkedTaskDeletions:v1';
+const MAX_CAS_ATTEMPTS = 32;
+
+export interface LinkedTaskDeletionSagaTransport {
+  isTauriAvailable: () => boolean;
+  dbGetAppSetting: typeof tauriIpc.dbGetAppSetting;
+  dbCompareAndSwapAppSetting: typeof tauriIpc.dbCompareAndSwapAppSetting;
+}
+
+const defaultTransport: LinkedTaskDeletionSagaTransport = tauriIpc;
 
 export type LinkedConversationDeletionOwner = 'task' | 'plan' | 'conversation';
 export type LinkedConversationDeletionPhase =
@@ -131,65 +140,68 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
   }
 };
 
-export const loadLinkedConversationDeletionSagas = async (): Promise<LinkedConversationDeletionSaga[]> => {
-  if (!tauriIpc.isTauriAvailable()) return [];
-  const setting = await tauriIpc.dbGetAppSetting(SAGA_KEY);
+export const loadLinkedConversationDeletionSagas = async (
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<LinkedConversationDeletionSaga[]> => {
+  if (!transport.isTauriAvailable()) return [];
+  const setting = await transport.dbGetAppSetting(SAGA_KEY);
   return parseSagas(setting?.value_json);
 };
 
-const saveLinkedConversationDeletionSagas = async (sagas: LinkedConversationDeletionSaga[]): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable()) return;
-  await tauriIpc.dbSetAppSetting({ key: SAGA_KEY, valueJson: JSON.stringify(sagas) });
-};
-
-let pendingMutation: Promise<void> = Promise.resolve();
-
-const serializeMutation = async <T>(operation: () => Promise<T>): Promise<T> => {
-  const previous = pendingMutation;
-  let release!: () => void;
-  pendingMutation = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous.catch(() => undefined);
-  try {
-    return await operation();
-  } finally {
-    release();
+const mutateLinkedConversationDeletionSagas = async (
+  mutation: (current: LinkedConversationDeletionSaga[]) => LinkedConversationDeletionSaga[],
+  transport: LinkedTaskDeletionSagaTransport,
+): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const setting = await transport.dbGetAppSetting(SAGA_KEY);
+    const expectedValueJson = setting?.value_json ?? null;
+    const valueJson = JSON.stringify(mutation(parseSagas(expectedValueJson)));
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key: SAGA_KEY,
+      expectedValueJson,
+      valueJson,
+    });
+    if (result.applied) return;
   }
+  throw new Error('Conflit persistant pendant la mise à jour du journal de suppression liée.');
 };
 
 export const upsertLinkedConversationDeletionSaga = async (
   saga: LinkedConversationDeletionSaga,
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
 ): Promise<void> => {
-  await serializeMutation(async () => {
-    const current = await loadLinkedConversationDeletionSagas();
-    await saveLinkedConversationDeletionSagas([
+  await mutateLinkedConversationDeletionSagas(
+    (current) => [
       ...current.filter(
         (entry) => !hasSameOwnerIdentity(entry, saga),
       ),
       saga,
-    ]);
-  });
+    ],
+    transport,
+  );
 };
 
 export const removeLinkedConversationDeletionSaga = async (
   ownerType: LinkedConversationDeletionOwner,
   ownerId: string,
   targetBranch?: string,
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
 ): Promise<void> => {
-  await serializeMutation(async () => {
-    const current = await loadLinkedConversationDeletionSagas();
+  await mutateLinkedConversationDeletionSagas((current) => {
     const matches = current.filter((entry) => entry.ownerType === ownerType && entry.ownerId === ownerId);
-    if (ownerType !== 'conversation' && targetBranch === undefined && matches.length > 1) return;
-    await saveLinkedConversationDeletionSagas(current.filter((entry) =>
+    if (ownerType !== 'conversation' && targetBranch === undefined && matches.length > 1) return current;
+    return current.filter((entry) =>
       entry.ownerType !== ownerType || entry.ownerId !== ownerId ||
       (ownerType !== 'conversation' && targetBranch !== undefined && entry.targetBranch !== targetBranch)
-    ));
-  });
+    );
+  }, transport);
 };
 
-export const loadLinkedTaskDeletionSagas = async (): Promise<LinkedTaskDeletionSaga[]> =>
-  (await loadLinkedConversationDeletionSagas()).flatMap((saga) =>
+export const loadLinkedTaskDeletionSagas = async (
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<LinkedTaskDeletionSaga[]> =>
+  (await loadLinkedConversationDeletionSagas(transport)).flatMap((saga) =>
     saga.ownerType === 'task'
       ? [{
           taskId: saga.ownerId,
@@ -209,12 +221,16 @@ export const loadLinkedTaskDeletionSagas = async (): Promise<LinkedTaskDeletionS
 
 export const upsertLinkedTaskDeletionSaga = async (
   saga: LinkedTaskDeletionSaga,
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
 ): Promise<void> =>
   upsertLinkedConversationDeletionSaga({
     ...saga,
     ownerType: 'task',
     ownerId: saga.taskId,
-  });
+  }, transport);
 
-export const removeLinkedTaskDeletionSaga = async (taskId: string, targetBranch?: string): Promise<void> =>
-  removeLinkedConversationDeletionSaga('task', taskId, targetBranch);
+export const removeLinkedTaskDeletionSaga = async (
+  taskId: string,
+  targetBranch?: string,
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<void> => removeLinkedConversationDeletionSaga('task', taskId, targetBranch, transport);

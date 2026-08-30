@@ -918,6 +918,17 @@ describe('useTaskStore merge workflow review loading', () => {
         updated_at: '2026-08-12T00:00:00.000Z',
       };
     });
+    dbCompareAndSwapAppSettingMock.mockImplementation(async (params: {
+      key: string;
+      expectedValueJson: string | null;
+      valueJson: string;
+    }) => {
+      if ((dbAppSettings.get(params.key) ?? null) !== params.expectedValueJson) {
+        return { applied: false };
+      }
+      dbAppSettings.set(params.key, params.valueJson);
+      return { applied: true };
+    });
   workspaceDeleteManualFeatureDraftMock.mockClear();
   workspaceDeleteManualFeatureDraftMock.mockImplementation(async () => true);
     workspaceDeleteManualFeatureMock.mockClear();
@@ -1133,7 +1144,7 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
     expect(gitBranchDeleteMock).not.toHaveBeenCalled();
     expect(
-      dbSetAppSettingMock.mock.calls.some(([params]) =>
+      dbCompareAndSwapAppSettingMock.mock.calls.some(([params]) =>
         params.valueJson.includes('"cleanupKind":"direct"')
       )
     ).toBe(true);
@@ -2288,13 +2299,20 @@ describe('useTaskStore merge workflow review loading', () => {
     gitBranchDeleteMock.mockImplementation(async () => {
       branchExists = false;
     });
-    dbSetAppSettingMock.mockImplementation(async (params: { key: string; valueJson: string }) => {
+    dbCompareAndSwapAppSettingMock.mockImplementation(async (params: {
+      key: string;
+      expectedValueJson: string | null;
+      valueJson: string;
+    }) => {
       if (rejectBranchCheckpoint && params.valueJson.includes('"branchRemoved":true')) {
         rejectBranchCheckpoint = false;
         throw new Error('injected branch checkpoint failure');
       }
+      if ((dbAppSettings.get(params.key) ?? null) !== params.expectedValueJson) {
+        return { applied: false };
+      }
       dbAppSettings.set(params.key, params.valueJson);
-      return { key: params.key, value_json: params.valueJson, updated_at: '2026-08-12T00:00:00.000Z' };
+      return { applied: true };
     });
 
     const { useTaskStore } = await loadIsolatedTaskStore();
@@ -2358,13 +2376,20 @@ describe('useTaskStore merge workflow review loading', () => {
       remote: [],
       current: 'develop',
     }));
-    dbSetAppSettingMock.mockImplementation(async (params: { key: string; valueJson: string }) => {
+    dbCompareAndSwapAppSettingMock.mockImplementation(async (params: {
+      key: string;
+      expectedValueJson: string | null;
+      valueJson: string;
+    }) => {
       if (rejectWorktreeCheckpoint && params.valueJson.includes('"worktreeRemoved":true')) {
         rejectWorktreeCheckpoint = false;
         throw new Error('injected worktree checkpoint failure');
       }
+      if ((dbAppSettings.get(params.key) ?? null) !== params.expectedValueJson) {
+        return { applied: false };
+      }
       dbAppSettings.set(params.key, params.valueJson);
-      return { key: params.key, value_json: params.valueJson, updated_at: '2026-08-12T00:00:00.000Z' };
+      return { applied: true };
     });
 
     const { useTaskStore } = await loadIsolatedTaskStore();
