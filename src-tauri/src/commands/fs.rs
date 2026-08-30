@@ -3619,7 +3619,7 @@ mod tests {
 
         let spawn_producer = |temp_name: &str| {
             let temp_path = temp.path().join(temp_name);
-            let mut child = std::process::Command::new("sh")
+            let mut child = crate::core::process::background_command("sh")
                 .arg("-c")
                 .arg(WSL_WRITE_FILE_SCRIPT)
                 .arg("macro-wsl-write-test")

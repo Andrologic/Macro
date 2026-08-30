@@ -944,6 +944,7 @@ fn install_package(
 
 #[cfg(test)]
 mod tests {
+    use crate::core::process::background_command;
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use std::time::Duration;
 
@@ -1300,7 +1301,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let guard = lock_update_directory(temp.path()).expect("parent update lock");
         let mut child =
-            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+            background_command(std::env::current_exe().expect("current test executable"))
                 .args([
                     "--exact",
                     "app_updates::tests::update_directory_lock_child",

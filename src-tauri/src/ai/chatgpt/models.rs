@@ -549,6 +549,7 @@ mod tests {
     use crate::ai::chatgpt::session::{
         ensure_fresh_secret, install_persist_after_secret_hook, persist_chatgpt_session,
     };
+    use crate::core::process::background_command;
     use crate::secrets::ChatGptSecret;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
@@ -884,7 +885,7 @@ mod tests {
             .await
             .expect("parent auth mutation lock");
         let mut child =
-            std::process::Command::new(std::env::current_exe().expect("current test executable"))
+            background_command(std::env::current_exe().expect("current test executable"))
                 .args([
                     "--exact",
                     "ai::chatgpt::models::tests::auth_mutation_lock_child",
