@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cap_std::ambient_authority;
+use cap_std::fs::Dir as CapabilityDir;
 use git2::{build::CheckoutBuilder, BranchType, ErrorCode, Repository, WorktreeAddOptions};
 
 use crate::core::error::{BackendError, Result};
@@ -580,61 +582,208 @@ pub(crate) fn repair_gitfile_worktree_links(
     .map(|repaired| repaired || changed)
 }
 
-fn quarantine_path(path: &Path) -> Result<PathBuf> {
+fn open_macro_owned_parent(root: &Path, path: &Path) -> Result<Option<(CapabilityDir, OsString)>> {
+    let relative = path.strip_prefix(root).map_err(|_| BackendError::Git {
+        message: format!(
+            "Refusing to modify {} because it is not lexically inside {}",
+            path.display(),
+            root.display()
+        ),
+    })?;
+    let file_name = relative
+        .file_name()
+        .map(OsString::from)
+        .ok_or_else(|| BackendError::Git {
+            message: format!("Refusing to modify capability root {}", root.display()),
+        })?;
+    let mut parent =
+        CapabilityDir::open_ambient_dir(root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open owned root {}: {error}", root.display()),
+                source: error,
+            }
+        })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!("Refusing unsafe managed path {}", path.display()),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                        message: format!(
+                            "Failed to open owned parent for {}: {error}",
+                            path.display()
+                        ),
+                        source: error,
+                    })?;
+                }
+                Ok(_) => {
+                    return Err(BackendError::Git {
+                        message: format!(
+                            "Refusing to modify {} through a linked or non-directory parent",
+                            path.display()
+                        ),
+                    })
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!("Failed to inspect {}: {error}", path.display()),
+                        source: error,
+                    })
+                }
+            }
+        }
+    }
+    Ok(Some((parent, file_name)))
+}
+
+pub(crate) fn remove_macro_owned_path(root: &Path, path: &Path) -> Result<bool> {
+    let Some((parent, file_name)) = open_macro_owned_parent(root, path)? else {
+        return Ok(false);
+    };
+    let metadata = match parent.symlink_metadata(&file_name) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!("Failed to inspect {}: {error}", path.display()),
+                source: error,
+            })
+        }
+    };
+    let removal = if metadata.file_type().is_symlink() {
+        #[cfg(windows)]
+        {
+            if metadata.is_dir() {
+                parent.remove_dir(&file_name)
+            } else {
+                parent.remove_file(&file_name)
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            parent.remove_file(&file_name)
+        }
+    } else if metadata.is_dir() {
+        parent.remove_dir_all(&file_name)
+    } else {
+        parent.remove_file(&file_name)
+    };
+    removal.map_err(|error| BackendError::Io {
+        message: format!("Failed to remove {}: {error}", path.display()),
+        source: error,
+    })?;
+    Ok(true)
+}
+
+fn quarantine_path(root: &Path, path: &Path) -> Result<PathBuf> {
+    let Some((parent, file_name)) = open_macro_owned_parent(root, path)? else {
+        return Err(BackendError::Git {
+            message: format!("Cannot quarantine missing path {}", path.display()),
+        });
+    };
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
-    let file_name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "worktree".to_string());
-    let mut candidate = path.with_file_name(format!("{file_name}.invalid-{stamp}"));
+    let display_name = file_name.to_string_lossy();
+    let mut candidate_name = OsString::from(format!("{display_name}.invalid-{stamp}"));
     let mut suffix = 0;
-    while candidate.exists() {
+    while parent.symlink_metadata(&candidate_name).is_ok() {
         suffix += 1;
-        candidate = path.with_file_name(format!("{file_name}.invalid-{stamp}-{suffix}"));
+        candidate_name = OsString::from(format!("{display_name}.invalid-{stamp}-{suffix}"));
     }
-    fs::rename(path, &candidate).map_err(|e| BackendError::Io {
-        message: e.to_string(),
-        source: e,
-    })?;
-    Ok(candidate)
+    parent
+        .rename(&file_name, &parent, &candidate_name)
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to quarantine {}: {error}", path.display()),
+            source: error,
+        })?;
+    Ok(path.with_file_name(candidate_name))
 }
 
-fn remove_path_if_present(path: &Path) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-
-    let metadata = fs::symlink_metadata(path).map_err(|e| BackendError::Io {
-        message: e.to_string(),
-        source: e,
-    })?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(path).map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
-    } else {
-        fs::remove_file(path).map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
-    }
-
-    Ok(true)
-}
-
-fn remove_or_quarantine_path_for_repair(path: &Path, should_quarantine: bool) -> Result<bool> {
-    if !path.exists() {
+fn remove_or_quarantine_path_for_repair(
+    root: &Path,
+    path: &Path,
+    should_quarantine: bool,
+) -> Result<bool> {
+    let present = open_macro_owned_parent(root, path)?
+        .is_some_and(|(parent, file_name)| parent.symlink_metadata(file_name).is_ok());
+    if !present {
         return Ok(false);
     }
     if should_quarantine {
-        let _ = quarantine_path(path)?;
+        let _ = quarantine_path(root, path)?;
         return Ok(true);
     }
-    remove_path_if_present(path)
+    remove_macro_owned_path(root, path)
+}
+
+fn create_macro_owned_directories(root: &Path, path: &Path) -> Result<()> {
+    let relative = path.strip_prefix(root).map_err(|_| BackendError::Git {
+        message: format!(
+            "Refusing to create {} because it is not lexically inside {}",
+            path.display(),
+            root.display()
+        ),
+    })?;
+    let mut directory =
+        CapabilityDir::open_ambient_dir(root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open owned root {}: {error}", root.display()),
+                source: error,
+            }
+        })?;
+    for component in relative.components() {
+        let Component::Normal(segment) = component else {
+            return Err(BackendError::Git {
+                message: format!("Refusing unsafe managed path {}", path.display()),
+            });
+        };
+        match directory.symlink_metadata(segment) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Refusing to create {} through a linked or non-directory parent",
+                        path.display()
+                    ),
+                })
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match directory.create_dir(segment) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(BackendError::Io {
+                            message: format!("Failed to create {}: {error}", path.display()),
+                            source: error,
+                        })
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!("Failed to inspect {}: {error}", path.display()),
+                    source: error,
+                })
+            }
+        }
+        directory = directory
+            .open_dir(segment)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to open created directory {}: {error}",
+                    path.display()
+                ),
+                source: error,
+            })?;
+    }
+    Ok(())
 }
 
 fn repair_requires_quarantine(
@@ -1051,12 +1200,13 @@ impl GitState {
                     inspection.is_dirty,
                 );
                 if let Some(path) = inspection.registered_path.as_ref() {
-                    let _ = remove_or_quarantine_path_for_repair(path, should_quarantine)?;
+                    let _ = remove_or_quarantine_path_for_repair(workdir, path, should_quarantine)?;
                 }
                 if inspection.worktree_path
                     != inspection.registered_path.clone().unwrap_or_default()
                 {
                     let _ = remove_or_quarantine_path_for_repair(
+                        workdir,
                         &inspection.worktree_path,
                         should_quarantine,
                     )?;
@@ -1092,10 +1242,7 @@ impl GitState {
             ManagedWorktreeKind::Task,
         )?;
         let worktree_root = task_worktree_root(repo)?;
-        fs::create_dir_all(&worktree_root).map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
+        create_macro_owned_directories(workdir, &worktree_root)?;
 
         if repo.find_branch(branch_name, BranchType::Local).is_err() {
             let branch_commit =
@@ -1375,12 +1522,13 @@ impl GitState {
                     inspection.is_dirty,
                 );
                 if let Some(path) = inspection.registered_path.as_ref() {
-                    let _ = remove_or_quarantine_path_for_repair(path, should_quarantine)?;
+                    let _ = remove_or_quarantine_path_for_repair(workdir, path, should_quarantine)?;
                 }
                 if inspection.worktree_path
                     != inspection.registered_path.clone().unwrap_or_default()
                 {
                     let _ = remove_or_quarantine_path_for_repair(
+                        workdir,
                         &inspection.worktree_path,
                         should_quarantine,
                     )?;
@@ -1418,10 +1566,7 @@ impl GitState {
             ManagedWorktreeKind::Branch,
         )?;
         let worktree_root = task_worktree_root(repo)?;
-        fs::create_dir_all(&worktree_root).map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
+        create_macro_owned_directories(workdir, &worktree_root)?;
 
         if repo.find_branch(branch_name, BranchType::Local).is_err() {
             let branch_commit = if let Some(from_ref) =
@@ -1499,6 +1644,9 @@ impl GitState {
         branch_name: &str,
         force: bool,
     ) -> Result<BranchWorktreeRemoveResult> {
+        let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+            message: "Bare repositories are not supported for worktrees".to_string(),
+        })?;
         let inspection = self.inspect_branch_worktree(repo, worktree_key, branch_name)?;
         if inspection.status != TaskWorktreeStatus::Absent {
             ensure_managed_worktree_ownership(
@@ -1519,9 +1667,9 @@ impl GitState {
 
         let mut removed_path = false;
         if let Some(path) = inspection.registered_path.as_ref() {
-            removed_path = remove_path_if_present(path)? || removed_path;
+            removed_path = remove_macro_owned_path(workdir, path)? || removed_path;
         }
-        removed_path = remove_path_if_present(&inspection.worktree_path)? || removed_path;
+        removed_path = remove_macro_owned_path(workdir, &inspection.worktree_path)? || removed_path;
 
         let pruned_registration = prune_worktree(repo, &inspection.worktree_name)?;
 
@@ -1542,6 +1690,9 @@ impl GitState {
         force: bool,
         branch_name: Option<&str>,
     ) -> Result<TaskWorktreeRemoveResult> {
+        let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+            message: "Bare repositories are not supported for worktrees".to_string(),
+        })?;
         let inspection = self.inspect_task_worktree_internal(repo, task_id, branch_name)?;
         if inspection.status != TaskWorktreeStatus::Absent {
             ensure_managed_worktree_ownership(
@@ -1562,9 +1713,9 @@ impl GitState {
 
         let mut removed_path = false;
         if let Some(path) = inspection.registered_path.as_ref() {
-            removed_path = remove_path_if_present(path)? || removed_path;
+            removed_path = remove_macro_owned_path(workdir, path)? || removed_path;
         }
-        removed_path = remove_path_if_present(&inspection.worktree_path)? || removed_path;
+        removed_path = remove_macro_owned_path(workdir, &inspection.worktree_path)? || removed_path;
 
         let pruned_registration = prune_worktree(repo, &inspection.worktree_name)?;
         self.clear_worktree_cache(task_id);
@@ -1627,6 +1778,31 @@ mod tests {
 
         assert!(path.starts_with(&root));
         assert_eq!(path.parent(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn managed_path_removal_never_follows_a_linked_parent() {
+        let root = TempDir::new().expect("managed root");
+        let outside = TempDir::new().expect("outside root");
+        fs::create_dir_all(outside.path().join("worktrees/task-owned")).expect("outside worktree");
+        fs::write(
+            outside.path().join("worktrees/task-owned/sentinel.txt"),
+            "preserve",
+        )
+        .expect("outside sentinel");
+        link_directory(&root.path().join(".macro"), outside.path());
+
+        remove_macro_owned_path(
+            root.path(),
+            &root.path().join(".macro/worktrees/task-owned"),
+        )
+        .expect_err("linked parent must be rejected");
+
+        assert_eq!(
+            fs::read_to_string(outside.path().join("worktrees/task-owned/sentinel.txt"))
+                .expect("outside sentinel survives"),
+            "preserve"
+        );
     }
 
     #[test]

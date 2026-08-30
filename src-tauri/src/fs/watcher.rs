@@ -171,7 +171,10 @@ fn discover_unwatched_directories(
     let mut discovered = Vec::new();
     let mut ignored_dir_count = 0;
     for path in &event.paths {
-        if !path.starts_with(workspace) || !path.is_dir() || should_ignore_path(path, workspace) {
+        let is_real_directory = fs::symlink_metadata(path)
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
+        if !path.starts_with(workspace) || !is_real_directory || should_ignore_path(path, workspace)
+        {
             continue;
         }
         collect_watch_paths(path, workspace, &mut discovered, &mut ignored_dir_count);
@@ -619,6 +622,24 @@ mod tests {
         assert!(!discovered
             .iter()
             .any(|path| path.starts_with(created.join(".macro"))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_new_directory_event_does_not_follow_a_symbolic_link() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside directory");
+        std::fs::create_dir_all(outside.path().join("nested")).expect("outside nested directory");
+        let linked = workspace.path().join("linked");
+        symlink(outside.path(), &linked).expect("link outside workspace");
+        let event = Event::new(EventKind::Create(notify::event::CreateKind::Folder))
+            .add_path(linked.clone());
+
+        let discovered = discover_unwatched_directories(&event, workspace.path(), &HashSet::new());
+
+        assert!(discovered.is_empty());
     }
 
     #[test]

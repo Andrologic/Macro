@@ -1181,7 +1181,7 @@ impl GitState {
             if owns_task_worktree_root
                 && worktree::is_macro_owned_worktree_path(&repo, worktree_name, &worktree_path)?
             {
-                if remove_macro_path_if_present(&worktree_path)? {
+                if worktree::remove_macro_owned_path(workdir, &worktree_path)? {
                     result.removed_task_worktrees += 1;
                 }
                 let mut prune_opts = git2::WorktreePruneOptions::new();
@@ -1196,7 +1196,7 @@ impl GitState {
         }
 
         if owns_task_worktree_root
-            && remove_macro_path_if_present(&task_worktree_root)?
+            && worktree::remove_macro_owned_path(workdir, &task_worktree_root)?
             && result.removed_task_worktrees == 0
         {
             result.removed_task_worktrees = 1;
@@ -1222,7 +1222,8 @@ impl GitState {
                 if worktree::ensure_macro_metadata_worktree_ownership(&repo, &registered_path)
                     .is_ok()
                 {
-                    let removed_registered_path = remove_macro_path_if_present(&registered_path)?;
+                    let removed_registered_path =
+                        worktree::remove_macro_owned_path(repo.path(), &registered_path)?;
                     let mut prune_opts = git2::WorktreePruneOptions::new();
                     prune_opts.valid(true);
                     if let Err(err) = metadata_worktree.prune(Some(&mut prune_opts)) {
@@ -1248,7 +1249,9 @@ impl GitState {
             }
         }
 
-        if owns_metadata_worktree && remove_macro_path_if_present(&metadata_worktree_path)? {
+        if owns_metadata_worktree
+            && worktree::remove_macro_owned_path(repo.path(), &metadata_worktree_path)?
+        {
             result.removed_metadata_worktree = true;
         }
 
@@ -1257,7 +1260,8 @@ impl GitState {
             worktree::is_macro_owned_project_artifact_root(&repo, &project_artifact_root)?;
         let can_remove_project_artifact_root =
             owns_project_artifact_root && (owns_task_worktree_root || !task_worktree_root.exists());
-        if can_remove_project_artifact_root && remove_macro_path_if_present(&project_artifact_root)?
+        if can_remove_project_artifact_root
+            && worktree::remove_macro_owned_path(workdir, &project_artifact_root)?
         {
             result.removed_metadata_worktree = true;
         } else if project_artifact_root.exists() && !can_remove_project_artifact_root {
@@ -1294,30 +1298,6 @@ impl GitState {
 
         Ok(result)
     }
-}
-
-fn remove_macro_path_if_present(path: &Path) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-
-    let metadata = fs::symlink_metadata(path).map_err(|e| BackendError::Io {
-        message: e.to_string(),
-        source: e,
-    })?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(path).map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
-    } else {
-        fs::remove_file(path).map_err(|e| BackendError::Io {
-            message: e.to_string(),
-            source: e,
-        })?;
-    }
-
-    Ok(true)
 }
 
 impl Default for GitState {
