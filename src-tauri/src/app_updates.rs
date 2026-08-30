@@ -36,6 +36,10 @@ static UPDATE_PUBLICATION_AFTER_MANIFEST_HOOK: LazyLock<
     >,
 > = LazyLock::new(|| Mutex::new(None));
 
+#[cfg(test)]
+static UPDATE_FAIL_AFTER_PACKAGE: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 fn lock_update_state() -> std::sync::MutexGuard<'static, ()> {
     UPDATE_STATE_LOCK
         .lock()
@@ -76,6 +80,33 @@ fn pause_after_manifest_publication(package_file: &str) {
 
 #[cfg(not(test))]
 fn pause_after_manifest_publication(_package_file: &str) {}
+
+#[cfg(test)]
+fn install_fail_after_package_publication(package_file: String) {
+    *UPDATE_FAIL_AFTER_PACKAGE
+        .lock()
+        .expect("update package failure hook mutex") = Some(package_file);
+}
+
+#[cfg(test)]
+fn fail_after_package_publication(package_file: &str) -> Result<(), String> {
+    let should_fail = {
+        let mut hook = UPDATE_FAIL_AFTER_PACKAGE
+            .lock()
+            .expect("update package failure hook mutex");
+        hook.as_deref() == Some(package_file) && hook.take().is_some()
+    };
+    if should_fail {
+        Err("injected failure after package publication".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(test))]
+fn fail_after_package_publication(_package_file: &str) -> Result<(), String> {
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -267,7 +298,7 @@ fn package_digest(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn package_file_name(version: &str) -> String {
+fn package_file_name(version: &str, sha256: &str) -> String {
     let safe_version: String = version
         .chars()
         .map(|character| {
@@ -278,7 +309,7 @@ fn package_file_name(version: &str) -> String {
             }
         })
         .collect();
-    format!("staged-update-{safe_version}.bin")
+    format!("staged-update-{safe_version}-{sha256}.bin")
 }
 
 fn staged_update_belongs_to_current_install(
@@ -395,6 +426,7 @@ fn publish_staged_update_directory(
 
     let _state_guard = lock_update_state();
     atomic_write(&directory.join(package_file), bytes)?;
+    fail_after_package_publication(package_file)?;
     write_manifest_file(&directory.join(MANIFEST_FILE), manifest)?;
     pause_after_manifest_publication(package_file);
     cleanup_staged_packages_except(directory, package_file);
@@ -577,7 +609,8 @@ pub async fn app_update_check_and_stage(
         .map_err(|error| error.to_string())?;
 
     let package_size = bytes.len() as u64;
-    let package_file = package_file_name(&update.version);
+    let sha256 = package_digest(&bytes);
+    let package_file = package_file_name(&update.version, &sha256);
     let manifest = StagedUpdateManifest {
         current_version: update.current_version.clone(),
         version: update.version.clone(),
@@ -586,7 +619,7 @@ pub async fn app_update_check_and_stage(
         target,
         package_file: package_file.clone(),
         signature: update.signature.clone(),
-        sha256: package_digest(&bytes),
+        sha256,
         package_size,
         phase: StagedUpdatePhase::Staged,
         activation_attempts: 0,
@@ -820,9 +853,10 @@ mod tests {
 
     use super::{
         atomic_write, clean_shutdown_matches, clear_staged_update_directory,
-        install_publication_after_manifest_hook, package_digest, publish_staged_update_directory,
-        read_manifest_file, staged_update_belongs_to_current_install, verify_update_signature,
-        CleanShutdownMarker, DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
+        install_fail_after_package_publication, install_publication_after_manifest_hook,
+        package_digest, package_file_name, publish_staged_update_directory, read_manifest_file,
+        staged_update_belongs_to_current_install, verify_update_signature, CleanShutdownMarker,
+        DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
     };
 
     const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
@@ -1028,6 +1062,51 @@ mod tests {
             persisted_manifest.sha256
         );
         assert!(!temp.path().join("staged-update-1.1.0.bin").exists());
+    }
+
+    #[test]
+    fn failed_package_publication_keeps_the_previous_manifest_valid() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let old_bytes = b"old package".to_vec();
+        let old_digest = package_digest(&old_bytes);
+        let mut old_manifest = manifest("1.0.0", "1.1.0");
+        old_manifest.package_file = package_file_name("1.1.0", &old_digest);
+        old_manifest.package_size = old_bytes.len() as u64;
+        old_manifest.sha256 = old_digest;
+        publish_staged_update_directory(temp.path(), &old_manifest, &old_bytes)
+            .expect("publish old update");
+
+        let new_bytes = b"new package".to_vec();
+        let new_digest = package_digest(&new_bytes);
+        let mut new_manifest = manifest("1.0.0", "1.2.0");
+        new_manifest.package_file = package_file_name("1.2.0", &new_digest);
+        new_manifest.package_size = new_bytes.len() as u64;
+        new_manifest.sha256 = new_digest;
+        install_fail_after_package_publication(new_manifest.package_file.clone());
+
+        let error = publish_staged_update_directory(temp.path(), &new_manifest, &new_bytes)
+            .expect_err("injected publication failure");
+        assert_eq!(error, "injected failure after package publication");
+
+        let persisted_manifest = read_manifest_file(&temp.path().join(super::MANIFEST_FILE))
+            .expect("read previous manifest")
+            .expect("previous manifest");
+        assert_eq!(persisted_manifest.version, "1.1.0");
+        let persisted_package = std::fs::read(temp.path().join(&persisted_manifest.package_file))
+            .expect("previous package");
+        assert_eq!(
+            package_digest(&persisted_package),
+            persisted_manifest.sha256
+        );
+
+        publish_staged_update_directory(temp.path(), &new_manifest, &new_bytes)
+            .expect("retry new update");
+        let retried_manifest = read_manifest_file(&temp.path().join(super::MANIFEST_FILE))
+            .expect("read retried manifest")
+            .expect("retried manifest");
+        assert_eq!(retried_manifest.version, "1.2.0");
+        assert!(temp.path().join(&retried_manifest.package_file).exists());
+        assert!(!temp.path().join(&old_manifest.package_file).exists());
     }
 
     #[cfg(target_os = "windows")]

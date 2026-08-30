@@ -257,4 +257,43 @@ describe('macroMetadataCoordinator', () => {
       message: 'chore(@macro): sync project state',
     });
   });
+
+  it('keeps a pending mutation when the backend reports a dirty failed commit', async () => {
+    const reportedFailure = mock(async () => createMacroResult({
+      state: 'unknown_error',
+      is_dirty: true,
+      committed: false,
+      reason: 'unknown_error',
+      next_action: 'retry',
+      error: 'injected metadata commit failure',
+    }));
+    const reportingDeps = {
+      ...deps,
+      tauri: {
+        isTauriAvailable: () => true,
+        macroBranchCommitIfDirty: reportedFailure,
+      },
+    };
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'chat_synced',
+      importance: 'light',
+    }, reportingDeps);
+
+    const first = await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: ['/repos/web'],
+    }, reportingDeps);
+    expect(first[0]?.error).toBe('injected metadata commit failure');
+
+    await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: ['/repos/web'],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledWith({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): sync project state',
+    });
+  });
 });

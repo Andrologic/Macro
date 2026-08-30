@@ -282,7 +282,8 @@ export const flushMacroMetadata = async (
       message: messageForTrigger(request.trigger, pending, request.message),
     });
     results.push(result);
-    if (pendingMutations.get(workspacePath) === pending) {
+    const durableCommitCompleted = result.error === null && !result.is_dirty;
+    if (durableCommitCompleted && pendingMutations.get(workspacePath) === pending) {
       pendingMutations.delete(workspacePath);
     }
   }

@@ -1,5 +1,5 @@
 use super::chatgpt::parse_serialized_chatgpt_secret;
-use super::store::test_store;
+use super::store::{install_migration_failure_after_replace, test_store};
 use super::{
     delete_api_key, delete_provider_secret, get_api_key, get_chatgpt_secret, init,
     metadata_for_api_key, set_api_key, set_chatgpt_secret, ChatGptSecret,
@@ -131,6 +131,45 @@ fn init_backs_up_a_legacy_secret_file_before_upgrading_it() {
     assert_eq!(
         get_api_key("openai").expect("migrated secret").as_deref(),
         Some("kept")
+    );
+}
+
+#[test]
+fn init_finishes_a_migration_that_failed_after_replacing_the_canonical_file() {
+    let _guard = super::lock_test_store();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("provider-secrets.json");
+    let legacy = r#"{"version":1,"api_keys":{"openai":"kept"},"chatgpt_sessions":{}}"#;
+    std::fs::write(&path, legacy).expect("legacy secrets");
+    install_migration_failure_after_replace(path.clone());
+
+    let error = init(temp.path()).expect_err("injected migration failure");
+    assert!(error
+        .to_string()
+        .contains("injected secret migration failure after canonical replacement"));
+    assert!(temp
+        .path()
+        .join("provider-secrets.migration-pending.json")
+        .exists());
+    let replaced: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("replaced canonical secrets"))
+            .expect("version 2 canonical JSON");
+    assert_eq!(replaced["version"], serde_json::json!(2));
+
+    init(temp.path()).expect("recover pending secret migration");
+
+    assert!(!temp
+        .path()
+        .join("provider-secrets.migration-pending.json")
+        .exists());
+    assert_eq!(
+        get_api_key("openai").expect("recovered secret").as_deref(),
+        Some("kept")
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("provider-secrets.json.v1.bak"))
+            .expect("migration backup"),
+        legacy
     );
 }
 
