@@ -704,6 +704,33 @@ pub(crate) fn content_revision(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn guarded_write_lock_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let path_key = path.to_string_lossy().to_lowercase();
+    #[cfg(not(windows))]
+    let path_key = path.to_string_lossy();
+
+    let digest = content_revision(path_key.as_bytes());
+    std::env::temp_dir()
+        .join("macro-guarded-write-locks")
+        .join(format!("{digest}.lock"))
+}
+
+fn acquire_guarded_write_lock(path: &Path) -> std::io::Result<std::fs::File> {
+    let lock_path = guarded_write_lock_path(path);
+    let parent = lock_path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("guarded write lock has no parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    lock.lock_exclusive()?;
+    Ok(lock)
+}
+
 pub(crate) async fn file_content_revision_internal(
     workspace: &Path,
     path: String,
@@ -1580,6 +1607,22 @@ async fn write_file_with_capability_target(
     let validated_path = target.validated_path.clone();
     let display_path = display_path.to_string();
     let content = content_bytes.to_vec();
+
+    // Lock a stable file derived from the target path before reading the target. Locking the
+    // target inode alone is insufficient because the atomic replacement changes that inode.
+    let _guarded_write_lock = if expected_revision.is_some() {
+        Some(
+            tokio::task::spawn_blocking({
+                let validated_path = validated_path.clone();
+                move || acquire_guarded_write_lock(&validated_path)
+            })
+            .await
+            .map_err(capability_task_error)?
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?,
+        )
+    } else {
+        None
+    };
 
     let existing = tokio::task::spawn_blocking({
         let directory = directory.clone();
@@ -3906,6 +3949,80 @@ mod tests {
         assert!(matches!(failure, BackendError::RevisionConflict { .. }));
         let content = fs::read_to_string(path).expect("read winning content");
         assert!(content == "first" || content == "second");
+    }
+
+    #[tokio::test]
+    async fn direct_guarded_writes_lock_the_path_before_reading_the_target() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+        let path = workspace_path.join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let validated_path = path.canonicalize().expect("canonical guarded file");
+        let revision = content_revision(b"current");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_after_revalidation_hook(
+            validated_path.clone(),
+            reached.clone(),
+            release.clone(),
+        );
+
+        let first_workspace = workspace_path.clone();
+        let first_path = validated_path.clone();
+        let first_revision = revision.clone();
+        let mut first = tokio::spawn(async move {
+            write_file_with_workspace_capability(
+                &first_workspace,
+                &first_path,
+                "guarded.txt",
+                b"first",
+                Some(true),
+                Some(&first_revision),
+                None,
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut first => panic!("first write finished before the replacement hook: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("first write did not reach the replacement hook"),
+        }
+
+        let second_workspace = workspace_path.clone();
+        let second_path = validated_path.clone();
+        let second_revision = revision.clone();
+        let mut second = tokio::spawn(async move {
+            write_file_with_workspace_capability(
+                &second_workspace,
+                &second_path,
+                "guarded.txt",
+                b"second",
+                Some(true),
+                Some(&second_revision),
+                None,
+            )
+            .await
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), &mut second)
+                .await
+                .is_err(),
+            "second write must wait for the stable path lock"
+        );
+        release.wait().await;
+
+        first.await.expect("first write task").expect("first write");
+        let error = second
+            .await
+            .expect("second write task")
+            .expect_err("second write must revalidate after acquiring the path lock");
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            fs::read_to_string(path).expect("read guarded file"),
+            "first"
+        );
     }
 
     #[tokio::test]

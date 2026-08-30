@@ -22,7 +22,60 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALLER_CLOSE_REQUEST_FILE: &str = "macro-installer-close.request";
 const INSTALLER_CLOSE_ACCEPTED_FILE: &str = "macro-installer-close.accepted";
 const INSTALLER_CLOSE_CANCELLED_FILE: &str = "macro-installer-close.cancelled";
-static UPDATE_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static UPDATE_ATOMIC_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static UPDATE_STATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[cfg(test)]
+static UPDATE_PUBLICATION_AFTER_MANIFEST_HOOK: LazyLock<
+    Mutex<
+        Option<(
+            String,
+            std::sync::Arc<std::sync::Barrier>,
+            std::sync::Arc<std::sync::Barrier>,
+        )>,
+    >,
+> = LazyLock::new(|| Mutex::new(None));
+
+fn lock_update_state() -> std::sync::MutexGuard<'static, ()> {
+    UPDATE_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+fn install_publication_after_manifest_hook(
+    package_file: String,
+    reached: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) {
+    *UPDATE_PUBLICATION_AFTER_MANIFEST_HOOK
+        .lock()
+        .expect("update publication hook mutex") = Some((package_file, reached, release));
+}
+
+#[cfg(test)]
+fn pause_after_manifest_publication(package_file: &str) {
+    let hook = {
+        let mut hooks = UPDATE_PUBLICATION_AFTER_MANIFEST_HOOK
+            .lock()
+            .expect("update publication hook mutex");
+        if hooks
+            .as_ref()
+            .is_some_and(|(expected, _, _)| expected == package_file)
+        {
+            hooks.take()
+        } else {
+            None
+        }
+    };
+    if let Some((_, reached, release)) = hook {
+        reached.wait();
+        release.wait();
+    }
+}
+
+#[cfg(not(test))]
+fn pause_after_manifest_publication(_package_file: &str) {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -115,7 +168,7 @@ fn read_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let _write_guard = UPDATE_WRITE_LOCK
+    let _write_guard = UPDATE_ATOMIC_WRITE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let parent = path
@@ -199,10 +252,14 @@ fn sync_parent_directory(_parent: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn write_manifest(app: &AppHandle, manifest: &StagedUpdateManifest) -> Result<(), String> {
+fn write_manifest_file(path: &Path, manifest: &StagedUpdateManifest) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|error| format!("Impossible d'enregistrer l'état de la mise à jour : {error}"))?;
-    atomic_write(&manifest_path(app)?, &bytes)
+    atomic_write(path, &bytes)
+}
+
+fn write_manifest(app: &AppHandle, manifest: &StagedUpdateManifest) -> Result<(), String> {
+    write_manifest_file(&manifest_path(app)?, manifest)
 }
 
 fn package_digest(bytes: &[u8]) -> String {
@@ -307,6 +364,43 @@ fn clear_staged_update_directory(directory: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn cleanup_staged_packages_except(directory: &Path, package_file: &str) {
+    if let Ok(entries) = fs::read_dir(directory) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("staged-update-") && name.ends_with(".bin") && name != package_file
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+fn publish_staged_update_directory(
+    directory: &Path,
+    manifest: &StagedUpdateManifest,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let package_file = manifest.package_file.as_str();
+    let valid_package_file = Path::new(package_file)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            value == package_file && value.starts_with("staged-update-") && value.ends_with(".bin")
+        });
+    if !valid_package_file {
+        return Err("UPDATE_STATE_INVALID".to_string());
+    }
+
+    let _state_guard = lock_update_state();
+    atomic_write(&directory.join(package_file), bytes)?;
+    write_manifest_file(&directory.join(MANIFEST_FILE), manifest)?;
+    pause_after_manifest_publication(package_file);
+    cleanup_staged_packages_except(directory, package_file);
+    Ok(())
+}
+
 fn clear_staged_update(app: &AppHandle) -> Result<(), String> {
     let directory = update_dir(app)?;
     clear_staged_update_directory(&directory)?;
@@ -361,6 +455,7 @@ fn verified_package(app: &AppHandle, manifest: &StagedUpdateManifest) -> Result<
 }
 
 fn mark_clean_shutdown(app: &AppHandle) -> Result<(), String> {
+    let _state_guard = lock_update_state();
     let marker_path = clean_shutdown_path(&app)?;
     let Some(manifest) = read_manifest_recovering(&app)? else {
         return remove_file_if_present(&marker_path);
@@ -384,6 +479,7 @@ pub fn app_update_exit_after_clean_shutdown(app: AppHandle) -> Result<(), String
 
 #[tauri::command]
 pub fn app_exit_cleanly(app: AppHandle) -> Result<(), String> {
+    let _state_guard = lock_update_state();
     remove_file_if_present(&clean_shutdown_path(&app)?)?;
     app.exit(0);
     Ok(())
@@ -411,6 +507,7 @@ fn consume_matching_clean_shutdown(
 
 #[tauri::command]
 pub fn app_update_status(app: AppHandle) -> Result<AppUpdateSnapshot, String> {
+    let _state_guard = lock_update_state();
     cleanup_installer_artifacts(&app);
     let current_version = app.package_info().version.to_string();
     let mut update = read_manifest_recovering(&app)?;
@@ -442,6 +539,7 @@ pub async fn app_update_check_and_stage(
     }
     let updater = builder.build().map_err(|error| error.to_string())?;
     let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
+        let _state_guard = lock_update_state();
         return Ok(AppUpdateSnapshot {
             current_version,
             update: read_manifest_recovering(&app)?,
@@ -494,19 +592,7 @@ pub async fn app_update_check_and_stage(
         activation_attempts: 0,
         error: None,
     };
-    atomic_write(&package_path(&app, &package_file)?, &bytes)?;
-    write_manifest(&app, &manifest)?;
-
-    if let Ok(entries) = fs::read_dir(update_dir(&app)?) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("staged-update-") && name.ends_with(".bin") && name != package_file
-            {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
+    publish_staged_update_directory(&update_dir(&app)?, &manifest, &bytes)?;
 
     Ok(AppUpdateSnapshot {
         current_version,
@@ -516,6 +602,7 @@ pub async fn app_update_check_and_stage(
 
 #[tauri::command]
 pub fn app_update_discard(app: AppHandle) -> Result<(), String> {
+    let _state_guard = lock_update_state();
     clear_staged_update(&app)
 }
 
@@ -528,6 +615,7 @@ pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, Stri
     if cfg!(debug_assertions) && !force {
         return Ok(false);
     }
+    let _state_guard = lock_update_state();
     let Some(mut manifest) = read_manifest_recovering(app)? else {
         return Ok(false);
     };
@@ -728,9 +816,11 @@ fn install_package(
 #[cfg(test)]
 mod tests {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    use std::time::Duration;
 
     use super::{
-        atomic_write, clean_shutdown_matches, clear_staged_update_directory, package_digest,
+        atomic_write, clean_shutdown_matches, clear_staged_update_directory,
+        install_publication_after_manifest_hook, package_digest, publish_staged_update_directory,
         read_manifest_file, staged_update_belongs_to_current_install, verify_update_signature,
         CleanShutdownMarker, DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
     };
@@ -866,6 +956,78 @@ mod tests {
             .expect("update directory")
             .flatten()
             .all(|entry| !entry.file_name().to_string_lossy().ends_with(".part")));
+    }
+
+    #[test]
+    fn concurrent_publications_keep_the_manifest_and_package_together() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first_bytes = vec![1_u8; 128 * 1024];
+        let second_bytes = vec![2_u8; 128 * 1024];
+        let mut first_manifest = manifest("1.0.0", "1.1.0");
+        first_manifest.package_file = "staged-update-1.1.0.bin".to_string();
+        first_manifest.package_size = first_bytes.len() as u64;
+        first_manifest.sha256 = package_digest(&first_bytes);
+        let mut second_manifest = manifest("1.0.0", "1.2.0");
+        second_manifest.package_file = "staged-update-1.2.0.bin".to_string();
+        second_manifest.package_size = second_bytes.len() as u64;
+        second_manifest.sha256 = package_digest(&second_bytes);
+
+        let reached = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        install_publication_after_manifest_hook(
+            first_manifest.package_file.clone(),
+            reached.clone(),
+            release.clone(),
+        );
+
+        let first_directory = temp.path().to_path_buf();
+        let first = std::thread::spawn(move || {
+            publish_staged_update_directory(&first_directory, &first_manifest, &first_bytes)
+        });
+        reached.wait();
+
+        let second_directory = temp.path().to_path_buf();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let second = std::thread::spawn(move || {
+            let result =
+                publish_staged_update_directory(&second_directory, &second_manifest, &second_bytes);
+            finished_tx.send(result.clone()).expect("send result");
+            result
+        });
+
+        assert!(matches!(
+            finished_rx.recv_timeout(Duration::from_millis(150)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        release.wait();
+        first
+            .join()
+            .expect("first publication thread")
+            .expect("first publication");
+        finished_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second publication result")
+            .expect("second publication");
+        second
+            .join()
+            .expect("second publication thread")
+            .expect("second publication");
+
+        let persisted_manifest = read_manifest_file(&temp.path().join(super::MANIFEST_FILE))
+            .expect("read final manifest")
+            .expect("final manifest");
+        assert_eq!(persisted_manifest.version, "1.2.0");
+        let persisted_package = std::fs::read(temp.path().join(&persisted_manifest.package_file))
+            .expect("manifest package");
+        assert_eq!(
+            persisted_package.len() as u64,
+            persisted_manifest.package_size
+        );
+        assert_eq!(
+            package_digest(&persisted_package),
+            persisted_manifest.sha256
+        );
+        assert!(!temp.path().join("staged-update-1.1.0.bin").exists());
     }
 
     #[cfg(target_os = "windows")]
