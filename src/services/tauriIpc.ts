@@ -2889,6 +2889,10 @@ export async function workspaceGetActiveRoot(): Promise<string> {
   return invoke<string>("workspace_get_active_root");
 }
 
+export async function workspaceQuarantineLegacyStateLock(): Promise<string> {
+  return invoke<string>('workspace_quarantine_legacy_state_lock');
+}
+
 export async function workspaceArchitectListPlans(params: {
   branchName: string;
   includeDeleted?: boolean;

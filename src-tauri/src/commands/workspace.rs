@@ -125,6 +125,22 @@ pub fn workspace_release_plan_lifecycle_lock(lease_id: String) -> Result<()> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn workspace_quarantine_legacy_state_lock(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+) -> Result<String> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root = resolve_metadata_root(workspace_path, git_state.inner().clone()).await?;
+    let _state_guard = workspace::lock_workspace_state(&metadata_root).await;
+    tokio::task::spawn_blocking(move || {
+        workspace::quarantine_legacy_workspace_state_lock(&metadata_root)
+            .map(|path| path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
 async fn register_project_config_roots(
     projects: impl IntoIterator<Item = ProjectDto>,
     git_state: GitState,

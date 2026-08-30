@@ -48,6 +48,8 @@ use tokio::time::timeout;
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 const WORKSPACE_STATE_BACKUP_FILE: &str = "workspace.json.bak";
 const WORKSPACE_STATE_FILE_LOCK: &str = ".workspace.json.lock";
+const WORKSPACE_STATE_LEGACY_LOCK_QUARANTINE_PREFIX: &str =
+    ".workspace.json.lock.legacy-quarantine-";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
 const MANUAL_FEATURES_METADATA_DIR: &str = "manual-features";
 const MANUAL_FEATURE_METADATA_FILE: &str = "feature.json";
@@ -124,7 +126,7 @@ fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
     std::fs::canonicalize(metadata_root).unwrap_or_else(|_| absolutize_path(metadata_root))
 }
 
-async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
+pub(crate) async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
     let key = workspace_state_lock_key(metadata_root);
     let lock = {
         let locks = WORKSPACE_STATE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
@@ -361,8 +363,10 @@ fn lock_workspace_state_file_with_retry(
         {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
-                std::thread::sleep(retry_delay);
-                continue;
+                return Err(BackendError::Validation(
+                    "Un ancien verrou de workspace bloque les écritures. Fermez les autres instances de Macro, puis lancez la réparation explicite du verrou."
+                        .to_string(),
+                ));
             }
             Err(error) => {
                 return Err(BackendError::Filesystem {
@@ -385,6 +389,49 @@ fn lock_workspace_state_file_with_retry(
     Err(BackendError::Validation(
         "Une autre instance modifie le workspace. Réessayez dans un instant.".to_string(),
     ))
+}
+
+pub(crate) fn quarantine_legacy_workspace_state_lock(metadata_root: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
+        message: format!("Failed to create workspace metadata directory: {error}"),
+    })?;
+    let lock_path = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
+    let metadata = std::fs::symlink_metadata(&lock_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            BackendError::Validation(
+                "Aucun verrou de workspace hérité ne nécessite de réparation.".to_string(),
+            )
+        } else {
+            BackendError::Filesystem {
+                message: format!("Failed to inspect legacy workspace state lock: {error}"),
+            }
+        }
+    })?;
+    if !metadata.file_type().is_dir() {
+        return Err(BackendError::Validation(
+            "Le verrou de workspace actuel n’est pas un répertoire hérité.".to_string(),
+        ));
+    }
+
+    let quarantine_path = metadata_root.join(format!(
+        "{WORKSPACE_STATE_LEGACY_LOCK_QUARANTINE_PREFIX}{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::rename(&lock_path, &quarantine_path).map_err(|error| BackendError::Filesystem {
+        message: format!(
+            "Failed to quarantine legacy workspace state lock {} to {}: {}",
+            lock_path.display(),
+            quarantine_path.display(),
+            error
+        ),
+    })?;
+    tracing::warn!(
+        action = "workspace_legacy_state_lock_quarantined",
+        lock_path = %lock_path.display(),
+        quarantine_path = %quarantine_path.display(),
+        "Un verrou de workspace hérité a été mis en quarantaine après confirmation explicite"
+    );
+    Ok(quarantine_path)
 }
 const ACCESS_BLOCK_DIRTY_WORKTREE: &str = "dirty_worktree";
 const ACCESS_BLOCK_LIVE_TERMINAL: &str = "live_terminal";
@@ -8568,6 +8615,8 @@ mod tests {
             .expect("open workspace state lock file");
 
         assert!(contender.try_lock_exclusive().is_err());
+        assert!(quarantine_legacy_workspace_state_lock(&metadata_root).is_err());
+        assert!(lock_path.is_file(), "a current lock file must not be moved");
         drop(guard);
         contender
             .try_lock_exclusive()
@@ -8576,8 +8625,8 @@ mod tests {
         assert!(lock_path.is_file());
     }
 
-    #[test]
-    fn workspace_state_lock_never_deletes_a_legacy_lock_directory() {
+    #[tokio::test]
+    async fn explicit_legacy_lock_repair_quarantines_the_directory_and_restores_writes() {
         let temp = TempDir::new().expect("temp dir");
         let metadata_root = temp.path().join(".macro");
         let legacy_lock = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
@@ -8587,6 +8636,29 @@ mod tests {
 
         assert!(result.is_err(), "a legacy lock owner must fail closed");
         assert!(legacy_lock.is_dir());
+        let quarantine_path = quarantine_legacy_workspace_state_lock(&metadata_root)
+            .expect("explicitly quarantine abandoned legacy lock");
+        assert!(!legacy_lock.exists());
+        assert!(quarantine_path.is_dir());
+        assert!(quarantine_path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.starts_with(WORKSPACE_STATE_LEGACY_LOCK_QUARANTINE_PREFIX)));
+
+        persist_sanitized_state(
+            temp.path(),
+            &metadata_root,
+            WorkspaceState::default(),
+            "legacy_lock_repair_test",
+        )
+        .await
+        .expect("workspace must be writable after explicit repair");
+        assert!(metadata_root.join(WORKSPACE_STATE_FILE).is_file());
+        assert!(legacy_lock.is_file());
+        assert!(
+            quarantine_path.is_dir(),
+            "quarantine must remain recoverable"
+        );
     }
 
     #[test]
