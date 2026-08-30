@@ -2108,14 +2108,6 @@ pub(crate) async fn wsl_git_reset(
     Ok(())
 }
 
-fn parse_nul_separated_git_paths(output: &[u8]) -> Vec<Vec<u8>> {
-    output
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-        .map(normalize_git_path)
-        .collect()
-}
-
 fn normalize_git_path(path: &[u8]) -> Vec<u8> {
     let end = path
         .iter()
@@ -2124,38 +2116,17 @@ fn normalize_git_path(path: &[u8]) -> Vec<u8> {
     path[..end].to_vec()
 }
 
-fn git_path_collision_key(path: &[u8], case_insensitive: bool) -> Vec<u8> {
-    if !case_insensitive {
-        return path.to_vec();
+fn git_path_prefixes(path: &[u8]) -> Vec<&[u8]> {
+    let mut prefixes = Vec::new();
+    let mut end = path.len();
+    loop {
+        prefixes.push(&path[..end]);
+        let Some(separator) = path[..end].iter().rposition(|byte| *byte == b'/') else {
+            break;
+        };
+        end = separator;
     }
-    match std::str::from_utf8(path) {
-        Ok(path) => path.to_lowercase().into_bytes(),
-        Err(_) => path.iter().map(u8::to_ascii_lowercase).collect(),
-    }
-}
-
-fn git_path_is_same_or_descendant(path: &[u8], ancestor: &[u8]) -> bool {
-    path == ancestor
-        || (path.starts_with(ancestor)
-            && path.get(ancestor.len()).is_some_and(|byte| *byte == b'/'))
-}
-
-fn find_untracked_reset_collision(
-    untracked_paths: &[Vec<u8>],
-    target_paths: &[Vec<u8>],
-    case_insensitive: bool,
-) -> Option<Vec<u8>> {
-    untracked_paths.iter().find_map(|untracked| {
-        let untracked_key = git_path_collision_key(untracked, case_insensitive);
-        target_paths
-            .iter()
-            .any(|target| {
-                let target_key = git_path_collision_key(target, case_insensitive);
-                git_path_is_same_or_descendant(&untracked_key, &target_key)
-                    || git_path_is_same_or_descendant(&target_key, &untracked_key)
-            })
-            .then(|| untracked.clone())
-    })
+    prefixes
 }
 
 fn untracked_reset_collision_error(path: &[u8]) -> BackendError {
@@ -4172,20 +4143,144 @@ fn native_untracked_paths(repo: &Repository) -> Result<Vec<Vec<u8>>> {
         .collect())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct NativeFileIdentity {
+    volume: u64,
+    file: u64,
+}
+
+#[cfg(unix)]
+fn native_path_identity(path: &Path) -> Option<NativeFileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path).ok()?;
+    Some(NativeFileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn native_path_identity(path: &Path) -> Option<NativeFileIdentity> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide_path.push(0);
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    let succeeded = unsafe { GetFileInformationByHandle(handle, &mut information) } != 0;
+    unsafe {
+        CloseHandle(handle);
+    }
+    if !succeeded {
+        return None;
+    }
+
+    Some(NativeFileIdentity {
+        volume: u64::from(information.dwVolumeSerialNumber),
+        file: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_path_identity(_path: &Path) -> Option<NativeFileIdentity> {
+    None
+}
+
+#[cfg(unix)]
+fn native_git_path(path: &[u8]) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    Some(PathBuf::from(OsStr::from_bytes(path)))
+}
+
+#[cfg(windows)]
+fn native_git_path(path: &[u8]) -> Option<PathBuf> {
+    std::str::from_utf8(path).ok().map(PathBuf::from)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_git_path(path: &[u8]) -> Option<PathBuf> {
+    std::str::from_utf8(path).ok().map(PathBuf::from)
+}
+
+fn native_git_path_identity(repo_root: &Path, path: &[u8]) -> Option<NativeFileIdentity> {
+    let relative = native_git_path(path)?;
+    native_path_identity(&repo_root.join(relative))
+}
+
+fn find_native_untracked_reset_collision(
+    repo_root: &Path,
+    untracked_paths: &[Vec<u8>],
+    target_paths: &[Vec<u8>],
+) -> Option<Vec<u8>> {
+    let mut target_full_paths = HashSet::new();
+    let mut target_prefix_paths = HashSet::new();
+    let mut target_full_identities = HashSet::new();
+    let mut target_prefix_identities = HashSet::new();
+
+    for target in target_paths {
+        target_full_paths.insert(target.clone());
+        if let Some(identity) = native_git_path_identity(repo_root, target) {
+            target_full_identities.insert(identity);
+        }
+        for prefix in git_path_prefixes(target) {
+            if target_prefix_paths.insert(prefix.to_vec()) {
+                if let Some(identity) = native_git_path_identity(repo_root, prefix) {
+                    target_prefix_identities.insert(identity);
+                }
+            }
+        }
+    }
+
+    untracked_paths.iter().find_map(|untracked| {
+        let untracked_identity = native_git_path_identity(repo_root, untracked);
+        if target_prefix_paths.contains(untracked)
+            || untracked_identity
+                .is_some_and(|identity| target_prefix_identities.contains(&identity))
+        {
+            return Some(untracked.clone());
+        }
+
+        git_path_prefixes(untracked)
+            .into_iter()
+            .any(|prefix| {
+                target_full_paths.contains(prefix)
+                    || native_git_path_identity(repo_root, prefix)
+                        .is_some_and(|identity| target_full_identities.contains(&identity))
+            })
+            .then(|| untracked.clone())
+    })
+}
+
 fn ensure_native_hard_reset_preserves_untracked(
     repo: &Repository,
     target: &Commit<'_>,
 ) -> Result<()> {
+    let Some(repo_root) = repo.workdir() else {
+        return Ok(());
+    };
     let untracked_paths = native_untracked_paths(repo)?;
     let target_paths = native_target_tree_paths(target)?;
-    let case_insensitive = cfg!(windows)
-        || repo
-            .config()
-            .ok()
-            .and_then(|config| config.get_bool("core.ignorecase").ok())
-            .unwrap_or(false);
     if let Some(path) =
-        find_untracked_reset_collision(&untracked_paths, &target_paths, case_insensitive)
+        find_native_untracked_reset_collision(repo_root, &untracked_paths, &target_paths)
     {
         return Err(untracked_reset_collision_error(&path));
     }
@@ -18044,10 +18139,6 @@ mod tests {
     #[test]
     fn test_reset_repo_hard_rejects_untracked_file_and_directory_collisions() {
         let (temp, repo) = init_repo();
-        repo.config()
-            .unwrap()
-            .set_bool("core.ignorecase", true)
-            .unwrap();
         let initial_commit = repo.head().unwrap().target().unwrap().to_string();
         fs::write(temp.path().join("collision.txt"), "tracked target").unwrap();
         fs::create_dir_all(temp.path().join("target-directory")).unwrap();
@@ -18059,12 +18150,8 @@ mod tests {
         let target_commit = commit_repo(&repo, "feat: add reset targets", true).unwrap();
         reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
 
-        fs::write(
-            repo.path().join("info/exclude"),
-            "collision.txt\nCOLLISION.txt\n",
-        )
-        .unwrap();
-        fs::write(temp.path().join("COLLISION.txt"), "untracked file").unwrap();
+        fs::write(repo.path().join("info/exclude"), "collision.txt\n").unwrap();
+        fs::write(temp.path().join("collision.txt"), "untracked file").unwrap();
         let file_error = reset_repo(&repo, "hard", Some(target_commit.clone()))
             .expect_err("hard reset must reject an untracked file collision");
         assert!(file_error
@@ -18072,7 +18159,7 @@ mod tests {
             .to_ascii_lowercase()
             .contains("collision.txt"));
         assert_eq!(
-            fs::read_to_string(temp.path().join("COLLISION.txt")).unwrap(),
+            fs::read_to_string(temp.path().join("collision.txt")).unwrap(),
             "untracked file"
         );
         assert_eq!(
@@ -18080,7 +18167,7 @@ mod tests {
             initial_commit
         );
 
-        fs::remove_file(temp.path().join("COLLISION.txt")).unwrap();
+        fs::remove_file(temp.path().join("collision.txt")).unwrap();
         fs::create_dir_all(temp.path().join("target-directory/tracked.txt")).unwrap();
         fs::write(
             temp.path().join("target-directory/tracked.txt/local.txt"),
@@ -18102,39 +18189,76 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
-    fn test_hard_reset_collision_parser_handles_nul_delimited_paths() {
-        let untracked =
-            parse_nul_separated_git_paths(b"keep.txt\0target-directory/tracked.txt/local.txt\0");
-        let target = parse_nul_separated_git_paths(b"README.md\0target-directory/tracked.txt\0");
+    fn test_reset_repo_hard_rejects_case_alias_in_insensitive_directory() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("case-collision.txt"), "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add case collision target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "CASE-COLLISION.txt\n").unwrap();
+        fs::write(temp.path().join("CASE-COLLISION.txt"), "untracked file").unwrap();
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject an alias on a case-insensitive directory");
+
+        assert!(error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("case-collision.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("CASE-COLLISION.txt")).unwrap(),
+            "untracked file"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_reset_repo_hard_allows_distinct_case_in_case_sensitive_directory() {
+        let (temp, repo) = init_repo();
+        let case_sensitive_directory = temp.path().join("case-sensitive");
+        fs::create_dir(&case_sensitive_directory).unwrap();
+        let status = background_command("fsutil.exe")
+            .args(["file", "setCaseSensitiveInfo"])
+            .arg(&case_sensitive_directory)
+            .arg("enable")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !status.is_ok_and(|status| status.success()) {
+            return;
+        }
+
+        repo.config()
+            .unwrap()
+            .set_bool("core.ignorecase", false)
+            .unwrap();
+        fs::write(case_sensitive_directory.join(".keep"), "keep directory").unwrap();
+        commit_repo(&repo, "test: retain case-sensitive directory", true).unwrap();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(case_sensitive_directory.join("foo.txt"), "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add case-sensitive target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "case-sensitive/FOO.txt\n").unwrap();
+        fs::write(case_sensitive_directory.join("FOO.txt"), "untracked file").unwrap();
+
+        reset_repo(&repo, "hard", Some(target_commit)).unwrap();
 
         assert_eq!(
-            find_untracked_reset_collision(&untracked, &target, false),
-            Some(b"target-directory/tracked.txt/local.txt".to_vec())
+            fs::read_to_string(case_sensitive_directory.join("FOO.txt")).unwrap(),
+            "untracked file"
         );
         assert_eq!(
-            find_untracked_reset_collision(
-                &parse_nul_separated_git_paths(b"target-directory/\0"),
-                &target,
-                false,
-            ),
-            Some(b"target-directory".to_vec())
-        );
-        assert_eq!(
-            find_untracked_reset_collision(
-                &parse_nul_separated_git_paths(b"FOO.txt\0"),
-                &parse_nul_separated_git_paths(b"foo.txt\0"),
-                true,
-            ),
-            Some(b"FOO.txt".to_vec())
-        );
-        assert_eq!(
-            find_untracked_reset_collision(
-                &parse_nul_separated_git_paths(b"FOO.txt\0"),
-                &parse_nul_separated_git_paths(b"foo.txt\0"),
-                false,
-            ),
-            None
+            fs::read_to_string(case_sensitive_directory.join("foo.txt")).unwrap(),
+            "tracked target"
         );
     }
 
