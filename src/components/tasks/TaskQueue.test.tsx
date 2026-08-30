@@ -865,6 +865,7 @@ describe('TaskQueue', () => {
         'archived-task': {
           operationId: 'cleanup-archived-task',
           taskId: 'archived-task',
+          archiveToken: '2026-04-30T10:00:00.000Z',
           targets: [{
             worktreeKey: 'project-1::feature/archived-task',
             repoPath: '/tmp/project-1',
@@ -933,6 +934,7 @@ describe('TaskQueue', () => {
           [taskId]: {
             operationId: 'cleanup-dirty-worktree',
             taskId,
+            archiveToken: '2026-04-30T10:00:00.000Z',
             targets: [{
               worktreeKey: 'project-1::feature/archive-with-dirty-worktree',
               repoPath: '/tmp/project-1',
@@ -1002,6 +1004,7 @@ describe('TaskQueue', () => {
           [taskId]: {
             operationId: 'cleanup-branch-only',
             taskId,
+            archiveToken: '2026-04-30T10:00:00.000Z',
             targets: [{
               worktreeKey: 'project-1::feature/archive-with-branch-cleanup',
               repoPath: '/tmp/project-1',

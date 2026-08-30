@@ -133,7 +133,9 @@ const fsReadFileWithOptionsMock = mock(async (_params?: { path?: string }): Prom
 const fsExistsMock = mock(async (_path?: string): Promise<boolean> => false);
 const fsWriteFileMock = mock(async () => ({ bytesWritten: 0 }));
 const workspaceGetActiveRootMock = mock(async () => '/repos/web');
-const workspaceArchiveManualFeatureMock = mock(async () => undefined);
+const workspaceArchiveManualFeatureMock = mock(async () => ({
+  archivedAt: '2026-08-30T10:00:00.000Z',
+} as Awaited<ReturnType<typeof actualTauriIpc.workspaceArchiveManualFeature>>));
 const workspaceUpdateStandaloneTaskStatusMock = mock(async () => undefined);
 const syncTerminalDisplayMetadataMock = mock(async () => undefined);
 const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);

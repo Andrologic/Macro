@@ -41,7 +41,10 @@ fn to_join_error(err: tokio::task::JoinError) -> BackendError {
     }
 }
 
-async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> Result<PathBuf> {
+pub(crate) async fn resolve_metadata_root(
+    workspace_path: PathBuf,
+    git_state: GitState,
+) -> Result<PathBuf> {
     if parse_wsl_unc_path(&workspace_path.to_string_lossy()).is_some() {
         return Err(BackendError::Git {
             message: "Macro metadata is not yet available for WSL projects.".to_string(),

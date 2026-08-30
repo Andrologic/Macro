@@ -18,6 +18,7 @@ export interface ArchivedTaskCleanupTarget {
 export interface ArchivedTaskCleanupSaga {
   operationId: string;
   taskId: string;
+  archiveToken: string | null;
   targets: ArchivedTaskCleanupTarget[];
   createdAt: string;
   updatedAt: string;
@@ -51,6 +52,11 @@ const parseCleanupSagas = (value: string | null | undefined): ArchivedTaskCleanu
     if (
       typeof saga.operationId !== 'string' ||
       typeof saga.taskId !== 'string' ||
+      (
+        saga.archiveToken !== undefined &&
+        typeof saga.archiveToken !== 'string' &&
+        saga.archiveToken !== null
+      ) ||
       !Array.isArray(saga.targets) ||
       !saga.targets.every(isCleanupTarget) ||
       typeof saga.createdAt !== 'string' ||
@@ -59,7 +65,10 @@ const parseCleanupSagas = (value: string | null | undefined): ArchivedTaskCleanu
     ) {
       throw new Error("Le journal de nettoyage des tâches archivées est corrompu.");
     }
-    return saga as ArchivedTaskCleanupSaga;
+    return {
+      ...saga,
+      archiveToken: saga.archiveToken ?? null,
+    } as ArchivedTaskCleanupSaga;
   });
 };
 

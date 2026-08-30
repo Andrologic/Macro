@@ -2296,11 +2296,15 @@ export async function gitBranchDelete(params: {
   repoPath: string;
   branchName: string;
   force?: boolean;
+  archiveTaskId?: string | null;
+  archiveToken?: string | null;
 }): Promise<void> {
   return invoke("git_branch_delete", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     force: params.force ?? null,
+    archiveTaskId: params.archiveTaskId ?? null,
+    archiveToken: params.archiveToken ?? null,
   });
 }
 
@@ -2702,12 +2706,16 @@ export async function gitWorktreeRemove(params: {
   taskId: string;
   force?: boolean;
   branchName?: string | null;
+  archiveTaskId?: string | null;
+  archiveToken?: string | null;
 }): Promise<GitWorktreeRemoveDto> {
   return invoke<GitWorktreeRemoveDto>("git_worktree_remove", {
     repoPath: params.repoPath,
     taskId: params.taskId,
     force: params.force ?? null,
     branchName: params.branchName ?? null,
+    archiveTaskId: params.archiveTaskId ?? null,
+    archiveToken: params.archiveToken ?? null,
   });
 }
 

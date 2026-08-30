@@ -11,6 +11,7 @@ use crate::git::{detect_preferred_git_flow_branches, GitState};
 pub use crate::project_path::parse_wsl_unc_path;
 use crate::project_path::{wsl_unc_path, ProjectPathKind, WslProjectPath};
 use chrono::Utc;
+use fs2::FileExt;
 use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
 };
@@ -32,6 +33,7 @@ use metadata::{
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
@@ -79,6 +81,8 @@ const PROJECT_WSL_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
 const NEW_REPO_OWNERSHIP_MARKER: &str = ".macro-create-in-progress";
 
 static WORKSPACE_STATE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
+static ARCHIVED_TASK_CLEANUP_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
 static NEW_REPO_TARGET_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
@@ -131,6 +135,117 @@ async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
             .clone()
     };
     lock.lock_owned().await
+}
+
+async fn lock_archived_task_cleanup_process(lock_path: &Path) -> OwnedMutexGuard<()> {
+    let key = lock_path.to_path_buf();
+    let lock = {
+        let locks = ARCHIVED_TASK_CLEANUP_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+        let mut locks = locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
+
+pub struct ArchivedTaskCleanupGuard {
+    _process_guard: OwnedMutexGuard<()>,
+    file: std::fs::File,
+}
+
+impl Drop for ArchivedTaskCleanupGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+fn archived_task_cleanup_lock_path(metadata_root: &Path, task_id: &str) -> PathBuf {
+    let identity = format!(
+        "{}\0{}",
+        workspace_state_lock_key(metadata_root).to_string_lossy(),
+        task_id.trim(),
+    );
+    let digest = Sha256::digest(identity.as_bytes());
+    std::env::temp_dir()
+        .join("macro")
+        .join("archived-task-cleanup-locks")
+        .join(format!("{digest:x}.lock"))
+}
+
+pub async fn lock_archived_task_cleanup(
+    metadata_root: &Path,
+    task_id: &str,
+) -> Result<ArchivedTaskCleanupGuard> {
+    let normalized_task_id = task_id.trim();
+    if normalized_task_id.is_empty() {
+        return Err(BackendError::Validation(
+            "Le verrou de nettoyage requiert un identifiant de tâche.".to_string(),
+        ));
+    }
+    let lock_path = archived_task_cleanup_lock_path(metadata_root, normalized_task_id);
+    let process_guard = lock_archived_task_cleanup_process(&lock_path).await;
+    let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de créer le dossier de verrouillage : {error}"),
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible d’ouvrir le verrou de nettoyage : {error}"),
+            })?;
+        file.lock_exclusive()
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de verrouiller le nettoyage : {error}"),
+            })?;
+        Ok(file)
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Le verrouillage du nettoyage a échoué : {error}"),
+    })??;
+    Ok(ArchivedTaskCleanupGuard {
+        _process_guard: process_guard,
+        file,
+    })
+}
+
+pub async fn validate_archived_task_cleanup_token(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    archive_token: &str,
+) -> Result<()> {
+    let normalized_task_id = task_id.trim();
+    let normalized_archive_token = archive_token.trim();
+    if normalized_archive_token.is_empty() {
+        return Err(BackendError::Validation(
+            "Le nettoyage requiert un jeton d’archive.".to_string(),
+        ));
+    }
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let feature = state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Tâche manuelle inconnue : {normalized_task_id}"))
+        })?;
+    if feature.archived_at.as_deref() != Some(normalized_archive_token) {
+        return Err(BackendError::Validation(
+            "Le nettoyage a été interrompu car la tâche archivée a changé.".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 struct WorkspaceFileLock {
@@ -2517,14 +2632,15 @@ pub async fn archive_manual_feature(
     reason: Option<&str>,
     merged_at: Option<&str>,
 ) -> Result<ManualFeatureDto> {
-    let _state_guard = lock_workspace_state(metadata_root).await;
-    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     if normalized_task_id.is_empty() {
         return Err(BackendError::Validation(
             "Manual feature archive requires a task id".to_string(),
         ));
     }
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
 
     let feature = state
         .manual_features
@@ -2568,14 +2684,15 @@ pub async fn restore_manual_feature(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<ManualFeatureDto> {
-    let _state_guard = lock_workspace_state(metadata_root).await;
-    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     if normalized_task_id.is_empty() {
         return Err(BackendError::Validation(
             "Manual feature restore requires a task id".to_string(),
         ));
     }
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
 
     let feature = state
         .manual_features
@@ -10838,6 +10955,132 @@ mod tests {
             .reserved_standalone_feature_slugs
             .iter()
             .any(|value| value == "quick-export"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restore_waits_for_archived_cleanup_guard_and_invalidates_its_token() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().to_path_buf();
+        let metadata_root = workspace_path.join(".macro");
+        let project_path = workspace_path.join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+        let state = WorkspaceState {
+            version: 1,
+            workspace_revision: 0,
+            standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: None,
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
+        };
+        persist_sanitized_state(
+            &workspace_path,
+            &metadata_root,
+            state,
+            "seed_archive_cleanup_race",
+        )
+        .await
+        .expect("seed workspace state");
+        create_manual_feature_draft(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            "manual-conversation-cleanup-race",
+            &["project-web".to_string()],
+            &[],
+            Some("develop"),
+            None,
+            None,
+            "feature",
+            Some("feature/cleanup-race"),
+            None,
+        )
+        .await
+        .expect("create feature draft");
+        finalize_manual_feature(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            Some("manual-conversation-cleanup-race"),
+            "Cleanup race",
+            "Verify archive cleanup serialization.",
+            "cleanup-race",
+            "feature",
+        )
+        .await
+        .expect("finalize feature");
+        let archived = archive_manual_feature(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            None,
+            None,
+        )
+        .await
+        .expect("archive feature");
+        let archive_token = archived.archived_at.expect("archive token");
+
+        let cleanup_guard = lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
+            .await
+            .expect("acquire cleanup guard");
+        validate_archived_task_cleanup_token(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            &archive_token,
+        )
+        .await
+        .expect("validate current archive token");
+        let restore_workspace_path = workspace_path.clone();
+        let restore_metadata_root = metadata_root.clone();
+        let mut restore = tokio::spawn(async move {
+            restore_manual_feature(
+                &restore_workspace_path,
+                &restore_metadata_root,
+                "manual-task-cleanup-race",
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut restore)
+                .await
+                .is_err()
+        );
+
+        drop(cleanup_guard);
+        restore
+            .await
+            .expect("join restore")
+            .expect("restore feature");
+        let _stale_cleanup_guard =
+            lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
+                .await
+                .expect("reacquire cleanup guard");
+        let stale_result = validate_archived_task_cleanup_token(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            &archive_token,
+        )
+        .await;
+        assert!(matches!(
+            stale_result,
+            Err(BackendError::Validation(message))
+                if message.contains("la tâche archivée a changé")
+        ));
     }
 
     #[tokio::test]

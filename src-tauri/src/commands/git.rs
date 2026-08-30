@@ -71,6 +71,31 @@ const MAX_DIRECT_REVIEW_PATHS: usize = 4_096;
 const MAX_DIRECT_REVIEW_REVISION_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DIRECT_CHECKPOINT_VERIFICATION_OBJECTS: usize = 100_000;
 
+async fn acquire_archived_task_cleanup_guard(
+    workspace_path: &Path,
+    git_state: &GitState,
+    archive_task_id: Option<&str>,
+    archive_token: Option<&str>,
+) -> Result<Option<workspace::ArchivedTaskCleanupGuard>> {
+    let (Some(task_id), Some(token)) = (archive_task_id, archive_token) else {
+        if archive_task_id.is_some() || archive_token.is_some() {
+            return Err(BackendError::Validation(
+                "Le nettoyage requiert la tâche archivée et son jeton.".to_string(),
+            ));
+        }
+        return Ok(None);
+    };
+    let metadata_root = crate::commands::workspace::resolve_metadata_root(
+        workspace_path.to_path_buf(),
+        git_state.clone(),
+    )
+    .await?;
+    let guard = workspace::lock_archived_task_cleanup(&metadata_root, task_id).await?;
+    workspace::validate_archived_task_cleanup_token(workspace_path, &metadata_root, task_id, token)
+        .await?;
+    Ok(Some(guard))
+}
+
 struct DirectCheckpointVerificationBudget {
     remaining_bytes: usize,
     remaining_objects: usize,
@@ -6432,13 +6457,21 @@ pub async fn git_branch_delete(
     repo_path: String,
     branch_name: String,
     force: Option<bool>,
+    archive_task_id: Option<String>,
+    archive_token: Option<String>,
 ) -> Result<()> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    let _cleanup_guard = acquire_archived_task_cleanup_guard(
+        &workspace,
+        &git_state,
+        archive_task_id.as_deref(),
+        archive_token.as_deref(),
+    )
+    .await?;
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
         return wsl_git_branch_delete(&wsl_repo_path, &branch_name, force.unwrap_or(false)).await;
     }
-
-    let workspace = workspace_root.inner().read().await.clone();
-    let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -12011,13 +12044,21 @@ pub async fn git_worktree_remove(
     task_id: String,
     force: Option<bool>,
     branch_name: Option<String>,
+    archive_task_id: Option<String>,
+    archive_token: Option<String>,
 ) -> Result<GitWorktreeRemoveDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    let _cleanup_guard = acquire_archived_task_cleanup_guard(
+        &workspace,
+        &git_state,
+        archive_task_id.as_deref(),
+        archive_token.as_deref(),
+    )
+    .await?;
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_worktree_remove"));
     }
-
-    let workspace = workspace_root.inner().read().await.clone();
-    let git_state = git_state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;

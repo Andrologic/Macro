@@ -88,7 +88,9 @@ const directCheckpointResolveIdMock = mock(async () => 'task-checkpoint-00000000
 const directCheckpointRemoveMock = mock(async () => true);
 const workspaceDeleteManualFeatureDraftMock = mock(async () => true);
 const workspaceDeleteManualFeatureMock = mock(async () => undefined);
-const workspaceArchiveManualFeatureMock = mock(async () => undefined);
+const workspaceArchiveManualFeatureMock = mock(async () => ({
+  archivedAt: '2026-08-30T10:00:00.000Z',
+} as Awaited<ReturnType<typeof actualTauriIpc.workspaceArchiveManualFeature>>));
 const workspaceListTasksMock = mock(async (): ReturnType<typeof actualTauriIpc.workspaceListTasks> => ({
   tasks: [],
   plans: [],
@@ -906,7 +908,9 @@ describe('useTaskStore merge workflow review loading', () => {
   workspaceDeleteManualFeatureDraftMock.mockImplementation(async () => true);
     workspaceDeleteManualFeatureMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
-    workspaceArchiveManualFeatureMock.mockImplementation(async () => undefined);
+    workspaceArchiveManualFeatureMock.mockImplementation(async () => ({
+      archivedAt: '2026-08-30T10:00:00.000Z',
+    } as Awaited<ReturnType<typeof actualTauriIpc.workspaceArchiveManualFeature>>));
     workspaceListTasksMock.mockClear();
     workspaceListTasksMock.mockImplementation(async () => ({
       tasks: [],
@@ -1470,11 +1474,15 @@ describe('useTaskStore merge workflow review loading', () => {
       taskId: 'project-1::feature/clean-archive',
       force: false,
       branchName: 'feature/clean-archive',
+      archiveTaskId: task.id,
+      archiveToken: '2026-08-30T10:00:00.000Z',
     });
     expect(gitBranchDeleteMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
       branchName: 'feature/clean-archive',
       force: false,
+      archiveTaskId: task.id,
+      archiveToken: '2026-08-30T10:00:00.000Z',
     });
     expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toBeUndefined();
     expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([]);
@@ -1649,6 +1657,7 @@ describe('useTaskStore merge workflow review loading', () => {
     const saga = {
       operationId: 'cleanup-race-operation',
       taskId: task.id,
+      archiveToken: task.archived_at,
       targets: [{
         worktreeKey: 'project-1::feature/cleanup-race',
         repoPath: '/repos/web',

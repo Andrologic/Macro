@@ -737,6 +737,21 @@ const runArchivedTaskCleanup = async (
   assertCurrent?: (saga: ArchivedTaskCleanupSaga) => Promise<void> | void,
 ): Promise<ArchivedTaskCleanupSaga | null> => {
   let saga = initialSaga;
+  if (!saga.archiveToken) {
+    const message = 'Le nettoyage attend un jeton d’archive durable.';
+    saga = {
+      ...saga,
+      updatedAt: new Date().toISOString(),
+      lastError: message,
+      targets: saga.targets.map((target) => ({
+        ...target,
+        state: 'failed',
+        lastError: message,
+      })),
+    };
+    await upsertArchivedTaskCleanupSaga(saga);
+    return saga;
+  }
   for (const target of saga.targets) {
     if (!target.worktreeRemoved) {
       try {
@@ -771,6 +786,8 @@ const runArchivedTaskCleanup = async (
             taskId: target.worktreeKey,
             force: false,
             branchName: target.branchName,
+            archiveTaskId: saga.taskId,
+            archiveToken: saga.archiveToken,
           });
           saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
             ...current,
@@ -831,6 +848,8 @@ const runArchivedTaskCleanup = async (
           repoPath: currentTarget.repoPath,
           branchName: currentTarget.branchName,
           force: false,
+          archiveTaskId: saga.taskId,
+          archiveToken: saga.archiveToken,
         });
       }
       saga = updateArchivedCleanupTarget(saga, currentTarget.worktreeKey, (current) => ({
@@ -3713,6 +3732,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ? {
           operationId: crypto.randomUUID(),
           taskId,
+          archiveToken: null,
           targets: gitTargets.map((target) => ({
             worktreeKey: target.worktreeKey,
             repoPath: target.repoPath,
@@ -3729,24 +3749,25 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       if (preparedCleanup) {
         await upsertArchivedTaskCleanupSaga(preparedCleanup);
       }
+      let archiveToken: string | null = null;
       try {
-        await tauriIpc.workspaceArchiveManualFeature({
+        const archivedFeature = await tauriIpc.workspaceArchiveManualFeature({
           taskId,
           reason: options?.reason ?? null,
           mergedAt: options?.mergedAt ?? null,
         });
+        archiveToken = archivedFeature.archivedAt;
       } catch (error) {
-        let durableArchiveConfirmed = false;
         try {
           const catalog = await tauriIpc.workspaceListTasks();
-          durableArchiveConfirmed = Boolean(
-            catalog.tasks.find((candidate) => candidate.id === taskId)?.archived_at,
-          );
+          archiveToken = catalog.tasks.find(
+            (candidate) => candidate.id === taskId,
+          )?.archived_at ?? null;
         } catch {
           // The mutation outcome remains ambiguous. Keep the prepared cleanup for recovery.
           throw error;
         }
-        if (!durableArchiveConfirmed) {
+        if (!archiveToken) {
           if (preparedCleanup) {
             await removeArchivedTaskCleanupSaga(taskId).catch(() => undefined);
           }
@@ -3756,11 +3777,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
       let remainingCleanup: ArchivedTaskCleanupSaga | null = null;
       if (preparedCleanup) {
+        const cleanupAfterArchive = {
+          ...preparedCleanup,
+          archiveToken,
+          updatedAt: new Date().toISOString(),
+        };
         try {
-          remainingCleanup = await runArchivedTaskCleanup(preparedCleanup);
+          await upsertArchivedTaskCleanupSaga(cleanupAfterArchive);
+          remainingCleanup = await runArchivedTaskCleanup(cleanupAfterArchive);
         } catch (error) {
           remainingCleanup = {
-            ...preparedCleanup,
+            ...cleanupAfterArchive,
             updatedAt: new Date().toISOString(),
             lastError: toServiceError(error).message,
           };
@@ -3857,10 +3884,18 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           ),
         );
       }
-      const saga = get().archivedTaskCleanupByTaskId[taskId]
+      let saga = get().archivedTaskCleanupByTaskId[taskId]
         ?? (await loadArchivedTaskCleanupSagas()).find((candidate) => candidate.taskId === taskId)
         ?? null;
       if (!saga) return null;
+      if (!saga.archiveToken && task.archived_at) {
+        saga = {
+          ...saga,
+          archiveToken: task.archived_at,
+          updatedAt: new Date().toISOString(),
+        };
+        await upsertArchivedTaskCleanupSaga(saga);
+      }
       const assertCurrent = async (candidate: ArchivedTaskCleanupSaga): Promise<void> => {
         const currentTask = get().getTaskById(taskId);
         const currentSaga = get().archivedTaskCleanupByTaskId[taskId]
@@ -3868,7 +3903,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         if (
           !currentTask ||
           !isTaskArchived(currentTask) ||
-          currentSaga?.operationId !== candidate.operationId
+          currentTask.archived_at !== candidate.archiveToken ||
+          currentSaga?.operationId !== candidate.operationId ||
+          currentSaga?.archiveToken !== candidate.archiveToken
         ) {
           throw new Error(
             tTask(
