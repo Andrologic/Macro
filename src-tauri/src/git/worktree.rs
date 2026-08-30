@@ -4,8 +4,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cap_std::ambient_authority;
-use cap_std::fs::Dir as CapabilityDir;
+use cap_std::fs::{Dir as CapabilityDir, Metadata as CapabilityMetadata};
 use git2::{build::CheckoutBuilder, BranchType, ErrorCode, Repository, WorktreeAddOptions};
+use uuid::Uuid;
 
 use crate::core::error::{BackendError, Result};
 use crate::git::repo::get_status_options;
@@ -273,9 +274,9 @@ fn is_macro_metadata_worktree_path(repo: &Repository, worktree_name: &str, path:
 pub(crate) fn ensure_macro_metadata_worktree_ownership(
     repo: &Repository,
     path: &Path,
-) -> Result<()> {
+) -> Result<Option<MacroPathIdentity>> {
     if is_macro_metadata_worktree_path(repo, super::MACRO_WORKTREE_NAME, path) {
-        return Ok(());
+        return macro_owned_path_identity(repo.path(), path);
     }
 
     Err(BackendError::Git {
@@ -291,11 +292,14 @@ fn ensure_managed_worktree_ownership(
     worktree_name: &str,
     path: &Path,
     kind: ManagedWorktreeKind,
-) -> Result<()> {
+) -> Result<Option<MacroPathIdentity>> {
     if is_managed_worktree_name(worktree_name, kind)
         && is_macro_owned_worktree_path(repo, worktree_name, path)?
     {
-        return Ok(());
+        let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
+            message: "Bare repositories are not supported for worktrees".to_string(),
+        })?;
+        return macro_owned_path_identity(workdir, path);
     }
 
     Err(BackendError::Git {
@@ -641,12 +645,99 @@ fn open_macro_owned_parent(root: &Path, path: &Path) -> Result<Option<(Capabilit
     Ok(Some((parent, file_name)))
 }
 
-pub(crate) fn remove_macro_owned_path(root: &Path, path: &Path) -> Result<bool> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MacroPathIdentity {
+    volume: u64,
+    file: u64,
+}
+
+#[cfg(unix)]
+fn capability_path_identity(metadata: &CapabilityMetadata) -> Option<MacroPathIdentity> {
+    use cap_fs_ext::MetadataExt;
+    Some(MacroPathIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn capability_path_identity(metadata: &CapabilityMetadata) -> Option<MacroPathIdentity> {
+    use cap_fs_ext::MetadataExt;
+    Some(MacroPathIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn capability_path_identity(_metadata: &CapabilityMetadata) -> Option<MacroPathIdentity> {
+    None
+}
+
+pub(crate) fn macro_owned_path_identity(
+    root: &Path,
+    path: &Path,
+) -> Result<Option<MacroPathIdentity>> {
+    let Some((parent, file_name)) = open_macro_owned_parent(root, path)? else {
+        return Ok(None);
+    };
+    match parent.symlink_metadata(&file_name) {
+        Ok(metadata) => capability_path_identity(&metadata)
+            .map(Some)
+            .ok_or_else(|| BackendError::Git {
+                message: format!("Cannot identify managed path {}", path.display()),
+            }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(BackendError::Io {
+            message: format!("Failed to inspect {}: {error}", path.display()),
+            source: error,
+        }),
+    }
+}
+
+fn restore_replaced_managed_path(
+    parent: &CapabilityDir,
+    original_name: &OsString,
+    quarantine_name: &OsString,
+    original_path: &Path,
+) -> Result<()> {
+    match parent.symlink_metadata(original_name) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => parent
+            .rename(quarantine_name, parent, original_name)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Managed path {} changed after ownership verification and could not be restored: {error}",
+                    original_path.display()
+                ),
+                source: error,
+            }),
+        Ok(_) => Err(BackendError::Git {
+            message: format!(
+                "Managed path {} changed after ownership verification; the replacement was retained at {}",
+                original_path.display(),
+                original_path.with_file_name(quarantine_name).display()
+            ),
+        }),
+        Err(error) => Err(BackendError::Io {
+            message: format!(
+                "Failed to inspect replaced managed path {}: {error}",
+                original_path.display()
+            ),
+            source: error,
+        }),
+    }
+}
+
+pub(crate) fn remove_macro_owned_path(
+    root: &Path,
+    path: &Path,
+    expected_identity: Option<MacroPathIdentity>,
+) -> Result<bool> {
     let Some((parent, file_name)) = open_macro_owned_parent(root, path)? else {
         return Ok(false);
     };
-    let metadata = match parent.symlink_metadata(&file_name) {
-        Ok(metadata) => metadata,
+    match parent.symlink_metadata(&file_name) {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
             return Err(BackendError::Io {
@@ -654,33 +745,82 @@ pub(crate) fn remove_macro_owned_path(root: &Path, path: &Path) -> Result<bool> 
                 source: error,
             })
         }
+    }
+    let Some(expected_identity) = expected_identity else {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to remove {} because it appeared after ownership verification",
+                path.display()
+            ),
+        });
     };
-    let removal = if metadata.file_type().is_symlink() {
+    let quarantine_name = OsString::from(format!(
+        ".{}.macro-removing-{}",
+        file_name.to_string_lossy(),
+        Uuid::new_v4()
+    ));
+    parent
+        .rename(&file_name, &parent, &quarantine_name)
+        .map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to isolate {} before removal: {error}",
+                path.display()
+            ),
+            source: error,
+        })?;
+    let quarantined_metadata =
+        parent
+            .symlink_metadata(&quarantine_name)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to verify isolated managed path {}: {error}",
+                    path.display()
+                ),
+                source: error,
+            })?;
+    if capability_path_identity(&quarantined_metadata) != Some(expected_identity) {
+        restore_replaced_managed_path(&parent, &file_name, &quarantine_name, path)?;
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to remove {} because it changed after ownership verification",
+                path.display()
+            ),
+        });
+    }
+    let removal = if quarantined_metadata.file_type().is_symlink() {
         #[cfg(windows)]
         {
-            if metadata.is_dir() {
-                parent.remove_dir(&file_name)
+            if quarantined_metadata.is_dir() {
+                parent.remove_dir(&quarantine_name)
             } else {
-                parent.remove_file(&file_name)
+                parent.remove_file(&quarantine_name)
             }
         }
         #[cfg(not(windows))]
         {
-            parent.remove_file(&file_name)
+            parent.remove_file(&quarantine_name)
         }
-    } else if metadata.is_dir() {
-        parent.remove_dir_all(&file_name)
+    } else if quarantined_metadata.is_dir() {
+        parent.remove_dir_all(&quarantine_name)
     } else {
-        parent.remove_file(&file_name)
+        parent.remove_file(&quarantine_name)
     };
     removal.map_err(|error| BackendError::Io {
-        message: format!("Failed to remove {}: {error}", path.display()),
+        message: format!(
+            "Failed to remove {}; the isolated path was retained at {}: {error}",
+            path.display(),
+            path.with_file_name(&quarantine_name).display()
+        ),
         source: error,
     })?;
     Ok(true)
 }
 
-fn quarantine_path(root: &Path, path: &Path) -> Result<PathBuf> {
+fn quarantine_path(
+    root: &Path,
+    path: &Path,
+    expected_identity: Option<MacroPathIdentity>,
+) -> Result<PathBuf> {
     let Some((parent, file_name)) = open_macro_owned_parent(root, path)? else {
         return Err(BackendError::Git {
             message: format!("Cannot quarantine missing path {}", path.display()),
@@ -703,12 +843,32 @@ fn quarantine_path(root: &Path, path: &Path) -> Result<PathBuf> {
             message: format!("Failed to quarantine {}: {error}", path.display()),
             source: error,
         })?;
+    let quarantined_metadata =
+        parent
+            .symlink_metadata(&candidate_name)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to verify quarantined managed path {}: {error}",
+                    path.display()
+                ),
+                source: error,
+            })?;
+    if capability_path_identity(&quarantined_metadata) != expected_identity {
+        restore_replaced_managed_path(&parent, &file_name, &candidate_name, path)?;
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to quarantine {} because it changed after ownership verification",
+                path.display()
+            ),
+        });
+    }
     Ok(path.with_file_name(candidate_name))
 }
 
 fn remove_or_quarantine_path_for_repair(
     root: &Path,
     path: &Path,
+    expected_identity: Option<MacroPathIdentity>,
     should_quarantine: bool,
 ) -> Result<bool> {
     let present = open_macro_owned_parent(root, path)?
@@ -717,10 +877,10 @@ fn remove_or_quarantine_path_for_repair(
         return Ok(false);
     }
     if should_quarantine {
-        let _ = quarantine_path(root, path)?;
+        let _ = quarantine_path(root, path, expected_identity)?;
         return Ok(true);
     }
-    remove_macro_owned_path(root, path)
+    remove_macro_owned_path(root, path, expected_identity)
 }
 
 fn create_macro_owned_directories(root: &Path, path: &Path) -> Result<()> {
@@ -1188,26 +1348,38 @@ impl GitState {
                         ),
                     });
                 }
-                ensure_managed_worktree_ownership(
-                    repo,
-                    &inspection.worktree_name,
-                    &inspection.worktree_path,
-                    ManagedWorktreeKind::Task,
-                )?;
                 let should_quarantine = repair_requires_quarantine(
                     &inspection.status,
                     &inspection.worktree_path,
                     inspection.is_dirty,
                 );
                 if let Some(path) = inspection.registered_path.as_ref() {
-                    let _ = remove_or_quarantine_path_for_repair(workdir, path, should_quarantine)?;
+                    let expected_identity = ensure_managed_worktree_ownership(
+                        repo,
+                        &inspection.worktree_name,
+                        path,
+                        ManagedWorktreeKind::Task,
+                    )?;
+                    let _ = remove_or_quarantine_path_for_repair(
+                        workdir,
+                        path,
+                        expected_identity,
+                        should_quarantine,
+                    )?;
                 }
                 if inspection.worktree_path
                     != inspection.registered_path.clone().unwrap_or_default()
                 {
+                    let expected_identity = ensure_managed_worktree_ownership(
+                        repo,
+                        &inspection.worktree_name,
+                        &inspection.worktree_path,
+                        ManagedWorktreeKind::Task,
+                    )?;
                     let _ = remove_or_quarantine_path_for_repair(
                         workdir,
                         &inspection.worktree_path,
+                        expected_identity,
                         should_quarantine,
                     )?;
                 }
@@ -1510,26 +1682,38 @@ impl GitState {
                         ),
                     });
                 }
-                ensure_managed_worktree_ownership(
-                    repo,
-                    &inspection.worktree_name,
-                    &inspection.worktree_path,
-                    ManagedWorktreeKind::Branch,
-                )?;
                 let should_quarantine = repair_requires_quarantine(
                     &inspection.status,
                     &inspection.worktree_path,
                     inspection.is_dirty,
                 );
                 if let Some(path) = inspection.registered_path.as_ref() {
-                    let _ = remove_or_quarantine_path_for_repair(workdir, path, should_quarantine)?;
+                    let expected_identity = ensure_managed_worktree_ownership(
+                        repo,
+                        &inspection.worktree_name,
+                        path,
+                        ManagedWorktreeKind::Branch,
+                    )?;
+                    let _ = remove_or_quarantine_path_for_repair(
+                        workdir,
+                        path,
+                        expected_identity,
+                        should_quarantine,
+                    )?;
                 }
                 if inspection.worktree_path
                     != inspection.registered_path.clone().unwrap_or_default()
                 {
+                    let expected_identity = ensure_managed_worktree_ownership(
+                        repo,
+                        &inspection.worktree_name,
+                        &inspection.worktree_path,
+                        ManagedWorktreeKind::Branch,
+                    )?;
                     let _ = remove_or_quarantine_path_for_repair(
                         workdir,
                         &inspection.worktree_path,
+                        expected_identity,
                         should_quarantine,
                     )?;
                 }
@@ -1648,14 +1832,6 @@ impl GitState {
             message: "Bare repositories are not supported for worktrees".to_string(),
         })?;
         let inspection = self.inspect_branch_worktree(repo, worktree_key, branch_name)?;
-        if inspection.status != TaskWorktreeStatus::Absent {
-            ensure_managed_worktree_ownership(
-                repo,
-                &inspection.worktree_name,
-                &inspection.worktree_path,
-                ManagedWorktreeKind::Branch,
-            )?;
-        }
         if !force && inspection.is_dirty.unwrap_or(false) {
             return Err(BackendError::GitRepositoryNotClean {
                 message: format!(
@@ -1667,9 +1843,26 @@ impl GitState {
 
         let mut removed_path = false;
         if let Some(path) = inspection.registered_path.as_ref() {
-            removed_path = remove_macro_owned_path(workdir, path)? || removed_path;
+            let expected_identity = ensure_managed_worktree_ownership(
+                repo,
+                &inspection.worktree_name,
+                path,
+                ManagedWorktreeKind::Branch,
+            )?;
+            removed_path =
+                remove_macro_owned_path(workdir, path, expected_identity)? || removed_path;
         }
-        removed_path = remove_macro_owned_path(workdir, &inspection.worktree_path)? || removed_path;
+        if inspection.worktree_path != inspection.registered_path.clone().unwrap_or_default() {
+            let expected_identity = ensure_managed_worktree_ownership(
+                repo,
+                &inspection.worktree_name,
+                &inspection.worktree_path,
+                ManagedWorktreeKind::Branch,
+            )?;
+            removed_path =
+                remove_macro_owned_path(workdir, &inspection.worktree_path, expected_identity)?
+                    || removed_path;
+        }
 
         let pruned_registration = prune_worktree(repo, &inspection.worktree_name)?;
 
@@ -1694,14 +1887,6 @@ impl GitState {
             message: "Bare repositories are not supported for worktrees".to_string(),
         })?;
         let inspection = self.inspect_task_worktree_internal(repo, task_id, branch_name)?;
-        if inspection.status != TaskWorktreeStatus::Absent {
-            ensure_managed_worktree_ownership(
-                repo,
-                &inspection.worktree_name,
-                &inspection.worktree_path,
-                ManagedWorktreeKind::Task,
-            )?;
-        }
         if !force && inspection.is_dirty.unwrap_or(false) {
             return Err(BackendError::GitRepositoryNotClean {
                 message: format!(
@@ -1713,9 +1898,26 @@ impl GitState {
 
         let mut removed_path = false;
         if let Some(path) = inspection.registered_path.as_ref() {
-            removed_path = remove_macro_owned_path(workdir, path)? || removed_path;
+            let expected_identity = ensure_managed_worktree_ownership(
+                repo,
+                &inspection.worktree_name,
+                path,
+                ManagedWorktreeKind::Task,
+            )?;
+            removed_path =
+                remove_macro_owned_path(workdir, path, expected_identity)? || removed_path;
         }
-        removed_path = remove_macro_owned_path(workdir, &inspection.worktree_path)? || removed_path;
+        if inspection.worktree_path != inspection.registered_path.clone().unwrap_or_default() {
+            let expected_identity = ensure_managed_worktree_ownership(
+                repo,
+                &inspection.worktree_name,
+                &inspection.worktree_path,
+                ManagedWorktreeKind::Task,
+            )?;
+            removed_path =
+                remove_macro_owned_path(workdir, &inspection.worktree_path, expected_identity)?
+                    || removed_path;
+        }
 
         let pruned_registration = prune_worktree(repo, &inspection.worktree_name)?;
         self.clear_worktree_cache(task_id);
@@ -1795,6 +1997,7 @@ mod tests {
         remove_macro_owned_path(
             root.path(),
             &root.path().join(".macro/worktrees/task-owned"),
+            None,
         )
         .expect_err("linked parent must be rejected");
 
@@ -1802,6 +2005,33 @@ mod tests {
             fs::read_to_string(outside.path().join("worktrees/task-owned/sentinel.txt"))
                 .expect("outside sentinel survives"),
             "preserve"
+        );
+    }
+
+    #[test]
+    fn managed_path_removal_refuses_a_replacement_after_ownership_verification() {
+        let root = TempDir::new().expect("managed root");
+        let managed_path = root.path().join(".macro/worktrees/task-owned");
+        fs::create_dir_all(&managed_path).expect("managed worktree");
+        fs::write(managed_path.join("owned.txt"), "owned").expect("owned sentinel");
+        let expected_identity =
+            macro_owned_path_identity(root.path(), &managed_path).expect("managed identity");
+
+        let original_path = root.path().join(".macro/worktrees/original-owned");
+        fs::rename(&managed_path, &original_path).expect("move original worktree");
+        fs::create_dir_all(&managed_path).expect("replacement worktree");
+        fs::write(managed_path.join("user.txt"), "preserve").expect("replacement sentinel");
+
+        remove_macro_owned_path(root.path(), &managed_path, expected_identity)
+            .expect_err("replacement must not be removed");
+
+        assert_eq!(
+            fs::read_to_string(managed_path.join("user.txt")).expect("replacement survives"),
+            "preserve"
+        );
+        assert_eq!(
+            fs::read_to_string(original_path.join("owned.txt")).expect("original survives"),
+            "owned"
         );
     }
 

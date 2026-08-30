@@ -15,6 +15,92 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WatchDirectoryIdentity {
+    volume: u64,
+    file: u64,
+}
+
+#[cfg(unix)]
+fn watch_directory_identity(path: &Path) -> Option<WatchDirectoryIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path).ok()?;
+    Some(WatchDirectoryIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn watch_directory_identity(path: &Path) -> Option<WatchDirectoryIdentity> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide_path.push(0);
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    let succeeded = unsafe { GetFileInformationByHandle(handle, &mut information) } != 0;
+    unsafe { CloseHandle(handle) };
+    succeeded.then_some(WatchDirectoryIdentity {
+        volume: u64::from(information.dwVolumeSerialNumber),
+        file: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn watch_directory_identity(_path: &Path) -> Option<WatchDirectoryIdentity> {
+    None
+}
+
+fn safe_watch_directory_identity(path: &Path, workspace: &Path) -> Option<WatchDirectoryIdentity> {
+    let relative = path.strip_prefix(workspace).ok()?;
+    let mut current = workspace.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(segment) = component else {
+            return None;
+        };
+        current.push(segment);
+        let metadata = fs::symlink_metadata(&current).ok()?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return None;
+        }
+    }
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return None;
+    }
+    let identity_before = watch_directory_identity(path)?;
+    let canonical_workspace = fs::canonicalize(workspace).ok()?;
+    let canonical_path = fs::canonicalize(path).ok()?;
+    if !canonical_path.starts_with(&canonical_workspace) {
+        return None;
+    }
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return None;
+    }
+    (watch_directory_identity(path)? == identity_before).then_some(identity_before)
+}
+
 /// File system watcher that monitors workspace changes and emits events
 pub struct FsWatcher {
     /// The underlying notify watcher
@@ -120,7 +206,7 @@ fn build_watch_plan(workspace: &Path) -> WatchPlan {
         &mut watch_paths,
         &mut ignored_dir_count,
     );
-    if watch_paths.is_empty() {
+    if watch_paths.is_empty() && safe_watch_directory_identity(workspace, workspace).is_some() {
         watch_paths.push(workspace.to_path_buf());
     }
     WatchPlan {
@@ -140,17 +226,27 @@ fn collect_watch_paths(
         return;
     }
 
-    watch_paths.push(current.to_path_buf());
+    let Some(identity_before) = safe_watch_directory_identity(current, workspace) else {
+        return;
+    };
 
     let entries = match fs::read_dir(current) {
-        Ok(entries) => entries,
+        Ok(entries) => entries.flatten().collect::<Vec<_>>(),
         Err(error) => {
             warn!("Failed to read watcher directory {:?}: {}", current, error);
+            if safe_watch_directory_identity(current, workspace) == Some(identity_before) {
+                watch_paths.push(current.to_path_buf());
+            }
             return;
         }
     };
 
-    for entry in entries.flatten() {
+    if safe_watch_directory_identity(current, workspace) != Some(identity_before) {
+        return;
+    }
+    watch_paths.push(current.to_path_buf());
+
+    for entry in entries {
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
             Err(_) => continue,
@@ -171,9 +267,8 @@ fn discover_unwatched_directories(
     let mut discovered = Vec::new();
     let mut ignored_dir_count = 0;
     for path in &event.paths {
-        let is_real_directory = fs::symlink_metadata(path)
-            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
-        if !path.starts_with(workspace) || !is_real_directory || should_ignore_path(path, workspace)
+        if safe_watch_directory_identity(path, workspace).is_none()
+            || should_ignore_path(path, workspace)
         {
             continue;
         }
@@ -210,9 +305,16 @@ fn register_new_directories(
         }
     };
     for path in discovered {
+        let Some(identity_before) = safe_watch_directory_identity(&path, workspace) else {
+            continue;
+        };
         match watcher.watch(&path, RecursiveMode::NonRecursive) {
             Ok(()) => {
-                watched.insert(path);
+                if safe_watch_directory_identity(&path, workspace) == Some(identity_before) {
+                    watched.insert(path);
+                } else if let Err(error) = watcher.unwatch(&path) {
+                    debug!("Failed to unwatch replaced directory {:?}: {}", path, error);
+                }
             }
             Err(error) => warn!("Failed to watch new directory {:?}: {}", path, error),
         }
@@ -516,6 +618,24 @@ pub fn init_watcher(
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    fn link_directory(link: &Path, target: &Path) {
+        let link = PathBuf::from(link.to_string_lossy().replace('/', "\\"));
+        let target = PathBuf::from(target.to_string_lossy().replace('/', "\\"));
+        let status = crate::core::process::background_command("cmd")
+            .args(["/d", "/c", "mklink /J"])
+            .arg(&link)
+            .arg(&target)
+            .status()
+            .expect("create Windows junction");
+        assert!(status.success(), "mklink /J must create the test junction");
+    }
+
+    #[cfg(unix)]
+    fn link_directory(link: &Path, target: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("create directory symlink");
+    }
+
     #[test]
     fn test_should_ignore_path() {
         let workspace = PathBuf::from("/workspace");
@@ -624,22 +744,37 @@ mod tests {
             .any(|path| path.starts_with(created.join(".macro"))));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn test_new_directory_event_does_not_follow_a_symbolic_link() {
-        use std::os::unix::fs::symlink;
-
+    fn test_new_directory_event_does_not_follow_a_linked_directory() {
         let workspace = tempfile::tempdir().expect("workspace");
         let outside = tempfile::tempdir().expect("outside directory");
         std::fs::create_dir_all(outside.path().join("nested")).expect("outside nested directory");
         let linked = workspace.path().join("linked");
-        symlink(outside.path(), &linked).expect("link outside workspace");
+        link_directory(&linked, outside.path());
         let event = Event::new(EventKind::Create(notify::event::CreateKind::Folder))
             .add_path(linked.clone());
 
         let discovered = discover_unwatched_directories(&event, workspace.path(), &HashSet::new());
 
         assert!(discovered.is_empty());
+    }
+
+    #[test]
+    fn test_watch_identity_detects_a_directory_replaced_after_discovery() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let watched = workspace.path().join("watched");
+        std::fs::create_dir(&watched).expect("watched directory");
+        let discovered_identity = safe_watch_directory_identity(&watched, workspace.path())
+            .expect("initial directory identity");
+
+        std::fs::rename(&watched, workspace.path().join("original-watched"))
+            .expect("move original directory");
+        std::fs::create_dir(&watched).expect("replacement directory");
+
+        assert_ne!(
+            safe_watch_directory_identity(&watched, workspace.path()),
+            Some(discovered_identity)
+        );
     }
 
     #[test]
