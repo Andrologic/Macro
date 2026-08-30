@@ -2298,6 +2298,14 @@ mod tests {
         options.reference(Some(&reference));
         repo.worktree("taskexternal-ownership", &external_path, Some(&options))
             .expect("external worktree");
+        fs::write(external_path.join("uncommitted.txt"), "preserve me")
+            .expect("dirty external worktree");
+        fs::write(external_path.join(".git"), "gitdir: stale-external-link\n")
+            .expect("corrupt external gitfile");
+        let admin_dir = repo.path().join("worktrees/taskexternal-ownership");
+        let gitfile_before = fs::read(external_path.join(".git")).expect("external gitfile");
+        let admin_gitdir_before = fs::read(admin_dir.join("gitdir")).expect("admin gitdir");
+        let commondir_before = fs::read(admin_dir.join("commondir")).expect("admin commondir");
 
         let error = GitState::new()
             .remove_task_worktree(
@@ -2311,6 +2319,23 @@ mod tests {
         assert!(matches!(error, BackendError::Git { .. }));
         assert!(external_path.exists());
         assert!(repo.find_worktree("taskexternal-ownership").is_ok());
+        assert_eq!(
+            fs::read(external_path.join(".git")).expect("preserved external gitfile"),
+            gitfile_before
+        );
+        assert_eq!(
+            fs::read(admin_dir.join("gitdir")).expect("preserved admin gitdir"),
+            admin_gitdir_before
+        );
+        assert_eq!(
+            fs::read(admin_dir.join("commondir")).expect("preserved admin commondir"),
+            commondir_before
+        );
+        assert_eq!(
+            fs::read_to_string(external_path.join("uncommitted.txt"))
+                .expect("preserved dirty file"),
+            "preserve me"
+        );
     }
 
     #[test]
@@ -2416,6 +2441,69 @@ mod tests {
             BackendError::GitRepositoryNotClean { .. } => {}
             other => panic!("expected GitRepositoryNotClean, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_ensure_branch_worktree_never_repairs_external_invalid_git_links() {
+        let temp = TempDir::new().expect("temp dir");
+        let external = TempDir::new().expect("external temp dir");
+        let repo = init_repo(temp.path());
+        let head = repo
+            .head()
+            .and_then(|reference| reference.peel_to_commit())
+            .expect("head commit");
+        repo.branch("plan/external-original", &head, false)
+            .expect("external branch");
+        drop(head);
+        let reference = repo
+            .find_reference("refs/heads/plan/external-original")
+            .expect("external branch reference");
+        let worktree_key = "external-invalid";
+        let worktree_name = "macro-integration-external-invalid";
+        let external_path = external.path().join("user-integration-worktree");
+        let mut options = WorktreeAddOptions::new();
+        options.reference(Some(&reference));
+        repo.worktree(worktree_name, &external_path, Some(&options))
+            .expect("external integration worktree");
+        fs::write(external_path.join("uncommitted.txt"), "preserve me")
+            .expect("dirty external worktree");
+        fs::write(external_path.join(".git"), "gitdir: stale-external-link\n")
+            .expect("corrupt external gitfile");
+        let admin_dir = repo.path().join("worktrees").join(worktree_name);
+        let gitfile_before = fs::read(external_path.join(".git")).expect("external gitfile");
+        let admin_gitdir_before = fs::read(admin_dir.join("gitdir")).expect("admin gitdir");
+        let commondir_before = fs::read(admin_dir.join("commondir")).expect("admin commondir");
+
+        let error = GitState::new()
+            .ensure_branch_worktree(
+                &repo,
+                worktree_key,
+                "plan/replacement",
+                None,
+                &["main".to_string()],
+            )
+            .expect_err("external worktree must not be repaired");
+
+        assert!(matches!(error, BackendError::Git { .. }));
+        assert!(external_path.exists());
+        assert!(repo.find_worktree(worktree_name).is_ok());
+        assert_eq!(
+            fs::read(external_path.join(".git")).expect("preserved external gitfile"),
+            gitfile_before
+        );
+        assert_eq!(
+            fs::read(admin_dir.join("gitdir")).expect("preserved admin gitdir"),
+            admin_gitdir_before
+        );
+        assert_eq!(
+            fs::read(admin_dir.join("commondir")).expect("preserved admin commondir"),
+            commondir_before
+        );
+        assert_eq!(
+            fs::read_to_string(external_path.join("uncommitted.txt"))
+                .expect("preserved dirty file"),
+            "preserve me"
+        );
     }
 
     #[test]

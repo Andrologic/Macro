@@ -215,6 +215,19 @@ fn is_path_in_task_worktree_root(repo: &Repository, path: &Path) -> Result<bool>
     Ok(canonical_path.starts_with(canonical_root))
 }
 
+fn is_macro_owned_worktree_path(
+    repo: &Repository,
+    worktree_name: &str,
+    path: &Path,
+) -> Result<bool> {
+    if !is_managed_worktree_name(worktree_name, ManagedWorktreeKind::Task)
+        && !is_managed_worktree_name(worktree_name, ManagedWorktreeKind::Branch)
+    {
+        return Ok(false);
+    }
+    is_path_in_task_worktree_root(repo, path)
+}
+
 fn ensure_managed_worktree_ownership(
     repo: &Repository,
     worktree_name: &str,
@@ -608,7 +621,9 @@ fn inspect_registered_worktree(
             is_dirty: None,
         }),
         RepoProbe::Invalid => {
-            if repair_gitfile_worktree_links(repo, &worktree_name, &registered_path)? {
+            if is_macro_owned_worktree_path(repo, &worktree_name, &registered_path)?
+                && repair_gitfile_worktree_links(repo, &worktree_name, &registered_path)?
+            {
                 if let RepoProbe::Ready(worktree_repo) = probe_repo_path(&registered_path) {
                     return Ok(TaskWorktreeInspection {
                         task_id: task_id.to_string(),
