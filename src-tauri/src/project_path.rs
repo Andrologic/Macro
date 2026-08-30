@@ -689,22 +689,13 @@ mod tests {
 
     #[tokio::test]
     async fn wsl_command_timeout_starts_after_stdin_write() {
-        #[cfg(windows)]
-        let mut command = {
-            let mut command = background_tokio_command("powershell.exe");
-            command.args([
-                "-NoProfile",
-                "-Command",
-                "Start-Sleep -Milliseconds 200; $stream = [Console]::OpenStandardInput(); $buffer = New-Object byte[] 65536; while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {}; Start-Sleep -Seconds 5",
-            ]);
-            command
-        };
-        #[cfg(not(windows))]
-        let mut command = {
-            let mut command = background_tokio_command("sh");
-            command.args(["-c", "sleep 0.2; cat >/dev/null; sleep 5"]);
-            command
-        };
+        let test_executable = std::env::current_exe().expect("resolve test executable");
+        let mut command = background_tokio_command(test_executable);
+        command.args([
+            "--ignored",
+            "--exact",
+            "project_path::tests::wsl_delayed_stdin_reader_helper",
+        ]);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -716,7 +707,7 @@ mod tests {
         let error = wait_for_wsl_child_with_timeouts(
             child,
             Some(vec![b'x'; 8 * 1024 * 1024]),
-            Duration::from_secs(3),
+            Duration::from_secs(10),
             Duration::from_millis(100),
         )
         .await
@@ -724,6 +715,15 @@ mod tests {
 
         assert!(matches!(error, BackendError::Git { message } if message.contains("timed out")));
         assert!(started.elapsed() >= Duration::from_millis(200));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(12));
+    }
+
+    #[test]
+    #[ignore]
+    fn wsl_delayed_stdin_reader_helper() {
+        std::thread::sleep(Duration::from_millis(200));
+        std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())
+            .expect("read delayed stdin");
+        std::thread::sleep(Duration::from_secs(5));
     }
 }

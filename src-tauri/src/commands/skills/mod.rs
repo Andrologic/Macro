@@ -3103,11 +3103,13 @@ mod tests {
         #[cfg(windows)]
         let (noisy_script_path, noisy_script_content) = (
             "scripts/noisy.cmd",
-            "@echo off\r\npowershell -NoProfile -Command \"$Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(30000, 25); Write-Host -NoNewline ('x' * 21050)\"\r\n",
+            "@echo off\r\ntype \"%~dp0noisy-payload.txt\"\r\n",
         );
         #[cfg(not(windows))]
-        let (noisy_script_path, noisy_script_content) =
-            ("scripts/noisy.sh", "printf 'x%.0s' {1..21050}\n");
+        let (noisy_script_path, noisy_script_content) = (
+            "scripts/noisy.sh",
+            "cat \"$(dirname \"$0\")/noisy-payload.txt\"\n",
+        );
         #[cfg(windows)]
         let (noisy_timeout_script_path, noisy_timeout_script_content) = (
             "scripts/noisy-timeout.cmd",
