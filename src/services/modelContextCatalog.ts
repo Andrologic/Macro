@@ -388,6 +388,7 @@ export const refreshModelContextCatalog = async (params: {
 } = {}): Promise<ModelContextCatalogStatus> => {
   const cached = readCachedCatalog();
   if (!params.force && cached && isFresh(cached)) {
+    loadedCatalogSource = 'cache';
     lastStatus = {
       lastFetchedAt: cached.fetchedAt,
       source: 'cache',

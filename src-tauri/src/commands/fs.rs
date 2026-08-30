@@ -2244,6 +2244,14 @@ fn to_slash_path(value: &Path) -> String {
     value.to_string_lossy().replace('\\', "/")
 }
 
+fn sort_workspace_file_candidates(candidates: &mut [(i32, WorkspaceFileSearchResultDto)]) {
+    candidates.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.path.to_lowercase().cmp(&right.path.to_lowercase()))
+    });
+}
+
 fn search_workspace_files_blocking(
     roots: Vec<WorkspaceFileSearchRootDto>,
     query: String,
@@ -2347,13 +2355,12 @@ fn search_workspace_files_blocking(
                 break;
             }
         }
+
+        sort_workspace_file_candidates(&mut candidates);
+        candidates.truncate(MAX_FILE_SEARCH_CANDIDATES);
     }
 
-    candidates.sort_by(|(left_score, left), (right_score, right)| {
-        right_score
-            .cmp(left_score)
-            .then_with(|| left.path.to_lowercase().cmp(&right.path.to_lowercase()))
-    });
+    sort_workspace_file_candidates(&mut candidates);
     candidates.truncate(result_limit);
     Ok(candidates.into_iter().map(|(_, result)| result).collect())
 }
