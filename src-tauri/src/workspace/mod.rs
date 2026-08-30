@@ -88,6 +88,8 @@ static ARCHIVED_TASK_CLEANUP_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<Async
     OnceLock::new();
 static PLAN_LIFECYCLE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
+static GIT_REPOSITORY_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
 static NEW_REPO_TARGET_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
 #[cfg(test)]
@@ -166,10 +168,82 @@ pub struct PlanLifecycleGuard {
     file: std::fs::File,
 }
 
+pub struct GitRepositoryGuard {
+    _process_guard: OwnedMutexGuard<()>,
+    file: std::fs::File,
+}
+
 impl Drop for PlanLifecycleGuard {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.file);
     }
+}
+
+impl Drop for GitRepositoryGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+fn git_repository_lock_path(repo_path: &Path) -> PathBuf {
+    let identity = workspace_state_lock_key(repo_path)
+        .to_string_lossy()
+        .to_string();
+    let digest = Sha256::digest(identity.as_bytes());
+    std::env::temp_dir()
+        .join("macro")
+        .join("git-repository-locks")
+        .join(format!("{digest:x}.lock"))
+}
+
+pub async fn lock_git_repository(repo_path: &Path) -> Result<GitRepositoryGuard> {
+    if repo_path.as_os_str().is_empty() {
+        return Err(BackendError::Validation(
+            "Le verrou Git requiert un chemin de dépôt.".to_string(),
+        ));
+    }
+    let lock_path = git_repository_lock_path(repo_path);
+    let process_guard = {
+        let lock = {
+            let locks = GIT_REPOSITORY_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+            let mut locks = locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks
+                .entry(lock_path.clone())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    };
+    let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de créer le dossier de verrouillage Git : {error}"),
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible d’ouvrir le verrou du dépôt Git : {error}"),
+            })?;
+        file.lock_exclusive()
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de verrouiller le dépôt Git : {error}"),
+            })?;
+        Ok(file)
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Le verrouillage du dépôt Git a échoué : {error}"),
+    })??;
+    Ok(GitRepositoryGuard {
+        _process_guard: process_guard,
+        file,
+    })
 }
 
 fn plan_lifecycle_lock_path(metadata_root: &Path, branch_name: &str, plan_id: &str) -> PathBuf {
@@ -299,6 +373,18 @@ pub async fn lock_archived_task_cleanup(
         _process_guard: process_guard,
         file,
     })
+}
+
+/// Acquire the durable lifecycle lock for a task.
+///
+/// This intentionally shares the same lock identity as archived cleanup. A
+/// task's draft-revert and archive-cleanup workflows must never mutate its
+/// worktrees concurrently, even when they run in different Macro processes.
+pub async fn lock_task_lifecycle(
+    metadata_root: &Path,
+    task_id: &str,
+) -> Result<ArchivedTaskCleanupGuard> {
+    lock_archived_task_cleanup(metadata_root, task_id).await
 }
 
 pub async fn validate_archived_task_cleanup_token(
@@ -8598,6 +8684,29 @@ mod tests {
         contender
             .try_lock_exclusive()
             .expect("lock must become available after lease release");
+        FileExt::unlock(&contender).expect("unlock contender");
+    }
+
+    #[tokio::test]
+    async fn git_repository_lock_holds_a_stable_file_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("repository");
+        stdfs::create_dir_all(&repo_path).expect("repository path");
+        let guard = lock_git_repository(&repo_path)
+            .await
+            .expect("acquire repository lock");
+        let lock_path = git_repository_lock_path(&repo_path);
+        let contender = stdfs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .expect("open stable repository lock file");
+
+        assert!(contender.try_lock_exclusive().is_err());
+        drop(guard);
+        contender
+            .try_lock_exclusive()
+            .expect("repository lock must become available after lease release");
         FileExt::unlock(&contender).expect("unlock contender");
     }
 

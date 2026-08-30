@@ -4881,7 +4881,7 @@ fn delete_local_branch(
         });
     }
 
-    let mut branch = repo
+    let branch = repo
         .find_branch(branch_name, BranchType::Local)
         .map_err(|_| BackendError::GitBranchNotFound {
             message: format!("Branch not found: {}", branch_name),
@@ -4932,8 +4932,38 @@ fn delete_local_branch(
         }
     }
 
-    branch.delete().map_err(|e| BackendError::Git {
-        message: e.to_string(),
+    drop(branch);
+    let ref_name = format!("refs/heads/{branch_name}");
+    let mut transaction = repo.transaction().map_err(|error| BackendError::Git {
+        message: error.to_string(),
+    })?;
+    transaction
+        .lock_ref(&ref_name)
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+    let locked_commit = repo
+        .find_reference(&ref_name)
+        .and_then(|reference| reference.peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?
+        .id();
+    if locked_commit != actual_commit {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to delete branch {} because its durable identity changed",
+                branch_name
+            ),
+        });
+    }
+    transaction
+        .remove(&ref_name)
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+    transaction.commit().map_err(|error| BackendError::Git {
+        message: error.to_string(),
     })?;
 
     Ok(())
@@ -6872,6 +6902,8 @@ pub async fn git_branch_create(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6915,6 +6947,8 @@ pub async fn git_branch_delete(
         return wsl_git_branch_delete(&wsl_repo_path, &branch_name, force.unwrap_or(false)).await;
     }
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7025,6 +7059,8 @@ pub async fn git_checkout(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7090,6 +7126,8 @@ pub async fn git_merge(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7128,6 +7166,8 @@ pub async fn git_guarded_merge_state(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7163,6 +7203,8 @@ pub async fn git_start_merge_resolution(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7192,6 +7234,8 @@ pub async fn git_fast_forward(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7251,6 +7295,8 @@ pub async fn git_rebase_branch(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7280,6 +7326,8 @@ pub async fn git_commit(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7376,6 +7424,8 @@ pub async fn git_reset(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7416,6 +7466,8 @@ pub async fn git_abort_merge(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7444,6 +7496,8 @@ pub async fn git_stash(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12114,6 +12168,8 @@ pub async fn git_accept_conflict_side(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
@@ -12142,6 +12198,8 @@ pub async fn git_complete_merge(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12359,6 +12417,8 @@ pub async fn git_worktree_create(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12460,6 +12520,8 @@ pub async fn git_branch_worktree_create(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12510,6 +12572,8 @@ pub async fn git_branch_worktree_remove(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12572,6 +12636,8 @@ pub async fn git_worktree_remove(
         return Err(unsupported_wsl_git_operation("git_worktree_remove"));
     }
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12630,6 +12696,8 @@ pub async fn git_fetch(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12689,6 +12757,8 @@ pub async fn git_prepare_guarded_branch_sync(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12779,6 +12849,8 @@ pub async fn git_guarded_branch_sync(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12812,6 +12884,8 @@ pub async fn git_push(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12897,6 +12971,8 @@ pub async fn git_pull(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -17872,6 +17948,21 @@ mod tests {
         assert!(repo
             .find_branch("feature/recreated", BranchType::Local)
             .is_ok());
+    }
+
+    #[test]
+    fn branch_delete_uses_the_locked_reference_transaction() {
+        let (_temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/delete", &head, false).unwrap();
+        let expected_commit = head.id().to_string();
+
+        delete_local_branch(&repo, "feature/delete", true, Some(&expected_commit))
+            .expect("branch with unchanged identity should be deleted");
+
+        assert!(repo
+            .find_branch("feature/delete", BranchType::Local)
+            .is_err());
     }
 
     #[test]
