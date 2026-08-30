@@ -526,6 +526,7 @@ jobs:
 
           bun dev/release/verify-updater.mjs \
             --manifest release-assets/latest.json \
+            --channel preview \
             --asset-root release-assets \
             --checksums release-assets/SHA256SUMS.txt
 

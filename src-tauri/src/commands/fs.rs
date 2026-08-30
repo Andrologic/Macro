@@ -2265,6 +2265,7 @@ fn search_workspace_files_blocking(
     let mut candidates: Vec<(i32, WorkspaceFileSearchResultDto)> = Vec::new();
 
     for root in roots {
+        let root_candidate_start = candidates.len();
         let workspace = PathBuf::from(root.workspace_path.trim());
         if workspace.as_os_str().is_empty() || !workspace.is_dir() {
             continue;
@@ -2342,13 +2343,9 @@ fn search_workspace_files_blocking(
                 },
             ));
 
-            if candidates.len() >= MAX_FILE_SEARCH_CANDIDATES {
+            if candidates.len() - root_candidate_start >= MAX_FILE_SEARCH_CANDIDATES {
                 break;
             }
-        }
-
-        if candidates.len() >= MAX_FILE_SEARCH_CANDIDATES {
-            break;
         }
     }
 
@@ -3326,6 +3323,53 @@ mod tests {
         )
         .expect("limited search results");
         assert_eq!(limited_results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_workspace_files_inspects_every_root_before_ranking_results() {
+        let first_workspace = setup_empty_workspace();
+        let second_workspace = setup_empty_workspace();
+        for index in 0..MAX_FILE_SEARCH_CANDIDATES {
+            fs::write(
+                first_workspace
+                    .path()
+                    .join(format!("needle-{index:03}.txt")),
+                "candidate",
+            )
+            .expect("write first-root candidate");
+        }
+        fs::write(second_workspace.path().join("needle"), "exact")
+            .expect("write exact second-root match");
+
+        let roots = vec![
+            WorkspaceFileSearchRootDto {
+                project_id: Some("first".to_string()),
+                project_name: Some("First".to_string()),
+                workspace_path: first_workspace.path().to_string_lossy().to_string(),
+                mount_name: Some("first".to_string()),
+                is_focused: true,
+            },
+            WorkspaceFileSearchRootDto {
+                project_id: Some("second".to_string()),
+                project_name: Some("Second".to_string()),
+                workspace_path: second_workspace.path().to_string_lossy().to_string(),
+                mount_name: Some("second".to_string()),
+                is_focused: false,
+            },
+        ];
+
+        let results = search_workspace_files_blocking(
+            roots,
+            "needle".to_string(),
+            Some(1),
+            Some(false),
+            Some(true),
+        )
+        .expect("multi-root search results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "second/needle");
+        assert_eq!(results[0].project_id.as_deref(), Some("second"));
     }
 
     fn init_git_repo(path: &Path) -> Repository {

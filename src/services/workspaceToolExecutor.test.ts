@@ -511,6 +511,8 @@ describe("workspaceToolExecutor helpers", () => {
     expect(
       pathMatchesGlob("src/services/toolModePolicy.ts", "src/**/*.ts"),
     ).toBe(true);
+    expect(pathMatchesGlob("src/App.ts", "src/**/*.ts")).toBe(true);
+    expect(pathMatchesGlob("App.ts", "**/*.ts")).toBe(true);
     expect(pathMatchesGlob("src/components/App.tsx", "src/**/*.ts")).toBe(
       false,
     );
