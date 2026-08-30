@@ -4169,17 +4169,30 @@ export const getArchitectPlanChatTranscript = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const persistedDirectPlan = await discoverPersistedDirectPlan({
-    branchName: normalizedBranch,
-    planId: safeId,
-    registrySnapshot,
-    deps,
-  });
+  const exactReplicaRequested = Boolean(options.replicaScopeKey || options.replicaProjectId);
+  const runtimeAvailable = isWorkspaceArchitectRuntimeAvailable(deps);
+  if (exactReplicaRequested && !runtimeAvailable) {
+    throw new Error(
+      `Architect runtime is unavailable for exact transcript replica ${options.replicaScopeKey ?? options.replicaProjectId}.`,
+    );
+  }
 
-  if ((options.replicaScopeKey || !persistedDirectPlan) &&
-      isWorkspaceArchitectRuntimeAvailable(deps) &&
-      canUseWorkspaceArchitectRuntimeForScope(registrySnapshot)) {
+  const registrySnapshot = exactReplicaRequested
+    ? null
+    : await loadArchitectPlanRegistrySnapshot(deps);
+  const persistedDirectPlan = exactReplicaRequested
+    ? null
+    : await discoverPersistedDirectPlan({
+        branchName: normalizedBranch,
+        planId: safeId,
+        registrySnapshot,
+        deps,
+      });
+
+  if (runtimeAvailable && (
+    exactReplicaRequested ||
+    (!persistedDirectPlan && canUseWorkspaceArchitectRuntimeForScope(registrySnapshot))
+  )) {
     const transcript = await deps.tauri.workspaceArchitectActivatePlanChat({
       branchName: normalizedBranch,
       planId: safeId,
