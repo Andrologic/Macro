@@ -919,7 +919,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         : t('implement.manualFeatureUntitled', 'New feature');
     setPendingTaskId(taskId);
     let conversationId: string | null = null;
-    let draftCreated = false;
+    let draftCreationStarted = false;
 
     try {
       setSelectedTask(taskId);
@@ -930,6 +930,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         targetGroupId
       );
       conversationId = conversation.id;
+      draftCreationStarted = true;
       await createManualFeatureDraft({
         taskId,
         conversationId: conversation.id,
@@ -953,7 +954,6 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               : null,
         baseCommitHash: startPoint.kind === 'direct' ? startPoint.baseCommitHash : null,
       });
-      draftCreated = true;
       await activateTask(taskId);
       if (!(await selectConversation(conversation.id))) {
         throw new Error('Impossible de sélectionner la nouvelle conversation.');
@@ -961,7 +961,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       setShowCreateTaskDialog(false);
     } catch (error) {
       const cleanupErrors: string[] = [];
-      if (draftCreated) {
+      if (draftCreationStarted) {
         try {
           await deleteManualFeatureDraft(taskId);
         } catch (cleanupFailure) {
@@ -1627,8 +1627,18 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     const target = saga.targets.find((candidate) => !candidate.worktreeRemoved || !candidate.branchRemoved)
       ?? saga.targets[0];
     if (!target) return;
-    const isDirty = target.state === 'dirty';
-    const description = isDirty
+    const isBranchOnly = target.worktreeRemoved && !target.branchRemoved;
+    const isDirty = target.state === 'dirty' && !target.worktreeRemoved;
+    const description = isBranchOnly
+      ? t(
+        'implement.archivedTaskBranchCleanupPendingDescription',
+        'The worktree has already been removed, but Macro could not remove {{branch}}. The branch remains in {{path}}.',
+        {
+          branch: target.branchName,
+          path: target.repoPath,
+        },
+      )
+      : isDirty
       ? t(
         'implement.archivedTaskDirtyWorktreeDescription',
         'The task is archived, but {{branch}} still has local changes in {{path}}. Resolve them, then retry cleanup.',
@@ -1655,7 +1665,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         closeButton: true,
         description,
         actions: [
-          ...(target.worktreePath
+          ...(!target.worktreeRemoved && target.worktreePath
             ? [{
               label: t('implement.openWorktree', 'Open worktree'),
               variant: 'secondary' as const,
@@ -1668,7 +1678,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 });
               },
             }]
-            : []),
+            : isBranchOnly
+              ? [{
+                label: t('implement.openRepository', 'Open repository'),
+                variant: 'secondary' as const,
+                onClick: () => {
+                  void openPath(target.repoPath).catch((error) => {
+                    notify.error(
+                      t('implement.openRepositoryFailed', 'Could not open the repository'),
+                      { description: toServiceError(error).message },
+                    );
+                  });
+                },
+              }]
+              : []),
           {
             label: t('common.retry', 'Retry'),
             variant: 'primary' as const,

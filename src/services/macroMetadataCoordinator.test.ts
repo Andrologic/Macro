@@ -260,7 +260,7 @@ describe('macroMetadataCoordinator', () => {
 
   it('keeps a pending mutation when the backend reports a dirty failed commit', async () => {
     const reportedFailure = mock(async () => createMacroResult({
-      state: 'unknown_error',
+      state: 'failed',
       is_dirty: true,
       committed: false,
       reason: 'unknown_error',

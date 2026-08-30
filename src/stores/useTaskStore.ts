@@ -386,6 +386,15 @@ const getPreferredExecutionTarget = (
 const isManualStandaloneTask = (task: CatalogedImplementTask): boolean =>
   task.task_source === 'standalone' && task.standalone_kind === 'manual_feature';
 
+const deleteManualFeatureDraftDurably = async (taskId: string): Promise<void> => {
+  const confirmedAbsent = await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+  if (confirmedAbsent !== true) {
+    throw new Error(
+      `La suppression durable du brouillon ${taskId} n'a pas confirmé la disparition de la tâche.`,
+    );
+  }
+};
+
 const isTaskArchived = (task: Pick<CatalogedImplementTask, 'archived_at'>): boolean =>
   Boolean(task.archived_at);
 
@@ -2917,7 +2926,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           try {
             if (taskStillExists) {
               if (pending.draft) {
-                await tauriIpc.workspaceDeleteManualFeatureDraft(pending.taskId);
+                await deleteManualFeatureDraftDurably(pending.taskId);
               } else {
                 await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
               }
@@ -3256,7 +3265,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   createManualFeatureDraft: async (params) => {
     set({ lastError: null });
     assertTaskMutationRuntime('createManualFeatureDraft');
-    let draftCreated = false;
+    let draftCreationStarted = false;
 
     try {
       if (!tauriIpc.isTauriAvailable()) {
@@ -3265,6 +3274,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
       assertStandaloneTaskKindCreatableForProjects(params.taskKind, params.projectIds);
 
+      draftCreationStarted = true;
       await tauriIpc.workspaceCreateManualFeatureDraft({
         taskId: params.taskId,
         conversationId: params.conversationId,
@@ -3278,17 +3288,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         existingBranchName: params.existingBranchName ?? null,
         baseCommitHash: params.baseCommitHash ?? null,
       });
-      draftCreated = true;
-
       await get().refreshFromPlan();
       await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
         set({ lastError: message });
       });
     } catch (error) {
       const normalized = toServiceError(error);
-      if (draftCreated) {
+      if (draftCreationStarted) {
         try {
-          await tauriIpc.workspaceDeleteManualFeatureDraft(params.taskId);
+          await deleteManualFeatureDraftDurably(params.taskId);
           await get().refreshFromPlan();
         } catch (rollbackError) {
           const rollbackMessage = toServiceError(rollbackError).message;
@@ -3509,7 +3517,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         throw new Error('Manual features require the desktop runtime.');
       }
 
-      await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+      await deleteManualFeatureDraftDurably(taskId);
       if (existingTask && isManualStandaloneTask(existingTask)) {
         try {
           await removeManualFeatureMetadata(existingTask);
@@ -4014,14 +4022,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         };
         await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
         if (task.draft) {
-          await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+          await deleteManualFeatureDraftDurably(taskId);
         } else {
           await tauriIpc.workspaceDeleteManualFeature(taskId);
         }
         linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
       } else {
         if (task.draft) {
-          await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+          await deleteManualFeatureDraftDurably(taskId);
         } else {
           await tauriIpc.workspaceDeleteManualFeature(taskId);
         }

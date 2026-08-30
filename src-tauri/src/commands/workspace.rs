@@ -1262,7 +1262,7 @@ pub async fn workspace_delete_manual_feature_draft(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     task_id: String,
-) -> Result<()> {
+) -> Result<bool> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;

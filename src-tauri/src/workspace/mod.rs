@@ -2431,7 +2431,7 @@ pub async fn delete_manual_feature_draft(
     workspace_path: &Path,
     metadata_root: &Path,
     task_id: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
@@ -2439,10 +2439,10 @@ pub async fn delete_manual_feature_draft(
         .manual_features
         .retain(|feature| !(feature.id == task_id.trim() && feature.draft));
     if state.manual_features.len() == initial_len {
-        return Err(BackendError::Validation(format!(
-            "Unknown manual feature draft: {}",
-            task_id
-        )));
+        return Ok(!state
+            .manual_features
+            .iter()
+            .any(|feature| feature.id == task_id.trim()));
     }
     let normalized_task_id = task_id.trim().to_string();
     if !state
@@ -2452,14 +2452,17 @@ pub async fn delete_manual_feature_draft(
         state.deleted_manual_feature_ids.push(normalized_task_id);
     }
 
-    persist_sanitized_state(
+    let (persisted_state, _) = persist_sanitized_state(
         workspace_path,
         metadata_root,
         state,
         "delete_manual_feature_draft",
     )
     .await?;
-    Ok(())
+    Ok(!persisted_state
+        .manual_features
+        .iter()
+        .any(|feature| feature.id == task_id.trim()))
 }
 
 pub async fn rename_manual_feature(
@@ -10835,6 +10838,77 @@ mod tests {
             .reserved_standalone_feature_slugs
             .iter()
             .any(|value| value == "quick-export"));
+    }
+
+    #[tokio::test]
+    async fn delete_manual_feature_draft_confirms_durable_absence_idempotently() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+        let state = WorkspaceState {
+            version: 1,
+            workspace_revision: 0,
+            standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: None,
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
+        };
+        persist_sanitized_state(temp.path(), &metadata_root, state, "seed_workspace_state")
+            .await
+            .expect("seed workspace state");
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "manual-task-delete",
+            "manual-conversation-delete",
+            &["project-web".to_string()],
+            &[],
+            Some("main"),
+            None,
+            None,
+            "feature",
+            None,
+            None,
+        )
+        .await
+        .expect("create draft");
+
+        assert!(
+            delete_manual_feature_draft(temp.path(), &metadata_root, "manual-task-delete",)
+                .await
+                .expect("delete draft")
+        );
+        assert!(
+            delete_manual_feature_draft(temp.path(), &metadata_root, "manual-task-delete",)
+                .await
+                .expect("confirm already absent draft")
+        );
+
+        let persisted = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .expect("load persisted state");
+        assert!(!persisted
+            .manual_features
+            .iter()
+            .any(|feature| feature.id == "manual-task-delete"));
+        assert!(persisted
+            .deleted_manual_feature_ids
+            .contains(&"manual-task-delete".to_string()));
     }
 
     #[tokio::test]

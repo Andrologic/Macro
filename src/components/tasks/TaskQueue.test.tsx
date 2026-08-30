@@ -989,6 +989,74 @@ describe('TaskQueue', () => {
     expect(options.actions.map((action) => action.label)).toEqual(['Open worktree', 'Retry']);
   });
 
+  it('opens the repository instead of a removed worktree when branch cleanup remains', async () => {
+    const task = makeTask('archive-with-branch-cleanup', 'Completed', {
+      title: 'Archive after worktree removal',
+      standalone_kind: 'manual_feature',
+    });
+    seedTasks([task]);
+    const archiveTask = mock(async (taskId: string) => {
+      useTaskStore.setState((state) => ({
+        archivedTaskCleanupByTaskId: {
+          ...state.archivedTaskCleanupByTaskId,
+          [taskId]: {
+            operationId: 'cleanup-branch-only',
+            taskId,
+            targets: [{
+              worktreeKey: 'project-1::feature/archive-with-branch-cleanup',
+              repoPath: '/tmp/project-1',
+              branchName: 'feature/archive-with-branch-cleanup',
+              worktreePath: '/tmp/project-1/.macro/worktrees/archive-with-branch-cleanup',
+              worktreeRemoved: true,
+              branchRemoved: false,
+              state: 'failed',
+              lastError: 'injected branch deletion failure',
+            }],
+            createdAt: '2026-04-30T10:00:00.000Z',
+            updatedAt: '2026-04-30T10:00:00.000Z',
+          },
+        },
+      }));
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      archiveTask: archiveTask as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('button[title="Task actions"]')?.click();
+      await flushRender();
+    });
+    const archiveAction = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((button) => button.textContent?.trim() === 'Archive');
+    await act(async () => {
+      archiveAction?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const confirmArchive = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [],
+    ).find((button) => button.textContent?.trim() === 'Archive');
+    await act(async () => {
+      confirmArchive?.click();
+      await flushRender();
+    });
+
+    const [, options] = notifyMock.actionRequired.mock.calls[0] as [
+      string,
+      { description: string; actions: Array<{ label: string }> },
+    ];
+    expect(options.description).toContain('worktree has already been removed');
+    expect(options.description).toContain('feature/archive-with-branch-cleanup');
+    expect(options.description).toContain('/tmp/project-1');
+    expect(options.actions.map((action) => action.label)).toEqual(['Open repository', 'Retry']);
+  });
+
   it('shows tasks from every project by default and filters them by project', async () => {
     seedTasks([
       makeTask('task-project-1', 'Pending', { title: 'First project task' }),
@@ -1276,7 +1344,7 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it('reports a failed durable draft compensation and still removes the conversation', async () => {
+  it('compensates an ambiguous draft creation failure and still removes the conversation', async () => {
     const directProject = {
       ...makeProject('project-folder', '/tmp/project-folder', 'Folder project'),
       directEdit: true,
@@ -1284,9 +1352,11 @@ describe('TaskQueue', () => {
     };
     seedTasks([]);
     const createConversation = mock(async () => ({ id: 'conversation-created' }));
-    const selectConversation = mock(async () => false);
+    const selectConversation = mock(async () => true);
     const deleteConversation = mock(async () => undefined);
-    const createManualFeatureDraft = mock(async (_params: { taskId: string }) => undefined);
+    const createManualFeatureDraft = mock(async (_params: { taskId: string }) => {
+      throw new Error('injected transport failure after draft persistence');
+    });
     const activateTask = mock(async () => undefined);
     const deleteManualFeatureDraft = mock(async () => {
       throw new Error('injected durable draft cleanup failure');

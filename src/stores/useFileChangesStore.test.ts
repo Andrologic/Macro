@@ -2112,6 +2112,53 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().getChange(repositoryIdA, changeIdA)?.modifiedContent).toContain('const value = 2;');
   });
 
+  it('does not attach a newer revision to a draft edited during revision capture', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    let markReadStarted: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve;
+    });
+    let releaseRead: () => void = () => undefined;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const externalContent = 'const external = true;\n';
+    fsReadFileWithOptionsMock.mockImplementationOnce(async () => {
+      markReadStarted();
+      await readGate;
+      return {
+        content: externalContent,
+        language: 'TypeScript',
+        is_binary: false,
+        size: externalContent.length,
+        encoding: 'utf-8',
+        revision: `revision:${externalContent}`,
+      };
+    });
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await readStarted;
+    const editedDraft = 'const value = 42;\nconsole.log(value);';
+    store.updateRightDraft(editedDraft);
+    currentFiles[worktreeAPath]['src/main.ts'] = externalContent;
+    releaseRead();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (!useFileChangesStore.getState().getDiffModalSession()?.isHydratingFullContext) break;
+      await Promise.resolve();
+    }
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    expect(session?.rightDraftContent).toBe(editedDraft);
+    expect(session?.lastLoadedModifiedContent).toContain('const value = 2;');
+    expect(session?.editRevision).toBeNull();
+    await expect(store.saveRightDraft()).rejects.toThrow(
+      'the loaded revision is unavailable',
+    );
+    expect(fsWriteFileMock).not.toHaveBeenCalled();
+    expect(currentFiles[worktreeAPath]['src/main.ts']).toBe(externalContent);
+  });
+
   it('opens the diff modal with full file hydration while keeping focused as the initial presentation mode', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();

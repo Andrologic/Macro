@@ -1683,9 +1683,11 @@ export const createFileChangesStore = (
                 rightDraftContent: state.diffModalSession.isDirty
                   ? state.diffModalSession.rightDraftContent
                   : hydratedChange.modifiedContent,
-                lastLoadedModifiedContent: hydratedChange.modifiedContent,
+                lastLoadedModifiedContent: state.diffModalSession.isDirty
+                  ? state.diffModalSession.lastLoadedModifiedContent
+                  : hydratedChange.modifiedContent,
                 isHydratingFullContext: false,
-                editRevision,
+                editRevision: state.diffModalSession.isDirty ? null : editRevision,
               }
               : state.diffModalSession,
             lastError: null,

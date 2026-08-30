@@ -3369,8 +3369,8 @@ export async function workspaceRevertManualFeatureToDraft(params: {
 
 export async function workspaceDeleteManualFeatureDraft(
   taskId: string,
-): Promise<void> {
-  return invoke("workspace_delete_manual_feature_draft", { taskId });
+): Promise<boolean> {
+  return invoke<boolean>("workspace_delete_manual_feature_draft", { taskId });
 }
 
 export async function workspaceRenameManualFeature(params: {

@@ -86,7 +86,7 @@ const gitBranchListMock = mock(async () => ({
 const gitBranchDeleteMock = mock(async () => undefined);
 const directCheckpointResolveIdMock = mock(async () => 'task-checkpoint-0000000000000001');
 const directCheckpointRemoveMock = mock(async () => true);
-const workspaceDeleteManualFeatureDraftMock = mock(async () => undefined);
+const workspaceDeleteManualFeatureDraftMock = mock(async () => true);
 const workspaceDeleteManualFeatureMock = mock(async () => undefined);
 const workspaceArchiveManualFeatureMock = mock(async () => undefined);
 const workspaceRestoreManualFeatureMock = mock(async () => undefined);
@@ -894,7 +894,8 @@ describe('useTaskStore merge workflow review loading', () => {
         updated_at: '2026-08-12T00:00:00.000Z',
       };
     });
-    workspaceDeleteManualFeatureDraftMock.mockClear();
+  workspaceDeleteManualFeatureDraftMock.mockClear();
+  workspaceDeleteManualFeatureDraftMock.mockImplementation(async () => true);
     workspaceDeleteManualFeatureMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
     workspaceRevertManualFeatureToDraftMock.mockClear();
@@ -3154,6 +3155,45 @@ describe('useTaskStore execution blocker messages', () => {
     })).rejects.toThrow('Create the initial commit');
 
     expect(useTaskStore.getState().lastError).toContain('Create the initial commit');
+  });
+
+  it('compensates when draft creation may have persisted before a transport error', async () => {
+    installTauriRuntimeMock(mock(async (command) => {
+      if (command === 'workspace_create_manual_feature_draft') {
+        throw new Error('injected transport failure after persistence');
+      }
+      return undefined;
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    await expect(useTaskStore.getState().createManualFeatureDraft({
+      taskId: 'task-ambiguous-create',
+      conversationId: 'conversation-ambiguous-create',
+      groupId: 'group-1',
+      projectIds: ['project-1'],
+      contextProjectIds: [],
+      taskKind: 'feature',
+    })).rejects.toThrow('injected transport failure after persistence');
+
+    expect(workspaceDeleteManualFeatureDraftMock)
+      .toHaveBeenCalledWith('task-ambiguous-create');
+  });
+
+  it('rejects a draft deletion when the backend does not confirm durable absence', async () => {
+    workspaceDeleteManualFeatureDraftMock.mockImplementationOnce(async () => false);
+    const task = buildStandaloneTask({
+      id: 'task-unconfirmed-delete',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: true,
+      execution_targets: [],
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task] });
+
+    await expect(
+      useTaskStore.getState().deleteManualFeatureDraft(task.id),
+    ).rejects.toThrow('n\'a pas confirmé la disparition de la tâche');
   });
 });
 
