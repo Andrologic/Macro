@@ -171,12 +171,9 @@ impl ContainedBackgroundProcess {
         {
             use std::os::unix::process::CommandExt;
             unsafe {
-                command.as_std_mut().pre_exec(|| {
-                    if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
+                command
+                    .as_std_mut()
+                    .pre_exec(install_linux_process_supervisor);
             }
         }
         #[cfg(windows)]
@@ -344,6 +341,74 @@ fn next_containment_id() -> String {
         std::process::id(),
         NEXT_CONTAINMENT_ID.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_process_supervisor() -> io::Result<()> {
+    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let command_process_id = unsafe { libc::fork() };
+    if command_process_id == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    if command_process_id == 0 {
+        return Ok(());
+    }
+
+    close_linux_supervisor_file_descriptors();
+    let mut command_status = 0;
+    let mut command_status_known = false;
+    loop {
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(-1, &mut status, 0) };
+        if waited == command_process_id {
+            command_status = status;
+            command_status_known = true;
+            continue;
+        }
+        if waited >= 0 {
+            continue;
+        }
+
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::ECHILD) if command_status_known => {
+                exit_linux_supervisor_with_status(command_status)
+            }
+            _ => unsafe { libc::_exit(1) },
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn close_linux_supervisor_file_descriptors() {
+    let closed = unsafe { libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) };
+    if closed == 0 {
+        return;
+    }
+
+    for descriptor in 3..65_536 {
+        let _ = unsafe { libc::close(descriptor) };
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn exit_linux_supervisor_with_status(status: i32) -> ! {
+    if libc::WIFEXITED(status) {
+        unsafe { libc::_exit(libc::WEXITSTATUS(status)) }
+    }
+    if libc::WIFSIGNALED(status) {
+        let signal = libc::WTERMSIG(status);
+        unsafe {
+            libc::signal(signal, libc::SIG_DFL);
+            libc::raise(signal);
+            libc::_exit(128 + signal);
+        }
+    }
+    unsafe { libc::_exit(1) }
 }
 
 #[cfg(unix)]
@@ -660,7 +725,7 @@ mod tests {
         let marker = temp.path().join("escaped-cleared-environment.txt");
         let marker_arg = marker.to_string_lossy().replace('\'', "'\\''");
         let script = format!(
-            "setsid -f env -i /bin/sh -c 'sleep 1; printf survived > \"$1\"' sh '{marker_arg}' & sleep 30"
+            "setsid -f env -i /bin/sh -c 'sleep 1; printf survived > \"$1\"' sh '{marker_arg}'"
         );
         let mut command = background_contained_tokio_command("sh");
         command
@@ -669,7 +734,17 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut process = ContainedBackgroundProcess::spawn(command).expect("spawn parent");
+        // The shell and setsid launcher both exit before this delay. The
+        // per-command subreaper remains alive while the daemon is running.
         tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            process
+                .child
+                .try_wait()
+                .expect("query supervisor")
+                .is_none(),
+            "the containment supervisor exited before its adopted daemon"
+        );
         process
             .terminate_with_grace(Duration::ZERO)
             .await
