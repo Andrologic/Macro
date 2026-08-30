@@ -368,6 +368,10 @@ export interface GitSyncDto {
   output: string;
 }
 
+export interface GitPreparedBranchSyncDto {
+  targetCommit: string;
+}
+
 export interface GitRemoteDto {
   remote: string;
   url: string;
@@ -379,6 +383,11 @@ export interface GitMergeCheckDto {
   hasChanges: boolean;
   ahead?: number;
   behind?: number;
+}
+
+export interface GitGuardedMergeStateDto {
+  status: "pending" | "integrated";
+  targetCommit: string;
 }
 
 export interface GitRebaseCheckDto {
@@ -2350,6 +2359,22 @@ export async function gitMerge(params: {
   });
 }
 
+export async function gitGuardedMergeState(params: {
+  repoPath: string;
+  branchName: string;
+  intoBranch: string;
+  expectedBranchCommit: string;
+  expectedIntoCommit: string;
+}): Promise<GitGuardedMergeStateDto> {
+  return invoke<GitGuardedMergeStateDto>("git_guarded_merge_state", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    intoBranch: params.intoBranch,
+    expectedBranchCommit: params.expectedBranchCommit,
+    expectedIntoCommit: params.expectedIntoCommit,
+  });
+}
+
 export async function gitStartMergeResolution(params: {
   repoPath: string;
   branchName: string;
@@ -2818,6 +2843,32 @@ export async function gitPull(params: {
     repoPath: params.repoPath,
     remote: params.remote ?? null,
     branch: params.branch ?? null,
+  });
+}
+
+export async function gitPrepareGuardedBranchSync(params: {
+  repoPath: string;
+  branchName: string;
+  expectedBranchCommit: string;
+}): Promise<GitPreparedBranchSyncDto> {
+  return invoke<GitPreparedBranchSyncDto>("git_prepare_guarded_branch_sync", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    expectedBranchCommit: params.expectedBranchCommit,
+  });
+}
+
+export async function gitGuardedBranchSync(params: {
+  repoPath: string;
+  branchName: string;
+  expectedBranchCommit: string;
+  syncTargetCommit: string;
+}): Promise<GitGuardedMergeStateDto> {
+  return invoke<GitGuardedMergeStateDto>("git_guarded_branch_sync", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    expectedBranchCommit: params.expectedBranchCommit,
+    syncTargetCommit: params.syncTargetCommit,
   });
 }
 

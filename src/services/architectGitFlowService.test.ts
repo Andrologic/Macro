@@ -149,13 +149,47 @@ const gitRebaseCheckMock = mock(async (_params: { repoPath: string; branchName: 
   conflictFiles: [],
   output: '',
 }));
-const gitMergeMock = mock(async (_params: {
+type MockMergeParams = {
   repoPath: string;
   branchName?: string;
   intoBranch?: string;
   expectedBranchCommit?: string | null;
   expectedIntoCommit?: string | null;
-}) => 'merge-ok');
+};
+const completedMergeIntents = new Set<string>();
+const getMergeIntentKey = (params: MockMergeParams): string => JSON.stringify(params);
+const gitMergeMock = mock(async (params: MockMergeParams) => {
+  completedMergeIntents.add(getMergeIntentKey(params));
+  return 'merge-ok';
+});
+const gitGuardedMergeStateMock = mock(async (params: {
+  repoPath: string;
+  branchName: string;
+  intoBranch: string;
+  expectedBranchCommit: string;
+  expectedIntoCommit: string;
+}) => {
+  const branches = await gitBranchListMock(params.repoPath);
+  const targetCommit = branches.local.find((branch) => branch.name === params.intoBranch)?.commit ??
+    params.expectedIntoCommit;
+  const merged = completedMergeIntents.has(getMergeIntentKey(params)) ||
+    targetCommit !== params.expectedIntoCommit;
+  return {
+    status: merged ? 'integrated' as const : 'pending' as const,
+    targetCommit,
+  };
+});
+const gitPrepareGuardedBranchSyncMock = mock(async (params: {
+  repoPath: string;
+  branchName: string;
+  expectedBranchCommit: string;
+}) => ({ targetCommit: params.expectedBranchCommit }));
+const gitGuardedBranchSyncMock = mock(async (params: {
+  repoPath: string;
+  branchName: string;
+  expectedBranchCommit: string;
+  syncTargetCommit: string;
+}) => ({ status: 'integrated' as const, targetCommit: params.syncTargetCommit }));
 const gitPullMock = mock(async (_params: { repoPath: string; branch?: string }) => ({
   branch: _params.branch || 'develop',
   remote: 'origin',
@@ -504,7 +538,31 @@ describe('architectGitFlowService', () => {
     }));
 
     gitMergeMock.mockReset();
-    gitMergeMock.mockImplementation(async ({ repoPath }: { repoPath: string }) => `merged:${repoPath}`);
+    completedMergeIntents.clear();
+    gitMergeMock.mockImplementation(async (params: MockMergeParams) => {
+      completedMergeIntents.add(getMergeIntentKey(params));
+      return `merged:${params.repoPath}`;
+    });
+    gitGuardedMergeStateMock.mockReset();
+    gitGuardedMergeStateMock.mockImplementation(async (params) => {
+      const branches = await gitBranchListMock(params.repoPath);
+      const targetCommit = branches.local.find((branch) => branch.name === params.intoBranch)?.commit ??
+        params.expectedIntoCommit;
+      return {
+        status: completedMergeIntents.has(getMergeIntentKey(params)) ||
+          targetCommit !== params.expectedIntoCommit ? 'integrated' as const : 'pending' as const,
+        targetCommit,
+      };
+    });
+    gitPrepareGuardedBranchSyncMock.mockReset();
+    gitPrepareGuardedBranchSyncMock.mockImplementation(async (params) => ({
+      targetCommit: params.expectedBranchCommit,
+    }));
+    gitGuardedBranchSyncMock.mockReset();
+    gitGuardedBranchSyncMock.mockImplementation(async (params) => ({
+      status: 'integrated' as const,
+      targetCommit: params.syncTargetCommit,
+    }));
     gitPullMock.mockReset();
 
     gitBranchListMock.mockReset();
@@ -607,6 +665,9 @@ describe('architectGitFlowService', () => {
         gitMergeCheck: gitMergeCheckMock,
         gitRebaseCheck: gitRebaseCheckMock,
         gitMerge: gitMergeMock,
+        gitGuardedMergeState: gitGuardedMergeStateMock,
+        gitPrepareGuardedBranchSync: gitPrepareGuardedBranchSyncMock,
+        gitGuardedBranchSync: gitGuardedBranchSyncMock,
         gitPull: gitPullMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
@@ -1640,7 +1701,7 @@ describe('architectGitFlowService', () => {
       phase: 'prepared',
       finalizationRepositories: expect.arrayContaining([
         expect.objectContaining({ repoPath: '/repos/web', phase: 'complete' }),
-        expect.objectContaining({ repoPath: '/repos/api', phase: 'base_synced' }),
+        expect.objectContaining({ repoPath: '/repos/api', phase: 'plan_merge_pending' }),
       ]),
     }));
 
@@ -1657,7 +1718,7 @@ describe('architectGitFlowService', () => {
     expect(readPersistedLifecycleSagas()).toEqual([]);
   });
 
-  it('blocks recovery when a merge changed the base ref before its checkpoint was durable', async () => {
+  it('recovers a merge that changed the base ref before its checkpoint was durable', async () => {
     currentPlan = {
       ...currentPlan,
       projectIds: ['web'],
@@ -1691,7 +1752,7 @@ describe('architectGitFlowService', () => {
       );
       const repository = finalization?.finalizationRepositories?.[0];
       if (
-        !checkpointFailureArmed && repository?.phase === 'base_synced' &&
+        !checkpointFailureArmed && repository?.phase === 'plan_merge_pending' &&
         repository?.mergeRequired === true
       ) {
         checkpointFailureArmed = true;
@@ -1709,15 +1770,155 @@ describe('architectGitFlowService', () => {
     await architectGitFlowService.resumePlanLifecycleSagas();
 
     expect(gitMergeMock).toHaveBeenCalledTimes(1);
-    expect(updateArchitectPlanMock).not.toHaveBeenCalled();
-    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
-    expect(readPersistedLifecycleSagas()).toEqual([
-      expect.objectContaining({
-        operation: 'finalize',
-        phase: 'prepared',
-        lastError: expect.stringContaining('Expected base-before, found base-after-ambiguous-merge'),
-      }),
+    expect(updateArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(archiveArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('recovers a base sync that completed before its checkpoint was durable', async () => {
+    currentPlan = {
+      ...currentPlan,
+      projectIds: ['web'],
+      nodes: currentPlan.nodes.filter((node: { projectId: string }) => node.projectId === 'web'),
+      predictedBranches: currentPlan.predictedBranches.filter(
+        (branch: { projectId: string }) => branch.projectId === 'web',
+      ),
+    };
+    const commits = new Map([
+      ['develop', 'base-before'],
+      ['plan/checkout', 'plan-source'],
+      ['feature/checkout/checkout-web', 'feature-source'],
     ]);
+    gitBranchListMock.mockImplementation(async () => ({
+      current: 'develop',
+      local: Array.from(commits).map(([name, commit]) => ({
+        name,
+        commit,
+        is_head: name === 'develop',
+      })),
+      remote: [],
+    }));
+    gitPrepareGuardedBranchSyncMock.mockImplementation(async () => ({
+      targetCommit: 'base-upstream',
+    }));
+    let syncMutations = 0;
+    gitGuardedBranchSyncMock.mockImplementation(async (params) => {
+      const current = commits.get(params.branchName);
+      if (current === params.expectedBranchCommit) {
+        syncMutations += 1;
+        commits.set(params.branchName, params.syncTargetCommit);
+      } else if (current !== params.syncTargetCommit) {
+        throw new Error('unexpected foreign branch identity');
+      }
+      return { status: 'integrated', targetCommit: params.syncTargetCommit };
+    });
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: false,
+    }));
+    let checkpointFailureArmed = false;
+    afterPlanLifecycleSave = (valueJson) => {
+      const finalization = (JSON.parse(valueJson) as Array<Record<string, any>>).find(
+        (saga) => saga.operation === 'finalize',
+      );
+      if (!checkpointFailureArmed &&
+        finalization?.finalizationRepositories?.[0]?.phase === 'base_sync_pending') {
+        checkpointFailureArmed = true;
+        failPlanLifecycleSave = new Error('injected base sync checkpoint failure');
+      }
+    };
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('injected base sync checkpoint failure');
+    expect(commits.get('develop')).toBe('base-upstream');
+    expect(syncMutations).toBe(1);
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(syncMutations).toBe(1);
+    expect(gitGuardedBranchSyncMock).toHaveBeenCalledTimes(2);
+    expect(gitMergeMock).not.toHaveBeenCalled();
+    expect(archiveArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('recovers a backmerge that completed before its checkpoint was durable', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      projectIds: ['web'],
+      nodes: buildPlan().nodes.filter((node: { projectId: string }) => node.projectId === 'web'),
+      predictedBranches: buildPlan().predictedBranches.filter(
+        (branch: { projectId: string }) => branch.projectId === 'web',
+      ),
+      planKind: 'release',
+      targetBranchesByProjectId: { web: 'main' },
+      gitFlowPlan: {
+        version: 1,
+        planKind: 'release',
+        slug: '0.2.0',
+        projects: {
+          web: {
+            projectId: 'web',
+            sourceBranch: 'develop',
+            integrationBranch: '',
+            targetBranch: 'main',
+            backmergeBranch: 'develop',
+            confirmedVersion: '0.2.0',
+            confirmedSlug: '0.2.0',
+          },
+        },
+      },
+    };
+    const commits = new Map([
+      ['main', 'main-before'],
+      ['develop', 'develop-before'],
+      ['release/v0.2.0', 'release-source'],
+      ['feature/checkout/checkout-web', 'feature-source'],
+    ]);
+    gitBranchListMock.mockImplementation(async () => ({
+      current: 'develop',
+      local: Array.from(commits).map(([name, commit]) => ({ name, commit, is_head: name === 'develop' })),
+      remote: [],
+    }));
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+    }));
+    gitMergeMock.mockImplementation(async (params) => {
+      commits.set(
+        params.intoBranch || '',
+        params.intoBranch === 'main' ? 'main-after-merge' : 'develop-after-backmerge',
+      );
+      return `merged:${params.intoBranch}`;
+    });
+    let checkpointFailureArmed = false;
+    afterPlanLifecycleSave = (valueJson) => {
+      const finalization = (JSON.parse(valueJson) as Array<Record<string, any>>).find(
+        (saga) => saga.operation === 'finalize',
+      );
+      if (!checkpointFailureArmed &&
+        finalization?.finalizationRepositories?.[0]?.phase === 'backmerge_merge_pending') {
+        checkpointFailureArmed = true;
+        failPlanLifecycleSave = new Error('injected backmerge checkpoint failure');
+      }
+    };
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'develop',
+      planId: 'plan-1',
+    })).rejects.toThrow('injected backmerge checkpoint failure');
+    expect(commits.get('develop')).toBe('develop-after-backmerge');
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitMergeMock.mock.calls.filter(([params]) => params.intoBranch === 'develop'))
+      .toHaveLength(1);
+    expect(archiveArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
   });
 
   it('finalizes release plans into main and backmerges main into develop', async () => {
@@ -1783,12 +1984,12 @@ describe('architectGitFlowService', () => {
         backmergeOutput: 'merged:/repos/api',
       },
     ]);
-    expect(gitCheckoutMock.mock.calls.map(([params]) => params)).toEqual(expect.arrayContaining([
-      { repoPath: '/repos/web', branchOrCommit: 'main', create: false },
-      { repoPath: '/repos/web', branchOrCommit: 'develop', create: false },
-      { repoPath: '/repos/api', branchOrCommit: 'main', create: false },
-      { repoPath: '/repos/api', branchOrCommit: 'develop', create: false },
-    ]));
+    expect(gitPrepareGuardedBranchSyncMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repos/web', branchName: 'main', expectedBranchCommit: 'main-sha' },
+      { repoPath: '/repos/api', branchName: 'main', expectedBranchCommit: 'main-sha' },
+      { repoPath: '/repos/web', branchName: 'develop', expectedBranchCommit: 'develop-sha' },
+      { repoPath: '/repos/api', branchName: 'develop', expectedBranchCommit: 'develop-sha' },
+    ]);
     expect(gitMergeMock.mock.calls.map(([params]) => params)).toEqual([
       {
         repoPath: '/repos/web',
@@ -1952,6 +2153,9 @@ describe('architectGitFlowService', () => {
         gitMergeCheck: gitMergeCheckMock,
         gitRebaseCheck: gitRebaseCheckMock,
         gitMerge: gitMergeMock,
+        gitGuardedMergeState: gitGuardedMergeStateMock,
+        gitPrepareGuardedBranchSync: gitPrepareGuardedBranchSyncMock,
+        gitGuardedBranchSync: gitGuardedBranchSyncMock,
         gitPull: gitPullMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,

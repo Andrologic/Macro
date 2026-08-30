@@ -28,9 +28,13 @@ export type PlanLifecyclePhase = 'prepared' | 'git_merges_complete' | 'metadata_
 
 export type PlanFinalizationRepositoryPhase =
   | 'prepared'
+  | 'base_sync_pending'
   | 'base_synced'
+  | 'plan_merge_pending'
   | 'plan_merged'
+  | 'backmerge_sync_pending'
   | 'backmerge_synced'
+  | 'backmerge_merge_pending'
   | 'complete';
 
 export interface PlanFinalizationRepositoryCheckpoint {
@@ -44,8 +48,10 @@ export interface PlanFinalizationRepositoryCheckpoint {
   expectedBackmergeCommit: string | null;
   phase: PlanFinalizationRepositoryPhase;
   mergeRequired?: boolean;
+  baseSyncTargetCommit?: string;
   baseCommitAfterSync?: string;
   baseCommitAfterMerge?: string;
+  backmergeSyncTargetCommit?: string;
   backmergeCommitAfterSync?: string;
   backmergeCommitAfterMerge?: string;
   mergeOutput?: string;
@@ -125,8 +131,10 @@ const isFinalizationRepository = (
 ): value is PlanFinalizationRepositoryCheckpoint => {
   if (!value || typeof value !== 'object') return false;
   const repository = value as Partial<PlanFinalizationRepositoryCheckpoint>;
-  const validPhase = repository.phase === 'prepared' || repository.phase === 'base_synced' ||
-    repository.phase === 'plan_merged' || repository.phase === 'backmerge_synced' ||
+  const validPhase = repository.phase === 'prepared' || repository.phase === 'base_sync_pending' ||
+    repository.phase === 'base_synced' || repository.phase === 'plan_merge_pending' ||
+    repository.phase === 'plan_merged' || repository.phase === 'backmerge_sync_pending' ||
+    repository.phase === 'backmerge_synced' || repository.phase === 'backmerge_merge_pending' ||
     repository.phase === 'complete';
   const validOptionalString = (candidate: unknown): boolean =>
     candidate === undefined || typeof candidate === 'string';
@@ -139,24 +147,47 @@ const isFinalizationRepository = (
     (typeof repository.expectedBackmergeCommit !== 'string' && repository.expectedBackmergeCommit !== null) ||
     !validPhase ||
     (repository.mergeRequired !== undefined && typeof repository.mergeRequired !== 'boolean') ||
+    !validOptionalString(repository.baseSyncTargetCommit) ||
     !validOptionalString(repository.baseCommitAfterSync) ||
     !validOptionalString(repository.baseCommitAfterMerge) ||
+    !validOptionalString(repository.backmergeSyncTargetCommit) ||
     !validOptionalString(repository.backmergeCommitAfterSync) ||
     !validOptionalString(repository.backmergeCommitAfterMerge) ||
     !validOptionalString(repository.mergeOutput) ||
     !validOptionalString(repository.backmergeOutput)
   ) return false;
-  if (repository.phase !== 'prepared' && typeof repository.baseCommitAfterSync !== 'string') {
+  if (
+    repository.phase === 'base_sync_pending' && typeof repository.baseSyncTargetCommit !== 'string'
+  ) return false;
+  if (
+    repository.phase !== 'prepared' && repository.phase !== 'base_sync_pending' &&
+    typeof repository.baseCommitAfterSync !== 'string'
+  ) {
+    return false;
+  }
+  if (repository.phase === 'plan_merge_pending' && typeof repository.mergeRequired !== 'boolean') {
     return false;
   }
   if (
-    (repository.phase === 'plan_merged' || repository.phase === 'backmerge_synced' || repository.phase === 'complete') &&
+    (
+      repository.phase === 'plan_merged' || repository.phase === 'backmerge_sync_pending' ||
+      repository.phase === 'backmerge_synced' || repository.phase === 'backmerge_merge_pending' ||
+      repository.phase === 'complete'
+    ) &&
     (typeof repository.mergeRequired !== 'boolean' || typeof repository.baseCommitAfterMerge !== 'string')
   ) return false;
-  if (repository.phase === 'backmerge_synced' && (
-    !repository.backmergeBranchName ||
+  if (
+    (repository.phase === 'backmerge_sync_pending' || repository.phase === 'backmerge_synced' ||
+      repository.phase === 'backmerge_merge_pending') && !repository.backmergeBranchName
+  ) return false;
+  if (
+    repository.phase === 'backmerge_sync_pending' &&
+    typeof repository.backmergeSyncTargetCommit !== 'string'
+  ) return false;
+  if (
+    (repository.phase === 'backmerge_synced' || repository.phase === 'backmerge_merge_pending') &&
     typeof repository.backmergeCommitAfterSync !== 'string'
-  )) return false;
+  ) return false;
   if (repository.phase === 'complete' && repository.backmergeBranchName &&
     typeof repository.backmergeCommitAfterMerge !== 'string') return false;
   return true;
@@ -465,9 +496,13 @@ export const loadPlanLifecycleSagas = async (
 
 const finalizationRepositoryPhaseRank = (phase: PlanFinalizationRepositoryPhase): number => [
   'prepared',
+  'base_sync_pending',
   'base_synced',
+  'plan_merge_pending',
   'plan_merged',
+  'backmerge_sync_pending',
   'backmerge_synced',
+  'backmerge_merge_pending',
   'complete',
 ].indexOf(phase);
 

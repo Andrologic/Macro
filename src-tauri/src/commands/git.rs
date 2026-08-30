@@ -312,6 +312,12 @@ pub struct GitSyncDto {
     pub output: String,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPreparedBranchSyncDto {
+    pub target_commit: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GitRemoteDto {
     pub remote: String,
@@ -407,6 +413,13 @@ pub struct GitMergeCheckDto {
     pub has_changes: bool,
     pub ahead: u32,
     pub behind: u32,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitGuardedMergeStateDto {
+    pub status: String,
+    pub target_commit: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -5726,6 +5739,305 @@ fn verify_expected_merge_identity(
     Ok(())
 }
 
+fn build_guarded_merge_state(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: &str,
+    expected_into_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    validate_branch_name(branch_name)?;
+    validate_branch_name(into_branch)?;
+
+    let expected_branch_oid =
+        Oid::from_str(expected_branch_commit).map_err(|_| BackendError::Git {
+            message: format!("Invalid expected source commit for branch {}", branch_name),
+        })?;
+    let expected_into_oid = Oid::from_str(expected_into_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid expected target commit for branch {}", into_branch),
+    })?;
+    let actual_branch_oid = repo
+        .find_branch(branch_name, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to resolve merge source branch {}: {}",
+                branch_name, error
+            ),
+        })?
+        .id();
+    if actual_branch_oid != expected_branch_oid {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to reconcile merge because the durable source identity of branch {} changed from {} to {}",
+                branch_name, expected_branch_oid, actual_branch_oid
+            ),
+        });
+    }
+
+    let actual_into_commit = repo
+        .find_branch(into_branch, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to resolve merge target branch {}: {}",
+                into_branch, error
+            ),
+        })?;
+    let actual_into_oid = actual_into_commit.id();
+    if actual_into_oid == expected_into_oid {
+        return Ok(GitGuardedMergeStateDto {
+            status: "pending".to_string(),
+            target_commit: actual_into_oid.to_string(),
+        });
+    }
+
+    let is_expected_merge = actual_into_commit.parent_count() == 2
+        && actual_into_commit.parent_id(0).ok() == Some(expected_into_oid)
+        && actual_into_commit.parent_id(1).ok() == Some(expected_branch_oid);
+    if is_expected_merge {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_into_oid.to_string(),
+        });
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "Refusing to reconcile merge because target branch {} changed from {} to unrelated commit {}",
+            into_branch, expected_into_oid, actual_into_oid
+        ),
+    })
+}
+
+fn abort_exact_incomplete_merge(
+    repo: &Repository,
+    into_branch: &str,
+    expected_into_commit: &str,
+    expected_merge_head: &str,
+) -> Result<bool> {
+    if repo.state() == RepositoryState::Clean {
+        return Ok(false);
+    }
+    if repo.state() != RepositoryState::Merge {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing durable merge recovery because repository state is {:?}",
+                repo.state()
+            ),
+        });
+    }
+    if get_branch_name(repo)?.as_deref() != Some(into_branch) {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing durable merge recovery because HEAD is not on target branch {}",
+                into_branch
+            ),
+        });
+    }
+    let expected_into_oid = Oid::from_str(expected_into_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid expected target commit for branch {}", into_branch),
+    })?;
+    let actual_into_oid = repo
+        .find_branch(into_branch, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to resolve merge target branch {}: {}",
+                into_branch, error
+            ),
+        })?
+        .id();
+    if actual_into_oid != expected_into_oid {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing durable merge recovery because target branch {} changed from {} to {}",
+                into_branch, expected_into_oid, actual_into_oid
+            ),
+        });
+    }
+    let merge_head_contents =
+        fs::read_to_string(repo.path().join("MERGE_HEAD")).map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to inspect MERGE_HEAD during durable recovery: {}",
+                error
+            ),
+        })?;
+    let merge_heads = merge_head_contents
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if merge_heads.as_slice() != [expected_merge_head] {
+        return Err(BackendError::Git {
+            message: "Refusing durable merge recovery because MERGE_HEAD does not match the journaled source commit".to_string(),
+        });
+    }
+
+    let root = repo_root(repo)?;
+    let output = run_git_command(&root, &["merge".to_string(), "--abort".to_string()])?;
+    if !output.success {
+        let details = command_output_text(&output);
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                format!("git merge --abort failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+    Ok(true)
+}
+
+fn reconcile_guarded_merge_state(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: &str,
+    expected_into_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    abort_exact_incomplete_merge(
+        repo,
+        into_branch,
+        expected_into_commit,
+        expected_branch_commit,
+    )?;
+    build_guarded_merge_state(
+        repo,
+        branch_name,
+        into_branch,
+        expected_branch_commit,
+        expected_into_commit,
+    )
+}
+
+fn build_guarded_branch_sync_state(
+    repo: &Repository,
+    branch_name: &str,
+    expected_branch_commit: &str,
+    sync_target_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    validate_branch_name(branch_name)?;
+    let expected_oid = Oid::from_str(expected_branch_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid expected sync commit for branch {}", branch_name),
+    })?;
+    let sync_target_oid = Oid::from_str(sync_target_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid prepared sync target for branch {}", branch_name),
+    })?;
+    let actual_commit = repo
+        .find_branch(branch_name, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to resolve sync branch {}: {}", branch_name, error),
+        })?;
+    let actual_oid = actual_commit.id();
+
+    if actual_oid == expected_oid {
+        let target_already_integrated = expected_oid == sync_target_oid
+            || repo
+                .graph_descendant_of(expected_oid, sync_target_oid)
+                .map_err(|error| BackendError::Git {
+                    message: format!("Failed to inspect prepared sync ancestry: {}", error),
+                })?;
+        return Ok(GitGuardedMergeStateDto {
+            status: if target_already_integrated {
+                "integrated"
+            } else {
+                "pending"
+            }
+            .to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+
+    if actual_oid == sync_target_oid {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+    let is_expected_merge = actual_commit.parent_count() == 2
+        && actual_commit.parent_id(0).ok() == Some(expected_oid)
+        && actual_commit.parent_id(1).ok() == Some(sync_target_oid);
+    if is_expected_merge {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "Refusing to reconcile sync because branch {} changed from {} to unrelated commit {}",
+            branch_name, expected_oid, actual_oid
+        ),
+    })
+}
+
+fn apply_guarded_branch_sync(
+    repo: &Repository,
+    branch_name: &str,
+    expected_branch_commit: &str,
+    sync_target_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    abort_exact_incomplete_merge(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    let initial = build_guarded_branch_sync_state(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    if initial.status == "integrated" {
+        return Ok(initial);
+    }
+
+    ensure_clean(repo)?;
+    if get_branch_name(repo)?.as_deref() != Some(branch_name) {
+        checkout_repo(repo, branch_name, false)?;
+    }
+    let root = repo_root(repo)?;
+    let output = run_git_command(
+        &root,
+        &[
+            "merge".to_string(),
+            "--no-edit".to_string(),
+            sync_target_commit.to_string(),
+        ],
+    )?;
+    if !output.success {
+        let merge_head_path = repo.path().join("MERGE_HEAD");
+        if merge_head_path.exists() {
+            let _ = run_git_command(&root, &["merge".to_string(), "--abort".to_string()]);
+        }
+        let details = command_output_text(&output);
+        return Err(BackendError::GitConflict {
+            message: if details.is_empty() {
+                format!("git sync merge failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    let completed = build_guarded_branch_sync_state(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    if completed.status != "integrated" {
+        return Err(BackendError::Git {
+            message: format!("Prepared sync for branch {} did not converge", branch_name),
+        });
+    }
+    Ok(completed)
+}
+
 pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<String> {
     validate_commit_message(message)?;
     ensure_safe_config(repo)?;
@@ -6793,6 +7105,43 @@ pub async fn git_merge(
             expected_into_commit.as_deref(),
         )?;
         merge_repo(&repo, &branch_name, &into_branch)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Reconcile a durable merge intent with the exact merge commit produced by `git_merge`.
+pub async fn git_guarded_merge_state(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    into_branch: String,
+    expected_branch_commit: String,
+    expected_into_commit: String,
+) -> Result<GitGuardedMergeStateDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_guarded_merge_state"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        reconcile_guarded_merge_state(
+            &repo,
+            &branch_name,
+            &into_branch,
+            &expected_branch_commit,
+            &expected_into_commit,
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -12323,6 +12672,131 @@ pub async fn git_fetch(
 }
 
 #[tauri::command]
+/// Fetch and capture the exact upstream commit for a later durable branch sync.
+pub async fn git_prepare_guarded_branch_sync(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    expected_branch_commit: String,
+) -> Result<GitPreparedBranchSyncDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation(
+            "git_prepare_guarded_branch_sync",
+        ));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        build_guarded_branch_sync_state(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &expected_branch_commit,
+        )?;
+        let local_ref = format!("refs/heads/{}", branch_name);
+        let remote_name = repo
+            .branch_upstream_remote(&local_ref)
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Branch {} has no configured upstream: {}",
+                    branch_name, error
+                ),
+            })?
+            .as_str()
+            .map_err(|_| BackendError::Git {
+                message: format!("Branch {} has a non-UTF-8 upstream remote", branch_name),
+            })?
+            .to_string();
+        validate_remote_name(&remote_name)?;
+        let root = repo_root(&repo)?;
+        drop(repo);
+
+        let output = run_git_command_with_timeout(
+            &root,
+            &["fetch".to_string(), remote_name],
+            NATIVE_GIT_NETWORK_TIMEOUT,
+        )?;
+        if !output.success {
+            let details = command_output_text(&output);
+            return Err(BackendError::Git {
+                message: if details.is_empty() {
+                    format!("git fetch failed (exit code: {:?})", output.code)
+                } else {
+                    details
+                },
+            });
+        }
+
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        build_guarded_branch_sync_state(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &expected_branch_commit,
+        )?;
+        let target_commit = repo
+            .find_branch(&branch_name, BranchType::Local)
+            .and_then(|branch| branch.upstream())
+            .and_then(|branch| branch.get().peel_to_commit())
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to resolve upstream for branch {}: {}",
+                    branch_name, error
+                ),
+            })?
+            .id()
+            .to_string();
+        Ok(GitPreparedBranchSyncDto { target_commit })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Apply or reconcile a branch sync whose local and upstream commits were journaled first.
+pub async fn git_guarded_branch_sync(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    expected_branch_commit: String,
+    sync_target_commit: String,
+) -> Result<GitGuardedMergeStateDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_guarded_branch_sync"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        apply_guarded_branch_sync(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &sync_target_commit,
+        )
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Push the current branch (or provided branch) to remote.
 pub async fn git_push(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -17501,6 +17975,168 @@ mod tests {
         .expect_err("a changed target ref must fence the merge");
 
         assert!(error.to_string().contains("durable target identity"));
+    }
+
+    #[test]
+    fn guarded_merge_state_recognizes_only_the_exact_intended_merge_commit() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        let pending = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(pending.status, "pending");
+        assert_eq!(pending.target_commit, expected_base.to_string());
+
+        merge_repo(&repo, "feature", &base_branch).unwrap();
+        let integrated = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(integrated.status, "integrated");
+        assert_ne!(integrated.target_commit, expected_base.to_string());
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("unrelated.txt"), "unrelated change").unwrap();
+        commit_repo(&repo, "chore: unrelated change", true).unwrap();
+        let error = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .expect_err("a later target commit must not impersonate the intended merge");
+        assert!(error.to_string().contains("unrelated commit"));
+    }
+
+    #[test]
+    fn guarded_branch_sync_replays_a_completed_fast_forward_without_mutating_again() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "prepared-upstream", true).unwrap();
+        fs::write(temp.path().join("upstream.txt"), "upstream change").unwrap();
+        commit_repo(&repo, "feat: upstream change", true).unwrap();
+        let sync_target = repo
+            .find_branch("prepared-upstream", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        let first = apply_guarded_branch_sync(
+            &repo,
+            &base_branch,
+            &expected_base.to_string(),
+            &sync_target.to_string(),
+        )
+        .unwrap();
+        assert_eq!(first.status, "integrated");
+        assert_eq!(first.target_commit, sync_target.to_string());
+
+        let replay = apply_guarded_branch_sync(
+            &repo,
+            &base_branch,
+            &expected_base.to_string(),
+            &sync_target.to_string(),
+        )
+        .unwrap();
+        assert_eq!(replay.status, "integrated");
+        assert_eq!(replay.target_commit, first.target_commit);
+    }
+
+    #[test]
+    fn guarded_merge_recovery_aborts_only_its_exact_incomplete_merge() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        let root = repo_root(&repo).unwrap();
+        let output = run_git_command(
+            &root,
+            &[
+                "merge".to_string(),
+                "--no-ff".to_string(),
+                "--no-commit".to_string(),
+                "feature".to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(output.success);
+        assert_eq!(repo.state(), RepositoryState::Merge);
+
+        let reconciled = reconcile_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(reconciled.status, "pending");
+        assert_eq!(repo.state(), RepositoryState::Clean);
+        assert_eq!(
+            repo.find_branch(&base_branch, BranchType::Local)
+                .unwrap()
+                .get()
+                .peel_to_commit()
+                .unwrap()
+                .id(),
+            expected_base
+        );
     }
 
     #[test]

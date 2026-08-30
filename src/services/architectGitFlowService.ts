@@ -415,6 +415,9 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'isTauriAvailable'
   | 'gitDiff'
   | 'gitMerge'
+  | 'gitGuardedMergeState'
+  | 'gitPrepareGuardedBranchSync'
+  | 'gitGuardedBranchSync'
   | 'gitBranchDelete'
   | 'gitBranchDeleteRemote'
   | 'gitCheckout'
@@ -2054,60 +2057,110 @@ export const createArchitectGitFlowService = (
       await persistSaga(nextSaga);
     };
 
-    for (const repository of saga.finalizationRepositories!) {
-      if (repository.phase !== 'prepared') continue;
-      let branches = await deps.tauri.gitBranchList(repository.repoPath);
-      assertFinalizationBranchCommit(
-        branches,
-        repository.planBranchName,
-        repository.expectedPlanCommit,
-        repository.repoPath,
-      );
-      assertFinalizationBranchCommit(
-        branches,
-        repository.baseBranchName,
-        repository.expectedBaseCommit,
-        repository.repoPath,
-      );
-      if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+    for (const repositorySnapshot of saga.finalizationRepositories!) {
+      let repository = saga.finalizationRepositories!.find((candidate) =>
+        candidate.projectId === repositorySnapshot.projectId &&
+        candidate.repoPath === repositorySnapshot.repoPath
+      )!;
+      if (repository.phase === 'prepared') {
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
         assertFinalizationBranchCommit(
           branches,
-          repository.backmergeBranchName,
-          repository.expectedBackmergeCommit,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
           repository.repoPath,
         );
-      }
-      await deps.tauri.gitCheckout({
-        repoPath: repository.repoPath,
-        branchOrCommit: repository.baseBranchName,
-        create: false,
-      });
-      await deps.tauri.gitPull({ repoPath: repository.repoPath });
-      branches = await deps.tauri.gitBranchList(repository.repoPath);
-      assertFinalizationBranchCommit(
-        branches,
-        repository.planBranchName,
-        repository.expectedPlanCommit,
-        repository.repoPath,
-      );
-      if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
         assertFinalizationBranchCommit(
           branches,
-          repository.backmergeBranchName,
-          repository.expectedBackmergeCommit,
+          repository.baseBranchName,
+          repository.expectedBaseCommit,
           repository.repoPath,
         );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branches,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        const preparedSync = await deps.tauri.gitPrepareGuardedBranchSync({
+          repoPath: repository.repoPath,
+          branchName: repository.baseBranchName,
+          expectedBranchCommit: repository.expectedBaseCommit,
+        });
+        const branchesAfterPrepare = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branchesAfterPrepare,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branchesAfterPrepare,
+          repository.baseBranchName,
+          repository.expectedBaseCommit,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branchesAfterPrepare,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'base_sync_pending',
+          baseSyncTargetCommit: preparedSync.targetCommit,
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
       }
-      const baseCommitAfterSync = requireLocalBranchCommit(
-        branches,
-        repository.baseBranchName,
-        repository.repoPath,
-      );
-      await persistRepository(repository.projectId, repository.repoPath, (current) => ({
-        ...current,
-        phase: 'base_synced',
-        baseCommitAfterSync,
-      }));
+
+      if (repository.phase === 'base_sync_pending') {
+        if (!repository.baseSyncTargetCommit) {
+          throw new Error(`Plan finalization is missing the prepared base sync for ${repository.repoPath}.`);
+        }
+        const sync = await deps.tauri.gitGuardedBranchSync({
+          repoPath: repository.repoPath,
+          branchName: repository.baseBranchName,
+          expectedBranchCommit: repository.expectedBaseCommit,
+          syncTargetCommit: repository.baseSyncTargetCommit,
+        });
+        if (sync.status !== 'integrated') {
+          throw new Error(`Plan finalization did not reconcile the base sync for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          sync.targetCommit,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branches,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'base_synced',
+          baseCommitAfterSync: sync.targetCommit,
+        }));
+      }
     }
 
     const resolvedRepositories = saga.finalizationRepositories!.map((repository) => ({
@@ -2173,21 +2226,61 @@ export const createArchitectGitFlowService = (
             repository.repoPath,
           );
         }
-        const mergeOutput = repository.mergeRequired
-          ? await deps.tauri.gitMerge({
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'plan_merge_pending',
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'plan_merge_pending') {
+        if (typeof repository.mergeRequired !== 'boolean' || !repository.baseCommitAfterSync) {
+          throw new Error(`Plan finalization is missing the merge intent for ${repository.repoPath}.`);
+        }
+        let mergeOutput = repository.mergeOutput;
+        let baseCommitAfterMerge = repository.baseCommitAfterSync;
+        if (repository.mergeRequired) {
+          const mergeParams = {
             repoPath: repository.repoPath,
             branchName: repository.planBranchName,
             intoBranch: repository.baseBranchName,
             expectedBranchCommit: repository.expectedPlanCommit,
             expectedIntoCommit: repository.baseCommitAfterSync,
-          })
-          : undefined;
-        const branchesAfterMerge = await deps.tauri.gitBranchList(repository.repoPath);
-        const baseCommitAfterMerge = requireLocalBranchCommit(
-          branchesAfterMerge,
-          repository.baseBranchName,
+          };
+          let mergeState = await deps.tauri.gitGuardedMergeState(mergeParams);
+          if (mergeState.status === 'pending') {
+            mergeOutput = await deps.tauri.gitMerge(mergeParams);
+            mergeState = await deps.tauri.gitGuardedMergeState(mergeParams);
+          }
+          if (mergeState.status !== 'integrated') {
+            throw new Error(`Plan finalization did not reconcile the plan merge for ${repository.repoPath}.`);
+          }
+          baseCommitAfterMerge = mergeState.targetCommit;
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
           repository.repoPath,
         );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branches,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
         await persistRepository(repository.projectId, repository.repoPath, (current) => ({
           ...current,
           phase: 'plan_merged',
@@ -2204,7 +2297,7 @@ export const createArchitectGitFlowService = (
         if (!repository.baseCommitAfterMerge || !repository.expectedBackmergeCommit) {
           throw new Error(`Plan finalization is missing backmerge identities for ${repository.repoPath}.`);
         }
-        let branches = await deps.tauri.gitBranchList(repository.repoPath);
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
         assertFinalizationBranchCommit(
           branches,
           repository.baseBranchName,
@@ -2217,28 +2310,68 @@ export const createArchitectGitFlowService = (
           repository.expectedBackmergeCommit,
           repository.repoPath,
         );
-        await deps.tauri.gitCheckout({
+        const preparedSync = await deps.tauri.gitPrepareGuardedBranchSync({
           repoPath: repository.repoPath,
-          branchOrCommit: repository.backmergeBranchName,
-          create: false,
+          branchName: repository.backmergeBranchName,
+          expectedBranchCommit: repository.expectedBackmergeCommit,
         });
-        await deps.tauri.gitPull({ repoPath: repository.repoPath });
-        branches = await deps.tauri.gitBranchList(repository.repoPath);
+        const branchesAfterPrepare = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branchesAfterPrepare,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branchesAfterPrepare,
+          repository.backmergeBranchName,
+          repository.expectedBackmergeCommit,
+          repository.repoPath,
+        );
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'backmerge_sync_pending',
+          backmergeSyncTargetCommit: preparedSync.targetCommit,
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'backmerge_sync_pending') {
+        if (
+          !repository.backmergeBranchName || !repository.expectedBackmergeCommit ||
+          !repository.baseCommitAfterMerge || !repository.backmergeSyncTargetCommit
+        ) {
+          throw new Error(`Plan finalization is missing the prepared backmerge sync for ${repository.repoPath}.`);
+        }
+        const sync = await deps.tauri.gitGuardedBranchSync({
+          repoPath: repository.repoPath,
+          branchName: repository.backmergeBranchName,
+          expectedBranchCommit: repository.expectedBackmergeCommit,
+          syncTargetCommit: repository.backmergeSyncTargetCommit,
+        });
+        if (sync.status !== 'integrated') {
+          throw new Error(`Plan finalization did not reconcile the backmerge sync for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
         assertFinalizationBranchCommit(
           branches,
           repository.baseBranchName,
           repository.baseCommitAfterMerge,
           repository.repoPath,
         );
-        const backmergeCommitAfterSync = requireLocalBranchCommit(
+        assertFinalizationBranchCommit(
           branches,
           repository.backmergeBranchName,
+          sync.targetCommit,
           repository.repoPath,
         );
         await persistRepository(repository.projectId, repository.repoPath, (current) => ({
           ...current,
           phase: 'backmerge_synced',
-          backmergeCommitAfterSync,
+          backmergeCommitAfterSync: sync.targetCommit,
         }));
         repository = saga.finalizationRepositories!.find((candidate) =>
           candidate.projectId === repositorySnapshot.projectId &&
@@ -2266,23 +2399,56 @@ export const createArchitectGitFlowService = (
           repository.backmergeCommitAfterSync,
           repository.repoPath,
         );
-        const backmergeOutput = await deps.tauri.gitMerge({
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'backmerge_merge_pending',
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'backmerge_merge_pending') {
+        if (
+          !repository.backmergeBranchName || !repository.baseCommitAfterMerge ||
+          !repository.backmergeCommitAfterSync
+        ) {
+          throw new Error(`Plan finalization is missing the backmerge intent for ${repository.repoPath}.`);
+        }
+        const mergeParams = {
           repoPath: repository.repoPath,
           branchName: repository.baseBranchName,
           intoBranch: repository.backmergeBranchName,
           expectedBranchCommit: repository.baseCommitAfterMerge,
           expectedIntoCommit: repository.backmergeCommitAfterSync,
-        });
-        const branchesAfterBackmerge = await deps.tauri.gitBranchList(repository.repoPath);
-        const backmergeCommitAfterMerge = requireLocalBranchCommit(
-          branchesAfterBackmerge,
+        };
+        let backmergeOutput = repository.backmergeOutput;
+        let mergeState = await deps.tauri.gitGuardedMergeState(mergeParams);
+        if (mergeState.status === 'pending') {
+          backmergeOutput = await deps.tauri.gitMerge(mergeParams);
+          mergeState = await deps.tauri.gitGuardedMergeState(mergeParams);
+        }
+        if (mergeState.status !== 'integrated') {
+          throw new Error(`Plan finalization did not reconcile the backmerge for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
           repository.backmergeBranchName,
+          mergeState.targetCommit,
           repository.repoPath,
         );
         await persistRepository(repository.projectId, repository.repoPath, (current) => ({
           ...current,
           phase: 'complete',
-          backmergeCommitAfterMerge,
+          backmergeCommitAfterMerge: mergeState.targetCommit,
           backmergeOutput,
         }));
       } else if (repository.phase === 'plan_merged' && !repository.backmergeBranchName) {
@@ -2295,6 +2461,35 @@ export const createArchitectGitFlowService = (
 
     if (!saga.finalizationRepositories!.every((repository) => repository.phase === 'complete')) {
       throw new Error('Plan finalization did not checkpoint every repository merge.');
+    }
+    for (const repository of saga.finalizationRepositories!) {
+      if (!repository.baseCommitAfterMerge) {
+        throw new Error(`Plan finalization is missing its final base identity for ${repository.repoPath}.`);
+      }
+      const branches = await deps.tauri.gitBranchList(repository.repoPath);
+      assertFinalizationBranchCommit(
+        branches,
+        repository.planBranchName,
+        repository.expectedPlanCommit,
+        repository.repoPath,
+      );
+      assertFinalizationBranchCommit(
+        branches,
+        repository.baseBranchName,
+        repository.baseCommitAfterMerge,
+        repository.repoPath,
+      );
+      if (repository.backmergeBranchName) {
+        if (!repository.backmergeCommitAfterMerge) {
+          throw new Error(`Plan finalization is missing its final backmerge identity for ${repository.repoPath}.`);
+        }
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.backmergeCommitAfterMerge,
+          repository.repoPath,
+        );
+      }
     }
     await persistSaga({
       ...saga,
