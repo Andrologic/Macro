@@ -226,4 +226,79 @@ describe('Dialog', () => {
     expect(remainingDialogs).toHaveLength(1);
     expect(remainingDialogs[0]?.contains(document.activeElement)).toBe(true);
   });
+
+  it('closes a newer independent confirmation before an older nested stack', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeOuter = mock(() => undefined);
+    const cancelNestedConfirmation = mock(() => undefined);
+    const cancelIndependentConfirmation = mock(() => undefined);
+    let openIndependentConfirmation: () => void = () => undefined;
+
+    const IndependentDialogStacks = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [nestedConfirmationOpen, setNestedConfirmationOpen] = useState(true);
+      const [independentConfirmationOpen, setIndependentConfirmationOpen] = useState(false);
+      openIndependentConfirmation = () => setIndependentConfirmationOpen(true);
+      return (
+        <>
+          {outerOpen && (
+            <Dialog
+              title="Parent modal"
+              onClose={() => {
+                closeOuter();
+                setOuterOpen(false);
+              }}
+            >
+              <ConfirmPromptModal
+                isOpen={nestedConfirmationOpen}
+                title="Nested confirmation"
+                onCancel={() => {
+                  cancelNestedConfirmation();
+                  setNestedConfirmationOpen(false);
+                }}
+                onConfirm={() => undefined}
+              />
+            </Dialog>
+          )}
+          <ConfirmPromptModal
+            isOpen={independentConfirmationOpen}
+            title="Independent confirmation"
+            onCancel={() => {
+              cancelIndependentConfirmation();
+              setIndependentConfirmationOpen(false);
+            }}
+            onConfirm={() => undefined}
+          />
+        </>
+      );
+    };
+
+    await act(async () => {
+      root?.render(<IndependentDialogStacks />);
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      openIndependentConfirmation();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(3);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(cancelIndependentConfirmation).toHaveBeenCalledTimes(1);
+    expect(cancelNestedConfirmation).not.toHaveBeenCalled();
+    expect(closeOuter).not.toHaveBeenCalled();
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+  });
 });
