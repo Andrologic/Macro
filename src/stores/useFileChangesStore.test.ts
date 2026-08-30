@@ -2382,6 +2382,34 @@ describe('useFileChangesStore', () => {
     expect(repository?.stats.pendingVisibleFileCount).toBe(1);
   });
 
+  it('accepts a draft save whose durable write succeeded before its response was lost', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision) break;
+      await Promise.resolve();
+    }
+    const nextContent = 'const durableWriteLostItsResponse = true;\n';
+    store.updateRightDraft(nextContent);
+    fsWriteFileMock.mockImplementationOnce(async ({ content }) => {
+      currentFiles[worktreeAPath]['src/main.ts'] = content;
+      throw new Error('injected response loss after durable write');
+    });
+
+    await store.saveRightDraft();
+
+    const session = useFileChangesStore.getState().diffModalSession;
+    expect(currentFiles[worktreeAPath]['src/main.ts']).toBe(nextContent);
+    expect(session?.rightDraftContent).toBe(nextContent);
+    expect(session?.lastLoadedModifiedContent).toBe(nextContent);
+    expect(session?.editRevision).toBe(`revision:${nextContent}`);
+    expect(session?.isDirty).toBe(false);
+    expect(session?.isSaving).toBe(false);
+    expect(useFileChangesStore.getState().lastError).toBeNull();
+    expect(fsWriteFileMock).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a draft save when the file changed after the diff loaded', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();

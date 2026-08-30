@@ -1736,6 +1736,19 @@ fn rollback_config_publication(
         )
         .with_diagnostics(validation.diagnostics));
     }
+
+    let current_document = read_json_value(canonical_path)?;
+    let current_etag = etag(&current_document);
+    if current_etag == publication.previous_etag {
+        return remove_file_if_exists(&publication_document_path(root, key));
+    }
+    if current_etag != publication.proposed_etag {
+        return Err(ConfigApiError::new(
+            "config.publication.conflict",
+            "Le document canonique a changé depuis la publication interrompue. Macro conserve cette version et le journal pour une récupération explicite.",
+        ));
+    }
+
     #[cfg(test)]
     if canonical_path.with_extension("fail-rollback").exists() {
         return Err(ConfigApiError::new(
@@ -2170,6 +2183,59 @@ mod tests {
             .await
             .expect("recovered settings");
         assert_eq!(recovered.value, previous);
+    }
+
+    #[tokio::test]
+    async fn interrupted_publication_never_overwrites_a_divergent_document_on_restart() {
+        let (_temp, manager) = manager().await;
+        let root = manager.root().to_path_buf();
+        let document = manager
+            .get_document(ConfigDocumentKind::Settings, ConfigScope::User)
+            .await
+            .expect("settings");
+        let canonical_path = PathBuf::from(&document.file_path);
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Settings,
+            scope: ConfigScope::User,
+        };
+        let approved_path = approved_document_path(manager.root(), &key);
+        let publication_path = publication_document_path(manager.root(), &key);
+        fs::write(approved_path.with_extension("fail-write-once"), b"fail")
+            .expect("inject approved publication failure");
+        let rollback_failure = canonical_path.with_extension("fail-rollback");
+        fs::write(&rollback_failure, b"fail").expect("inject rollback failure");
+
+        manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Settings,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/language".to_string(),
+                    from: None,
+                    value: Some(json!("fr")),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect_err("publication and compensation must fail");
+        fs::remove_file(rollback_failure).expect("release rollback");
+
+        let divergent = json!({ "language": "de" });
+        atomic_write_json_locked(&canonical_path, &divergent).expect("write divergent document");
+        drop(manager);
+
+        let error = match ConfigManager::initialize(root).await {
+            Ok(_) => panic!("divergent recovery must stop"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "config.publication.conflict");
+        assert_eq!(
+            read_json_value(&canonical_path).expect("preserved divergent document"),
+            divergent
+        );
+        assert!(publication_path.exists());
     }
 
     #[tokio::test]

@@ -2585,6 +2585,39 @@ export const createFileChangesStore = (
 
     const nextContent = session.rightDraftContent;
     const requestSessionId = session.sessionId;
+    const path = resolveChangeFilePath(repository.worktreePath, change.path);
+    let writeAttempted = false;
+
+    const publishSuccessfulSave = async (revision: string | null): Promise<void> => {
+      set((state) => {
+        if (state.diffModalSession?.sessionId !== requestSessionId) {
+          return state;
+        }
+        const repositories = updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
+          ...currentRepository,
+          savingChangeId: null,
+          lastError: null,
+        }));
+        return {
+          repositories,
+          ...deriveReviewState(repositories),
+          diffModalSession: {
+            ...state.diffModalSession,
+            rightDraftContent: nextContent,
+            lastLoadedModifiedContent: nextContent,
+            isDirty: false,
+            isSaving: false,
+            editRevision: revision,
+          },
+        };
+      });
+
+      await get().loadCurrentChanges({
+        silent: true,
+        preserveDiffModalSession: true,
+        expectedDiffModalSessionId: requestSessionId,
+      });
+    };
 
     set((state) => {
       if (state.diffModalSession?.sessionId !== requestSessionId) {
@@ -2605,7 +2638,6 @@ export const createFileChangesStore = (
     });
 
     try {
-      const path = resolveChangeFilePath(repository.worktreePath, change.path);
       const expectedRevision = session.editRevision;
       if (!expectedRevision) {
         throw new Error(
@@ -2613,6 +2645,7 @@ export const createFileChangesStore = (
         );
       }
 
+      writeAttempted = true;
       const writeResult = await deps.tauri.fsWriteFile({
         path,
         content: nextContent,
@@ -2622,35 +2655,30 @@ export const createFileChangesStore = (
         expectedRevision,
       });
 
-      set((state) => {
-        if (state.diffModalSession?.sessionId !== requestSessionId) {
-          return state;
-        }
-        const repositories = updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          savingChangeId: null,
-          lastError: null,
-        }));
-        return {
-          repositories,
-          ...deriveReviewState(repositories),
-          diffModalSession: {
-            ...state.diffModalSession,
-            rightDraftContent: nextContent,
-            lastLoadedModifiedContent: nextContent,
-            isDirty: false,
-            isSaving: false,
-            editRevision: writeResult.revision ?? null,
-          },
-        };
-      });
-
-      await get().loadCurrentChanges({
-        silent: true,
-        preserveDiffModalSession: true,
-        expectedDiffModalSessionId: requestSessionId,
-      });
+      await publishSuccessfulSave(writeResult.revision ?? null);
     } catch (error) {
+      if (
+        writeAttempted &&
+        get().diffModalSession?.sessionId === requestSessionId
+      ) {
+        try {
+          const durableFile = await deps.tauri.fsReadFileWithOptions({
+            path,
+            allowOutsideWorkspace: false,
+            workspacePath: repository.worktreePath,
+          });
+          if (
+            get().diffModalSession?.sessionId === requestSessionId &&
+            durableFile.content === nextContent &&
+            durableFile.revision
+          ) {
+            await publishSuccessfulSave(durableFile.revision);
+            return;
+          }
+        } catch {
+          // Preserve the original write error when durable reconciliation is unavailable.
+        }
+      }
       const message = toServiceError(error).message ||
         tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
       set((state) => {
