@@ -1364,7 +1364,7 @@ const getStrictTranscriptFingerprint = (
 ): string => {
   const trimmedId = message.id.trim();
   if (trimmedId.length > 0) {
-    return `id:${trimmedId}`;
+    return `id:${trimmedId}:${message.role}:${message.content}:${message.createdAt}`;
   }
   return `f:${message.role}:${message.content}:${message.createdAt}`;
 };
@@ -12552,34 +12552,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? Math.max(0, Math.floor(chatMessageCount))
         : (chatMessagesHint?.length ?? 0);
 
-    if (
-      chatMessagesLoaded === false &&
-      !sharedConversation &&
-      !createdConversation &&
-      tauriIpc.isTauriAvailable()
-    ) {
-      const sync = await tauriIpc
-        .dbGetArchitectPlanConversationSync(conversation.id)
-        .catch(() => null);
-      const conversationCount = conversation.message_count;
-      const headRevisionCanVerifyTranscript =
-        !replicaScopeKey || expectedTranscriptCount === 0 || chatTranscriptRevision !== null;
-      const syncMatches =
-        headRevisionCanVerifyTranscript &&
-        sync?.plan_id === plan.id &&
-        sync.target_branch === targetBranch &&
-        (sync.transcript_revision ?? null) === (chatTranscriptRevision ?? null) &&
-        sync.message_count === expectedTranscriptCount &&
-        conversationCount === expectedTranscriptCount;
-      if (syncMatches) {
-        return {
-          conversationId: conversation.id,
-          restoredTranscript: false,
-          createdConversation: false,
-        };
-      }
-    }
-
     const transcriptResult =
       chatMessagesLoaded === false
         ? await getArchitectPlanChatTranscript(targetBranch, plan.id, {
@@ -12640,19 +12612,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
     } else if (transcriptState.relation === "metadata_prefix") {
-      await syncArchitectMetadataFromDb({
-        branchName: targetBranch,
-        planId: plan.id,
-        conversationId: conversation.id,
-        reason: transcriptState.relation,
-      });
-      await upsertArchitectConversationSync({
-        conversationId: conversation.id,
-        planId: plan.id,
-        targetBranch,
-        transcriptRevision: null,
-        messageCount: localMessages.length,
-      });
+      if (!replicaScopeKey) {
+        await syncArchitectMetadataFromDb({
+          branchName: targetBranch,
+          planId: plan.id,
+          conversationId: conversation.id,
+          reason: transcriptState.relation,
+        });
+        await upsertArchitectConversationSync({
+          conversationId: conversation.id,
+          planId: plan.id,
+          targetBranch,
+          transcriptRevision: null,
+          messageCount: localMessages.length,
+        });
+      } else {
+        logArchitectTranscriptEvent("warn", "architect_local_transcript_ahead", {
+          planId: plan.id,
+          conversationId: conversation.id,
+          dbCount: transcriptState.dbCount,
+          metadataCount: transcriptState.metadataCount,
+        });
+        throw new Error(
+          "Le transcript local est plus récent que la réplique Architect active. La conversation reste désélectionnée et les métadonnées ne sont pas modifiées.",
+        );
+      }
     } else if (transcriptState.relation === "diverged") {
       logArchitectTranscriptEvent("warn", "architect_transcript_diverged", {
         planId: plan.id,
@@ -12660,6 +12644,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         dbCount: transcriptState.dbCount,
         metadataCount: transcriptState.metadataCount,
       });
+      if (replicaScopeKey) {
+        throw new Error(
+          "Le transcript local diverge de la réplique Architect active. La conversation reste désélectionnée pour éviter d’afficher un contenu incohérent.",
+        );
+      }
       await syncArchitectMetadataFromDb({
         branchName: targetBranch,
         planId: plan.id,
@@ -13204,12 +13193,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? "app_store"
           : "service";
         if (!isCurrentRequest()) return modeFallback(null);
-        const activePlan =
-          activationPayload?.plan ??
-          (await getArchitectPlan(
-            targetBranch,
-            appState.activeArchitectPlanId,
-          ));
+        if (!activationPayload) {
+          throw new Error(
+            "Le runtime Architect n’a trouvé aucune tête de plan cohérente pour l’activation demandée.",
+          );
+        }
+        const activePlan = activationPayload.plan;
         if (!isCurrentRequest()) return modeFallback(null);
         if (activePlan && activePlan.status !== "deleted") {
           const fallbackProjectId =
