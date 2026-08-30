@@ -42,8 +42,8 @@ use std::{
 use tauri::{async_runtime::JoinHandle, AppHandle, Error, Listener, Manager, Url, WebviewWindow};
 use tokio::{
     net::TcpListener,
-    sync::{Mutex, RwLock},
-    time::{timeout, Duration},
+    sync::{watch, Mutex, RwLock},
+    time::{timeout, Duration, Instant},
 };
 
 /// Extension trait for Tauri's `AppHandle` to manage the Remote UI server lifecycle.
@@ -82,7 +82,10 @@ impl RemoteUiExt for AppHandle {
     /// Stop the remote UI server.
     async fn stop_remote_ui(&self) -> Result<(), Error> {
         let remote_ui = self.state::<Arc<RwLock<RemoteUi>>>();
-        remote_ui.write().await.rpc_server.stop();
+        let shutdown = remote_ui.write().await.rpc_server.stop();
+        if let Some(shutdown) = shutdown {
+            shutdown.finish().await;
+        }
         Ok(())
     }
 
@@ -107,6 +110,9 @@ const VERSION_PREFIX: &str = "version:";
 const SESSION_REPLACED_CLOSE_CODE: u16 = 4009;
 const SESSION_REPLACED_CLOSE_REASON: &str = "session_replaced";
 const SESSION_REPLACED_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const SERVER_SHUTDOWN_CLOSE_CODE: u16 = 1001;
+const SERVER_SHUTDOWN_CLOSE_REASON: &str = "server_shutdown";
 
 fn session_replaced_close_message() -> Message {
     Message::Close(Some(hyper_tungstenite::tungstenite::protocol::CloseFrame {
@@ -173,6 +179,54 @@ fn remove_ws_handle_if_current(
 /// WebSocket sink handle for a single connection (sending side).
 pub(crate) type WsSink = Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>;
 
+#[derive(Debug, Default)]
+struct ConnectionTaskRegistry {
+    state: Mutex<ConnectionTaskRegistryState>,
+}
+
+#[derive(Debug)]
+struct ConnectionTaskRegistryState {
+    accepting: bool,
+    tasks: Vec<JoinHandle<()>>,
+}
+
+impl Default for ConnectionTaskRegistryState {
+    fn default() -> Self {
+        Self {
+            accepting: true,
+            tasks: Vec::new(),
+        }
+    }
+}
+
+impl ConnectionTaskRegistry {
+    async fn open(&self) {
+        self.state.lock().await.accepting = true;
+    }
+
+    async fn register(&self, handle: JoinHandle<()>) {
+        let mut state = self.state.lock().await;
+        if state.accepting {
+            state.tasks.push(handle);
+            return;
+        }
+        drop(state);
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    async fn close_and_drain(&self) -> Vec<JoinHandle<()>> {
+        let mut state = self.state.lock().await;
+        state.accepting = false;
+        state.tasks.drain(..).collect()
+    }
+
+    #[cfg(test)]
+    async fn is_empty(&self) -> bool {
+        self.state.lock().await.tasks.is_empty()
+    }
+}
+
 /// The main Remote UI RPC server struct.
 ///
 /// Manages HTTP/WebSocket server lifecycle, window handles, and configuration.
@@ -188,6 +242,8 @@ pub struct RpcServer {
     ws_window_handle: HashMap<WindowLabel, WsSink>,
     /// Handle to the HTTP server task for aborting on stop.
     http_server_thread: Option<JoinHandle<()>>,
+    shutdown_sender: Option<watch::Sender<bool>>,
+    connection_tasks: Arc<ConnectionTaskRegistry>,
     /// Port the listener was bound to (resolved after start, useful when the
     /// configured port was 0 / `None`).
     bound_port: Option<u16>,
@@ -217,6 +273,8 @@ impl RpcServer {
             remote_ui_config: RemoteUiConfig::default(),
             ws_window_handle: HashMap::new(),
             http_server_thread: None,
+            shutdown_sender: None,
+            connection_tasks: Arc::new(ConnectionTaskRegistry::default()),
             bound_port: None,
         }
     }
@@ -228,13 +286,29 @@ impl RpcServer {
             return Err(crate::Error::ServerAlreadyRunning);
         }
         self.remote_ui_config = remote_ui_config;
-        self.spawn_http_server().await
+        if let Err(error) = self.spawn_http_server().await {
+            self.abort_partial_start().await;
+            return Err(error);
+        }
+        Ok(())
     }
 
-    /// Stop the remote UI server and abort the HTTP server task.
-    pub(crate) fn stop(&mut self) {
-        if !self.is_active {
-            return;
+    async fn abort_partial_start(&mut self) {
+        self.is_active = false;
+        self.bound_port = None;
+        abort_partial_server_start(
+            self.shutdown_sender.take(),
+            self.http_server_thread.take(),
+            self.connection_tasks.clone(),
+        )
+        .await;
+    }
+
+    /// Detach all server resources so the caller can finish shutdown without
+    /// holding the Tauri state lock needed by connection cleanup.
+    pub(crate) fn stop(&mut self) -> Option<RemoteUiShutdown> {
+        if !self.is_active && self.http_server_thread.is_none() && self.shutdown_sender.is_none() {
+            return None;
         }
         self.is_active = false;
         self.bound_port = None;
@@ -244,10 +318,16 @@ impl RpcServer {
                 log::error!("Failed to reload webview window '{label}': {err}");
             }
         }
-        if let Some(server_handle) = self.http_server_thread.take() {
-            server_handle.abort();
-        }
-        self.ws_window_handle.clear();
+        Some(RemoteUiShutdown {
+            shutdown_sender: self.shutdown_sender.take(),
+            http_server_thread: self.http_server_thread.take(),
+            connection_tasks: self.connection_tasks.clone(),
+            sockets: self
+                .ws_window_handle
+                .drain()
+                .map(|(_, socket)| socket)
+                .collect(),
+        })
     }
 
     /// Bind the TCP listener and spawn the connection-accept loop. Records the
@@ -303,9 +383,15 @@ impl RpcServer {
         }
 
         let app_handle = self.app.clone();
+        let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+        self.shutdown_sender = Some(shutdown_sender);
+        let connection_tasks = self.connection_tasks.clone();
+        connection_tasks.open().await;
         self.is_active = true;
         let handle = tauri::async_runtime::spawn(async move {
-            if let Err(err) = run_hyper_server(listener, app_handle).await {
+            if let Err(err) =
+                run_hyper_server(listener, app_handle, shutdown_receiver, connection_tasks).await
+            {
                 log::error!("Hyper server for Remote UI exited with error: {err}");
             }
         });
@@ -402,12 +488,79 @@ impl RpcServer {
     }
 }
 
+async fn abort_partial_server_start(
+    shutdown_sender: Option<watch::Sender<bool>>,
+    http_server_thread: Option<JoinHandle<()>>,
+    connection_tasks: Arc<ConnectionTaskRegistry>,
+) {
+    if let Some(sender) = shutdown_sender {
+        let _ = sender.send(true);
+    }
+    if let Some(server_handle) = http_server_thread {
+        server_handle.abort();
+        let _ = server_handle.await;
+    }
+    let tasks = connection_tasks.close_and_drain().await;
+    for task in tasks {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+pub(crate) struct RemoteUiShutdown {
+    shutdown_sender: Option<watch::Sender<bool>>,
+    http_server_thread: Option<JoinHandle<()>>,
+    connection_tasks: Arc<ConnectionTaskRegistry>,
+    sockets: Vec<WsSink>,
+}
+
+impl RemoteUiShutdown {
+    async fn finish(mut self) {
+        if let Some(sender) = self.shutdown_sender.take() {
+            let _ = sender.send(true);
+        }
+        for socket in self.sockets {
+            let _ = timeout(SESSION_REPLACED_CLOSE_TIMEOUT, async {
+                socket
+                    .lock()
+                    .await
+                    .send(server_shutdown_close_message())
+                    .await
+            })
+            .await;
+        }
+        if let Some(handle) = self.http_server_thread.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+
+        let deadline = Instant::now() + SERVER_SHUTDOWN_TIMEOUT;
+        let mut tasks = self.connection_tasks.close_and_drain().await;
+        for mut task in tasks.drain(..) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || timeout(remaining, &mut task).await.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+    }
+}
+
+fn server_shutdown_close_message() -> Message {
+    Message::Close(Some(hyper_tungstenite::tungstenite::protocol::CloseFrame {
+        code: SERVER_SHUTDOWN_CLOSE_CODE.into(),
+        reason: SERVER_SHUTDOWN_CLOSE_REASON.into(),
+    }))
+}
+
 /// Run the Hyper accept loop for the already-bound listener. The loop exits
 /// when the server is marked inactive (the task is also `.abort()`ed by
 /// [`RpcServer::stop`], whichever happens first).
 async fn run_hyper_server(
     listener: TcpListener,
     app_handle: Arc<AppHandle>,
+    mut shutdown: watch::Receiver<bool>,
+    connection_tasks: Arc<ConnectionTaskRegistry>,
 ) -> std::io::Result<()> {
     loop {
         {
@@ -416,14 +569,31 @@ async fn run_hyper_server(
                 break;
             }
         }
-        let (stream, peer_addr) = listener.accept().await?;
+        let accepted = tokio::select! {
+            result = listener.accept() => result?,
+            changed = shutdown.changed() => {
+                let _ = changed;
+                break;
+            }
+        };
+        let (stream, peer_addr) = accepted;
         let io = TokioIo::new(stream);
         let req_app_handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
+        let request_shutdown = shutdown.clone();
+        let websocket_tasks = connection_tasks.clone();
+        let handle = tauri::async_runtime::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
                     io,
-                    service_fn(move |req| handle_request(req, req_app_handle.clone(), peer_addr)),
+                    service_fn(move |req| {
+                        handle_request(
+                            req,
+                            req_app_handle.clone(),
+                            peer_addr,
+                            request_shutdown.clone(),
+                            websocket_tasks.clone(),
+                        )
+                    }),
                 )
                 .with_upgrades()
                 .await
@@ -431,6 +601,7 @@ async fn run_hyper_server(
                 log::warn!("Error serving Remote UI connection: {err:?}");
             }
         });
+        connection_tasks.register(handle).await;
     }
     Ok(())
 }
@@ -478,6 +649,8 @@ async fn handle_request(
     request: Request<Incoming>,
     app_handle: Arc<AppHandle>,
     peer_addr: SocketAddr,
+    shutdown: watch::Receiver<bool>,
+    connection_tasks: Arc<ConnectionTaskRegistry>,
 ) -> Result<Response<Full<Bytes>>, Error> {
     // Origin scope filter: reject early if the peer is outside the allowed scope.
     {
@@ -585,11 +758,14 @@ async fn handle_request(
             if hyper_tungstenite::is_upgrade_request(&request) {
                 match hyper_tungstenite::upgrade(request, None) {
                     Ok((response, websocket)) => {
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) = ws_handle(websocket, Arc::clone(&app_handle)).await {
+                        let handle = tauri::async_runtime::spawn(async move {
+                            if let Err(e) =
+                                ws_handle(websocket, Arc::clone(&app_handle), shutdown).await
+                            {
                                 log::warn!("WebSocket session error: {e:?}");
                             }
                         });
+                        connection_tasks.register(handle).await;
                         Ok(response)
                     }
                     Err(e) => {
@@ -683,9 +859,11 @@ fn websocket_credentials_match(
 #[cfg(test)]
 mod tests {
     use super::{
-        close_replaced_ws, confined_asset_path, remove_ws_handle_if_current, transfer_ws_ownership,
-        websocket_credentials_match, with_current_ws_owner, WindowLabel, WsSink,
-        SESSION_REPLACED_CLOSE_CODE, SESSION_REPLACED_CLOSE_REASON,
+        abort_partial_server_start, close_replaced_ws, confined_asset_path,
+        remove_ws_handle_if_current, transfer_ws_ownership, websocket_credentials_match,
+        with_current_ws_owner, ConnectionTaskRegistry, RemoteUiShutdown, WindowLabel, WsSink,
+        SERVER_SHUTDOWN_CLOSE_CODE, SERVER_SHUTDOWN_CLOSE_REASON, SESSION_REPLACED_CLOSE_CODE,
+        SESSION_REPLACED_CLOSE_REASON,
     };
     use futures::{SinkExt, StreamExt};
     use http_body_util::Full;
@@ -700,10 +878,21 @@ mod tests {
     use std::collections::HashMap;
     use std::convert::Infallible;
     use std::net::TcpStream;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    use tokio::sync::{mpsc, Mutex};
+    use tokio::sync::{mpsc, watch, Mutex};
+
+    struct TaskAlive(Arc<AtomicBool>);
+
+    impl Drop for TaskAlive {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
 
     async fn upgrade_test_websocket(
         request: Request<Incoming>,
@@ -746,6 +935,40 @@ mod tests {
             origin,
             token,
         ));
+    }
+
+    #[tokio::test]
+    async fn injected_failure_after_listener_start_releases_port_and_tasks() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind partial-start listener");
+        let address = listener.local_addr().expect("partial-start address");
+        let task_alive = Arc::new(AtomicBool::new(true));
+        let alive = TaskAlive(task_alive.clone());
+        let server_task = tauri::async_runtime::spawn(async move {
+            let _alive = alive;
+            let _listener = listener;
+            std::future::pending::<()>().await;
+        });
+        let connection_alive = Arc::new(AtomicBool::new(true));
+        let connection_guard = TaskAlive(connection_alive.clone());
+        let connection_task = tauri::async_runtime::spawn(async move {
+            let _alive = connection_guard;
+            std::future::pending::<()>().await;
+        });
+        let tasks = Arc::new(ConnectionTaskRegistry::default());
+        tasks.register(connection_task).await;
+        let (shutdown_sender, _) = watch::channel(false);
+
+        abort_partial_server_start(Some(shutdown_sender), Some(server_task), tasks.clone()).await;
+
+        assert!(tasks.is_empty().await);
+        assert!(!task_alive.load(Ordering::SeqCst));
+        assert!(!connection_alive.load(Ordering::SeqCst));
+        let rebound = tokio::net::TcpListener::bind(address)
+            .await
+            .expect("partial-start port must be reusable after compensation");
+        drop(rebound);
     }
 
     #[test]
@@ -909,11 +1132,86 @@ mod tests {
         );
         server.join().expect("join test websocket server");
     }
+
+    #[test]
+    fn shutdown_closes_an_accepted_websocket_and_reaps_its_task() {
+        let (address_tx, address_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let task_alive = Arc::new(AtomicBool::new(false));
+        let server_task_alive = task_alive.clone();
+        let server = thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind lifecycle websocket server");
+                address_tx
+                    .send(listener.local_addr().expect("read lifecycle address"))
+                    .expect("publish lifecycle address");
+                let (stream, _) = listener.accept().await.expect("accept lifecycle client");
+                let (sink_tx, mut sink_rx) = mpsc::unbounded_channel();
+                server_task_alive.store(true, Ordering::SeqCst);
+                let alive = TaskAlive(server_task_alive.clone());
+                let connection = tauri::async_runtime::spawn(async move {
+                    let _alive = alive;
+                    http1::Builder::new()
+                        .serve_connection(
+                            TokioIo::new(stream),
+                            service_fn(move |request| {
+                                upgrade_test_websocket(request, sink_tx.clone())
+                            }),
+                        )
+                        .with_upgrades()
+                        .await
+                        .expect("serve lifecycle websocket connection");
+                });
+                let socket = sink_rx.recv().await.expect("receive lifecycle socket sink");
+                let (shutdown_sender, _) = watch::channel(false);
+                let tasks = Arc::new(ConnectionTaskRegistry::default());
+                tasks.register(connection).await;
+                RemoteUiShutdown {
+                    shutdown_sender: Some(shutdown_sender),
+                    http_server_thread: None,
+                    connection_tasks: tasks.clone(),
+                    sockets: vec![socket],
+                }
+                .finish()
+                .await;
+                assert!(tasks.is_empty().await);
+                assert!(!server_task_alive.load(Ordering::SeqCst));
+                finished_tx.send(()).expect("publish shutdown completion");
+            });
+        });
+
+        let address = address_rx
+            .recv()
+            .expect("receive lifecycle websocket address");
+        let url = format!("ws://{address}/remote_ui_ws");
+        let (mut client, _) = client(
+            url.as_str(),
+            TcpStream::connect(address).expect("connect lifecycle client"),
+        )
+        .expect("connect lifecycle websocket client");
+        let Message::Close(Some(close)) = client.read().expect("read shutdown close") else {
+            panic!("accepted client must receive a close frame during shutdown");
+        };
+        assert_eq!(u16::from(close.code), SERVER_SHUTDOWN_CLOSE_CODE);
+        assert_eq!(close.reason, SERVER_SHUTDOWN_CLOSE_REASON);
+        finished_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("shutdown must finish within its deadline");
+        server.join().expect("join lifecycle websocket server");
+        assert!(!task_alive.load(Ordering::SeqCst));
+    }
 }
 
 /// Handle a WebSocket connection for remote UI RPC.
 /// Manages ping/pong, message routing, and connection lifecycle.
-async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Result<(), Error> {
+async fn ws_handle(
+    websocket: HyperWebsocket,
+    app_handle: Arc<AppHandle>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), Error> {
     static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
     match websocket.await {
@@ -937,7 +1235,18 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
                 tokio::spawn(close_replaced_ws(replaced_ws));
             }
             let mut session_error = None;
-            while let Some(message_stream) = rx.next().await {
+            loop {
+                let message_stream = tokio::select! {
+                    message = rx.next() => message,
+                    changed = shutdown.changed() => {
+                        let _ = changed;
+                        let _ = ws_sender.lock().await.send(server_shutdown_close_message()).await;
+                        break;
+                    }
+                };
+                let Some(message_stream) = message_stream else {
+                    break;
+                };
                 let is_current_owner = {
                     let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>();
                     let is_current = remote_ui
