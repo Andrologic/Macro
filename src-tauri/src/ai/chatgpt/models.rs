@@ -4,16 +4,14 @@ use super::types::{
     db_error_to_string, extract_response_error, ModelsCacheEntry, RemoteModelsResponse,
     DEFAULT_ORIGINATOR,
 };
+use super::AUTH_MUTATION_LOCK;
 use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderConfig, ProviderModelInput};
 use crate::db::repository;
 use crate::secrets::{self, ChatGptSecret};
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use sqlx::SqlitePool;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
-
-static DISCONNECT_AUTH_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub async fn disconnect_auth(
     pool: &SqlitePool,
@@ -33,7 +31,7 @@ async fn disconnect_auth_with_secret_delete<F>(
 where
     F: FnOnce(&str) -> Result<(), String>,
 {
-    let _disconnect_guard = DISCONNECT_AUTH_LOCK.lock().await;
+    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
     let provider = repository::get_provider_config(pool, provider_id)
         .await
         .map_err(db_error_to_string)?
@@ -313,8 +311,29 @@ pub(super) fn model_supports_plan(entry: &ModelsCacheEntry, plan_type: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::disconnect_auth_with_secret_delete;
+    use crate::ai::chatgpt::session::{install_persist_after_secret_hook, persist_chatgpt_session};
+    use crate::secrets::ChatGptSecret;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
     use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
     use std::sync::{Arc, Mutex};
+
+    fn test_access_token() -> String {
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::json!({
+                "exp": 4_102_444_800_i64,
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct-new",
+                    "chatgpt_plan_type": "plus"
+                },
+                "https://api.openai.com/profile": {
+                    "email": "new@example.com"
+                }
+            })
+            .to_string(),
+        );
+        format!("header.{payload}.signature")
+    }
 
     async fn provider_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -445,6 +464,76 @@ mod tests {
         assert!(success.is_ok());
         assert!(failure.is_err());
 
+        let provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
+            .await
+            .expect("provider query")
+            .expect("provider");
+        assert_eq!(provider.auth_status.as_deref(), Some("unauthenticated"));
+        assert!(provider.auth_source.is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_and_disconnect_share_the_entire_auth_persistence_lock() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
+        let pool = provider_pool().await;
+        let reached = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Barrier::new(2));
+        install_persist_after_secret_hook("chatgpt".to_string(), reached.clone(), release.clone());
+        let secret = ChatGptSecret {
+            access_token: test_access_token(),
+            refresh_token: "refresh-new".to_string(),
+            access_token_expires_at: Some("2100-01-01T00:00:00Z".to_string()),
+            account_id: Some("acct-new".to_string()),
+            auth_source: "browser".to_string(),
+        };
+
+        let connect_pool = pool.clone();
+        let mut connect = tokio::spawn(async move {
+            persist_chatgpt_session(
+                &connect_pool,
+                "chatgpt",
+                &secret,
+                Some("plus".to_string()),
+                Some("new@example.com".to_string()),
+            )
+            .await
+        });
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut connect => panic!("connect finished before the secret hook: {result:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("connect did not reach the secret hook"),
+        }
+
+        let disconnect_pool = pool.clone();
+        let mut disconnect = tokio::spawn(async move {
+            disconnect_auth_with_secret_delete(&disconnect_pool, "chatgpt", |provider_id| {
+                crate::secrets::delete_provider_secret(provider_id)
+                    .map_err(|error| error.to_string())
+            })
+            .await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), &mut disconnect)
+                .await
+                .is_err(),
+            "disconnect must wait while the connection is between secret and SQL persistence"
+        );
+        release.wait().await;
+
+        connect
+            .await
+            .expect("connect task")
+            .expect("connect session");
+        disconnect
+            .await
+            .expect("disconnect task")
+            .expect("disconnect session");
+
+        assert!(crate::secrets::get_chatgpt_secret("chatgpt")
+            .expect("read final secret")
+            .is_none());
         let provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
             .await
             .expect("provider query")

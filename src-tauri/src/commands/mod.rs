@@ -5610,11 +5610,16 @@ pub async fn db_delete_provider_config(
 
     let lock = provider_mutation_lock(&id);
     let _guard = lock.lock().await;
-    configured_provider_configs(config_manager.inner(), &pool)
+    let provider = configured_provider_configs(config_manager.inner(), &pool)
         .await?
         .into_iter()
         .find(|provider| provider.id == id)
         .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
+    let _chatgpt_auth_guard = if provider.provider_type == "chatgpt" {
+        Some(crate::ai::chatgpt::AUTH_MUTATION_LOCK.lock().await)
+    } else {
+        None
+    };
     let escaped = id.replace('~', "~0").replace('/', "~1");
     let previous_api_key = secrets::get_api_key(&id)
         .map_err(|error| command_error(format!("Failed to read provider secret: {error}")))?;

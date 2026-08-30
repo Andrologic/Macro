@@ -3,6 +3,7 @@ use super::types::{
     db_error_to_string, extract_response_error, PersistChatGptSessionError, TokenClaims,
     TokenResponse, CHATGPT_CLIENT_ID, CHATGPT_TOKEN_URL, TOKEN_REFRESH_LEEWAY_SECONDS,
 };
+use super::AUTH_MUTATION_LOCK;
 use crate::db::models::{ProviderAuthMetadata, ProviderConfig};
 use crate::db::repository;
 use crate::secrets::{self, ChatGptSecret};
@@ -14,7 +15,53 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use tracing::{debug, error, info, warn};
 
-pub async fn sync_local_provider_secret_metadata(
+#[cfg(test)]
+static PERSIST_AFTER_SECRET_HOOK: std::sync::LazyLock<
+    std::sync::Mutex<
+        Option<(
+            String,
+            std::sync::Arc<tokio::sync::Barrier>,
+            std::sync::Arc<tokio::sync::Barrier>,
+        )>,
+    >,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+#[cfg(test)]
+pub(super) fn install_persist_after_secret_hook(
+    provider_id: String,
+    reached: std::sync::Arc<tokio::sync::Barrier>,
+    release: std::sync::Arc<tokio::sync::Barrier>,
+) {
+    *PERSIST_AFTER_SECRET_HOOK
+        .lock()
+        .expect("ChatGPT persist hook mutex") = Some((provider_id, reached, release));
+}
+
+#[cfg(test)]
+async fn pause_after_chatgpt_secret_persist(provider_id: &str) {
+    let hook = {
+        let mut hook = PERSIST_AFTER_SECRET_HOOK
+            .lock()
+            .expect("ChatGPT persist hook mutex");
+        if hook
+            .as_ref()
+            .is_some_and(|(expected, _, _)| expected == provider_id)
+        {
+            hook.take()
+        } else {
+            None
+        }
+    };
+    if let Some((_, reached, release)) = hook {
+        reached.wait().await;
+        release.wait().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_after_chatgpt_secret_persist(_provider_id: &str) {}
+
+async fn sync_local_provider_secret_metadata(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> Result<(), String> {
@@ -46,6 +93,7 @@ pub(super) async fn ensure_fresh_secret(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> Result<ChatGptSecret, String> {
+    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
     sync_local_provider_secret_metadata(pool, provider_id).await?;
 
     let secret = secrets::get_chatgpt_secret(provider_id)
@@ -69,10 +117,22 @@ pub(super) async fn ensure_fresh_secret(
         return Ok(secret);
     }
 
-    force_refresh_secret(pool, provider_id, &secret).await
+    force_refresh_secret_inner(pool, provider_id, &secret).await
 }
 
 pub(super) async fn force_refresh_secret(
+    pool: &SqlitePool,
+    provider_id: &str,
+    _secret: &ChatGptSecret,
+) -> Result<ChatGptSecret, String> {
+    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
+    let current = secrets::get_chatgpt_secret(provider_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "ChatGPT is not linked. Use Connect with ChatGPT first.".to_string())?;
+    force_refresh_secret_inner(pool, provider_id, &current).await
+}
+
+async fn force_refresh_secret_inner(
     pool: &SqlitePool,
     provider_id: &str,
     secret: &ChatGptSecret,
@@ -208,6 +268,7 @@ pub(super) async fn persist_chatgpt_session(
     plan_type: Option<String>,
     account_label: Option<String>,
 ) -> Result<ProviderConfig, PersistChatGptSessionError> {
+    let _auth_guard = AUTH_MUTATION_LOCK.lock().await;
     let metadata = build_provider_auth_metadata(secret, plan_type, account_label)
         .map_err(PersistChatGptSessionError::Metadata)?;
     debug!(
@@ -227,6 +288,7 @@ pub(super) async fn persist_chatgpt_session(
         );
         return Err(PersistChatGptSessionError::Secret(error.to_string()));
     }
+    pause_after_chatgpt_secret_persist(provider_id).await;
     if let Err(error) =
         repository::update_provider_auth_metadata(pool, provider_id, &metadata).await
     {
