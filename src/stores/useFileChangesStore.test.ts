@@ -2159,6 +2159,71 @@ describe('useFileChangesStore', () => {
     expect(currentFiles[worktreeAPath]['src/main.ts']).toBe(externalContent);
   });
 
+  it('ignores hydration from an older modal session reopened on the same file', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    const staleContent = 'const staleSession = true;\n';
+    const freshContent = 'const freshSession = true;\n';
+    let markFirstReadStarted: () => void = () => undefined;
+    const firstReadStarted = new Promise<void>((resolve) => {
+      markFirstReadStarted = resolve;
+    });
+    let releaseFirstRead: () => void = () => undefined;
+    const firstReadGate = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    fsReadFileWithOptionsMock.mockImplementationOnce(async () => {
+      markFirstReadStarted();
+      await firstReadGate;
+      return {
+        content: staleContent,
+        language: 'TypeScript',
+        is_binary: false,
+        size: staleContent.length,
+        encoding: 'utf-8',
+        revision: `revision:${staleContent}`,
+      };
+    });
+    fsReadFileWithOptionsMock.mockImplementationOnce(async () => ({
+      content: freshContent,
+      language: 'TypeScript',
+      is_binary: false,
+      size: freshContent.length,
+      encoding: 'utf-8',
+      revision: `revision:${freshContent}`,
+    }));
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await firstReadStarted;
+    const firstSessionId = useFileChangesStore.getState().diffModalSession?.sessionId;
+    store.closeDiffModal();
+    currentFiles[worktreeAPath]['src/main.ts'] = freshContent;
+    store.openDiffModal(repositoryIdA, changeIdA);
+    const secondSessionId = useFileChangesStore.getState().diffModalSession?.sessionId;
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision === `revision:${freshContent}`) {
+        break;
+      }
+      await Promise.resolve();
+    }
+    expect(secondSessionId).not.toBe(firstSessionId);
+    expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe(freshContent);
+    expect(useFileChangesStore.getState().diffModalSession?.editRevision)
+      .toBe(`revision:${freshContent}`);
+
+    releaseFirstRead();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await Promise.resolve();
+    }
+
+    const finalState = useFileChangesStore.getState();
+    expect(finalState.diffModalSession?.sessionId).toBe(secondSessionId);
+    expect(finalState.diffModalSession?.rightDraftContent).toBe(freshContent);
+    expect(finalState.diffModalSession?.editRevision).toBe(`revision:${freshContent}`);
+    expect(finalState.getChange(repositoryIdA, changeIdA)?.modifiedContent).toBe(freshContent);
+  });
+
   it('opens the diff modal with full file hydration while keeping focused as the initial presentation mode', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();

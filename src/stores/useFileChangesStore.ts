@@ -172,6 +172,7 @@ interface SelectedDiffTarget {
 }
 
 export interface FileDiffModalSession {
+  sessionId: string;
   repositoryId: string;
   changeId: string;
   originalContent: string;
@@ -1342,6 +1343,7 @@ const buildDiffModalSession = (
   change: FileChangeEntry,
   overrides: Partial<FileDiffModalSession> = {}
 ): FileDiffModalSession => ({
+  sessionId: crypto.randomUUID(),
   repositoryId,
   changeId: change.id,
   originalContent: change.originalContent,
@@ -1528,26 +1530,35 @@ export const createFileChangesStore = (
       if (!repository || !change) {
         return;
       }
+      const requestSession = get().diffModalSession;
+      if (
+        !requestSession ||
+        requestSession.repositoryId !== repositoryId ||
+        requestSession.changeId !== changeId
+      ) {
+        return;
+      }
+      const requestSessionId = requestSession.sessionId;
       const requestTaskId = resolveSelectedTask(deps)?.id ?? null;
       const requestLoadId = get().loadRequestId;
 
-      set((state) => ({
-        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          loadingChangeId: changeId,
+      set((state) => {
+        if (state.diffModalSession?.sessionId !== requestSessionId) {
+          return state;
+        }
+        return {
+          repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            loadingChangeId: changeId,
+            lastError: null,
+          })),
+          diffModalSession: {
+            ...state.diffModalSession,
+            isHydratingFullContext: true,
+          },
           lastError: null,
-        })),
-        diffModalSession:
-          state.diffModalSession &&
-          state.diffModalSession.repositoryId === repositoryId &&
-          state.diffModalSession.changeId === changeId
-            ? {
-              ...state.diffModalSession,
-              isHydratingFullContext: true,
-            }
-            : state.diffModalSession,
-        lastError: null,
-      }));
+        };
+      });
 
       try {
         let hydratedChange = change;
@@ -1659,15 +1670,17 @@ export const createFileChangesStore = (
           }
         }
 
-        if (get().loadRequestId !== requestLoadId) {
+        if (
+          get().loadRequestId !== requestLoadId ||
+          get().diffModalSession?.sessionId !== requestSessionId
+        ) {
           return;
         }
 
         set((state) => {
-          const isCurrentSession =
-            state.diffModalSession &&
-            state.diffModalSession.repositoryId === repositoryId &&
-            state.diffModalSession.changeId === changeId;
+          if (state.diffModalSession?.sessionId !== requestSessionId) {
+            return state;
+          }
 
           return {
             repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -1676,25 +1689,26 @@ export const createFileChangesStore = (
               loadingChangeId: null,
               lastError: null,
             })),
-            diffModalSession: isCurrentSession && state.diffModalSession
-              ? {
-                ...state.diffModalSession,
-                originalContent: hydratedChange.originalContent,
-                rightDraftContent: state.diffModalSession.isDirty
-                  ? state.diffModalSession.rightDraftContent
-                  : hydratedChange.modifiedContent,
-                lastLoadedModifiedContent: state.diffModalSession.isDirty
-                  ? state.diffModalSession.lastLoadedModifiedContent
-                  : hydratedChange.modifiedContent,
-                isHydratingFullContext: false,
-                editRevision: state.diffModalSession.isDirty ? null : editRevision,
-              }
-              : state.diffModalSession,
+            diffModalSession: {
+              ...state.diffModalSession,
+              originalContent: hydratedChange.originalContent,
+              rightDraftContent: state.diffModalSession.isDirty
+                ? state.diffModalSession.rightDraftContent
+                : hydratedChange.modifiedContent,
+              lastLoadedModifiedContent: state.diffModalSession.isDirty
+                ? state.diffModalSession.lastLoadedModifiedContent
+                : hydratedChange.modifiedContent,
+              isHydratingFullContext: false,
+              editRevision: state.diffModalSession.isDirty ? null : editRevision,
+            },
             lastError: null,
           };
         });
       } catch (error) {
-        if (get().loadRequestId !== requestLoadId) {
+        if (
+          get().loadRequestId !== requestLoadId ||
+          get().diffModalSession?.sessionId !== requestSessionId
+        ) {
           return;
         }
         const serviceError = withReviewProjectContext(error, repository.projectId);
@@ -1703,46 +1717,49 @@ export const createFileChangesStore = (
           if (!requestTaskId || currentTaskId !== requestTaskId) {
             return;
           }
-          set((state) => ({
-            repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-              ...currentRepository,
-              loadingChangeId: null,
+          set((state) => {
+            if (state.diffModalSession?.sessionId !== requestSessionId) {
+              return state;
+            }
+            return {
+              repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+                ...currentRepository,
+                loadingChangeId: null,
+                lastError: null,
+              })),
+              diffModalSession: {
+                ...state.diffModalSession,
+                isHydratingFullContext: false,
+              },
               lastError: null,
-            })),
-            diffModalSession:
-              state.diffModalSession &&
-              state.diffModalSession.repositoryId === repositoryId &&
-              state.diffModalSession.changeId === changeId
-                ? { ...state.diffModalSession, isHydratingFullContext: false }
-                : state.diffModalSession,
-            lastError: null,
-            reviewSuspension: {
-              taskId: requestTaskId,
-              error: serviceError,
-              retrying: false,
-            },
-          }));
+              reviewSuspension: {
+                taskId: requestTaskId,
+                error: serviceError,
+                retrying: false,
+              },
+            };
+          });
           return;
         }
         const message = serviceError.message ||
           tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
-        set((state) => ({
-          repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-            ...currentRepository,
-            loadingChangeId: null,
+        set((state) => {
+          if (state.diffModalSession?.sessionId !== requestSessionId) {
+            return state;
+          }
+          return {
+            repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+              ...currentRepository,
+              loadingChangeId: null,
+              lastError: message,
+            })),
+            diffModalSession: {
+              ...state.diffModalSession,
+              isHydratingFullContext: false,
+            },
             lastError: message,
-          })),
-          diffModalSession:
-            state.diffModalSession &&
-            state.diffModalSession.repositoryId === repositoryId &&
-            state.diffModalSession.changeId === changeId
-              ? {
-                ...state.diffModalSession,
-                isHydratingFullContext: false,
-              }
-              : state.diffModalSession,
-          lastError: message,
-        }));
+          };
+        });
       }
     };
 
@@ -2088,11 +2105,25 @@ export const createFileChangesStore = (
 
   closeDiffModal: () => {
     const state = get();
+    const closingTarget = state.selectedDiffTarget;
     debugFileDiffStoreLog('closeDiffModal', {
-      selectedDiffTarget: state.selectedDiffTarget,
+      selectedDiffTarget: closingTarget,
       hadSession: Boolean(state.diffModalSession),
     });
     set({
+      repositories: closingTarget
+        ? updateRepositoryState(
+          state.repositories,
+          closingTarget.repositoryId,
+          (repository) => ({
+            ...repository,
+            loadingChangeId:
+              repository.loadingChangeId === closingTarget.changeId
+                ? null
+                : repository.loadingChangeId,
+          }),
+        )
+        : state.repositories,
       selectedDiffTarget: null,
       diffModalSession: null,
       isDiffModalOpen: false,

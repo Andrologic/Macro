@@ -159,6 +159,7 @@ const buildRepository = (): ReviewRepositoryState => {
 };
 
 const buildSession = (overrides: Partial<FileDiffModalSession> = {}): FileDiffModalSession => ({
+  sessionId: 'modal-session-test',
   repositoryId: 'repo-1',
   changeId: 'change-2',
   originalContent: 'before();',
