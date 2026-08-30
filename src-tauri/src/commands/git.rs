@@ -2167,109 +2167,109 @@ fn untracked_reset_collision_error(path: &[u8]) -> BackendError {
     }
 }
 
-fn parse_wsl_case_sensitivity_probe(value: &str) -> Result<bool> {
-    match value {
-        "insensitive" => Ok(true),
-        "sensitive" => Ok(false),
-        // Bare repositories have no worktree paths to protect. For any other
-        // unusual layout, a conservative comparison is safer than overwriting.
-        "unknown" => Ok(true),
-        _ => Err(BackendError::Git {
-            message: "git filesystem case-sensitivity preflight WSL returned an invalid result"
-                .to_string(),
-        }),
-    }
-}
-
 async fn ensure_wsl_hard_reset_preserves_untracked(
     repo_path: &WslProjectPath,
     target_commit: &str,
 ) -> Result<()> {
-    let case_probe = run_wsl_command_allow_failure(
+    const COLLISION_EXIT_CODE: i32 = 42;
+    let collision_probe = run_wsl_command_allow_failure(
         repo_path,
         "bash",
         &[
             "-c".to_string(),
             r#"
+set -u
 repo=$1
-primary=$repo/.git
-alternate=$repo/.GIT
-if [[ ! -e $primary ]]; then
-  printf unknown
-  exit 0
-fi
-primary_id=$(stat -Lc '%d:%i' -- "$primary") || exit $?
-alternate_id=$(stat -Lc '%d:%i' -- "$alternate" 2>/dev/null) || {
-  printf sensitive
-  exit 0
-}
-if [[ $primary_id == "$alternate_id" ]]; then
-  printf insensitive
-else
-  printf sensitive
-fi
+target_commit=$2
+scratch=$(mktemp -d) || exit $?
+trap 'rm -rf -- "$scratch"' EXIT
+
+git -C "$repo" ls-files --others --exclude-standard -z > "$scratch/untracked" || exit $?
+git -C "$repo" ls-files --others --ignored --exclude-standard -z >> "$scratch/untracked" || exit $?
+git -C "$repo" ls-tree -r --name-only -z "$target_commit" > "$scratch/target" || exit $?
+mapfile -d '' -t untracked_paths < "$scratch/untracked"
+mapfile -d '' -t target_paths < "$scratch/target"
+
+declare -A target_full_paths=()
+declare -A target_prefix_paths=()
+declare -A target_full_inodes=()
+declare -A target_prefix_inodes=()
+
+for target in "${target_paths[@]}"; do
+  target_full_paths["$target"]=1
+  target_prefix=$target
+  first_prefix=1
+  while true; do
+    if [[ -z ${target_prefix_paths["$target_prefix"]+present} ]]; then
+      target_prefix_paths["$target_prefix"]=1
+      prefix_id=$(stat -c '%d:%i' -- "$repo/$target_prefix" 2>/dev/null) || prefix_id=
+      if [[ -n $prefix_id ]]; then
+        target_prefix_inodes["$prefix_id"]=1
+      fi
+    elif (( first_prefix == 0 )); then
+      break
+    fi
+    if (( first_prefix == 1 )); then
+      first_prefix=0
+      target_id=$(stat -c '%d:%i' -- "$repo/$target" 2>/dev/null) || target_id=
+      if [[ -n $target_id ]]; then
+        target_full_inodes["$target_id"]=1
+      fi
+    fi
+    if [[ $target_prefix != */* ]]; then
+      break
+    fi
+    target_prefix=${target_prefix%/*}
+  done
+done
+
+for untracked in "${untracked_paths[@]}"; do
+  untracked_id=$(stat -c '%d:%i' -- "$repo/$untracked" 2>/dev/null) || untracked_id=
+  if [[ -n ${target_prefix_paths["$untracked"]+present}
+        || ( -n $untracked_id && -n ${target_prefix_inodes["$untracked_id"]+present} ) ]]; then
+    printf '%s\0' "$untracked"
+    exit 42
+  fi
+
+  untracked_prefix=$untracked
+  while true; do
+    prefix_id=$(stat -c '%d:%i' -- "$repo/$untracked_prefix" 2>/dev/null) || prefix_id=
+    if [[ -n ${target_full_paths["$untracked_prefix"]+present}
+          || ( -n $prefix_id && -n ${target_full_inodes["$prefix_id"]+present} ) ]]; then
+      printf '%s\0' "$untracked"
+      exit 42
+    fi
+    if [[ $untracked_prefix != */* ]]; then
+      break
+    fi
+    untracked_prefix=${untracked_prefix%/*}
+  done
+done
 "#
             .to_string(),
-            "macro-git-case-probe".to_string(),
+            "macro-git-reset-preflight".to_string(),
             repo_path.linux_path.clone(),
-        ],
-        WSL_GIT_TIMEOUT,
-    )
-    .await?;
-    if !case_probe.status.success() {
-        return Err(wsl_git_failure(
-            &case_probe,
-            "git filesystem case-sensitivity preflight WSL failed",
-        ));
-    }
-    let case_insensitive = parse_wsl_case_sensitivity_probe(&case_probe.stdout_text())?;
-    let untracked = run_wsl_git_checked(
-        repo_path,
-        &[
-            "ls-files".to_string(),
-            "--others".to_string(),
-            "--exclude-standard".to_string(),
-            "-z".to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-        "git untracked-path preflight WSL failed",
-    )
-    .await?;
-    let ignored = run_wsl_git_checked(
-        repo_path,
-        &[
-            "ls-files".to_string(),
-            "--others".to_string(),
-            "--ignored".to_string(),
-            "--exclude-standard".to_string(),
-            "-z".to_string(),
-        ],
-        WSL_GIT_TIMEOUT,
-        "git ignored-path preflight WSL failed",
-    )
-    .await?;
-    let target = run_wsl_git_checked(
-        repo_path,
-        &[
-            "ls-tree".to_string(),
-            "-r".to_string(),
-            "--name-only".to_string(),
-            "-z".to_string(),
             target_commit.to_string(),
         ],
         WSL_GIT_TIMEOUT,
-        "git reset target preflight WSL failed",
     )
     .await?;
-    let mut untracked_paths = parse_nul_separated_git_paths(&untracked.stdout);
-    untracked_paths.extend(parse_nul_separated_git_paths(&ignored.stdout));
-    let target_paths = parse_nul_separated_git_paths(&target.stdout);
-    if let Some(path) =
-        find_untracked_reset_collision(&untracked_paths, &target_paths, case_insensitive)
-    {
-        return Err(untracked_reset_collision_error(&path));
+
+    match collision_probe.status.code() {
+        Some(0) => Ok(()),
+        Some(COLLISION_EXIT_CODE) => {
+            let path = collision_probe
+                .stdout
+                .split(|byte| *byte == 0)
+                .next()
+                .unwrap_or_default();
+            Err(untracked_reset_collision_error(path))
+        }
+        _ => Err(wsl_git_failure(
+            &collision_probe,
+            "git untracked-path preflight WSL failed",
+        )),
     }
-    Ok(())
 }
 
 pub(crate) async fn wsl_git_checkout(
@@ -18103,7 +18103,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wsl_hard_reset_collision_preflight_uses_nul_delimited_paths() {
+    fn test_hard_reset_collision_parser_handles_nul_delimited_paths() {
         let untracked =
             parse_nul_separated_git_paths(b"keep.txt\0target-directory/tracked.txt/local.txt\0");
         let target = parse_nul_separated_git_paths(b"README.md\0target-directory/tracked.txt\0");
@@ -18136,10 +18136,6 @@ mod tests {
             ),
             None
         );
-        assert!(parse_wsl_case_sensitivity_probe("insensitive").unwrap());
-        assert!(!parse_wsl_case_sensitivity_probe("sensitive").unwrap());
-        assert!(parse_wsl_case_sensitivity_probe("unknown").unwrap());
-        assert!(parse_wsl_case_sensitivity_probe("invalid").is_err());
     }
 
     #[test]
