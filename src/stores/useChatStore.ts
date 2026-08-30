@@ -13353,6 +13353,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             error: toServiceError(error).message,
           },
         );
+        if (mode === "Architect" && appState.activeArchitectPlanId) {
+          throw error;
+        }
       }
     }
 
@@ -14418,6 +14421,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       } catch (error) {
         const normalized = toServiceError(error);
         if (isCurrentRequest()) {
+          if (mode === "Architect" && useAppStore.getState().activeArchitectPlanId) {
+            clearConversationSelection(mode);
+          }
           set({
             restoreStatus: "error",
             pendingArchitectPlanSwitchRequestId: null,

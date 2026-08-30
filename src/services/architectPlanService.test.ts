@@ -1398,6 +1398,57 @@ describe('architectPlanService', () => {
     expect(runtimeHead).not.toHaveBeenCalled();
   });
 
+  it('does not bypass a null Git runtime activation with legacy plan metadata', async () => {
+    const legacyPlan: ArchitectPlanRecord = {
+      id: 'runtime-rejected-plan',
+      slug: 'runtime-rejected-plan',
+      title: 'Runtime rejected plan',
+      description: 'Legacy metadata must not bypass the runtime.',
+      status: 'draft',
+      targetBranch: branchName,
+      projectId: 'web',
+      projectIds: ['web'],
+      createdAt: '2026-08-29T12:00:00.000Z',
+      updatedAt: '2026-08-29T12:00:00.000Z',
+      nodes: [],
+      predictedBranches: [],
+    };
+    seedLegacyPlan(storage, legacyPlan);
+    const runtimeHead = mock(async () => null);
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: 'web',
+      scopedProjectIds: ['web'],
+      actionableProjectIds: ['web'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web']),
+      readOnlyProjectIdSet: new Set<string>(),
+      manualReadOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web'],
+      validProjectIdSet: new Set(['web']),
+      repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([['web', '/repos/web']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['web', 'git']]),
+      hasRegisteredProjects: true,
+    };
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      registrySnapshot,
+      workspaceArchitectListPlans: mock(async () => ({ activePlanId: null, plans: [] })),
+      workspaceArchitectActivatePlanHead:
+        runtimeHead as typeof actualTauriIpc.workspaceArchitectActivatePlanHead,
+    });
+
+    const activation = await service.getArchitectPlanActivationPayload(
+      branchName,
+      legacyPlan.id,
+    );
+
+    expect(runtimeHead).toHaveBeenCalledTimes(1);
+    expect(activation).toBeNull();
+  });
+
   it('keeps persisted direct plan targets when direct editing becomes blocked', async () => {
     const baseSnapshot: ValidProjectRegistrySnapshot = {
       selectedGroupId: null,

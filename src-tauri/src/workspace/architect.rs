@@ -602,10 +602,14 @@ async fn read_json_file<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> 
         })
 }
 
-async fn read_json_lines_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Vec<T>> {
+async fn read_json_lines_file<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> Result<(String, Vec<T>)> {
     let contents = match fs::read_to_string(path).await {
         Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((String::new(), Vec::new()))
+        }
         Err(error) => {
             return Err(BackendError::Filesystem {
                 message: format!("Failed to read {}: {}", path.display(), error),
@@ -624,7 +628,16 @@ async fn read_json_lines_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Resu
             })?;
         values.push(value);
     }
-    Ok(values)
+    Ok((contents, values))
+}
+
+fn architect_content_hash(contents: &str) -> String {
+    let hash = contents
+        .encode_utf16()
+        .fold(2_166_136_261_u32, |hash, unit| {
+            (hash ^ u32::from(unit)).wrapping_mul(16_777_619)
+        });
+    format!("h{hash:08x}")
 }
 
 async fn file_stamp(path: &Path) -> String {
@@ -1396,6 +1409,9 @@ async fn load_head_snapshot(
     if sanitize_id(&plan.id) != plan_id
         || sanitize_id(&manifest.plan_id) != plan_id
         || normalize_branch_name(&manifest.target_branch) != branch_name
+        || plan.updated_at != manifest.updated_at
+        || manifest.revision <= 0
+        || plan.revision.unwrap_or(1) != manifest.revision
     {
         return Err(BackendError::Filesystem {
             message: format!(
@@ -1454,7 +1470,7 @@ async fn read_transcript_for_scope(
     scope: &ArchitectRuntimeScope,
     branch_name: &str,
     plan_id: &str,
-) -> Result<Vec<WorkspaceArchitectChatMessageDto>> {
+) -> Result<(String, Vec<WorkspaceArchitectChatMessageDto>)> {
     let path = architect_plan_dir(&scope.metadata_root, branch_name, plan_id).join("chat.jsonl");
     read_json_lines_file::<WorkspaceArchitectChatMessageDto>(&path).await
 }
@@ -1687,11 +1703,21 @@ pub async fn activate_plan_chat(
                     ),
                 });
             }
-            let messages = if manifest.conversation.message_count == 0 {
-                Vec::new()
-            } else {
-                read_transcript_for_scope(&locator.scope, &normalized_branch, &plan_id).await?
-            };
+            let (transcript_contents, messages) =
+                read_transcript_for_scope(&locator.scope, &normalized_branch, &plan_id).await?;
+            let actual_transcript_revision = architect_content_hash(&transcript_contents);
+            if transcript_revision
+                .as_ref()
+                .map(|revision| revision != &actual_transcript_revision)
+                .unwrap_or(manifest.conversation.message_count > 0)
+            {
+                return Err(BackendError::RevisionConflict {
+                    message: format!(
+                        "Transcript content does not match manifest revision in scope '{}' for branch '{}' and plan '{}'",
+                        locator.scope.scope_key, normalized_branch, plan_id
+                    ),
+                });
+            }
             if messages.len() != manifest.conversation.message_count {
                 return Err(BackendError::Filesystem {
                     message: format!(
@@ -1716,6 +1742,14 @@ pub async fn activate_plan_chat(
                     message_count: manifest.conversation.message_count,
                     messages,
                 }))
+            }
+            Err(error @ BackendError::RevisionConflict { .. })
+                if requested_scope_key.is_some()
+                    || requested_project_id.is_some()
+                    || expected_transcript_revision.is_some()
+                    || expected_message_count.is_some() =>
+            {
+                return Err(error)
             }
             Err(error) => failures.push(format!("{}: {}", locator.scope.scope_key, error)),
         }
@@ -1803,6 +1837,11 @@ mod tests {
         .expect("write json");
     }
 
+    #[test]
+    fn architect_content_hash_matches_the_frontend_utf16_hash() {
+        assert_eq!(architect_content_hash("é😊"), "h3acc3de3");
+    }
+
     fn plan_summary(plan_id: &str, stored_project_id: &str) -> WorkspaceArchitectPlanSummaryDto {
         WorkspaceArchitectPlanSummaryDto {
             id: plan_id.to_string(),
@@ -1853,7 +1892,6 @@ mod tests {
         project_id: &str,
         summary_updated_at: &str,
         plan_updated_at: &str,
-        chat_hash: &str,
         conversation_id: &str,
         message_content: &str,
     ) {
@@ -1875,6 +1913,14 @@ mod tests {
         plan.conversation_id = Some(conversation_id.to_string());
         let plan_dir = architect_plan_dir(metadata_root, "main", plan_id);
         write_json(&plan_dir.join("plan.json"), &plan);
+        let chat_contents = serde_json::to_string(&WorkspaceArchitectChatMessageDto {
+            id: format!("message-{project_id}"),
+            role: "user".to_string(),
+            content: message_content.to_string(),
+            created_at: plan_updated_at.to_string(),
+        })
+        .expect("serialize chat message");
+        let chat_revision = architect_content_hash(&chat_contents);
         write_json(
             &plan_dir.join("manifest.json"),
             &ArchitectPlanManifestDto {
@@ -1888,7 +1934,7 @@ mod tests {
                 updated_at: plan_updated_at.to_string(),
                 content_hashes: ArchitectPlanContentHashesDto {
                     plan: format!("plan-{project_id}"),
-                    chat: chat_hash.to_string(),
+                    chat: chat_revision.clone(),
                 },
                 conversation: ArchitectPlanConversationSnapshotDto {
                     conversation_id: Some(conversation_id.to_string()),
@@ -1898,20 +1944,7 @@ mod tests {
                 },
             },
         );
-        std_fs::write(
-            plan_dir.join("chat.jsonl"),
-            format!(
-                "{}\n",
-                serde_json::to_string(&WorkspaceArchitectChatMessageDto {
-                    id: format!("message-{project_id}"),
-                    role: "user".to_string(),
-                    content: message_content.to_string(),
-                    created_at: plan_updated_at.to_string(),
-                })
-                .expect("serialize chat message")
-            ),
-        )
-        .expect("write chat jsonl");
+        std_fs::write(plan_dir.join("chat.jsonl"), chat_contents).expect("write chat jsonl");
     }
 
     #[tokio::test]
@@ -2193,6 +2226,14 @@ mod tests {
             &plan_dir.join("plan.json"),
             &plan_record(plan_id, stale_project_id),
         );
+        let chat_contents = serde_json::to_string(&WorkspaceArchitectChatMessageDto {
+            id: "message-1".to_string(),
+            role: "user".to_string(),
+            content: "Explain the plan".to_string(),
+            created_at: "2026-06-01T08:00:00.000Z".to_string(),
+        })
+        .expect("serialize chat message");
+        let chat_revision = architect_content_hash(&chat_contents);
         write_json(
             &plan_dir.join("manifest.json"),
             &ArchitectPlanManifestDto {
@@ -2206,7 +2247,7 @@ mod tests {
                 updated_at: "2026-06-01T08:00:00.000Z".to_string(),
                 content_hashes: ArchitectPlanContentHashesDto {
                     plan: "plan-hash".to_string(),
-                    chat: "chat-hash".to_string(),
+                    chat: chat_revision.clone(),
                 },
                 conversation: ArchitectPlanConversationSnapshotDto {
                     conversation_id: Some("conversation-standalone".to_string()),
@@ -2216,20 +2257,7 @@ mod tests {
                 },
             },
         );
-        std_fs::write(
-            plan_dir.join("chat.jsonl"),
-            format!(
-                "{}\n",
-                serde_json::to_string(&WorkspaceArchitectChatMessageDto {
-                    id: "message-1".to_string(),
-                    role: "user".to_string(),
-                    content: "Explain the plan".to_string(),
-                    created_at: "2026-06-01T08:00:00.000Z".to_string(),
-                })
-                .expect("serialize chat message")
-            ),
-        )
-        .expect("write chat jsonl");
+        std_fs::write(plan_dir.join("chat.jsonl"), chat_contents).expect("write chat jsonl");
 
         let listed = list_plans(
             workspace.path(),
@@ -2290,7 +2318,7 @@ mod tests {
         );
         assert_eq!(
             activation.chat_transcript_revision.as_deref(),
-            Some("chat-hash")
+            Some(chat_revision.as_str())
         );
 
         let transcript = activate_plan_chat(
@@ -2347,7 +2375,6 @@ mod tests {
             project_a_id,
             "2026-06-02T12:00:00.000Z",
             "2026-06-02T10:00:00.000Z",
-            "chat-project-a",
             "conversation-project-a",
             "Transcript from project A",
         );
@@ -2357,7 +2384,6 @@ mod tests {
             project_b_id,
             "2026-06-02T11:00:00.000Z",
             "2026-06-02T13:00:00.000Z",
-            "chat-project-b",
             "conversation-project-b",
             "Transcript from project B",
         );
@@ -2378,10 +2404,7 @@ mod tests {
 
         assert_eq!(activation.plan.updated_at, "2026-06-02T13:00:00.000Z");
         assert_eq!(activation.replica_project_id.as_deref(), Some(project_b_id));
-        assert_eq!(
-            activation.chat_transcript_revision.as_deref(),
-            Some("chat-project-b")
-        );
+        assert!(activation.chat_transcript_revision.is_some());
 
         let transcript = activate_plan_chat(
             workspace.path(),
@@ -2402,6 +2425,78 @@ mod tests {
         assert_eq!(transcript.replica_scope_key, activation.replica_scope_key);
         assert_eq!(transcript.replica_project_id.as_deref(), Some(project_b_id));
         assert_eq!(transcript.messages[0].content, "Transcript from project B");
+    }
+
+    #[tokio::test]
+    async fn rejects_transcript_content_that_does_not_match_the_manifest_revision() {
+        let workspace = TempDir::new().expect("workspace temp dir");
+        let metadata_root = workspace.path().join("metadata");
+        std_fs::create_dir_all(&metadata_root).expect("create metadata root");
+        let project_path = workspace.path().join("project-a");
+        let _repo = init_repo(&project_path);
+        let project_metadata = GitState::new()
+            .resolve_macro_metadata_root(&project_path)
+            .expect("project metadata root");
+        let project_id = "project-a";
+        let plan_id = "conflicting-transcript";
+        let mut state = WorkspaceState::default();
+        state.standalone_projects = vec![project(
+            project_id,
+            project_path.to_str().expect("project path string"),
+        )];
+        write_json(&metadata_root.join("workspace.json"), &state);
+        write_plan_replica(
+            &project_metadata,
+            plan_id,
+            project_id,
+            "2026-06-02T12:00:00.000Z",
+            "2026-06-02T12:00:00.000Z",
+            "conversation-project-a",
+            "Transcript before concurrent write",
+        );
+
+        let activation = activate_plan_head(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectActivatePlanHeadRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                summary_hint: None,
+                scoped_project_ids_hint: vec![project_id.to_string()],
+            },
+        )
+        .await
+        .expect("activate plan head")
+        .expect("activation payload");
+        let replacement = serde_json::to_string(&WorkspaceArchitectChatMessageDto {
+            id: "replacement-message".to_string(),
+            role: "user".to_string(),
+            content: "Different transcript with the same count".to_string(),
+            created_at: "2026-06-02T12:00:00.000Z".to_string(),
+        })
+        .expect("serialize replacement chat message");
+        std_fs::write(
+            architect_plan_dir(&project_metadata, "main", plan_id).join("chat.jsonl"),
+            replacement,
+        )
+        .expect("replace transcript without updating manifest");
+
+        let error = activate_plan_chat(
+            workspace.path(),
+            &metadata_root,
+            WorkspaceArchitectActivatePlanChatRequestDto {
+                branch_name: "main".to_string(),
+                plan_id: plan_id.to_string(),
+                replica_scope_key: activation.replica_scope_key,
+                replica_project_id: activation.replica_project_id,
+                expected_transcript_revision: activation.chat_transcript_revision,
+                expected_message_count: Some(activation.chat_message_count),
+            },
+        )
+        .await
+        .expect_err("mismatched transcript content must fail closed");
+
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
     }
 
     #[tokio::test]

@@ -928,6 +928,46 @@ export const registerArchitectLifecycleScenarios = (
       ).toEqual(['missing-sync-user', 'missing-sync-assistant']);
     });
 
+    it('fails closed when the transcript identity changes after head activation', async () => {
+      context.tauriAvailable = true;
+      const plan = createScenarioPlan('started', {
+        id: 'plan-head-conflict',
+        slug: 'plan-head-conflict',
+        title: 'plan-head-conflict',
+        conversationId: 'plan-head-conflict-conv',
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('project-architect-conversation'),
+      ];
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => ({
+        plan,
+        chatMessages: [],
+        chatMessagesLoaded: false,
+        chatTranscriptRevision: 'revision-before-conflict',
+        chatMessageCount: 1,
+        replicaScopeKey: 'repo:C:/repos/project-a',
+        replicaProjectId: 'project-a',
+        conversationId: 'plan-head-conflict-conv',
+        sharedConversation: false,
+        targetBranch: 'develop',
+        resolutionMode: 'full',
+      }));
+      getArchitectPlanChatTranscriptMock.mockImplementationOnce(async () => {
+        throw new Error('Architect transcript identity changed.');
+      });
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().initialize();
+
+      expect(useChatStore.getState().selectedConversationId).toBeNull();
+      expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBeNull();
+      expect(useChatStore.getState().restoreStatus).toBe('error');
+      expect(useChatStore.getState().lastError).toContain('identity changed');
+    });
+
     it('reuses the app-store activation payload before falling back to the plan service', async () => {
       const plan = createScenarioPlan('blank', {
         id: 'plan-blank-shared-payload',

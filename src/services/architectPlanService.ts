@@ -2951,6 +2951,7 @@ const writePlanAtScope = async (
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
   options?: {
     chatMessages?: ArchitectPlanChatMessage[];
+    skipManifest?: boolean;
   }
 ): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
@@ -2984,13 +2985,15 @@ const writePlanAtScope = async (
   await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), normalizedPlan);
   await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(normalizedPlan, registrySnapshot));
   await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan);
-  const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
-  const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
-    plan: normalizedPlan,
-    chatMessages,
-    registrySnapshot,
-  }));
-  await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
+  if (!options?.skipManifest) {
+    const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
+    const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
+      plan: normalizedPlan,
+      chatMessages,
+      registrySnapshot,
+    }));
+    await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
+  }
 };
 
 const writePlanChatAtScope = async (
@@ -2999,9 +3002,6 @@ const writePlanChatAtScope = async (
   planId: string,
   messages: ArchitectPlanChatMessage[],
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
-  options?: {
-    skipManifest?: boolean;
-  }
 ): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
   const safeId = sanitizeId(planId);
@@ -3011,9 +3011,6 @@ const writePlanChatAtScope = async (
   }
 
   await writeTextFileAtScope(scope, getPlanChatPath(normalized, safeId), toJsonLines(messages));
-  if (options?.skipManifest) {
-    return;
-  }
   const planResult = await readPlanAtScopeWithDiagnostics(scope, normalized, safeId, registrySnapshot);
   if (planResult.plan) {
     const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
@@ -3243,6 +3240,7 @@ const applyArchitectPlanReplicaMutation = async (
       }
       await writePlanAtScope(target.scope, entry.branchName, target.plan, registrySnapshot, {
         chatMessages: target.chatMessages,
+        skipManifest: target.chatMessages !== undefined,
       });
       if (target.chatMessages) {
         await writePlanChatAtScope(
@@ -3251,7 +3249,6 @@ const applyArchitectPlanReplicaMutation = async (
           entry.planId,
           target.chatMessages,
           registrySnapshot,
-          { skipManifest: true },
         );
       }
       if (target.extraFiles && target.scope.source !== 'local') {
@@ -4382,38 +4379,30 @@ const loadArchitectPlanActivationPayloadImpl = async (
       }
     : null;
 
-  if (!persistedDirectPlan && canUseWorkspaceArchitectRuntimeForScope(
-    registrySnapshot,
-    options.scopedProjectIdsHint,
-  )) {
-    try {
-      const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
-        normalizedBranch,
-        safeId,
-        options,
-        deps
-      );
-      if (runtimePayload) {
-        logArchitectPlanActivationLoad({
-          branchName: normalizedBranch,
-          planId: safeId,
-          resolutionMode: runtimePayload.resolutionMode,
-          sharedConversation: runtimePayload.sharedConversation,
-          durationMs: Date.now() - startedAt,
-        });
-        return runtimePayload;
-      }
-    } catch (error) {
-      devLogger.warn(
-        JSON.stringify({
-          event: 'architect_plan_runtime_activation_fallback',
-          at: new Date().toISOString(),
-          branchName: normalizedBranch,
-          planId: safeId,
-          error: toErrorMessage(error),
-        })
-      );
+  if (
+    !persistedDirectPlan &&
+    isWorkspaceArchitectRuntimeAvailable(deps) &&
+    canUseWorkspaceArchitectRuntimeForScope(
+      registrySnapshot,
+      options.scopedProjectIdsHint,
+    )
+  ) {
+    const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
+      normalizedBranch,
+      safeId,
+      options,
+      deps,
+    );
+    if (runtimePayload) {
+      logArchitectPlanActivationLoad({
+        branchName: normalizedBranch,
+        planId: safeId,
+        resolutionMode: runtimePayload.resolutionMode,
+        sharedConversation: runtimePayload.sharedConversation,
+        durationMs: Date.now() - startedAt,
+      });
     }
+    return runtimePayload;
   }
 
   let index: ArchitectPlanIndex | null = null;
