@@ -2683,7 +2683,7 @@ mod tests {
     #[tokio::test]
     async fn scoped_workspace_commands_isolate_two_concurrent_workspaces() {
         let root = TempDir::new().expect("workspace registry root");
-        let state = test_headless_state(&root, &["workspace-a", "workspace-b"]).await;
+        let state = Arc::new(test_headless_state(&root, &["workspace-a", "workspace-b"]).await);
         write_workspace_marker(
             &state.registered_projects["workspace-a"].canonical_path,
             "alpha",
@@ -2694,24 +2694,41 @@ mod tests {
         );
 
         let load = |workspace_id: &'static str| {
-            let scoped = resolve_scoped_workspace_state(&state, workspace_id)
-                .expect("registered workspace must resolve");
-            async move {
-                let metadata_root =
-                    resolve_metadata_root_for_workspace(&scoped).expect("workspace metadata root");
-                workspace::get_bootstrap(&scoped.workspace_path, &metadata_root)
-                    .await
-                    .expect("workspace bootstrap")
-            }
+            workspace_bootstrap_scoped(
+                State(state.clone()),
+                HeaderMap::new(),
+                Path(workspace_id.to_string()),
+            )
         };
-        let (alpha, beta) = tokio::join!(load("workspace-a"), load("workspace-b"));
+        let (alpha_response, beta_response) =
+            tokio::join!(load("workspace-a"), load("workspace-b"));
+        let alpha_response = alpha_response.into_response();
+        let beta_response = beta_response.into_response();
+        assert_eq!(alpha_response.status(), StatusCode::OK);
+        assert_eq!(beta_response.status(), StatusCode::OK);
+        let alpha: Value = serde_json::from_slice(
+            &axum::body::to_bytes(alpha_response.into_body(), usize::MAX)
+                .await
+                .expect("read alpha response"),
+        )
+        .expect("decode alpha response");
+        let beta: Value = serde_json::from_slice(
+            &axum::body::to_bytes(beta_response.into_body(), usize::MAX)
+                .await
+                .expect("read beta response"),
+        )
+        .expect("decode beta response");
 
-        assert_eq!(alpha.standalone_projects.len(), 1);
-        assert_eq!(alpha.standalone_projects[0].name, "alpha");
-        assert_eq!(beta.standalone_projects.len(), 1);
-        assert_eq!(beta.standalone_projects[0].name, "beta");
-        assert!(resolve_scoped_workspace_state(&state, "missing-workspace").is_err());
-        assert!(resolve_scoped_workspace_state(&state, " ").is_err());
+        assert_eq!(alpha["standaloneProjects"][0]["name"], "alpha");
+        assert_eq!(beta["standaloneProjects"][0]["name"], "beta");
+        let missing = workspace_bootstrap_scoped(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path("missing-workspace".to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

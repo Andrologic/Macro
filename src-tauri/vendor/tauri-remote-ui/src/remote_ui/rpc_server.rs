@@ -200,10 +200,6 @@ impl Default for ConnectionTaskRegistryState {
 }
 
 impl ConnectionTaskRegistry {
-    async fn open(&self) {
-        self.state.lock().await.accepting = true;
-    }
-
     async fn register(&self, handle: JoinHandle<()>) {
         let mut state = self.state.lock().await;
         if state.accepting {
@@ -225,6 +221,14 @@ impl ConnectionTaskRegistry {
     async fn is_empty(&self) -> bool {
         self.state.lock().await.tasks.is_empty()
     }
+}
+
+fn replace_connection_task_registry(
+    slot: &mut Arc<ConnectionTaskRegistry>,
+) -> Arc<ConnectionTaskRegistry> {
+    let next = Arc::new(ConnectionTaskRegistry::default());
+    *slot = next.clone();
+    next
 }
 
 /// The main Remote UI RPC server struct.
@@ -286,22 +290,7 @@ impl RpcServer {
             return Err(crate::Error::ServerAlreadyRunning);
         }
         self.remote_ui_config = remote_ui_config;
-        if let Err(error) = self.spawn_http_server().await {
-            self.abort_partial_start().await;
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    async fn abort_partial_start(&mut self) {
-        self.is_active = false;
-        self.bound_port = None;
-        abort_partial_server_start(
-            self.shutdown_sender.take(),
-            self.http_server_thread.take(),
-            self.connection_tasks.clone(),
-        )
-        .await;
+        self.spawn_http_server().await
     }
 
     /// Detach all server resources so the caller can finish shutdown without
@@ -353,7 +342,6 @@ impl RpcServer {
         let port = self.remote_ui_config.port().unwrap_or(0);
         let listener = TcpListener::bind((origin, port)).await?;
         let actual_port = listener.local_addr()?.port();
-        self.bound_port = Some(actual_port);
         self.remote_ui_config.port = Some(actual_port);
         log::info!("Tauri Remote UI listening on {origin}:{actual_port}");
 
@@ -384,43 +372,57 @@ impl RpcServer {
 
         let app_handle = self.app.clone();
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-        self.shutdown_sender = Some(shutdown_sender);
-        let connection_tasks = self.connection_tasks.clone();
-        connection_tasks.open().await;
-        self.is_active = true;
+        // Every server generation owns its registry. A previous shutdown may
+        // still be awaiting old connections after the Tauri state lock is
+        // released, so reusing its registry would let it drain a new start.
+        let connection_tasks = replace_connection_task_registry(&mut self.connection_tasks);
+        let server_connection_tasks = connection_tasks.clone();
         let handle = tauri::async_runtime::spawn(async move {
-            if let Err(err) =
-                run_hyper_server(listener, app_handle, shutdown_receiver, connection_tasks).await
+            if let Err(err) = run_hyper_server(
+                listener,
+                app_handle,
+                shutdown_receiver,
+                server_connection_tasks,
+            )
+            .await
             {
                 log::error!("Hyper server for Remote UI exited with error: {err}");
             }
         });
-        self.http_server_thread = Some(handle);
+        let pending = PendingServerStart::new(shutdown_sender, handle, connection_tasks);
 
-        let window_label = self.remote_ui_config.primary_window_label().to_owned();
-        let window = self
-            .app
-            .get_webview_window(&window_label)
-            .ok_or_else(|| crate::Error::PrimaryWindowNotFound(window_label.clone()))?;
-        if self.remote_ui_config.minimize_app {
-            window.minimize().map_err(crate::Error::Tauri)?;
+        let setup_result: crate::Result<()> = (|| {
+            let window_label = self.remote_ui_config.primary_window_label().to_owned();
+            let window = self
+                .app
+                .get_webview_window(&window_label)
+                .ok_or_else(|| crate::Error::PrimaryWindowNotFound(window_label.clone()))?;
+            if self.remote_ui_config.minimize_app {
+                window.minimize().map_err(crate::Error::Tauri)?;
+            }
+            if !self.remote_ui_config.application_ui {
+                let origin = self.remote_ui_config.allowed_origin();
+                let urls = build_reachable_urls(origin, actual_port);
+                log::info!("Tauri Remote UI reachable at: {}", urls.join(", "));
+                let primary_url = urls
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| format!("http://127.0.0.1:{actual_port}"));
+                self.activate_remote_ui_mode(
+                    &window,
+                    &primary_url,
+                    &urls,
+                    &self.remote_ui_config.custom_blocking_ui,
+                )
+                .map_err(crate::Error::Tauri)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = setup_result {
+            pending.abort().await;
+            return Err(error);
         }
-        if !self.remote_ui_config.application_ui {
-            let origin = self.remote_ui_config.allowed_origin();
-            let urls = build_reachable_urls(origin, actual_port);
-            log::info!("Tauri Remote UI reachable at: {}", urls.join(", "));
-            let primary_url = urls
-                .first()
-                .cloned()
-                .unwrap_or_else(|| format!("http://127.0.0.1:{actual_port}"));
-            self.activate_remote_ui_mode(
-                &window,
-                &primary_url,
-                &urls,
-                &self.remote_ui_config.custom_blocking_ui,
-            )
-            .map_err(crate::Error::Tauri)?;
-        }
+        pending.commit(self, actual_port);
         Ok(())
     }
 
@@ -488,22 +490,56 @@ impl RpcServer {
     }
 }
 
-async fn abort_partial_server_start(
+struct PendingServerStart {
     shutdown_sender: Option<watch::Sender<bool>>,
     http_server_thread: Option<JoinHandle<()>>,
     connection_tasks: Arc<ConnectionTaskRegistry>,
-) {
-    if let Some(sender) = shutdown_sender {
-        let _ = sender.send(true);
+}
+
+impl PendingServerStart {
+    fn new(
+        shutdown_sender: watch::Sender<bool>,
+        http_server_thread: JoinHandle<()>,
+        connection_tasks: Arc<ConnectionTaskRegistry>,
+    ) -> Self {
+        Self {
+            shutdown_sender: Some(shutdown_sender),
+            http_server_thread: Some(http_server_thread),
+            connection_tasks,
+        }
     }
-    if let Some(server_handle) = http_server_thread {
-        server_handle.abort();
-        let _ = server_handle.await;
+
+    async fn abort(mut self) {
+        if let Some(sender) = self.shutdown_sender.take() {
+            let _ = sender.send(true);
+        }
+        if let Some(handle) = self.http_server_thread.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        for task in self.connection_tasks.close_and_drain().await {
+            task.abort();
+            let _ = task.await;
+        }
     }
-    let tasks = connection_tasks.close_and_drain().await;
-    for task in tasks {
-        task.abort();
-        let _ = task.await;
+
+    fn commit(mut self, server: &mut RpcServer, actual_port: u16) {
+        server.shutdown_sender = self.shutdown_sender.take();
+        server.http_server_thread = self.http_server_thread.take();
+        server.connection_tasks = self.connection_tasks.clone();
+        server.bound_port = Some(actual_port);
+        server.is_active = true;
+    }
+}
+
+impl Drop for PendingServerStart {
+    fn drop(&mut self) {
+        if let Some(sender) = self.shutdown_sender.take() {
+            let _ = sender.send(true);
+        }
+        if let Some(handle) = self.http_server_thread.take() {
+            handle.abort();
+        }
     }
 }
 
@@ -563,12 +599,6 @@ async fn run_hyper_server(
     connection_tasks: Arc<ConnectionTaskRegistry>,
 ) -> std::io::Result<()> {
     loop {
-        {
-            let remote_ui = app_handle.state::<Arc<RwLock<RemoteUi>>>();
-            if !remote_ui.read().await.rpc_server.is_active() {
-                break;
-            }
-        }
         let accepted = tokio::select! {
             result = listener.accept() => result?,
             changed = shutdown.changed() => {
@@ -859,11 +889,11 @@ fn websocket_credentials_match(
 #[cfg(test)]
 mod tests {
     use super::{
-        abort_partial_server_start, close_replaced_ws, confined_asset_path,
-        remove_ws_handle_if_current, transfer_ws_ownership, websocket_credentials_match,
-        with_current_ws_owner, ConnectionTaskRegistry, RemoteUiShutdown, WindowLabel, WsSink,
-        SERVER_SHUTDOWN_CLOSE_CODE, SERVER_SHUTDOWN_CLOSE_REASON, SESSION_REPLACED_CLOSE_CODE,
-        SESSION_REPLACED_CLOSE_REASON,
+        close_replaced_ws, confined_asset_path, remove_ws_handle_if_current,
+        replace_connection_task_registry, transfer_ws_ownership, websocket_credentials_match,
+        with_current_ws_owner, ConnectionTaskRegistry, PendingServerStart, RemoteUiShutdown,
+        WindowLabel, WsSink, SERVER_SHUTDOWN_CLOSE_CODE, SERVER_SHUTDOWN_CLOSE_REASON,
+        SESSION_REPLACED_CLOSE_CODE, SESSION_REPLACED_CLOSE_REASON,
     };
     use futures::{SinkExt, StreamExt};
     use http_body_util::Full;
@@ -950,25 +980,64 @@ mod tests {
             let _listener = listener;
             std::future::pending::<()>().await;
         });
+        let connection_tasks = Arc::new(ConnectionTaskRegistry::default());
         let connection_alive = Arc::new(AtomicBool::new(true));
         let connection_guard = TaskAlive(connection_alive.clone());
-        let connection_task = tauri::async_runtime::spawn(async move {
-            let _alive = connection_guard;
-            std::future::pending::<()>().await;
-        });
-        let tasks = Arc::new(ConnectionTaskRegistry::default());
-        tasks.register(connection_task).await;
+        connection_tasks
+            .register(tauri::async_runtime::spawn(async move {
+                let _alive = connection_guard;
+                std::future::pending::<()>().await;
+            }))
+            .await;
         let (shutdown_sender, _) = watch::channel(false);
+        let pending =
+            PendingServerStart::new(shutdown_sender, server_task, connection_tasks.clone());
+        let injected_setup_result: crate::Result<()> = Err(crate::Error::PrimaryWindowNotFound(
+            "injected-late-failure".to_string(),
+        ));
+        if injected_setup_result.is_err() {
+            pending.abort().await;
+        }
 
-        abort_partial_server_start(Some(shutdown_sender), Some(server_task), tasks.clone()).await;
-
-        assert!(tasks.is_empty().await);
         assert!(!task_alive.load(Ordering::SeqCst));
         assert!(!connection_alive.load(Ordering::SeqCst));
+        assert!(connection_tasks.is_empty().await);
         let rebound = tokio::net::TcpListener::bind(address)
             .await
-            .expect("partial-start port must be reusable after compensation");
+            .expect("late startup failure must release the bound port");
         drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn finishing_an_old_shutdown_does_not_reap_the_next_server_generation() {
+        let old_tasks = Arc::new(ConnectionTaskRegistry::default());
+        let mut active_tasks = old_tasks.clone();
+        let old_shutdown = RemoteUiShutdown {
+            shutdown_sender: None,
+            http_server_thread: None,
+            connection_tasks: old_tasks,
+            sockets: Vec::new(),
+        };
+
+        let next_tasks = replace_connection_task_registry(&mut active_tasks);
+        let next_task_alive = Arc::new(AtomicBool::new(true));
+        let alive = TaskAlive(next_task_alive.clone());
+        next_tasks
+            .register(tauri::async_runtime::spawn(async move {
+                let _alive = alive;
+                std::future::pending::<()>().await;
+            }))
+            .await;
+
+        old_shutdown.finish().await;
+
+        assert!(next_task_alive.load(Ordering::SeqCst));
+        assert!(!next_tasks.is_empty().await);
+        for task in next_tasks.close_and_drain().await {
+            task.abort();
+            let _ = task.await;
+        }
+        assert!(!next_task_alive.load(Ordering::SeqCst));
     }
 
     #[test]
