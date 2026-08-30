@@ -1149,6 +1149,205 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(useTaskStore.getState().branchWorktrees).toEqual({});
   });
 
+  it('keeps a durable task archive and pending cleanup when worktree removal fails', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-archive-cleanup-failure',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      assigned_branch: 'feature/quick-export',
+      branch_name: 'feature/quick-export',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/quick-export',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/quick-export',
+        repoPath: '/repos/web',
+      }],
+    });
+    gitWorktreeRemoveMock.mockImplementation(async () => {
+      throw new Error('injected worktree cleanup failure');
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: {
+        'project-1::feature/quick-export': '/repos/web/.macro/worktrees/quick-export',
+      },
+      refreshFromPlan: mock(async () => undefined),
+      lastError: null,
+    });
+
+    try {
+      await useTaskStore.getState().archiveTask(task.id);
+    } finally {
+      gitWorktreeRemoveMock.mockImplementation(async () => ({
+        removed: true,
+        removedPath: '/repos/web/.macro/worktrees/task-1',
+      }));
+    }
+
+    expect(workspaceArchiveManualFeatureMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      reason: null,
+      mergedAt: null,
+    });
+    expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toEqual(
+      expect.objectContaining({
+        taskId: task.id,
+        targets: [expect.objectContaining({
+          state: 'failed',
+          worktreeRemoved: false,
+          branchRemoved: false,
+          lastError: 'injected worktree cleanup failure',
+        })],
+      }),
+    );
+    expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        taskId: task.id,
+        targets: [expect.objectContaining({
+          state: 'failed',
+          worktreeRemoved: false,
+          branchRemoved: false,
+        })],
+      }),
+    ]);
+  });
+
+  it('removes a clean archived worktree and its local branch without forcing either operation', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-clean-archive',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      assigned_branch: 'feature/clean-archive',
+      branch_name: 'feature/clean-archive',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/clean-archive',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/clean-archive',
+        repoPath: '/repos/web',
+      }],
+    });
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{ name: 'feature/clean-archive', is_head: false, commit: 'abc123' }],
+      remote: [],
+      current: 'develop',
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: {
+        'project-1::feature/clean-archive': '/repos/web/.macro/worktrees/clean-archive',
+      },
+      refreshFromPlan: mock(async () => undefined),
+      lastError: null,
+    });
+
+    try {
+      await useTaskStore.getState().archiveTask(task.id);
+    } finally {
+      gitBranchListMock.mockImplementation(async () => ({
+        local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
+        remote: [],
+        current: 'develop',
+      }));
+    }
+
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      taskId: 'project-1::feature/clean-archive',
+      force: false,
+      branchName: 'feature/clean-archive',
+    });
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/clean-archive',
+      force: false,
+    });
+    expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toBeUndefined();
+    expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('archives a task but preserves a dirty worktree for explicit cleanup', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-dirty-archive',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      status: 'Completed',
+      assigned_branch: 'feature/dirty-archive',
+      branch_name: 'feature/dirty-archive',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/dirty-archive',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/dirty-archive',
+        repoPath: '/repos/web',
+      }],
+    });
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: '/repos/web/.macro/worktrees/dirty-archive',
+      branchName: params.branchName ?? null,
+      status: 'ready' as const,
+      isDirty: true,
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      branchWorktrees: {
+        'project-1::feature/dirty-archive': '/repos/web/.macro/worktrees/dirty-archive',
+      },
+      refreshFromPlan: mock(async () => undefined),
+      lastError: null,
+    });
+
+    try {
+      await useTaskStore.getState().archiveTask(task.id);
+    } finally {
+      gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+        taskId: params.taskId,
+        worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+        branchName: params.branchName ?? null,
+        status: 'ready' as const,
+        isDirty: false,
+      }));
+    }
+
+    expect(workspaceArchiveManualFeatureMock).toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().archivedTaskCleanupByTaskId[task.id]).toEqual(
+      expect.objectContaining({
+        targets: [expect.objectContaining({
+          branchName: 'feature/dirty-archive',
+          worktreePath: '/repos/web/.macro/worktrees/dirty-archive',
+          state: 'dirty',
+          worktreeRemoved: false,
+        })],
+      }),
+    );
+    expect(JSON.parse(dbAppSettings.get('pendingArchivedTaskCleanups:v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        taskId: task.id,
+        targets: [expect.objectContaining({
+          branchName: 'feature/dirty-archive',
+          worktreePath: '/repos/web/.macro/worktrees/dirty-archive',
+          state: 'dirty',
+          worktreeRemoved: false,
+        })],
+      }),
+    ]);
+  });
+
   it('blocks deletion while the linked conversation is still running', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-running-conversation',

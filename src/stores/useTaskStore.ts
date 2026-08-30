@@ -29,6 +29,14 @@ import {
   type LinkedTaskDeletionSaga,
 } from '../services/linkedTaskDeletionSaga';
 import {
+  archivedTaskCleanupIsComplete,
+  loadArchivedTaskCleanupSagas,
+  removeArchivedTaskCleanupSaga,
+  upsertArchivedTaskCleanupSaga,
+  type ArchivedTaskCleanupSaga,
+  type ArchivedTaskCleanupTarget,
+} from '../services/archivedTaskCleanup';
+import {
   deriveImplementTasksFromStrategy,
   applyTaskStatusToPlanNodes,
   toBranchWorktreeKey,
@@ -701,6 +709,120 @@ const resumeLinkedTaskGitCleanup = async (
     }
   }
   return current;
+};
+
+const updateArchivedCleanupTarget = (
+  saga: ArchivedTaskCleanupSaga,
+  worktreeKey: string,
+  update: (target: ArchivedTaskCleanupTarget) => ArchivedTaskCleanupTarget,
+): ArchivedTaskCleanupSaga => ({
+  ...saga,
+  updatedAt: new Date().toISOString(),
+  targets: saga.targets.map((target) =>
+    target.worktreeKey === worktreeKey ? update(target) : target,
+  ),
+});
+
+const runArchivedTaskCleanup = async (
+  initialSaga: ArchivedTaskCleanupSaga,
+): Promise<ArchivedTaskCleanupSaga | null> => {
+  let saga = initialSaga;
+  for (const target of saga.targets) {
+    if (!target.worktreeRemoved) {
+      try {
+        const inspection = await tauriIpc.gitWorktreeInspect({
+          repoPath: target.repoPath,
+          taskId: target.worktreeKey,
+          branchName: target.branchName,
+        });
+        if (inspection.status === 'absent') {
+          saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
+            ...current,
+            worktreeRemoved: true,
+            worktreePath: inspection.worktreePath || current.worktreePath,
+            state: 'pending',
+            lastError: undefined,
+          }));
+          await upsertArchivedTaskCleanupSaga(saga);
+        } else if (inspection.isDirty) {
+          const message = `Le worktree ${inspection.worktreePath} contient des changements locaux.`;
+          saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
+            ...current,
+            worktreePath: inspection.worktreePath || current.worktreePath,
+            state: 'dirty',
+            lastError: message,
+          }));
+          await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
+          continue;
+        } else {
+          await tauriIpc.gitWorktreeRemove({
+            repoPath: target.repoPath,
+            taskId: target.worktreeKey,
+            force: false,
+            branchName: target.branchName,
+          });
+          saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
+            ...current,
+            worktreeRemoved: true,
+            worktreePath: inspection.worktreePath || current.worktreePath,
+            state: 'pending',
+            lastError: undefined,
+          }));
+          await upsertArchivedTaskCleanupSaga(saga);
+        }
+      } catch (error) {
+        const message = toServiceError(error).message;
+        saga = updateArchivedCleanupTarget(saga, target.worktreeKey, (current) => ({
+          ...current,
+          state: 'failed',
+          lastError: message,
+        }));
+        await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
+        continue;
+      }
+    }
+
+    const currentTarget = saga.targets.find(
+      (candidate) => candidate.worktreeKey === target.worktreeKey,
+    );
+    if (!currentTarget?.worktreeRemoved || currentTarget.branchRemoved) {
+      continue;
+    }
+    try {
+      const branches = await tauriIpc.gitBranchList(currentTarget.repoPath);
+      if ((branches.local || []).some((branch) => branch.name === currentTarget.branchName)) {
+        await tauriIpc.gitBranchDelete({
+          repoPath: currentTarget.repoPath,
+          branchName: currentTarget.branchName,
+          force: false,
+        });
+      }
+      saga = updateArchivedCleanupTarget(saga, currentTarget.worktreeKey, (current) => ({
+        ...current,
+        branchRemoved: true,
+        state: 'pending',
+        lastError: undefined,
+      }));
+      await upsertArchivedTaskCleanupSaga(saga);
+    } catch (error) {
+      const message = toServiceError(error).message;
+      saga = updateArchivedCleanupTarget(saga, currentTarget.worktreeKey, (current) => ({
+        ...current,
+        state: 'failed',
+        lastError: message,
+      }));
+      await upsertArchivedTaskCleanupSaga({ ...saga, lastError: message });
+    }
+  }
+
+  if (archivedTaskCleanupIsComplete(saga)) {
+    await removeArchivedTaskCleanupSaga(saga.taskId);
+    return null;
+  }
+  return {
+    ...saga,
+    lastError: saga.targets.find((target) => target.lastError)?.lastError ?? saga.lastError,
+  };
 };
 
 const findActiveTasksSharingExecutionBranch = (
@@ -1873,6 +1995,7 @@ interface TaskStore {
   isLoading: boolean;
   mergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState>;
   planFinalizationRuntimeByPlanId: Record<string, PlanFinalizationRuntimeState>;
+  archivedTaskCleanupByTaskId: Record<string, ArchivedTaskCleanupSaga>;
   lastError: string | null;
   missingBaseBranchIssue: TaskMissingBaseBranchIssue | null;
   source: TaskSource;
@@ -1926,6 +2049,7 @@ interface TaskStore {
   clearMissingBaseBranchIssue: () => void;
   renameTask: (taskId: string, title: string) => Promise<void>;
   archiveTask: (taskId: string, options?: { reason?: string | null; mergedAt?: string | null }) => Promise<void>;
+  cleanupArchivedTask: (taskId: string) => Promise<ArchivedTaskCleanupSaga | null>;
   restoreTask: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   reopenTask: (taskId: string) => Promise<void>;
@@ -2629,6 +2753,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   isLoading: false,
   mergeWorkflowRuntimeByTaskId: {},
   planFinalizationRuntimeByPlanId: {},
+  archivedTaskCleanupByTaskId: {},
   lastError: null,
   missingBaseBranchIssue: null,
   source: 'empty',
@@ -2829,6 +2954,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           });
         }
       }
+      const archivedTaskCleanupSagas = await loadArchivedTaskCleanupSagas();
+      if (!isCurrentRefresh()) return;
       const nextMergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState> =
         {};
       const nextPlanFinalizationRuntimeByPlanId: Record<string, PlanFinalizationRuntimeState> = {};
@@ -2905,6 +3032,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         publishedStandaloneTasks,
         mergeWorkflowRuntimeByTaskId: nextMergeWorkflowRuntimeByTaskId,
         planFinalizationRuntimeByPlanId: nextPlanFinalizationRuntimeByPlanId,
+        archivedTaskCleanupByTaskId: Object.fromEntries(
+          archivedTaskCleanupSagas.map((saga) => [saga.taskId, saga]),
+        ),
         missingBaseBranchIssue: null,
         source: catalog.source,
         lastError: null,
@@ -3524,31 +3654,78 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           isGitExecutionTarget(target) &&
           !isRepositoryRootTarget(target),
       );
-      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
-      await tauriIpc.workspaceArchiveManualFeature({
-        taskId,
-        reason: options?.reason ?? null,
-        mergedAt: options?.mergedAt ?? null,
-      });
-      for (const target of gitTargets) {
-        await tauriIpc.gitWorktreeRemove({
-          repoPath: target.repoPath,
-          taskId: target.worktreeKey,
-          force: false,
-          branchName: target.branchName,
-        });
-
-        const branches = await tauriIpc.gitBranchList(target.repoPath);
-        if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
-          await tauriIpc.gitBranchDelete({
+      const now = new Date().toISOString();
+      const preparedCleanup: ArchivedTaskCleanupSaga | null = gitTargets.length > 0
+        ? {
+          taskId,
+          targets: gitTargets.map((target) => ({
+            worktreeKey: target.worktreeKey,
             repoPath: target.repoPath,
             branchName: target.branchName,
-            force: false,
-          });
+            worktreePath: get().branchWorktrees[target.worktreeKey] ?? null,
+            worktreeRemoved: false,
+            branchRemoved: false,
+            state: 'pending',
+          })),
+          createdAt: now,
+          updatedAt: now,
         }
+        : null;
+      if (preparedCleanup) {
+        await upsertArchivedTaskCleanupSaga(preparedCleanup);
+      }
+      try {
+        await tauriIpc.workspaceArchiveManualFeature({
+          taskId,
+          reason: options?.reason ?? null,
+          mergedAt: options?.mergedAt ?? null,
+        });
+      } catch (error) {
+        if (preparedCleanup) {
+          await removeArchivedTaskCleanupSaga(taskId).catch(() => undefined);
+        }
+        throw error;
       }
 
-      const removedKeys = new Set(executionTargets.map((target) => target.worktreeKey));
+      let remainingCleanup: ArchivedTaskCleanupSaga | null = null;
+      if (preparedCleanup) {
+        try {
+          remainingCleanup = await runArchivedTaskCleanup(preparedCleanup);
+        } catch (error) {
+          remainingCleanup = {
+            ...preparedCleanup,
+            updatedAt: new Date().toISOString(),
+            lastError: toServiceError(error).message,
+          };
+        }
+      }
+      set((state) => ({
+        archivedTaskCleanupByTaskId: remainingCleanup
+          ? {
+            ...state.archivedTaskCleanupByTaskId,
+            [taskId]: remainingCleanup,
+          }
+          : Object.fromEntries(
+            Object.entries(state.archivedTaskCleanupByTaskId).filter(
+              ([candidateTaskId]) => candidateTaskId !== taskId,
+            ),
+          ),
+      }));
+
+      const removedKeys = new Set([
+        ...executionTargets
+          .filter(isDirectCheckpointCleanupTarget)
+          .map((target) => target.worktreeKey),
+        ...(preparedCleanup?.targets ?? [])
+          .filter((target) =>
+            remainingCleanup
+              ? remainingCleanup.targets.find(
+                (candidate) => candidate.worktreeKey === target.worktreeKey,
+              )?.worktreeRemoved
+              : true,
+          )
+          .map((target) => target.worktreeKey),
+      ]);
       const removedPaths = new Set(
         Array.from(removedKeys)
           .map((key) => get().branchWorktrees[key])
@@ -3561,7 +3738,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         activeBranchName:
           state.activeBranchName === task.assigned_branch ? null : state.activeBranchName,
         activeRepositoryPath:
-          state.activeRepositoryPath && removedPaths.has(state.activeRepositoryPath)
+          state.activeBranchName === task.assigned_branch ||
+          (state.activeRepositoryPath && removedPaths.has(state.activeRepositoryPath))
             ? null
             : state.activeRepositoryPath,
         activeWorkspacePathOverridesByProjectId: {},
@@ -3598,6 +3776,27 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
   },
 
+  cleanupArchivedTask: async (taskId) => {
+    const saga = get().archivedTaskCleanupByTaskId[taskId]
+      ?? (await loadArchivedTaskCleanupSagas()).find((candidate) => candidate.taskId === taskId)
+      ?? null;
+    if (!saga) return null;
+    const remaining = await runArchivedTaskCleanup(saga);
+    set((state) => ({
+      archivedTaskCleanupByTaskId: remaining
+        ? {
+          ...state.archivedTaskCleanupByTaskId,
+          [taskId]: remaining,
+        }
+        : Object.fromEntries(
+          Object.entries(state.archivedTaskCleanupByTaskId).filter(
+            ([candidateTaskId]) => candidateTaskId !== taskId,
+          ),
+        ),
+    }));
+    return remaining;
+  },
+
   restoreTask: async (taskId) => {
     set({ lastError: null });
     assertTaskMutationRuntime('restoreTask');
@@ -3619,6 +3818,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     try {
       await tauriIpc.workspaceRestoreManualFeature(taskId);
+      await removeArchivedTaskCleanupSaga(taskId);
+      set((state) => ({
+        archivedTaskCleanupByTaskId: Object.fromEntries(
+          Object.entries(state.archivedTaskCleanupByTaskId).filter(
+            ([candidateTaskId]) => candidateTaskId !== taskId,
+          ),
+        ),
+      }));
       await get().refreshFromPlan();
       await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
         set({ lastError: message });

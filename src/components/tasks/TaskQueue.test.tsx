@@ -859,6 +859,25 @@ describe('TaskQueue', () => {
         sequence_index: 1,
       }),
     ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      archivedTaskCleanupByTaskId: {
+        'archived-task': {
+          taskId: 'archived-task',
+          targets: [{
+            worktreeKey: 'project-1::feature/archived-task',
+            repoPath: '/tmp/project-1',
+            branchName: 'feature/archived-task',
+            worktreePath: '/tmp/project-1/.macro/worktrees/archived-task',
+            worktreeRemoved: false,
+            branchRemoved: false,
+            state: 'dirty',
+          }],
+          createdAt: '2026-04-30T10:00:00.000Z',
+          updatedAt: '2026-04-30T10:00:00.000Z',
+        },
+      },
+    });
 
     await act(async () => {
       root?.render(<TaskQueueComponent />);
@@ -888,6 +907,84 @@ describe('TaskQueue', () => {
     expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
     expect(document.body.textContent).not.toContain('Active task');
     expect(document.body.textContent).toContain('Archived task');
+
+    const taskActions = document.body.querySelector<HTMLButtonElement>(
+      'button[title="Task actions"]'
+    );
+    await act(async () => {
+      taskActions?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+    expect(document.body.querySelector('[role="menu"]')?.textContent)
+      .toContain('Clean up worktree');
+  });
+
+  it('warns after archiving succeeds with a pending dirty-worktree cleanup', async () => {
+    const task = makeTask('archive-with-dirty-worktree', 'Completed', {
+      title: 'Archive with local edits',
+      standalone_kind: 'manual_feature',
+    });
+    seedTasks([task]);
+    const archiveTask = mock(async (taskId: string) => {
+      useTaskStore.setState((state) => ({
+        archivedTaskCleanupByTaskId: {
+          ...state.archivedTaskCleanupByTaskId,
+          [taskId]: {
+            taskId,
+            targets: [{
+              worktreeKey: 'project-1::feature/archive-with-dirty-worktree',
+              repoPath: '/tmp/project-1',
+              branchName: 'feature/archive-with-dirty-worktree',
+              worktreePath: '/tmp/project-1/.macro/worktrees/archive-with-dirty-worktree',
+              worktreeRemoved: false,
+              branchRemoved: false,
+              state: 'dirty',
+            }],
+            createdAt: '2026-04-30T10:00:00.000Z',
+            updatedAt: '2026-04-30T10:00:00.000Z',
+          },
+        },
+      }));
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      archiveTask: archiveTask as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('button[title="Task actions"]')?.click();
+      await flushRender();
+    });
+    const archiveAction = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((button) => button.textContent?.trim() === 'Archive');
+    await act(async () => {
+      archiveAction?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const confirmArchive = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [],
+    ).find((button) => button.textContent?.trim() === 'Archive');
+    await act(async () => {
+      confirmArchive?.click();
+      await flushRender();
+    });
+
+    expect(archiveTask).toHaveBeenCalledWith('archive-with-dirty-worktree');
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+    const [title, options] = notifyMock.actionRequired.mock.calls[0] as [
+      string,
+      { description: string; actions: Array<{ label: string }> },
+    ];
+    expect(title).toBe('Task archived, cleanup pending');
+    expect(options.description).toContain('feature/archive-with-dirty-worktree');
+    expect(options.description).toContain('/tmp/project-1/.macro/worktrees/archive-with-dirty-worktree');
+    expect(options.actions.map((action) => action.label)).toEqual(['Open worktree', 'Retry']);
   });
 
   it('shows tasks from every project by default and filters them by project', async () => {
@@ -988,7 +1085,7 @@ describe('TaskQueue', () => {
     seedTasks([makeTask('task-1', 'Pending')]);
     const createConversation = mock(async () => ({ id: 'conversation-created' }));
     const selectConversation = mock(async () => true);
-    const createManualFeatureDraft = mock(async () => undefined);
+    const createManualFeatureDraft = mock(async (_params: { taskId: string }) => undefined);
     const activateTask = mock(async () => undefined);
     useChatStore.setState({
       ...useChatStore.getState(),
@@ -1175,6 +1272,71 @@ describe('TaskQueue', () => {
     });
     expect(activateTask).toHaveBeenCalledWith(expect.stringContaining('manual-feature-'));
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('deletes a durable standalone draft when a late creation step fails', async () => {
+    const directProject = {
+      ...makeProject('project-folder', '/tmp/project-folder', 'Folder project'),
+      directEdit: true,
+      gitSetupState: 'not_git' as const,
+    };
+    seedTasks([]);
+    const createConversation = mock(async () => ({ id: 'conversation-created' }));
+    const selectConversation = mock(async () => false);
+    const deleteConversation = mock(async () => undefined);
+    const createManualFeatureDraft = mock(async (_params: { taskId: string }) => undefined);
+    const activateTask = mock(async () => undefined);
+    const deleteTask = mock(async () => undefined);
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      createConversation: createConversation as never,
+      selectConversation: selectConversation as never,
+      deleteConversation: deleteConversation as never,
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      createManualFeatureDraft: createManualFeatureDraft as never,
+      activateTask: activateTask as never,
+      deleteTask: deleteTask as never,
+    });
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [{
+        id: 'group-folder',
+        name: 'Folder group',
+        isOpen: true,
+        projects: [directProject],
+      }] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>(
+        '[data-tour-id="implement-create-task"]'
+      )?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const findDialogButton = (text: string) => Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []
+    ).find((button) => button.textContent?.includes(text));
+    await act(async () => {
+      findDialogButton('Folder project')?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      findDialogButton('Create task')?.click();
+      await flushRender();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const taskId = createManualFeatureDraft.mock.calls[0]?.[0]?.taskId;
+    expect(taskId).toEqual(expect.stringContaining('manual-feature-'));
+    expect(deleteTask).toHaveBeenCalledWith(taskId);
+    expect(deleteConversation).not.toHaveBeenCalled();
   });
 
   it('opens task creation for a direct project without loading Git start points', async () => {
