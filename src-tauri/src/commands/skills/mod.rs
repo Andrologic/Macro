@@ -1,6 +1,6 @@
 use crate::commands::{command_error, CommandResult};
 use crate::config::{ConfigDocumentKind, ConfigManager, SkillsDocument};
-use crate::core::process::background_tokio_command;
+use crate::core::process::{background_contained_tokio_command, ContainedBackgroundProcess};
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Value};
 use sha2::{Digest, Sha256};
@@ -12,6 +12,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
+use tokio::io::AsyncReadExt;
 use tokio::time::timeout;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
@@ -32,6 +33,16 @@ const MAX_DISCOVERY_DIRS: usize = 2_000;
 const MAX_SKILL_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
 const MAX_COMPATIBILITY_LENGTH: usize = 500;
+
+struct SkillRunTempDir(Option<PathBuf>);
+
+impl Drop for SkillRunTempDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+}
 
 const FRONTMATTER_FIELDS: &[&str] = &[
     "name",
@@ -1951,7 +1962,7 @@ async fn run_skill_script_with_manifest(
     };
     command_args.extend(args);
 
-    let mut temp_run_dir: Option<PathBuf> = None;
+    let mut temp_run_dir = SkillRunTempDir(None);
     let run_cwd = if allow_workspace {
         resolve_workspace_cwd(workspace_path, &project_roots)?
     } else {
@@ -1959,11 +1970,11 @@ async fn run_skill_script_with_manifest(
         fs::create_dir_all(&path).map_err(|error| {
             command_error(format!("Failed to create skill run directory: {}", error))
         })?;
-        temp_run_dir = Some(path.clone());
+        temp_run_dir.0 = Some(path.clone());
         path
     };
 
-    let mut command = background_tokio_command(program);
+    let mut command = background_contained_tokio_command(program);
     command
         .args(command_args)
         .current_dir(run_cwd)
@@ -1971,7 +1982,6 @@ async fn run_skill_script_with_manifest(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear();
-    command.kill_on_drop(true);
     let preserved_env_vars = if cfg!(windows) {
         ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"].as_slice()
     } else {
@@ -1983,41 +1993,89 @@ async fn run_skill_script_with_manifest(
         }
     }
 
-    let result = timeout(Duration::from_millis(timeout_ms), command.output()).await;
-    let response = match result {
-        Ok(Ok(output)) => {
-            let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
-            let (stdout, stdout_truncated) = truncate_chars(stdout_raw, SCRIPT_OUTPUT_MAX_CHARS);
-            let (stderr, stderr_truncated) = truncate_chars(stderr_raw, SCRIPT_OUTPUT_MAX_CHARS);
-            Ok(SkillScriptRunResponse {
-                skill_id,
-                script_path,
-                stdout,
-                stderr,
-                exit_code: output.status.code(),
-                timed_out: false,
-                truncated: stdout_truncated || stderr_truncated,
-            })
+    let mut process = ContainedBackgroundProcess::spawn(command)
+        .map_err(|error| command_error(format!("Failed to run skill script: {}", error)))?;
+    let mut stdout_pipe = process
+        .take_stdout()
+        .ok_or_else(|| command_error("Failed to capture skill script stdout."))?;
+    let mut stderr_pipe = process
+        .take_stderr()
+        .ok_or_else(|| command_error("Failed to capture skill script stderr."))?;
+    let stdout_task = tokio::spawn(async move {
+        let mut output = Vec::new();
+        stdout_pipe.read_to_end(&mut output).await.map(|_| output)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut output = Vec::new();
+        stderr_pipe.read_to_end(&mut output).await.map(|_| output)
+    });
+    let wait_result = timeout(Duration::from_millis(timeout_ms), process.wait()).await;
+    let timed_out = wait_result.is_err();
+    let status = match wait_result {
+        Ok(Ok(status)) => Some(status),
+        Ok(Err(error)) => {
+            let _ = process.terminate_with_grace(Duration::ZERO).await;
+            return Err(command_error(format!(
+                "Failed to wait for skill script: {}",
+                error
+            )));
         }
-        Ok(Err(error)) => Err(command_error(format!(
-            "Failed to run skill script: {}",
-            error
-        ))),
-        Err(_) => Ok(SkillScriptRunResponse {
+        Err(_) => {
+            process
+                .terminate_with_grace(Duration::ZERO)
+                .await
+                .map_err(|error| {
+                    command_error(format!("Failed to stop timed out skill script: {}", error))
+                })?;
+            None
+        }
+    };
+    if status.is_some() {
+        process
+            .terminate_with_grace(Duration::ZERO)
+            .await
+            .map_err(|error| {
+                command_error(format!(
+                    "Failed to reap skill script descendants: {}",
+                    error
+                ))
+            })?;
+    }
+    let stdout_bytes = stdout_task
+        .await
+        .map_err(|error| command_error(format!("Failed to join skill stdout: {}", error)))?
+        .map_err(|error| command_error(format!("Failed to read skill stdout: {}", error)))?;
+    let stderr_bytes = stderr_task
+        .await
+        .map_err(|error| command_error(format!("Failed to join skill stderr: {}", error)))?
+        .map_err(|error| command_error(format!("Failed to read skill stderr: {}", error)))?;
+
+    let response = if timed_out {
+        Ok(SkillScriptRunResponse {
             skill_id,
             script_path,
-            stdout: String::new(),
+            stdout: String::from_utf8_lossy(&stdout_bytes).to_string(),
             stderr: format!("Skill script timed out after {} ms.", timeout_ms),
             exit_code: None,
             timed_out: true,
             truncated: false,
-        }),
+        })
+    } else {
+        let status = status.expect("completed skill script status");
+        let stdout_raw = String::from_utf8_lossy(&stdout_bytes).to_string();
+        let stderr_raw = String::from_utf8_lossy(&stderr_bytes).to_string();
+        let (stdout, stdout_truncated) = truncate_chars(stdout_raw, SCRIPT_OUTPUT_MAX_CHARS);
+        let (stderr, stderr_truncated) = truncate_chars(stderr_raw, SCRIPT_OUTPUT_MAX_CHARS);
+        Ok(SkillScriptRunResponse {
+            skill_id,
+            script_path,
+            stdout,
+            stderr,
+            exit_code: status.code(),
+            timed_out: false,
+            truncated: stdout_truncated || stderr_truncated,
+        })
     };
-
-    if let Some(path) = temp_run_dir {
-        let _ = fs::remove_dir_all(path);
-    }
 
     response
 }
@@ -2920,8 +2978,23 @@ mod tests {
         #[cfg(not(windows))]
         let (noisy_script_path, noisy_script_content) =
             ("scripts/noisy.sh", "printf 'x%.0s' {1..21050}\n");
+        #[cfg(windows)]
+        let (descendant_script_path, descendant_script_content) = (
+            "scripts/descendant.cmd",
+            "@echo off\r\nstart \"\" /B powershell.exe -NoProfile -Command \"Start-Sleep -Milliseconds 1500; Set-Content -LiteralPath '%~1' -Value survived\"\r\npowershell.exe -NoProfile -Command \"Start-Sleep -Seconds 10\"\r\n",
+        );
+        #[cfg(not(windows))]
+        let (descendant_script_path, descendant_script_content) = (
+            "scripts/descendant.sh",
+            "(sleep 1.5; printf survived > \"$1\") &\nsleep 10\n",
+        );
         fs::write(skill_dir.join(slow_script_path), slow_script_content).expect("write slow");
         fs::write(skill_dir.join(noisy_script_path), noisy_script_content).expect("write noisy");
+        fs::write(
+            skill_dir.join(descendant_script_path),
+            descendant_script_content,
+        )
+        .expect("write descendant script");
         let project_roots = vec![SkillProjectRootDto {
             project_id: "p1".to_string(),
             project_name: "Project".to_string(),
@@ -2956,6 +3029,25 @@ mod tests {
             timed_out.stdout, timed_out.stderr, timed_out.exit_code
         );
         assert!(timed_out.stderr.contains("timed out"));
+
+        let descendant_marker = project.path().join("descendant-survived.txt");
+        let descendant_timeout = test_skills_run_script(
+            skill_id.clone(),
+            descendant_script_path.to_string(),
+            vec![descendant_marker.to_string_lossy().to_string()],
+            Some(1_000),
+            false,
+            None,
+            project_roots.clone(),
+        )
+        .await
+        .expect("descendant timeout response");
+        assert!(descendant_timeout.timed_out);
+        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        assert!(
+            !descendant_marker.exists(),
+            "skill script descendant survived timeout"
+        );
 
         let truncated = test_skills_run_script(
             skill_id,

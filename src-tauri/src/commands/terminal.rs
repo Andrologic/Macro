@@ -126,6 +126,8 @@ struct LiveTerminalSession {
     writer: Arc<StdMutex<Box<dyn Write + Send>>>,
     master: Arc<StdMutex<Box<dyn MasterPty + Send>>>,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
+    #[cfg(windows)]
+    windows_job: Arc<WindowsJob>,
 }
 
 struct LiveTerminalRuntime {
@@ -234,6 +236,18 @@ impl WindowsJob {
             .raw_handle()
             .ok_or_else(|| command_error("Windows child process handle is unavailable"))?
             as HANDLE;
+        Self::assign_handle(process_handle)
+    }
+
+    fn assign_portable(child: &dyn portable_pty::Child) -> CommandResult<Arc<Self>> {
+        let process_handle = child
+            .as_raw_handle()
+            .ok_or_else(|| command_error("Windows terminal process handle is unavailable"))?
+            as HANDLE;
+        Self::assign_handle(process_handle)
+    }
+
+    fn assign_handle(process_handle: HANDLE) -> CommandResult<Arc<Self>> {
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
             return Err(command_error(format!(
@@ -1672,6 +1686,11 @@ async fn spawn_live_tab(
         .spawn_command(shell_command)
         .map_err(|error| command_error(format!("Failed to launch terminal shell: {}", error)))?;
     drop(pair.slave);
+    #[cfg(windows)]
+    let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
+        let _ = child.kill();
+        error
+    })?;
 
     let writer = match pair.master.take_writer() {
         Ok(writer) => writer,
@@ -1715,6 +1734,8 @@ async fn spawn_live_tab(
         writer: Arc::new(StdMutex::new(writer)),
         master: Arc::new(StdMutex::new(pair.master)),
         runtime: runtime.clone(),
+        #[cfg(windows)]
+        windows_job,
     };
 
     let replaced_by_existing = {
@@ -1799,6 +1820,11 @@ async fn spawn_command_tab(
         .spawn_command(process_command)
         .map_err(|error| command_error(format!("Failed to launch terminal command: {}", error)))?;
     drop(pair.slave);
+    #[cfg(windows)]
+    let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
+        let _ = child.kill();
+        error
+    })?;
 
     let writer = match pair.master.take_writer() {
         Ok(writer) => writer,
@@ -1842,6 +1868,8 @@ async fn spawn_command_tab(
         writer: Arc::new(StdMutex::new(writer)),
         master: Arc::new(StdMutex::new(pair.master)),
         runtime: runtime.clone(),
+        #[cfg(windows)]
+        windows_job,
     };
 
     {
@@ -2490,6 +2518,8 @@ pub async fn terminal_close_tab(
         }
 
         tokio::time::sleep(Duration::from_millis(LIVE_TERMINAL_CLOSE_GRACE_MS)).await;
+        #[cfg(windows)]
+        session.windows_job.terminate()?;
         let child = session.child.clone();
         tokio::task::spawn_blocking(move || {
             let mut guard = child
@@ -3587,6 +3617,38 @@ mod tests {
             !listing.contains(&descendant_pid.to_string()),
             "descendant process {descendant_pid} survived: {listing}"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn closing_a_portable_terminal_job_removes_descendants() {
+        let temp = TempDir::new().expect("temp dir");
+        let marker = temp.path().join("terminal-descendant-survived.txt");
+        let child_script = format!(
+            "Start-Sleep -Milliseconds 1200; Set-Content -LiteralPath '{}' -Value survived",
+            marker.to_string_lossy().replace('\'', "''")
+        );
+        let parent_script = format!(
+            "$child = Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList @('-NoProfile','-Command','{}') -PassThru; Start-Sleep -Seconds 30",
+            child_script.replace('\'', "''")
+        );
+        let pty = NativePtySystem::default()
+            .openpty(pty_size(80, 24))
+            .expect("open terminal PTY");
+        let mut command = CommandBuilder::new("powershell.exe");
+        command.args(["-NoProfile", "-Command", &parent_script]);
+        let mut child = pty
+            .slave
+            .spawn_command(command)
+            .expect("spawn portable terminal");
+        let job = WindowsJob::assign_portable(child.as_ref()).expect("assign terminal job");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        job.terminate().expect("close terminal job");
+        let _ = child.kill();
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+        assert!(!marker.exists(), "terminal descendant survived close");
     }
 
     fn terminal_test_project(id: &str, path: &str) -> ProjectDto {
