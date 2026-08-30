@@ -2313,11 +2313,12 @@ pub async fn finalize_manual_feature(
     feature_slug: &str,
     task_kind: &str,
 ) -> Result<ManualFeatureDto> {
+    let normalized_task_id = task_id.trim();
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let standalone_projects = state.standalone_projects.clone();
     let project_groups = state.project_groups.clone();
-    let normalized_task_id = task_id.trim();
     let feature_index = state
         .manual_features
         .iter()
@@ -2325,6 +2326,11 @@ pub async fn finalize_manual_feature(
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
         })?;
+    if state.manual_features[feature_index].archived_at.is_some() {
+        return Err(BackendError::Validation(
+            "Une tâche archivée doit être restaurée avant sa finalisation.".to_string(),
+        ));
+    }
     let existing_feature_slug = state.manual_features[feature_index].feature_slug.clone();
     let normalized_title = title.trim();
     let normalized_description = description.trim();
@@ -2465,9 +2471,10 @@ pub async fn revert_manual_feature_to_draft(
     title: Option<&str>,
     description: Option<&str>,
 ) -> Result<ManualFeatureDto> {
+    let normalized_task_id = task_id.trim();
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
-    let normalized_task_id = task_id.trim();
     let feature_index = state
         .manual_features
         .iter()
@@ -2475,6 +2482,12 @@ pub async fn revert_manual_feature_to_draft(
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
         })?;
+
+    if state.manual_features[feature_index].archived_at.is_some() {
+        return Err(BackendError::Validation(
+            "Une tâche archivée doit être restaurée avant son retour en brouillon.".to_string(),
+        ));
+    }
 
     let previous_feature_slug = state.manual_features[feature_index]
         .feature_slug
@@ -2603,7 +2616,6 @@ pub async fn rename_manual_feature(
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })?;
-
     feature.title = normalized_title.to_string();
     feature.updated_at = Utc::now().to_rfc3339();
 
@@ -11044,6 +11056,70 @@ mod tests {
         )
         .await
         .expect("validate current archive token");
+        let finalize_workspace_path = workspace_path.clone();
+        let finalize_metadata_root = metadata_root.clone();
+        let mut finalize = tokio::spawn(async move {
+            finalize_manual_feature(
+                &finalize_workspace_path,
+                &finalize_metadata_root,
+                "manual-task-cleanup-race",
+                Some("manual-conversation-cleanup-race"),
+                "Stale finalization",
+                "This stale command must not reactivate the task.",
+                "cleanup-race",
+                "feature",
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut finalize)
+                .await
+                .is_err()
+        );
+        drop(cleanup_guard);
+        let finalize_error = finalize
+            .await
+            .expect("join stale finalization")
+            .expect_err("archived finalization must fail");
+        assert!(matches!(
+            finalize_error,
+            BackendError::Validation(message) if message.contains("doit être restaurée")
+        ));
+
+        let cleanup_guard = lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
+            .await
+            .expect("reacquire cleanup guard before stale revert");
+        let revert_workspace_path = workspace_path.clone();
+        let revert_metadata_root = metadata_root.clone();
+        let mut revert = tokio::spawn(async move {
+            revert_manual_feature_to_draft(
+                &revert_workspace_path,
+                &revert_metadata_root,
+                "manual-task-cleanup-race",
+                Some("manual-conversation-cleanup-race"),
+                Some("Stale draft"),
+                Some(""),
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut revert)
+                .await
+                .is_err()
+        );
+        drop(cleanup_guard);
+        let revert_error = revert
+            .await
+            .expect("join stale revert")
+            .expect_err("archived revert must fail");
+        assert!(matches!(
+            revert_error,
+            BackendError::Validation(message) if message.contains("doit être restaurée")
+        ));
+
+        let cleanup_guard = lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
+            .await
+            .expect("reacquire cleanup guard before restore");
         let restore_workspace_path = workspace_path.clone();
         let restore_metadata_root = metadata_root.clone();
         let mut restore = tokio::spawn(async move {

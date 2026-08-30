@@ -342,37 +342,99 @@ async fn run_wsl_command_raw(
     for arg in args {
         command.arg(arg);
     }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     if stdin.is_some() {
         command.stdin(Stdio::piped());
     }
     command.kill_on_drop(true);
-    let mut child = command.spawn().map_err(classify_wsl_launch_error)?;
-    if let Some(input) = stdin {
-        let mut child_stdin = child.stdin.take().ok_or_else(|| BackendError::Filesystem {
-            message: "Failed to open stdin for the WSL command.".to_string(),
-        })?;
-        child_stdin
-            .write_all(&input)
-            .await
-            .map_err(|error| BackendError::Filesystem {
-                message: format!("Failed to write to WSL: {}", error),
+    let child = command.spawn().map_err(classify_wsl_launch_error)?;
+    collect_wsl_child_output(child, stdin, timeout_duration).await
+}
+
+async fn collect_wsl_child_output(
+    mut child: tokio::process::Child,
+    stdin: Option<Vec<u8>>,
+    timeout_duration: Duration,
+) -> Result<WslCommandOutput> {
+    let stdout = child.stdout.take().ok_or_else(|| BackendError::Git {
+        message: "Failed to capture WSL stdout.".to_string(),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| BackendError::Git {
+        message: "Failed to capture WSL stderr.".to_string(),
+    })?;
+    let stdout_task = tokio::spawn(async move {
+        let mut stdout = stdout;
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut stderr = stderr;
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+
+    let operation = async {
+        if let Some(input) = stdin {
+            let mut child_stdin = child.stdin.take().ok_or_else(|| BackendError::Filesystem {
+                message: "Failed to open stdin for the WSL command.".to_string(),
             })?;
-        drop(child_stdin);
-    }
-    let output = timeout(timeout_duration, child.wait_with_output())
+            child_stdin
+                .write_all(&input)
+                .await
+                .map_err(|error| BackendError::Filesystem {
+                    message: format!("Failed to write to WSL: {error}"),
+                })?;
+            child_stdin
+                .shutdown()
+                .await
+                .map_err(|error| BackendError::Filesystem {
+                    message: format!("Failed to close WSL stdin: {error}"),
+                })?;
+        }
+        child.wait().await.map_err(|error| BackendError::Git {
+            message: format!("WSL command failed: {error}"),
+        })
+    };
+    let status = match timeout(timeout_duration, operation).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err(BackendError::Git {
+                message: "WSL command timed out.".to_string(),
+            });
+        }
+    };
+    let stdout = stdout_task
         .await
-        .map_err(|_| BackendError::Git {
-            message: "WSL command timed out.".to_string(),
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to join WSL stdout reader: {error}"),
         })?
         .map_err(|error| BackendError::Git {
-            message: format!("WSL command failed: {}", error),
+            message: format!("Failed to read WSL stdout: {error}"),
         })?;
-    let output = WslCommandOutput {
-        status: output.status,
-        stdout: output.stdout,
-        stderr: output.stderr,
-    };
-    Ok(output)
+    let stderr = stderr_task
+        .await
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to join WSL stderr reader: {error}"),
+        })?
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to read WSL stderr: {error}"),
+        })?;
+    Ok(WslCommandOutput {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 async fn run_wsl_command_bounded_raw(
@@ -578,6 +640,47 @@ pub async fn run_wsl_shell_with_stdin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn wsl_timeout_includes_a_blocked_stdin_write() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = background_tokio_command("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 10",
+            ]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = background_tokio_command("sh");
+            command.args(["-c", "sleep 10"]);
+            command
+        };
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let child = command.spawn().expect("spawn process that ignores stdin");
+        let started = std::time::Instant::now();
+
+        let result = collect_wsl_child_output(
+            child,
+            Some(vec![b'x'; 2 * 1024 * 1024]),
+            Duration::from_millis(100),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::Git { message }) if message == "WSL command timed out."
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn parse_wsl_unc_supports_wsl_dollar() {

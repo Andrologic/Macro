@@ -3541,7 +3541,7 @@ mod tests {
         let revision = content_revision(b"current");
         let lock_path = temp.path().join("guarded.lock");
 
-        let spawn_producer = |content: &'static [u8], temp_name: &str| {
+        let spawn_producer = |temp_name: &str| {
             let temp_path = temp.path().join(temp_name);
             let mut child = std::process::Command::new("sh")
                 .arg("-c")
@@ -3558,19 +3558,30 @@ mod tests {
                 .stderr(std::process::Stdio::piped())
                 .spawn()
                 .expect("spawn independent producer");
-            child
-                .stdin
-                .take()
-                .expect("producer stdin")
-                .write_all(content)
-                .expect("write producer content");
-            child
+            let stdin = child.stdin.take().expect("producer stdin");
+            (child, stdin)
         };
 
-        let first = spawn_producer(b"first", "first.tmp");
-        let second = spawn_producer(b"second", "second.tmp");
+        let mut first_content = vec![b'a'; 2 * 1024 * 1024];
+        first_content[..5].copy_from_slice(b"first");
+        let mut second_content = vec![b'b'; 2 * 1024 * 1024];
+        second_content[..6].copy_from_slice(b"second");
+        let (first, mut first_stdin) = spawn_producer("first.tmp");
+        let (second, mut second_stdin) = spawn_producer("second.tmp");
+        let first_writer = std::thread::spawn(move || {
+            first_stdin
+                .write_all(&first_content)
+                .expect("write first producer content");
+        });
+        let second_writer = std::thread::spawn(move || {
+            second_stdin
+                .write_all(&second_content)
+                .expect("write second producer content");
+        });
         let first_output = first.wait_with_output().expect("wait for first producer");
         let second_output = second.wait_with_output().expect("wait for second producer");
+        first_writer.join().expect("join first producer writer");
+        second_writer.join().expect("join second producer writer");
         assert!(first_output.status.success());
         assert!(second_output.status.success());
         let outputs = [
@@ -3591,8 +3602,9 @@ mod tests {
                 .count(),
             1
         );
-        let final_content = fs::read_to_string(&target).expect("read winning content");
-        assert!(final_content == "first" || final_content == "second");
+        let final_content = fs::read(&target).expect("read winning content");
+        assert!(final_content.starts_with(b"first") || final_content.starts_with(b"second"));
+        assert_eq!(final_content.len(), 2 * 1024 * 1024);
         assert!(!temp.path().join("first.tmp").exists());
         assert!(!temp.path().join("second.tmp").exists());
     }
