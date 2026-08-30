@@ -90,7 +90,10 @@ import {
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
 import { toPlanLocatorKey } from '../../services/durableIdentity';
-import { recoverFailedPlanActivation } from './planActivationRecovery';
+import {
+  recoverFailedPlanActivation,
+  resolvePlanActivationRequestIdentity,
+} from './planActivationRecovery';
 
 interface PlanSelectorProps {
   className?: string;
@@ -646,6 +649,8 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     })();
     const planBranch = planSummaryHint?.targetBranch || targetBranch;
     const locatorKey = toPlanLocatorKey({ branchName: planBranch, planId });
+    let activationTargetBranch = planBranch;
+    let activationLocatorKey = locatorKey;
     const requestId = ++activationRequestIdRef.current;
     const requestContext = selectorAsyncContextRef.current ?? selectorAsyncContext;
     setIsActivating(locatorKey);
@@ -672,8 +677,16 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const unambiguousLegacyBranch = idOnlyBranches.length === 1
         ? idOnlyBranches[0]?.branchName
         : null;
+      const activationIdentity = resolvePlanActivationRequestIdentity({
+        planId,
+        exactCatalogBranch,
+        unambiguousLegacyBranch,
+        fallbackBranch: planBranch,
+      });
+      activationTargetBranch = activationIdentity.targetBranch;
+      activationLocatorKey = activationIdentity.locatorKey;
       const activated = await activateArchitectPlan(planId, {
-        targetBranch: exactCatalogBranch ?? unambiguousLegacyBranch ?? planBranch,
+        targetBranch: activationTargetBranch,
         planSummaryHint: planSummaryHint ?? null,
       });
       if (!isCurrentActivationRequest(requestId, requestContext)) {
@@ -693,11 +706,11 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const failedSwitch = useAppStore.getState().architectPlanSwitch;
       const failedSwitchLocator = failedSwitch.targetPlanId
         ? toPlanLocatorKey({
-            branchName: failedSwitch.targetBranch ?? planBranch,
+            branchName: failedSwitch.targetBranch ?? activationTargetBranch,
             planId: failedSwitch.targetPlanId,
           })
         : null;
-      if (failedSwitchLocator !== locatorKey) {
+      if (failedSwitchLocator !== activationLocatorKey) {
         return;
       }
       setPlans(previousPlans);

@@ -1,3 +1,5 @@
+import { toPlanLocatorKey } from '../../services/durableIdentity';
+
 interface SelectionSnapshot {
   selectionRequestId: number;
 }
@@ -28,6 +30,30 @@ interface RecoverFailedPlanActivationOptions<
 export type FailedPlanActivationRecoveryResult =
   | 'replica-repair-opened'
   | 'error-reported';
+
+interface ResolvePlanActivationRequestIdentityOptions {
+  planId: string;
+  exactCatalogBranch?: string | null;
+  unambiguousLegacyBranch?: string | null;
+  fallbackBranch: string;
+}
+
+export const resolvePlanActivationRequestIdentity = ({
+  planId,
+  exactCatalogBranch,
+  unambiguousLegacyBranch,
+  fallbackBranch,
+}: ResolvePlanActivationRequestIdentityOptions): {
+  targetBranch: string;
+  locatorKey: string;
+} => {
+  const targetBranch =
+    exactCatalogBranch ?? unambiguousLegacyBranch ?? fallbackBranch;
+  return {
+    targetBranch,
+    locatorKey: toPlanLocatorKey({ branchName: targetBranch, planId }),
+  };
+};
 
 export const restoreFailedPlanActivation = <
   TAppState,

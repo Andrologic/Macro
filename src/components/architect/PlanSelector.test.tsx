@@ -1,5 +1,8 @@
 import { describe, expect, it, mock } from 'bun:test';
-import { recoverFailedPlanActivation } from './planActivationRecovery';
+import {
+  recoverFailedPlanActivation,
+  resolvePlanActivationRequestIdentity,
+} from './planActivationRecovery';
 
 interface VisibleAppState {
   activeArchitectPlanId: string;
@@ -23,6 +26,18 @@ interface VisibleAppState {
 }
 
 describe('PlanSelector activation recovery', () => {
+  it('uses the catalog branch for both activation and failure identity', () => {
+    expect(resolvePlanActivationRequestIdentity({
+      planId: 'plan-b',
+      exactCatalogBranch: 'release/2.0',
+      unambiguousLegacyBranch: null,
+      fallbackBranch: 'develop',
+    })).toEqual({
+      targetBranch: 'release/2.0',
+      locatorKey: 'plan:v1:release%2F2.0:plan-b',
+    });
+  });
+
   it('restores the exact visible state and reports the activation error', () => {
     const previousAppState: VisibleAppState = {
       activeArchitectPlanId: 'plan-a',
