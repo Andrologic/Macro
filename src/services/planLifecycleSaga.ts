@@ -409,14 +409,10 @@ const appendQuarantine = async (
         if (!candidate || typeof candidate !== 'object') return [];
         const entry = candidate as Partial<PlanLifecycleSagaQuarantineEntry>;
         if (
-          typeof entry.sourceKey !== 'string' || typeof entry.sourceRevision !== 'string' ||
-          (entry.sourceIndex !== 'root' && !Number.isSafeInteger(entry.sourceIndex)) ||
-          typeof entry.reason !== 'string'
+          typeof entry.sourceKey !== 'string' || typeof entry.reason !== 'string'
         ) return [];
         return [JSON.stringify([
           entry.sourceKey,
-          entry.sourceRevision,
-          entry.sourceIndex,
           entry.reason,
           entry.entry,
         ])];
@@ -424,8 +420,6 @@ const appendQuarantine = async (
       const additions = entries.filter((entry) => {
         const identity = JSON.stringify([
           entry.sourceKey,
-          entry.sourceRevision,
-          entry.sourceIndex,
           entry.reason,
           entry.entry,
         ]);
