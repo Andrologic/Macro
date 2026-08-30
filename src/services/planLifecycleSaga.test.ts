@@ -311,6 +311,81 @@ describe('planLifecycleSaga', () => {
     expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([fresh]);
   });
 
+  it('retires a historical plan generation completed during numeric conversion', async () => {
+    const historical: PlanLifecycleSaga = {
+      planId: 'conversion-race-plan',
+      branchName: 'develop',
+      operation: 'archive',
+      phase: 'git_cleanup_complete',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:01.000Z',
+    };
+    const values = new Map<string, string>([
+      ['pendingPlanLifecycles:v1', JSON.stringify([historical])],
+    ]);
+    let releaseCompletion!: () => void;
+    const completionReleased = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+    let reportCompletionBlocked!: () => void;
+    const completionBlocked = new Promise<void>((resolve) => {
+      reportCompletionBlocked = resolve;
+    });
+    let shouldBlockCompletion = true;
+    const transport: PlanLifecycleSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if (key === 'completedPlanLifecycles:v1' && shouldBlockCompletion) {
+          shouldBlockCompletion = false;
+          reportCompletionBlocked();
+          await completionReleased;
+        }
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+
+    const removal = removePlanLifecycleSaga(
+      historical.planId,
+      historical.operation,
+      historical.branchName,
+      getPlanLifecycleSagaGeneration(historical),
+      transport,
+    );
+    await completionBlocked;
+    const converted = { ...historical };
+    await upsertPlanLifecycleSaga(converted, transport);
+    expect(converted).toEqual(expect.objectContaining({
+      generation: 1,
+      legacyCreatedAt: historical.createdAt,
+    }));
+    await upsertPlanLifecycleSaga({
+      ...converted,
+      legacyCreatedAt: undefined,
+      updatedAt: '2026-08-30T00:00:01.500Z',
+    }, transport);
+    expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([
+      expect.objectContaining({ legacyCreatedAt: historical.createdAt }),
+    ]);
+
+    releaseCompletion();
+    await removal;
+    expect(JSON.parse(values.get('pendingPlanLifecycles:v1') ?? '[]')).toEqual([]);
+
+    await expect(upsertPlanLifecycleSaga({
+      ...converted,
+      updatedAt: '2026-08-30T00:00:02.000Z',
+    }, transport)).rejects.toBeInstanceOf(StalePlanLifecycleSagaError);
+    expect(await loadPlanLifecycleSagas(transport)).toEqual([]);
+  });
+
   it('keeps durable high-water marks after more than 512 completed plan identities', async () => {
     const values = new Map<string, string>();
     const transport: PlanLifecycleSagaTransport = {
@@ -391,6 +466,7 @@ describe('planLifecycleSaga', () => {
     const second: PlanLifecycleSaga = {
       ...first,
       generation: undefined,
+      legacyCreatedAt: undefined,
       phase: 'prepared',
       cleanupResources: [],
       createdAt: '2020-01-01T00:00:00.000Z',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  loadArchivedTaskCleanupSagas,
   removeArchivedTaskCleanupSaga,
   startArchivedTaskCleanupSaga,
   StaleArchivedTaskCleanupError,
@@ -161,6 +162,64 @@ describe('archivedTaskCleanup', () => {
     await expect(startArchivedTaskCleanupSaga(competing, transport))
       .rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
     expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([fresh]);
+  });
+
+  it('retires a historical archive cleanup completed during numeric conversion', async () => {
+    const historical = {
+      ...saga('conversion-race-task'),
+      operationId: 'conversion-race-operation',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:01.000Z',
+    };
+    const settings = new Map<string, string>([[CLEANUP_KEY, JSON.stringify([historical])]]);
+    let releaseCompletion!: () => void;
+    const completionReleased = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+    let reportCompletionBlocked!: () => void;
+    const completionBlocked = new Promise<void>((resolve) => {
+      reportCompletionBlocked = resolve;
+    });
+    let shouldBlockCompletion = true;
+    const transport: ArchivedTaskCleanupJournalTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = settings.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if (key === 'completedArchivedTaskCleanups:v1' && shouldBlockCompletion) {
+          shouldBlockCompletion = false;
+          reportCompletionBlocked();
+          await completionReleased;
+        }
+        if ((settings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        settings.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+
+    const removal = removeArchivedTaskCleanupSaga(
+      historical.taskId,
+      historical.operationId,
+      transport,
+    );
+    await completionBlocked;
+    const converted = { ...historical };
+    await upsertArchivedTaskCleanupSaga(converted, transport);
+    expect(converted.generation).toBe(1);
+
+    releaseCompletion();
+    await removal;
+    expect(JSON.parse(settings.get(CLEANUP_KEY) ?? '[]')).toEqual([]);
+
+    await expect(upsertArchivedTaskCleanupSaga({
+      ...converted,
+      updatedAt: '2026-08-30T00:00:02.000Z',
+    }, transport)).rejects.toBeInstanceOf(StaleArchivedTaskCleanupError);
+    expect(await loadArchivedTaskCleanupSagas(transport)).toEqual([]);
   });
 
   it('keeps durable high-water marks after more than 256 completed task identities', async () => {

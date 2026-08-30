@@ -51,6 +51,7 @@ export interface LinkedConversationDeletionSaga {
   conversationId: string;
   phase: LinkedConversationDeletionPhase;
   generation?: number;
+  legacyCreatedAt?: string;
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
   archivedCleanupOperationId?: string;
@@ -68,6 +69,7 @@ export interface LinkedTaskDeletionSaga {
   conversationId: string;
   phase: LinkedConversationDeletionPhase;
   generation?: number;
+  legacyCreatedAt?: string;
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
   archivedCleanupOperationId?: string;
@@ -153,6 +155,13 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
           candidate.phase !== 'plan_deleting') ||
         !isAllowedOwnerPhase(ownerType, candidate.phase) ||
         (candidate.generation !== undefined && !isDurableGeneration(candidate.generation)) ||
+        (
+          candidate.legacyCreatedAt !== undefined &&
+          (
+            !isDurableGeneration(candidate.generation) ||
+            candidate.legacyCreatedAt !== candidate.createdAt
+          )
+        ) ||
         (
           candidate.archivedCleanupOperationId !== undefined &&
           typeof candidate.archivedCleanupOperationId !== 'string'
@@ -248,10 +257,17 @@ const loadCompletedRegistry = async (
 const registryCompletesSaga = (
   registry: CompletedLinkedDeletionRegistry,
   saga: LinkedConversationDeletionSaga,
-): boolean => isDurableGeneration(saga.generation)
-  ? (registry.highWatermarks[getLinkedDeletionSagaKey(saga)] ?? 0) >= saga.generation
-  : registry.legacyGenerations.includes(getLinkedDeletionSagaGeneration(saga)) ||
-    (registry.legacyHighWatermarks[getLinkedDeletionSagaKey(saga)] ?? '') >= saga.createdAt;
+): boolean => {
+  const sagaKey = getLinkedDeletionSagaKey(saga);
+  if (!isDurableGeneration(saga.generation)) {
+    return registry.legacyGenerations.includes(getLinkedDeletionSagaGeneration(saga)) ||
+      (registry.legacyHighWatermarks[sagaKey] ?? '') >= saga.createdAt;
+  }
+  if ((registry.highWatermarks[sagaKey] ?? 0) >= saga.generation) return true;
+  if (!saga.legacyCreatedAt) return false;
+  return registry.legacyGenerations.includes(`${sagaKey}:${saga.legacyCreatedAt}`) ||
+    (registry.legacyHighWatermarks[sagaKey] ?? '') >= saga.legacyCreatedAt;
+};
 
 const updateSetting = async (
   key: string,
@@ -324,6 +340,16 @@ const mergeSameGenerationProgress = (
   persisted: LinkedConversationDeletionSaga,
   incoming: LinkedConversationDeletionSaga,
 ): LinkedConversationDeletionSaga => {
+  if (
+    persisted.createdAt !== incoming.createdAt ||
+    (
+      persisted.legacyCreatedAt !== undefined &&
+      incoming.legacyCreatedAt !== undefined &&
+      persisted.legacyCreatedAt !== incoming.legacyCreatedAt
+    )
+  ) {
+    throw new StaleLinkedTaskDeletionSagaError();
+  }
   const incomingTransfersNewerCleanup = Boolean(
     incoming.archivedCleanupOperationId && (
       !persisted.archivedCleanupOperationId ||
@@ -337,6 +363,7 @@ const mergeSameGenerationProgress = (
   );
   return {
     ...incoming,
+    legacyCreatedAt: persisted.legacyCreatedAt ?? incoming.legacyCreatedAt,
     executionTargets: mergeTargetProgress(
       persisted.executionTargets,
       incoming.executionTargets,
@@ -357,7 +384,13 @@ const persistLinkedConversationDeletionSaga = async (
   startNewGeneration: boolean,
 ): Promise<void> => {
   if (!transport.isTauriAvailable()) return;
-  if (startNewGeneration && saga.generation !== undefined) {
+  if (
+    saga.legacyCreatedAt !== undefined &&
+    (!isDurableGeneration(saga.generation) || saga.legacyCreatedAt !== saga.createdAt)
+  ) {
+    throw new StaleLinkedTaskDeletionSagaError();
+  }
+  if (startNewGeneration && (saga.generation !== undefined || saga.legacyCreatedAt !== undefined)) {
     throw new StaleLinkedTaskDeletionSagaError();
   }
   const completionIdentity = { ...saga };
@@ -367,12 +400,14 @@ const persistLinkedConversationDeletionSaga = async (
   ) {
     throw new StaleLinkedTaskDeletionSagaError();
   }
+  const convertsLegacyGeneration = !startNewGeneration && !isDurableGeneration(saga.generation);
   if (!isDurableGeneration(saga.generation)) {
     saga.generation = await allocateDurableGeneration({
       settingKey: GENERATION_COUNTER_KEY,
       identityKey: getLinkedDeletionSagaKey(saga),
       transport,
     });
+    if (convertsLegacyGeneration) saga.legacyCreatedAt = saga.createdAt;
   }
   const generation = getLinkedDeletionSagaGeneration(saga);
   const completedAfterAllocation = await loadCompletedRegistry(transport);
@@ -487,7 +522,10 @@ export const removeLinkedConversationDeletionSaga = async (
     return current.filter((entry) =>
       entry.ownerType !== ownerType || entry.ownerId !== ownerId ||
       (ownerType !== 'conversation' && targetBranch !== undefined && entry.targetBranch !== targetBranch) ||
-      getLinkedDeletionSagaGeneration(entry) !== generation
+      (
+        getLinkedDeletionSagaGeneration(entry) !== generation &&
+        (durableGeneration !== null || entry.legacyCreatedAt !== generationValue)
+      )
     );
   }, transport);
 };
@@ -502,6 +540,7 @@ export const loadLinkedTaskDeletionSagas = async (
           conversationId: saga.conversationId,
           phase: saga.phase,
           generation: saga.generation,
+          legacyCreatedAt: saga.legacyCreatedAt,
           draft: saga.draft,
           executionTargets: saga.executionTargets,
           archivedCleanupOperationId: saga.archivedCleanupOperationId,
@@ -527,6 +566,7 @@ export const upsertLinkedTaskDeletionSaga = async (
   };
   await upsertLinkedConversationDeletionSaga(conversationSaga, transport);
   saga.generation = conversationSaga.generation;
+  saga.legacyCreatedAt = conversationSaga.legacyCreatedAt;
 };
 
 export const startLinkedTaskDeletionSaga = async (
@@ -540,6 +580,7 @@ export const startLinkedTaskDeletionSaga = async (
   };
   await startLinkedConversationDeletionSaga(conversationSaga, transport);
   saga.generation = conversationSaga.generation;
+  saga.legacyCreatedAt = conversationSaga.legacyCreatedAt;
 };
 
 export const removeLinkedTaskDeletionSaga = async (

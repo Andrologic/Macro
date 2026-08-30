@@ -189,11 +189,17 @@ const loadCompletedRegistry = async (
 const registryCompletesSaga = (
   registry: CompletedArchivedCleanupRegistry,
   saga: ArchivedTaskCleanupSaga,
-): boolean => isDurableGeneration(saga.generation)
-  ? (registry.highWatermarks[saga.taskId] ?? 0) >= saga.generation
-  : registry.legacyOperationIds.includes(saga.operationId) ||
-    registry.legacyHighWatermarks[saga.taskId]?.operationId === saga.operationId ||
+): boolean => {
+  const operationWasCompletedHistorically =
+    registry.legacyOperationIds.includes(saga.operationId) ||
+    registry.legacyHighWatermarks[saga.taskId]?.operationId === saga.operationId;
+  if (isDurableGeneration(saga.generation)) {
+    return (registry.highWatermarks[saga.taskId] ?? 0) >= saga.generation ||
+      operationWasCompletedHistorically;
+  }
+  return operationWasCompletedHistorically ||
     (registry.legacyHighWatermarks[saga.taskId]?.createdAt ?? '') >= saga.createdAt;
+};
 
 const updateSetting = async (
   key: string,

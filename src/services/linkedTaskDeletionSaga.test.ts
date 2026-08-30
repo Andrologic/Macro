@@ -241,6 +241,82 @@ describe('linkedTaskDeletionSaga', () => {
     expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([fresh]);
   });
 
+  it('retires a historical linked deletion completed during numeric conversion', async () => {
+    const historical: LinkedConversationDeletionSaga = {
+      ownerType: 'task',
+      ownerId: 'conversion-race-task',
+      conversationId: 'conversion-race-conversation',
+      phase: 'task_deleted',
+      targetBranch: 'feature/conversion-race-task',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:01.000Z',
+    };
+    const values = new Map<string, string>([
+      ['pendingLinkedTaskDeletions:v1', JSON.stringify([historical])],
+    ]);
+    let releaseCompletion!: () => void;
+    const completionReleased = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+    let reportCompletionBlocked!: () => void;
+    const completionBlocked = new Promise<void>((resolve) => {
+      reportCompletionBlocked = resolve;
+    });
+    let shouldBlockCompletion = true;
+    const transport: LinkedTaskDeletionSagaTransport = {
+      isTauriAvailable: () => true,
+      dbGetAppSetting: async (key) => {
+        const valueJson = values.get(key);
+        return valueJson === undefined
+          ? null
+          : { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00.000Z' };
+      },
+      dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }) => {
+        if (key === 'completedLinkedTaskDeletions:v1' && shouldBlockCompletion) {
+          shouldBlockCompletion = false;
+          reportCompletionBlocked();
+          await completionReleased;
+        }
+        if ((values.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        values.set(key, valueJson);
+        return { applied: true };
+      },
+    };
+
+    const removal = sagaService.removeLinkedConversationDeletionSaga(
+      historical.ownerType,
+      historical.ownerId,
+      historical.targetBranch,
+      sagaService.getLinkedDeletionSagaGeneration(historical),
+      transport,
+    );
+    await completionBlocked;
+    const converted = { ...historical };
+    await sagaService.upsertLinkedConversationDeletionSaga(converted, transport);
+    expect(converted).toEqual(expect.objectContaining({
+      generation: 1,
+      legacyCreatedAt: historical.createdAt,
+    }));
+    await sagaService.upsertLinkedConversationDeletionSaga({
+      ...converted,
+      legacyCreatedAt: undefined,
+      updatedAt: '2026-08-30T00:00:01.500Z',
+    }, transport);
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
+      expect.objectContaining({ legacyCreatedAt: historical.createdAt }),
+    ]);
+
+    releaseCompletion();
+    await removal;
+    expect(JSON.parse(values.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+
+    await expect(sagaService.upsertLinkedConversationDeletionSaga({
+      ...converted,
+      updatedAt: '2026-08-30T00:00:02.000Z',
+    }, transport)).rejects.toBeInstanceOf(sagaService.StaleLinkedTaskDeletionSagaError);
+    expect(await sagaService.loadLinkedConversationDeletionSagas(transport)).toEqual([]);
+  });
+
   it('keeps durable high-water marks after more than 512 completed owner identities', async () => {
     const values = new Map<string, string>();
     const transport: LinkedTaskDeletionSagaTransport = {
@@ -323,6 +399,7 @@ describe('linkedTaskDeletionSaga', () => {
     const second: LinkedConversationDeletionSaga = {
       ...first,
       generation: undefined,
+      legacyCreatedAt: undefined,
       conversationId: 'clock-conversation-new',
       createdAt: '2020-01-01T00:00:00.000Z',
       updatedAt: '2020-01-01T00:00:00.000Z',
