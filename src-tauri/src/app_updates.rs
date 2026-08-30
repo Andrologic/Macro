@@ -648,7 +648,9 @@ fn read_manifest_directory_recovering_unlocked(
             .flatten();
         let current_generation = read_update_generation_directory(directory)?;
         if manifest.as_ref().is_some_and(|value| {
-            !value.generation.is_empty() && value.generation == current_generation
+            !value.generation.is_empty()
+                && value.generation == current_generation
+                && staged_manifest_package_is_valid(directory, value)
         }) {
             remove_file_if_present(&directory.join(PUBLICATION_BACKUP_FILE))?;
             if let Some(manifest) = manifest.as_ref() {

@@ -185,8 +185,16 @@ impl Drop for GitRepositoryGuard {
     }
 }
 
+fn git_repository_lock_identity(repo_path: &Path) -> PathBuf {
+    Repository::discover(repo_path)
+        .or_else(|_| Repository::open(repo_path))
+        .ok()
+        .map(|repo| workspace_state_lock_key(repo.commondir()))
+        .unwrap_or_else(|| workspace_state_lock_key(repo_path))
+}
+
 fn git_repository_lock_path(repo_path: &Path) -> PathBuf {
-    let identity = workspace_state_lock_key(repo_path)
+    let identity = git_repository_lock_identity(repo_path)
         .to_string_lossy()
         .to_string();
     let digest = Sha256::digest(identity.as_bytes());

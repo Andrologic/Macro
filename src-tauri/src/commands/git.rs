@@ -7001,6 +7001,9 @@ pub async fn git_branch_delete_remote(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7356,6 +7359,9 @@ pub async fn git_add(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7389,6 +7395,9 @@ pub async fn git_restore_paths(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -12132,6 +12141,9 @@ pub async fn git_write_conflict_resolution(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
@@ -12943,6 +12955,9 @@ pub async fn git_remote_add_origin(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -13034,6 +13049,7 @@ pub async fn macro_branch_ensure(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, repaired_after_move) =
@@ -13071,6 +13087,7 @@ pub async fn macro_branch_status(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, repaired_after_move) =
@@ -13103,6 +13120,7 @@ pub async fn macro_branch_commit_if_dirty(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
     let commit_message = message
         .unwrap_or_else(|| "chore(metadata): persist metadata updates".to_string())
         .trim()
@@ -13237,6 +13255,7 @@ pub async fn macro_branch_push(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
@@ -13315,6 +13334,7 @@ pub async fn macro_branch_pull(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
