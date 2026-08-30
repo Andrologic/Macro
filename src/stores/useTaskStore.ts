@@ -853,6 +853,21 @@ const resumeLinkedTaskGitCleanup = async (
   return current;
 };
 
+const withTaskLifecycleLock = async <T>(
+  taskId: string,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  if (!tauriIpc.isTauriAvailable()) {
+    return operation();
+  }
+  const leaseId = await tauriIpc.workspaceAcquireTaskLifecycleLock(taskId);
+  try {
+    return await operation();
+  } finally {
+    await tauriIpc.workspaceReleaseTaskLifecycleLock(leaseId).catch(() => undefined);
+  }
+};
+
 const updateArchivedCleanupTarget = (
   saga: ArchivedTaskCleanupSaga,
   worktreeKey: string,
@@ -3084,48 +3099,68 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         const taskStillExists = Boolean(catalogTask);
         if (pending.phase === 'draft_reverting' || pending.phase === 'draft_reverted') {
           let recoverySaga = pending;
-          try {
-            if (!Array.isArray(pending.executionTargets)) {
-              throw new Error(
-                "Le journal du retour en brouillon ne contient pas les checkpoints à nettoyer.",
+          await withTaskLifecycleLock(pending.taskId, async () => {
+              const currentPending = (await loadLinkedTaskDeletionSagas()).find(
+                (candidate) =>
+                  candidate.taskId === pending.taskId &&
+                  candidate.targetBranch === pending.targetBranch &&
+                  getLinkedDeletionSagaGeneration({
+                    ...candidate,
+                    ownerType: 'task',
+                    ownerId: candidate.taskId,
+                  }) ===
+                    getLinkedDeletionSagaGeneration({
+                      ...pending,
+                      ownerType: 'task',
+                      ownerId: pending.taskId,
+                    }) &&
+                  (candidate.phase === 'draft_reverting' || candidate.phase === 'draft_reverted'),
               );
-            }
-            if (pending.phase === 'draft_reverting' && catalogTask && !catalogTask.draft) {
-              await tauriIpc.workspaceRevertManualFeatureToDraft({
-                taskId: pending.taskId,
-                conversationId: pending.conversationId || null,
-                title: pending.revertTitle ?? null,
-                description: pending.revertDescription ?? null,
-              });
-            }
-            recoverySaga = {
-              ...pending,
-              phase: 'draft_reverted',
-              updatedAt: new Date().toISOString(),
-              lastError: undefined,
-            };
-            await upsertLinkedTaskDeletionSaga(recoverySaga);
-            recoverySaga = await resumeLinkedTaskGitCleanup(recoverySaga);
-            await removeLinkedTaskDeletionSaga(
-              pending.taskId,
-              pending.targetBranch,
-              getLinkedDeletionSagaGeneration({
-                ...recoverySaga,
-                ownerType: 'task',
-                ownerId: pending.taskId,
-              }),
-            );
-          } catch (error) {
-            const message = toServiceError(error).message;
-            await upsertLinkedTaskDeletionSaga({
-              ...recoverySaga,
-              updatedAt: new Date().toISOString(),
-              lastError: message,
-            });
-            set({
-              lastError: `Le retour en brouillon reste en attente et sera repris automatiquement : ${message}`,
-            });
-          }
+              if (!currentPending) return;
+              recoverySaga = currentPending;
+              try {
+                if (!Array.isArray(currentPending.executionTargets)) {
+                  throw new Error(
+                    "Le journal du retour en brouillon ne contient pas les checkpoints à nettoyer.",
+                  );
+                }
+                if (currentPending.phase === 'draft_reverting' && catalogTask && !catalogTask.draft) {
+                  await tauriIpc.workspaceRevertManualFeatureToDraft({
+                    taskId: currentPending.taskId,
+                    conversationId: currentPending.conversationId || null,
+                    title: currentPending.revertTitle ?? null,
+                    description: currentPending.revertDescription ?? null,
+                  });
+                }
+                recoverySaga = {
+                  ...currentPending,
+                  phase: 'draft_reverted',
+                  updatedAt: new Date().toISOString(),
+                  lastError: undefined,
+                };
+                await upsertLinkedTaskDeletionSaga(recoverySaga);
+                recoverySaga = await resumeLinkedTaskGitCleanup(recoverySaga);
+                await removeLinkedTaskDeletionSaga(
+                  currentPending.taskId,
+                  currentPending.targetBranch,
+                  getLinkedDeletionSagaGeneration({
+                    ...recoverySaga,
+                    ownerType: 'task',
+                    ownerId: currentPending.taskId,
+                  }),
+                );
+              } catch (error) {
+                const message = toServiceError(error).message;
+                await upsertLinkedTaskDeletionSaga({
+                  ...recoverySaga,
+                  updatedAt: new Date().toISOString(),
+                  lastError: message,
+                });
+                set({
+                  lastError: `Le retour en brouillon reste en attente et sera repris automatiquement : ${message}`,
+                });
+              }
+          });
           continue;
         }
         if (pending.phase === 'task_deleting' && !Array.isArray(pending.executionTargets)) {
@@ -3603,6 +3638,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         throw new Error('Manual features require the desktop runtime.');
       }
 
+      await withTaskLifecycleLock(existingTask.id, async () => {
       const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
       executionTargets
         .filter((target) => !isDirectCheckpointCleanupTarget(target))
@@ -3733,6 +3769,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       } else if (get().activeBranchName === null && get().activeRepositoryPath === null) {
         await syncWorkspaceRoot(null);
       }
+      });
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });

@@ -145,6 +145,8 @@ const workspaceRevertManualFeatureToDraftMock = mock(async () => ({
   createdAt: '2026-04-01T00:00:00.000Z',
   updatedAt: '2026-04-01T00:00:00.000Z',
 }));
+const workspaceAcquireTaskLifecycleLockMock = mock(async () => 'task-lifecycle-lease');
+const workspaceReleaseTaskLifecycleLockMock = mock(async () => undefined);
 const workspaceUpdateStandaloneTaskStatusMock = mock(
   async (params: { taskId: string; status: string }) => {
     if (!updateStandaloneTaskStatusImpl) {
@@ -302,6 +304,8 @@ mock.module('../services/tauriIpc', () => ({
   workspaceListTasks: workspaceListTasksMock,
   workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
+  workspaceAcquireTaskLifecycleLock: workspaceAcquireTaskLifecycleLockMock,
+  workspaceReleaseTaskLifecycleLock: workspaceReleaseTaskLifecycleLockMock,
 }));
 
 mock.module('../services/tauriIpc.ts', () => ({
@@ -337,6 +341,8 @@ mock.module('../services/tauriIpc.ts', () => ({
   workspaceListTasks: workspaceListTasksMock,
   workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
+  workspaceAcquireTaskLifecycleLock: workspaceAcquireTaskLifecycleLockMock,
+  workspaceReleaseTaskLifecycleLock: workspaceReleaseTaskLifecycleLockMock,
 }));
 
 mock.module('./useAppStore', () => ({
@@ -457,6 +463,8 @@ beforeEach(() => {
   dbCompareAndSwapAppSettingMock.mockClear();
   completeLinkedTaskConversationDeletionMock.mockClear();
   completeLinkedTaskConversationDeletionImpl = null;
+  workspaceAcquireTaskLifecycleLockMock.mockClear();
+  workspaceReleaseTaskLifecycleLockMock.mockClear();
   runWorktreeSetupCommandMock.mockClear();
   taskProjectCommandRegistryMock = {
     version: 3,
@@ -2185,6 +2193,57 @@ describe('useTaskStore merge workflow review loading', () => {
       description: 'Draft description',
     });
     expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('does not apply a stale draft-revert snapshot after another worker completed it', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-stale-revert',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      conversation_id: 'conv-stale-revert',
+      assigned_branch: 'direct',
+      branch_name: 'direct',
+      execution_targets: [],
+    });
+    dbAppSettings.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: task.id,
+        conversationId: task.conversation_id,
+        phase: 'draft_reverting',
+        draft: false,
+        targetBranch: '@direct-draft-revert',
+        executionTargets: [],
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    workspaceAcquireTaskLifecycleLockMock.mockImplementationOnce(async () => {
+      dbAppSettings.set('pendingLinkedTaskDeletions:v1', '[]');
+      return 'task-lifecycle-lease';
+    });
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [task],
+      plans: [],
+      hasStandaloneTasks: true,
+      source: 'mixed' as const,
+    }));
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+
+    expect(workspaceRevertManualFeatureToDraftMock).not.toHaveBeenCalled();
+    expect(workspaceReleaseTaskLifecycleLockMock).toHaveBeenCalledWith('task-lifecycle-lease');
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
