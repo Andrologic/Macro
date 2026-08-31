@@ -442,6 +442,7 @@ type ArchitectGitFlowTauriDeps = Pick<
     intoBranch: string;
   }) => Promise<ArchitectGitFlowMergeCheck>;
   gitBranchList: (repoPath: string) => Promise<ArchitectGitFlowGitBranches>;
+  workspaceRenewPlanLifecycleLock?: (leaseId: string) => Promise<void>;
 };
 
 interface ArchitectGitFlowAppState {
@@ -489,10 +490,34 @@ const withPlanLifecycleLock = async <T>(
 ): Promise<T> => {
   if (!deps.tauri.isTauriAvailable()) return operation();
   const leaseId = await deps.tauri.workspaceAcquirePlanLifecycleLock({ branchName, planId });
+  let renewalInFlight: Promise<void> | null = null;
+  const renewLease = () => {
+    if (!deps.tauri.workspaceRenewPlanLifecycleLock || renewalInFlight) return;
+    renewalInFlight = deps.tauri.workspaceRenewPlanLifecycleLock(leaseId)
+      .catch((error) => {
+        devLogger.warn('[architectGitFlow] Could not renew the plan lifecycle lease.', {
+          branchName,
+          planId,
+          error: toServiceError(error).message,
+        });
+      })
+      .finally(() => {
+        renewalInFlight = null;
+      });
+  };
+  const heartbeat = globalThis.setInterval(renewLease, 30_000);
   try {
     return await operation();
   } finally {
-    await deps.tauri.workspaceReleasePlanLifecycleLock(leaseId);
+    globalThis.clearInterval(heartbeat);
+    await renewalInFlight;
+    await deps.tauri.workspaceReleasePlanLifecycleLock(leaseId).catch((error) => {
+      devLogger.warn('[architectGitFlow] Could not release the plan lifecycle lease.', {
+        branchName,
+        planId,
+        error: toServiceError(error).message,
+      });
+    });
   }
 };
 

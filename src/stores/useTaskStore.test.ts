@@ -146,6 +146,7 @@ const workspaceRevertManualFeatureToDraftMock = mock(async () => ({
   updatedAt: '2026-04-01T00:00:00.000Z',
 }));
 const workspaceAcquireTaskLifecycleLockMock = mock(async () => 'task-lifecycle-lease');
+const workspaceRenewTaskLifecycleLockMock = mock(async () => undefined);
 const workspaceReleaseTaskLifecycleLockMock = mock(async () => undefined);
 const workspaceUpdateStandaloneTaskStatusMock = mock(
   async (params: { taskId: string; status: string }) => {
@@ -305,6 +306,7 @@ mock.module('../services/tauriIpc', () => ({
   workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
   workspaceAcquireTaskLifecycleLock: workspaceAcquireTaskLifecycleLockMock,
+  workspaceRenewTaskLifecycleLock: workspaceRenewTaskLifecycleLockMock,
   workspaceReleaseTaskLifecycleLock: workspaceReleaseTaskLifecycleLockMock,
 }));
 
@@ -342,6 +344,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
   workspaceAcquireTaskLifecycleLock: workspaceAcquireTaskLifecycleLockMock,
+  workspaceRenewTaskLifecycleLock: workspaceRenewTaskLifecycleLockMock,
   workspaceReleaseTaskLifecycleLock: workspaceReleaseTaskLifecycleLockMock,
 }));
 
@@ -464,6 +467,7 @@ beforeEach(() => {
   completeLinkedTaskConversationDeletionMock.mockClear();
   completeLinkedTaskConversationDeletionImpl = null;
   workspaceAcquireTaskLifecycleLockMock.mockClear();
+  workspaceRenewTaskLifecycleLockMock.mockClear();
   workspaceReleaseTaskLifecycleLockMock.mockClear();
   runWorktreeSetupCommandMock.mockClear();
   taskProjectCommandRegistryMock = {
@@ -4009,12 +4013,24 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
       lastError: null,
     });
 
-    await useTaskStore.getState().revertManualFeatureToDraft({
-      taskId: 'task-1',
-      conversationId: 'conv-1',
-      title: 'New feature',
-      description: '',
-    });
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    globalThis.setInterval = ((handler: TimerHandler) => {
+      if (typeof handler === 'function') handler();
+      return 1;
+    }) as typeof globalThis.setInterval;
+    globalThis.clearInterval = (() => undefined) as typeof globalThis.clearInterval;
+    try {
+      await useTaskStore.getState().revertManualFeatureToDraft({
+        taskId: 'task-1',
+        conversationId: 'conv-1',
+        title: 'New feature',
+        description: '',
+      });
+    } finally {
+      globalThis.setInterval = originalSetInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
 
     expect(gitWorktreeRemoveMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
@@ -4038,6 +4054,7 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
       description: '',
       taskLifecycleLeaseId: 'task-lifecycle-lease',
     });
+    expect(workspaceRenewTaskLifecycleLockMock).toHaveBeenCalledWith('task-lifecycle-lease');
     expect(syncTerminalDisplayMetadataMock).toHaveBeenCalledWith({
       taskId: 'task-1',
     });

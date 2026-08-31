@@ -867,10 +867,32 @@ const withTaskLifecycleLock = async <T>(
     return operation(null);
   }
   const leaseId = await tauriIpc.workspaceAcquireTaskLifecycleLock(taskId);
+  let renewalInFlight: Promise<void> | null = null;
+  const renewLease = () => {
+    if (renewalInFlight) return;
+    renewalInFlight = tauriIpc.workspaceRenewTaskLifecycleLock(leaseId)
+      .catch((error) => {
+        devLogger.warn('[tasks] Could not renew the task lifecycle lease.', {
+          taskId,
+          error: toServiceError(error).message,
+        });
+      })
+      .finally(() => {
+        renewalInFlight = null;
+      });
+  };
+  const heartbeat = globalThis.setInterval(renewLease, 30_000);
   try {
     return await operation(leaseId);
   } finally {
-    await tauriIpc.workspaceReleaseTaskLifecycleLock(leaseId).catch(() => undefined);
+    globalThis.clearInterval(heartbeat);
+    await renewalInFlight;
+    await tauriIpc.workspaceReleaseTaskLifecycleLock(leaseId).catch((error) => {
+      devLogger.warn('[tasks] Could not release the task lifecycle lease.', {
+        taskId,
+        error: toServiceError(error).message,
+      });
+    });
   }
 };
 

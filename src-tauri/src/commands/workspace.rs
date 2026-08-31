@@ -32,19 +32,88 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::State;
 use tokio::sync::{watch, Mutex};
 
-static PLAN_LIFECYCLE_LEASES: OnceLock<StdMutex<HashMap<String, workspace::PlanLifecycleGuard>>> =
-    OnceLock::new();
+const LIFECYCLE_LEASE_TTL: Duration = Duration::from_secs(5 * 60);
+
+struct LifecycleLease<T> {
+    expires_at: Instant,
+    value: T,
+}
+
+static PLAN_LIFECYCLE_LEASES: OnceLock<
+    StdMutex<HashMap<String, LifecycleLease<workspace::PlanLifecycleGuard>>>,
+> = OnceLock::new();
 struct TaskLifecycleLease {
     metadata_root: PathBuf,
     task_id: String,
     _guard: workspace::ArchivedTaskCleanupGuard,
 }
 
-static TASK_LIFECYCLE_LEASES: OnceLock<StdMutex<HashMap<String, TaskLifecycleLease>>> =
-    OnceLock::new();
+static TASK_LIFECYCLE_LEASES: OnceLock<
+    StdMutex<HashMap<String, LifecycleLease<TaskLifecycleLease>>>,
+> = OnceLock::new();
+
+fn lifecycle_lease_wait_or_remove<T>(
+    leases: &StdMutex<HashMap<String, LifecycleLease<T>>>,
+    lease_id: &str,
+    now: Instant,
+) -> Option<Duration> {
+    let mut leases = leases
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let expires_at = leases.get(lease_id)?.expires_at;
+    if expires_at <= now {
+        leases.remove(lease_id);
+        return None;
+    }
+    Some(expires_at.duration_since(now))
+}
+
+fn spawn_lifecycle_lease_expiry<T: Send + 'static>(
+    leases: &'static StdMutex<HashMap<String, LifecycleLease<T>>>,
+    lease_id: String,
+) {
+    tokio::spawn(async move {
+        loop {
+            let Some(wait) = lifecycle_lease_wait_or_remove(leases, &lease_id, Instant::now())
+            else {
+                return;
+            };
+            tokio::time::sleep(wait).await;
+        }
+    });
+}
+
+fn renew_lifecycle_lease<T>(
+    leases: &StdMutex<HashMap<String, LifecycleLease<T>>>,
+    lease_id: &str,
+    invalid_message: &str,
+) -> Result<()> {
+    let normalized = lease_id.trim();
+    if normalized.is_empty() {
+        return Err(BackendError::Validation(invalid_message.to_string()));
+    }
+
+    let now = Instant::now();
+    let mut leases = leases
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if leases
+        .get(normalized)
+        .map(|lease| lease.expires_at <= now)
+        .unwrap_or(false)
+    {
+        leases.remove(normalized);
+    }
+    let lease = leases
+        .get_mut(normalized)
+        .ok_or_else(|| BackendError::Validation(invalid_message.to_string()))?;
+    lease.expires_at = now + LIFECYCLE_LEASE_TTL;
+    Ok(())
+}
 
 fn to_join_error(err: tokio::task::JoinError) -> BackendError {
     BackendError::Internal {
@@ -112,12 +181,28 @@ pub async fn workspace_acquire_plan_lifecycle_lock(
     let metadata_root = resolve_metadata_root(workspace_path, git_state.inner().clone()).await?;
     let guard = workspace::lock_plan_lifecycle(&metadata_root, &branch_name, &plan_id).await?;
     let lease_id = uuid::Uuid::new_v4().to_string();
-    PLAN_LIFECYCLE_LEASES
-        .get_or_init(|| StdMutex::new(HashMap::new()))
+    let leases = PLAN_LIFECYCLE_LEASES.get_or_init(|| StdMutex::new(HashMap::new()));
+    leases
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(lease_id.clone(), guard);
+        .insert(
+            lease_id.clone(),
+            LifecycleLease {
+                expires_at: Instant::now() + LIFECYCLE_LEASE_TTL,
+                value: guard,
+            },
+        );
+    spawn_lifecycle_lease_expiry(leases, lease_id.clone());
     Ok(lease_id)
+}
+
+#[tauri::command]
+pub fn workspace_renew_plan_lifecycle_lock(lease_id: String) -> Result<()> {
+    renew_lifecycle_lease(
+        PLAN_LIFECYCLE_LEASES.get_or_init(|| StdMutex::new(HashMap::new())),
+        &lease_id,
+        "Le bail du cycle de vie du plan est invalide ou a expiré.",
+    )
 }
 
 #[tauri::command]
@@ -147,29 +232,53 @@ pub async fn workspace_acquire_task_lifecycle_lock(
     let guard = workspace::lock_task_lifecycle(&metadata_root, &task_id).await?;
     let lease_id = uuid::Uuid::new_v4().to_string();
     let task_id = task_id.trim().to_string();
-    TASK_LIFECYCLE_LEASES
-        .get_or_init(|| StdMutex::new(HashMap::new()))
+    let leases = TASK_LIFECYCLE_LEASES.get_or_init(|| StdMutex::new(HashMap::new()));
+    leases
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(
             lease_id.clone(),
-            TaskLifecycleLease {
-                metadata_root: workspace::workspace_state_lock_key(&metadata_root),
-                task_id,
-                _guard: guard,
+            LifecycleLease {
+                expires_at: Instant::now() + LIFECYCLE_LEASE_TTL,
+                value: TaskLifecycleLease {
+                    metadata_root: workspace::workspace_state_lock_key(&metadata_root),
+                    task_id,
+                    _guard: guard,
+                },
             },
         );
+    spawn_lifecycle_lease_expiry(leases, lease_id.clone());
     Ok(lease_id)
 }
 
 fn task_lifecycle_lease_metadata_root(lease_id: &str, task_id: &str) -> Option<PathBuf> {
-    TASK_LIFECYCLE_LEASES
-        .get_or_init(|| StdMutex::new(HashMap::new()))
+    let leases = TASK_LIFECYCLE_LEASES.get_or_init(|| StdMutex::new(HashMap::new()));
+    let normalized = lease_id.trim();
+    let now = Instant::now();
+    let mut leases = leases
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(lease_id.trim())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if leases
+        .get(normalized)
+        .map(|lease| lease.expires_at <= now)
+        .unwrap_or(false)
+    {
+        leases.remove(normalized);
+    }
+    leases
+        .get(normalized)
+        .map(|lease| &lease.value)
         .filter(|lease| lease.task_id == task_id.trim())
         .map(|lease| lease.metadata_root.clone())
+}
+
+#[tauri::command]
+pub fn workspace_renew_task_lifecycle_lock(lease_id: String) -> Result<()> {
+    renew_lifecycle_lease(
+        TASK_LIFECYCLE_LEASES.get_or_init(|| StdMutex::new(HashMap::new())),
+        &lease_id,
+        "Le bail du cycle de vie de la tâche est invalide ou a expiré.",
+    )
 }
 
 #[tauri::command]
@@ -1547,4 +1656,89 @@ pub async fn workspace_update_manual_feature_merge_workflow(
         merge_workflow,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn abandoned_lifecycle_lease_releases_its_guard() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let leases = Box::leak(Box::new(StdMutex::new(HashMap::from([(
+            "abandoned".to_string(),
+            LifecycleLease {
+                expires_at: Instant::now() + Duration::from_millis(20),
+                value: DropProbe(dropped.clone()),
+            },
+        )]))));
+
+        spawn_lifecycle_lease_expiry(leases, "abandoned".to_string());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !dropped.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("abandoned lease must expire");
+
+        assert!(leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty());
+    }
+
+    #[test]
+    fn expired_lifecycle_lease_is_removed() {
+        let leases = StdMutex::new(HashMap::from([(
+            "expired".to_string(),
+            LifecycleLease {
+                expires_at: Instant::now(),
+                value: (),
+            },
+        )]));
+
+        assert!(lifecycle_lease_wait_or_remove(&leases, "expired", Instant::now()).is_none());
+        assert!(leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty());
+    }
+
+    #[test]
+    fn renewed_lifecycle_lease_keeps_its_guard_alive() {
+        let initial_deadline = Instant::now() + Duration::from_millis(1);
+        let leases = StdMutex::new(HashMap::from([(
+            "active".to_string(),
+            LifecycleLease {
+                expires_at: initial_deadline,
+                value: (),
+            },
+        )]));
+
+        renew_lifecycle_lease(&leases, "active", "invalid lease").expect("renew lease");
+        let renewed_deadline = leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get("active")
+            .expect("active lease")
+            .expires_at;
+
+        assert!(renewed_deadline > initial_deadline);
+        assert!(lifecycle_lease_wait_or_remove(
+            &leases,
+            "active",
+            renewed_deadline - Duration::from_millis(1),
+        )
+        .is_some());
+    }
 }

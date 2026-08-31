@@ -196,7 +196,15 @@ fn git_repository_lock_identity(repo_path: &Path) -> PathBuf {
     Repository::discover(repo_path)
         .or_else(|_| Repository::open(repo_path))
         .ok()
-        .map(|repo| workspace_state_lock_key(repo.commondir()))
+        .map(|repo| {
+            let common_dir = repo.commondir();
+            if !repo.is_bare() && common_dir.file_name() == Some(OsStr::new(".git")) {
+                if let Some(repository_root) = common_dir.parent() {
+                    return workspace_state_lock_key(repository_root);
+                }
+            }
+            workspace_state_lock_key(common_dir)
+        })
         .unwrap_or_else(|| workspace_state_lock_key(repo_path))
 }
 
@@ -8811,6 +8819,38 @@ mod tests {
             .try_lock_exclusive()
             .expect("repository lock must become available after lease release");
         FileExt::unlock(&contender).expect("unlock contender");
+    }
+
+    #[tokio::test]
+    async fn git_repository_lock_stays_stable_when_repository_appears() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("repository");
+        stdfs::create_dir_all(&repo_path).expect("repository path");
+
+        let lock_path_before_init = git_repository_lock_path(&repo_path);
+        let guard = lock_git_repository(&repo_path)
+            .await
+            .expect("acquire pre-init repository lock");
+        Repository::init(&repo_path).expect("initialize repository while lock is held");
+
+        assert_eq!(git_repository_lock_path(&repo_path), lock_path_before_init);
+
+        let contender_path = repo_path.clone();
+        let mut contender = tokio::spawn(async move { lock_git_repository(&contender_path).await });
+        assert!(
+            timeout(Duration::from_millis(100), &mut contender)
+                .await
+                .is_err(),
+            "a contender arriving after .git appears must wait on the pre-init lock"
+        );
+
+        drop(guard);
+        let contender_guard = timeout(Duration::from_secs(2), contender)
+            .await
+            .expect("contender must resume after the pre-init owner releases")
+            .expect("contender task must finish")
+            .expect("contender must acquire the repository lock");
+        drop(contender_guard);
     }
 
     #[test]

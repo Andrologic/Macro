@@ -211,6 +211,7 @@ const gitBranchDeleteRemoteMock = mock(async (_params: { repoPath: string; branc
 const gitCheckoutMock = mock(async (_params: { repoPath: string; branchOrCommit: string }) => undefined);
 const gitBranchCreateMock = mock(async (_params: { repoPath: string; branchName: string; fromRef: string }) => undefined);
 const workspaceAcquirePlanLifecycleLockMock = mock(async () => 'plan-lifecycle-lease');
+const workspaceRenewPlanLifecycleLockMock = mock(async () => undefined);
 const workspaceReleasePlanLifecycleLockMock = mock(async () => undefined);
 const gitWorktreeInspectMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => {
   const worktreePath = `${params.repoPath}/.macro/worktrees/task${params.taskId}`;
@@ -607,6 +608,8 @@ describe('architectGitFlowService', () => {
     gitBranchCreateMock.mockReset();
     workspaceAcquirePlanLifecycleLockMock.mockReset();
     workspaceAcquirePlanLifecycleLockMock.mockImplementation(async () => 'plan-lifecycle-lease');
+    workspaceRenewPlanLifecycleLockMock.mockReset();
+    workspaceRenewPlanLifecycleLockMock.mockImplementation(async () => undefined);
     workspaceReleasePlanLifecycleLockMock.mockReset();
     workspaceReleasePlanLifecycleLockMock.mockImplementation(async () => undefined);
     gitWorktreeInspectMock.mockReset();
@@ -710,6 +713,7 @@ describe('architectGitFlowService', () => {
         gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
         gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
         workspaceAcquirePlanLifecycleLock: workspaceAcquirePlanLifecycleLockMock,
+        workspaceRenewPlanLifecycleLock: workspaceRenewPlanLifecycleLockMock,
         workspaceReleasePlanLifecycleLock: workspaceReleasePlanLifecycleLockMock,
       },
       getAppState: () => ({
