@@ -6896,6 +6896,8 @@ pub async fn git_branch_create(
     from_ref: String,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_branch_create(&wsl_repo_path, &branch_name, &from_ref).await;
     }
 
@@ -6939,6 +6941,8 @@ pub async fn git_branch_delete(
     )
     .await?;
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         if expected_commit.is_some() {
             return Err(unsupported_wsl_git_operation(
                 "git_branch_delete with a durable identity",
@@ -6977,6 +6981,8 @@ pub async fn git_branch_delete_remote(
     remote: Option<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         validate_branch_name(&branch_name)?;
         let remote_name = remote
             .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
@@ -7056,6 +7062,8 @@ pub async fn git_checkout(
     create: bool,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_checkout(&wsl_repo_path, &branch_or_commit, create).await;
     }
 
@@ -7118,6 +7126,8 @@ pub async fn git_merge(
     expected_into_commit: Option<String>,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         if expected_branch_commit.is_some() || expected_into_commit.is_some() {
             return Err(unsupported_wsl_git_operation(
                 "git_merge with durable identity",
@@ -7268,6 +7278,9 @@ pub async fn git_rebase_check(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7323,6 +7336,8 @@ pub async fn git_commit(
     stage_all: bool,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_commit(&wsl_repo_path, &message, stage_all).await;
     }
 
@@ -7353,6 +7368,8 @@ pub async fn git_add(
     paths: Vec<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_add(&wsl_repo_path, &paths).await;
     }
 
@@ -7385,6 +7402,8 @@ pub async fn git_restore_paths(
     target: Option<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_restore_paths(
             &wsl_repo_path,
             &paths,
@@ -7427,6 +7446,8 @@ pub async fn git_reset(
     confirm: Option<bool>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_reset(&wsl_repo_path, &mode, commit, confirm).await;
     }
 
@@ -7499,6 +7520,8 @@ pub async fn git_stash(
     message: Option<String>,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_stash(&wsl_repo_path, message).await;
     }
 
@@ -7633,9 +7656,10 @@ pub async fn git_review_snapshot(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let operation_cancellation = cancellation.clone();
         run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
             review::build_git_review_snapshot_with_cancellation(repo, &validated, || {
@@ -8448,6 +8472,32 @@ fn open_direct_checkpoint(
             ),
         })?;
     open_direct_checkpoint_at(&app_data_dir, task_id, project_path, checkpoint_id, create)
+}
+
+fn resolve_direct_checkpoint_storage_lock_path(app: &AppHandle) -> Result<PathBuf> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| BackendError::Filesystem {
+            message: format!("Failed to resolve Macro application data directory: {error}"),
+        })?;
+    Ok(app_data_dir.join(DIRECT_CHECKPOINTS_DIR))
+}
+
+async fn lock_direct_checkpoint_repositories(
+    app: &AppHandle,
+    workspace: &Path,
+    project_path: &str,
+) -> Result<(workspace::GitRepositoryGuard, workspace::GitRepositoryGuard)> {
+    reject_unsupported_direct_project_path(project_path)?;
+    let validated = validate_repo_path(project_path, workspace)?;
+    let storage_path = resolve_direct_checkpoint_storage_lock_path(app)?;
+    // Keep a stable order for every direct-review command. The project lock
+    // protects the configured worktree, while the storage lock protects the
+    // internal checkpoint repositories and their tombstones.
+    let project_guard = workspace::lock_git_repository(&validated).await?;
+    let storage_guard = workspace::lock_git_repository(&storage_path).await?;
+    Ok((project_guard, storage_guard))
 }
 
 fn initialize_created_direct_checkpoint<F>(
@@ -9627,6 +9677,8 @@ pub async fn direct_checkpoint_resolve_id(
     project_path: String,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&project_path, &workspace)?;
         if task_id.trim().is_empty() {
@@ -9655,6 +9707,8 @@ pub async fn direct_checkpoint_remove(
     project_path: String,
 ) -> Result<bool> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         validate_direct_checkpoint_owner(&checkpoint_id, &task_id)?;
         let validated = validate_repo_path(&project_path, &workspace)?;
@@ -9682,6 +9736,8 @@ pub async fn direct_checkpoint_ensure(
     checkpoint_id: Option<String>,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -9707,6 +9763,8 @@ pub async fn direct_review_snapshot(
     request_id: Option<String>,
 ) -> Result<DirectReviewSnapshotDto> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) =
         register_git_review_cancellation(request_id.as_deref())?;
     tokio::task::spawn_blocking(move || {
@@ -9833,6 +9891,8 @@ pub async fn direct_review_file(
     request_id: Option<String>,
 ) -> Result<GitReviewFileDto> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) =
         register_git_review_cancellation(request_id.as_deref())?;
     tokio::task::spawn_blocking(move || {
@@ -10349,6 +10409,8 @@ pub async fn direct_stage_paths(
         });
     }
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -10388,6 +10450,8 @@ pub async fn direct_unstage_paths(
     paths: Vec<String>,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -11963,6 +12027,8 @@ pub async fn direct_restore_worktree_paths(
         });
     }
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) = register_git_review_cancellation(Some(&request_id))?;
     tokio::task::spawn_blocking(move || {
         let _cancellation_guard = cancellation_guard;
@@ -12023,6 +12089,8 @@ pub async fn direct_accept_changes(
     checkpoint_id: Option<String>,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -12059,8 +12127,9 @@ pub async fn git_review_file(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
         let operation_cancellation = cancellation.clone();
         run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
@@ -12268,6 +12337,9 @@ pub async fn git_worktree_inspect(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -12484,6 +12556,9 @@ pub async fn git_branch_worktree_inspect(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -12702,6 +12777,8 @@ pub async fn git_fetch(
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "fetch", remote, branch).await;
     }
 
@@ -12890,6 +12967,8 @@ pub async fn git_push(
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "push", remote, branch).await;
     }
 
@@ -12949,6 +13028,8 @@ pub async fn git_remote_add_origin(
     url: String,
 ) -> Result<GitRemoteDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_remote_add_origin(&wsl_repo_path, &url).await;
     }
 
@@ -12980,6 +13061,8 @@ pub async fn git_pull(
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "pull", remote, branch).await;
     }
 
@@ -13128,10 +13211,17 @@ pub async fn macro_branch_commit_if_dirty(
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
 
         let add_output = run_git_command(
             &worktree_path,
-            &["add".to_string(), "-A".to_string(), ".".to_string()],
+            &[
+                "add".to_string(),
+                "-A".to_string(),
+                "--".to_string(),
+                ".".to_string(),
+                ":!.workspace.json.lock".to_string(),
+            ],
         )?;
         if !add_output.success {
             let details = command_output_text(&add_output);
@@ -13259,6 +13349,7 @@ pub async fn macro_branch_push(
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
         let push_output = run_git_command(
             &worktree_path,
             &[
@@ -13288,7 +13379,7 @@ pub async fn macro_branch_push(
             );
         }
 
-        let recovery_report = workspace::recover_missing_metadata_sync(
+        let recovery_report = workspace::recover_missing_metadata_sync_unlocked(
             &workspace,
             &worktree_path,
             &WorkspaceRecoverMissingMetadataRequestDto {
@@ -13338,6 +13429,7 @@ pub async fn macro_branch_pull(
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
         let pull_output = run_git_command(
             &worktree_path,
             &[

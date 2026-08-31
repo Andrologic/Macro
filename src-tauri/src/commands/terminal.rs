@@ -411,6 +411,9 @@ async fn resolve_metadata_root(
     }
 
     let workspace_path_for_fallback = workspace_path.clone();
+    let _repo_guard = crate::workspace::lock_git_repository(&workspace_path)
+        .await
+        .map_err(|error| command_error(error.to_string()))?;
     let resolved =
         tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace_path))
             .await

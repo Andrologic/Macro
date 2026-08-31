@@ -3432,6 +3432,7 @@ export async function workspaceRevertManualFeatureToDraft(params: {
   conversationId?: string | null;
   title?: string | null;
   description?: string | null;
+  taskLifecycleLeaseId?: string | null;
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_revert_manual_feature_to_draft",
@@ -3440,14 +3441,19 @@ export async function workspaceRevertManualFeatureToDraft(params: {
       conversationId: params.conversationId ?? null,
       title: params.title ?? null,
       description: params.description ?? null,
+      taskLifecycleLeaseId: params.taskLifecycleLeaseId ?? null,
     },
   );
 }
 
-export async function workspaceDeleteManualFeatureDraft(
-  taskId: string,
-): Promise<boolean> {
-  return invoke<boolean>("workspace_delete_manual_feature_draft", { taskId });
+export async function workspaceDeleteManualFeatureDraft(params: {
+  taskId: string;
+  taskLifecycleLeaseId?: string | null;
+}): Promise<boolean> {
+  return invoke<boolean>("workspace_delete_manual_feature_draft", {
+    taskId: params.taskId,
+    taskLifecycleLeaseId: params.taskLifecycleLeaseId ?? null,
+  });
 }
 
 export async function workspaceAcquirePlanLifecycleLock(params: {
@@ -3499,10 +3505,14 @@ export async function workspaceRestoreManualFeature(
   });
 }
 
-export async function workspaceDeleteManualFeature(
-  taskId: string,
-): Promise<void> {
-  return invoke("workspace_delete_manual_feature", { taskId });
+export async function workspaceDeleteManualFeature(params: {
+  taskId: string;
+  taskLifecycleLeaseId?: string | null;
+}): Promise<void> {
+  return invoke("workspace_delete_manual_feature", {
+    taskId: params.taskId,
+    taskLifecycleLeaseId: params.taskLifecycleLeaseId ?? null,
+  });
 }
 
 export async function workspaceUpdateStandaloneTaskStatus(params: {

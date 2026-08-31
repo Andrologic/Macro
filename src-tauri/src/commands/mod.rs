@@ -484,6 +484,9 @@ async fn resolve_workspace_for_tool_path(
         let workspace_for_task = workspace.to_path_buf();
         let workspace_for_fallback = workspace.to_path_buf();
         let git_state_for_task = git_state.clone();
+        let _repo_guard = crate::workspace::lock_git_repository(workspace)
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
         let resolved = tokio::task::spawn_blocking(move || {
             git_state_for_task.resolve_macro_metadata_root(&workspace_for_task)
         })
@@ -3870,6 +3873,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 git::wsl_git_add(&wsl_repo_path, &paths)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3889,6 +3896,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let status = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -3924,6 +3935,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 let before = git::build_wsl_git_log(&wsl_repo_path, 1, None)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3952,6 +3967,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let result = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -4007,6 +4026,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 git::wsl_git_checkout(&wsl_repo_path, &branch_or_commit, create)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4024,6 +4047,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let status = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -4060,6 +4087,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 let output = git::wsl_git_merge(&wsl_repo_path, &branch_name, &into_branch)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4082,6 +4113,10 @@ async fn execute_workspace_tool_inner(
             let into_branch_for_task = into_branch.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
             let (output, status) = tokio::task::spawn_blocking(move || {
                 let validated =
                     validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
@@ -4124,6 +4159,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 git::wsl_git_reset(&wsl_repo_path, &mode, commit, confirm)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4140,6 +4179,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let status = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -4181,6 +4224,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let status = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -4212,6 +4259,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 let stash = git::wsl_git_stash(&wsl_repo_path, message)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4229,6 +4280,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let result = tokio::task::spawn_blocking(move || {
                 let validated =

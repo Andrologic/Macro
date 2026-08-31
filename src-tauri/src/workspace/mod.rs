@@ -124,7 +124,7 @@ fn take_new_repo_cancellation_after_init(project_path: &Path) -> bool {
         .remove(&new_repo_cancellation_key(project_path))
 }
 
-fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
+pub(crate) fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
     std::fs::canonicalize(metadata_root).unwrap_or_else(|_| absolutize_path(metadata_root))
 }
 
@@ -186,6 +186,13 @@ impl Drop for GitRepositoryGuard {
 }
 
 fn git_repository_lock_identity(repo_path: &Path) -> PathBuf {
+    if let Some(wsl_path) = parse_wsl_unc_path(&repo_path.to_string_lossy()) {
+        // `\\wsl$` and `\\wsl.localhost` are aliases for the same WSL
+        // location. Normalize both spellings before deriving the lock key.
+        let normalized_distro = wsl_path.distro.to_ascii_lowercase();
+        let normalized_unc = wsl_unc_path(&normalized_distro, &wsl_path.linux_path);
+        return workspace_state_lock_key(Path::new(&normalized_unc));
+    }
     Repository::discover(repo_path)
         .or_else(|_| Repository::open(repo_path))
         .ok()
@@ -425,7 +432,7 @@ pub async fn validate_archived_task_cleanup_token(
     Ok(())
 }
 
-struct WorkspaceFileLock {
+pub(crate) struct WorkspaceFileLock {
     file: std::fs::File,
 }
 
@@ -435,7 +442,7 @@ impl Drop for WorkspaceFileLock {
     }
 }
 
-fn lock_workspace_state_file(metadata_root: &Path) -> Result<WorkspaceFileLock> {
+pub(crate) fn lock_workspace_state_file(metadata_root: &Path) -> Result<WorkspaceFileLock> {
     lock_workspace_state_file_with_retry(metadata_root, 100, Duration::from_millis(25))
 }
 
@@ -1884,6 +1891,8 @@ where
     );
 
     ensure_not_cancelled(cancel_rx.as_ref())?;
+    let resolved_project_path = resolve_project_path(workspace_path, project_path);
+    let _repo_guard = lock_git_repository(&resolved_project_path).await?;
     let detection = validate_project_git_setup_commit(
         workspace_path,
         project_path,
@@ -2711,6 +2720,31 @@ pub async fn revert_manual_feature_to_draft(
 ) -> Result<ManualFeatureDto> {
     let normalized_task_id = task_id.trim();
     let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    revert_manual_feature_to_draft_with_existing_lifecycle_lock(
+        workspace_path,
+        metadata_root,
+        task_id,
+        conversation_id,
+        title,
+        description,
+    )
+    .await
+}
+
+/// Revert a feature when the caller already owns the task lifecycle lock.
+///
+/// The public operation acquires the archived-task cleanup lock itself. The
+/// lifecycle lease command deliberately calls this variant to avoid trying to
+/// acquire the same non-reentrant lock a second time in the same process.
+pub(crate) async fn revert_manual_feature_to_draft_with_existing_lifecycle_lock(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    conversation_id: Option<&str>,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<ManualFeatureDto> {
+    let normalized_task_id = task_id.trim();
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let feature_index = state
@@ -2794,6 +2828,18 @@ pub async fn revert_manual_feature_to_draft(
 }
 
 pub async fn delete_manual_feature_draft(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+) -> Result<bool> {
+    let normalized_task_id = task_id.trim();
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    delete_manual_feature_draft_with_existing_lifecycle_lock(workspace_path, metadata_root, task_id)
+        .await
+}
+
+/// Delete a draft when the caller already owns the task lifecycle lock.
+pub(crate) async fn delete_manual_feature_draft_with_existing_lifecycle_lock(
     workspace_path: &Path,
     metadata_root: &Path,
     task_id: &str,
@@ -2984,6 +3030,16 @@ pub async fn delete_manual_feature(
 ) -> Result<()> {
     let normalized_task_id = task_id.trim();
     let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    delete_manual_feature_with_existing_lifecycle_lock(workspace_path, metadata_root, task_id).await
+}
+
+/// Delete a feature when the caller already owns the task lifecycle lock.
+pub(crate) async fn delete_manual_feature_with_existing_lifecycle_lock(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+) -> Result<()> {
+    let normalized_task_id = task_id.trim();
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
@@ -3553,6 +3609,12 @@ pub async fn create_new_project_repo_with_cancel(
         .to_string_lossy()
         .to_string()
     };
+    // The target may be a brand-new repository, so the repository lock falls
+    // back to the target path until Git metadata exists. This still fences
+    // concurrent Macro processes while the directory and initial commit are
+    // being created.
+    let target_path = PathBuf::from(&target);
+    let _repo_guard = lock_git_repository(&target_path).await?;
     let _target_guard = lock_new_repo_target(metadata_root, &target).await;
     create_new_project_repo_with_cancel_locked(workspace_path, metadata_root, request, cancel_rx)
         .await
@@ -4896,6 +4958,7 @@ pub async fn debug_reset_project(
     close_project(workspace_path, metadata_root, &project.id).await?;
     report.removed_registry_entry = true;
 
+    let _repo_guard = lock_git_repository(&project_path).await?;
     match git_state.debug_reset_macro_project_artifacts(&project_path) {
         Ok(reset) => {
             report.removed_task_worktrees = reset.removed_task_worktrees;
@@ -6268,9 +6331,18 @@ fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option
 
 fn metadata_statuses(repo: &Repository) -> Result<(bool, bool)> {
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
-    let has_conflicts = statuses.iter().any(|entry| entry.status().is_conflicted())
+    let is_relevant_status = |entry: &git2::StatusEntry<'_>| {
+        entry
+            .path()
+            .map(|path| path.trim_start_matches("./") != WORKSPACE_STATE_FILE_LOCK)
+            .unwrap_or(true)
+    };
+    let has_conflicts = statuses
+        .iter()
+        .filter(is_relevant_status)
+        .any(|entry| entry.status().is_conflicted())
         || repo.path().join("MERGE_HEAD").exists();
-    let is_dirty = !statuses.is_empty();
+    let is_dirty = statuses.iter().any(|entry| is_relevant_status(&entry));
     Ok((is_dirty, has_conflicts))
 }
 
@@ -6511,32 +6583,10 @@ fn hint_project_id_is_recoverable(project_id: &str) -> bool {
 }
 
 fn project_macro_metadata_root_is_usable(project_path: &Path) -> bool {
-    if let Ok(repo) = Repository::open(project_path) {
-        if crate::git::repair_existing_macro_metadata_worktree(&repo)
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            return true;
-        }
-    }
-    if crate::git::find_existing_macro_metadata_worktree_root(project_path).is_some() {
-        return true;
-    }
-
-    let legacy_root = project_path.join(LEGACY_WORKSPACE_META_DIR);
-    legacy_root.exists() && Repository::open(legacy_root).is_ok()
+    resolve_existing_macro_metadata_root(project_path).is_some()
 }
 
 fn resolve_existing_macro_metadata_root(project_path: &Path) -> Option<PathBuf> {
-    if let Ok(repo) = Repository::open(project_path) {
-        if let Some(result) = crate::git::repair_existing_macro_metadata_worktree(&repo)
-            .ok()
-            .flatten()
-        {
-            return Some(result.worktree_path);
-        }
-    }
     if let Some(worktree_path) =
         crate::git::find_existing_macro_metadata_worktree_root(project_path)
     {
@@ -6549,6 +6599,40 @@ fn resolve_existing_macro_metadata_root(project_path: &Path) -> Option<PathBuf> 
     }
 
     None
+}
+
+/// Repair metadata worktree pointers before taking the workspace-state lock.
+///
+/// Metadata discovery and state loading run while the state lock is held. They
+/// must remain read-only so they cannot introduce a `state -> repository`
+/// lock-order edge. Reconciliation is the one discovery path that is allowed
+/// to repair moved worktrees, so it performs that best-effort repair up front
+/// while holding the repository lock and before acquiring the state lock.
+async fn repair_macro_metadata_roots_from_hints(
+    workspace_path: &Path,
+    hints: &[WorkspaceMetadataRecoveryHintDto],
+) {
+    for hint in hints {
+        let raw_path = hint.path.trim();
+        if raw_path.is_empty() {
+            continue;
+        }
+        let project_path = resolve_project_path(workspace_path, raw_path);
+        if !project_path.is_dir() || Repository::open(&project_path).is_err() {
+            continue;
+        }
+
+        let Ok(_repo_guard) = lock_git_repository(&project_path).await else {
+            continue;
+        };
+        let _ = tokio::task::spawn_blocking(move || -> Result<()> {
+            let repo = Repository::open(&project_path).map_err(|error| BackendError::Git {
+                message: format!("Failed to open project repository for metadata repair: {error}"),
+            })?;
+            crate::git::repair_existing_macro_metadata_worktree(&repo).map(|_| ())
+        })
+        .await;
+    }
 }
 
 fn collect_project_registry_parent_dirs(
@@ -6799,6 +6883,7 @@ pub async fn reconcile_project_registry_from_hints(
     metadata_root: &Path,
     request: WorkspaceReconcileProjectRegistryFromHintsRequestDto,
 ) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    repair_macro_metadata_roots_from_hints(workspace_path, &request.projects).await;
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut report = WorkspaceProjectRegistryReconcileReportDto {
         status: "unchanged".to_string(),
@@ -7014,6 +7099,15 @@ pub(crate) fn recover_missing_metadata_sync(
     metadata_root: &Path,
     request: &WorkspaceRecoverMissingMetadataRequestDto,
 ) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    let _file_guard = lock_workspace_state_file(metadata_root)?;
+    recover_missing_metadata_sync_unlocked(workspace_path, metadata_root, request)
+}
+
+pub(crate) fn recover_missing_metadata_sync_unlocked(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: &WorkspaceRecoverMissingMetadataRequestDto,
+) -> Result<WorkspaceMetadataRecoveryReportDto> {
     let mut report = WorkspaceMetadataRecoveryReportDto {
         status: "none".to_string(),
         restored_commit: None,
@@ -7107,6 +7201,7 @@ pub async fn recover_missing_metadata(
     metadata_root: &Path,
     request: WorkspaceRecoverMissingMetadataRequestDto,
 ) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    let _repo_guard = lock_git_repository(workspace_path).await?;
     let _state_guard = lock_workspace_state(metadata_root).await;
     recover_missing_metadata_sync(workspace_path, metadata_root, &request)
 }
@@ -11312,6 +11407,80 @@ mod tests {
             .reserved_standalone_feature_slugs
             .iter()
             .any(|value| value == "quick-export"));
+    }
+
+    #[tokio::test]
+    async fn revert_with_existing_lifecycle_lock_does_not_reacquire_cleanup_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+        let state = WorkspaceState {
+            version: 1,
+            workspace_revision: 0,
+            standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: None,
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: vec![ManualFeatureDto {
+                id: "manual-task-lock".to_string(),
+                conversation_id: "manual-conv".to_string(),
+                draft: false,
+                title: "Finalized feature".to_string(),
+                description: "Description".to_string(),
+                status: "Pending".to_string(),
+                feature_slug: Some("finalized-feature".to_string()),
+                branch_name: None,
+                archived_at: None,
+                archive_reason: None,
+                merged_at: None,
+                base_branch: "develop".to_string(),
+                project_ids: vec!["project-web".to_string()],
+                context_project_ids: Vec::new(),
+                execution_targets: Vec::new(),
+                task_kind: Some("feature".to_string()),
+                merge_workflow: None,
+                created_at: "2026-08-30T00:00:00Z".to_string(),
+                updated_at: "2026-08-30T00:00:00Z".to_string(),
+            }],
+            deleted_manual_feature_ids: Vec::new(),
+            reserved_standalone_feature_slugs: vec!["finalized-feature".to_string()],
+        };
+        persist_state_sync(&metadata_root, &state).expect("seed workspace state");
+
+        let lifecycle_guard = lock_task_lifecycle(&metadata_root, "manual-task-lock")
+            .await
+            .expect("acquire lifecycle lock");
+        let reverted = timeout(
+            Duration::from_millis(250),
+            revert_manual_feature_to_draft_with_existing_lifecycle_lock(
+                temp.path(),
+                &metadata_root,
+                "manual-task-lock",
+                Some("manual-conv"),
+                Some("New feature"),
+                Some(""),
+            ),
+        )
+        .await
+        .expect("revert must not wait on its own lifecycle lock")
+        .expect("revert feature");
+        drop(lifecycle_guard);
+
+        assert!(reverted.draft);
+        assert_eq!(reverted.title, "New feature");
+        assert!(reverted.feature_slug.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

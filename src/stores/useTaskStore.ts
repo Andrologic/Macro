@@ -394,8 +394,14 @@ const getPreferredExecutionTarget = (
 const isManualStandaloneTask = (task: CatalogedImplementTask): boolean =>
   task.task_source === 'standalone' && task.standalone_kind === 'manual_feature';
 
-const deleteManualFeatureDraftDurably = async (taskId: string): Promise<void> => {
-  const confirmedAbsent = await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+const deleteManualFeatureDraftDurably = async (
+  taskId: string,
+  taskLifecycleLeaseId?: string | null,
+): Promise<void> => {
+  const confirmedAbsent = await tauriIpc.workspaceDeleteManualFeatureDraft({
+    taskId,
+    taskLifecycleLeaseId,
+  });
   if (confirmedAbsent !== true) {
     throw new Error(
       `La suppression durable du brouillon ${taskId} n'a pas confirmé la disparition de la tâche.`,
@@ -855,14 +861,14 @@ const resumeLinkedTaskGitCleanup = async (
 
 const withTaskLifecycleLock = async <T>(
   taskId: string,
-  operation: () => Promise<T>,
+  operation: (leaseId: string | null) => Promise<T>,
 ): Promise<T> => {
   if (!tauriIpc.isTauriAvailable()) {
-    return operation();
+    return operation(null);
   }
   const leaseId = await tauriIpc.workspaceAcquireTaskLifecycleLock(taskId);
   try {
-    return await operation();
+    return await operation(leaseId);
   } finally {
     await tauriIpc.workspaceReleaseTaskLifecycleLock(leaseId).catch(() => undefined);
   }
@@ -3099,67 +3105,68 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         const taskStillExists = Boolean(catalogTask);
         if (pending.phase === 'draft_reverting' || pending.phase === 'draft_reverted') {
           let recoverySaga = pending;
-          await withTaskLifecycleLock(pending.taskId, async () => {
-              const currentPending = (await loadLinkedTaskDeletionSagas()).find(
-                (candidate) =>
-                  candidate.taskId === pending.taskId &&
-                  candidate.targetBranch === pending.targetBranch &&
+          await withTaskLifecycleLock(pending.taskId, async (taskLifecycleLeaseId) => {
+            const currentPending = (await loadLinkedTaskDeletionSagas()).find(
+              (candidate) =>
+                candidate.taskId === pending.taskId &&
+                candidate.targetBranch === pending.targetBranch &&
+                getLinkedDeletionSagaGeneration({
+                  ...candidate,
+                  ownerType: 'task',
+                  ownerId: candidate.taskId,
+                }) ===
                   getLinkedDeletionSagaGeneration({
-                    ...candidate,
+                    ...pending,
                     ownerType: 'task',
-                    ownerId: candidate.taskId,
-                  }) ===
-                    getLinkedDeletionSagaGeneration({
-                      ...pending,
-                      ownerType: 'task',
-                      ownerId: pending.taskId,
-                    }) &&
-                  (candidate.phase === 'draft_reverting' || candidate.phase === 'draft_reverted'),
-              );
-              if (!currentPending) return;
-              recoverySaga = currentPending;
-              try {
-                if (!Array.isArray(currentPending.executionTargets)) {
-                  throw new Error(
-                    "Le journal du retour en brouillon ne contient pas les checkpoints à nettoyer.",
-                  );
-                }
-                if (currentPending.phase === 'draft_reverting' && catalogTask && !catalogTask.draft) {
-                  await tauriIpc.workspaceRevertManualFeatureToDraft({
-                    taskId: currentPending.taskId,
-                    conversationId: currentPending.conversationId || null,
-                    title: currentPending.revertTitle ?? null,
-                    description: currentPending.revertDescription ?? null,
-                  });
-                }
-                recoverySaga = {
-                  ...currentPending,
-                  phase: 'draft_reverted',
-                  updatedAt: new Date().toISOString(),
-                  lastError: undefined,
-                };
-                await upsertLinkedTaskDeletionSaga(recoverySaga);
-                recoverySaga = await resumeLinkedTaskGitCleanup(recoverySaga);
-                await removeLinkedTaskDeletionSaga(
-                  currentPending.taskId,
-                  currentPending.targetBranch,
-                  getLinkedDeletionSagaGeneration({
-                    ...recoverySaga,
-                    ownerType: 'task',
-                    ownerId: currentPending.taskId,
-                  }),
+                    ownerId: pending.taskId,
+                  }) &&
+                (candidate.phase === 'draft_reverting' || candidate.phase === 'draft_reverted'),
+            );
+            if (!currentPending) return;
+            recoverySaga = currentPending;
+            try {
+              if (!Array.isArray(currentPending.executionTargets)) {
+                throw new Error(
+                  "Le journal du retour en brouillon ne contient pas les checkpoints à nettoyer.",
                 );
-              } catch (error) {
-                const message = toServiceError(error).message;
-                await upsertLinkedTaskDeletionSaga({
-                  ...recoverySaga,
-                  updatedAt: new Date().toISOString(),
-                  lastError: message,
-                });
-                set({
-                  lastError: `Le retour en brouillon reste en attente et sera repris automatiquement : ${message}`,
+              }
+              if (currentPending.phase === 'draft_reverting' && catalogTask && !catalogTask.draft) {
+                await tauriIpc.workspaceRevertManualFeatureToDraft({
+                  taskId: currentPending.taskId,
+                  conversationId: currentPending.conversationId || null,
+                  title: currentPending.revertTitle ?? null,
+                  description: currentPending.revertDescription ?? null,
+                  taskLifecycleLeaseId,
                 });
               }
+              recoverySaga = {
+                ...currentPending,
+                phase: 'draft_reverted',
+                updatedAt: new Date().toISOString(),
+                lastError: undefined,
+              };
+              await upsertLinkedTaskDeletionSaga(recoverySaga);
+              recoverySaga = await resumeLinkedTaskGitCleanup(recoverySaga);
+              await removeLinkedTaskDeletionSaga(
+                currentPending.taskId,
+                currentPending.targetBranch,
+                getLinkedDeletionSagaGeneration({
+                  ...recoverySaga,
+                  ownerType: 'task',
+                  ownerId: currentPending.taskId,
+                }),
+              );
+            } catch (error) {
+              const message = toServiceError(error).message;
+              await upsertLinkedTaskDeletionSaga({
+                ...recoverySaga,
+                updatedAt: new Date().toISOString(),
+                lastError: message,
+              });
+              set({
+                lastError: `Le retour en brouillon reste en attente et sera repris automatiquement : ${message}`,
+              });
+            }
           });
           continue;
         }
@@ -3179,29 +3186,39 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
         let deletionSaga = pending;
         if (pending.phase === 'task_deleting') {
-          try {
-            deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
-            if (taskStillExists) {
-              if (deletionSaga.draft) {
-                await deleteManualFeatureDraftDurably(deletionSaga.taskId);
-              } else {
-                await tauriIpc.workspaceDeleteManualFeature(deletionSaga.taskId);
+          let deletionRecoveryFailed = false;
+          await withTaskLifecycleLock(pending.taskId, async (taskLifecycleLeaseId) => {
+            try {
+              deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
+              if (taskStillExists) {
+                if (deletionSaga.draft) {
+                  await deleteManualFeatureDraftDurably(
+                    deletionSaga.taskId,
+                    taskLifecycleLeaseId,
+                  );
+                } else {
+                  await tauriIpc.workspaceDeleteManualFeature({
+                    taskId: deletionSaga.taskId,
+                    taskLifecycleLeaseId,
+                  });
+                }
               }
+              deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
+              deletionSaga = await resumeLinkedTaskGitCleanup(deletionSaga);
+            } catch (error) {
+              const message = toServiceError(error).message;
+              await upsertLinkedTaskDeletionSaga({
+                ...deletionSaga,
+                updatedAt: new Date().toISOString(),
+                lastError: message,
+              });
+              set({
+                lastError: `La suppression de la tâche reste en attente et sera reprise automatiquement : ${message}`,
+              });
+              deletionRecoveryFailed = true;
             }
-            deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
-            deletionSaga = await resumeLinkedTaskGitCleanup(deletionSaga);
-          } catch (error) {
-            const message = toServiceError(error).message;
-            await upsertLinkedTaskDeletionSaga({
-              ...deletionSaga,
-              updatedAt: new Date().toISOString(),
-              lastError: message,
-            });
-            set({
-              lastError: `La suppression de la tâche reste en attente et sera reprise automatiquement : ${message}`,
-            });
-            continue;
-          }
+          });
+          if (deletionRecoveryFailed) continue;
         }
         const taskDeletedSaga: LinkedTaskDeletionSaga = {
           ...deletionSaga,
@@ -3638,7 +3655,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         throw new Error('Manual features require the desktop runtime.');
       }
 
-      await withTaskLifecycleLock(existingTask.id, async () => {
+      await withTaskLifecycleLock(existingTask.id, async (taskLifecycleLeaseId) => {
       const executionTargets = getExecutionTargetsWithRepoPaths(existingTask);
       executionTargets
         .filter((target) => !isDirectCheckpointCleanupTarget(target))
@@ -3711,6 +3728,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         conversationId: params.conversationId ?? null,
         title: params.title ?? null,
         description: params.description ?? null,
+        taskLifecycleLeaseId,
       });
       if (revertSaga) {
         revertSaga = {
@@ -3758,10 +3776,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         missingBaseBranchIssue: null,
       }));
 
+      });
+
       await get().refreshFromPlan();
-      await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId: params.taskId });
-      await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
-        set({ lastError: message });
+      await withTaskLifecycleLock(existingTask.id, async () => {
+        await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId: params.taskId });
+        await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
+          set({ lastError: message });
+        });
       });
 
       if (useAppStore.getState().selectedTaskId === params.taskId) {
@@ -3769,7 +3791,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       } else if (get().activeBranchName === null && get().activeRepositoryPath === null) {
         await syncWorkspaceRoot(null);
       }
-      });
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
@@ -3788,15 +3809,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         throw new Error('Manual features require the desktop runtime.');
       }
 
-      await deleteManualFeatureDraftDurably(taskId);
-      if (existingTask && isManualStandaloneTask(existingTask)) {
-        try {
-          await removeManualFeatureMetadata(existingTask);
-        } catch (error) {
-          const normalized = toServiceError(error);
-          set({ lastError: normalized.message });
+      await withTaskLifecycleLock(taskId, async (taskLifecycleLeaseId) => {
+        await deleteManualFeatureDraftDurably(taskId, taskLifecycleLeaseId);
+        if (existingTask && isManualStandaloneTask(existingTask)) {
+          try {
+            await removeManualFeatureMetadata(existingTask);
+          } catch (error) {
+            const normalized = toServiceError(error);
+            set({ lastError: normalized.message });
+          }
         }
-      }
+      });
       await get().refreshFromPlan();
     } catch (error) {
       const normalized = toServiceError(error);
@@ -4230,7 +4253,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     let linkedConversationSaga: LinkedTaskDeletionSaga | null = null;
+    let publishedTaskBlocked = false;
     try {
+      await withTaskLifecycleLock(taskId, async (taskLifecycleLeaseId) => {
       if (!task.draft) {
         const published = await hasPublishedStandaloneBranch(task);
         set((state) => ({
@@ -4246,6 +4271,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               'This feature branch has already been pushed. Archive it instead.'
             ),
           });
+          publishedTaskBlocked = true;
           return;
         }
       }
@@ -4339,9 +4365,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           ),
         }));
         if (task.draft) {
-          await deleteManualFeatureDraftDurably(taskId);
+          await deleteManualFeatureDraftDurably(taskId, taskLifecycleLeaseId);
         } else {
-          await tauriIpc.workspaceDeleteManualFeature(taskId);
+          await tauriIpc.workspaceDeleteManualFeature({
+            taskId,
+            taskLifecycleLeaseId,
+          });
         }
         linkedConversationSaga = await transferArchivedCleanupToLinkedDeletion(
           linkedConversationSaga,
@@ -4349,9 +4378,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
       } else {
         if (task.draft) {
-          await deleteManualFeatureDraftDurably(taskId);
+          await deleteManualFeatureDraftDurably(taskId, taskLifecycleLeaseId);
         } else {
-          await tauriIpc.workspaceDeleteManualFeature(taskId);
+          await tauriIpc.workspaceDeleteManualFeature({
+            taskId,
+            taskLifecycleLeaseId,
+          });
         }
         for (const target of gitTargets) {
           const identity = cleanupIdentities.get(target.worktreeKey)!;
@@ -4451,7 +4483,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         set({ lastError: normalized.message });
       }
 
-      await get().refreshFromPlan();
       if (useAppStore.getState().selectedTaskId === task.id) {
         useAppStore.getState().setSelectedTask(null);
       }
@@ -4466,6 +4497,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           'La tâche a été supprimée, mais le nettoyage de sa conversation reste en attente et sera repris automatiquement.',
         );
       }
+      });
+      if (publishedTaskBlocked) return;
+      await get().refreshFromPlan();
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });

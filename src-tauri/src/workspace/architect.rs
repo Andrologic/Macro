@@ -706,6 +706,8 @@ async fn resolve_project_scopes(
                 if direct_metadata_root.exists() {
                     project_scopes.push(direct_scope);
                 }
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(&resolved_repo_path).await?;
                 let metadata_root_result = tokio::task::spawn_blocking({
                     let git_state = git_state.clone();
                     let repo_path = resolved_repo_path.clone();

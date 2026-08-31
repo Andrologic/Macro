@@ -1095,7 +1095,10 @@ describe('useTaskStore merge workflow review loading', () => {
 
     await useTaskStore.getState().deleteTask(task.id);
 
-    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledWith(task.id);
+    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      taskLifecycleLeaseId: 'task-lifecycle-lease',
+    });
     expect(deleteConversationMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().tasks).toEqual([]);
     expect(useTaskStore.getState().lastError).toBeNull();
@@ -1142,7 +1145,10 @@ describe('useTaskStore merge workflow review loading', () => {
 
     await useTaskStore.getState().deleteTask(task.id);
 
-    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      taskLifecycleLeaseId: 'task-lifecycle-lease',
+    });
     expect(directCheckpointRemoveMock).toHaveBeenCalledWith({
       taskId: task.id,
       checkpointId: 'task-checkpoint-0000000000000001',
@@ -1939,7 +1945,10 @@ describe('useTaskStore merge workflow review loading', () => {
       'nettoyage de sa conversation reste en attente',
     );
 
-    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledWith(task.id);
+    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      taskLifecycleLeaseId: 'task-lifecycle-lease',
+    });
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
       expect.objectContaining({
         taskId: task.id,
@@ -2191,6 +2200,7 @@ describe('useTaskStore merge workflow review loading', () => {
       conversationId: task.conversation_id,
       title: 'Draft title',
       description: 'Draft description',
+      taskLifecycleLeaseId: 'task-lifecycle-lease',
     });
     expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
@@ -2524,7 +2534,10 @@ describe('useTaskStore merge workflow review loading', () => {
       services.listTasks = originalListTasks;
     }
 
-    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      taskLifecycleLeaseId: 'task-lifecycle-lease',
+    });
     expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith('conv-git-retry');
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
@@ -2607,7 +2620,10 @@ describe('useTaskStore merge workflow review loading', () => {
 
     expect(gitBranchDeleteMock).toHaveBeenCalledTimes(1);
     expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
-    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      taskLifecycleLeaseId: 'task-lifecycle-lease',
+    });
     expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(task.conversation_id);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
@@ -2682,7 +2698,10 @@ describe('useTaskStore merge workflow review loading', () => {
     }
 
     expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
-    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith({
+      taskId: task.id,
+      taskLifecycleLeaseId: 'task-lifecycle-lease',
+    });
     expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(task.conversation_id);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
@@ -3802,7 +3821,10 @@ describe('useTaskStore execution blocker messages', () => {
     })).rejects.toThrow('injected transport failure after persistence');
 
     expect(workspaceDeleteManualFeatureDraftMock)
-      .toHaveBeenCalledWith('task-ambiguous-create');
+      .toHaveBeenCalledWith({
+        taskId: 'task-ambiguous-create',
+        taskLifecycleLeaseId: undefined,
+      });
   });
 
   it('rejects a draft deletion when the backend does not confirm durable absence', async () => {
@@ -4014,6 +4036,7 @@ describe('useTaskStore revertManualFeatureToDraft', () => {
       conversationId: 'conv-1',
       title: 'New feature',
       description: '',
+      taskLifecycleLeaseId: 'task-lifecycle-lease',
     });
     expect(syncTerminalDisplayMetadataMock).toHaveBeenCalledWith({
       taskId: 'task-1',

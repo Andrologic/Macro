@@ -37,9 +37,14 @@ use tokio::sync::{watch, Mutex};
 
 static PLAN_LIFECYCLE_LEASES: OnceLock<StdMutex<HashMap<String, workspace::PlanLifecycleGuard>>> =
     OnceLock::new();
-static TASK_LIFECYCLE_LEASES: OnceLock<
-    StdMutex<HashMap<String, workspace::ArchivedTaskCleanupGuard>>,
-> = OnceLock::new();
+struct TaskLifecycleLease {
+    metadata_root: PathBuf,
+    task_id: String,
+    _guard: workspace::ArchivedTaskCleanupGuard,
+}
+
+static TASK_LIFECYCLE_LEASES: OnceLock<StdMutex<HashMap<String, TaskLifecycleLease>>> =
+    OnceLock::new();
 
 fn to_join_error(err: tokio::task::JoinError) -> BackendError {
     BackendError::Internal {
@@ -58,6 +63,9 @@ pub(crate) async fn resolve_metadata_root(
     }
 
     let workspace_path_for_fallback = workspace_path.clone();
+    // Resolving the metadata root may repair or create the @macro worktree.
+    // Serialize that Git transaction with every other repository mutation.
+    let _repo_guard = workspace::lock_git_repository(&workspace_path).await?;
     let resolved =
         tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&workspace_path))
             .await
@@ -138,12 +146,30 @@ pub async fn workspace_acquire_task_lifecycle_lock(
     let metadata_root = resolve_metadata_root(workspace_path, git_state.inner().clone()).await?;
     let guard = workspace::lock_task_lifecycle(&metadata_root, &task_id).await?;
     let lease_id = uuid::Uuid::new_v4().to_string();
+    let task_id = task_id.trim().to_string();
     TASK_LIFECYCLE_LEASES
         .get_or_init(|| StdMutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(lease_id.clone(), guard);
+        .insert(
+            lease_id.clone(),
+            TaskLifecycleLease {
+                metadata_root: workspace::workspace_state_lock_key(&metadata_root),
+                task_id,
+                _guard: guard,
+            },
+        );
     Ok(lease_id)
+}
+
+fn task_lifecycle_lease_metadata_root(lease_id: &str, task_id: &str) -> Option<PathBuf> {
+    TASK_LIFECYCLE_LEASES
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(lease_id.trim())
+        .filter(|lease| lease.task_id == task_id.trim())
+        .map(|lease| lease.metadata_root.clone())
 }
 
 #[tauri::command]
@@ -1336,19 +1362,44 @@ pub async fn workspace_revert_manual_feature_to_draft(
     conversation_id: Option<String>,
     title: Option<String>,
     description: Option<String>,
+    task_lifecycle_lease_id: Option<String>,
 ) -> Result<ManualFeatureDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::revert_manual_feature_to_draft(
-        &workspace_path,
-        &metadata_root,
-        &task_id,
-        conversation_id.as_deref(),
-        title.as_deref(),
-        description.as_deref(),
-    )
-    .await
+    let (metadata_root, lease_id) = if let Some(lease_id) = task_lifecycle_lease_id {
+        let metadata_root = task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
+            BackendError::Validation(
+                "Le bail du cycle de vie de la tâche est invalide ou ne correspond pas à cette tâche."
+                    .to_string(),
+            )
+        })?;
+        (metadata_root, Some(lease_id))
+    } else {
+        (
+            resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?,
+            None,
+        )
+    };
+    if lease_id.is_some() {
+        workspace::revert_manual_feature_to_draft_with_existing_lifecycle_lock(
+            &workspace_path,
+            &metadata_root,
+            &task_id,
+            conversation_id.as_deref(),
+            title.as_deref(),
+            description.as_deref(),
+        )
+        .await
+    } else {
+        workspace::revert_manual_feature_to_draft(
+            &workspace_path,
+            &metadata_root,
+            &task_id,
+            conversation_id.as_deref(),
+            title.as_deref(),
+            description.as_deref(),
+        )
+        .await
+    }
 }
 
 #[tauri::command]
@@ -1356,11 +1407,33 @@ pub async fn workspace_delete_manual_feature_draft(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     task_id: String,
+    task_lifecycle_lease_id: Option<String>,
 ) -> Result<bool> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::delete_manual_feature_draft(&workspace_path, &metadata_root, &task_id).await
+    let (metadata_root, lease_id) = if let Some(lease_id) = task_lifecycle_lease_id {
+        let metadata_root = task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
+            BackendError::Validation(
+                "Le bail du cycle de vie de la tâche est invalide ou ne correspond pas à cette tâche."
+                    .to_string(),
+            )
+        })?;
+        (metadata_root, Some(lease_id))
+    } else {
+        (
+            resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?,
+            None,
+        )
+    };
+    if lease_id.is_some() {
+        workspace::delete_manual_feature_draft_with_existing_lifecycle_lock(
+            &workspace_path,
+            &metadata_root,
+            &task_id,
+        )
+        .await
+    } else {
+        workspace::delete_manual_feature_draft(&workspace_path, &metadata_root, &task_id).await
+    }
 }
 
 #[tauri::command]
@@ -1414,11 +1487,33 @@ pub async fn workspace_delete_manual_feature(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     task_id: String,
+    task_lifecycle_lease_id: Option<String>,
 ) -> Result<()> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::delete_manual_feature(&workspace_path, &metadata_root, &task_id).await
+    let (metadata_root, lease_id) = if let Some(lease_id) = task_lifecycle_lease_id {
+        let metadata_root = task_lifecycle_lease_metadata_root(&lease_id, &task_id).ok_or_else(|| {
+            BackendError::Validation(
+                "Le bail du cycle de vie de la tâche est invalide ou ne correspond pas à cette tâche."
+                    .to_string(),
+            )
+        })?;
+        (metadata_root, Some(lease_id))
+    } else {
+        (
+            resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?,
+            None,
+        )
+    };
+    if lease_id.is_some() {
+        workspace::delete_manual_feature_with_existing_lifecycle_lock(
+            &workspace_path,
+            &metadata_root,
+            &task_id,
+        )
+        .await
+    } else {
+        workspace::delete_manual_feature(&workspace_path, &metadata_root, &task_id).await
+    }
 }
 
 #[tauri::command]
