@@ -10,6 +10,8 @@ describe('PanelResizer', () => {
   afterEach(() => {
     act(() => root?.unmount());
     container?.remove();
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
     root = null;
     container = null;
   });
@@ -47,5 +49,38 @@ describe('PanelResizer', () => {
     });
 
     expect((container.querySelector('[role="separator"]') as HTMLDivElement | null)?.tabIndex).toBe(-1);
+  });
+
+  it('restores body styles and removes drag listeners when unmounted during a resize', () => {
+    const onResize = mock((_delta: number) => undefined);
+    document.body.style.userSelect = 'text';
+    document.body.style.cursor = 'crosshair';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(<PanelResizer onResize={onResize} />);
+    });
+    const separator = container.querySelector('[role="separator"]') as HTMLDivElement | null;
+    act(() => {
+      separator?.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 100,
+      }));
+    });
+    expect(document.body.style.userSelect).toBe('none');
+    expect(document.body.style.cursor).toBe('col-resize');
+
+    act(() => {
+      root?.unmount();
+    });
+    root = null;
+
+    expect(document.body.style.userSelect).toBe('text');
+    expect(document.body.style.cursor).toBe('crosshair');
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 140 }));
+    expect(onResize).not.toHaveBeenCalled();
   });
 });

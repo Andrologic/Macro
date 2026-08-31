@@ -248,7 +248,7 @@ describe("createChatStreamLifecycleRuntime", () => {
       },
     });
 
-    await runtime.onComplete(
+    const completion = runtime.onComplete(
       {
         visibleContent: "Final",
         toolTraces: [],
@@ -262,8 +262,7 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(events).not.toContain("clear-persistence-ownership");
 
     releaseConsolidationRef.current?.();
-    await Promise.resolve();
-    await Promise.resolve();
+    await completion;
 
     expect(events.indexOf("consolidate-end")).toBeLessThan(
       events.indexOf("clear-persistence-ownership"),

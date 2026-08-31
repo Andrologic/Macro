@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Dialog } from './Dialog';
+import { ConfirmPromptModal } from './ConfirmPromptModal';
 
 describe('Dialog', () => {
   let root: Root | null = null;
@@ -111,5 +112,199 @@ describe('Dialog', () => {
     });
     expect(document.activeElement).toBe(trigger);
     expect(document.body.querySelector('[inert]')).toBeNull();
+  });
+
+  it('closes only a nested confirmation when Escape is pressed', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeOuter = mock(() => undefined);
+    const cancelConfirmation = mock(() => undefined);
+
+    const NestedConfirmation = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [confirmationOpen, setConfirmationOpen] = useState(false);
+      return outerOpen ? (
+        <Dialog
+          title="Parent modal"
+          backdropClassName="fixed inset-0 z-[95] flex items-center justify-center"
+          onClose={() => {
+            closeOuter();
+            setOuterOpen(false);
+          }}
+        >
+          <button type="button" onClick={() => setConfirmationOpen(true)}>
+            Open confirmation
+          </button>
+          <ConfirmPromptModal
+            isOpen={confirmationOpen}
+            title="Nested confirmation"
+            onCancel={() => {
+              cancelConfirmation();
+              setConfirmationOpen(false);
+            }}
+            onConfirm={() => undefined}
+          />
+        </Dialog>
+      ) : null;
+    };
+
+    await act(async () => {
+      root?.render(<NestedConfirmation />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Open confirmation')
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+    const initialDialogRoots = document.body.querySelectorAll<HTMLElement>(
+      '[data-macro-dialog-root]',
+    );
+    expect(initialDialogRoots[0]?.style.zIndex).toBe('95');
+    expect(initialDialogRoots[1]?.style.zIndex).toBe('96');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(cancelConfirmation).toHaveBeenCalledTimes(1);
+    expect(closeOuter).not.toHaveBeenCalled();
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  });
+
+  it('keeps the parent open when a nested confirmation mounts with it', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeOuter = mock(() => undefined);
+    const cancelConfirmation = mock(() => undefined);
+
+    const InitiallyNestedConfirmation = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [confirmationOpen, setConfirmationOpen] = useState(true);
+      return outerOpen ? (
+        <Dialog
+          title="Parent modal"
+          onClose={() => {
+            closeOuter();
+            setOuterOpen(false);
+          }}
+        >
+          <ConfirmPromptModal
+            isOpen={confirmationOpen}
+            title="Nested confirmation"
+            onCancel={() => {
+              cancelConfirmation();
+              setConfirmationOpen(false);
+            }}
+            onConfirm={() => undefined}
+          />
+        </Dialog>
+      ) : null;
+    };
+
+    await act(async () => {
+      root?.render(<InitiallyNestedConfirmation />);
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(cancelConfirmation).toHaveBeenCalledTimes(1);
+    expect(closeOuter).not.toHaveBeenCalled();
+    const remainingDialogs = document.body.querySelectorAll<HTMLElement>('[role="dialog"]');
+    expect(remainingDialogs).toHaveLength(1);
+    expect(remainingDialogs[0]?.contains(document.activeElement)).toBe(true);
+  });
+
+  it('closes a newer independent confirmation before an older nested stack', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const closeOuter = mock(() => undefined);
+    const cancelNestedConfirmation = mock(() => undefined);
+    const cancelIndependentConfirmation = mock(() => undefined);
+    let openIndependentConfirmation: () => void = () => undefined;
+
+    const IndependentDialogStacks = () => {
+      const [outerOpen, setOuterOpen] = useState(true);
+      const [nestedConfirmationOpen, setNestedConfirmationOpen] = useState(true);
+      const [independentConfirmationOpen, setIndependentConfirmationOpen] = useState(false);
+      openIndependentConfirmation = () => setIndependentConfirmationOpen(true);
+      return (
+        <>
+          {outerOpen && (
+            <Dialog
+              title="Parent modal"
+              onClose={() => {
+                closeOuter();
+                setOuterOpen(false);
+              }}
+            >
+              <ConfirmPromptModal
+                isOpen={nestedConfirmationOpen}
+                title="Nested confirmation"
+                onCancel={() => {
+                  cancelNestedConfirmation();
+                  setNestedConfirmationOpen(false);
+                }}
+                onConfirm={() => undefined}
+              />
+            </Dialog>
+          )}
+          <ConfirmPromptModal
+            isOpen={independentConfirmationOpen}
+            title="Independent confirmation"
+            onCancel={() => {
+              cancelIndependentConfirmation();
+              setIndependentConfirmationOpen(false);
+            }}
+            onConfirm={() => undefined}
+          />
+        </>
+      );
+    };
+
+    await act(async () => {
+      root?.render(<IndependentDialogStacks />);
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+
+    await act(async () => {
+      openIndependentConfirmation();
+      await Promise.resolve();
+    });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(3);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(cancelIndependentConfirmation).toHaveBeenCalledTimes(1);
+    expect(cancelNestedConfirmation).not.toHaveBeenCalled();
+    expect(closeOuter).not.toHaveBeenCalled();
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(2);
   });
 });

@@ -352,12 +352,30 @@ pub(crate) async fn load_oauth_token_provider(
 struct CallbackState {
     callback_base: Arc<str>,
     sender: Arc<Mutex<Option<oneshot::Sender<String>>>>,
+    expected_state: Arc<Mutex<Option<String>>>,
 }
 
 async fn receive_oauth_callback(
     State(state): State<CallbackState>,
     RawQuery(query): RawQuery,
 ) -> Response {
+    let received_state = query.as_deref().and_then(|query| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .find(|(key, _)| key == "state")
+            .map(|(_, value)| value.into_owned())
+    });
+    let expected_state = state.expected_state.lock().await.clone();
+    if expected_state.is_none() || received_state.as_deref() != expected_state.as_deref() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(
+                "<!doctype html><html lang=\"fr\"><meta charset=\"utf-8\"><title>Macro</title>\
+                 <body><p>Cette callback OAuth ne correspond pas à la demande en cours.</p></body></html>",
+            ),
+        )
+            .into_response();
+    }
+
     let callback_url = match query {
         Some(query) => format!("{}?{query}", state.callback_base),
         None => state.callback_base.to_string(),
@@ -382,9 +400,11 @@ async fn spawn_oauth_callback_server(
         .map_err(|_| command_error("The local MCP OAuth callback address is unavailable."))?;
     let callback_base = format!("http://127.0.0.1:{}/oauth/callback", address.port());
     let (sender, receiver) = oneshot::channel();
+    let expected_state = Arc::new(Mutex::new(None));
     let state = CallbackState {
         callback_base: Arc::from(callback_base.clone()),
         sender: Arc::new(Mutex::new(Some(sender))),
+        expected_state: expected_state.clone(),
     };
     let router = Router::new()
         .route("/oauth/callback", get(receive_oauth_callback))
@@ -392,14 +412,36 @@ async fn spawn_oauth_callback_server(
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    Ok((callback_base, receiver, CallbackServerGuard(Some(task))))
+    Ok((
+        callback_base,
+        receiver,
+        CallbackServerGuard {
+            task: Some(task),
+            expected_state,
+        },
+    ))
 }
 
-struct CallbackServerGuard(Option<tokio::task::JoinHandle<()>>);
+struct CallbackServerGuard {
+    task: Option<tokio::task::JoinHandle<()>>,
+    expected_state: Arc<Mutex<Option<String>>>,
+}
 
 impl CallbackServerGuard {
+    async fn set_expected_state(&self, authorization_url: &str) -> CommandResult<()> {
+        let authorization_url = Url::parse(authorization_url)
+            .map_err(|_| command_error("The MCP OAuth authorization URL is invalid."))?;
+        let state = authorization_url
+            .query_pairs()
+            .find(|(key, value)| key == "state" && !value.trim().is_empty())
+            .map(|(_, value)| value.into_owned())
+            .ok_or_else(|| command_error("The MCP OAuth authorization URL has no state."))?;
+        *self.expected_state.lock().await = Some(state);
+        Ok(())
+    }
+
     fn abort(&mut self) {
-        if let Some(task) = self.0.take() {
+        if let Some(task) = self.task.take() {
             task.abort();
         }
     }
@@ -475,6 +517,9 @@ pub(crate) async fn authorize_interactively(
                 return Err(command_error("MCP OAuth client registration failed."));
             }
         };
+    callback_server
+        .set_expected_state(session.get_authorization_url())
+        .await?;
     app.opener()
         .open_url(session.get_authorization_url(), None::<&str>)
         .map_err(|_| command_error("The MCP OAuth authorization page could not be opened."))?;
@@ -563,6 +608,38 @@ mod tests {
         assert!(!url_is_loopback(
             &Url::parse("http://example.test/mcp").unwrap()
         ));
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_ignores_an_unexpected_state_before_the_valid_callback() {
+        let (sender, mut receiver) = oneshot::channel();
+        let state = CallbackState {
+            callback_base: Arc::from("http://127.0.0.1:34567/oauth/callback"),
+            sender: Arc::new(Mutex::new(Some(sender))),
+            expected_state: Arc::new(Mutex::new(Some("expected-state".to_string()))),
+        };
+
+        let parasite = receive_oauth_callback(
+            State(state.clone()),
+            RawQuery(Some("code=parasite&state=wrong-state".to_string())),
+        )
+        .await;
+        assert_eq!(parasite.status(), StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        let valid = receive_oauth_callback(
+            State(state),
+            RawQuery(Some("code=valid&state=expected-state".to_string())),
+        )
+        .await;
+        assert_eq!(valid.status(), StatusCode::OK);
+        assert_eq!(
+            receiver.await.expect("valid callback URL"),
+            "http://127.0.0.1:34567/oauth/callback?code=valid&state=expected-state"
+        );
     }
 
     #[derive(Clone)]

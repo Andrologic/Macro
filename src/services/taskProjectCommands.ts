@@ -1,5 +1,5 @@
 import type { ConfigSnapshot } from '../types/generated/config';
-import { patchUserConfigTopLevel } from './configDocuments';
+import { updateUserConfigTopLevel } from './configDocuments';
 import { configurationGetSnapshot } from './configurationClient';
 const TASK_PROJECT_COMMANDS_VERSION = 3;
 
@@ -92,6 +92,15 @@ interface ToolsProjectCommandsDocument extends Record<string, unknown> {
   projectCommands?: Record<string, TaskProjectCommandEntry>;
 }
 
+const resolveTaskProjectCommandRegistryValue = (
+  value: unknown,
+): TaskProjectCommandRegistry => {
+  return normalizeRegistry({
+    version: TASK_PROJECT_COMMANDS_VERSION,
+    commandsByProjectPath: isRecord(value) ? value : {},
+  });
+};
+
 export const mergeTaskProjectCommandRegistry = (
   current: TaskProjectCommandRegistry,
   drafts: TaskProjectCommandDraft[]
@@ -163,21 +172,40 @@ export const loadTaskProjectCommandRegistry = async (
 };
 
 export const saveTaskProjectCommandDrafts = async (
-  drafts: TaskProjectCommandDraft[]
+  drafts: TaskProjectCommandDraft[],
+  dependencies: {
+    snapshotLoader?: (projectIds: string[]) => Promise<ConfigSnapshot>;
+    updater?: typeof updateUserConfigTopLevel;
+  } = {},
 ): Promise<TaskProjectCommandRegistry> => {
-  const projectIds = drafts
-    .map((draft) => draft.projectId?.trim() ?? '')
-    .filter(Boolean);
-  const nextRegistry = mergeTaskProjectCommandRegistry(
-    await loadTaskProjectCommandRegistry(projectIds),
-    drafts
+  const projectIds = normalizeProjectIds(
+    drafts.map((draft) => draft.projectId?.trim() ?? ''),
   );
+  const snapshot = await (dependencies.snapshotLoader ?? configurationGetSnapshot)(projectIds);
+  const scopedRegistry = resolveTaskProjectCommandRegistry(snapshot, projectIds);
+  let nextRegistry: TaskProjectCommandRegistry | null = null;
 
-  await patchUserConfigTopLevel(
+  await (dependencies.updater ?? updateUserConfigTopLevel)(
     'tools',
     'projectCommands',
-    nextRegistry.commandsByProjectPath,
+    (currentValue) => {
+      const userRegistry = resolveTaskProjectCommandRegistryValue(currentValue);
+      nextRegistry = mergeTaskProjectCommandRegistry(
+        {
+          version: TASK_PROJECT_COMMANDS_VERSION,
+          commandsByProjectPath: {
+            ...userRegistry.commandsByProjectPath,
+            ...scopedRegistry.commandsByProjectPath,
+          },
+        },
+        drafts,
+      );
+      return nextRegistry.commandsByProjectPath;
+    },
   );
+  if (!nextRegistry) {
+    throw new Error('La mise à jour des commandes de projet n’a pas été appliquée.');
+  }
   return nextRegistry;
 };
 

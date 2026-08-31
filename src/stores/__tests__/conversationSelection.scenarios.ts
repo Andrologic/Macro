@@ -583,6 +583,58 @@ export const registerConversationSelectionScenarios = (
       expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('conv-a');
     });
 
+    it('waits for an older toolbox upsert before deleting removed composer refs', async () => {
+      context.tauriAvailable = true;
+      const pendingUpsert = createDeferred<void>();
+      upsertConversationToolboxStateMock.mockImplementationOnce(async (input) => {
+        await pendingUpsert.promise;
+        const timestamp = input.timestamp ?? '2026-03-19T00:00:00.000Z';
+        const record = {
+          conversation_id: input.conversation_id,
+          composer_context_refs_json: input.composer_context_refs_json,
+          created_at: timestamp,
+          updated_at: timestamp,
+        };
+        toolboxStateByConversationId.set(input.conversation_id, record);
+        return record;
+      });
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(
+        createArchitectStoreState({
+          conversations: [createConversation('conv-a')],
+          selectedConversationId: 'conv-a',
+          selectedConversationIdsByMode: { Architect: 'conv-a' },
+        }),
+      );
+      useChatStore.setState({ composerContextRefs: [] });
+
+      useChatStore.getState().addComposerContextRef({
+        id: 'file-1',
+        kind: 'file',
+        title: 'README.md',
+        subtitle: 'project-1',
+        data: {
+          id: 'file-1',
+          path: 'README.md',
+          relativePath: 'README.md',
+          projectId: 'project-1',
+          projectName: 'Project 1',
+        },
+      });
+      await Promise.resolve();
+      useChatStore.getState().removeComposerContextRef('file-1', 'file');
+      await waitForToolboxPersistence();
+
+      expect(deleteConversationToolboxStateMock).not.toHaveBeenCalled();
+
+      pendingUpsert.resolve();
+      await flushAsyncWork();
+
+      expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('conv-a');
+      expect(toolboxStateByConversationId.has('conv-a')).toBe(false);
+      expect(useChatStore.getState().composerContextRefs).toEqual([]);
+    });
+
     it('restores the conversation model from the database when preferences are empty', async () => {
       providerState.modelsByProvider = {
         'provider-1': [

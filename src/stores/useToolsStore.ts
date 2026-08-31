@@ -7,6 +7,7 @@ import { getToolModePolicy } from '../services/toolModePolicy';
 import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../services/configDocuments';
 import { isConfigurationClientAvailable } from '../services/configurationClient';
 import { callScopedMcpTool } from '../services/scopedMcpRuntime';
+import { createSerialQueue } from '../services/serialQueue';
 import {
   isMCPServerEnabled,
   isMCPToolId,
@@ -106,6 +107,8 @@ const persistChatModeToolSettings = (settings: Record<string, boolean>): void =>
 };
 
 let settingsMutationVersion = 0;
+const enqueueToolSettingsMutation = createSerialQueue();
+let pendingToolSettingsMutations = 0;
 
 interface ToolsStore {
   // Internal Tools
@@ -235,31 +238,26 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
 
   toggleTool: async (toolId: string) => {
     settingsMutationVersion += 1;
+    pendingToolSettingsMutations += 1;
     set({ saving: true, lastError: null });
     try {
-      const currentTools = get().internalTools;
-      const tool = currentTools[toolId];
-
-      if (tool) {
-        if (tool.config?.locked === true) {
-          set({ saving: false });
-          return;
-        }
+      await enqueueToolSettingsMutation(async () => {
+        const currentTools = get().internalTools;
+        const tool = currentTools[toolId];
+        if (!tool || tool.config?.locked === true) return;
 
         const nextEnabled = !isToolEnabledState(tool);
-        const newSettings: Record<string, boolean> = {
-          ...Object.fromEntries(
-            Object.entries(currentTools).map(([id, t]) => [
-              id,
-              id === toolId ? nextEnabled : isToolEnabledState(t),
-            ])
-          ),
-        };
+        const newSettings = Object.fromEntries(
+          Object.entries(currentTools).map(([id, t]) => [
+            id,
+            id === toolId ? nextEnabled : isToolEnabledState(t),
+          ])
+        );
 
         await services.updateToolSettings({ tools: newSettings });
-        set({
+        set((state) => ({
           internalTools: {
-            ...currentTools,
+            ...state.internalTools,
             [toolId]: {
               ...tool,
               status: nextEnabled ? 'enabled' : 'disabled',
@@ -269,15 +267,15 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
               },
             },
           },
-        });
-      }
-
-      set({ saving: false });
+        }));
+      });
     } catch (error) {
       set({
-        saving: false,
         lastError: toServiceError(error).message,
       });
+    } finally {
+      pendingToolSettingsMutations -= 1;
+      set({ saving: pendingToolSettingsMutations > 0 });
     }
   },
 

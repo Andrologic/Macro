@@ -87,6 +87,11 @@ import {
 import { presentReplicaIssue } from '../../services/degradedErrorPresentation';
 import { buildArchitectPlanCatalogScopeKey } from '../../services/macroProjectMetadataLoader';
 import { toPlanLocatorKey } from '../../services/durableIdentity';
+import {
+  isPlanActivationSwitchRequestCurrent,
+  recoverFailedPlanActivation,
+  resolvePlanActivationTargetBranch,
+} from './planActivationRecovery';
 
 interface PlanSelectorProps {
   className?: string;
@@ -614,8 +619,35 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     planId: string,
     planSummaryHint?: ArchitectPlanSummary | null
   ) => {
+    const previousPlans = plans;
+    const previousActivePlanId = activePlanId;
+    const previousVisibleState = (() => {
+      const state = useAppStore.getState();
+      return {
+        activeArchitectPlanId: state.activeArchitectPlanId,
+        activePlanContext: state.activePlanContext,
+        architectPlanSwitch: state.architectPlanSwitch,
+        pendingArchitectPlanActivationPayload: state.pendingArchitectPlanActivationPayload,
+        planNodes: state.planNodes,
+        predictedBranches: state.predictedBranches,
+        strategyMutationPreview: state.strategyMutationPreview,
+      };
+    })();
+    const previousChatVisibleState = (() => {
+      const state = useChatStore.getState();
+      return {
+        selectedConversationId: state.selectedConversationId,
+        selectedConversationIdsByMode: state.selectedConversationIdsByMode,
+        restoreStatus: state.restoreStatus,
+        activeContextKey: state.activeContextKey,
+        selectionRequestId: state.selectionRequestId,
+        pendingArchitectPlanSwitchRequestId: state.pendingArchitectPlanSwitchRequestId,
+        lastError: state.lastError,
+      };
+    })();
     const planBranch = planSummaryHint?.targetBranch || targetBranch;
     const locatorKey = toPlanLocatorKey({ branchName: planBranch, planId });
+    let activationSwitchRequestId: number | null = null;
     const requestId = ++activationRequestIdRef.current;
     const requestContext = selectorAsyncContextRef.current ?? selectorAsyncContext;
     setIsActivating(locatorKey);
@@ -642,10 +674,20 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       const unambiguousLegacyBranch = idOnlyBranches.length === 1
         ? idOnlyBranches[0]?.branchName
         : null;
-      const activated = await activateArchitectPlan(planId, {
-        targetBranch: exactCatalogBranch ?? unambiguousLegacyBranch ?? planBranch,
+      const activationTargetBranch = resolvePlanActivationTargetBranch({
+        exactCatalogBranch,
+        unambiguousLegacyBranch,
+        fallbackBranch: planBranch,
+      });
+      const activationPromise = activateArchitectPlan(planId, {
+        targetBranch: activationTargetBranch,
         planSummaryHint: planSummaryHint ?? null,
       });
+      const startedSwitch = useAppStore.getState().architectPlanSwitch;
+      if (startedSwitch.targetPlanId === planId) {
+        activationSwitchRequestId = startedSwitch.requestId;
+      }
+      const activated = await activationPromise;
       if (!isCurrentActivationRequest(requestId, requestContext)) {
         return;
       }
@@ -660,14 +702,40 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
       if (!isCurrentActivationRequest(requestId, requestContext)) {
         return;
       }
-      if (openReplicaRepair(activationError, () => activatePlan(planId, planSummaryHint ?? null))) {
+      const failedSwitch = useAppStore.getState().architectPlanSwitch;
+      if (!isPlanActivationSwitchRequestCurrent({
+        activationSwitchRequestId,
+        planId,
+        currentSwitch: failedSwitch,
+      })) {
         return;
       }
-      const message = resolveOperationMessage(
-        activationError,
-        t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.')
-      );
-      setError(message);
+      setPlans(previousPlans);
+      setActivePlanId(previousActivePlanId);
+      const recoveryResult = recoverFailedPlanActivation({
+        previousAppState: previousVisibleState,
+        previousChatState: previousChatVisibleState,
+        invalidateConversationResolution: () =>
+          useChatStore.getState().invalidateConversationResolution(),
+        restoreAppState: (state) => useAppStore.setState(state),
+        getChatSelectionRequestId: () =>
+          useChatStore.getState().selectionRequestId,
+        restoreChatState: (state) => useChatStore.setState(state),
+        error: activationError,
+        openReplicaRepair: (error) =>
+          openReplicaRepair(error, () =>
+            activatePlan(planId, planSummaryHint ?? null)),
+        resolveErrorMessage: (error) =>
+          resolveOperationMessage(
+            error,
+            t('architect.planSelector.errorActivatePlan', 'Failed to activate plan.'),
+          ),
+        setError,
+        notifyError: (message) => notify.error(message),
+      });
+      if (recoveryResult === 'replica-repair-opened') {
+        return;
+      }
     } finally {
       if (activationRequestIdRef.current === requestId) {
         setIsActivating(null);

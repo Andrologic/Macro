@@ -14,6 +14,7 @@ import type { StateSnapshotDto } from './tauriIpc';
 import * as tauriIpc from './tauriIpc';
 import { MACRO_AI_SPEECH_PROVIDER_ID } from "../config/macroAi";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
+import { mutateConfigDocument } from './configDocuments';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 import {
   CHAT_MAX_TURNS_DISABLED,
@@ -702,53 +703,53 @@ const persistConfigPreference = async <T>(
   value: T,
   target: ConfigPreferenceTarget,
 ): Promise<void> => {
-  const store = useConfigStore.getState();
-  const document = await store.getDocument(target.document);
-  if (!document || typeof document.etag !== 'string') {
-    throw new Error(`Configuration document ${target.document} is unavailable.`);
-  }
-  const sparse = isRecord(document.value) ? document.value : {};
-  const topLevelKey = target.path[0];
-  const defaultValue = PREF_DEFAULTS[key];
-  const persistedValue = serializeConfigPreference(key, value);
-  const shouldInherit = jsonEqual(persistedValue, defaultValue);
-  const existingTopLevel = sparse[topLevelKey];
-  let operation: 'add' | 'remove' | null = null;
-  let operationValue: unknown;
-
-  if (target.path.length === 1) {
-    if (shouldInherit) {
-      operation = topLevelKey in sparse ? 'remove' : null;
-    } else if (!jsonEqual(existingTopLevel, persistedValue)) {
-      operation = 'add';
-      operationValue = persistedValue;
+  await mutateConfigDocument(target.document, { type: 'user' }, async (document) => {
+    if (!document || typeof document.etag !== 'string') {
+      throw new Error(`Configuration document ${target.document} is unavailable.`);
     }
-  } else {
-    const nextTopLevel = isRecord(existingTopLevel) ? { ...existingTopLevel } : {};
-    const nestedPath = target.path.slice(1);
-    if (shouldInherit) {
-      deleteNestedValue(nextTopLevel, nestedPath);
+    const sparse = isRecord(document.value) ? document.value : {};
+    const topLevelKey = target.path[0];
+    const defaultValue = PREF_DEFAULTS[key];
+    const persistedValue = serializeConfigPreference(key, value);
+    const shouldInherit = jsonEqual(persistedValue, defaultValue);
+    const existingTopLevel = sparse[topLevelKey];
+    let operation: 'add' | 'remove' | null = null;
+    let operationValue: unknown;
+
+    if (target.path.length === 1) {
+      if (shouldInherit) {
+        operation = topLevelKey in sparse ? 'remove' : null;
+      } else if (!jsonEqual(existingTopLevel, persistedValue)) {
+        operation = 'add';
+        operationValue = persistedValue;
+      }
     } else {
-      writeNestedValue(nextTopLevel, nestedPath, persistedValue);
+      const nextTopLevel = isRecord(existingTopLevel) ? { ...existingTopLevel } : {};
+      const nestedPath = target.path.slice(1);
+      if (shouldInherit) {
+        deleteNestedValue(nextTopLevel, nestedPath);
+      } else {
+        writeNestedValue(nextTopLevel, nestedPath, persistedValue);
+      }
+      if (Object.keys(nextTopLevel).length === 0) {
+        operation = topLevelKey in sparse ? 'remove' : null;
+      } else if (!jsonEqual(nextTopLevel, existingTopLevel)) {
+        operation = 'add';
+        operationValue = nextTopLevel;
+      }
     }
-    if (Object.keys(nextTopLevel).length === 0) {
-      operation = topLevelKey in sparse ? 'remove' : null;
-    } else if (!jsonEqual(nextTopLevel, existingTopLevel)) {
-      operation = 'add';
-      operationValue = nextTopLevel;
-    }
-  }
 
-  if (!operation) return;
-  await store.patch({
-    kind: target.document,
-    expectedEtag: document.etag,
-    patch: [{
-      op: operation,
-      path: `/${escapeJsonPointer(topLevelKey)}`,
-      value: operation === 'add' ? operationValue : null,
-      from: null,
-    }],
+    if (!operation) return;
+    await useConfigStore.getState().patch({
+      kind: target.document,
+      expectedEtag: document.etag,
+      patch: [{
+        op: operation,
+        path: `/${escapeJsonPointer(topLevelKey)}`,
+        value: operation === 'add' ? operationValue : null,
+        from: null,
+      }],
+    });
   });
 };
 

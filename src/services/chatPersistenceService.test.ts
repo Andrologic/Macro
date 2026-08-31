@@ -10,6 +10,7 @@ import {
   createAssistantPlaceholderMessage,
   createUserMessage,
   deleteConversation,
+  deleteConversationTurn,
   deleteConversations,
   deleteMessagesAfter,
   loadChatBootstrapSnapshot,
@@ -100,6 +101,7 @@ const baseIpc = (
   ),
   updateMessage: mock(async () => undefined),
   deleteMessagesAfter: mock(async () => undefined),
+  deleteConversationTurn: mock(async () => undefined),
   renameConversation: mock(async () => undefined),
   deleteConversation: mock(async () => undefined),
   deleteConversations: mock(async () => undefined),
@@ -347,5 +349,19 @@ describe("chatPersistenceService", () => {
       "conv-1",
       "message-1",
     );
+  });
+
+  it("delegates turn deletion only when Tauri is available", async () => {
+    const ipc = baseIpc();
+
+    await deleteConversationTurn({ ...adapters(), ipc }, "conv-1", "turn-1");
+    await deleteConversationTurn(
+      { ...adapters({ available: false }), ipc },
+      "conv-1",
+      "turn-1",
+    );
+
+    expect(ipc.deleteConversationTurn).toHaveBeenCalledTimes(1);
+    expect(ipc.deleteConversationTurn).toHaveBeenCalledWith("conv-1", "turn-1");
   });
 });

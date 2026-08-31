@@ -554,6 +554,16 @@ const flushRender = async () => {
   await Promise.resolve();
 };
 
+const createDeferred = <T,>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+};
+
 describe('FileChangesPanel', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
@@ -977,6 +987,173 @@ describe('FileChangesPanel', () => {
     expect(document.body.textContent).toContain('Produced');
     expect(document.body.textContent).toContain('Inherited');
     expect(document.body.textContent).toContain('Validated');
+  });
+
+  it('ignores artifact responses from a previously selected task that resolve out of order', async () => {
+    const firstPlanDeferred = createDeferred<ArchitectPlanRecord | null>();
+    const secondPlan = {
+      ...buildArtifactPlan(),
+      id: 'plan-2',
+      slug: 'plan-2',
+      title: 'Plan 2',
+      nodes: [
+        {
+          id: 'task-2',
+          title: 'Second task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+        },
+      ],
+    } as unknown as ArchitectPlanRecord;
+    const secondEntry = buildArtifactEntries()[0]!;
+    const secondEntries: VisiblePlanTaskArtifactReviewEntry[] = [
+      {
+        ...secondEntry,
+        artifact: {
+          ...secondEntry.artifact,
+          id: 'second-task-artifact',
+          planId: 'plan-2',
+          taskId: 'task-2',
+          title: 'Second task artifact',
+        },
+      },
+    ];
+    getArchitectPlanMock = mock(async (_branchName: string, planId: string) =>
+      planId === 'plan-1' ? firstPlanDeferred.promise : secondPlan
+    );
+    listArtifactEntriesMock = mock(async (params: { task: { id: string } }) =>
+      params.task.id === 'task-2' ? secondEntries : buildArtifactEntries()
+    );
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_storage_branch: 'feature/artifacts-a',
+        plan_target_branch: 'feature/artifacts-a',
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    expect(getArchitectPlanMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      const firstTask = useTaskStore.getState().tasks[0]!;
+      useTaskStore.setState({
+        tasks: [
+          firstTask,
+          {
+            ...firstTask,
+            id: 'task-2',
+            title: 'Second task',
+            plan_id: 'plan-2',
+            plan_storage_branch: 'feature/artifacts-b',
+            plan_target_branch: 'feature/artifacts-b',
+          } as never,
+        ],
+      });
+      useAppStore.setState({ selectedTaskId: 'task-2' });
+      await flushRender();
+    });
+
+    let artifactSection = document.body.querySelector('[data-artifacts-review-section="true"]');
+    await act(async () => {
+      (artifactSection?.querySelector('button') as HTMLButtonElement | null)?.click();
+      await flushRender();
+    });
+    expect(artifactSection?.textContent).toContain('Second task artifact');
+
+    await act(async () => {
+      firstPlanDeferred.resolve(buildArtifactPlan());
+      await flushRender();
+    });
+
+    artifactSection = document.body.querySelector('[data-artifacts-review-section="true"]');
+    expect(artifactSection?.textContent).toContain('Second task artifact');
+    expect(artifactSection?.textContent).not.toContain('API contract');
+  });
+
+  it('invalidates an artifact request as soon as the selected task changes', async () => {
+    const firstPlanDeferred = createDeferred<ArchitectPlanRecord | null>();
+    const secondPlan = {
+      ...buildArtifactPlan(),
+      id: 'plan-2',
+      slug: 'plan-2',
+      title: 'Plan 2',
+      nodes: [{
+        id: 'task-2',
+        title: 'Second task',
+        type: 'task',
+        status: 'pending',
+        dependencies: [],
+      }],
+    } as unknown as ArchitectPlanRecord;
+    const secondEntry = buildArtifactEntries()[0]!;
+    const secondEntries: VisiblePlanTaskArtifactReviewEntry[] = [{
+      ...secondEntry,
+      artifact: {
+        ...secondEntry.artifact,
+        id: 'second-task-artifact',
+        planId: 'plan-2',
+        taskId: 'task-2',
+        title: 'Second task artifact',
+      },
+    }];
+    getArchitectPlanMock = mock(async (_branchName: string, planId: string) =>
+      planId === 'plan-1' ? firstPlanDeferred.promise : secondPlan
+    );
+    listArtifactEntriesMock = mock(async (params: { task: { id: string } }) =>
+      params.task.id === 'task-2' ? secondEntries : buildArtifactEntries()
+    );
+    seedStores(buildRepository(false), {
+      taskOverrides: {
+        task_source: 'architect',
+        plan_id: 'plan-1',
+        plan_storage_branch: 'feature/artifacts-a',
+        plan_target_branch: 'feature/artifacts-a',
+      },
+    });
+
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      const firstTask = useTaskStore.getState().tasks[0]!;
+      useTaskStore.setState({
+        tasks: [
+          firstTask,
+          {
+            ...firstTask,
+            id: 'task-2',
+            title: 'Second task',
+            plan_id: 'plan-2',
+            plan_storage_branch: 'feature/artifacts-b',
+            plan_target_branch: 'feature/artifacts-b',
+          } as never,
+        ],
+      });
+      useAppStore.setState({ selectedTaskId: 'task-2' });
+      firstPlanDeferred.resolve(buildArtifactPlan());
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await flushRender();
+    });
+
+    expect(
+      listArtifactEntriesMock.mock.calls.every(([params]) => params.task.id === 'task-2')
+    ).toBe(true);
+    const artifactSection = document.body.querySelector('[data-artifacts-review-section="true"]');
+    await act(async () => {
+      (artifactSection?.querySelector('button') as HTMLButtonElement | null)?.click();
+      await flushRender();
+    });
+    expect(artifactSection?.textContent).toContain('Second task artifact');
   });
 
   it('keeps application repository folders visible when artifacts are present', async () => {

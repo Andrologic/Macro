@@ -365,19 +365,9 @@ pub async fn sync_models(pool: &SqlitePool, provider_id: &str) -> Result<Vec<AiM
 
     let models = build_provider_models(&entries, provider.plan_type.as_deref());
 
-    if !models.is_empty() {
-        repository::upsert_provider_models(pool, provider_id, &models)
-            .await
-            .map_err(db_error_to_string)?;
-
-        let keep_model_ids = models
-            .iter()
-            .map(|model| model.model_id.clone())
-            .collect::<Vec<_>>();
-        repository::prune_provider_models(pool, provider_id, &keep_model_ids)
-            .await
-            .map_err(db_error_to_string)?;
-    }
+    repository::replace_discovered_provider_models(pool, provider_id, &models)
+        .await
+        .map_err(db_error_to_string)?;
 
     let persisted_models = repository::list_models_by_provider(pool, provider_id)
         .await
