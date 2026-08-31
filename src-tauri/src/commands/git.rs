@@ -21854,6 +21854,21 @@ mod tests {
             return;
         }
 
+        let lowercase_probe = case_sensitive_directory.join("case-probe");
+        let uppercase_probe = case_sensitive_directory.join("CASE-PROBE");
+        fs::write(&lowercase_probe, "lowercase probe").unwrap();
+        let distinct_case_is_supported = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&uppercase_probe)
+            .is_ok();
+        fs::remove_file(&lowercase_probe).unwrap();
+        if distinct_case_is_supported {
+            fs::remove_file(&uppercase_probe).unwrap();
+        } else {
+            return;
+        }
+
         repo.config()
             .unwrap()
             .set_bool("core.ignorecase", false)
