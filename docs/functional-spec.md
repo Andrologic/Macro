@@ -503,6 +503,8 @@ L'interface doit permettre d'identifier clairement :
 L'interface doit afficher toutes les tâches de tous les projets par défaut et permettre de les filtrer par projet.
 Le mode Implement ne dépend pas du sélecteur de projet global du header.
 
+Lorsqu'une tâche est active, l'en-tête de la zone centrale affiche son titre puis une ligne de contexte compacte. Cette ligne indique, dans l'ordre, le plan d'origine lorsqu'il est connu, le projet ou le nombre de projets concernés, puis la branche de travail lorsqu'elle existe. Le plan est absent pour une tâche autonome sans plan catalogué. La branche est absente pour une tâche directe ou sans branche préparée. La ligne entière est masquée hors du mode Implement et lorsqu'aucune tâche n'est sélectionnée. Les valeurs viennent du catalogue de tâches et du registre de projets existants ; l'affichage ne conserve aucun état métier supplémentaire.
+
 ---
 
 ## 10. Cycle de vie des projets
