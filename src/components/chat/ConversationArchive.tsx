@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
+import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
 import { Icon } from '../ui/Icon';
 import { SearchBar } from '../ui/SearchBar';
@@ -405,9 +406,12 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
   const archiveHydrationError = useConversationArchiveStore(
     (state) => state.archiveHydrationError
   );
+  const isArchiveHydrated = useConversationArchiveStore((state) => state.isArchiveHydrated);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
+  const showArchived = useViewFilterStore((state) => state.chat.showArchived);
+  const areViewFiltersHydrated = useViewFilterStore((state) => state.isHydrated);
+  const setChatShowArchived = useViewFilterStore((state) => state.setChatShowArchived);
   const [isArchiveViewSwitching, setIsArchiveViewSwitching] = useState(false);
   const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
@@ -499,6 +503,36 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     () => getArchiveViewConversations(chatConversations, archivedIds, showArchived),
     [archivedIds, chatConversations, showArchived]
   );
+
+  useEffect(() => {
+    if (!areViewFiltersHydrated || !isArchiveHydrated) return;
+    const selectionMatchesView = selectedConversationId
+      ? archivedIds.has(selectedConversationId) === showArchived
+      : archiveSourceConversations.length === 0;
+    if (selectionMatchesView) return;
+
+    const nextConversationId = resolveArchiveViewSelection({
+      enteringArchive: showArchived,
+      conversations: chatConversations,
+      archivedIds,
+      previousActiveConversationId: previousActiveConversationIdRef.current,
+    });
+    void applyArchiveViewSelection(
+      nextConversationId,
+      selectConversation,
+      clearSelectedConversation,
+    );
+  }, [
+    archiveSourceConversations.length,
+    archivedIds,
+    areViewFiltersHydrated,
+    chatConversations,
+    clearSelectedConversation,
+    isArchiveHydrated,
+    selectConversation,
+    selectedConversationId,
+    showArchived,
+  ]);
   const pinnedIds = useMemo(
     () =>
       new Set(
@@ -667,7 +701,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           }
           if (!shouldArchive && selectedConversationId && idsToUpdate.has(selectedConversationId)) {
             previousActiveConversationIdRef.current = selectedConversationId;
-            setShowArchived(false);
+            setChatShowArchived(false);
           }
           notify.success(
             shouldArchive
@@ -710,6 +744,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
       clearSelectedConversation,
       discardComposerDraftForConversation,
       selectedConversationId,
+      setChatShowArchived,
       t,
     ]
   );
@@ -795,11 +830,11 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
   const handleNewChat = useCallback(() => {
     if (showArchived) {
-      setShowArchived(false);
+      setChatShowArchived(false);
     }
     exitMultiSelectMode();
     void createConversation(t('chat.newConversation', 'New Conversation'), null, null);
-  }, [createConversation, exitMultiSelectMode, showArchived, t]);
+  }, [createConversation, exitMultiSelectMode, setChatShowArchived, showArchived, t]);
 
   const handleToggleArchivedView = useCallback(async () => {
     if (isArchiveViewSwitching) {
@@ -825,7 +860,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
             clearSelectedConversation
           )
         ) {
-          setShowArchived(true);
+          setChatShowArchived(true);
         }
         return;
       }
@@ -843,7 +878,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
           clearSelectedConversation
         )
       ) {
-        setShowArchived(false);
+        setChatShowArchived(false);
       }
     } finally {
       setIsArchiveViewSwitching(false);
@@ -857,6 +892,7 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     selectConversation,
     selectedConversationId,
     showArchived,
+    setChatShowArchived,
   ]);
 
   const archiveButtonLabel = showArchived

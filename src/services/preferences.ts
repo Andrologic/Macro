@@ -23,6 +23,11 @@ import {
   DEFAULT_TOOL_RISK_LEVEL,
   TOOL_RISK_LEVELS,
 } from './toolSecurityPolicy';
+import {
+  DEFAULT_ARCHITECT_VIEW_FILTERS,
+  DEFAULT_CHAT_VIEW_FILTERS,
+  DEFAULT_IMPLEMENT_VIEW_FILTERS,
+} from './viewFilterPreferences';
 
 // Preference keys
 export const PREF_KEYS = {
@@ -59,6 +64,9 @@ export const PREF_KEYS = {
   MACRO_ENABLED_PROJECTS: "macroEnabledProjects",
   ARCHITECT_PINNED_PLAN_IDS: "architectPinnedPlanIds",
   ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS: "architectNavigatorExpandedScopeIds",
+  IMPLEMENT_VIEW_FILTERS: "implementViewFilters",
+  ARCHITECT_VIEW_FILTERS: "architectViewFilters",
+  CHAT_VIEW_FILTERS: "chatViewFilters",
   AI_CONTEXT_SELECTIONS: "aiContextSelections",
   PROMPT_ARCHITECT: "promptArchitect",
   PROMPT_IMPLEMENT: "promptImplement",
@@ -295,6 +303,9 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.MACRO_ENABLED_PROJECTS]: [],
   [PREF_KEYS.ARCHITECT_PINNED_PLAN_IDS]: [],
   [PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS]: [],
+  [PREF_KEYS.IMPLEMENT_VIEW_FILTERS]: DEFAULT_IMPLEMENT_VIEW_FILTERS,
+  [PREF_KEYS.ARCHITECT_VIEW_FILTERS]: DEFAULT_ARCHITECT_VIEW_FILTERS,
+  [PREF_KEYS.CHAT_VIEW_FILTERS]: DEFAULT_CHAT_VIEW_FILTERS,
   [PREF_KEYS.AI_CONTEXT_SELECTIONS]: {
     version: 2,
     modeSelections: {},
@@ -525,6 +536,13 @@ const isToolRiskLevel = (value: unknown): value is ToolRiskLevel =>
   (TOOL_RISK_LEVELS as readonly string[]).includes(value);
 
 const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
+  if (
+    key === PREF_KEYS.IMPLEMENT_VIEW_FILTERS ||
+    key === PREF_KEYS.ARCHITECT_VIEW_FILTERS ||
+    key === PREF_KEYS.CHAT_VIEW_FILTERS
+  ) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
   if (key === PREF_KEYS.UPDATE_CHANNEL) {
     return value === "stable" || value === "preview";
   }

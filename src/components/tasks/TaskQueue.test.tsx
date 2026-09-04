@@ -5,6 +5,10 @@ import type { useAppStore as UseAppStoreHook } from '../../stores/useAppStore';
 import type { useChatStore as UseChatStoreHook } from '../../stores/useChatStore';
 import type { useFileChangesStore as UseFileChangesStoreHook } from '../../stores/useFileChangesStore';
 import type { useTaskStore as UseTaskStoreHook } from '../../stores/useTaskStore';
+import {
+  DEFAULT_IMPLEMENT_VIEW_FILTERS,
+} from '../../services/viewFilterPreferences';
+import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import type { ProjectGitFlowSettings, TaskStatus } from '../../types';
 import {
   createTranslationMock,
@@ -409,6 +413,10 @@ describe('TaskQueue', () => {
   };
 
   beforeEach(async () => {
+    useViewFilterStore.setState({
+      implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS },
+      isHydrated: true,
+    });
     installTauriRuntimeMock();
     await loadTaskQueueModules();
     initialAppState = useAppStore.getState();
@@ -982,6 +990,30 @@ describe('TaskQueue', () => {
       await flushRender();
     });
     expect(document.activeElement).toBe(projectFilter);
+  });
+
+  it('preserves a remembered project filter across a failed bootstrap', async () => {
+    useViewFilterStore.getState().setImplementProjectFilter('missing-project');
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      standaloneProjects: [],
+      projectGroups: [],
+      isLoading: false,
+      lastError: 'Workspace bootstrap failed',
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    expect(useViewFilterStore.getState().implement.projectId).toBe('missing-project');
+
+    await act(async () => {
+      useAppStore.setState({ lastError: null });
+      await flushRender();
+    });
+    expect(useViewFilterStore.getState().implement.projectId)
+      .toBe(DEFAULT_IMPLEMENT_VIEW_FILTERS.projectId);
   });
 
   it('requires an explicit project when creating from the all-projects view', async () => {
