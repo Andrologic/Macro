@@ -15,6 +15,7 @@ import {
 import { createStoreHookMock } from '../../test-utils/storeHookMock';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
+import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
 import { registerArchitectScenarios } from './__tests__/architect.scenarios';
 import { registerCompactionScenarios } from './__tests__/compaction.scenarios';
@@ -128,22 +129,7 @@ export type MockChatState = {
       draftTextByStepId: Record<string, string>;
     }
   >;
-  pendingToolApprovalByConversationId: Record<
-    string,
-    {
-      conversationId: string;
-      assistantMessageId: string;
-      toolCallId: string;
-        toolId: string;
-        actionGroup: 'observe' | 'change' | 'escape';
-        riskLevel: 'strict' | 'balanced' | 'yolo';
-        isDestructive?: boolean;
-        summary: string;
-        detail?: string;
-        args?: Record<string, unknown>;
-        rememberKey: string;
-    }
-  >;
+  pendingToolApprovalByConversationId: Record<string, PendingToolApproval>;
   skillTurnFeedbackByMessageId: Record<string, unknown>;
   getPendingToolApproval: ReturnType<typeof mock>;
   approvePendingToolApprovalOnce: ReturnType<typeof mock>;
@@ -162,6 +148,8 @@ export type MockChatState = {
   isStreaming: boolean;
   sendState: 'idle' | 'preparing' | 'streaming' | 'error';
   lastError: string | null;
+  toolApprovalRecoveryError: string | null;
+  dismissToolApprovalRecoveryError: ReturnType<typeof mock>;
   stopStreaming: ReturnType<typeof mock>;
   sendMessage: ReturnType<typeof mock>;
   submitDuringActiveTurn: ReturnType<typeof mock>;
@@ -322,6 +310,7 @@ const useTaskStore = createStoreHookMock(() => taskState, (nextState) => {
   taskState = nextState;
 });
 const translationMock = createTranslationMock({
+  'errors.degraded.fallback.dynamic': '{{message}}',
   'chat.typeMessage': 'Type your message',
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
@@ -812,6 +801,8 @@ const resetState = () => {
     isStreaming: false,
     sendState: 'idle',
     lastError: null,
+    toolApprovalRecoveryError: null,
+    dismissToolApprovalRecoveryError: mock(() => undefined),
     stopStreaming: mock(() => undefined),
     sendMessage: mock(async () => ({ status: 'sent' })),
     submitDuringActiveTurn: mock(async () => 'steered'),

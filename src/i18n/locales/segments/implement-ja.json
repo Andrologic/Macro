@@ -1,4 +1,9 @@
 {
+  "statusAttention": "要対応",
+  "taskNextActionOpenApproval": "次：承認リクエストを開く",
+  "taskNextActionFinalizePlan": "次：プランを完了する",
+  "taskNextActionAcceptRepository": "次：{{repository}} の変更を承認する",
+  "taskNextActionOpenReview": "次：レビューを開く",
   "tasks": "タスク",
   "searchTasks": "タスクを検索...",
   "noSearchResults": "この検索に一致するタスクはありません。",
@@ -220,6 +225,8 @@
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "手動フィーチャーの作成に失敗しました。",
   "taskValidationProgress": "{{resolved}}/{{total}}サブプロジェクトが解決されました",
+  "repositoryCountInlineSingle": "{{count}}関連するリポジトリ",
+  "taskValidationProgressSingle": "{{resolved}}/{{total}}サブプロジェクトが解決されました",
   "repositoryCountInline": "{{count}}関連するリポジトリ",
   "taskCommandsModalDescription": "{{project}} の各プロジェクトに 1 つのコマンドを定義します。これらのコマンドはすべてのタスクで再利用されます。",
   "taskCommandConfigured": "設定済み",

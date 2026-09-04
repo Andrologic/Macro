@@ -84,6 +84,21 @@ describe('useViewFilterStore', () => {
     });
   });
 
+  it('persists attention with project and archive filters across restart', async () => {
+    await useViewFilterStore.getState().hydrate();
+    useViewFilterStore.getState().setImplementStatusFilter('attention');
+    useViewFilterStore.getState().setImplementProjectFilter('project-2');
+    useViewFilterStore.getState().setImplementShowArchived(true);
+    await waitForViewFilterPersistence();
+    resetInMemoryStore();
+    await useViewFilterStore.getState().hydrate();
+    expect(useViewFilterStore.getState().implement).toEqual({
+      version: 1, projectId: 'project-2', status: 'attention', showArchived: true,
+    });
+    useViewFilterStore.getState().setImplementShowArchived(false);
+    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+  });
+
   it('sanitizes invalid current values and safely rejects an old version', () => {
     expect(normalizeImplementViewFilters({
       version: 1,

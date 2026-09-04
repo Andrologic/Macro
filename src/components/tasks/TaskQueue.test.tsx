@@ -9,6 +9,7 @@ import {
   DEFAULT_IMPLEMENT_VIEW_FILTERS,
 } from '../../services/viewFilterPreferences';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
+import { buildReviewTaskSummary } from '../../services/implementMultiRepoSummary';
 import type { ProjectGitFlowSettings, TaskStatus } from '../../types';
 import {
   createTranslationMock,
@@ -491,12 +492,8 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Ready task');
     expect(document.body.textContent).not.toContain('Blocked task');
 
-    const clearFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('All statuses'));
-    expect(clearFilter?.getAttribute('title')).toBe('Show all statuses');
-
     await act(async () => {
-      clearFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      readyFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       await flushRender();
     });
 
@@ -624,6 +621,190 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).not.toContain('Merge blocked task');
     expect(document.body.textContent).not.toContain('Reblocked completed task');
     expect(document.body.textContent).not.toContain('Legacy status task');
+  });
+
+  it('tracks mixed attention, pending approvals during streaming, resolution and navigation', async () => {
+    seedTasks([
+      makeTask('task-1', 'InProgress', { conversation_id: 'conversation-1', title: 'Approval task' }),
+      makeTask('review', 'InReview', { title: 'Review task' }),
+      makeTask('waiting', 'AwaitingResponse', { title: 'Unloaded waiting task' }),
+      makeTask('blocked', 'InReview', { is_blocked: true, title: 'Blocked review' }),
+      makeTask('completed', 'Completed', { title: 'Completed task' }),
+      makeTask('archived', 'InReview', { archived_at: 'today', title: 'Archived task' }),
+    ], { isStreaming: true });
+    const activateTask = mock(async (id: string) => { useAppStore.setState({ selectedTaskId: id }); });
+    const selectConversation = mock(async () => true);
+    useTaskStore.setState({ activateTask });
+    useChatStore.setState({
+      selectConversation,
+      pendingToolApprovalByConversationId: { 'conversation-1': { toolCallId: 'call', summary: 'Approval' } } as never,
+    });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    const attentionFilter = document.body.querySelector<HTMLButtonElement>('button[title="Needs attention"]');
+    expect(attentionFilter?.textContent).toBe('Needs attention3');
+    expect(document.body.querySelector('button[title="Needs reply"]')?.textContent).toBe('Needs reply2');
+    expect(document.body.querySelector('button[title="In progress"]')?.textContent).toBe('In progress1');
+    expect(document.body.querySelector('[data-task-status-indicator-state="running"]')).toBeNull();
+    await act(async () => { attentionFilter?.click(); await flushRender(); });
+    expect(attentionFilter?.getAttribute('aria-pressed')).toBe('true');
+    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:task-1', 'task:review', 'task:waiting']);
+    expect(document.body.querySelectorAll('[role="button"][tabindex="0"]').length).toBe(3);
+    expect(document.body.textContent).toContain('Next: open the approval request');
+    await act(async () => { (getTaskCard() as HTMLElement)?.click(); await flushRender(); });
+    expect(activateTask).toHaveBeenCalledWith('task-1');
+    expect(selectConversation).toHaveBeenCalledWith('conversation-1');
+    await act(async () => {
+      useChatStore.setState({ pendingToolApprovalByConversationId: {} });
+      useTaskStore.setState({ tasks: useTaskStore.getState().tasks.map((task) =>
+        task.id === 'review' ? { ...task, status: 'Completed' } : task) });
+      await flushRender();
+    });
+    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:waiting']);
+    expect(attentionFilter?.textContent).toBe('Needs attention1');
+    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    await act(async () => { attentionFilter?.click(); await flushRender(); });
+    expect(document.body.querySelector('[data-task-status-indicator-state="running"]')).not.toBeNull();
+  });
+
+  it('updates waits on questionnaire replies without rendering each text fragment', async () => {
+    seedTasks([makeTask('task-1', 'AwaitingResponse', { conversation_id: 'conversation-1' })]);
+    const message = { id: 'question', task_id: 'task-1', conversation_id: 'conversation-1', role: 'assistant' as const,
+      content: 'Text', timestamp: '2026-09-04T10:00:00Z' };
+    useChatStore.setState({ messagesByConversationId: { 'conversation-1': [message] } });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')).not.toBeNull();
+    const renders = virtualListRowKeys.length;
+    await act(async () => {
+      useChatStore.setState({ messagesByConversationId: { 'conversation-1': [{ ...message, content: 'Text fragment' }] } });
+      await flushRender();
+    });
+    expect(virtualListRowKeys.length).toBe(renders);
+    const question = { ...message, questionnaire: { source: 'tool' as const,
+      questions: [{ id: 'target', prompt: 'Which?', choices: ['A', 'B', 'C'] as [string, string, string] }] } };
+    await act(async () => {
+      useChatStore.setState({ messagesByConversationId: { 'conversation-1': [question] } });
+      await flushRender();
+    });
+    expect(document.body.querySelector('button[title="Needs attention"]')?.textContent).toBe('Needs attention1');
+    await act(async () => {
+      useChatStore.setState({ messagesByConversationId: { 'conversation-1': [question, { ...message, id: 'reply', role: 'user' }] } });
+      await flushRender();
+    });
+    expect(document.body.querySelector('button[title="Needs attention"]')?.textContent).toBe('Needs attention0');
+    expect(document.body.querySelector('button[title="Needs reply"]')?.textContent).toBe('Needs reply0');
+    expect(document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')).toBeNull();
+    expect(document.body.querySelector('[data-task-status-indicator-state="idle_prompt"]')).not.toBeNull();
+  });
+
+  it('keeps the attention filter combined with project, search and archive navigation', async () => {
+    seedTasks([
+      makeTask('first', 'InReview', { title: 'Alpha review' }),
+      makeTask('second', 'InReview', { title: 'Beta review', project_id: 'project-2', project_ids: ['project-2'] }),
+      makeTask('archived', 'InReview', { title: 'Archived review', archived_at: 'today' }),
+    ]);
+    useAppStore.setState({ standaloneProjects: [makeProject('project-2', '/tmp/project-2', 'Project Two')] });
+    useViewFilterStore.getState().setImplementStatusFilter('attention');
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    await act(async () => {
+      useViewFilterStore.getState().setImplementProjectFilter('project-2');
+      await flushRender();
+    });
+    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:second']);
+    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+    await act(async () => {
+      useViewFilterStore.getState().setImplementProjectFilter('__all_projects__');
+      useViewFilterStore.getState().setImplementShowArchived(true);
+      await flushRender();
+    });
+    expect(getLastVirtualListKeys()).toEqual(['section:archived', 'task:archived']);
+    await act(async () => { useViewFilterStore.getState().setImplementShowArchived(false); await flushRender(); });
+    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:first', 'task:second']);
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-search-toggle"]')?.click();
+      await flushRender();
+    });
+    const input = document.body.querySelector<HTMLInputElement>('[data-tour-id="implement-task-search"] input');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set?.call(input, 'Beta');
+      input?.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await flushRender();
+    });
+    expect(getLastVirtualListKeys()).toEqual(['section:attention', 'task:second']);
+    expect(useViewFilterStore.getState().implement.status).toBe('attention');
+  });
+
+  it('shows review next actions for one and multiple repositories without reusing another task summary', async () => {
+    for (const projectIds of [['project-1'], ['project-1', 'project-2']]) {
+      await act(async () => {
+        seedTasks([makeTask('review', 'InReview', {
+          project_ids: projectIds,
+          execution_targets: projectIds.map((projectId) => ({ projectId, branchName: 'feature/review', worktreeKey: projectId })),
+        })]);
+        useAppStore.setState({ standaloneProjects: [makeProject('project-2', '/tmp/project-2', 'Project Two')] });
+        root?.render(<TaskQueueComponent />);
+        await flushRender();
+      });
+      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
+      const repositories = projectIds.map((projectId) => ({
+        id: `${projectId}::${projectId}`, projectId, branchName: 'feature/review', repoPath: `/tmp/${projectId}`,
+        stats: { pendingVisibleFileCount: 1, validatedStagedFileCount: 0 }, commitState: 'idle' as const,
+      }));
+      const publishSummary = async (reviewRepositories: Parameters<typeof buildReviewTaskSummary>[0]) => {
+        await act(async () => {
+          useFileChangesStore.setState({ currentTaskId: 'review', currentTaskLoadState: 'ready', isLoading: false,
+            reviewSummary: buildReviewTaskSummary(reviewRepositories) });
+          await flushRender();
+        });
+      };
+      await publishSummary(repositories);
+      expect(getTaskCardNextAction()?.textContent).toBe('Next: validate Project One');
+      await publishSummary(repositories.map((repository) => ({ ...repository,
+        stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 1 } })));
+      expect(getTaskCardNextAction()?.textContent).toBe('Next: commit Project One');
+      await publishSummary(repositories.map((repository, index) => ({ ...repository,
+        commitState: index === 0 ? 'committing' : 'idle',
+        stats: { pendingVisibleFileCount: index === 0 ? 0 : 1, validatedStagedFileCount: index === 0 ? 1 : 0 },
+      })));
+      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
+      if (projectIds.length > 1) {
+        await publishSummary(repositories.map((repository, index) => ({ ...repository,
+          commitState: index === 0 ? 'committed' : 'idle' })));
+        expect(getTaskCardNextAction()?.textContent).toBe('Next: validate Project Two');
+      }
+      await publishSummary(repositories.map((repository) => ({ ...repository, commitState: 'committed' })));
+      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
+      await publishSummary(repositories.map((repository) => ({ ...repository, commitState: 'no_changes' })));
+      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
+      await act(async () => { useFileChangesStore.setState({ currentTaskId: 'another-task' }); await flushRender(); });
+      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
+      await act(async () => { useFileChangesStore.setState({ currentTaskId: 'review', isLoading: true }); await flushRender(); });
+      expect(getTaskCardNextAction()?.textContent).toBe('Next: open the review');
+    }
+  });
+
+  it('uses Git commit for a direct task whose execution mode is Git', async () => {
+    seedTasks([makeTask('direct', 'InReview', { task_kind: 'direct', execution_targets: [{
+      projectId: 'project-1', branchName: 'main', worktreeKey: 'root', executionMode: 'git', executionKind: 'repository_root',
+    }] })]);
+    useFileChangesStore.setState({ currentTaskId: 'direct', currentTaskLoadState: 'ready', isLoading: false,
+      reviewSummary: buildReviewTaskSummary([{ id: 'project-1::root', projectId: 'project-1', branchName: 'main',
+        repoPath: '/tmp/project-1', stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 1 }, commitState: 'idle' }]) });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getTaskCardNextAction()?.textContent).toBe('Next: commit Project One');
+  });
+
+  it('describes acceptance for direct reviews and finalization for plans', async () => {
+    seedTasks([makeTask('direct', 'InReview', { execution_targets: [{ projectId: 'project-1', branchName: '', worktreeKey: 'direct-key', executionMode: 'direct' }] })]);
+    useFileChangesStore.setState({ currentTaskId: 'direct', currentTaskLoadState: 'ready', isLoading: false,
+      reviewSummary: buildReviewTaskSummary([{ id: 'project-1::direct-key', projectId: 'project-1', branchName: 'direct',
+        repoPath: '/tmp/project-1', stats: { pendingVisibleFileCount: 0, validatedStagedFileCount: 1 }, commitState: 'idle' }]) });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    expect(getTaskCardNextAction()?.textContent).toBe('Next: accept changes in Project One');
+    await act(async () => {
+      useTaskStore.setState({ tasks: [makeTask('finalize', 'InReview', { task_source: 'plan_finalization' })] as never });
+      await flushRender();
+    });
+    expect(getTaskCardNextAction()?.textContent).toBe('Next: finalize the plan');
   });
 
   it('searches within the active task filters and activates the selected result', async () => {

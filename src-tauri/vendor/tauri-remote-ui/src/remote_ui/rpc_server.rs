@@ -39,7 +39,7 @@ use std::{
         Arc,
     },
 };
-use tauri::{async_runtime::JoinHandle, AppHandle, Error, Listener, Manager, Url, WebviewWindow};
+use tauri::{async_runtime::JoinHandle, AppHandle, Error, Manager, Url, WebviewWindow};
 use tokio::{
     net::TcpListener,
     sync::{Mutex, RwLock},
@@ -919,7 +919,6 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
     match websocket.await {
         Ok(ws_stream) => {
             let session_id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
-            let pending_listeners = Arc::new(std::sync::Mutex::new(HashMap::new()));
             let (tx, mut rx) = ws_stream.split();
             let ws_sender = Arc::new(Mutex::new(tx));
             let primary_label;
@@ -934,6 +933,9 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
                     .transfer_ws_ownership(&primary_label, ws_sender.clone())
             };
             if let Some(replaced_ws) = replaced_ws {
+                app_handle
+                    .state::<super::plugin_ext::PendingRpcs>()
+                    .remove_recipient(&replaced_ws);
                 tokio::spawn(close_replaced_ws(replaced_ws));
             }
             let mut session_error = None;
@@ -991,7 +993,6 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
                                             msg.as_ref(),
                                             ws_sender.clone(),
                                             session_id,
-                                            pending_listeners.clone(),
                                         )
                                     },
                                 );
@@ -1012,6 +1013,7 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
                         }
                         Message::Close(_) => {
                             log::debug!("Remote UI socket closed by peer");
+                            break;
                         }
                         _ => {
                             log::trace!("Unhandled WS data frame");
@@ -1019,6 +1021,7 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
                     },
                     Err(err) => {
                         log::warn!("Message read failed: {err}");
+                        break;
                     }
                 }
             }
@@ -1028,15 +1031,9 @@ async fn ws_handle(websocket: HyperWebsocket, app_handle: Arc<AppHandle>) -> Res
                 .await
                 .rpc_server
                 .remove_ws_handle_if_current(&primary_label, &ws_sender);
-            let listener_ids = pending_listeners
-                .lock()
-                .expect("remote UI listener registry mutex poisoned")
-                .drain()
-                .map(|(_, id)| id)
-                .collect::<Vec<_>>();
-            for listener_id in listener_ids {
-                app_handle.unlisten(listener_id);
-            }
+            app_handle
+                .state::<super::plugin_ext::PendingRpcs>()
+                .remove_session(session_id);
             match session_error {
                 Some(err) => Err(err),
                 None => Ok(()),

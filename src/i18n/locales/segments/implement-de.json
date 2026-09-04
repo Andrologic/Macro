@@ -1,4 +1,9 @@
 {
+  "statusAttention": "Zu erledigen",
+  "taskNextActionOpenApproval": "Weiter: Genehmigungsanfrage öffnen",
+  "taskNextActionFinalizePlan": "Weiter: Plan abschließen",
+  "taskNextActionAcceptRepository": "Weiter: Änderungen in {{repository}} akzeptieren",
+  "taskNextActionOpenReview": "Weiter: Review öffnen",
   "tasks": "Aufgaben",
   "searchTasks": "Aufgaben suchen...",
   "noSearchResults": "Keine Aufgabe entspricht dieser Suche.",
@@ -220,6 +225,8 @@
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "Die manuelle Funktion konnte nicht erstellt werden.",
   "taskValidationProgress": "{{resolved}}/{{total}} Teilprojekte gelöst",
+  "repositoryCountInlineSingle": "{{count}} beteiligtes Repository",
+  "taskValidationProgressSingle": "{{resolved}}/{{total}} Teilprojekt gelöst",
   "repositoryCountInline": "{{count}} beteiligte Repositories",
   "taskCommandsModalDescription": "Definieren Sie einen Befehl pro Projekt für {{project}}. Diese Befehle werden von allen Aufgaben wiederverwendet.",
   "taskCommandConfigured": "Konfiguriert",

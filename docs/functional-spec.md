@@ -393,7 +393,19 @@ résultat déclenche la même sélection que dans la liste non filtrée.
 
 Les filtres structurants des listes principales survivent aux changements de
 mode et aux redémarrages. Implement conserve le projet, le statut et la vue
-archivée. Architect et Chat conservent la vue active ou archivée. Les requêtes
+archivée. Le filtre « À traiter » regroupe les questionnaires actifs, les demandes
+d'approbation d'outil actives ou restaurées et les tâches en review. Une tâche
+n'y apparaît qu'une fois. Les tâches terminées ou archivées et les simples
+blocages de dépendances n'y entrent pas. Une demande active reste accessible
+même si la tâche porte aussi un blocage. Avant le chargement de la conversation,
+une attente durable reste visible, sauf si une exécution ou un workflow de
+merge indique déjà une autre activité. Le filtre se combine au projet et à la
+recherche. Un second clic sur le filtre actif affiche tous les statuts. Changer
+de projet conserve le filtre choisi ; consulter les archives le suspend et le
+retour aux tâches actives le rétablit. Une approbation en attente remplace le
+spinner par l'indicateur d'attente utilisateur, même si le moteur est encore en
+streaming. Ouvrir cette tâche donne accès à la conversation de la demande.
+Architect et Chat conservent la vue active ou archivée. Les requêtes
 de recherche, la sélection multiple et les filtres propres aux boîtes de
 dialogue ou au terminal restent limités à la session d'interaction en cours.
 
@@ -742,6 +754,17 @@ Pendant l'exécution d'une tâche, l'IA peut :
 - lancer un build
 - préparer des changements pour review
 
+### Approbations interrompues
+
+Une demande d'approbation d'outil survit au redémarrage comme demande interrompue.
+Le footer propose de reprendre dans un nouveau tour ou d'ignorer la demande.
+La reprise recharge le contexte actuel et applique la politique d'outils courante.
+Elle ne vaut pas approbation de l'ancienne commande et ne restaure aucun droit de
+session. L'agent doit vérifier les effets déjà produits avant de répéter une action.
+La demande initiale reste consultable dans l'historique. Si le nouveau tour échoue
+avant tout envoi, la demande reste disponible. Le refus, l'arrêt, la suppression,
+l'archivage et la fin de tâche invalident l'attente.
+
 ### 14.4 Review humaine
 
 Une review humaine est obligatoire à la fin de chaque tâche.
@@ -760,6 +783,16 @@ L'utilisateur doit pouvoir :
 Si un objet Git nécessaire à la review reste absent après une actualisation et une seule relance, Macro suspend les actualisations automatiques de cette review. L’interface précise qu’aucun fichier de travail n’a été modifié, propose de réessayer et donne accès aux détails Git. Une nouvelle tentative explicite, un changement de tâche ou une modification des métadonnées de review peut reprendre le chargement. Un changement d’état sans lien avec la review ne la relance pas. Macro ne lance aucune réparation destructive pour traiter cette erreur.
 
 Pour un projet sans Git, la review repose sur l’historique interne de Macro. Si ce checkpoint est absent, lié à un autre projet ou incomplet, le panneau suspend ses actualisations et nomme le checkpoint interne, pas un dépôt Git utilisateur. Macro conserve l’historique disponible et les fichiers du projet. Une réparation qui pourrait perdre un état accepté n’est jamais automatique.
+
+La carte de la file indique la prochaine action de review pour une tâche à un
+ou plusieurs dépôts : valider les changements du projet concerné, committer ce
+projet ou ouvrir la review. Pour un projet en mode d'exécution direct, elle
+indique d'accepter les changements. Le résumé des dépôts ne couvre pas les
+artefacts : il ne suffit donc pas à annoncer que la tâche peut être terminée. Une tâche de finalisation indique de finaliser le plan. Ces
+indications utilisent le résumé de la review chargée et les états existants du
+workflow de merge. En l'absence de données de review pour cette tâche, la carte
+propose d'ouvrir la review. Les validations et opérations Git restent dans leur
+parcours de review habituel.
 
 ### 14.5 Édition manuelle autorisée pendant la review
 
@@ -1050,7 +1083,9 @@ Les notifications doivent au minimum couvrir :
 
 Si le runtime ne supporte pas les notifications bureau, les modes bureau ne doivent pas être proposés et une configuration bureau déjà persistée doit retomber sur une notification in-app plutôt que perdre l'événement.
 
-La catégorie « besoin d'attention sur une tâche » couvre trois transitions : l'apparition d'un questionnaire sans réponse, l'apparition d'une demande d'approbation d'outil et le passage d'une tâche existante vers `InReview`. La clé de la notification combine le type de demande avec l'identifiant du message, de l'appel d'outil ou de la tâche. Une mise à jour du même état ne crée donc pas de doublon. L'hydratation d'un état déjà en attente, la résolution de la demande et une demande déjà affichée dans le contexte actif ne produisent pas de notification.
+La catégorie « besoin d'attention sur une tâche » couvre trois transitions : l'apparition d'un questionnaire sans réponse, l'apparition d'une demande d'approbation d'outil et le passage d'une tâche existante vers `InReview`. La clé de la notification combine le type de demande avec l'identifiant du message, de l'appel d'outil ou de la tâche. Une mise à jour du même état ne crée donc pas de doublon. L'hydratation d'un état déjà en attente, la résolution de la demande et une demande déjà affichée dans le contexte actif d'une fenêtre au premier plan ne produisent pas de notification. Une fenêtre inactive ou minimisée reçoit les nouvelles demandes selon les préférences de canal, même si leur conversation ou tâche est sélectionnée.
+
+Le centre de notifications conserve un descripteur de navigation typé, sans callback ni paramètres d'outil. Le bouton d'ouverture reste disponible après relance. Le clic relit la conversation et l'identité durable de la tâche ; une cible supprimée ne change pas la sélection. Les appels à l'action résolus sont retirés dès que leur état chargé permet de le déterminer.
 
 L'action d'une notification de questionnaire ou d'approbation ouvre sa conversation et sa tâche lorsqu'elle en possède une. L'action d'une review ouvre la tâche dans le mode Implement et restaure sa conversation connue. Le système ne possède pas encore de route stable vers un dépôt ou un fichier précis de la review : la navigation s'arrête donc volontairement au contexte sûr de la tâche.
 

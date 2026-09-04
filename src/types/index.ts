@@ -748,6 +748,8 @@ export interface ToolTrace {
 }
 
 export interface PendingToolApproval {
+  /** Absent for a live resolver; interrupted requests require a new turn. */
+  recoveryState?: 'interrupted';
   conversationId: string;
   assistantMessageId: string;
   toolCallId: string;

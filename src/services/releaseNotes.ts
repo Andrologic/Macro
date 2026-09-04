@@ -14,6 +14,52 @@ export interface PendingUpdateReleaseNote {
 type ReleaseNoteLocale = 'en' | 'fr';
 
 const RELEASE_NOTES: Record<string, Record<ReleaseNoteLocale, ReleaseNote>> = {
+  '0.1.4': {
+    en: {
+      version: '0.1.4',
+      eyebrow: "Desktop supervision",
+      title: 'Macro 0.1.4',
+      summary: "Pending requests, interrupted approvals, persistent filters, and clearer review guidance.",
+      content: `## Notifications and pending requests
+
+- Questionnaires, tool approvals, and reviews can trigger notifications while the window is inactive, according to your settings. The notification center preserves their destinations across restarts and removes resolved requests.
+- The Needs attention filter groups pending questionnaires, approvals, and reviews. It works with project filtering and search and survives restarts.
+- A pending approval shows that a reply is needed instead of an execution spinner. Dependency blocks remain distinct.
+
+## Resume an interrupted approval
+
+- After a restart, choose to resume work in a new turn or dismiss the interrupted request.
+- Resuming uses the current context and tool policy. The old request grants no permission to execute, and session permissions are not restored. The agent is instructed to check previous effects before repeating an action.
+
+## Navigation and review
+
+- Task cards show the next action using loaded review data: validate or commit a project, accept direct changes, or open the review. Finalization tasks point to plan finalization.
+- Implement shows the active task context, provides access to project management, and remembers project, status, and archive filters. Architect and Chat remember their archive filters.
+- Architect empty states reflect available plans and editing permissions. Project icon dimensions and several French translations have been corrected.`,
+    },
+    fr: {
+      version: '0.1.4',
+      eyebrow: "Supervision desktop",
+      title: 'Macro 0.1.4',
+      summary: "Demandes en attente, approbations interrompues, filtres persistants et prochaines actions de review.",
+      content: `## Notifications et demandes en attente
+
+- Les questionnaires, approbations d'outils et reviews peuvent déclencher une notification lorsque la fenêtre est inactive, selon vos réglages. Le centre de notifications conserve leur destination après redémarrage et retire les demandes résolues.
+- Le filtre « À traiter » regroupe les questionnaires, approbations et reviews en attente. Il se combine au projet et à la recherche et reste mémorisé après redémarrage.
+- Une approbation en attente affiche une demande de réponse plutôt qu'un indicateur d'exécution. Les blocages de dépendances restent distincts.
+
+## Reprendre une approbation interrompue
+
+- Après redémarrage, choisissez de reprendre le travail dans un nouveau tour ou d'ignorer la demande interrompue.
+- La reprise utilise le contexte et la politique d'outils actuels. L'ancienne demande n'autorise aucune exécution et les droits de session ne sont pas restaurés. L'agent reçoit l'instruction de vérifier les effets précédents avant de répéter une action.
+
+## Navigation et review
+
+- Les cartes de tâches indiquent la prochaine action selon les données de review chargées : valider ou committer un projet, accepter des changements directs ou ouvrir la review. Les tâches de finalisation renvoient vers la finalisation du plan.
+- Implement affiche le contexte de la tâche active, donne accès à la gestion des projets et conserve les filtres de projet, de statut et d'archives. Architect et Chat conservent leur filtre d'archives.
+- Les états vides Architect tiennent compte des plans et des droits de modification. Les dimensions des icônes de projet et plusieurs traductions françaises ont été corrigées.`,
+    },
+  },
   '0.1.2': {
     en: {
       version: '0.1.2',

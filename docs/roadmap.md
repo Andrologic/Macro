@@ -31,9 +31,10 @@ Un écart devenu obsolète doit être supprimé.
 
 ## 3. État actuel synthétique
 
-La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.3`.
-La configuration Tauri reprend la version de `package.json`. La `0.1.4` est la
-prochaine version de travail, pas une version déjà livrée.
+La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.4`.
+La configuration Tauri reprend la version de `package.json`. Cette version est
+en préparation locale et n'est pas publiée. Les installateurs multiplateformes
+restent à valider.
 
 L'application dispose déjà d'une base solide :
 
@@ -63,28 +64,25 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 
 - expérience Implement encore partiellement inachevée
 - automatisation et orchestration encore à fiabiliser
-- boucle d'attention desktop encore incomplète entre questionnaires, approbations, review et retour vers l'action attendue
 - articulation desktop / remote / mobile encore incomplète
 - expérience multi-plan et multi-projet encore à consolider de bout en bout
 
 ### 3.1 Périmètre confirmé de la 0.1.4
 
-La `0.1.4` doit terminer la supervision et la finalisation desktop sans ambiguïté.
-Elle s'appuie sur les questionnaires, les notifications, la review et le
-démarrage manuel déjà livrés.
+La boucle d'attention desktop est intégrée dans la version locale `0.1.4`.
+Les notifications et la file « À traiter » ramènent aux demandes en attente.
+La préparation locale ne vaut pas publication.
 
-Objectifs confirmés :
+Écarts résolus dans le code :
 
-- notifier les questionnaires, les approbations d'outils et les reviews qui attendent l'utilisateur
-- ramener chaque notification vers la bonne tâche, conversation ou review
-- restaurer après redémarrage les questionnaires, approbations et reviews encore en attente
-- distinguer une attente de décision utilisateur d'un blocage d'exécution
-- afficher la prochaine action de review jusqu'au commit par dépôt, à la complétion de la tâche et à la validation globale du plan
-- clarifier le contexte groupe, projet, plan et tâche ainsi que la progression multi-dépôts
-- conserver les filtres et la sélection utiles pendant la navigation Implement
-- donner accès à la gestion des projets depuis Implement
-- corriger les états vides Architect selon la présence de plans et les droits de modification
-- normaliser les icônes de projet et corriger les accents ou fallbacks de traduction démontrablement erronés
+- notifications des questionnaires, approbations et reviews lorsque leur contexte n'est pas au premier plan, avec destination conservée dans le centre après redémarrage
+- filtre « À traiter » persistant, combiné au projet et à la recherche
+- approbations interrompues restaurées comme demandes à reprendre dans un nouveau tour ou à ignorer, sans restaurer les droits de session
+- attente utilisateur distincte des blocages de tâche et de dépendance
+- prochaine action de review indiquée d'après les données chargées, avec retour vers la review lorsque la complétion reste à vérifier
+- contexte de la tâche active, filtres persistants et accès aux projets depuis Implement
+- états vides Architect adaptés aux plans disponibles et aux droits de modification
+- dimensions des icônes de projet et traductions françaises corrigées
 
 Le kernel distant public, la supervision mobile, les comptes, la synchronisation
 connectée, un système de plugins, l'édition complète des fichiers en review et
@@ -120,7 +118,9 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 - cleanup complet des structures lorsque des plans sont supprimés ou abandonnés
 - robustesse multi-plans parallèles
 - lisibilité du mode Architect quand plusieurs plans coexistent
-- états vides cohérents pour un projet modifiable, en lecture seule ou encore à configurer
+
+État consolidé en `0.1.4` :
+- états vides adaptés aux plans disponibles et aux droits de modification
 
 ### 4.3 Mode Implement
 
@@ -143,13 +143,13 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 - review multi-dépôts côté Implement maintenant lisible dans la file et dans la review
 - navigation explicite dépôt par dépôt, commits distincts par dépôt et complétion de tâche unifiée
 - verrouillage des états fantômes entre review, commit par dépôt et complétion finale
+- file « À traiter », reprise des approbations interrompues et prochaine action de review en `0.1.4`
+- contexte de tâche, filtres persistants et gestion des projets accessibles dans Implement
 
 État à consolider :
 - UX de la review et de l'édition ciblée
-- notifications et restauration des questionnaires ou approbations en attente
 - articulation claire entre review de tâche, commit, validation finale de plan et merge
 - comportement global du mode quand plusieurs plans et plusieurs projets sont actifs en même temps
-- contexte de la tâche, filtres persistants et accès à la gestion des projets dans la file Implement
 
 ### 4.4 Review et édition ciblée
 
@@ -230,11 +230,10 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 - notifications in-app et desktop disponibles
 - préférences locales par catégorie et par canal
 - repli vers l'in-app lorsque les notifications bureau ne sont pas supportées
+- notifications reliées aux questionnaires, approbations et reviews, avec navigation persistante dans le centre
+- reprise explicite des approbations interrompues après redémarrage
 
 État à consolider :
-- émission systématique pour les questionnaires, approbations et reviews en attente
-- retour vers l'action exacte depuis une notification
-- restauration fiable des demandes d'attention après redémarrage
 - protocole d'échange entre exécution et client mobile
 - définition de la supervision distante comme expérience produit complète
 
@@ -268,17 +267,12 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 
 ## 5. Chantiers prioritaires
 
-### 5.1 Priorité 1 - Terminer la boucle d'attention desktop pour 0.1.4
+### 5.1 Boucle d'attention desktop intégrée en 0.1.4
 
-Objectif :
-- signaler ce qui attend l'utilisateur et le ramener à l'action exacte
-
-Chantiers :
-- brancher les questionnaires, approbations d'outils et reviews sur le système de notification existant
-- ouvrir la bonne tâche, conversation ou review depuis l'action de notification
-- restaurer les demandes encore en attente après redémarrage
-- distinguer l'attente utilisateur du blocage d'exécution
-- rendre la prochaine action explicite jusqu'à la validation finale du plan
+Les écarts de notification, de restauration des approbations et de filtrage
+sont résolus dans le code local. La validation d'ensemble et les installateurs
+restent à vérifier avant publication. Les évolutions suivantes portent sur
+l'ergonomie de review et la supervision distante.
 
 ### 5.2 Priorité 2 - Rendre le multi-projet réellement premium
 
@@ -287,8 +281,6 @@ Objectif :
 
 Chantiers :
 - clarifier la structure groupe / projet / plan / tâche
-- conserver les filtres et la sélection pendant la navigation Implement
-- ajouter l'accès à la gestion des projets depuis Implement
 - améliorer la lisibilité de la progression et des commits par dépôt
 - mieux articuler finalisation de plan, review et navigation quand plusieurs plans restent actifs en parallèle
 
@@ -407,10 +399,11 @@ Critère de sortie :
 - la synthèse de plans, la file de tâches et les filtres restent maintenant cohérents quand plusieurs plans vivants coexistent dans un même groupe, sans régression sur les tâches hors plan
 - le prochain verrou majeur de la phase redevient la lisibilité UX du multi-projet et l'articulation review / finalisation quand plusieurs plans restent actifs
 
-Tranche confirmée pour la `0.1.4` :
-- lisibilité UX groupe / projet / plan / tâche côté Implement
-- clarté des filtres, de la navigation et de la review quand plusieurs plans et plusieurs dépôts restent actifs en parallèle
-- meilleure articulation entre review de tâche multi-projet, validation globale de plan et finalisation
+Tranche intégrée dans la `0.1.4` locale :
+- contexte de tâche active, filtres persistants et accès à la gestion des projets
+- file « À traiter » et prochaine action de review pour un ou plusieurs dépôts
+
+L'ergonomie globale de review et de finalisation multi-plan reste à consolider.
 
 ### Phase 4 - Automatisation et supervision
 
@@ -425,7 +418,8 @@ Critère de sortie :
 
 État :
 - le démarrage manuel, les questionnaires et le système de notifications desktop sont livrés
-- les connexions entre ces capacités constituent le cœur de la `0.1.4`
+- les notifications, la navigation persistante, la reprise des approbations interrompues et la file « À traiter » sont intégrées en `0.1.4` locale
+- les parcours de validation d'ensemble et les installateurs restent à vérifier avant publication
 
 ### Phase 5 - Remote kernel et mobile supervision
 

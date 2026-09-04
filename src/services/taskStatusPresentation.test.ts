@@ -11,6 +11,13 @@ import type { MergeWorkflowRuntimeState } from './mergeWorkflow';
 import type { TaskStatus } from '../types';
 
 describe('taskStatusPresentation', () => {
+  it('prioritizes a real pending request over streaming and resumes running after resolution', () => {
+    expect(resolveTaskStatusIndicatorState('InProgress', true, null, null, false, true)).toBe('awaiting_response');
+    expect(resolveTaskQueueStatusGroup('InProgress', false, null, true, true)).toBe('waiting');
+    expect(resolveTaskStatusIndicatorState('AwaitingResponse', true, null, null, false, false)).toBe('running');
+    expect(resolveTaskQueueStatusGroup('AwaitingResponse', false, null, true, false)).toBe('in_progress');
+  });
+
   it('resolves idle prompt for pending tasks without streaming', () => {
     expect(resolveTaskStatusIndicatorState('Pending', false)).toBe('idle_prompt');
   });

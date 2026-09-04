@@ -1,3 +1,4 @@
+import { sanitizeWorkflowNotificationNavigation, type WorkflowNotificationNavigation } from '../services/workflowNotificationNavigation';
 import { create } from 'zustand';
 import { PREF_KEYS, savePreference } from '../services/preferences';
 import {
@@ -32,6 +33,7 @@ export interface NotificationCenterItemInput extends NotificationTemplateSnapsho
 }
 
 export interface NotificationCenterItem {
+  workflowNavigation?: WorkflowNotificationNavigation;
   id: string;
   level: NotificationLevel;
   variant: NotificationVariant;
@@ -192,6 +194,9 @@ const toNotificationCenterItem = (
     title: item.title.trim(),
     description,
     createdAt: item.createdAt,
+    ...(variant === 'actionable' && category === 'task_attention_required'
+      ? { workflowNavigation: sanitizeWorkflowNotificationNavigation(item.workflowNavigation) }
+      : {}),
     readAt,
     ...(sessionActions ? { sessionActions } : {}),
     ...(sessionToastId !== null ? { sessionToastId } : {}),
@@ -409,14 +414,15 @@ export const useNotificationCenterStore = create<NotificationCenterStore>((set, 
         return item;
       }
 
-      if (!item.sessionActions || item.sessionActions.length === 0) {
+      const actionCount = item.workflowNavigation ? 1 : (item.sessionActions?.length ?? 0);
+      if (actionCount === 0) {
         return item;
       }
 
       const nextPendingActionIndex =
         typeof pendingActionIndex === 'number' &&
         pendingActionIndex >= 0 &&
-        pendingActionIndex < item.sessionActions.length
+        pendingActionIndex < actionCount
           ? pendingActionIndex
           : null;
 
