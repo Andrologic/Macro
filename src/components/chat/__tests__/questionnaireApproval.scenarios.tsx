@@ -1,6 +1,7 @@
 import { expect, it, mock } from 'bun:test';
 import { act, type ReactElement } from 'react';
 import type { Root } from 'react-dom/client';
+import { useConversationArchiveStore } from '../../../stores/useConversationArchiveStore';
 import type { MockChatState, MockMessage } from '../ChatZone.test';
 
 export type QuestionnaireApprovalScenarioContext = {
@@ -86,6 +87,58 @@ export const registerQuestionnaireApprovalScenarios = (
     expect(footer?.textContent).toContain('Allow once');
     expect(footer?.textContent).toContain('Allow for this conversation');
     expect(requireContainer().querySelector('[data-testid="composer-editor"]')).toBeNull();
+  });
+
+  it('offers a new turn and dismissal for an interrupted approval', async () => {
+    context.chatState = {
+      ...context.chatState,
+      pendingToolApprovalByConversationId: { 'conv-1': {
+        conversationId: 'conv-1', assistantMessageId: 'msg-assistant-1', toolCallId: 'old-call',
+        toolId: 'terminal_run', actionGroup: 'escape', riskLevel: 'strict', summary: 'terminal_run',
+        rememberKey: '', recoveryState: 'interrupted',
+      } },
+    };
+    await act(async () => { requireRoot().render(renderChatZone()); });
+    const footer = requireContainer().querySelector('[data-testid="tool-approval-footer"]');
+    expect(footer?.textContent).toContain('interrupted');
+    expect(footer?.textContent).not.toContain('Allow once');
+    expect(footer?.textContent).not.toContain('Allow for this conversation');
+    const buttons = Array.from(footer?.querySelectorAll('button') ?? []);
+    await act(async () => {
+      buttons.find((button) => button.textContent?.includes('Resume with a new turn'))?.click();
+      buttons.find((button) => button.textContent?.includes('Dismiss'))?.click();
+    });
+    expect(context.chatState.approvePendingToolApprovalOnce).toHaveBeenCalledWith('conv-1');
+    expect(context.chatState.denyPendingToolApproval).toHaveBeenCalledWith('conv-1', undefined);
+    expect(requireContainer().querySelector('[data-testid="tool-approval-deny-reason"]')).toBeNull();
+  });
+
+  it('hides interrupted approval actions in an archived conversation', async () => {
+    context.chatState = {
+      ...context.chatState,
+      pendingToolApprovalByConversationId: { 'conv-1': {
+        conversationId: 'conv-1', assistantMessageId: 'msg-assistant-1', toolCallId: 'old-call',
+        toolId: 'terminal_run', actionGroup: 'escape', riskLevel: 'strict', summary: 'terminal_run',
+        rememberKey: '', recoveryState: 'interrupted',
+      } },
+    };
+    useConversationArchiveStore.getState().replaceArchivedConversationIds(['conv-1']);
+    await act(async () => { requireRoot().render(renderChatZone()); });
+    expect(requireContainer().querySelector('[data-testid="tool-approval-footer"]')).toBeNull();
+    expect(context.chatState.approvePendingToolApprovalOnce).not.toHaveBeenCalled();
+  });
+
+  it('explains preserved recovery data and lets the user close the warning', async () => {
+    context.chatState = { ...context.chatState, toolApprovalRecoveryError: 'Saved tool approvals could not be restored: invalid recovery data.' };
+    await act(async () => { requireRoot().render(renderChatZone()); });
+    expect(requireContainer().textContent).toContain('Their data has been kept');
+    expect(requireContainer().textContent).not.toContain('Review the details, then try again');
+    const close = Array.from(requireContainer().querySelectorAll('button')).find((button) => button.textContent === 'Close');
+    expect(close).toBeDefined();
+    await act(async () => { close?.click(); });
+    expect(context.chatState.dismissToolApprovalRecoveryError).toHaveBeenCalledTimes(1);
+    expect(context.chatState.clearLastError).not.toHaveBeenCalled();
+    expect(requireContainer().querySelector('[data-testid="composer-editor"]')).not.toBeNull();
   });
 
   it('forwards tool approval actions to the chat store', async () => {

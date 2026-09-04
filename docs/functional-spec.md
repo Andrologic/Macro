@@ -754,6 +754,17 @@ Pendant l'exécution d'une tâche, l'IA peut :
 - lancer un build
 - préparer des changements pour review
 
+### Approbations interrompues
+
+Une demande d'approbation d'outil survit au redémarrage comme demande interrompue.
+Le footer propose de reprendre dans un nouveau tour ou d'ignorer la demande.
+La reprise recharge le contexte actuel et applique la politique d'outils courante.
+Elle ne vaut pas approbation de l'ancienne commande et ne restaure aucun droit de
+session. L'agent doit vérifier les effets déjà produits avant de répéter une action.
+La demande initiale reste consultable dans l'historique. Si le nouveau tour échoue
+avant tout envoi, la demande reste disponible. Le refus, l'arrêt, la suppression,
+l'archivage et la fin de tâche invalident l'attente.
+
 ### 14.4 Review humaine
 
 Une review humaine est obligatoire à la fin de chaque tâche.

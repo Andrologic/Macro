@@ -1066,6 +1066,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     hydrationStatus,
     restoreStatus,
     lastError,
+    toolApprovalRecoveryError,
+    dismissToolApprovalRecoveryError,
     stopStreaming,
     sendMessage,
     submitDuringActiveTurn = async () => 'steered' as const,
@@ -1125,6 +1127,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     hydrationStatus: state.hydrationStatus,
     restoreStatus: state.restoreStatus,
     lastError: state.lastError,
+    toolApprovalRecoveryError: state.toolApprovalRecoveryError,
+    dismissToolApprovalRecoveryError: state.dismissToolApprovalRecoveryError,
     stopStreaming: state.stopStreaming,
     sendMessage: state.sendMessage,
     submitDuringActiveTurn: state.submitDuringActiveTurn,
@@ -3797,6 +3801,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         {(showManualDraftComposerNotice ||
           (selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0) ||
           composerError ||
+          toolApprovalRecoveryError ||
           showSkillNativeToolWarning ||
           isSelectedConversationArchived) && (
           <ChatFloatingNoticeStack>
@@ -3812,6 +3817,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       )
                     : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
                 })}
+              />
+            )}
+
+            {toolApprovalRecoveryError && (
+              <ActionableErrorCallout
+                className="shadow-lg shadow-black/15 backdrop-blur"
+                compact
+                presentation={{
+                  ...presentServiceError(toolApprovalRecoveryError, {
+                    fallbackBody: t('chat.toolApprovalRecoveryWarning', 'Some saved tool requests could not be restored. Their data has been kept. You can close this notice and continue chatting.'),
+                  }),
+                  severity: 'warning',
+                  nextStep: null,
+                }}
+                actionLabel={t('common.close', 'Close')}
+                onAction={dismissToolApprovalRecoveryError}
               />
             )}
 
@@ -4006,7 +4027,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             )}
 
-            {activePendingToolApproval ? (
+            {activePendingToolApproval && !isSelectedConversationArchived ? (
               <Suspense fallback={null}>
                 <ToolApprovalFooter
                   pendingApproval={activePendingToolApproval}
