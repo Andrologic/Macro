@@ -35,7 +35,11 @@ pub mod remote_ui;
 /// ```
 pub fn init() -> TauriPlugin<Wry> {
     Builder::new("remote-ui")
+        .invoke_handler(tauri::generate_handler![
+            remote_ui::plugin_ext::complete_rpc
+        ])
         .setup(|app, api| {
+            app.manage(remote_ui::plugin_ext::PendingRpcs::default());
             let remote_ui = remote_ui::init(app, api)?;
             app.manage(remote_ui);
             Ok(())
