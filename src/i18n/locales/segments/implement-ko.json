@@ -1,4 +1,9 @@
 {
+  "statusAttention": "처리 필요",
+  "taskNextActionOpenApproval": "다음: 승인 요청 열기",
+  "taskNextActionFinalizePlan": "다음: 계획 완료",
+  "taskNextActionAcceptRepository": "다음: {{repository}}의 변경 사항 수락",
+  "taskNextActionOpenReview": "다음: 검토 열기",
   "tasks": "작업",
   "searchTasks": "작업 검색...",
   "noSearchResults": "검색과 일치하는 작업이 없습니다.",
@@ -220,6 +225,8 @@
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "수동 기능을 생성하지 못했습니다.",
   "taskValidationProgress": "{{resolved}}/{{total}}해결된 하위 프로젝트",
+  "repositoryCountInlineSingle": "{{count}}관련된 저장소",
+  "taskValidationProgressSingle": "{{resolved}}/{{total}}해결된 하위 프로젝트",
   "repositoryCountInline": "{{count}}관련된 저장소",
   "taskCommandsModalDescription": "{{project}}의 각 프로젝트마다 하나의 명령을 정의하세요. 이 명령은 모든 작업에서 재사용됩니다.",
   "taskCommandConfigured": "설정됨",

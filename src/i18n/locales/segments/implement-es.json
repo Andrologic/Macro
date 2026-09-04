@@ -1,4 +1,9 @@
 {
+  "statusAttention": "Por atender",
+  "taskNextActionOpenApproval": "Siguiente: abrir la solicitud de aprobación",
+  "taskNextActionFinalizePlan": "Siguiente: finalizar el plan",
+  "taskNextActionAcceptRepository": "Siguiente: aceptar los cambios en {{repository}}",
+  "taskNextActionOpenReview": "Siguiente: abrir la revisión",
   "tasks": "Tareas",
   "searchTasks": "Buscar tareas...",
   "noSearchResults": "Ninguna tarea coincide con esta búsqueda.",
@@ -220,6 +225,8 @@
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "No se pudo crear la función manual.",
   "taskValidationProgress": "{{resolved}}/{{total}} subproyectos resueltos",
+  "repositoryCountInlineSingle": "{{count}} repositorio involucrado",
+  "taskValidationProgressSingle": "{{resolved}}/{{total}} subproyecto resuelto",
   "repositoryCountInline": "{{count}} repositorios involucrados",
   "taskCommandsModalDescription": "Define un comando por proyecto para {{project}}. Estos comandos se reutilizarán en todas las tareas.",
   "taskCommandConfigured": "Configurado",

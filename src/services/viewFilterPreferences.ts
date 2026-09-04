@@ -1,6 +1,7 @@
 export const ALL_PROJECTS_FILTER = '__all_projects__';
 export const TASK_QUEUE_STATUS_FILTERS = [
   'all',
+  'attention',
   'ready',
   'in_progress',
   'waiting',

@@ -589,6 +589,20 @@ Le frontend utilise aussi de la persistance locale légère pour :
 - certains fallback de plans
 - des données temporaires de pièces jointes
 
+La file Implement dérive sa supervision dans `taskQueueAttention` à partir du
+catalogue de tâches, des liens durables vers les conversations, des
+questionnaires et de `pendingToolApprovalByConversationId`. Le registre inclut
+les approbations restaurées ; la file n'interprète pas leur stratégie de reprise.
+Le classement reste distinct du statut durable de la tâche. Une demande active
+prime sur le streaming dans l'indicateur et le compteur d'attente ; un statut
+`AwaitingResponse` obsolète ne prime pas sur une exécution réelle. Une réponse
+après le dernier questionnaire retire aussi cette attente du groupe et de
+l’indicateur. Le chargement de messages sans cette preuve conserve l’attente
+durable. La file s’abonne à la signature des demandes, sans réagir aux fragments
+de texte ordinaires. Le filtre
+`attention` partage la persistance du filtre de statut. Aucun index d'attention
+ni résumé de review supplémentaire n'est persisté.
+
 Ces filtres de liste utilisent des objets versionnés dans `state.json`. Le
 frontend normalise chaque valeur hydratée et revient aux valeurs par défaut
 pour une version inconnue. Les recherches textuelles, les sélections multiples
