@@ -497,6 +497,127 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Blocked task');
   });
 
+  it('keeps reply-required, blocked and failed tasks in separate filter groups', async () => {
+    seedTasks([
+      makeTask('waiting-task', 'AwaitingResponse', { title: 'Reply required task' }),
+      makeTask('blocked-task', 'Blocked', { title: 'Actually blocked task', is_ready: false }),
+      makeTask('blocked-in-progress', 'InProgress', {
+        title: 'Dependency blocked task',
+        is_blocked: true,
+        is_ready: false,
+      }),
+      makeTask('active-task', 'InProgress', { title: 'Active task' }),
+      makeTask('failed-task', 'Failed', { title: 'Failed task', is_ready: false }),
+      makeTask('merge-blocked-task', 'AwaitingResponse', {
+        title: 'Merge blocked task',
+        is_ready: false,
+      }),
+      makeTask('merge-failed-task', 'AwaitingResponse', {
+        title: 'Merge failed task',
+        is_ready: false,
+      }),
+      makeTask('legacy-task', 'Paused' as TaskStatus, {
+        title: 'Legacy status task',
+      }),
+      makeTask('completed-blocked-task', 'Completed', {
+        title: 'Reblocked completed task',
+        is_blocked: true,
+        is_ready: false,
+      }),
+    ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      mergeWorkflowRuntimeByTaskId: {
+        'merge-blocked-task': {
+          taskId: 'merge-blocked-task',
+          kind: 'task_completion',
+          phase: 'blocked',
+          taskStatus: 'AwaitingResponse',
+          review: {
+            taskId: 'merge-blocked-task',
+            title: 'Merge blocked task',
+            taskSource: 'standalone',
+            planId: null,
+            planTitle: null,
+            targetBranch: 'develop',
+          },
+          repositories: [],
+          blockedRepositories: [],
+          message: 'Resolve merge blockers.',
+          lastLoadedAt: '2026-09-04T10:00:00.000Z',
+        },
+        'merge-failed-task': {
+          taskId: 'merge-failed-task',
+          kind: 'task_completion',
+          phase: 'failed',
+          taskStatus: 'AwaitingResponse',
+          review: {
+            taskId: 'merge-failed-task',
+            title: 'Merge failed task',
+            taskSource: 'standalone',
+            planId: null,
+            planTitle: null,
+            targetBranch: 'develop',
+          },
+          repositories: [],
+          blockedRepositories: [],
+          message: 'Retry merge.',
+          lastLoadedAt: '2026-09-04T10:00:00.000Z',
+        },
+      },
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const needsReplyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Needs reply'));
+    const blockedFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Blocked'));
+    const inProgressFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('In progress'));
+    const failedFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Failed'));
+
+    expect(needsReplyFilter?.textContent).toContain('1');
+    expect(blockedFilter?.textContent).toContain('4');
+    expect(inProgressFilter?.textContent).toContain('1');
+    expect(failedFilter?.textContent).toContain('2');
+    expect(getSectionSummaries()).toContainEqual({ title: 'Blocked tasks', count: '4' });
+    expect(getSectionSummaries()).toContainEqual({ title: 'Failed tasks', count: '2' });
+    expect(getSectionSummaries().some((section) => section.title === 'Completed tasks')).toBe(false);
+    expect(document.body.textContent).toContain('Legacy status task');
+
+    await act(async () => {
+      blockedFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Actually blocked task');
+    expect(document.body.textContent).toContain('Dependency blocked task');
+    expect(document.body.textContent).toContain('Merge blocked task');
+    expect(document.body.textContent).toContain('Reblocked completed task');
+    expect(document.body.textContent).not.toContain('Reply required task');
+    expect(document.body.textContent).not.toContain('Active task');
+    expect(document.body.textContent).not.toContain('Failed task');
+    expect(document.body.textContent).not.toContain('Merge failed task');
+    expect(document.body.textContent).not.toContain('Legacy status task');
+
+    await act(async () => {
+      failedFilter?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Failed task');
+    expect(document.body.textContent).toContain('Merge failed task');
+    expect(document.body.textContent).not.toContain('Reply required task');
+    expect(document.body.textContent).not.toContain('Merge blocked task');
+    expect(document.body.textContent).not.toContain('Reblocked completed task');
+    expect(document.body.textContent).not.toContain('Legacy status task');
+  });
+
   it('searches within the active task filters and activates the selected result', async () => {
     const activateTask = mock(async () => undefined);
     seedTasks([
@@ -1358,6 +1479,26 @@ describe('TaskQueue', () => {
     ).not.toBeNull();
   });
 
+  it('classifies a streamed task as in progress ahead of a stale waiting status', async () => {
+    seedStores('AwaitingResponse', { isStreaming: true });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const needsReplyFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Needs reply'));
+    const inProgressFilter = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('In progress'));
+
+    expect(needsReplyFilter?.textContent).toContain('0');
+    expect(inProgressFilter?.textContent).toContain('1');
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="running"]')
+    ).not.toBeNull();
+  });
+
   it('renders a running indicator while the task conversation is preparing', async () => {
     seedStores('InProgress', { runtimePhase: 'preparing' });
 
@@ -1704,7 +1845,6 @@ describe('TaskQueue', () => {
         },
       ],
     });
-
     await act(async () => {
       root?.render(<TaskQueueComponent />);
       await flushRender();
@@ -1715,6 +1855,75 @@ describe('TaskQueue', () => {
       { key: 'standalone', text: 'Standalone' },
     ]);
     expect(document.body.textContent).not.toContain('Secondary Project');
+  });
+
+  it('prioritizes dependency blockers in the next action for a waiting multi-project task', async () => {
+    seedTasks([
+      makeTask('blocked-multi-project', 'AwaitingResponse', {
+        title: 'Blocked multi-project task',
+        project_ids: ['project-1', 'project-2'],
+        is_blocked: true,
+        blocked_by: ['Upstream task'],
+        blocked_by_task_ids: ['upstream-task'],
+        execution_targets: [
+          {
+            projectId: 'project-1',
+            branchName: 'feature/blocked-multi-project',
+            worktreeKey: 'project-1::feature/blocked-multi-project',
+          },
+          {
+            projectId: 'project-2',
+            branchName: 'feature/blocked-multi-project',
+            worktreeKey: 'project-2::feature/blocked-multi-project',
+          },
+        ],
+      }),
+    ]);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [
+            makeProject('project-1', '/tmp/project-1', 'Primary Project'),
+            makeProject('project-2', '/tmp/project-2', 'Secondary Project'),
+          ],
+        },
+      ],
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      mergeWorkflowRuntimeByTaskId: {
+        'blocked-multi-project': {
+          taskId: 'blocked-multi-project',
+          kind: 'task_completion',
+          phase: 'blocked',
+          taskStatus: 'AwaitingResponse',
+          review: {
+            taskId: 'blocked-multi-project',
+            title: 'Blocked multi-project task',
+            taskSource: 'standalone',
+            planId: null,
+            planTitle: null,
+            targetBranch: 'develop',
+          },
+          repositories: [],
+          blockedRepositories: [],
+          message: 'Resolve dependencies first.',
+          lastLoadedAt: '2026-09-04T10:00:00.000Z',
+        },
+      },
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    expect(getTaskCardNextAction()?.textContent).toContain('Next: unblock task dependencies');
+    expect(getTaskCardNextAction()?.textContent).not.toContain('answer the pending request');
   });
 
   it('renders the synthetic plan finalization task in the operational status summary', async () => {

@@ -4,9 +4,11 @@ import {
   resolvePlanNodeStatusIndicatorState,
   resolveRunningConversationIds,
   resolveRunningTaskIds,
+  resolveTaskQueueStatusGroup,
   resolveTaskStatusIndicatorState,
 } from './taskStatusPresentation';
 import type { MergeWorkflowRuntimeState } from './mergeWorkflow';
+import type { TaskStatus } from '../types';
 
 describe('taskStatusPresentation', () => {
   it('resolves idle prompt for pending tasks without streaming', () => {
@@ -20,6 +22,70 @@ describe('taskStatusPresentation', () => {
   it('resolves awaiting response to a pulsing state', () => {
     expect(resolveTaskStatusIndicatorState('AwaitingResponse', false)).toBe(
       'awaiting_response'
+    );
+  });
+
+  it('lets a structured dependency blocker override a stale waiting status', () => {
+    expect(
+      resolveTaskStatusIndicatorState('AwaitingResponse', false, null, null, true)
+    ).toBe('blocked');
+    expect(
+      resolveTaskStatusIndicatorState('AwaitingResponse', true, null, null, true)
+    ).toBe('running');
+    expect(
+      resolveTaskStatusIndicatorState(
+        'AwaitingResponse',
+        false,
+        null,
+        { phase: 'partial' },
+        true
+      )
+    ).toBe('blocked');
+  });
+
+  it('projects structured dependency blockers on plan nodes', () => {
+    expect(
+      resolvePlanNodeStatusIndicatorState({
+        nodeStatus: 'in-progress',
+        taskStatus: 'InReview',
+        isAssistantRunning: false,
+        isDependencyBlocked: true,
+      })
+    ).toBe('blocked');
+  });
+
+  it('keeps waiting, blocked and failed queue groups disjoint', () => {
+    expect(resolveTaskQueueStatusGroup('AwaitingResponse')).toBe('waiting');
+    expect(resolveTaskQueueStatusGroup('Blocked')).toBe('blocked');
+    expect(resolveTaskQueueStatusGroup('Failed')).toBe('failed');
+    expect(resolveTaskQueueStatusGroup('AwaitingResponse', true)).toBe('blocked');
+    expect(
+      resolveTaskQueueStatusGroup('AwaitingResponse', false, { phase: 'blocked' })
+    ).toBe('blocked');
+    expect(
+      resolveTaskQueueStatusGroup('AwaitingResponse', false, { phase: 'partial' })
+    ).toBe('blocked');
+    expect(
+      resolveTaskQueueStatusGroup('AwaitingResponse', false, { phase: 'failed' })
+    ).toBe('failed');
+    expect(
+      resolveTaskQueueStatusGroup('AwaitingResponse', false, { phase: 'merging' })
+    ).toBe('in_progress');
+    expect(
+      resolveTaskQueueStatusGroup(
+        'AwaitingResponse',
+        true,
+        { phase: 'blocked' },
+        true
+      )
+    ).toBe('in_progress');
+  });
+
+  it('leaves unknown and completed statuses outside actionable queue groups', () => {
+    expect(resolveTaskQueueStatusGroup('Paused')).toBe('other');
+    expect(resolveTaskQueueStatusGroup('Completed')).toBe('other');
+    expect(resolveTaskStatusIndicatorState('Paused' as TaskStatus, false)).toBe(
+      'idle_prompt'
     );
   });
 
