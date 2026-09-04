@@ -16,7 +16,7 @@ use hyper_util::rt::TokioIo;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
-use tauri::{plugin::PluginApi, AppHandle, Error, EventId, Listener, Manager, Runtime};
+use tauri::{plugin::PluginApi, AppHandle, Error, Manager, Runtime};
 use tokio::sync::{Mutex, RwLock};
 
 /// Initialize the remote UI plugin state for Tauri.
@@ -62,7 +62,6 @@ impl RemoteUi {
         payload: &str,
         session: Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>,
         session_id: u64,
-        pending_listeners: Arc<std::sync::Mutex<HashMap<String, EventId>>>,
     ) -> Result<(), Error> {
         let ws_payload: WsPayload = serde_json::from_str(payload).map_err(|err| {
             Error::PluginInitialization(
@@ -74,37 +73,6 @@ impl RemoteUi {
         let window = self.app.get_webview_window(&window_label).ok_or_else(|| {
             Error::AssetNotFound(format!("Webview window '{window_label}' not found",))
         })?;
-        let req_unique_id = rpc_result_event_name(session_id, ws_payload.id);
-        let listener_key = req_unique_id.clone();
-        let listeners_for_handler = pending_listeners.clone();
-        let listener_id = self
-            .app
-            .app_handle()
-            .once_any(&req_unique_id, move |handler| {
-                listeners_for_handler
-                    .lock()
-                    .expect("remote UI listener registry mutex poisoned")
-                    .remove(&listener_key);
-                // Spawn a new task to send the message asynchronously
-                let payload = handler.payload().to_string();
-                let id = ws_payload.id;
-                tauri::async_runtime::spawn(async move {
-                    if let Err(err) = session
-                        .lock()
-                        .await
-                        .send(Message::text(
-                            json!({"id":id,"payload":payload}).to_string(),
-                        ))
-                        .await
-                    {
-                        log::error!("WS send message failed: {err}");
-                    }
-                });
-            });
-        pending_listeners
-            .lock()
-            .expect("remote UI listener registry mutex poisoned")
-            .insert(req_unique_id.clone(), listener_id);
         // JSON-encode every interpolated input so untrusted strings from the
         // socket cannot escape the JS string context inside `window.eval`.
         let cmd_json = serde_json::to_string(&ws_payload.cmd).map_err(|err| {
@@ -125,36 +93,38 @@ impl RemoteUi {
                 format!("Failed to serialize options: {err}"),
             )
         })?;
-        let event_json = serde_json::to_string(&req_unique_id).map_err(|err| {
-            Error::PluginInitialization(
-                "tauri-remote-ui".to_owned(),
-                format!("Failed to serialize event id: {err}"),
-            )
-        })?;
         let js = format!(
             r#"
             window.__TAURI_INTERNALS__.invoke({cmd}, {args}, {opts})
                 .then((res) => {{
-                    window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {{
-                        event: {ev},
-                        payload: {{ status: "{success}", payload: res }}
+                    return window.__TAURI_INTERNALS__.invoke("plugin:remote-ui|complete_rpc", {{
+                        sessionId: "{session_id}",
+                        id: {id},
+                        status: "{success}", payload: res
                     }});
-                }})
-                .catch((err) => {{
-                    window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {{
-                        event: {ev},
-                        payload: {{ status: "{error}", payload: err }}
+                }}, (err) => {{
+                    return window.__TAURI_INTERNALS__.invoke("plugin:remote-ui|complete_rpc", {{
+                        sessionId: "{session_id}",
+                        id: {id},
+                        status: "{error}", payload: err
                     }});
-                }});
+                }}).catch((err) => console.error("Remote UI RPC completion failed", err));
             "#,
             cmd = cmd_json,
             args = args_json,
             opts = opts_json,
-            ev = event_json,
+            session_id = session_id,
+            id = ws_payload.id,
             success = RpcStatus::Success.as_str(),
             error = RpcStatus::Error.as_str(),
         );
-        window.eval(js)?;
+        let pending = self.app.state::<PendingRpcs>();
+        let key = (session_id.to_string(), ws_payload.id);
+        pending.insert(key.clone(), session)?;
+        if let Err(err) = window.eval(js) {
+            pending.take(&key);
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -185,17 +155,141 @@ impl RemoteUi {
     }
 }
 
-pub(crate) fn rpc_result_event_name(session_id: u64, request_id: usize) -> String {
-    format!("remote-ui::result::{session_id}::{request_id}")
+type WsSender = Arc<Mutex<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>;
+pub(crate) type PendingRpcs = RpcRegistry<WsSender>;
+
+// Registration is synchronous: completion never depends on Tauri's pending
+// event-listener queue. Taking a recipient also consumes the request atomically.
+#[derive(Debug)]
+pub(crate) struct RpcRegistry<T>(std::sync::Mutex<HashMap<(String, usize), T>>);
+
+impl<T> Default for RpcRegistry<T> {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(HashMap::new()))
+    }
+}
+
+impl<T> RpcRegistry<T> {
+    fn insert(&self, key: (String, usize), recipient: T) -> Result<(), Error> {
+        use std::collections::hash_map::Entry;
+        match self
+            .0
+            .lock()
+            .expect("RPC registry mutex poisoned")
+            .entry(key)
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(recipient);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Error::PluginInitialization(
+                "tauri-remote-ui".into(),
+                "Duplicate pending RPC id".into(),
+            )),
+        }
+    }
+
+    fn take(&self, key: &(String, usize)) -> Option<T> {
+        self.0
+            .lock()
+            .expect("RPC registry mutex poisoned")
+            .remove(key)
+    }
+
+    pub(crate) fn remove_session(&self, session_id: u64) {
+        let session_id = session_id.to_string();
+        self.0
+            .lock()
+            .expect("RPC registry mutex poisoned")
+            .retain(|(session, _), _| session != &session_id);
+    }
+}
+
+impl PendingRpcs {
+    pub(crate) fn remove_recipient(&self, recipient: &WsSender) {
+        self.0
+            .lock()
+            .expect("RPC registry mutex poisoned")
+            .retain(|_, sender| !Arc::ptr_eq(sender, recipient));
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn complete_rpc(
+    webview: tauri::Webview,
+    remote_ui: tauri::State<'_, Arc<RwLock<RemoteUi>>>,
+    pending: tauri::State<'_, PendingRpcs>,
+    session_id: String,
+    id: usize,
+    status: RpcStatus,
+    payload: Option<serde_json::Value>,
+) -> Result<(), String> {
+    if webview.label() != remote_ui.read().await.rpc_server.primary_window_label() {
+        return Err("RPC completion must originate from the primary host webview".into());
+    }
+    if let Some(session) = pending.take(&(session_id, id)) {
+        // Preserve the existing wire envelope: payload is a JSON string.
+        let payload = json!({"status": status, "payload": payload}).to_string();
+        session
+            .lock()
+            .await
+            .send(Message::text(
+                json!({"id": id, "payload": payload}).to_string(),
+            ))
+            .await
+            .map_err(|err| format!("WS send message failed: {err}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::rpc_result_event_name;
+    use super::RpcRegistry;
 
     #[test]
-    fn response_events_are_namespaced_by_websocket_session() {
-        assert_ne!(rpc_result_event_name(1, 7), rpc_result_event_name(2, 7));
-        assert_eq!(rpc_result_event_name(3, 9), "remote-ui::result::3::9");
+    fn immediate_completions_are_consumed_once_and_isolated_by_session() {
+        let pending = RpcRegistry::default();
+        for id in 0..1000 {
+            pending.insert(("1".into(), id), "first").unwrap();
+            pending.insert(("2".into(), id), "second").unwrap();
+            assert_eq!(pending.take(&("1".into(), id)), Some("first"));
+            assert_eq!(pending.take(&("1".into(), id)), None);
+            assert_eq!(pending.take(&("2".into(), id)), Some("second"));
+        }
+    }
+
+    #[test]
+    fn concurrent_completions_deliver_to_only_one_recipient() {
+        let pending = std::sync::Arc::new(RpcRegistry::default());
+        pending.insert(("1".into(), 7), 42).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let pending = pending.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    pending.take(&("1".into(), 7))
+                })
+            })
+            .collect();
+        let results: Vec<_> = workers
+            .into_iter()
+            .filter_map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results, vec![42]);
+    }
+
+    #[test]
+    fn disconnect_and_eval_failure_remove_only_their_requests() {
+        let pending = RpcRegistry::default();
+        pending.insert(("1".into(), 1), 11).unwrap();
+        pending.insert(("1".into(), 2), 12).unwrap();
+        pending.insert(("2".into(), 1), 21).unwrap();
+        assert!(pending.insert(("2".into(), 1), 99).is_err());
+        assert_eq!(pending.take(&("1".into(), 1)), Some(11));
+        pending.remove_session(1);
+        assert_eq!(pending.take(&("1".into(), 2)), None);
+        assert_eq!(pending.take(&("2".into(), 1)), Some(21));
     }
 }

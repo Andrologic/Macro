@@ -3,5 +3,5 @@
 // See LICENSE file in the root directory.
 
 fn main() {
-    tauri_plugin::Builder::new(&[]).build();
+    tauri_plugin::Builder::new(&["complete_rpc"]).build();
 }
