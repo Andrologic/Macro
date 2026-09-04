@@ -643,6 +643,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedTaskId,
     standaloneProjects,
     projectGroups,
+    openProjectNavigator,
     openProjectGitFlowModal,
     setSelectedProject,
     setSelectedTask,
@@ -652,6 +653,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedTaskId: state.selectedTaskId,
     standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
+    openProjectNavigator: state.openProjectNavigator,
     openProjectGitFlowModal: state.openProjectGitFlowModal,
     setSelectedProject: state.setSelectedProject,
     setSelectedTask: state.setSelectedTask,
@@ -2070,6 +2072,12 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                       )
                     : t('implement.createStandaloneTask', 'Créer une tâche indépendante')
             }
+          />
+          <PanelHeaderIconButton
+            icon="settings"
+            label={t('implement.manageProjects', 'Manage projects')}
+            onClick={openProjectNavigator}
+            data-tour-id="implement-manage-projects"
           />
             </>
           )}

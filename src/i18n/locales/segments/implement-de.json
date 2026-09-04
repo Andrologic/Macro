@@ -247,6 +247,7 @@
   "hideArchived": "Archivierte Aufgaben ausblenden",
   "showArchived": "Archivierte Aufgaben anzeigen",
   "archives": "Archiv",
+  "manageProjects": "Projekte verwalten",
   "taskCommandsDraftUnsupported": "Befehle sind nicht verfügbar, solange diese Aufgabe noch ein Entwurf ist.",
   "taskCommandsArchivedUnsupported": "Befehle sind für archivierte Aufgaben nicht verfügbar.",
   "completedTasks": "Abgeschlossene Aufgaben",

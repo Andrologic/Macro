@@ -247,6 +247,7 @@
   "hideArchived": "アーカイブ済みタスクを隠す",
   "showArchived": "アーカイブ済みタスクを表示",
   "archives": "アーカイブ",
+  "manageProjects": "プロジェクトを管理",
   "taskCommandsDraftUnsupported": "このタスクがまだ下書きの間はコマンドを利用できません。",
   "taskCommandsArchivedUnsupported": "アーカイブ済みタスクではコマンドを利用できません。",
   "completedTasks": "完了したタスク",
