@@ -2069,19 +2069,38 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     architectPlanSelectorState.planCount === 0 &&
     architectPlanSelectorState.canCreate
       ? 'create'
-      : 'select';
-  const isMissingArchitectPlanActionLoading =
-    architectPlanSelectorState?.status === 'loading';
-  const missingArchitectPlanActionLabel = isMissingArchitectPlanActionLoading
+      : architectPlanSelectorState?.status === 'ready' &&
+          architectPlanSelectorState.planCount === 0 &&
+          !architectPlanSelectorState.canCreate
+        ? 'configure'
+        : 'select';
+  const isMissingArchitectPlanActionPending =
+    !architectPlanSelectorState || architectPlanSelectorState.status === 'loading';
+  const isMissingArchitectPlanActionUnavailable =
+    architectPlanSelectorState?.status === 'error';
+  const isMissingArchitectPlanActionDisabled =
+    architectPlanSelectorState?.status !== 'ready';
+  const missingArchitectPlanActionLabel = isMissingArchitectPlanActionPending
     ? t('architect.planSelector.loadingShort', 'Loading')
+    : isMissingArchitectPlanActionUnavailable
+      ? t('architect.planSelector.unavailableShort', 'Unavailable')
     : missingArchitectPlanActionKind === 'create'
       ? t('architect.createPlanAction', 'Create a plan')
+      : missingArchitectPlanActionKind === 'configure'
+        ? t('architect.projectNavigator.manageProjects', 'Manage projects')
       : t('architect.selectPlanAction', 'Select a plan');
-  const missingArchitectPlanMessage = missingArchitectPlanActionKind === 'create'
+  const missingArchitectPlanMessage = isMissingArchitectPlanActionUnavailable
+    ? t('architect.projectNavigator.loadError', 'Unable to load plans.')
+    : missingArchitectPlanActionKind === 'create'
     ? t(
         'architect.createFirstPlanToStart',
         'Create your first plan to start architecting.',
       )
+    : missingArchitectPlanActionKind === 'configure'
+      ? t(
+          'architect.configureProjectToCreatePlan',
+          'Make a project editable before creating a plan.',
+        )
     : architectPlanSelectorState?.status === 'ready' && architectPlanSelectorState.canSelect
       ? t(
           'architect.selectExistingPlanToStart',
@@ -3569,25 +3588,29 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   ref={missingArchitectPlanActionRef}
                   type="button"
                   onClick={handleMissingArchitectPlanAction}
-                  disabled={isMissingArchitectPlanActionLoading}
+                  disabled={isMissingArchitectPlanActionDisabled}
                   data-tour-id="architect-empty-plan-action"
                   className={cn(
                     'inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors',
-                    isMissingArchitectPlanActionLoading
+                    isMissingArchitectPlanActionPending
                       ? 'border-border bg-muted text-muted-foreground cursor-wait'
+                      : isMissingArchitectPlanActionDisabled
+                        ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                       : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
                   )}
                 >
                   <Icon
                     name={
-                      isMissingArchitectPlanActionLoading
+                      isMissingArchitectPlanActionPending
                         ? 'loader'
                         : missingArchitectPlanActionKind === 'create'
                           ? 'plus'
+                          : missingArchitectPlanActionKind === 'configure'
+                            ? 'settings'
                           : 'list'
                     }
                     size={14}
-                    className={cn(isMissingArchitectPlanActionLoading && 'animate-spin')}
+                    className={cn(isMissingArchitectPlanActionPending && 'animate-spin')}
                   />
                   {missingArchitectPlanActionLabel}
                 </button>

@@ -1515,6 +1515,7 @@
       "hideArchived": "보관된 항목 숨기기",
       "loading": "계획 로드 중...",
       "loadingShort": "로드 중",
+      "unavailableShort": "사용할 수 없음",
       "repairMetadata": "Repair metadata",
       "empty": "아직 계획이 없습니다.",
       "emptyOutsideScope": "@macro에 계획이 있지만 선택한 프로젝트와 일치하지 않습니다.",
@@ -1661,6 +1662,7 @@
     "selectPlanToStart": "설계를 시작하려면 플랜을 선택하거나 만드세요.",
     "createFirstPlanToStart": "설계를 시작하려면 첫 번째 플랜을 만드세요.",
     "selectExistingPlanToStart": "설계를 시작하려면 플랜을 선택하세요.",
+    "configureProjectToCreatePlan": "플랜을 만들기 전에 프로젝트를 편집 가능하게 설정하세요.",
     "createPlanAction": "계획 만들기",
     "selectPlanAction": "계획 선택",
     "noStrategyDiscussionDescription": "Architect와 계획을 논의하고 범위가 명확해지면 전략을 생성하세요."

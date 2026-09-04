@@ -1520,6 +1520,7 @@
       "hideArchived": "Ocultar archivado",
       "loading": "Cargando planos...",
       "loadingShort": "Cargando",
+      "unavailableShort": "No disponible",
       "repairMetadata": "Repair metadata",
       "empty": "Aún no hay planes.",
       "emptyOutsideScope": "Existen planes en @macro, pero no corresponden al proyecto seleccionado.",
@@ -1666,6 +1667,7 @@
     "selectPlanToStart": "Selecciona o crea un plan para empezar a diseñar.",
     "createFirstPlanToStart": "Crea tu primer plan para empezar a diseñar.",
     "selectExistingPlanToStart": "Selecciona un plan para empezar a diseñar.",
+    "configureProjectToCreatePlan": "Haz que un proyecto sea editable antes de crear un plan.",
     "createPlanAction": "Crear un plan",
     "selectPlanAction": "Seleccionar un plan",
     "noStrategyDiscussionDescription": "Habla del plan con Architect y genera la estrategia cuando el alcance esté claro."

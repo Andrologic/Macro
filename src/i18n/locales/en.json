@@ -1537,6 +1537,7 @@
       "hideArchived": "Hide archived",
       "loading": "Loading plans...",
       "loadingShort": "Loading",
+      "unavailableShort": "Unavailable",
       "repairMetadata": "Repair metadata",
       "empty": "No plans yet.",
       "emptyOutsideScope": "Plans exist in @macro but do not match the selected project.",
@@ -1683,6 +1684,7 @@
     "selectPlanToStart": "Select or create a plan to start architecting.",
     "createFirstPlanToStart": "Create your first plan to start architecting.",
     "selectExistingPlanToStart": "Select a plan to start architecting.",
+    "configureProjectToCreatePlan": "Make a project editable before creating a plan.",
     "createPlanAction": "Create a plan",
     "selectPlanAction": "Select a plan",
     "noStrategyDiscussionDescription": "Discuss the plan with Architect, then generate the strategy when the scope is clear."
