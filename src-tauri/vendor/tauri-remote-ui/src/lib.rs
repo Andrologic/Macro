@@ -34,7 +34,8 @@ pub mod remote_ui;
 /// let _plugin = tauri_remote_ui::init();
 /// ```
 pub fn init() -> TauriPlugin<Wry> {
-    Builder::new("remote-ui")
+    // The ACL build uses the crate name, stripping only a `tauri-plugin-` prefix.
+    Builder::new("tauri-remote-ui")
         .invoke_handler(tauri::generate_handler![
             remote_ui::plugin_ext::complete_rpc
         ])
