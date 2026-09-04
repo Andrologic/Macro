@@ -342,7 +342,7 @@
   "taskNextActionValidateRepository": "Suivant : valider {{repository}}",
   "taskNextActionValidateRepositories": "Suivant : valider et commit chaque projet",
   "taskNextActionValidateAllRepositories": "Suivant : valider et résoudre les projets restants",
-  "taskNextActionCommitRepository": "Suivant : s'engager {{repository}}",
+  "taskNextActionCommitRepository": "Suite : créer un commit pour {{repository}}",
   "taskNextActionCompleteTask": "Suivant : achèvement de la tâche",
   "taskNextActionCompleteWithoutCodeChanges": "Suivant : terminer sans modifications de code",
   "taskNextActionCompleted": "Tâche terminée sur les projets",
