@@ -32,6 +32,12 @@ and linked docs when a task needs detail.
 - For behavior changes, update or add focused tests near the affected code.
 - For UI changes, preserve Macro's dense desktop-app feel. Avoid marketing-page
   layout patterns inside the product shell.
+- For UI behavior or layout changes, visually validate the affected state when
+  it can be exercised locally. When that check needs real Tauri IPC or local app
+  data, follow `Browser UI with the Tauri runtime` in `DEVELOPMENT.md`: run
+  `bun run tauri:dev:browser`, inspect `http://127.0.0.1:1422/` with browser
+  automation, and verify the changed state. Use `bun run dev` when the
+  frontend-only runtime is sufficient.
 - Keep user-facing strings routed through the existing i18n patterns when the
   surrounding code already does so.
 - Never commit secrets, local provider keys, build artifacts, local databases,
@@ -54,6 +60,7 @@ Use the smallest validation set that proves the change.
 
 - Install dependencies: `bun install`.
 - Run the desktop app in development: `bun run tauri:dev`.
+- Run the Tauri backend with its UI in a local browser: `bun run tauri:dev:browser`.
 - Run the frontend dev server only: `bun run dev`.
 - Type-check TypeScript: `bun run typecheck`.
 - Lint TypeScript and React code: `bun run lint`.
