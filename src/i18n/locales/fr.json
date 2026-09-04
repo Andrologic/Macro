@@ -2059,6 +2059,15 @@
     "remove": "Supprimer la notification",
     "actionRequired": "Action requise",
     "actionError": "Une erreur est survenue",
+    "workflow": {
+      "openAction": "Ouvrir",
+      "questionnaireTitle": "Question en attente",
+      "questionnaireBody": "{{conversation}} attend votre réponse : {{prompt}}",
+      "approvalTitle": "Approbation requise",
+      "approvalBody": "{{conversation}} attend votre approbation : {{summary}}",
+      "reviewTitle": "Review prête",
+      "reviewBody": "{{task}} est prête pour votre review."
+    },
     "emptyTitle": "Aucune notification",
     "emptySubtitle": "Les notifications d’informations, d’avertissements et d’erreurs apparaissent ici.",
     "allRead": "Tous rattrapés",

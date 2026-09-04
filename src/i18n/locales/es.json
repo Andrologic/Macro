@@ -2043,6 +2043,15 @@
     "remove": "Eliminar notificación",
     "actionRequired": "Acción requerida",
     "actionError": "Se produjo un error",
+    "workflow": {
+      "openAction": "Abrir",
+      "questionnaireTitle": "Pregunta pendiente",
+      "questionnaireBody": "{{conversation}} espera tu respuesta: {{prompt}}",
+      "approvalTitle": "Aprobación requerida",
+      "approvalBody": "{{conversation}} necesita tu aprobación: {{summary}}",
+      "reviewTitle": "Revisión lista",
+      "reviewBody": "{{task}} está lista para tu revisión."
+    },
     "emptyTitle": "Sin notificaciones",
     "emptySubtitle": "Aquí aparecen notificaciones de información, advertencias y errores.",
     "allRead": "todos atrapados",

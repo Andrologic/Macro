@@ -9,6 +9,7 @@ import { hasModePanel } from "./components/layout/modePanelLoaders";
 import { Footer } from "./components/layout/Footer";
 import { Toaster } from "./components/ui/Toaster";
 import { notify } from "./components/ui/toastService";
+import { WorkflowAttentionNotifications } from "./components/notifications/WorkflowAttentionNotifications";
 import { useAppStore } from "./stores/useAppStore";
 import { useConversationArchiveStore } from "./stores/useConversationArchiveStore";
 import { useViewFilterStore } from "./stores/useViewFilterStore";
@@ -526,6 +527,7 @@ const App: React.FC = () => {
       </Suspense>
 
       <Toaster />
+      <WorkflowAttentionNotifications />
 
       <Suspense fallback={null}>
         <OnboardingGuide />

@@ -2039,6 +2039,15 @@
     "remove": "Benachrichtigung entfernen",
     "actionRequired": "Aktion erforderlich",
     "actionError": "Ein Fehler ist aufgetreten",
+    "workflow": {
+      "openAction": "Öffnen",
+      "questionnaireTitle": "Frage wartet",
+      "questionnaireBody": "{{conversation}} wartet auf Ihre Antwort: {{prompt}}",
+      "approvalTitle": "Genehmigung erforderlich",
+      "approvalBody": "{{conversation}} benötigt Ihre Genehmigung: {{summary}}",
+      "reviewTitle": "Review bereit",
+      "reviewBody": "{{task}} ist zur Review bereit."
+    },
     "emptyTitle": "Keine Benachrichtigungen",
     "emptySubtitle": "Hier erscheinen Info-, Warn- und Fehlermeldungen.",
     "allRead": "Alles eingeholt",

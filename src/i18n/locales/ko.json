@@ -2038,6 +2038,15 @@
     "remove": "알림 제거",
     "actionRequired": "조치 필요",
     "actionError": "오류가 발생했습니다",
+    "workflow": {
+      "openAction": "열기",
+      "questionnaireTitle": "답변 대기 중인 질문",
+      "questionnaireBody": "{{conversation}}에서 답변을 기다리고 있습니다: {{prompt}}",
+      "approvalTitle": "승인 필요",
+      "approvalBody": "{{conversation}}에서 승인이 필요합니다: {{summary}}",
+      "reviewTitle": "리뷰 준비 완료",
+      "reviewBody": "{{task}} 리뷰 준비가 완료되었습니다."
+    },
     "emptyTitle": "알림 없음",
     "emptySubtitle": "정보, 경고, 오류 알림이 여기에 표시됩니다.",
     "allRead": "모두 따라잡았어",

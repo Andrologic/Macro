@@ -1050,6 +1050,10 @@ Les notifications doivent au minimum couvrir :
 
 Si le runtime ne supporte pas les notifications bureau, les modes bureau ne doivent pas être proposés et une configuration bureau déjà persistée doit retomber sur une notification in-app plutôt que perdre l'événement.
 
+La catégorie « besoin d'attention sur une tâche » couvre trois transitions : l'apparition d'un questionnaire sans réponse, l'apparition d'une demande d'approbation d'outil et le passage d'une tâche existante vers `InReview`. La clé de la notification combine le type de demande avec l'identifiant du message, de l'appel d'outil ou de la tâche. Une mise à jour du même état ne crée donc pas de doublon. L'hydratation d'un état déjà en attente, la résolution de la demande et une demande déjà affichée dans le contexte actif ne produisent pas de notification.
+
+L'action d'une notification de questionnaire ou d'approbation ouvre sa conversation et sa tâche lorsqu'elle en possède une. L'action d'une review ouvre la tâche dans le mode Implement et restaure sa conversation connue. Le système ne possède pas encore de route stable vers un dépôt ou un fichier précis de la review : la navigation s'arrête donc volontairement au contexte sûr de la tâche.
+
 ---
 
 ## 20. Cible future : kernel distant et continuité d'exécution

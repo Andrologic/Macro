@@ -2105,6 +2105,15 @@
     "remove": "Remove notification",
     "actionRequired": "Action required",
     "actionError": "An error occurred",
+    "workflow": {
+      "openAction": "Open",
+      "questionnaireTitle": "Question waiting",
+      "questionnaireBody": "{{conversation}} is waiting for your answer: {{prompt}}",
+      "approvalTitle": "Approval required",
+      "approvalBody": "{{conversation}} needs your approval: {{summary}}",
+      "reviewTitle": "Review ready",
+      "reviewBody": "{{task}} is ready for your review."
+    },
     "emptyTitle": "No notifications",
     "emptySubtitle": "Info, warning, and error notifications appear here.",
     "allRead": "All caught up",
