@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
+import { openWorkflowNotificationContext } from '../../services/openWorkflowNotificationContext';
 import type { TFunction } from 'i18next';
 import type { ChatMessage, Conversation, PendingToolApproval } from '../../types';
 import type { CatalogedImplementTask } from '../../services/implementTaskCatalog';
@@ -10,8 +12,8 @@ interface TestAppState {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   selectedTaskId: string | null;
-  standaloneProjects: unknown[];
-  projectGroups: unknown[];
+  standaloneProjects: Array<{ id: string }>;
+  projectGroups: Array<{ id: string; projects: Array<{ id: string }> }>;
   setMode: ReturnType<typeof mock>;
   setSelectedGroup: ReturnType<typeof mock>;
   setSelectedTask: ReturnType<typeof mock>;
@@ -21,6 +23,8 @@ interface TestAppState {
 }
 
 interface TestChatState {
+  hydrationStatus?: 'idle' | 'hydrating' | 'ready';
+  messageLoadStatusByConversationId?: Record<string, 'ready'>;
   messages: ChatMessage[];
   messagesByConversationId: Record<string, ChatMessage[]>;
   conversations: Conversation[];
@@ -32,6 +36,7 @@ interface TestChatState {
 }
 
 interface TestTaskState {
+  isLoading?: boolean;
   tasks: CatalogedImplementTask[];
 }
 
@@ -73,11 +78,12 @@ mock.module('../../stores/useAppStore', () => ({ useAppStore }));
 mock.module('../../stores/useChatStore', () => ({ useChatStore }));
 mock.module('../../stores/useTaskStore', () => ({ useTaskStore }));
 mock.module('../ui/toastService', () => ({
-  notify: { actionRequired: notifyActionRequired },
+  notify: { actionRequired: notifyActionRequired, dismiss: mock(() => undefined) },
 }));
 
 const {
   subscribeToWorkflowAttentionNotifications,
+  reconcileWorkflowAttentionNotifications,
 } = await import('./WorkflowAttentionNotifications');
 
 const t = ((key: string, fallback?: string, values?: Record<string, string>) => {
@@ -154,6 +160,7 @@ const updateTaskState = (tasks: CatalogedImplementTask[]) => {
 };
 
 beforeEach(() => {
+  useNotificationCenterStore.setState({ items: [] });
   chatListeners.clear();
   taskListeners.clear();
   notifyActionRequired.mockClear();
@@ -163,8 +170,8 @@ beforeEach(() => {
     selectedGroupId: 'group-current',
     selectedTaskId: null,
     selectedProjectId: 'project-current',
-    standaloneProjects: [],
-    projectGroups: [],
+    standaloneProjects: [{ id: 'project-other' }, { id: 'project-current' }],
+    projectGroups: [{ id: 'group-other', projects: [{ id: 'project-current' }] }],
     setMode: mock((mode: TestAppState['mode'], _options?: { ensureAutoPlan?: boolean }) => {
       navigationCalls.push('setMode');
       appState.mode = mode;
@@ -223,10 +230,112 @@ beforeEach(() => {
       return 'conversation-fallback';
     }),
   };
-  taskState = { tasks: [] };
+  taskState = { tasks: [makeTask('InProgress')] };
 });
 
 describe('workflow attention notification subscriptions', () => {
+  it('uses the current conversation task identity instead of an obsolete notification context', async () => {
+    const conversation = makeConversation();
+    chatState.conversations = [conversation];
+    const navigation = { kind: 'conversation' as const, requestKind: 'approval' as const, conversationId: conversation.id };
+    chatState.conversations = [{ ...conversation, task_id: 'node-new' }];
+    taskState.tasks = [{ ...makeTask('InProgress'), id: 'task:v1:branch:plan:node-new', node_id: 'node-new' }];
+    await openWorkflowNotificationContext(navigation);
+    expect(appState.setSelectedTask).toHaveBeenCalledWith('task:v1:branch:plan:node-new');
+    expect(chatState.selectConversation).toHaveBeenCalledWith(conversation.id);
+  });
+
+  it('keeps navigation retryable while hydration or the task catalog is loading', async () => {
+    chatState.hydrationStatus = 'hydrating';
+    await expect(openWorkflowNotificationContext({ kind: 'review', taskId: 'task-1' })).rejects.toThrow('Loading...');
+    chatState.hydrationStatus = 'ready';
+    taskState.isLoading = true;
+    await expect(openWorkflowNotificationContext({ kind: 'review', taskId: 'task-1' })).rejects.toThrow('Loading...');
+    expect(navigationCalls).toEqual([]);
+  });
+
+  it('does not change selection when a conversation or task has been deleted', async () => {
+    await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'questionnaire', conversationId: 'deleted' });
+    await openWorkflowNotificationContext({ kind: 'review', taskId: 'deleted' });
+    chatState.conversations = [makeConversation({ task_id: 'deleted' })];
+    await openWorkflowNotificationContext({ kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-1' });
+    expect(navigationCalls).toEqual([]);
+  });
+
+  it('restores a review through its current matching conversation, ignoring a stale stored association', async () => {
+    taskState.tasks = [{ ...makeTask('InReview'), conversation_id: 'deleted' }];
+    chatState.conversations = [makeConversation({ id: 'replacement' })];
+    await openWorkflowNotificationContext({ kind: 'review', taskId: 'task-1' });
+    expect(chatState.selectConversation).toHaveBeenCalledWith('replacement');
+  });
+
+  it('removes resolved calls to action after loaded state is known and leaves pending requests intact', () => {
+    const conversation = makeConversation();
+    const approval = makeApproval(conversation);
+    const item = {
+      id: 'workflow-attention:approval:conversation-1:tool-call-1',
+      level: 'info' as const, variant: 'actionable' as const,
+      category: 'task_attention_required' as const, title: 'Approval required',
+      createdAt: '2026-09-04T10:00:00.000Z', readAt: null,
+      workflowNavigation: { kind: 'conversation' as const, requestKind: 'approval' as const, conversationId: conversation.id },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+    chatState = { ...chatState, hydrationStatus: 'ready', conversations: [conversation],
+      messageLoadStatusByConversationId: { [conversation.id]: 'ready' },
+      pendingToolApprovalByConversationId: { [conversation.id]: approval } };
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+    chatState.pendingToolApprovalByConversationId = {};
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    useNotificationCenterStore.setState({ items: [item] });
+    chatState.conversations = [];
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    expect(notifyActionRequired).not.toHaveBeenCalled();
+  });
+
+  it('reconciles restored approvals before their conversation transcript is loaded', () => {
+    const conversation = makeConversation();
+    const item = {
+      id: 'workflow-attention:approval:conversation-1:tool-call-1',
+      level: 'info' as const, variant: 'actionable' as const,
+      category: 'task_attention_required' as const, title: 'Approval required',
+      createdAt: '2026-09-04T10:00:00.000Z', readAt: null,
+      workflowNavigation: { kind: 'conversation' as const, requestKind: 'approval' as const, conversationId: conversation.id },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    chatState = { ...chatState, hydrationStatus: 'ready', conversations: [conversation],
+      messageLoadStatusByConversationId: {},
+      pendingToolApprovalByConversationId: { [conversation.id]: makeApproval(conversation) } };
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+    chatState.pendingToolApprovalByConversationId = {};
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    expect(notifyActionRequired).not.toHaveBeenCalled();
+  });
+
+  it('keeps a restored questionnaire until its transcript is loaded', () => {
+    const conversation = makeConversation();
+    const item = {
+      id: 'workflow-attention:questionnaire:conversation-1:question-1',
+      level: 'info' as const, variant: 'actionable' as const,
+      category: 'task_attention_required' as const, title: 'Question waiting',
+      createdAt: '2026-09-04T10:00:00.000Z', readAt: null,
+      workflowNavigation: { kind: 'conversation' as const, requestKind: 'questionnaire' as const, conversationId: conversation.id },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    chatState = { ...chatState, hydrationStatus: 'ready', conversations: [conversation], messageLoadStatusByConversationId: {} };
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+    chatState.messageLoadStatusByConversationId = { [conversation.id]: 'ready' };
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+  });
+
   it('emits one questionnaire notification and honors its explicit Architect group', async () => {
     const conversation = makeConversation({
       scope_mode: 'Architect',

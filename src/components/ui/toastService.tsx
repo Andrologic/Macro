@@ -1,3 +1,4 @@
+import type { WorkflowNotificationNavigation } from '../../services/workflowNotificationNavigation';
 import type { ReactNode } from 'react';
 import { toast as sonnerToast, type ExternalToast } from 'sonner';
 import i18n from '../../i18n';
@@ -17,6 +18,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import {
   useNotificationCenterStore,
   type NotificationLevel,
+  type NotificationCenterItem,
   type NotificationCenterSessionAction,
 } from '../../stores/useNotificationCenterStore';
 import { cn } from '../../utils/cn';
@@ -73,6 +75,7 @@ interface TrackableToastContent {
 }
 
 interface PersistableNotificationContent extends TrackableToastContent {
+  workflowNavigation?: WorkflowNotificationNavigation;
   variant: NotificationVariant;
   category?: NotificationCategory;
   sessionActions?: NotificationCenterSessionAction[];
@@ -116,6 +119,7 @@ interface InformationalNotificationToastBodyProps {
 }
 
 interface TemplatedNotificationPayload {
+  workflowNavigation?: WorkflowNotificationNavigation;
   tone: NotificationTone;
   variant: NotificationVariant;
   title: string;
@@ -435,6 +439,7 @@ const persistNotification = (
     level,
     variant: content.variant,
     category: content.category,
+    workflowNavigation: content.workflowNavigation,
     title: content.title,
     description: content.description,
     createdAt,
@@ -592,6 +597,22 @@ export const executeNotificationAction = async (
   }
 };
 
+export const getNotificationCenterActions = (
+  item: NotificationCenterItem,
+): NotificationCenterSessionAction[] | undefined => {
+  const navigation = item.workflowNavigation;
+  if (!navigation) return item.sessionActions;
+  return [{
+    label: i18n.t('notifications.workflow.openAction', 'Open'),
+    variant: 'primary',
+    dismissOnSuccess: true,
+    onClick: async () => {
+      const { openWorkflowNotificationContext } = await import('../../services/openWorkflowNotificationContext');
+      await openWorkflowNotificationContext(navigation);
+    },
+  }];
+};
+
 export const executeRegisteredNotificationAction = async (
   notificationId: string,
   actionIndex: number,
@@ -601,7 +622,7 @@ export const executeRegisteredNotificationAction = async (
   const item = store.items.find(
     (candidate) => candidate.id === notificationId && candidate.variant === 'actionable'
   );
-  const action = item?.sessionActions?.[actionIndex];
+  const action = item ? getNotificationCenterActions(item)?.[actionIndex] : undefined;
 
   if (!item || !action) {
     return false;
@@ -835,6 +856,7 @@ const emitTemplatedNotification = (
         description: payload.description,
         variant: payload.variant,
         category: payload.category,
+        workflowNavigation: payload.workflowNavigation,
         ...(payload.variant === 'actionable' && payload.actions?.length
           ? {
               sessionActions: toSessionNotificationActions(payload.actions),
@@ -876,6 +898,7 @@ const buildActionablePayload = (
   description: options.description,
   category: options.category,
   actions: normalizeNotificationActions(options.actions),
+  workflowNavigation: options.workflowNavigation,
   notificationKey: options.notificationKey,
   desktopTitle: options.desktopTitle,
   desktopBody: options.desktopBody,
