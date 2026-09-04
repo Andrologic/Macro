@@ -9,10 +9,8 @@ import { hasModePanel } from "./components/layout/modePanelLoaders";
 import { Footer } from "./components/layout/Footer";
 import { Toaster } from "./components/ui/Toaster";
 import { notify } from "./components/ui/toastService";
-import { WorkflowAttentionNotifications } from "./components/notifications/WorkflowAttentionNotifications";
 import { useAppStore } from "./stores/useAppStore";
 import { useConversationArchiveStore } from "./stores/useConversationArchiveStore";
-import { useViewFilterStore } from "./stores/useViewFilterStore";
 import { Skeleton } from "./components/shared/Skeleton";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { getPlatformChromeState } from "./utils/desktopPlatform";
@@ -57,6 +55,11 @@ const OnboardingGuide = lazy(() =>
   import("./components/onboarding/OnboardingGuide").then((module) => ({
     default: module.OnboardingGuide,
   })),
+);
+const WorkflowAttentionNotifications = lazy(() =>
+  import("./components/notifications/WorkflowAttentionNotifications").then(
+    (module) => ({ default: module.WorkflowAttentionNotifications }),
+  ),
 );
 
 const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
@@ -205,7 +208,9 @@ const App: React.FC = () => {
 
   useEffect(() => {
     void useConversationArchiveStore.getState().hydrateArchivedConversationIds();
-    void useViewFilterStore.getState().hydrate();
+    void import("./stores/useViewFilterStore").then(({ useViewFilterStore }) =>
+      useViewFilterStore.getState().hydrate(),
+    );
   }, [bootstrapRetryKey]);
 
   // Ref to track panels that were auto-collapsed during resize
@@ -527,7 +532,9 @@ const App: React.FC = () => {
       </Suspense>
 
       <Toaster />
-      <WorkflowAttentionNotifications />
+      <Suspense fallback={null}>
+        <WorkflowAttentionNotifications />
+      </Suspense>
 
       <Suspense fallback={null}>
         <OnboardingGuide />
