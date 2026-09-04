@@ -576,6 +576,33 @@ Elle stocke notamment :
 - références de dépôts Git et worktrees
 - configurations des fournisseurs de reconnaissance vocale, sans les clés API
 
+Les approbations en attente utilisent le setting SQLite versionné
+`toolApprovalRecovery:v1`. Il conserve uniquement les identifiants de conversation,
+de message assistant et d'appel d'outil. Le transcript est enregistré avant ce
+marqueur. Les arguments, chemins et permissions ne sont pas copiés dans ce
+setting. Un writer sérialise les mutations du registre. L'hydratation lit ce
+registre, puis les transcripts concernés. Les données inconnues restent intactes
+à la lecture. Une écriture conserve les collisions et les racines illisibles dans
+`preservedData` du même document, sans bloquer une nouvelle demande. Les champs
+inconnus de la racine restent présents après suppression de la dernière demande.
+Un échec de lecture ou de nettoyage d'une demande est affiché sans interrompre le
+démarrage de Chat. L'avertissement peut être fermé sans supprimer les données.
+Si la création du marqueur échoue, le store ferme la trace enregistrée ; si cette
+fermeture échoue aussi, une action de reprise reste disponible dans la session.
+
+`PendingToolApproval.recoveryState === 'interrupted'` désigne une demande
+restaurée sans resolver vivant. Le store ferme durablement la trace avant de
+supprimer son marqueur. Pendant une reprise, le marqueur et son action restent
+présents jusqu'à l'acceptation du nouveau message utilisateur. Une trace déjà
+refusée peut donc encore porter cette intention de reprise. Une approbation live
+recharge la politique projet et le runtime MCP avant toute clôture. Une politique
+invérifiable laisse une action de reprise et n'autorise aucune exécution. Une
+demande active n'a pas ce champ. Les permissions de conversation restent en
+mémoire et ne sont jamais restaurées. Une réinitialisation retire les anciens
+resolvers et attend la fin des écritures déjà engagées dans leurs files avant
+l'hydratation. Une génération périmée ne peut plus autoriser l'outil ni clore
+une demande restaurée.
+
 ### 10.2 Persistance locale frontend
 
 Le frontend utilise aussi de la persistance locale légère pour :
