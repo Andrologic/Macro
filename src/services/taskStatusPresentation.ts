@@ -207,9 +207,13 @@ export const resolveTaskStatusIndicatorState = (
   isAssistantRunning: boolean,
   taskSource?: string | null,
   mergeWorkflowRuntime?: MergeWorkflowIndicatorSource | null,
-  isDependencyBlocked = false
+  isDependencyBlocked = false,
+  hasPendingUserRequest = false,
+  hasResolvedUserRequest = false
 ): TaskStatusIndicatorState => {
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(taskSource);
+
+  if (hasPendingUserRequest && status !== 'Completed') return 'awaiting_response';
 
   if (isAssistantRunning) {
     return 'running';
@@ -228,7 +232,7 @@ export const resolveTaskStatusIndicatorState = (
 
   switch (status) {
     case 'AwaitingResponse':
-      return 'awaiting_response';
+      return hasResolvedUserRequest ? 'idle_prompt' : 'awaiting_response';
     case 'Pending':
     case 'InProgress':
       return isPlanFinalizationTask ? 'plan_finalization' : 'idle_prompt';
@@ -249,8 +253,11 @@ export const resolveTaskQueueStatusGroup = (
   status: unknown,
   isDependencyBlocked = false,
   mergeWorkflowRuntime?: MergeWorkflowIndicatorSource | null,
-  isAssistantRunning = false
+  isAssistantRunning = false,
+  hasPendingUserRequest = false,
+  hasResolvedUserRequest = false
 ): TaskQueueStatusGroup => {
+  if (hasPendingUserRequest && status !== 'Completed') return 'waiting';
   if (isAssistantRunning) return 'in_progress';
   if (isDependencyBlocked || status === 'Blocked') return 'blocked';
   const mergeWorkflowIndicatorState = resolveMergeWorkflowIndicatorState(
@@ -264,7 +271,7 @@ export const resolveTaskQueueStatusGroup = (
   }
   if (mergeWorkflowIndicatorState === 'merge_failed') return 'failed';
   if (mergeWorkflowIndicatorState === 'merging') return 'in_progress';
-  if (status === 'AwaitingResponse') return 'waiting';
+  if (status === 'AwaitingResponse') return hasResolvedUserRequest ? 'ready' : 'waiting';
   if (status === 'Pending') return 'ready';
   if (status === 'InProgress' || status === 'InReview') return 'in_progress';
   if (status === 'Failed') return 'failed';

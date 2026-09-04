@@ -1,4 +1,9 @@
 {
+  "statusAttention": "Needs attention",
+  "taskNextActionOpenApproval": "Next: open the approval request",
+  "taskNextActionFinalizePlan": "Next: finalize the plan",
+  "taskNextActionAcceptRepository": "Next: accept changes in {{repository}}",
+  "taskNextActionOpenReview": "Next: open the review",
   "tasks": "Tasks",
   "searchTasks": "Search tasks...",
   "noSearchResults": "No task matches this search.",
@@ -220,6 +225,8 @@
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "Failed to create manual feature.",
   "taskValidationProgress": "{{resolved}}/{{total}} projects resolved",
+  "repositoryCountInlineSingle": "{{count}} project involved",
+  "taskValidationProgressSingle": "{{resolved}}/{{total}} project resolved",
   "repositoryCountInline": "{{count}} projects involved",
   "taskCommandsModalDescription": "Define one command per project for {{project}}. These commands will be reused by all tasks.",
   "taskCommandConfigured": "Configured",

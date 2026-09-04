@@ -393,7 +393,19 @@ résultat déclenche la même sélection que dans la liste non filtrée.
 
 Les filtres structurants des listes principales survivent aux changements de
 mode et aux redémarrages. Implement conserve le projet, le statut et la vue
-archivée. Architect et Chat conservent la vue active ou archivée. Les requêtes
+archivée. Le filtre « À traiter » regroupe les questionnaires actifs, les demandes
+d'approbation d'outil actives ou restaurées et les tâches en review. Une tâche
+n'y apparaît qu'une fois. Les tâches terminées ou archivées et les simples
+blocages de dépendances n'y entrent pas. Une demande active reste accessible
+même si la tâche porte aussi un blocage. Avant le chargement de la conversation,
+une attente durable reste visible, sauf si une exécution ou un workflow de
+merge indique déjà une autre activité. Le filtre se combine au projet et à la
+recherche. Un second clic sur le filtre actif affiche tous les statuts. Changer
+de projet conserve le filtre choisi ; consulter les archives le suspend et le
+retour aux tâches actives le rétablit. Une approbation en attente remplace le
+spinner par l'indicateur d'attente utilisateur, même si le moteur est encore en
+streaming. Ouvrir cette tâche donne accès à la conversation de la demande.
+Architect et Chat conservent la vue active ou archivée. Les requêtes
 de recherche, la sélection multiple et les filtres propres aux boîtes de
 dialogue ou au terminal restent limités à la session d'interaction en cours.
 
@@ -760,6 +772,16 @@ L'utilisateur doit pouvoir :
 Si un objet Git nécessaire à la review reste absent après une actualisation et une seule relance, Macro suspend les actualisations automatiques de cette review. L’interface précise qu’aucun fichier de travail n’a été modifié, propose de réessayer et donne accès aux détails Git. Une nouvelle tentative explicite, un changement de tâche ou une modification des métadonnées de review peut reprendre le chargement. Un changement d’état sans lien avec la review ne la relance pas. Macro ne lance aucune réparation destructive pour traiter cette erreur.
 
 Pour un projet sans Git, la review repose sur l’historique interne de Macro. Si ce checkpoint est absent, lié à un autre projet ou incomplet, le panneau suspend ses actualisations et nomme le checkpoint interne, pas un dépôt Git utilisateur. Macro conserve l’historique disponible et les fichiers du projet. Une réparation qui pourrait perdre un état accepté n’est jamais automatique.
+
+La carte de la file indique la prochaine action de review pour une tâche à un
+ou plusieurs dépôts : valider les changements du projet concerné, committer ce
+projet ou ouvrir la review. Pour un projet en mode d'exécution direct, elle
+indique d'accepter les changements. Le résumé des dépôts ne couvre pas les
+artefacts : il ne suffit donc pas à annoncer que la tâche peut être terminée. Une tâche de finalisation indique de finaliser le plan. Ces
+indications utilisent le résumé de la review chargée et les états existants du
+workflow de merge. En l'absence de données de review pour cette tâche, la carte
+propose d'ouvrir la review. Les validations et opérations Git restent dans leur
+parcours de review habituel.
 
 ### 14.5 Édition manuelle autorisée pendant la review
 
