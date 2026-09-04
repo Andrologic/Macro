@@ -9,6 +9,7 @@ import {
   DEFAULT_ARCHITECT_VIEW_FILTERS,
 } from '../../services/viewFilterPreferences';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
+import { dispatchArchitectPlanSelectorRequest } from './planSelectorEvents';
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -73,6 +74,9 @@ describe('ArchitectProjectNavigator search', () => {
         id: 'project-1',
         name: 'Macro',
         path: 'C:/repo/Macro',
+        gitSetupState: 'ready',
+        directEdit: false,
+        isReadOnly: false,
       }] as never,
       projectGroups: [],
       selectedGroupId: null,
@@ -195,5 +199,272 @@ describe('ArchitectProjectNavigator search', () => {
       await flushRender();
     });
     expect(document.body.textContent).toContain('Aucun plan ne correspond à cette recherche.');
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('macro:architect-plan-selector-request', {
+        detail: {
+          action: 'primary',
+          anchorRect: {
+            top: 300,
+            right: 740,
+            bottom: 336,
+            left: 600,
+            width: 140,
+            height: 36,
+          },
+        },
+      }));
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-architect-scope-create-menu]')).toBeNull();
+  });
+
+  it('opens project management when the selected empty scope is not editable', async () => {
+    const openProjectNavigator = mock(() => undefined);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      standaloneProjects: [{
+        id: 'project-1',
+        name: 'Macro',
+        path: 'C:/repo/Macro',
+        gitSetupState: 'not_git',
+        directEdit: false,
+        isReadOnly: true,
+      }] as never,
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+      openProjectNavigator,
+    });
+
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: {
+        branchCatalogByBranch: {},
+        branches: [],
+        scannedBranchNames: [],
+        scopedProjectIds: ['project-1'],
+        visiblePlans: [],
+        modernPlanCount: 0,
+        selectedPlan: null,
+        selectedBranchName: null,
+        selectionReason: 'none',
+        errors: [],
+      },
+      selectedPlan: null,
+      selectedBranchName: null,
+      selectionReason: 'none',
+    }));
+
+    await act(async () => {
+      root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('macro:architect-plan-selector-request', {
+        detail: { action: 'primary' },
+      }));
+      await flushRender();
+    });
+
+    expect(openProjectNavigator).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelector('[data-architect-scope-create-menu]')).toBeNull();
+  });
+
+  it('opens the compatible plan-kind menu for an editable empty scope', async () => {
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      standaloneProjects: [{
+        id: 'project-1',
+        name: 'Macro',
+        path: 'C:/repo/Macro',
+        gitSetupState: 'ready',
+        directEdit: false,
+        isReadOnly: false,
+      }] as never,
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    });
+
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: {
+        branchCatalogByBranch: {},
+        branches: [],
+        scannedBranchNames: [],
+        scopedProjectIds: ['project-1'],
+        visiblePlans: [],
+        modernPlanCount: 0,
+        selectedPlan: null,
+        selectedBranchName: null,
+        selectionReason: 'none',
+        errors: [],
+      },
+      selectedPlan: null,
+      selectedBranchName: null,
+      selectionReason: 'none',
+    }));
+
+    await act(async () => {
+      root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('macro:architect-plan-selector-request', {
+        detail: {
+          action: 'primary',
+          anchorRect: {
+            top: 300,
+            right: 740,
+            bottom: 336,
+            left: 600,
+            width: 140,
+            height: 36,
+          },
+        },
+      }));
+      await flushRender();
+    });
+
+    const menu = document.body.querySelector('[data-architect-scope-create-menu]');
+    expect(menu).not.toBeNull();
+    expect(menu?.textContent).toContain('Feature');
+  });
+
+  it('publishes an error when the catalog is only partially loaded', async () => {
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      standaloneProjects: [{
+        id: 'project-1',
+        name: 'Macro',
+        path: 'C:/repo/Macro',
+        gitSetupState: 'ready',
+        directEdit: false,
+        isReadOnly: false,
+      }] as never,
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    });
+
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: {
+        branchCatalogByBranch: {},
+        branches: [{
+          branchName: 'develop',
+          activePlanId: null,
+          plans: [],
+          error: null,
+        }, {
+          branchName: 'release/0.1.4',
+          activePlanId: null,
+          plans: [],
+          error: 'metadata unavailable',
+        }],
+        scannedBranchNames: ['develop', 'release/0.1.4'],
+        scopedProjectIds: ['project-1'],
+        visiblePlans: [],
+        modernPlanCount: 0,
+        selectedPlan: null,
+        selectedBranchName: null,
+        selectionReason: 'none',
+        errors: [{ branchName: 'release/0.1.4', message: 'metadata unavailable' }],
+      },
+      selectedPlan: null,
+      selectedBranchName: null,
+      selectionReason: 'none',
+    }));
+    const publishedStates: Array<{ status: string }> = [];
+    const handleState = (event: Event) => {
+      publishedStates.push((event as CustomEvent<{ status: string }>).detail);
+    };
+    window.addEventListener('macro:architect-plan-selector-state', handleState);
+
+    try {
+      await act(async () => {
+        root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />);
+        await flushRender();
+      });
+
+      expect(document.body.textContent).toContain('Impossible de charger les plans.');
+      expect(publishedStates.at(-1)?.status).toBe('error');
+      expect(document.body.querySelector('[data-architect-scope-create-menu]')).toBeNull();
+      expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Nouveau plan pour Macro"]')?.disabled).toBe(true);
+      const firstPlanButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('Créer le premier plan'));
+      expect(firstPlanButton?.disabled).toBe(true);
+    } finally {
+      window.removeEventListener('macro:architect-plan-selector-state', handleState);
+    }
+  });
+
+  it('waits for the catalog before replaying a deferred primary request', async () => {
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      standaloneProjects: [{
+        id: 'project-1',
+        name: 'Macro',
+        path: 'C:/repo/Macro',
+        gitSetupState: 'ready',
+        directEdit: false,
+        isReadOnly: false,
+      }] as never,
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    });
+
+    const existingPlan = plan('existing-plan', 'Plan existant');
+    let resolveCatalog: ((result: MacroProjectMetadataLoadResult) => void) | null = null;
+    const catalogLoader = mock(() => new Promise<MacroProjectMetadataLoadResult>((resolve) => {
+      resolveCatalog = resolve;
+    }));
+
+    dispatchArchitectPlanSelectorRequest({ action: 'primary' });
+    await act(async () => {
+      root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />);
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('[data-architect-scope-create-menu]')).toBeNull();
+
+    await act(async () => {
+      resolveCatalog?.({
+        snapshot: {
+          branchCatalogByBranch: {},
+          branches: [{
+            branchName: 'develop',
+            activePlanId: null,
+            plans: [existingPlan],
+            error: null,
+          }],
+          scannedBranchNames: ['develop'],
+          scopedProjectIds: ['project-1'],
+          visiblePlans: [existingPlan],
+          modernPlanCount: 1,
+          selectedPlan: null,
+          selectedBranchName: null,
+          selectionReason: 'none',
+          errors: [],
+        },
+        selectedPlan: null,
+        selectedBranchName: null,
+        selectionReason: 'none',
+      });
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Plan existant');
+    expect(document.body.querySelector('[data-architect-scope-create-menu]')).toBeNull();
   });
 });

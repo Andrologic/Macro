@@ -71,6 +71,11 @@ export const registerArchitectScenarios = (context: ArchitectScenarioContext) =>
       expect(composer?.disabled).toBe(true);
       const sendButton = requireContainer().querySelector('[data-tour-id="chat-send-button"]') as HTMLButtonElement | null;
       expect(sendButton?.disabled).toBe(true);
+      const emptyStateAction = requireContainer().querySelector(
+        '[data-tour-id="architect-empty-plan-action"]'
+      ) as HTMLButtonElement | null;
+      expect(emptyStateAction?.disabled).toBe(true);
+      expect(emptyStateAction?.textContent).toContain('Loading');
       expect(context.chatState.refreshConversationContextDiagnostics).not.toHaveBeenCalled();
     } finally {
       try {
@@ -132,6 +137,7 @@ export const registerArchitectScenarios = (context: ArchitectScenarioContext) =>
 
     const requestDetails: unknown[] = [];
     const handleRequest = (event: Event) => {
+      event.preventDefault();
       requestDetails.push((event as CustomEvent).detail);
     };
     window.addEventListener('macro:architect-plan-selector-request', handleRequest);
@@ -187,6 +193,104 @@ export const registerArchitectScenarios = (context: ArchitectScenarioContext) =>
     ) as HTMLButtonElement | null;
     expect(requireContainer().textContent).toContain('Select a plan to start architecting.');
     expect(button?.textContent).toContain('Select a plan');
+  });
+
+  it('offers project management when the empty scope cannot create plans', async () => {
+    context.appState = {
+      ...context.appState,
+      mode: 'Architect',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    };
+
+    await act(async () => {
+      requireRoot().render(renderChatZone());
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('macro:architect-plan-selector-state', {
+          detail: {
+            status: 'ready',
+            planCount: 0,
+            canCreate: false,
+            canSelect: false,
+          },
+        }),
+      );
+    });
+
+    const button = requireContainer().querySelector(
+      '[data-tour-id="architect-empty-plan-action"]'
+    ) as HTMLButtonElement | null;
+    expect(requireContainer().textContent).toContain('Make a project editable before creating a plan.');
+    expect(requireContainer().textContent).not.toContain('Select a plan to start architecting.');
+    expect(button?.textContent).toContain('Manage projects');
+  });
+
+  it('keeps the empty-state action disabled while the plan catalog loads', async () => {
+    context.appState = {
+      ...context.appState,
+      mode: 'Architect',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    };
+
+    await act(async () => {
+      requireRoot().render(renderChatZone());
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('macro:architect-plan-selector-state', {
+          detail: {
+            status: 'loading',
+            planCount: 0,
+            canCreate: false,
+            canSelect: false,
+          },
+        }),
+      );
+    });
+
+    const button = requireContainer().querySelector(
+      '[data-tour-id="architect-empty-plan-action"]'
+    ) as HTMLButtonElement | null;
+    expect(button?.disabled).toBe(true);
+    expect(button?.textContent).toContain('Loading');
+  });
+
+  it('keeps the empty-state action disabled when the plan catalog fails', async () => {
+    context.appState = {
+      ...context.appState,
+      mode: 'Architect',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    };
+
+    await act(async () => {
+      requireRoot().render(renderChatZone());
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('macro:architect-plan-selector-state', {
+          detail: {
+            status: 'error',
+            planCount: 0,
+            canCreate: false,
+            canSelect: false,
+          },
+        }),
+      );
+    });
+
+    const button = requireContainer().querySelector(
+      '[data-tour-id="architect-empty-plan-action"]'
+    ) as HTMLButtonElement | null;
+    expect(requireContainer().textContent).toContain('Unable to load plans.');
+    expect(button?.disabled).toBe(true);
+    expect(button?.textContent).toContain('Unavailable');
   });
 
   it('does not create or send an Architect message when no plan is selected', async () => {

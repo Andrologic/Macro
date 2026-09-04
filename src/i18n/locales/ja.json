@@ -1515,6 +1515,7 @@
       "hideArchived": "アーカイブを非表示にする",
       "loading": "計画を読み込んでいます...",
       "loadingShort": "読み込み中",
+      "unavailableShort": "利用できません",
       "repairMetadata": "Repair metadata",
       "empty": "まだ計画はありません。",
       "emptyOutsideScope": "@macro に計画はありますが、選択中のプロジェクトには対応していません。",
@@ -1661,6 +1662,7 @@
     "selectPlanToStart": "設計を始めるにはプランを選択または作成してください。",
     "createFirstPlanToStart": "設計を始めるには最初のプランを作成してください。",
     "selectExistingPlanToStart": "設計を始めるにはプランを選択してください。",
+    "configureProjectToCreatePlan": "プランを作成する前に、プロジェクトを編集可能にしてください。",
     "createPlanAction": "プランを作成",
     "selectPlanAction": "プランを選択",
     "noStrategyDiscussionDescription": "Architect とプランについて話し合い、スコープが明確になったら戦略を生成します。"

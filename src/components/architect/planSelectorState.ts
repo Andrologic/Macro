@@ -19,6 +19,17 @@ export interface PlanSelectorRefreshState {
 export type PlanSelectorEmptyState = 'hidden' | 'empty' | 'outside-scope';
 export type PlanSelectorNullLoadDisposition = 'preserve' | 'clear';
 
+export const canUsePlanSelectorCreation = (params: {
+  canCreateForScope: boolean;
+  hasError: boolean;
+  hasLoadedPlans: boolean;
+  isLoading: boolean;
+}): boolean =>
+  params.canCreateForScope
+  && params.hasLoadedPlans
+  && !params.isLoading
+  && !params.hasError;
+
 export const getPlanSelectorNullLoadDisposition = (params: {
   catalogStatus: 'idle' | 'loading' | 'ready' | 'error';
   isCatalogForCurrentScope: boolean;

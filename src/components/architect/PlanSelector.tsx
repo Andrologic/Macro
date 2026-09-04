@@ -65,6 +65,7 @@ import {
   ensureScopedBlankPlan,
 } from '../../services/architectAutoPlan';
 import {
+  canUsePlanSelectorCreation,
   computePlanSelectorRefreshState,
   getPlanSelectorNullLoadDisposition,
   computePlanSelectorEmptyState,
@@ -73,7 +74,7 @@ import {
   type PlanSelectorRefreshState,
 } from './planSelectorState';
 import {
-  ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT,
+  registerArchitectPlanSelectorRequestHandler,
   registerArchitectPlanSelectorStatePublisher,
   type ArchitectPlanSelectorRequestDetail,
   type ArchitectPlanSelectorStateDetail,
@@ -247,6 +248,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const [creatingPlanKind, setCreatingPlanKind] = useState<ArchitectPlanKind | null>(null);
   const [hasLoadedPlans, setHasLoadedPlans] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const pendingPrimaryRequestRef = useRef<ArchitectPlanSelectorRequestDetail | null>(null);
   const lastEffectIdRef = useRef<string | null | undefined>(undefined);
   const loadPlansRequestIdRef = useRef(0);
   const activationRequestIdRef = useRef(0);
@@ -350,6 +352,12 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   const firstReadOnlyProject = scopedReadOnlyProjects[0] ?? null;
   const isReadOnlyOnlyScope = scopedProjectIds.length > 0 && scopedActionableProjectIds.length === 0;
   const canCreatePlanForScope = !isWorkspaceMissing && !isReadOnlyOnlyScope;
+  const canUseCreationControls = canUsePlanSelectorCreation({
+    canCreateForScope: canCreatePlanForScope,
+    hasError: Boolean(error),
+    hasLoadedPlans,
+    isLoading,
+  });
   const creatablePlanKinds = useMemo(
     () =>
       getCreatableArchitectPlanKinds(
@@ -581,6 +589,9 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
         }
         if (disposition === 'preserve') return;
       }
+      if (result?.snapshot.errors.length) {
+        setError(t('architect.planSelector.errorLoadPlans', 'Failed to load plans.'));
+      }
       const visiblePlans = result?.snapshot.visiblePlans ?? [];
       const nextActivePlanId = result?.selectedPlan?.id ?? null;
       setPlans(visiblePlans);
@@ -735,7 +746,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
   }, [getProjectById]);
 
   const handleCreatePlan = async (planKind: ArchitectPlanKind = 'feature') => {
-    if (creatingPlanKind) {
+    if (creatingPlanKind || !canUseCreationControls) {
       return;
     }
     setFormError(null);
@@ -881,30 +892,37 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
     if (typeof window === 'undefined') {
       return undefined;
     }
-    const handleRequest = (event: Event) => {
-      const detail = (event as CustomEvent<ArchitectPlanSelectorRequestDetail>).detail;
+    const handleRequest = (detail: ArchitectPlanSelectorRequestDetail) => {
       if (detail?.action !== 'primary') {
         return;
       }
       if (!hasLoadedPlans || isLoading) {
-        setIsOpen(true);
-        setShowCreateKinds(false);
+        pendingPrimaryRequestRef.current = detail;
         return;
       }
-      if (plans.length === 0 && canCreatePlanForScope && !creatingPlanKind) {
-        void handleCreatePlanRef.current?.('feature');
+      pendingPrimaryRequestRef.current = null;
+      if (error) {
+        return;
+      }
+      if (plans.length === 0 && canUseCreationControls && !creatingPlanKind) {
+        setIsOpen(true);
+        setShowCreateKinds(true);
         return;
       }
       setIsOpen(true);
       setShowCreateKinds(false);
     };
-    window.addEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
-    return () => {
-      window.removeEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
-    };
+    const unregister = registerArchitectPlanSelectorRequestHandler(handleRequest);
+    const pendingRequest = pendingPrimaryRequestRef.current;
+    if (hasLoadedPlans && !isLoading && pendingRequest) {
+      pendingPrimaryRequestRef.current = null;
+      handleRequest(pendingRequest);
+    }
+    return unregister;
   }, [
-    canCreatePlanForScope,
+    canUseCreationControls,
     creatingPlanKind,
+    error,
     hasLoadedPlans,
     isLoading,
     plans.length,
@@ -1381,7 +1399,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                 <div className="relative">
                   <button
                     onClick={() => setShowCreateKinds((current) => !current)}
-                    disabled={isReadOnlyOnlyScope || isWorkspaceMissing || Boolean(creatingPlanKind)}
+                    disabled={!canUseCreationControls || Boolean(creatingPlanKind)}
                     title={
                       isWorkspaceMissing
                         ? workspaceState.kind === 'noProjectAvailable'
@@ -1396,7 +1414,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                     }
                     className={cn(
                       'h-7 shrink-0 px-2 rounded-md text-xs border flex items-center gap-1.5',
-                      isReadOnlyOnlyScope || isWorkspaceMissing || creatingPlanKind
+                      !canUseCreationControls || creatingPlanKind
                         ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                         : 'border-border hover:bg-accent'
                     )}
@@ -1410,7 +1428,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                       ? t('architect.planSelector.creating', 'Creating')
                       : t('architect.planSelector.create', 'Create')}
                   </button>
-                  {showCreateKinds && !isReadOnlyOnlyScope && !isWorkspaceMissing && (
+                  {showCreateKinds && canUseCreationControls && (
                     <div className="absolute right-0 top-8 z-[90] w-56 rounded-lg border border-border bg-popover shadow-xl p-1">
                       {([
                         ['feature', 'sparkles', t('architect.planSelector.newFeaturePlan', 'New Feature Plan'), t('architect.planSelector.kindFeatureHelp', 'Build something new.')] as const,
@@ -1421,7 +1439,7 @@ export const PlanSelector: React.FC<PlanSelectorProps> = ({ className }) => {
                         .filter(([kind]) => creatablePlanKinds.includes(kind))
                         .map(([kind, icon, label, help]) => {
                           const isCreatingKind = creatingPlanKind === kind;
-                          const isCreateDisabled = Boolean(creatingPlanKind);
+                          const isCreateDisabled = Boolean(creatingPlanKind) || !canUseCreationControls;
                           return (
                             <button
                               key={kind}

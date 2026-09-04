@@ -1536,6 +1536,7 @@
       "hideArchived": "Masquer les archives",
       "loading": "Chargement des plans...",
       "loadingShort": "Chargement",
+      "unavailableShort": "Indisponible",
       "repairMetadata": "Réparer les métadonnées",
       "empty": "Pas encore de projets.",
       "emptyOutsideScope": "Des plans existent dans @macro mais ne correspondent pas au projet sélectionné.",
@@ -1682,6 +1683,7 @@
     "selectPlanToStart": "Sélectionnez ou créez un plan pour démarrer l’architecture.",
     "createFirstPlanToStart": "Créez votre premier plan pour démarrer l’architecture.",
     "selectExistingPlanToStart": "Sélectionnez un plan pour démarrer l’architecture.",
+    "configureProjectToCreatePlan": "Rendez un projet modifiable avant de créer un plan.",
     "createPlanAction": "Créer un plan",
     "selectPlanAction": "Sélectionner un plan",
     "noStrategyDiscussionDescription": "Discutez du plan avec Architect, puis générez la stratégie lorsque le périmètre est clair."
