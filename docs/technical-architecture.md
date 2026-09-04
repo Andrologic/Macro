@@ -268,6 +268,8 @@ Il gère notamment :
 
 Le store porte aussi une partie de la logique d'orchestration entre chat et mode produit.
 
+En mode Implement, l'en-tête de la conversation dérive le contexte visible de la tâche cataloguée sélectionnée. Il utilise `plan_title` et `branch_name` de cette tâche, puis résout les noms de projets depuis le registre déjà chargé. Une valeur absente n'est pas remplacée par une sélection globale et aucun état d'affichage durable n'est ajouté.
+
 ### 6.3 `useTaskStore`
 
 `useTaskStore` gère :

@@ -238,13 +238,18 @@ export type TaskState = {
     draft?: boolean;
     task_source?: 'architect' | 'standalone' | 'plan_finalization';
     standalone_kind?: 'legacy' | 'manual_feature' | null;
+    task_kind?: 'feature' | 'bugfix' | 'hotfix' | 'direct' | null;
     is_blocked?: boolean;
     blocked_by?: string[];
     status?: string;
-    execution_targets?: Array<{ projectId: string }>;
+    execution_targets?: Array<{
+      projectId: string;
+      executionMode?: 'git' | 'direct';
+    }>;
     project_ids?: string[];
     project_id?: string | null;
     plan_id?: string | null;
+    plan_title?: string | null;
     branch_name?: string;
     dependencies?: string[];
     estimated_changes?: Array<{ operation: string; path: string }>;
