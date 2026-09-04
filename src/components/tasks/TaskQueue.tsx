@@ -12,6 +12,11 @@ import {
 } from '../../stores/useTaskStore';
 import { useFileChangesStore } from '../../stores/useFileChangesStore';
 import {
+  ALL_PROJECTS_FILTER,
+  resolveAvailableProjectFilter,
+} from '../../services/viewFilterPreferences';
+import { useViewFilterStore } from '../../stores/useViewFilterStore';
+import {
   getArchitectPlanPrimaryName,
 } from '../../services/architectPlanPresentation';
 import {
@@ -120,15 +125,6 @@ type TaskListRow =
       task: ImplementTask;
       multiRepoPresentation: MultiRepoTaskPresentation | null;
     };
-
-const ALL_PROJECTS_FILTER = '__all_projects__';
-type TaskQueueStatusFilter =
-  | 'all'
-  | 'ready'
-  | 'in_progress'
-  | 'waiting'
-  | 'blocked'
-  | 'failed';
 
 const statusConfig: Record<TaskStatus, { color: string; bgColor: string }> = {
   Pending: { color: 'text-muted-foreground', bgColor: 'bg-muted' },
@@ -658,6 +654,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedGroupId,
     selectedProjectId,
     selectedTaskId,
+    isAppLoading,
+    appLoadError,
     standaloneProjects,
     projectGroups,
     openProjectGitFlowModal,
@@ -667,6 +665,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     selectedTaskId: state.selectedTaskId,
+    isAppLoading: state.isLoading,
+    appLoadError: state.lastError,
     standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
     openProjectGitFlowModal: state.openProjectGitFlowModal,
@@ -742,12 +742,22 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const readOnlyScopeToastRef = useRef<string | null>(null);
   const missingBaseBranchToastRef = useRef<string | number | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
-  const [projectFilter, setProjectFilter] = useState<string>(ALL_PROJECTS_FILTER);
-  const [statusFilter, setStatusFilter] = useState<TaskQueueStatusFilter>('all');
+  const {
+    implement: { projectId: projectFilter, status: statusFilter, showArchived },
+    setImplementProjectFilter,
+    setImplementStatusFilter,
+    setImplementShowArchived,
+    filtersHydrated,
+  } = useViewFilterStore(useShallow((state) => ({
+    implement: state.implement,
+    setImplementProjectFilter: state.setImplementProjectFilter,
+    setImplementStatusFilter: state.setImplementStatusFilter,
+    setImplementShowArchived: state.setImplementShowArchived,
+    filtersHydrated: state.isHydrated,
+  })));
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [showCreateTaskDialog, setShowCreateTaskDialog] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ImplementTask | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<{ task: ImplementTask; action: 'archive' | 'delete' } | null>(null);
   const [taskCommandModal, setTaskCommandModal] = useState<{
@@ -1252,10 +1262,22 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   }, [availablePlanSummaries]);
 
   useEffect(() => {
-    if (projectFilter === ALL_PROJECTS_FILTER) return;
-    if (availableProjects.some((project) => project.id === projectFilter)) return;
-    setProjectFilter(ALL_PROJECTS_FILTER);
-  }, [availableProjects, projectFilter]);
+    if (!filtersHydrated || isAppLoading || appLoadError) return;
+    const availableFilter = resolveAvailableProjectFilter(
+      projectFilter,
+      availableProjects.map((project) => project.id),
+    );
+    if (availableFilter !== projectFilter) {
+      setImplementProjectFilter(availableFilter);
+    }
+  }, [
+    appLoadError,
+    availableProjects,
+    filtersHydrated,
+    isAppLoading,
+    projectFilter,
+    setImplementProjectFilter,
+  ]);
 
   const runningTaskIds = useMemo(
     () =>
@@ -2132,7 +2154,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             icon="archive"
             label={t('implement.archives', 'Archives')}
             pressed={showArchived}
-            onClick={() => setShowArchived((current) => !current)}
+            onClick={() => setImplementShowArchived(!showArchived)}
             data-tour-id="implement-archive-toggle"
           />
           <PanelHeaderIconButton
@@ -2170,8 +2192,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           selectedProjectId={projectFilter === ALL_PROJECTS_FILTER ? null : projectFilter}
           totalTaskCount={totalActiveTaskCount}
           onSelect={(projectId) => {
-            setProjectFilter(projectId || ALL_PROJECTS_FILTER);
-            setStatusFilter('all');
+            setImplementProjectFilter(projectId || ALL_PROJECTS_FILTER);
+            setImplementStatusFilter('all');
           }}
         />
 
@@ -2190,7 +2212,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               <button
                 key={filter}
                 type="button"
-                onClick={() => setStatusFilter((current) => current === filter ? 'all' : filter)}
+                onClick={() => setImplementStatusFilter(statusFilter === filter ? 'all' : filter)}
                 aria-pressed={statusFilter === filter}
                 title={label}
                 className={cn(
@@ -2208,7 +2230,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             {statusFilter !== 'all' && (
               <button
                 type="button"
-                onClick={() => setStatusFilter('all')}
+                onClick={() => setImplementStatusFilter('all')}
                 title={t('implement.clearStatusFilter', 'Show all statuses')}
                 className="flex h-7 min-w-0 items-center justify-center gap-1.5 rounded-md border border-border/70 bg-muted/30 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/30 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
               >

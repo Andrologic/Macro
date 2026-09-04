@@ -5,6 +5,10 @@ import { useAppStore } from '../../stores/useAppStore';
 import type { ArchitectPlanSummary } from '../../services/architectPlanService';
 import type { MacroProjectMetadataLoadResult } from '../../services/macroProjectMetadataLoader';
 import { ArchitectProjectNavigator } from './ArchitectProjectNavigator';
+import {
+  DEFAULT_ARCHITECT_VIEW_FILTERS,
+} from '../../services/viewFilterPreferences';
+import { useViewFilterStore } from '../../stores/useViewFilterStore';
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -33,6 +37,10 @@ describe('ArchitectProjectNavigator search', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    useViewFilterStore.setState({
+      architect: { ...DEFAULT_ARCHITECT_VIEW_FILTERS },
+      isHydrated: true,
+    });
     window.localStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);

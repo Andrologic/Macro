@@ -8,6 +8,11 @@ import {
   resolveArchiveViewSelection,
 } from './ConversationArchive';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
+import {
+  DEFAULT_CHAT_VIEW_FILTERS,
+} from '../../services/viewFilterPreferences';
+import { useViewFilterStore } from '../../stores/useViewFilterStore';
+import { PREF_KEYS, savePreference } from '../../services/preferences';
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -25,6 +30,10 @@ describe('ConversationArchive', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    useViewFilterStore.setState({
+      chat: { ...DEFAULT_CHAT_VIEW_FILTERS },
+      isHydrated: true,
+    });
     window.localStorage.setItem('macro_chatArchivedConversationIds', '[]');
     useChatStore.setState({
       ...useChatStore.getState(),
@@ -123,6 +132,63 @@ describe('ConversationArchive', () => {
 
     expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
     expect(document.body.textContent).toContain('No archived conversations');
+  });
+
+  it('aligns the selected conversation with a restored archived view', async () => {
+    const selectConversation = mock(async (conversationId: string) => {
+      useChatStore.setState({ selectedConversationId: conversationId });
+      return true;
+    });
+    useChatStore.setState({
+      conversations: [
+        ...useChatStore.getState().conversations,
+        {
+          id: 'conversation-2',
+          title: 'Conversation archivée',
+          scope_mode: 'Chat',
+          task_id: null,
+          project_id: 'project-1',
+          last_message: 'Ancien message',
+          message_count: 1,
+          updated_at: '2026-08-15T10:00:00.000Z',
+          is_unread: false,
+        },
+      ],
+      selectedConversationId: 'conversation-1',
+      selectConversation: selectConversation as never,
+    });
+    await savePreference(PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS, ['conversation-2']);
+    useConversationArchiveStore.getState().replaceArchivedConversationIds(['conversation-2']);
+    useViewFilterStore.setState({
+      chat: { version: 1, showArchived: true },
+      isHydrated: true,
+    });
+
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+
+    expect(selectConversation).toHaveBeenCalledWith('conversation-2');
+    expect(useChatStore.getState().selectedConversationId).toBe('conversation-2');
+    expect(
+      document.body.querySelector('[data-tour-id="chat-archive-toggle"]')
+        ?.getAttribute('aria-pressed'),
+    ).toBe('true');
+
+    await act(async () => {
+      root?.render(<></>);
+      useChatStore.setState({ selectedConversationId: 'conversation-1' });
+      await flushRender();
+    });
+    selectConversation.mockClear();
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+
+    expect(selectConversation).toHaveBeenCalledWith('conversation-2');
+    expect(useChatStore.getState().selectedConversationId).toBe('conversation-2');
   });
 
   it('opens and closes search inside the existing compact header', async () => {

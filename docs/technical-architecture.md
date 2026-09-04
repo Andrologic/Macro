@@ -579,11 +579,19 @@ Elle stocke notamment :
 Le frontend utilise aussi de la persistance locale légère pour :
 
 - certaines préférences
+- les filtres structurants des listes principales : projet, statut et archives
+  dans Implement, ainsi que la vue active ou archivée dans Architect et Chat
 - le fournisseur vocal actif, la langue et la durée maximale de dictée
 - les sélections de modèle par contexte
 - l'état de session local
 - certains fallback de plans
 - des données temporaires de pièces jointes
+
+Ces filtres de liste utilisent des objets versionnés dans `state.json`. Le
+frontend normalise chaque valeur hydratée et revient aux valeurs par défaut
+pour une version inconnue. Les recherches textuelles, les sélections multiples
+et les filtres propres aux boîtes de dialogue ou au terminal restent des états
+de session non persistés.
 
 ### 10.3 Metadata dans la branche `@macro`
 

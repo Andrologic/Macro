@@ -32,6 +32,7 @@ import { getPlanKindIconName } from '../../services/planKindPresentation';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
+import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { ProjectIcon } from '../project/ProjectIcon';
@@ -122,7 +123,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [expandedScopeIds, setExpandedScopeIds] = useState<string[]>([]);
   const [pinnedPlanIds, setPinnedPlanIds] = useState<string[]>([]);
   const [expandedPlanLists, setExpandedPlanLists] = useState<string[]>([]);
-  const [showArchived, setShowArchived] = useState(false);
+  const showArchived = useViewFilterStore((state) => state.architect.showArchived);
+  const setArchitectShowArchived = useViewFilterStore(
+    (state) => state.setArchitectShowArchived,
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -942,7 +946,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               setOpenPlanMenuKey(null);
               setScopeCreateMenu(null);
               setScopeContextMenu(null);
-              setShowArchived((current) => !current);
+              setArchitectShowArchived(!showArchived);
             }}
             data-tour-id="architect-archive-toggle"
           />

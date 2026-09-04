@@ -391,6 +391,12 @@ les archives et le tri déjà actifs restent appliqués aux résultats. Une
 recherche sans correspondance affiche un état vide explicite. Choisir un
 résultat déclenche la même sélection que dans la liste non filtrée.
 
+Les filtres structurants des listes principales survivent aux changements de
+mode et aux redémarrages. Implement conserve le projet, le statut et la vue
+archivée. Architect et Chat conservent la vue active ou archivée. Les requêtes
+de recherche, la sélection multiple et les filtres propres aux boîtes de
+dialogue ou au terminal restent limités à la session d'interaction en cours.
+
 En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. La flèche et la ligne d'un projet basculent toutes deux son état développé ou réduit, même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit cet état. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet ouvre le choix des types de plans compatibles avec son workflow Git.
 
 En mode Chat, la sélection multiple reste compacte tant qu'elle n'est pas utilisée. Son déclencheur est un bouton à icône placé dans l'en-tête, immédiatement avant la création d'une conversation. Le bandeau indiquant le nombre de conversations sélectionnées et les actions groupées n'est rendu qu'après activation du mode ; il s'ouvre à zéro sélection et disparaît à l'annulation.

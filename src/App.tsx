@@ -11,6 +11,7 @@ import { Toaster } from "./components/ui/Toaster";
 import { notify } from "./components/ui/toastService";
 import { useAppStore } from "./stores/useAppStore";
 import { useConversationArchiveStore } from "./stores/useConversationArchiveStore";
+import { useViewFilterStore } from "./stores/useViewFilterStore";
 import { Skeleton } from "./components/shared/Skeleton";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import { getPlatformChromeState } from "./utils/desktopPlatform";
@@ -203,6 +204,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     void useConversationArchiveStore.getState().hydrateArchivedConversationIds();
+    void useViewFilterStore.getState().hydrate();
   }, [bootstrapRetryKey]);
 
   // Ref to track panels that were auto-collapsed during resize
