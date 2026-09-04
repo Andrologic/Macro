@@ -31,6 +31,10 @@ Un écart devenu obsolète doit être supprimé.
 
 ## 3. État actuel synthétique
 
+La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.3`.
+La configuration Tauri reprend la version de `package.json`. La `0.1.4` est la
+prochaine version de travail, pas une version déjà livrée.
+
 L'application dispose déjà d'une base solide :
 
 - shell desktop React + Tauri fonctionnel
@@ -46,6 +50,12 @@ L'application dispose déjà d'une base solide :
 - lifecycle des plans maintenant robuste sur le socle desktop local-first
 - sync `@macro` maintenant structurée avec états exploitables, actions explicites et erreurs remontées proprement
 - merge conflicts pilotés par Macro maintenant détectés, bloqués en fail-closed et traités via un workflow assisté de résolution et reprise
+- questionnaires à choix rapides et réponses libres présents dans les conversations
+- notifications in-app et desktop configurables par catégorie, avec repli in-app lorsque le runtime desktop n'est pas disponible
+- démarrage manuel des tâches autonomes avec progression visible et reprise sûre après échec
+- recherche locale compacte dans les listes Architect, Implement et Chat
+- brouillons de composer persistants par conversation ou tâche
+- tâches directes Git et édition directe des projets sans Git, avec checkpoints internes pour la review
 - couches de services, stores et IPC déjà structurées
 - fondation headless expérimentale présente dans le code, sans capacité produit exposée
 
@@ -53,9 +63,33 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 
 - expérience Implement encore partiellement inachevée
 - automatisation et orchestration encore à fiabiliser
-- notifications et supervision distante non finalisées
+- boucle d'attention desktop encore incomplète entre questionnaires, approbations, review et retour vers l'action attendue
 - articulation desktop / remote / mobile encore incomplète
 - expérience multi-plan et multi-projet encore à consolider de bout en bout
+
+### 3.1 Périmètre confirmé de la 0.1.4
+
+La `0.1.4` doit terminer la supervision et la finalisation desktop sans ambiguïté.
+Elle s'appuie sur les questionnaires, les notifications, la review et le
+démarrage manuel déjà livrés.
+
+Objectifs confirmés :
+
+- notifier les questionnaires, les approbations d'outils et les reviews qui attendent l'utilisateur
+- ramener chaque notification vers la bonne tâche, conversation ou review
+- restaurer après redémarrage les questionnaires, approbations et reviews encore en attente
+- distinguer une attente de décision utilisateur d'un blocage d'exécution
+- afficher la prochaine action de review jusqu'au commit par dépôt, à la complétion de la tâche et à la validation globale du plan
+- clarifier le contexte groupe, projet, plan et tâche ainsi que la progression multi-dépôts
+- conserver les filtres et la sélection utiles pendant la navigation Implement
+- donner accès à la gestion des projets depuis Implement
+- corriger les états vides Architect selon la présence de plans et les droits de modification
+- normaliser les icônes de projet et corriger les accents ou fallbacks de traduction démontrablement erronés
+
+Le kernel distant public, la supervision mobile, les comptes, la synchronisation
+connectée, un système de plugins, l'édition complète des fichiers en review et
+une nouvelle politique de merge automatique restent hors périmètre de la
+`0.1.4`.
 
 ---
 
@@ -86,6 +120,7 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - cleanup complet des structures lorsque des plans sont supprimés ou abandonnés
 - robustesse multi-plans parallèles
 - lisibilité du mode Architect quand plusieurs plans coexistent
+- états vides cohérents pour un projet modifiable, en lecture seule ou encore à configurer
 
 ### 4.3 Mode Implement
 
@@ -97,6 +132,8 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - commits et intégration bien verrouillés
 
 État déjà consolidé :
+- démarrage manuel des tâches, avec progression de leur préparation
+- questionnaires à réponses suggérées ou libres
 - dérivation et agrégation de tâches depuis plusieurs plans exécutables côté desktop
 - catalogue/backend de listing des tâches maintenant découplé du seul plan actif et d'une seule branche cible
 - filtrage de la file par plan
@@ -109,9 +146,10 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 
 État à consolider :
 - UX de la review et de l'édition ciblée
-- questions IA à réponses rapides réellement branchées
+- notifications et restauration des questionnaires ou approbations en attente
 - articulation claire entre review de tâche, commit, validation finale de plan et merge
 - comportement global du mode quand plusieurs plans et plusieurs projets sont actifs en même temps
+- contexte de la tâche, filtres persistants et accès à la gestion des projets dans la file Implement
 
 ### 4.4 Review et édition ciblée
 
@@ -188,8 +226,15 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - demandes d'attention claires
 - réponses rapides depuis mobile
 
+État déjà consolidé :
+- notifications in-app et desktop disponibles
+- préférences locales par catégorie et par canal
+- repli vers l'in-app lorsque les notifications bureau ne sont pas supportées
+
 État à consolider :
-- système de notification encore absent ou incomplet
+- émission systématique pour les questionnaires, approbations et reviews en attente
+- retour vers l'action exacte depuis une notification
+- restauration fiable des demandes d'attention après redémarrage
 - protocole d'échange entre exécution et client mobile
 - définition de la supervision distante comme expérience produit complète
 
@@ -223,17 +268,17 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 
 ## 5. Chantiers prioritaires
 
-### 5.1 Priorité 1 - Stabiliser le cœur desktop
+### 5.1 Priorité 1 - Terminer la boucle d'attention desktop pour 0.1.4
 
 Objectif :
-- rendre l'expérience desktop suffisamment robuste pour servir de base produit
+- signaler ce qui attend l'utilisateur et le ramener à l'action exacte
 
 Chantiers :
-- finir la boucle Architect -> Implement -> Review -> Commit -> Validation de plan
-- durcir le workflow Git de plan
-- fiabiliser les transitions de tâches
-- finaliser l'UX de review et d'édition ciblée
-- stabiliser la lisibilité du multi-plan côté Implement dans la review et la finalisation
+- brancher les questionnaires, approbations d'outils et reviews sur le système de notification existant
+- ouvrir la bonne tâche, conversation ou review depuis l'action de notification
+- restaurer les demandes encore en attente après redémarrage
+- distinguer l'attente utilisateur du blocage d'exécution
+- rendre la prochaine action explicite jusqu'à la validation finale du plan
 
 ### 5.2 Priorité 2 - Rendre le multi-projet réellement premium
 
@@ -242,9 +287,9 @@ Objectif :
 
 Chantiers :
 - clarifier la structure groupe / projet / plan / tâche
-- fiabiliser les tâches multi-projets
-- garantir la qualité des commits par projet
-- améliorer navigation, filtres et lisibilité de contexte
+- conserver les filtres et la sélection pendant la navigation Implement
+- ajouter l'accès à la gestion des projets depuis Implement
+- améliorer la lisibilité de la progression et des commits par dépôt
 - mieux articuler finalisation de plan, review et navigation quand plusieurs plans restent actifs en parallèle
 
 ### 5.3 Priorité 3 - Fiabiliser l'autonomie assistée
@@ -253,8 +298,6 @@ Objectif :
 - rendre l'IA capable d'avancer longtemps sans dégrader la qualité de supervision
 
 Chantiers :
-- démarrage manuel des tâches bien borné
-- questions IA à choix rapides
 - gestion claire des points de blocage
 - exécution test/build observable et interprétable
 
@@ -264,7 +307,6 @@ Objectif :
 - permettre la poursuite du travail hors du poste principal
 
 Chantiers :
-- notifications desktop d'abord
 - socle de supervision mobile ensuite
 - protocoles de questions/réponses à distance
 - review et validation à distance
@@ -365,7 +407,7 @@ Critère de sortie :
 - la synthèse de plans, la file de tâches et les filtres restent maintenant cohérents quand plusieurs plans vivants coexistent dans un même groupe, sans régression sur les tâches hors plan
 - le prochain verrou majeur de la phase redevient la lisibilité UX du multi-projet et l'articulation review / finalisation quand plusieurs plans restent actifs
 
-Prochaine tranche recommandée après merge 0.1 :
+Tranche confirmée pour la `0.1.4` :
 - lisibilité UX groupe / projet / plan / tâche côté Implement
 - clarté des filtres, de la navigation et de la review quand plusieurs plans et plusieurs dépôts restent actifs en parallèle
 - meilleure articulation entre review de tâche multi-projet, validation globale de plan et finalisation
@@ -373,12 +415,17 @@ Prochaine tranche recommandée après merge 0.1 :
 ### Phase 4 - Automatisation et supervision
 
 Livrables :
-- démarrage manuel des tâches abouti
-- notifications desktop
-- système de questions/réponses rapides
+- notifications des questionnaires, approbations et reviews
+- retour vers la bonne action depuis chaque demande d'attention
+- restauration des demandes en attente après redémarrage
+- prochaine action de review et progression multi-dépôts explicites
 
 Critère de sortie :
 - l'utilisateur peut laisser Macro avancer puis reprendre la main efficacement
+
+État :
+- le démarrage manuel, les questionnaires et le système de notifications desktop sont livrés
+- les connexions entre ces capacités constituent le cœur de la `0.1.4`
 
 ### Phase 5 - Remote kernel et mobile supervision
 
@@ -437,7 +484,7 @@ Cette roadmap doit être mise à jour lorsque :
 
 - une phase est terminée
 - une priorité change
-- un nouveau chantier majeur apparait
+- un nouveau chantier majeur apparaît
 - une décision produit ferme un sujet ouvert
 
 Chaque entrée importante de roadmap doit pouvoir être reliée à :
