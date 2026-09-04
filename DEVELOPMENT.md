@@ -148,10 +148,10 @@ runs only from a newly created annotated `vX.Y.Z` tag whose commit belongs to
 version, builds macOS, Windows, and Linux packages, then creates a GitHub
 Release draft for manual review.
 
-The current `0.1.0` version is eligible for an official release once its
-matching `v0.1.0` tag is created. Windows and Linux release packages are built
-in GitHub Actions; local macOS universal builds remain available for smoke
-testing.
+Local validation and release publication are separate steps. Passing local
+checks does not validate installers for every supported platform or publish a
+release. Windows and Linux release packages are built in GitHub Actions;
+local macOS universal builds remain available for smoke testing.
 
 ## Validation
 
