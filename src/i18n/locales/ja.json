@@ -2036,6 +2036,15 @@
     "remove": "通知を削除する",
     "actionRequired": "対応が必要です",
     "actionError": "エラーが発生しました",
+    "workflow": {
+      "openAction": "開く",
+      "questionnaireTitle": "回答待ちの質問",
+      "questionnaireBody": "{{conversation}} が回答を待っています: {{prompt}}",
+      "approvalTitle": "承認が必要です",
+      "approvalBody": "{{conversation}} が承認を求めています: {{summary}}",
+      "reviewTitle": "レビューの準備完了",
+      "reviewBody": "{{task}} のレビュー準備ができました。"
+    },
     "emptyTitle": "通知はありません",
     "emptySubtitle": "情報、警告、エラー通知がここに表示されます。",
     "allRead": "全部追いついた",

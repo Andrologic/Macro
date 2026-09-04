@@ -1578,6 +1578,66 @@ describe('useAppStore architect plan resolution', () => {
     );
   });
 
+  it('skips Architect auto-plan hydration when mode navigation disables it', async () => {
+    const rememberedPlan = buildPlan({ id: 'plan-remembered' });
+    planById.set(rememberedPlan.id, rememberedPlan);
+
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    useAppStore.setState({
+      mode: 'Chat',
+      projectGroups: bootstrapProjectGroups,
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+    });
+
+    useAppStore.getState().setMode('Architect', { ensureAutoPlan: false });
+    await flushAsyncWork();
+
+    expect(useAppStore.getState().mode).toBe('Architect');
+    expect(listArchitectPlansMock).not.toHaveBeenCalled();
+    expect(ensureProjectGroupPlanMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves the latest mode while group notification navigation settles', async () => {
+    const secondGroup = buildProjectGroup({
+      id: 'group-2',
+      name: 'Companion',
+      projects: [
+        {
+          id: 'project-3',
+          name: 'Desktop',
+          path: '/repos/desktop',
+          gitFlowSettings: { baseBranch: 'develop' },
+        },
+      ],
+    });
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    getLocalProjectContextStateMock.mockClear();
+    listArchitectPlansMock.mockClear();
+    ensureProjectGroupPlanMock.mockClear();
+    useAppStore.setState({
+      mode: 'Chat',
+      projectGroups: [...bootstrapProjectGroups, secondGroup],
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+    });
+
+    useAppStore.getState().setSelectedGroup('group-2', {
+      restoreProjectContext: false,
+      ensureAutoPlan: false,
+    });
+    useAppStore.getState().setMode('Architect', { ensureAutoPlan: false });
+    await flushAsyncWork();
+
+    expect(useAppStore.getState().selectedGroupId).toBe('group-2');
+    expect(useAppStore.getState().mode).toBe('Architect');
+    expect(sessionContext?.selectedGroupId).toBe('group-2');
+    expect(sessionContext?.mode).toBe('Architect');
+    expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+    expect(listArchitectPlansMock).not.toHaveBeenCalled();
+    expect(ensureProjectGroupPlanMock).not.toHaveBeenCalled();
+  });
+
   it('resolves a visible plan on same-group project focus changes when no plan is active', async () => {
     const visiblePlan = buildPlan({
       id: 'plan-visible',
