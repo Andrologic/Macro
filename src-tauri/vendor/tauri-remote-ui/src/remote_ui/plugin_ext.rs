@@ -97,13 +97,13 @@ impl RemoteUi {
             r#"
             window.__TAURI_INTERNALS__.invoke({cmd}, {args}, {opts})
                 .then((res) => {{
-                    return window.__TAURI_INTERNALS__.invoke("plugin:remote-ui|complete_rpc", {{
+                    return window.__TAURI_INTERNALS__.invoke("plugin:tauri-remote-ui|complete_rpc", {{
                         sessionId: "{session_id}",
                         id: {id},
                         status: "{success}", payload: res
                     }});
                 }}, (err) => {{
-                    return window.__TAURI_INTERNALS__.invoke("plugin:remote-ui|complete_rpc", {{
+                    return window.__TAURI_INTERNALS__.invoke("plugin:tauri-remote-ui|complete_rpc", {{
                         sessionId: "{session_id}",
                         id: {id},
                         status: "{error}", payload: err
