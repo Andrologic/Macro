@@ -1511,7 +1511,7 @@ export const registerImplementPolicyScenarios = (
       expect(terminalRunCommandFromChatMock).toHaveBeenCalledTimes(1);
     });
 
-    it('cancels a pending approval when the conversation stream is stopped', async () => {
+    it('denies the active approval and aborts queued requests when the conversation stream is stopped', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';
       providerState.selectedSupportsNativeToolCalling = () => true;
@@ -1565,7 +1565,7 @@ export const registerImplementPolicyScenarios = (
       useChatStore.getState().stopConversationStream('implement-conv');
 
       expect(String(await toolCallPromise)).toBe('Tool terminal_run was denied by the user.');
-      expect(String(await queuedToolCallPromise)).toBe('Tool terminal_run was denied by the user.');
+      expect(String(await queuedToolCallPromise)).toBe('Tool execution aborted');
       expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
       expect(terminalRunCommandFromChatMock).not.toHaveBeenCalled();
       expect(
