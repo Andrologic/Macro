@@ -248,6 +248,7 @@
   "hideArchived": "Hide archived",
   "showArchived": "Show archived",
   "archives": "Archives",
+  "manageProjects": "Manage projects",
   "taskCommandsDraftUnsupported": "Commands are unavailable while this task is still a draft.",
   "taskCommandsArchivedUnsupported": "Commands are unavailable for archived tasks.",
   "completedTasks": "Completed tasks",

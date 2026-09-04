@@ -248,6 +248,7 @@
   "hideArchived": "보관된 작업 숨기기",
   "showArchived": "보관된 작업 보기",
   "archives": "아카이브",
+  "manageProjects": "프로젝트 관리",
   "taskCommandsDraftUnsupported": "이 작업이 아직 초안인 동안에는 명령을 사용할 수 없습니다.",
   "taskCommandsArchivedUnsupported": "보관된 작업에는 명령을 사용할 수 없습니다.",
   "completedTasks": "완료된 작업",

@@ -1019,6 +1019,49 @@ describe('TaskQueue', () => {
     expect(document.body.textContent).toContain('Archived task');
   });
 
+  it('opens project management from an accessible compact header action', async () => {
+    seedStores('Pending');
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+
+    const manageProjectsButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-manage-projects"]'
+    );
+    expect(manageProjectsButton).not.toBeNull();
+    expect(manageProjectsButton?.tagName).toBe('BUTTON');
+    expect(manageProjectsButton?.type).toBe('button');
+    expect(manageProjectsButton?.tabIndex).toBe(0);
+    expect(manageProjectsButton?.getAttribute('aria-label')).toBe('Manage projects');
+    expect(manageProjectsButton?.getAttribute('title')).toBe('Manage projects');
+
+    const searchToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-search-toggle"]'
+    );
+    await act(async () => {
+      searchToggle?.click();
+      await flushRender();
+    });
+    expect(document.body.querySelector('[data-tour-id="implement-manage-projects"]')).toBeNull();
+
+    await act(async () => {
+      searchToggle?.click();
+      await flushRender();
+    });
+
+    const restoredManageProjectsButton = document.body.querySelector<HTMLButtonElement>(
+      '[data-tour-id="implement-manage-projects"]'
+    );
+    await act(async () => {
+      restoredManageProjectsButton?.click();
+      await flushRender();
+    });
+
+    expect(useAppStore.getState().projectNavigatorOpen).toBe(true);
+  });
+
   it('shows tasks from every project by default and filters them by project', async () => {
     seedTasks([
       makeTask('task-project-1', 'Pending', { title: 'First project task' }),
