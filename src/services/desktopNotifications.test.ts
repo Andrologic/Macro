@@ -114,6 +114,22 @@ describe('desktopNotifications service', () => {
     sendNotificationMock.mockImplementation((_payload?: unknown) => undefined);
   });
 
+  it('tracks browser blur and visibility even when desktop notifications are unsupported', async () => {
+    tauriRuntime = false;
+    installDomStubs('Linux');
+    await desktopNotifications.initializeDesktopNotifications();
+    expect(desktopNotifications.isAppForeground()).toBe(true);
+    windowTarget.emit('blur');
+    expect(desktopNotifications.isAppForeground()).toBe(false);
+    windowTarget.emit('focus');
+    documentHidden = true;
+    documentTarget.emit('visibilitychange');
+    expect(desktopNotifications.isAppForeground()).toBe(false);
+    documentHidden = false;
+    documentTarget.emit('visibilitychange');
+    expect(desktopNotifications.isAppForeground()).toBe(true);
+  });
+
   it('does not send a desktop notification while the app is foregrounded', async () => {
     await expect(
       desktopNotifications.maybeSendDesktopNotification({

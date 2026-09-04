@@ -14,6 +14,7 @@ import {
 } from './durableIdentity';
 
 export interface WorkflowAttentionContext {
+  appForeground: boolean;
   mode: AppMode;
   selectedTaskId: string | null;
   selectedConversationId: string | null;
@@ -24,6 +25,8 @@ export interface WorkflowAttentionContext {
 }
 
 export interface WorkflowChatAttentionState {
+  hydrationStatus?: "idle" | "hydrating" | "ready" | "error";
+  messageLoadStatusByConversationId?: Record<string, "idle" | "loading" | "ready" | "error" | undefined>;
   messages: ChatMessage[];
   messagesByConversationId: Record<string, ChatMessage[]>;
   conversations: Conversation[];
@@ -110,6 +113,7 @@ const isConversationContextVisible = (
   context: WorkflowAttentionContext,
   conversation: Conversation,
 ): boolean =>
+  context.appForeground &&
   context.mode === conversation.scope_mode &&
   context.selectedConversationId === conversation.id &&
   (conversation.scope_mode === 'Chat' ||
@@ -134,12 +138,22 @@ const getQuestionnaireKeys = (state: WorkflowChatAttentionState): Set<string> =>
   return keys;
 };
 
+export const getActiveChatAttentionKeys = (state: WorkflowChatAttentionState): Set<string> => {
+  const keys = new Set([...getQuestionnaireKeys(state)].map((key) => `workflow-attention:questionnaire:${key}`));
+  for (const [conversationId, approval] of Object.entries(state.pendingToolApprovalByConversationId)) {
+    if (approval) keys.add(`workflow-attention:approval:${conversationId}:${approval.toolCallId}`);
+  }
+  return keys;
+};
+
 export const detectNewChatAttentionEvents = (
   previousState: WorkflowChatAttentionState,
   nextState: WorkflowChatAttentionState,
   context: WorkflowAttentionContext,
 ): WorkflowAttentionEvent[] => {
   const events: WorkflowAttentionEvent[] = [];
+  if (previousState.hydrationStatus === "hydrating" || nextState.hydrationStatus === "hydrating" ||
+      nextState.hydrationStatus === "idle") return events;
   const previousQuestionnaireKeys = getQuestionnaireKeys(previousState);
 
   for (const conversation of nextState.conversations) {
@@ -151,7 +165,9 @@ export const detectNewChatAttentionEvents = (
     );
     if (questionnaire?.mode === 'pending_reply') {
       const requestKey = `${conversation.id}:${questionnaire.assistantMessageId}`;
-      if (!previousQuestionnaireKeys.has(requestKey) && !isVisible) {
+      const wasLoading = previousState.messageLoadStatusByConversationId?.[conversation.id] === 'loading';
+      const isLoading = nextState.messageLoadStatusByConversationId?.[conversation.id] === 'loading';
+      if (!wasLoading && !isLoading && !previousQuestionnaireKeys.has(requestKey) && !isVisible) {
         events.push({
           kind: 'questionnaire',
           key: `workflow-attention:questionnaire:${requestKey}`,
@@ -213,7 +229,7 @@ export const detectNewReviewAttentionEvents = (
       task.status !== 'InReview' ||
       previousStatuses.get(task.id) === undefined ||
       previousStatuses.get(task.id) === 'InReview' ||
-      (context.mode === 'Implement' && selectedTask?.id === task.id)
+      (context.appForeground && context.mode === 'Implement' && selectedTask?.id === task.id)
     ) {
       return [];
     }

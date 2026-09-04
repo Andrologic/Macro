@@ -3,18 +3,25 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
+import { useNotificationCenterStore } from '../../stores/useNotificationCenterStore';
+import { resolveTaskReference } from '../../services/durableIdentity';
 import { useTaskStore } from '../../stores/useTaskStore';
 import {
   detectNewChatAttentionEvents,
+  getActiveChatAttentionKeys,
   detectNewReviewAttentionEvents,
   type WorkflowAttentionEvent,
 } from '../../services/workflowAttentionEvents';
 import { getScopedProjectIds } from '../../services/globalProjects';
+import { initializeDesktopNotifications, isAppForeground } from '../../services/desktopNotifications';
+import { openWorkflowNotificationContext } from '../../services/openWorkflowNotificationContext';
+import type { WorkflowNotificationNavigation } from '../../services/workflowNotificationNavigation';
 import { notify } from '../ui/toastService';
 
 const getAttentionContext = () => {
   const appState = useAppStore.getState();
   return {
+    appForeground: isAppForeground(),
     mode: appState.mode,
     selectedTaskId: appState.selectedTaskId,
     selectedConversationId: useChatStore.getState().selectedConversationId,
@@ -32,88 +39,16 @@ const getAttentionContext = () => {
   };
 };
 
-export const openAttentionContext = async (
-  event: WorkflowAttentionEvent,
-): Promise<void> => {
-  const appState = useAppStore.getState();
-  const chatState = useChatStore.getState();
-
-  if (event.kind === 'review') {
-    appState.setMode('Implement');
-    appState.setSelectedTask(event.taskId);
-    await chatState.ensureConversationForCurrentMode();
-    if (event.conversationId) {
-      const selected = await chatState.selectConversation(event.conversationId);
-      if (!selected) {
-        await chatState.ensureConversationForCurrentMode();
-      }
-    } else {
-      await chatState.ensureConversationForCurrentMode();
-    }
-    return;
-  }
-
-  if (event.mode === 'Architect') {
-    if (event.groupId) {
-      if (event.groupId !== appState.selectedGroupId) {
-        appState.setSelectedGroup(event.groupId, {
-          restoreProjectContext: false,
-          ensureAutoPlan: false,
-        });
-      }
-    } else if (event.projectId) {
-      await appState.switchProjectContext(event.projectId, {
-        restoreProjectContext: false,
-        ensureAutoPlan: false,
-      });
-    }
-  }
-
-  appState.setMode(event.mode, {
-    ensureAutoPlan: event.mode !== 'Architect',
-  });
-  if (event.mode === 'Architect') {
-    const metadata = await useAppStore
-      .getState()
-      .loadMacroProjectMetadataForSelection({
-        hydrateActivePlan: false,
-        reason: 'manual',
-      });
-    const ownerPlan = metadata?.snapshot.visiblePlans.find(
-      (plan) => plan.conversationId === event.conversationId,
-    );
-    if (ownerPlan) {
-      await useAppStore.getState().activateArchitectPlan(ownerPlan.id, {
-        targetBranch: ownerPlan.targetBranch,
-        allowScopeSwitch: false,
-        consolidateBlankPlans: false,
-        planSummaryHint: ownerPlan,
-        scopedProjectIdsHint: metadata?.snapshot.scopedProjectIds,
-      });
-    } else {
-      await useAppStore.getState().loadMacroProjectMetadataForSelection({
-        hydrateActivePlan: true,
-        reason: 'manual',
-      });
-    }
-  }
-  if (event.mode === 'Implement') {
-    appState.setSelectedTask(event.taskId);
-  }
-  await chatState.ensureConversationForCurrentMode();
-  const selected = await chatState.selectConversation(event.conversationId);
-  if (!selected) {
-    await chatState.ensureConversationForCurrentMode();
-  }
-};
-
 export const emitWorkflowAttentionNotification = (
   event: WorkflowAttentionEvent,
   t: TFunction,
 ): void => {
+  const workflowNavigation: WorkflowNotificationNavigation = event.kind === 'review'
+    ? { kind: 'review', taskId: event.taskId }
+    : { kind: 'conversation', requestKind: event.kind, conversationId: event.conversationId };
   const action = {
     label: t('notifications.workflow.openAction', 'Open'),
-    onClick: () => openAttentionContext(event),
+    onClick: () => openWorkflowNotificationContext(workflowNavigation),
   };
 
   if (event.kind === 'questionnaire') {
@@ -129,6 +64,7 @@ export const emitWorkflowAttentionNotification = (
         notificationKey: event.key,
         tone: 'info',
         actions: [action],
+        workflowNavigation,
       },
     );
     return;
@@ -147,6 +83,7 @@ export const emitWorkflowAttentionNotification = (
         notificationKey: event.key,
         tone: event.isDestructive ? 'warning' : 'info',
         actions: [action],
+        workflowNavigation,
       },
     );
     return;
@@ -162,10 +99,42 @@ export const emitWorkflowAttentionNotification = (
     notificationKey: event.key,
     tone: 'info',
     actions: [action],
+    workflowNavigation,
   });
 };
 
+// Resolution removes the obsolete call to action. Loading an old request never emits it again.
+export const reconcileWorkflowAttentionNotifications = (): void => {
+  const chat = useChatStore.getState();
+  const tasks = useTaskStore.getState().tasks;
+  const center = useNotificationCenterStore.getState();
+  const activeKeys = getActiveChatAttentionKeys(chat);
+  const remove = (item: (typeof center.items)[number]) => {
+    if (item.sessionToastId != null) notify.dismiss(item.sessionToastId);
+    center.removeItem(item.id);
+  };
+  for (const item of center.items) {
+    const navigation = item.workflowNavigation;
+    if (!navigation) continue;
+    if (navigation.kind === 'review') {
+      const task = resolveTaskReference(tasks, navigation.taskId);
+      if (task && task.status !== 'InReview') remove(item);
+      continue;
+    }
+    if (chat.hydrationStatus !== 'ready') continue;
+    const conversation = chat.conversations.find((candidate) => candidate.id === navigation.conversationId);
+    if (!conversation) {
+      remove(item);
+    } else if ((navigation.requestKind === 'approval' ||
+        chat.messageLoadStatusByConversationId[conversation.id] === 'ready') && !activeKeys.has(item.id)) {
+      remove(item);
+    }
+  }
+};
+
 export const subscribeToWorkflowAttentionNotifications = (t: TFunction) => {
+  void initializeDesktopNotifications();
+  reconcileWorkflowAttentionNotifications();
   const unsubscribeChat = useChatStore.subscribe((nextState, previousState) => {
     const events = detectNewChatAttentionEvents(
       previousState,
@@ -173,6 +142,7 @@ export const subscribeToWorkflowAttentionNotifications = (t: TFunction) => {
       getAttentionContext(),
     );
     events.forEach((event) => emitWorkflowAttentionNotification(event, t));
+    reconcileWorkflowAttentionNotifications();
   });
   const unsubscribeTasks = useTaskStore.subscribe((nextState, previousState) => {
     const events = detectNewReviewAttentionEvents(
@@ -182,6 +152,7 @@ export const subscribeToWorkflowAttentionNotifications = (t: TFunction) => {
       useChatStore.getState().conversations,
     );
     events.forEach((event) => emitWorkflowAttentionNotification(event, t));
+    reconcileWorkflowAttentionNotifications();
   });
 
   return () => {

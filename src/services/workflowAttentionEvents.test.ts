@@ -13,6 +13,7 @@ import {
 } from './workflowAttentionEvents';
 
 const backgroundContext: WorkflowAttentionContext = {
+  appForeground: true,
   mode: 'Chat',
   selectedTaskId: null,
   selectedConversationId: 'conversation-visible',
@@ -91,6 +92,36 @@ const makeTask = (
   }) as CatalogedImplementTask;
 
 describe('workflow attention events', () => {
+  it('notifies for selected questionnaires and approvals when the window is inactive', () => {
+    const conversation = makeConversation('visible', { scope_mode: 'Chat', task_id: null });
+    const previous = makeChatState([conversation]);
+    const next = makeChatState([conversation], {
+      messages: [makeQuestionnaireMessage(conversation.id)],
+      pendingToolApprovalByConversationId: { [conversation.id]: makeApproval(conversation.id) },
+    });
+    const context = { ...backgroundContext, selectedConversationId: conversation.id, appForeground: false };
+    expect(detectNewChatAttentionEvents(previous, next, context).map((event) => event.kind)).toEqual(['questionnaire', 'approval']);
+    expect(detectNewChatAttentionEvents(next, next, context)).toEqual([]);
+    expect(detectNewChatAttentionEvents(previous, next, { ...context, appForeground: true })).toEqual([]);
+  });
+
+  it('notifies for a selected review only while the window is inactive', () => {
+    const previous = [makeTask('visible', 'InProgress')];
+    const next = [makeTask('visible', 'InReview')];
+    const context: WorkflowAttentionContext = { ...backgroundContext, mode: 'Implement', selectedTaskId: 'visible', appForeground: false };
+    expect(detectNewReviewAttentionEvents(previous, next, context, [])).toHaveLength(1);
+    expect(detectNewReviewAttentionEvents(next, next, context, [])).toEqual([]);
+    expect(detectNewReviewAttentionEvents(previous, next, { ...context, appForeground: true }, [])).toEqual([]);
+  });
+
+  it('does not emit requests restored during startup or lazy message loading', () => {
+    const conversation = makeConversation('old');
+    const previous = makeChatState([conversation]);
+    const next = makeChatState([conversation], { messages: [makeQuestionnaireMessage(conversation.id)] });
+    expect(detectNewChatAttentionEvents({ ...previous, hydrationStatus: 'hydrating' }, { ...next, hydrationStatus: 'ready' }, backgroundContext)).toEqual([]);
+    expect(detectNewChatAttentionEvents({ ...previous, messageLoadStatusByConversationId: { old: 'loading' } }, { ...next, messageLoadStatusByConversationId: { old: 'ready' } }, backgroundContext)).toEqual([]);
+  });
+
   it('detects a new questionnaire once', () => {
     const conversation = makeConversation('questionnaire');
     const previous = makeChatState([conversation]);
@@ -197,6 +228,7 @@ describe('workflow attention events', () => {
       messagesByConversationId: { [conversation.id]: [message] },
     });
     const visibleContext: WorkflowAttentionContext = {
+      appForeground: true,
       mode: 'Implement',
       selectedTaskId: conversation.task_id,
       selectedConversationId: conversation.id,
@@ -218,6 +250,7 @@ describe('workflow attention events', () => {
       },
     });
     const visibleContext: WorkflowAttentionContext = {
+      appForeground: true,
       mode: 'Implement',
       selectedTaskId: conversation.task_id,
       selectedConversationId: conversation.id,
@@ -244,6 +277,7 @@ describe('workflow attention events', () => {
       messagesByConversationId: { [conversation.id]: [message] },
     });
     const staleContext: WorkflowAttentionContext = {
+      appForeground: true,
       mode: 'Architect',
       selectedTaskId: null,
       selectedConversationId: conversation.id,
@@ -272,6 +306,7 @@ describe('workflow attention events', () => {
       messagesByConversationId: { [conversation.id]: [message] },
     });
     const conflictingContext: WorkflowAttentionContext = {
+      appForeground: true,
       mode: 'Architect',
       selectedTaskId: null,
       selectedConversationId: conversation.id,
@@ -298,6 +333,7 @@ describe('workflow attention events', () => {
       },
     });
     const selectedTaskContext: WorkflowAttentionContext = {
+      appForeground: true,
       mode: 'Implement',
       selectedTaskId: 'task-selected',
       selectedConversationId: conversation.id,
@@ -327,6 +363,7 @@ describe('workflow attention events', () => {
       },
     });
     const visibleContext: WorkflowAttentionContext = {
+      appForeground: true,
       mode: 'Implement',
       selectedTaskId: task.id,
       selectedConversationId: conversation.id,
@@ -341,6 +378,7 @@ describe('workflow attention events', () => {
 
   it('does not notify for a review already visible to the user', () => {
     const visibleReviewContext: WorkflowAttentionContext = {
+      appForeground: true,
       mode: 'Implement',
       selectedTaskId: 'visible',
       selectedConversationId: 'conversation-visible',

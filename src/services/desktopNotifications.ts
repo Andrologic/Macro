@@ -81,7 +81,10 @@ const setStatus = (nextStatus: DesktopNotificationPermissionStatus): void => {
   notifyListeners();
 };
 
-const isAppForeground = (): boolean => windowFocused && documentVisible;
+export const isAppForeground = (): boolean =>
+  initialized || initPromise
+    ? windowFocused && documentVisible
+    : getInitialWindowFocusedState() && getInitialDocumentVisibleState();
 
 const syncBackgroundDeduplication = (): void => {
   if (isAppForeground()) {
@@ -231,12 +234,6 @@ export const initializeDesktopNotifications = async (): Promise<void> => {
     windowFocused = getInitialWindowFocusedState();
     documentVisible = getInitialDocumentVisibleState();
 
-    if (!isSupportedRuntime()) {
-      setStatus('unsupported');
-      initialized = true;
-      return;
-    }
-
     if (typeof window !== 'undefined') {
       const handleWindowFocus = () => setWindowFocused(true);
       const handleWindowBlur = () => setWindowFocused(false);
@@ -254,6 +251,12 @@ export const initializeDesktopNotifications = async (): Promise<void> => {
       cleanupCallbacks.push(() =>
         document.removeEventListener('visibilitychange', handleVisibilityChange)
       );
+    }
+
+    if (!isSupportedRuntime()) {
+      setStatus('unsupported');
+      initialized = true;
+      return;
     }
 
     try {
