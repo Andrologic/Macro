@@ -17,6 +17,10 @@ const WEB_FETCH_PAGE_MAX_BYTES: usize = 2 * 1024 * 1024;
 const WEB_FETCH_FAVICON_MAX_BYTES: usize = 256 * 1024;
 const WEB_FETCH_MAX_REDIRECTS: usize = 5;
 const WEB_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+const WEB_SEARCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const WEB_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
+const WEB_SEARCH_RESPONSE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const WEB_SEARCH_ERROR_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -420,7 +424,8 @@ async fn search_tavily(
     max_results: u32,
     include_raw_content: bool,
 ) -> CommandResult<Vec<WebSearchResultDto>> {
-    let response = reqwest::Client::new()
+    let client = web_search_client()?;
+    let response = client
         .post("https://api.tavily.com/search")
         .bearer_auth(api_key)
         .json(&json!({
@@ -436,13 +441,14 @@ async fn search_tavily(
         .map_err(|error| command_error(format!("La recherche Tavily a échoué : {error}")))?;
     let status = response.status();
     if !status.is_success() {
+        let detail = read_bounded_response(response, WEB_SEARCH_ERROR_MAX_BYTES, "Tavily").await?;
         return Err(command_error(format!(
-            "Tavily a refusé la requête ({status})."
+            "Tavily a refusé la requête ({status}){}.",
+            format_http_error_detail(&detail),
         )));
     }
-    let payload = response
-        .json::<Value>()
-        .await
+    let body = read_bounded_response(response, WEB_SEARCH_RESPONSE_MAX_BYTES, "Tavily").await?;
+    let payload = serde_json::from_slice::<Value>(&body)
         .map_err(|error| command_error(format!("Réponse Tavily invalide : {error}")))?;
     Ok(payload
         .get("results")
@@ -483,7 +489,8 @@ async fn search_brave(
         .append_pair("q", query)
         .append_pair("count", &max_results.to_string())
         .append_pair("extra_snippets", "true");
-    let response = reqwest::Client::new()
+    let client = web_search_client()?;
+    let response = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")
         .header("X-Subscription-Token", api_key)
@@ -492,13 +499,16 @@ async fn search_brave(
         .map_err(|error| command_error(format!("La recherche Brave a échoué : {error}")))?;
     let status = response.status();
     if !status.is_success() {
+        let detail =
+            read_bounded_response(response, WEB_SEARCH_ERROR_MAX_BYTES, "Brave Search").await?;
         return Err(command_error(format!(
-            "Brave Search a refusé la requête ({status})."
+            "Brave Search a refusé la requête ({status}){}.",
+            format_http_error_detail(&detail),
         )));
     }
-    let payload = response
-        .json::<Value>()
-        .await
+    let body =
+        read_bounded_response(response, WEB_SEARCH_RESPONSE_MAX_BYTES, "Brave Search").await?;
+    let payload = serde_json::from_slice::<Value>(&body)
         .map_err(|error| command_error(format!("Réponse Brave invalide : {error}")))?;
     Ok(payload
         .pointer("/web/results")
@@ -536,6 +546,79 @@ async fn search_brave(
         .collect())
 }
 
+fn web_search_client() -> CommandResult<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(WEB_SEARCH_CONNECT_TIMEOUT)
+        .timeout(WEB_SEARCH_TIMEOUT)
+        .build()
+        .map_err(|error| {
+            command_error(format!(
+                "Impossible de préparer le transport de recherche web : {error}"
+            ))
+        })
+}
+
+fn append_bounded_chunk(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    max_bytes: usize,
+    provider: &str,
+) -> CommandResult<()> {
+    let next_len = body
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| command_error(format!("Réponse {provider} trop volumineuse.")))?;
+    if next_len > max_bytes {
+        return Err(command_error(format!(
+            "Réponse {provider} trop volumineuse (limite : {max_bytes} octets)."
+        )));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+async fn read_bounded_response(
+    response: reqwest::Response,
+    max_bytes: usize,
+    provider: &str,
+) -> CommandResult<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|content_length| content_length > max_bytes as u64)
+    {
+        return Err(command_error(format!(
+            "Réponse {provider} trop volumineuse (limite : {max_bytes} octets)."
+        )));
+    }
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(max_bytes as u64) as usize,
+    );
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            command_error(format!(
+                "Lecture de la réponse {provider} interrompue : {error}"
+            ))
+        })?;
+        append_bounded_chunk(&mut body, &chunk, max_bytes, provider)?;
+    }
+    Ok(body)
+}
+
+fn format_http_error_detail(body: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(body);
+    let detail = detail.trim();
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(" : {detail}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +631,26 @@ mod tests {
         );
         assert_eq!(secret_id(BRAVE_PROVIDER), "web-search:brave");
         assert!(normalize_provider("unknown").is_err());
+    }
+
+    #[test]
+    fn web_search_response_buffers_are_bounded_before_appending() {
+        let mut body = vec![0_u8; 4];
+        append_bounded_chunk(&mut body, &[1, 2], 6, "Test").expect("within limit");
+        assert_eq!(body.len(), 6);
+
+        let error = append_bounded_chunk(&mut body, &[3], 6, "Test").expect_err("over limit");
+        assert!(error.message.contains("limite : 6 octets"));
+        assert_eq!(body.len(), 6, "the overflowing chunk must not be appended");
+    }
+
+    #[test]
+    fn web_search_http_error_details_are_empty_or_bounded_text() {
+        assert_eq!(format_http_error_detail(b" \n"), "");
+        assert_eq!(
+            format_http_error_detail(b"quota exceeded"),
+            " : quota exceeded"
+        );
     }
 
     #[test]

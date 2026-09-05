@@ -36,6 +36,11 @@ import {
   normalizeReasoningEffortValue,
 } from '../../../../services/reasoningCatalog';
 import {
+  getModelContextCatalogStatus,
+  refreshModelContextCatalog,
+  type ModelContextCatalogStatus,
+} from '../../../../services/modelContextCatalog';
+import {
   SettingsCollectionHeader,
   SettingsSearchEmpty,
   useSettingsSearch,
@@ -128,6 +133,7 @@ export const ModelsSettings: React.FC = () => {
     setProviderModelContextWindowOverride,
     updateProviderSettings,
     scanModelsForProvider,
+    refreshLoadedModelContextCatalog,
     getAvailableReasoningEfforts,
   } = useProviderStore();
 
@@ -165,6 +171,10 @@ export const ModelsSettings: React.FC = () => {
   const [isDeletingManualModel, setIsDeletingManualModel] = useState(false);
   const [isSavingContextWindow, setIsSavingContextWindow] = useState(false);
   const [openProviderIds, setOpenProviderIds] = useState<string[]>([]);
+  const [catalogStatus, setCatalogStatus] = useState<ModelContextCatalogStatus>(
+    () => getModelContextCatalogStatus(),
+  );
+  const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
   const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null>(null);
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -179,6 +189,28 @@ export const ModelsSettings: React.FC = () => {
       },
     })
   );
+
+  const refreshCatalog = useCallback(async (providerId?: string) => {
+    setIsRefreshingCatalog(true);
+    try {
+      const status = await refreshModelContextCatalog({ force: true });
+      setCatalogStatus(status);
+      await refreshLoadedModelContextCatalog(providerId);
+      return status;
+    } finally {
+      setIsRefreshingCatalog(false);
+    }
+  }, [refreshLoadedModelContextCatalog]);
+
+  const catalogStatusLabel = catalogStatus.lastFetchedAt
+    ? catalogStatus.stale
+      ? t('models.catalogStale', 'Catalog last synchronized {{time}}. Update overdue.', {
+          time: new Date(catalogStatus.lastFetchedAt).toLocaleString(),
+        })
+      : t('models.catalogFresh', 'Catalog synchronized {{time}}.', {
+          time: new Date(catalogStatus.lastFetchedAt).toLocaleString(),
+        })
+    : t('models.catalogMissing', 'Catalog metadata has not been synchronized. Bundled snapshot in use.');
 
   const handleProviderSettingsChange = async (
     providerId: string,
@@ -625,7 +657,37 @@ export const ModelsSettings: React.FC = () => {
         description={t('models.collectionDescription', 'Manage models by provider')}
         searchPlaceholder={t('models.searchPlaceholder', 'Search models...')}
         className="pt-2"
+        action={(
+          <Button
+            variant="secondary"
+            size="sm"
+            isLoading={isRefreshingCatalog}
+            onClick={() => void refreshCatalog()}
+          >
+            <Icon name="refresh-cw" size={14} className="mr-1.5" />
+            {t('models.refreshCatalog', 'Refresh catalog')}
+          </Button>
+        )}
       />
+
+      <div
+        role="status"
+        className={cn(
+          'rounded-lg border px-3 py-2 text-xs',
+          catalogStatus.stale
+            ? 'border-amber-500/25 bg-amber-500/5 text-amber-700 dark:text-amber-300'
+            : 'border-border bg-muted/20 text-muted-foreground',
+        )}
+      >
+        <p>{catalogStatusLabel}</p>
+        {catalogStatus.error && (
+          <p className="mt-1 text-destructive">
+            {t('models.catalogRefreshError', 'Latest catalog refresh failed: {{error}}', {
+              error: catalogStatus.error,
+            })}
+          </p>
+        )}
+      </div>
 
       {!hasSearchResults && (
         <SettingsSearchEmpty
@@ -766,6 +828,7 @@ export const ModelsSettings: React.FC = () => {
                         onClick={async (event) => {
                           event.preventDefault();
                           try {
+                            await refreshCatalog(provider.id);
                             await scanModelsForProvider(provider.id);
                             notify.success(t('models.modelsRefreshed', 'Models refreshed'));
                           } catch (error) {

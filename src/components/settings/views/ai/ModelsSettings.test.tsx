@@ -12,6 +12,14 @@ let loadMetadataModelConfigMock: ReturnType<typeof mock>;
 let saveMetadataModelConfigMock: ReturnType<typeof mock>;
 let addManualModelMock: ReturnType<typeof mock>;
 let updateManualModelMock: ReturnType<typeof mock>;
+let refreshCatalogMock: ReturnType<typeof mock>;
+let refreshLoadedCatalogMock: ReturnType<typeof mock>;
+let catalogStatus: {
+  lastFetchedAt: string | null;
+  source: 'cache' | 'network' | 'snapshot';
+  stale: boolean;
+  error: string | null;
+};
 let settingsSearchQuery: string;
 const translate = (_key: string, fallback?: string) => fallback ?? _key;
 
@@ -63,8 +71,18 @@ const loadModelsSettings = async () => {
       setProviderModelContextWindowOverride: mock(async () => undefined),
       updateProviderSettings: mock(async () => undefined),
       scanModelsForProvider: mock(async () => []),
+      refreshLoadedModelContextCatalog: refreshLoadedCatalogMock,
       getAvailableReasoningEfforts: () => [],
     }),
+  }));
+
+  mock.module('../../../../services/modelContextCatalog', () => ({
+    MODELS_DEV_URL: 'https://models.dev/api.json',
+    MODEL_CONTEXT_CATALOG_TTL_MS: 300_000,
+    lookupModelContextCatalogLimit: () => null,
+    lookupModelReasoningCatalogCapability: () => null,
+    getModelContextCatalogStatus: () => catalogStatus,
+    refreshModelContextCatalog: (params: unknown) => refreshCatalogMock(params),
   }));
 
   mock.module('../../../../services/metadataModelPreference', () => ({
@@ -200,6 +218,19 @@ describe('ModelsSettings metadata model config', () => {
     });
     addManualModelMock = mock(async () => undefined);
     updateManualModelMock = mock(async () => undefined);
+    catalogStatus = {
+      lastFetchedAt: null,
+      source: 'snapshot',
+      stale: true,
+      error: null,
+    };
+    refreshCatalogMock = mock(async () => ({
+      lastFetchedAt: '2026-09-05T08:00:00.000Z',
+      source: 'network' as const,
+      stale: false,
+      error: null,
+    }));
+    refreshLoadedCatalogMock = mock(async () => undefined);
     window.localStorage.clear();
     settingsSearchQuery = '';
     container = document.createElement('div');
@@ -511,5 +542,30 @@ describe('ModelsSettings metadata model config', () => {
 
     expect(container!.textContent).toContain('No models match the current filter.');
     expect(container!.textContent).toContain('Metadata generation');
+  });
+
+  it('distinguishes a missing catalog sync and refreshes it from settings', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    expect(container!.textContent).toContain(
+      'Catalog metadata has not been synchronized. Bundled snapshot in use.'
+    );
+    const refreshButton = Array.from(container!.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Refresh catalog')
+    );
+    await act(async () => {
+      refreshButton?.click();
+      await flush();
+    });
+
+    expect(refreshCatalogMock).toHaveBeenCalledWith({ force: true });
+    expect(refreshLoadedCatalogMock).toHaveBeenCalledWith(undefined);
+    expect(container!.textContent).toContain('Catalog synchronized');
   });
 });

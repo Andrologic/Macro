@@ -17,7 +17,13 @@ export interface WebSearchOptions {
   braveApiKey?: string;
   maxResults?: number;
   includeRawContent?: boolean;
+  signal?: AbortSignal;
 }
+
+const WEB_SEARCH_TIMEOUT_MS = 30_000;
+const WEB_SEARCH_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+const WEB_SEARCH_ERROR_MAX_BYTES = 64 * 1024;
+const responseCleanup = new WeakMap<Response, () => void>();
 
 export interface WebFetchResult {
   url: string;
@@ -72,30 +78,31 @@ export async function webSearch(
     braveApiKey,
     maxResults = 5,
     includeRawContent = false,
+    signal,
   } = options;
   const resultCount = clampSearchResultCount(maxResults);
 
   if (provider === 'tavily' && tavilyApiKey) {
-    return searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent);
+    return searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent, signal);
   } else if (provider === 'brave' && braveApiKey) {
-    return searchWithBrave(query, braveApiKey, resultCount);
+    return searchWithBrave(query, braveApiKey, resultCount, signal);
   }
 
   // Try Tavily first, then fall back to Brave
   if (tavilyApiKey) {
     try {
-      return await searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent);
+      return await searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent, signal);
     } catch (error) {
       console.warn('Tavily search failed, trying Brave:', error);
       if (braveApiKey) {
-        return searchWithBrave(query, braveApiKey, resultCount);
+        return searchWithBrave(query, braveApiKey, resultCount, signal);
       }
       throw error;
     }
   }
 
   if (braveApiKey) {
-    return searchWithBrave(query, braveApiKey, resultCount);
+    return searchWithBrave(query, braveApiKey, resultCount, signal);
   }
 
   if (options.configured && isTauriAvailable()) {
@@ -113,9 +120,10 @@ async function searchWithTavily(
   query: string,
   apiKey: string,
   maxResults: number,
-  includeRawContent: boolean
+  includeRawContent: boolean,
+  signal?: AbortSignal,
 ): Promise<WebSearchResult[]> {
-  const response = await tauriFetch('https://api.tavily.com/search', {
+  const response = await fetchSearchResponse('https://api.tavily.com/search', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -129,14 +137,18 @@ async function searchWithTavily(
       include_favicon: false,
       search_depth: 'basic',
     }),
-  });
+  }, signal);
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => 'Unknown error');
+    const errorText = await readBoundedResponseText(response, WEB_SEARCH_ERROR_MAX_BYTES, 'Tavily');
     throw new Error(`Tavily API error: ${response.status} - ${errorText}`);
   }
 
-  const data: TavilyResponse = await response.json();
+  const data = await readBoundedResponseJson<TavilyResponse>(
+    response,
+    WEB_SEARCH_RESPONSE_MAX_BYTES,
+    'Tavily',
+  );
 
   return data.results.map((result) => ({
     url: result.url,
@@ -153,9 +165,10 @@ async function searchWithTavily(
 async function searchWithBrave(
   query: string,
   apiKey: string,
-  maxResults: number
+  maxResults: number,
+  signal?: AbortSignal,
 ): Promise<WebSearchResult[]> {
-  const response = await tauriFetch(
+  const response = await fetchSearchResponse(
     `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${maxResults}&extra_snippets=true`,
     {
       method: 'GET',
@@ -163,15 +176,20 @@ async function searchWithBrave(
         'Accept': 'application/json',
         'X-Subscription-Token': apiKey,
       },
-    }
+    },
+    signal,
   );
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => 'Unknown error');
+    const errorText = await readBoundedResponseText(response, WEB_SEARCH_ERROR_MAX_BYTES, 'Brave Search');
     throw new Error(`Brave Search API error: ${response.status} - ${errorText}`);
   }
 
-  const data: BraveResponse = await response.json();
+  const data = await readBoundedResponseJson<BraveResponse>(
+    response,
+    WEB_SEARCH_RESPONSE_MAX_BYTES,
+    'Brave Search',
+  );
 
   if (!data.web?.results) {
     return [];
@@ -186,6 +204,91 @@ async function searchWithBrave(
     score: 1, // Brave doesn't provide scores
   }));
 }
+
+const fetchSearchResponse = async (
+  input: Parameters<typeof tauriFetch>[0],
+  init: Parameters<typeof tauriFetch>[1],
+  callerSignal?: AbortSignal,
+): Promise<Response> => {
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+  const timer = setTimeout(() => controller.abort(new Error('Web search timed out.')), WEB_SEARCH_TIMEOUT_MS);
+  try {
+    const response = await tauriFetch(input, { ...init, signal: controller.signal });
+    responseCleanup.set(response, () => {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', abortFromCaller);
+    });
+    return response;
+  } catch (error) {
+    clearTimeout(timer);
+    callerSignal?.removeEventListener('abort', abortFromCaller);
+    throw error;
+  }
+};
+
+const readBoundedResponseBytes = async (
+  response: Response,
+  maxBytes: number,
+  provider: string,
+): Promise<Uint8Array> => {
+  try {
+    const contentLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new Error(`${provider} response exceeds the ${maxBytes}-byte limit.`);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) return new Uint8Array();
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const nextLength = length + value.byteLength;
+      if (nextLength > maxBytes) {
+        await reader.cancel();
+        throw new Error(`${provider} response exceeds the ${maxBytes}-byte limit.`);
+      }
+      chunks.push(value);
+      length = nextLength;
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  } finally {
+    responseCleanup.get(response)?.();
+    responseCleanup.delete(response);
+  }
+};
+
+const readBoundedResponseText = async (
+  response: Response,
+  maxBytes: number,
+  provider: string,
+): Promise<string> => new TextDecoder().decode(
+  await readBoundedResponseBytes(response, maxBytes, provider),
+).trim() || 'Unknown error';
+
+const readBoundedResponseJson = async <T>(
+  response: Response,
+  maxBytes: number,
+  provider: string,
+): Promise<T> => {
+  const text = new TextDecoder().decode(
+    await readBoundedResponseBytes(response, maxBytes, provider),
+  );
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw new Error(`${provider} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+};
 
 /**
  * Format search results as context for the LLM

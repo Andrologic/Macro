@@ -89,6 +89,26 @@ const MCPDiscoveredTools: React.FC<{ tools?: MCPTool[] }> = ({ tools }) => {
   );
 };
 
+type MCPErrorAction = 'authorize' | 'edit' | 'retry';
+
+export const getMCPErrorAction = (
+  server: Pick<MCPServer, 'authorization' | 'lastErrorCode'>,
+): MCPErrorAction => {
+  const code = server.lastErrorCode?.toUpperCase() ?? '';
+  if (code.includes('AUTH') || code.includes('OAUTH')) {
+    return server.authorization?.type === 'oauth' ? 'authorize' : 'edit';
+  }
+  if (
+    code.includes('CONFIG') ||
+    code.includes('INVALID') ||
+    code.includes('UNCONFIGURED') ||
+    code.includes('SECRET')
+  ) {
+    return 'edit';
+  }
+  return 'retry';
+};
+
 const MCPServerForm: React.FC<{
   draft: MCPServerDraft;
   editing: boolean;
@@ -332,6 +352,7 @@ const MCPServerRow: React.FC<{
   const { t } = useTranslation();
   const enabled = server.config?.enabled === true;
   const toolCount = server.tools?.length ?? 0;
+  const errorAction = getMCPErrorAction(server);
 
   return (
     <div className="rounded-lg border border-border bg-card p-3">
@@ -366,9 +387,31 @@ const MCPServerRow: React.FC<{
               )}
             </div>
             {server.lastError && (
-              <p className="max-w-2xl truncate text-xs text-red-500" title={server.lastError}>
-                {server.lastError}
-              </p>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-red-500">
+                <p className="max-w-2xl truncate" title={server.lastError}>
+                  {server.lastError}
+                </p>
+                {server.lastErrorCode && (
+                  <code className="rounded bg-destructive/10 px-1.5 py-0.5">
+                    {server.lastErrorCode}
+                  </code>
+                )}
+                <button
+                  type="button"
+                  className="rounded border border-destructive/30 px-2 py-1 font-medium hover:bg-destructive/10"
+                  onClick={() => {
+                    if (errorAction === 'authorize') onAuthorize(server.id);
+                    else if (errorAction === 'edit') onEdit(server);
+                    else onRefresh(server.id);
+                  }}
+                >
+                  {errorAction === 'authorize'
+                    ? t('tools.mcp.errorActionAuthorize', 'Connect account')
+                    : errorAction === 'edit'
+                      ? t('tools.mcp.errorActionEdit', 'Review settings')
+                      : t('tools.mcp.errorActionRetry', 'Try again')}
+                </button>
+              </div>
             )}
           </div>
         </div>

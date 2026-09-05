@@ -4,6 +4,7 @@ import {
   __testables,
   lookupModelContextCatalogLimit,
   lookupModelReasoningCatalogCapability,
+  getModelContextCatalogStatus,
   refreshModelContextCatalog,
 } from './modelContextCatalog';
 
@@ -153,5 +154,23 @@ describe('modelContextCatalog', () => {
 
     expect(status.source).toBe('cache');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes a missing synchronization from a stale cached catalog', () => {
+    expect(getModelContextCatalogStatus()).toMatchObject({
+      lastFetchedAt: null,
+      source: 'snapshot',
+      stale: true,
+    });
+
+    __testables.writeCachedCatalog({
+      fetchedAt: '2020-01-01T00:00:00.000Z',
+      providers: {},
+    });
+    expect(getModelContextCatalogStatus()).toMatchObject({
+      lastFetchedAt: '2020-01-01T00:00:00.000Z',
+      source: 'cache',
+      stale: true,
+    });
   });
 });

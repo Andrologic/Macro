@@ -375,6 +375,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
               ...s,
               status: 'online' as const,
               tools,
+              lastErrorCode: null,
               lastError: null,
               discoveredAt,
             }
@@ -383,12 +384,14 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
       set({ mcpServers: nextServers, saving: false });
     } catch (error) {
-      const message = toServiceError(error).message;
+      const normalizedError = toServiceError(error);
+      const message = normalizedError.message;
       const nextServers = currentServers.map((s) =>
         s.id === serverId
           ? {
               ...s,
               status: s.transport ? ('degraded' as const) : ('unconfigured' as const),
+              lastErrorCode: normalizedError.code,
               lastError: message,
             }
           : s
@@ -421,7 +424,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       set((state) => ({
         mcpServers: state.mcpServers.map((server) =>
           server.id === serverId
-            ? { ...server, status: 'offline' as const, lastError: null }
+            ? { ...server, status: 'offline' as const, lastErrorCode: null, lastError: null }
             : server
         ),
         saving: false,
@@ -600,14 +603,29 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       const normalizedError = toServiceError(error);
       const message = normalizedError.message;
       if (!MCP_SERVER_DEGRADING_ERROR_CODES.has(normalizedError.code)) {
-        set({ lastError: message });
-        throw new Error(
-          `Error executing MCP tool ${resolved.tool.name} on ${resolved.server.name}: ${message}`
+        const nextServers = get().mcpServers.map((server) =>
+          server.id === resolved.server.id
+            ? { ...server, lastErrorCode: normalizedError.code, lastError: message }
+            : server
         );
+        await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) }).catch(
+          () => undefined
+        );
+        set({ mcpServers: nextServers, lastError: message });
+        const reported = new Error(
+          `Error executing MCP tool ${resolved.tool.name} on ${resolved.server.name}: ${message}`
+        ) as Error & { code: string };
+        reported.code = normalizedError.code;
+        throw reported;
       }
       const nextServers = get().mcpServers.map((server) =>
         server.id === resolved.server.id
-          ? { ...server, status: 'degraded' as const, lastError: message }
+          ? {
+              ...server,
+              status: 'degraded' as const,
+              lastErrorCode: normalizedError.code,
+              lastError: message,
+            }
           : server
       );
       await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) }).catch(

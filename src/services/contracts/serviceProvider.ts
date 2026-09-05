@@ -78,6 +78,7 @@ export interface MCPRuntimeServerSnapshot {
   negotiatedEra?: MCPProtocolEra | null;
   negotiatedProtocolVersion?: string | null;
   protocolDecisionReason?: string | null;
+  lastErrorCode?: string | null;
   lastError?: string | null;
   updatedAt: string;
 }

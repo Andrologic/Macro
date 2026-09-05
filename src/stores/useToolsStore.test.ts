@@ -219,16 +219,22 @@ describe('useToolsStore chat toolbox policy', () => {
 
     const { services } = await import('../services');
     (services.mcpRuntimeCallTool as unknown as {
-      mockResolvedValueOnce: (value: { content: string; isError: boolean }) => void;
+      mockResolvedValueOnce: (value: {
+        content: string;
+        isError: boolean;
+        rawResult?: unknown;
+      }) => void;
     }).mockResolvedValueOnce({
       content: 'Access denied by MCP server',
       isError: true,
+      rawResult: { code: 'MCP_ACCESS_DENIED' },
     });
 
     await expect(
       useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
     ).rejects.toThrow('Access denied by MCP server');
     expect(useToolsStore.getState().mcpServers[0]?.status).toBe('online');
+    expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe('MCP_ACCESS_DENIED');
   });
 
   it('degrades a server only when the persistent runtime reports a transport failure', async () => {
@@ -248,5 +254,8 @@ describe('useToolsStore chat toolbox policy', () => {
       useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
     ).rejects.toThrow('Transport closed');
     expect(useToolsStore.getState().mcpServers[0]?.status).toBe('degraded');
+    expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe(
+      'MCP_RUNTIME_CALL_TOOL_FAILED'
+    );
   });
 });
