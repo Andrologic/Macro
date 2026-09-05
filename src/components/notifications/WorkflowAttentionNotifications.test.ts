@@ -42,6 +42,7 @@ interface TestTaskState {
     revision: number;
     selectedGroupId: string | null;
     selectedProjectId: string | null;
+    taskIds: string[];
   } | null;
   tasks: CatalogedImplementTask[];
 }
@@ -377,6 +378,7 @@ describe('workflow attention notification subscriptions', () => {
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
+        taskIds: [],
       },
     };
     reconcileWorkflowAttentionNotifications();
@@ -411,6 +413,7 @@ describe('workflow attention notification subscriptions', () => {
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
+        taskIds: [],
       },
     });
 
@@ -448,6 +451,7 @@ describe('workflow attention notification subscriptions', () => {
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
+        taskIds: [],
       },
     });
 
@@ -511,12 +515,61 @@ describe('workflow attention notification subscriptions', () => {
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
+        taskIds: [],
       },
     };
 
     reconcileWorkflowAttentionNotifications();
 
     expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+  });
+
+  it('does not confirm review deletion from a local task snapshot mutation', () => {
+    const item = {
+      id: 'workflow-attention:review:task-1',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'task-1',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    const loadedReview = makeTask('InReview');
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = {
+      isLoading: false,
+      lastError: null,
+      tasks: [loadedReview],
+      lastSuccessfulCatalogLoad: {
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [loadedReview.id],
+      },
+    };
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    updateTaskState([]);
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+
+    updateTaskState([], {
+      lastSuccessfulCatalogLoad: {
+        revision: 2,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [],
+      },
+    });
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    unsubscribe();
   });
 
   it('emits one questionnaire notification and honors its explicit Architect group', async () => {

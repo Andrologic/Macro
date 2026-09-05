@@ -681,6 +681,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
         revision: 1,
         selectedGroupId: 'group-b',
         selectedProjectId: 'project-b',
+        taskIds: ['task-b'],
       });
     } finally {
       services.listTasks = originalListTasks;
@@ -721,7 +722,11 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
+        taskIds: [],
       });
+      const successfulLoad = useTaskStore.getState().lastSuccessfulCatalogLoad;
+      useTaskStore.getState().setTasks([buildTask({ id: 'local-only-task' })]);
+      expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toBe(successfulLoad);
     } finally {
       services.listTasks = originalListTasks;
     }

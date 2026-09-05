@@ -126,7 +126,8 @@ export const reconcileWorkflowAttentionNotifications = (): void => {
         navigation.catalogScope &&
         successfulLoad &&
         navigation.catalogScope.selectedGroupId === successfulLoad.selectedGroupId &&
-        navigation.catalogScope.selectedProjectId === successfulLoad.selectedProjectId,
+        navigation.catalogScope.selectedProjectId === successfulLoad.selectedProjectId &&
+        !successfulLoad.taskIds.includes(navigation.taskId),
       );
       if (
         (task && task.status !== 'InReview') ||

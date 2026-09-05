@@ -139,6 +139,7 @@ export interface SuccessfulTaskCatalogLoad {
   revision: number;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
+  taskIds: string[];
 }
 
 export interface TaskCompletionRepositoryRecord {
@@ -2921,6 +2922,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           revision: (get().lastSuccessfulCatalogLoad?.revision ?? 0) + 1,
           selectedGroupId: appStateAtStart.selectedGroupId,
           selectedProjectId: appStateAtStart.selectedProjectId,
+          taskIds: tasks.map((task) => task.id),
         },
       });
 
