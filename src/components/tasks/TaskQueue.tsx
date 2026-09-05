@@ -1,3 +1,5 @@
+import { WorktreeDiagnosticsDialog } from './WorktreeDiagnosticsDialog';
+import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -206,6 +208,7 @@ interface MultiRepoTaskPresentation {
 }
 
 type TaskActionKey =
+  | 'worktree_diagnostic'
   | 'project_settings'
   | 'rename'
   | 'delete'
@@ -699,6 +702,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     setSelectedProject: state.setSelectedProject,
     setSelectedTask: state.setSelectedTask,
   })));
+  const [diagnostic, setDiagnostic] = useState<{ task: ImplementTask; entries: WorktreeDiagnosticTarget[] } | null>(null);
   const getProjectById = useAppStore((state) => state.getProjectById);
   const {
     createConversation,
@@ -1627,6 +1631,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       },
     ];
 
+    if (getWorktreeDiagnosticTargets(task, getProjectById).length > 0) {
+      actions.push({ key: 'worktree_diagnostic', label: t('implement.worktreeDiagnostic.title'), icon: 'folder-git-2' });
+    }
+
     if (capabilities.canReopen) {
       actions.push({
         key: 'reopen',
@@ -1675,6 +1683,10 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const handleTaskAction = async (task: ImplementTask, action: TaskActionKey) => {
+    if (action === 'worktree_diagnostic') {
+      setDiagnostic({ task, entries: getWorktreeDiagnosticTargets(task, getProjectById) });
+      return;
+    }
     if (action === 'project_settings' && taskCommandsDisabled) {
       notify.error(taskCommandsDisabledTitle);
       return;
@@ -2404,6 +2416,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         )}
       </div>
 
+      {diagnostic && <WorktreeDiagnosticsDialog entries={diagnostic.entries} repairDisabled={taskMutationDisabled || runningTaskIds.has(diagnostic.task.id) || tasks.some((task) => task.id === diagnostic.task.id && (task.status === 'InProgress' || task.status === 'AwaitingResponse')) || Boolean(diagnostic.task.archived_at)} onClose={() => setDiagnostic(null)} />}
       {taskCommandModal && (
         <React.Suspense fallback={null}>
           <TaskProjectCommandsModal

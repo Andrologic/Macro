@@ -575,5 +575,32 @@
   "diffRenderFailedDescription": "El panel de cambios permaneció abierto. Cierra este archivo y vuelve a intentarlo, o inspecciona el archivo directamente.",
   "reviewBeforeValidation": "Abre cada diff pendiente antes de validar los cambios.",
   "reviewArtifactBeforeValidation": "Abre este artefacto antes de validarlo.",
-  "taskCommandsPlanMutationActive": "Detén los comandos de tareas activos antes de archivar o eliminar este plan."
+  "taskCommandsPlanMutationActive": "Detén los comandos de tareas activos antes de archivar o eliminar este plan.",
+  "worktreeDiagnostic": {
+    "title": "Diagnóstico del worktree",
+    "repository": "Repositorio",
+    "path": "Ruta del worktree",
+    "expectedBranch": "Rama esperada",
+    "branch": "Rama actual",
+    "state": "Estado",
+    "changes": "Cambios",
+    "unknown": "Desconocido",
+    "dirty": "Hay cambios",
+    "clean": "Limpio",
+    "repaired": "Worktree reparado",
+    "refused": "No se pudo reparar",
+    "repair": "Reparar con seguridad",
+    "refresh": "Actualizar",
+    "stopBeforeRepair": "Detén la tarea antes de reparar. Las tareas archivadas no se pueden reparar aquí.",
+    "branchMismatch": "Este worktree usa otra rama. Conserva tus cambios y vuelve a la rama esperada.",
+    "protection": "La reparación conserva los archivos existentes. Mueve las rutas con archivos a una copia de seguridad antes de reintentar. Actualizar comprueba el estado actual. Las copias de los registros se guardan en macro-worktree-backups dentro del directorio Git común.",
+    "states": {
+      "absent": "Ausente",
+      "ready": "Listo",
+      "stale_registration": "Registro obsoleto",
+      "orphan_path": "Ruta sin registrar",
+      "invalid_repo": "Repositorio no válido"
+    }
+  },
+  "wslCapabilities": "En proyectos WSL no están disponibles la sincronización de metadatos, los worktrees de tareas, la revisión de archivos ni el flujo de fusión. Las operaciones básicas de Git siguen disponibles. Usa un clon local para estos flujos."
 }

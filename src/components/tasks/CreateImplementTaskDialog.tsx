@@ -1,6 +1,8 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { getProjectCapabilities } from '../../services/projectCapabilities';
+import { ProjectCapabilitiesNotice } from '../project/ProjectCapabilitiesNotice';
 import type { StandaloneTaskKind } from '../../types';
 import { cn } from '../../utils/cn';
 import { getCreatableStandaloneTaskKinds } from '../../services/standaloneTaskKinds';
@@ -160,6 +162,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         },
       }).mode === 'direct'
     : false;
+  const selectedCapabilities = selectedProject ? getProjectCapabilities(selectedProject) : null;
   const creatableTaskKinds = useMemo(
     () => selectedProject
       ? isDirectEditProject
@@ -174,6 +177,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     : false;
   const canCreate = Boolean(
     selectedProject &&
+    selectedCapabilities?.review &&
     selectedTaskKindIsCreatable &&
     (selectedTaskKind === 'direct'
       ? isDirectEditProject || Boolean(currentBranch && currentHeadCommitHash && isCurrentRepositoryClean)
@@ -203,6 +207,9 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         'implement.taskKindSelectProjectHelp',
         'Select a target project to see which task types are available.',
       );
+    }
+    if (selectedCapabilities?.reason === 'wsl') {
+      return t('implement.wslCapabilities');
     }
     if (isDirectEditProject) {
       return directTaskDescription;
@@ -381,7 +388,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
     setCurrentHeadCommitHash(null);
     setIsCurrentRepositoryClean(null);
     setStartPointLoadFailed(false);
-    if (!selectedProject || isDirectEditProject) return () => { cancelled = true; };
+    if (!selectedProject || !getProjectCapabilities(selectedProject).worktrees || isDirectEditProject) return () => { cancelled = true; };
     setIsLoadingWorktrees(true);
     void Promise.all([
       gitTaskStartPoints({ repoPath: selectedProject.path }),
@@ -418,7 +425,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
       onClose={onClose}
       panelClassName={cn(
         'flex h-[min(46rem,calc(100vh-2rem))] w-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl transition-[max-width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
-        workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedTaskKind !== 'direct'
+        workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedCapabilities?.worktrees && selectedTaskKind !== 'direct'
           ? 'max-w-5xl'
           : 'max-w-2xl'
       )}
@@ -501,6 +508,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           </div>
         </div>
 
+        {selectedProject && <ProjectCapabilitiesNotice project={selectedProject} />}
         {selectedProject && !isDirectEditProject && (
         <fieldset className="space-y-2">
           <legend className="text-xs font-medium text-foreground">
@@ -517,7 +525,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
                   ? t('implement.taskKindBugfix', 'Bugfix')
                   : t('implement.taskKindHotfix', 'Hotfix');
               const descriptionId = `implement-task-kind-${kind}-description`;
-              const isCreatable = creatableTaskKinds.includes(kind);
+              const isCreatable = Boolean(selectedCapabilities?.review) && creatableTaskKinds.includes(kind);
 
               return (
                   <button
@@ -580,7 +588,7 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
         </fieldset>
         )}
 
-        {!isDirectEditProject && selectedProject && selectedTaskKind !== 'direct' && (
+        {!isDirectEditProject && selectedProject && selectedCapabilities?.worktrees && selectedTaskKind !== 'direct' && (
           <fieldset className="space-y-2">
             <legend className="text-xs font-medium text-foreground">
               {t('implement.taskWorkspaceLabel', 'Starting point')}
@@ -645,12 +653,12 @@ export const CreateImplementTaskDialog: React.FC<CreateImplementTaskDialogProps>
           aria-hidden={workspaceChoice !== 'existing'}
           className={cn(
             'min-h-0 shrink-0 overflow-hidden transition-[width,max-width,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
-            workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedTaskKind !== 'direct'
+            workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedCapabilities?.worktrees && selectedTaskKind !== 'direct'
               ? 'w-[26rem] max-w-[44vw] opacity-100'
               : 'w-0 max-w-0 opacity-0'
           )}
         >
-          {workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedTaskKind !== 'direct' && startPointPicker}
+          {workspaceChoice === 'existing' && !isDirectEditProject && selectedProject && selectedCapabilities?.worktrees && selectedTaskKind !== 'direct' && startPointPicker}
         </div>
       </div>
 
