@@ -749,6 +749,63 @@ describe('useFileChangesStore', () => {
     expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(false);
   });
 
+  it('preserves the latest draft after an ordinary lazy reread fails and retries', async () => {
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA)!;
+    const original = repository.changes[0];
+    let content = original.modifiedContent;
+    const reviewFile = mock(async () => ({ path: original.path, status: original.status,
+      headExists: true, indexExists: true, worktreeExists: true,
+      headContent: original.originalContent, indexContent: original.indexContent, worktreeContent: content,
+      pendingDiff: { originalContent: original.indexContent, modifiedContent: content, additions: 1, deletions: 1, hunks: [] },
+      fullDiff: { originalContent: original.originalContent, modifiedContent: content, additions: 1, deletions: 1, hunks: [] },
+      hasValidatedStage: false, validatedRemovedLineNumbers: [], validatedAddedLineNumbers: [],
+      isBinary: false, tooLarge: false, language: 'typescript',
+    }));
+    appStoreState.selectedProjectId = 'project-a';
+    const deferredStore = createFileChangesStore({
+      tauri: { isTauriAvailable: () => true, gitStatus: gitStatusMock, gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock, gitMergeCheck: gitMergeCheckMock, gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock, fsReadFileWithOptions: fsReadFileWithOptionsMock, fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock, gitAdd: gitAddMock, gitCommit: gitCommitMock,
+        gitReviewSnapshot: mock(async () => ({ branch: repository.branchName, stagedPaths: [],
+          changes: [{ ...original, requiresHydration: true, originalContent: '', indexContent: '', modifiedContent: '',
+            isBinary: false, tooLarge: false }], conflictedFiles: [], mergeInProgress: false, isClean: false })),
+        gitReviewFile: reviewFile,
+      }, getGitFlowBaseBranch: () => 'develop', getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState, setTaskState: () => undefined,
+    });
+    const store = deferredStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    store.updateRightDraft('draft before refresh');
+    let rejectReread!: () => void;
+    let markRereadStarted!: () => void;
+    const rereadStarted = new Promise<void>((resolve) => { markRereadStarted = resolve; });
+    const rereadGate = new Promise<void>((resolve) => { rejectReread = resolve; });
+    reviewFile.mockImplementationOnce(async () => {
+      markRereadStarted();
+      await rereadGate;
+      throw new Error('file reread failed');
+    });
+    const refresh = store.loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+    await rereadStarted;
+    store.updateRightDraft('latest draft during refresh');
+    rejectReread();
+    await refresh;
+    expect(deferredStore.getState().diffModalSession?.rightDraftContent).toBe('latest draft during refresh');
+    expect(deferredStore.getState().selectedDiffTarget).toEqual({ repositoryId: repositoryIdA, changeId: changeIdA });
+    expect(deferredStore.getState().isDiffModalOpen).toBe(true);
+    expect(deferredStore.getState().lastError).toContain('file reread failed');
+    content = content.replace('2', '3');
+    await store.loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
+    expect(deferredStore.getState().diffModalSession?.rightDraftContent).toBe('latest draft during refresh');
+    expect(deferredStore.getState().diffModalSession?.lastLoadedModifiedContent).toBe(content);
+    expect(deferredStore.getState().diffModalSession?.isDirty).toBe(true);
+    expect(deferredStore.getState().lastError).toBeNull();
+  });
+
   it('keeps snapshots lazy and rereads only opened contents to detect equal-length deferred changes', async () => {
     await useFileChangesStore.getState().loadCurrentChanges();
     const repository = useFileChangesStore.getState().getRepository(repositoryIdA)!;
@@ -2763,6 +2820,108 @@ describe('useFileChangesStore', () => {
     expect(state.currentTaskId).toBe('task-3');
     expect(state.currentTaskLoadState).toBe('invalid_mapping');
     expect(state.repositories).toHaveLength(0);
+  });
+
+  it.each(['single-success', 'single-error', 'batch-success', 'batch-error'] as const)(
+    'does not apply a late commit to another task: %s', async (scenario) => {
+      const store = useFileChangesStore.getState();
+      await store.loadCurrentChanges();
+      await store.stageChanges(repositoryIdA, [changeIdA]);
+      await store.stageChanges(repositoryIdB, [changeIdB]);
+      let releaseCommit!: () => void;
+      let markCommitStarted!: () => void;
+      const started = new Promise<void>((resolve) => { markCommitStarted = resolve; });
+      const gate = new Promise<void>((resolve) => { releaseCommit = resolve; });
+      gitCommitMock.mockImplementationOnce(async (input) => {
+        markCommitStarted();
+        await gate;
+        if (scenario.endsWith('error')) throw new Error('late commit rejected');
+        return commitRepository(input);
+      });
+      const committing = scenario.startsWith('batch')
+        ? store.commitAllReadyTaskRepositories({ messagesByRepositoryId: {
+            [repositoryIdA]: 'feat: commit project a', [repositoryIdB]: 'feat: commit project b',
+          } })
+        : store.commitStagedChanges(repositoryIdA, 'feat: commit project a');
+      const outcome = committing.then((result) => ({ result, error: null }), (error: Error) => ({ result: null, error }));
+      await started;
+      appStoreState.selectedTaskId = 'task-2';
+      await store.loadCurrentChanges();
+      const otherTaskState = useFileChangesStore.getState();
+      expect(otherTaskState.isCommitting).toBe(false);
+      releaseCommit();
+      const { result, error } = await outcome;
+      expect(useFileChangesStore.getState()).toBe(otherTaskState);
+      expect(useFileChangesStore.getState().executionRecords).toEqual({});
+      expect(useFileChangesStore.getState().lastCommitHash).toBeNull();
+      expect(gitCommitMock).toHaveBeenCalledTimes(1);
+      if (scenario.endsWith('error')) {
+        expect(error?.message).toContain('late commit rejected');
+      } else {
+        expect(result?.taskId).toBe('task-1');
+        if (result && 'commits' in result) expect(result.commits).toHaveLength(1);
+        else expect(result?.hash).toBeTruthy();
+        expect(Object.keys(stagedFiles[worktreeAPath])).toHaveLength(0);
+        expect(Object.keys(stagedFiles[worktreeBPath])).toHaveLength(1);
+      }
+    },
+  );
+
+  it('does not apply commit metadata after its refresh is superseded by another task', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    let releaseRefresh!: () => void;
+    let markRefreshStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markRefreshStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    gitCommitMock.mockImplementationOnce(async (input) => {
+      const hash = await commitRepository(input);
+      gitStatusMock.mockImplementationOnce(async (repoPath) => {
+        markRefreshStarted();
+        await gate;
+        return buildGitStatus(repoPath);
+      });
+      return hash;
+    });
+    const committing = store.commitStagedChanges(repositoryIdA, 'feat: commit project a');
+    await started;
+    appStoreState.selectedTaskId = 'task-2';
+    await store.loadCurrentChanges();
+    const otherTaskState = useFileChangesStore.getState();
+    releaseRefresh();
+    const result = await committing;
+    expect(result.taskId).toBe('task-1');
+    expect(result.hash).toBeTruthy();
+    expect(useFileChangesStore.getState()).toBe(otherTaskState);
+    expect(useFileChangesStore.getState().executionRecords).toEqual({});
+    expect(gitCommitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not clear another task generation state when a batch message request finishes late', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageChanges(repositoryIdA, [changeIdA]);
+    let releaseMessages!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseMessages = resolve; });
+    generateCommitMessagesMock.mockImplementationOnce(async (input) => {
+      markStarted();
+      await gate;
+      return buildGeneratedCommitMessages(input);
+    });
+    const committing = store.commitAllReadyTaskRepositories().catch((error: Error) => error);
+    await started;
+    appStoreState.selectedTaskId = 'task-2';
+    await store.loadCurrentChanges();
+    expect(useFileChangesStore.getState().isGeneratingCommitMessages).toBe(false);
+    useFileChangesStore.setState({ isGeneratingCommitMessages: true });
+    const otherTaskState = useFileChangesStore.getState();
+    releaseMessages();
+    await committing;
+    expect(useFileChangesStore.getState()).toBe(otherTaskState);
+    expect(gitCommitMock).not.toHaveBeenCalled();
   });
 
   it('keeps the task in progress after repository commits complete', async () => {

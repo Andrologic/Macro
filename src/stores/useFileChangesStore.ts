@@ -1531,6 +1531,7 @@ export const createFileChangesStore = (
     let reviewRequestSequence = 0;
     let reviewVisitSequence = 0;
     let hydrationGeneration = 0;
+    let taskReviewGeneration = 0;
     let mutationRequestSequence = 0;
     const activeMutationRequests = new Map<string, number>();
     let expiredReviewRefreshPromise: Promise<void> | null = null;
@@ -1867,6 +1868,8 @@ export const createFileChangesStore = (
     const task = resolveSelectedTask(deps);
     if (previousState.currentTaskId !== (task?.id ?? null)) {
       activeMutationRequests.clear();
+      taskReviewGeneration += 1;
+      set({ isCommitting: false, isGeneratingCommitMessages: false });
     }
     const nextLoadRequestId = previousState.loadRequestId + 1;
 
@@ -2157,8 +2160,9 @@ export const createFileChangesStore = (
         return;
       }
 
-      const preserveExpiredRefreshState = options?.refreshExpired === true && canPreserveLatestReview;
-      const preservedState = preserveExpiredRefreshState
+      const preserveFailedRefreshState = canPreserveLatestReview &&
+        (options?.refreshExpired === true || shouldPreserveModalAfterRefresh);
+      const preservedState = preserveFailedRefreshState
         ? {
             repositories: latestState.repositories,
             reviewSummary: latestState.reviewSummary,
@@ -2171,12 +2175,12 @@ export const createFileChangesStore = (
         ...preservedState,
         currentTaskId: task.id,
         currentTaskLoadState:
-          preserveExpiredRefreshState && latestState.repositories.length > 0
+          preserveFailedRefreshState && latestState.repositories.length > 0
             ? 'ready'
             : 'invalid_mapping',
         currentTaskLoadMessage: null,
         isLoading: false,
-        executionRecords: preserveExpiredRefreshState ? executionRecords : {},
+        executionRecords: preserveFailedRefreshState ? executionRecords : {},
         lastError:
           serviceError.message ||
           tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
@@ -2207,6 +2211,7 @@ export const createFileChangesStore = (
   },
 
   resetReviewState: () => {
+    taskReviewGeneration += 1;
     cancelActiveReviewRequests();
     activeMutationRequests.clear();
     set({ reviewedChanges: {}, staleDirectRepositoryId: null });
@@ -2880,6 +2885,11 @@ export const createFileChangesStore = (
 
   commitStagedChanges: async (repositoryId, message, internalOptions = {}) => {
     const task = ensureReviewTask(deps);
+    const requestGeneration = taskReviewGeneration;
+    const isCurrentReview = () => taskReviewGeneration === requestGeneration &&
+      get().currentTaskId === task.id && resolveSelectedTask(deps)?.id === task.id;
+    const initialRepositories = get().repositories.map((entry) =>
+      get().executionRecords[entry.id] || buildCompletionRepositoryRecord(deps, task, entry));
     const repository = get().getRepository(repositoryId);
     const commitMessage = (
       message || repository?.commitMessageDraft || buildDefaultCommitMessage(task.title)
@@ -2973,6 +2983,17 @@ export const createFileChangesStore = (
         planBranchName: integrationBranchName,
       };
 
+      const result: CommitTaskChangesResult = {
+        hash,
+        taskId: task.id,
+        taskCompleted: false,
+        taskStatus: deps.getTaskState().getTaskById(task.id)?.status ?? null,
+        committedRepositoryId: repositoryId,
+        repositories: initialRepositories,
+      };
+      // Git has committed the original task even if its review is no longer selected.
+      if (!isCurrentReview()) return result;
+
       const currentState = get();
       const nextExecutionRecords = {
         ...currentState.executionRecords,
@@ -2990,6 +3011,7 @@ export const createFileChangesStore = (
         await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
       }
 
+      if (!isCurrentReview()) return result;
       const refreshedState = get();
       const nextRepositories = refreshedState.repositories.map((currentRepository) => (
         currentRepository.id === repositoryId
@@ -3034,6 +3056,7 @@ export const createFileChangesStore = (
         repositories: completionRecords,
       };
     } catch (error) {
+      if (!isCurrentReview()) throw error;
       const messageText = toServiceError(error).message;
       set((state) => ({
         isCommitting: false,
@@ -3061,6 +3084,11 @@ export const createFileChangesStore = (
     if (get().isCommitting || get().isGeneratingCommitMessages) throw new Error(
       tChanges('implement.commitInProgress', 'Committing changes...'));
     const task = ensureReviewTask(deps);
+    const requestGeneration = taskReviewGeneration;
+    const isCurrentReview = () => taskReviewGeneration === requestGeneration &&
+      get().currentTaskId === task.id && resolveSelectedTask(deps)?.id === task.id;
+    const initialRepositories = get().repositories.map((repository) =>
+      get().executionRecords[repository.id] || buildCompletionRepositoryRecord(deps, task, repository));
 
     const targetRepositories = getReadyCommitRepositories(get().repositories);
     const targetRepositoryIds = targetRepositories.map((repository) => repository.id);
@@ -3083,8 +3111,8 @@ export const createFileChangesStore = (
     if (!messagesByRepositoryId) {
       set({ isGeneratingCommitMessages: true, lastError: null });
       let generatedMessages: GeneratedCommitMessages;
-      const commitMessageInput = await buildSmartCommitMessageInput(deps, task, targetRepositories);
       try {
+        const commitMessageInput = await buildSmartCommitMessageInput(deps, task, targetRepositories);
         generatedMessages = await generateCommitMessagesWithRetry(
           deps,
           commitMessageInput,
@@ -3094,7 +3122,7 @@ export const createFileChangesStore = (
       } catch (error) {
         const messageText = toServiceError(error).message ||
           tChanges('implement.errors.commitMessageGenerationFailed', 'Could not generate commit messages.');
-        set({
+        if (isCurrentReview()) set({
           isGeneratingCommitMessages: false,
           lastError: null,
         });
@@ -3107,7 +3135,7 @@ export const createFileChangesStore = (
         }
         throw new SmartCommitMessageGenerationError(messageText);
       } finally {
-        set({ isGeneratingCommitMessages: false });
+        if (isCurrentReview()) set({ isGeneratingCommitMessages: false });
       }
 
       messagesByRepositoryId = Object.fromEntries(
@@ -3123,6 +3151,7 @@ export const createFileChangesStore = (
     let attemptedCommit = false;
 
     for (const repositoryId of targetRepositoryIds) {
+      if (!isCurrentReview()) break;
       const repository = get().getRepository(repositoryId);
       if (!repository || !isRepositoryReadyToCommit(repository)) {
         continue;
@@ -3162,7 +3191,7 @@ export const createFileChangesStore = (
       }
     }
 
-    if (attemptedCommit) {
+    if (attemptedCommit && isCurrentReview()) {
       try {
         await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
       } catch (refreshError) {
@@ -3181,10 +3210,10 @@ export const createFileChangesStore = (
     }
 
     const currentState = get();
-    const repositories = currentState.repositories.map((repository) =>
+    const repositories = isCurrentReview() ? currentState.repositories.map((repository) =>
       currentState.executionRecords[repository.id] ||
       buildCompletionRepositoryRecord(deps, task, repository)
-    );
+    ) : initialRepositories;
     const lastCommit = commits[commits.length - 1];
 
     return {

@@ -1620,12 +1620,15 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     } = {}
   ) => {
     if (isCommitting || isGeneratingCommitMessages || !hasReadyToCommit) return;
+    const commitTaskId = selectedTaskId;
     setCommitMessageGenerationError(null);
 
     try {
       await commitAllReadyTaskRepositories(options);
+      if (useAppStore.getState().selectedTaskId !== commitTaskId) return;
       setCommitMessageEditState(null);
     } catch (error) {
+      if (useAppStore.getState().selectedTaskId !== commitTaskId) return;
       const messageText = toServiceError(error).message;
       if (isSmartCommitMessageGenerationError(error)) {
         if (error.generatedMessages) {

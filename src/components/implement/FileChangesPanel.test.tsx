@@ -1731,6 +1731,57 @@ describe('FileChangesPanel', () => {
     });
   });
 
+  it.each(['success', 'error'] as const)('preserves the current task commit dialog after a previous task returns: %s', async (outcome) => {
+    const repository = buildRepository(true);
+    let releaseOldCommit!: () => void;
+    const oldCommitGate = new Promise<void>((resolve) => { releaseOldCommit = resolve; });
+    const generationError = (subject: string) => Object.assign(new Error('Review generated fields'), {
+      name: 'SmartCommitMessageGenerationError',
+      generatedMessages: { repositories: [{
+        repositoryId: repository.id, type: 'feat', scope: null, subject, body: null,
+      }] },
+    });
+    commitAllReadyTaskRepositoriesMock.mockImplementationOnce(async () => {
+      await oldCommitGate;
+      if (outcome === 'error') throw generationError('old task message');
+      return { taskId: 'task-1', taskCompleted: false, taskStatus: 'InProgress', commits: [], repositories: [] };
+    });
+    commitAllReadyTaskRepositoriesMock.mockImplementationOnce(async () => {
+      throw generationError('current task message');
+    });
+    seedStores(repository);
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    const clickCommit = () => Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit')?.click();
+    await act(async () => {
+      clickCommit();
+      await flushRender();
+    });
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      useTaskStore.setState({ tasks: [{ ...useTaskStore.getState().tasks[0], id: 'task-2' }] });
+      useAppStore.setState({ selectedTaskId: 'task-2' });
+      await flushRender();
+    });
+    await act(async () => {
+      clickCommit();
+      await flushRender();
+    });
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain('Review commit messages');
+    expect(Array.from(document.body.querySelectorAll('input')).some((input) => input.value === 'current task message')).toBe(true);
+    await act(async () => {
+      releaseOldCommit();
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain('Review commit messages');
+    expect(Array.from(document.body.querySelectorAll('input')).some((input) => input.value === 'current task message')).toBe(true);
+    expect(Array.from(document.body.querySelectorAll('input')).some((input) => input.value === 'old task message')).toBe(false);
+  });
+
   it('shows structured commit message editing when generated fields are invalid', async () => {
     const repository = buildRepository(true);
     commitAllReadyTaskRepositoriesMock = mock(async () => {
