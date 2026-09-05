@@ -291,9 +291,8 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
     if (!repository || !change || !change.hasPendingVisibleChange || isBusy || isDirty) return;
     try {
       await stageChanges(repository.id, [change.id]);
-      onClose();
     } catch { /* The store retains the actionable error in the review. */ }
-  }, [change, isBusy, isDirty, onClose, repository, stageChanges]);
+  }, [change, isBusy, isDirty, repository, stageChanges]);
 
   const handleUnstage = useCallback(async () => {
     if (!repository || !change || !change.hasValidatedStage || isBusy || isDirty) return;
