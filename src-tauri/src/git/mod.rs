@@ -2065,10 +2065,28 @@ mod tests {
                     .worktree_path
             };
             let worktree = Repository::open(&path).unwrap();
+            let detached_commit = {
+                let parent = worktree.head().unwrap().peel_to_commit().unwrap();
+                let tree = parent.tree().unwrap();
+                let signature = git2::Signature::now("Tester", "tester@example.com").unwrap();
+                worktree
+                    .commit(
+                        None,
+                        &signature,
+                        &signature,
+                        "detached work",
+                        &tree,
+                        &[&parent],
+                    )
+                    .unwrap()
+            };
+            worktree.set_head_detached(detached_commit).unwrap();
+            worktree.set_head("refs/heads/feature/staged").unwrap();
             fs::write(path.join("README.md"), "staged unique content").unwrap();
             let mut index = worktree.index().unwrap();
             index.add_path(Path::new("README.md")).unwrap();
             index.write().unwrap();
+            let staged_blob = index.get_path(Path::new("README.md"), 0).unwrap().id;
             let original_index = fs::read(worktree.path().join("index")).unwrap();
             drop(index);
             drop(worktree);
@@ -2090,6 +2108,22 @@ mod tests {
                 .path();
             assert_eq!(fs::read(backup.join("index")).unwrap(), original_index);
             assert!(Repository::open(&path).is_ok());
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args(["prune", "--expire=now"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                repo.find_blob(staged_blob).unwrap().content(),
+                b"staged unique content"
+            );
+            assert!(repo.find_commit(detached_commit).is_ok());
         }
     }
 

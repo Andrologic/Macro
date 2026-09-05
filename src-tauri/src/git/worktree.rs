@@ -524,7 +524,57 @@ fn preserve_registration_for_repair(repo: &Repository, name: &str) -> Result<()>
         });
     }
     fs::create_dir_all(&backups)?;
-    let backup = backups.join(format!("{}-{}", name, uuid::Uuid::new_v4()));
+    let backup_id = format!("{}-{}", name, uuid::Uuid::new_v4());
+    let backup = backups.join(&backup_id);
+    // Moving administration removes it from Git's reachability roots. Pin every
+    // index blob and HEAD/reflog commit before moving it so later GC cannot erase
+    // unique staged work or detached commits. Failure leaves registration intact.
+    let worktree_repo = Repository::open_ext(
+        &admin,
+        git2::RepositoryOpenFlags::BARE | git2::RepositoryOpenFlags::NO_SEARCH,
+        std::iter::empty::<&Path>(),
+    )?;
+    let index = git2::Index::open(&admin.join("index"))?;
+    let mut index_tree = repo.treebuilder(None)?;
+    for (position, entry) in index.iter().enumerate() {
+        // Gitlinks name objects belonging to another repository, not this ODB.
+        if entry.mode == 0o160000 {
+            continue;
+        }
+        repo.find_blob(entry.id)?;
+        index_tree.insert(position.to_string(), entry.id, 0o100644)?;
+    }
+    let tree_id = index_tree.write()?;
+    repo.reference(
+        &format!("refs/macro-worktree-backups/{}/index", backup_id),
+        tree_id,
+        false,
+        "Preserve worktree repair index objects",
+    )?;
+    let mut commits = std::collections::HashSet::new();
+    commits.insert(worktree_repo.head()?.peel_to_commit()?.id());
+    match worktree_repo.reflog("HEAD") {
+        Ok(reflog) => {
+            for entry in reflog.iter() {
+                for oid in [entry.id_old(), entry.id_new()] {
+                    if !oid.is_zero() {
+                        commits.insert(oid);
+                    }
+                }
+            }
+        }
+        Err(error) if error.code() == ErrorCode::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    for oid in commits {
+        repo.find_commit(oid)?;
+        repo.reference(
+            &format!("refs/macro-worktree-backups/{}/commit-{}", backup_id, oid),
+            oid,
+            false,
+            "Preserve worktree repair history",
+        )?;
+    }
     fs::rename(&admin, &backup)?;
     Ok(())
 }

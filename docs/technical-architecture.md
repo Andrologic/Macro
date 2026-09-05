@@ -753,7 +753,7 @@ Ils sont utilisés pour :
 - permettre plusieurs exécutions en parallèle
 - conserver une séparation nette entre contextes d'exécution
 
-La réparation des worktrees refuse les chemins non vides et les branches inattendues. Elle peut retirer un dossier vide avec `remove_dir`, sans suppression récursive. Avant de remplacer un enregistrement périmé, elle conserve son administration complète, dont l'index et les reflogs, sous `macro-worktree-backups` dans le répertoire Git commun. Les fichiers d'un chemin refusé restent à leur emplacement ; l'utilisateur peut déplacer ce chemin vers une sauvegarde puis relancer la réparation.
+La réparation des worktrees refuse les chemins non vides et les branches inattendues. Elle peut retirer un dossier vide avec `remove_dir`, sans suppression récursive. Avant de remplacer un enregistrement périmé, elle conserve son administration complète, dont l'index et les reflogs, sous `macro-worktree-backups` dans le répertoire Git commun. Des références sous `refs/macro-worktree-backups` protègent les objets de l'index et les commits de HEAD et de son reflog contre le nettoyage Git. Les fichiers d'un chemin refusé restent à leur emplacement ; l'utilisateur peut déplacer ce chemin vers une sauvegarde puis relancer la réparation.
 
 Le diagnostic de tâche utilise `git_worktree_inspect` avec `readOnly: true` : les inspections n'y réparent pas les liens Git. L'action explicite utilise la création protégée existante puis inspecte de nouveau. Les capacités de projet sont centralisées dans `projectCapabilities` : les refus WSL de métadonnées, worktrees, revue et parcours de fusion ne retirent pas les opérations Git disposant d'une implémentation Linux.
 
