@@ -92,4 +92,34 @@ describe('ReasoningDropdown', () => {
     act(() => highOption?.click());
     expect(selectReasoningEffortMock).toHaveBeenCalledWith('high');
   });
+
+  it('closes with Escape and restores focus to its named trigger', async () => {
+    availableEfforts = ['high', 'ultra'];
+    selectedEffort = 'high';
+    const { ReasoningDropdown } = await loadReasoningDropdown();
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<ReasoningDropdown />);
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-tour-id="reasoning-dropdown"] > button',
+    );
+    expect(trigger?.getAttribute('aria-label')).toBe('Choose reasoning level');
+    await act(async () => {
+      trigger?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    });
+    const option = container.querySelector<HTMLButtonElement>('[role="option"]');
+    expect(document.activeElement).toBe(option ?? null);
+
+    await act(async () => {
+      option?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    });
+
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger ?? null);
+  });
 });
