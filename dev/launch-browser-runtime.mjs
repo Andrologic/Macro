@@ -1,6 +1,16 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { validateQaBrowserRuntimeConfig } from './browser-runtime-config.mjs';
 
 const token = randomBytes(32).toString('hex');
+const customConfig = process.env.MACRO_TAURI_BROWSER_CONFIG;
+const configPath = customConfig
+  ? resolve(customConfig)
+  : 'src-tauri/tauri.browser-debug.conf.json';
+if (customConfig) {
+  validateQaBrowserRuntimeConfig(JSON.parse(readFileSync(configPath, 'utf8')));
+}
 const child = Bun.spawn(
   [
     'bun',
@@ -9,7 +19,7 @@ const child = Bun.spawn(
     '--features',
     'browser-runtime-debug',
     '--config',
-    'src-tauri/tauri.browser-debug.conf.json',
+    configPath,
   ],
   {
     cwd: process.cwd(),

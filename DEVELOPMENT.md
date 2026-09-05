@@ -94,6 +94,14 @@ requires the exact `http://127.0.0.1:1422` browser origin and binds only to
 `127.0.0.1:1430`. Always use `bun run tauri:dev:browser`; do not expose either
 local port through a proxy.
 
+Automated checks that exercise mutable state must use a separate Tauri identifier,
+not only a temporary `MACRO_CONFIG_DIR`. Set `MACRO_TAURI_BROWSER_CONFIG` to an
+absolute merged browser-runtime config whose identifier matches
+`com.macro.desktop.qa.*`. The launcher rejects the ordinary production identifier.
+Before creating fixtures, inspect the native process's open SQLite files and call
+`workspace_get_bootstrap`; continue only when both point to the intended isolated
+profile and synthetic workspace.
+
 ## Local Provider Configuration
 
 For Tauri development, you can preload provider definitions and avoid re-entering
