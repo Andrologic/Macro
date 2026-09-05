@@ -5,6 +5,7 @@ pub mod config;
 pub mod core;
 mod db;
 mod dev_overrides;
+mod diagnostics;
 mod local_backup;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
@@ -403,6 +404,7 @@ pub fn run() {
     let app = builder
         .manage(AppQuitState::default())
         .manage(DbPool::default())
+        .manage(diagnostics::DiagnosticReportStore::default())
         .manage(AiState::default())
         .manage(GitState::new())
         .manage(commands::mcp::McpRuntimeManager::production())
@@ -623,6 +625,8 @@ pub fn run() {
             app_updates::app_update_install_now,
             app_updates::app_installer_close_request_pending,
             app_updates::app_installer_close_respond,
+            diagnostics::app_diagnostic_generate,
+            diagnostics::app_diagnostic_save,
             frontend_log,
             show_main_window,
             window_close,

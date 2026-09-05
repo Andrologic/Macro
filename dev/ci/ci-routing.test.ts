@@ -20,6 +20,15 @@ describe('GitHub CI routing', () => {
     expect(stepByName('classify', 'Classify changed paths').run).toContain('echo "sidecar=true"');
   });
 
+  test('routes native changes to bounded macOS recovery tests', () => {
+    expect(workflow.jobs.classify.outputs.macos).toBe('${{ steps.changes.outputs.macos }}');
+    expect(stepByName('classify', 'Classify changed paths').run).toContain('echo "macos=true"');
+    expect(stepByName('macos', 'Run macOS migration, recovery, and updater smoke tests').run)
+      .toBe('bun dev/ci/native-recovery-smoke.mjs');
+    expect(stepByName('windows', 'Run Windows migration, recovery, and updater smoke tests').run)
+      .toBe('bun dev/ci/native-recovery-smoke.mjs');
+  });
+
   test('installs frontend dependencies only when a selected check needs them', () => {
     const linuxInstall = stepByName('linux', 'Install locked frontend dependencies');
     expect(linuxInstall.if).toContain("outputs.frontend == 'true'");

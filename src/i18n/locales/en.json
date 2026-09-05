@@ -951,6 +951,7 @@
     "skills": "Skills",
     "architect": "Git workflow",
     "shortcuts": "Shortcuts",
+    "diagnostics": "Diagnostics",
     "desc": {
       "general": "Configure language, application, and approval preferences",
       "notifications": "Configure notification channels for key workflow events",
@@ -961,6 +962,7 @@
       "prompts": "Customize system prompts used by Macro",
       "architect": "Configure Architect target and branch naming patterns",
       "shortcuts": "Configure keyboard shortcuts and key bindings",
+      "diagnostics": "Generate and review a local support report",
       "providers": "Configure API keys and endpoints",
       "models": "Manage available models parameters",
       "speech": "Configure microphone dictation and speech-to-text providers",
@@ -996,6 +998,20 @@
       "orphanSecrets": "Orphaned secrets",
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
+    },
+    "diagnostic": {
+      "title": "Local diagnostic report",
+      "description": "Review a redacted report before saving it for support. Nothing is sent automatically.",
+      "contents": "The report contains the Macro version, non-secret effective settings, database and recovery health, MCP and updater states, and bounded log metadata.",
+      "exclusions": "Secrets, prompts, source code, private paths, user content, and raw log messages are excluded.",
+      "generate": "Generate preview",
+      "regenerate": "Regenerate preview",
+      "generateFailed": "Could not generate the diagnostic report",
+      "preview": "Report preview",
+      "save": "Save report",
+      "saveTitle": "Save diagnostic report",
+      "saved": "Diagnostic report saved",
+      "saveFailed": "Could not save the diagnostic report"
     },
     "updates": "Updates",
     "language_region": "Language & Region",

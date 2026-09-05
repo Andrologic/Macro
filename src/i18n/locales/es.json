@@ -926,6 +926,7 @@
     "skills": "Skills",
     "architect": "Workflow Git",
     "shortcuts": "Atajos",
+    "diagnostics": "Diagnóstico",
     "desc": {
       "skills": "Gestiona los skills reutilizables y sus fuentes",
       "prompts": "Personaliza los prompts del sistema utilizados por Macro",
@@ -935,6 +936,7 @@
       "tools": "Configurar herramientas externas y servidores MCP",
       "architect": "Configurar patrones de nomenclatura de ramas y objetivos de Architect",
       "shortcuts": "Configurar atajos de teclado y combinaciones de teclas",
+      "diagnostics": "Generar y revisar un informe de soporte local",
       "providers": "Configurar claves API y puntos finales",
       "models": "Administrar los parámetros de los modelos disponibles.",
       "notifications": "Configura los canales de notificación para los eventos clave del flujo de trabajo",
@@ -971,6 +973,20 @@
       "orphanSecrets": "Orphaned secrets",
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
+    },
+    "diagnostic": {
+      "title": "Informe de diagnóstico local",
+      "description": "Revisa el informe depurado antes de guardarlo para soporte. No se envía nada automáticamente.",
+      "contents": "El informe contiene la versión de Macro, ajustes efectivos no secretos, el estado de la base de datos y la recuperación, los estados de MCP y del actualizador y metadatos de registro limitados.",
+      "exclusions": "Se excluyen secretos, prompts, código fuente, rutas privadas, contenido del usuario y mensajes de registro sin procesar.",
+      "generate": "Generar vista previa",
+      "regenerate": "Regenerar vista previa",
+      "generateFailed": "No se pudo generar el informe de diagnóstico",
+      "preview": "Vista previa del informe",
+      "save": "Guardar informe",
+      "saveTitle": "Guardar informe de diagnóstico",
+      "saved": "Informe de diagnóstico guardado",
+      "saveFailed": "No se pudo guardar el informe de diagnóstico"
     },
     "updates": "Actualizaciones",
     "language_region": "Idioma y región",

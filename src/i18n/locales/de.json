@@ -922,6 +922,7 @@
     "skills": "Skills",
     "architect": "Git-Workflow",
     "shortcuts": "Verknüpfungen",
+    "diagnostics": "Diagnose",
     "desc": {
       "skills": "Wiederverwendbare Agent-Skills und ihre Quellen verwalten",
       "prompts": "Von Macro verwendete System-Prompts anpassen",
@@ -931,6 +932,7 @@
       "tools": "Konfigurieren Sie externe Tools und MCP-Server",
       "architect": "Konfigurieren Sie Architect-Ziel- und Branch-Benennungsmuster",
       "shortcuts": "Konfigurieren Sie Tastaturkürzel und Tastenkombinationen",
+      "diagnostics": "Lokalen Supportbericht erstellen und prüfen",
       "providers": "Konfigurieren Sie API-Schlüssel und Endpunkte",
       "models": "Verwalten Sie verfügbare Modellparameter",
       "notifications": "Benachrichtigungskanäle für wichtige Workflow-Ereignisse konfigurieren",
@@ -967,6 +969,20 @@
       "orphanSecrets": "Orphaned secrets",
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
+    },
+    "diagnostic": {
+      "title": "Lokaler Diagnosebericht",
+      "description": "Prüfen Sie den bereinigten Bericht, bevor Sie ihn für den Support speichern. Es wird nichts automatisch gesendet.",
+      "contents": "Der Bericht enthält die Macro-Version, nicht geheime wirksame Einstellungen, Datenbank- und Wiederherstellungsstatus, MCP- und Updater-Status sowie begrenzte Log-Metadaten.",
+      "exclusions": "Geheimnisse, Prompts, Quellcode, private Pfade, Benutzerinhalte und rohe Logmeldungen sind ausgeschlossen.",
+      "generate": "Vorschau erstellen",
+      "regenerate": "Vorschau neu erstellen",
+      "generateFailed": "Diagnosebericht konnte nicht erstellt werden",
+      "preview": "Berichtsvorschau",
+      "save": "Bericht speichern",
+      "saveTitle": "Diagnosebericht speichern",
+      "saved": "Diagnosebericht gespeichert",
+      "saveFailed": "Diagnosebericht konnte nicht gespeichert werden"
     },
     "updates": "Updates",
     "language_region": "Sprache und Region",
