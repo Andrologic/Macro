@@ -82,6 +82,10 @@ const loadUseToolsStore = async () => {
         ],
       })),
       mcpCallTool: mock(async () => ({ content: 'ok' })),
+      mcpRuntimeGetSnapshot: mock(async () => ({
+        generatedAt: '2026-09-05T20:00:00.000Z',
+        servers: [],
+      })),
       mcpRuntimeConnect: mock(async () => ({
         key: {
           serverId: 'github',
@@ -259,5 +263,36 @@ describe('useToolsStore chat toolbox policy', () => {
     expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe(
       'MCP_RUNTIME_CALL_TOOL_FAILED'
     );
+  });
+
+  it('hydrates autonomous runtime failures and their codes from the MCP snapshot', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    (services.mcpRuntimeGetSnapshot as unknown as {
+      mockResolvedValueOnce: (value: unknown) => void;
+    }).mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:05.000Z',
+      servers: [{
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        status: 'failed',
+        lastErrorCode: 'MCP_RUNTIME_RECONNECT_TIMEOUT',
+        lastError: 'Reconnect circuit timed out',
+        updatedAt: '2026-09-05T20:00:04.000Z',
+      }],
+    });
+
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+
+    expect(useToolsStore.getState().mcpServers[0]).toMatchObject({
+      status: 'degraded',
+      lastErrorCode: 'MCP_RUNTIME_RECONNECT_TIMEOUT',
+      lastError: 'Reconnect circuit timed out',
+    });
   });
 });

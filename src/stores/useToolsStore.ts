@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { services } from '../services';
 import type { Tool, MCPServer, MCPTool } from '../types';
+import type { MCPRuntimeSnapshotDto, MCPRuntimeServerSnapshot } from '../services/contracts/serviceProvider';
 import { toServiceError } from '../services/contracts/errors';
 import { normalizeArchitectToolId } from '../services/architectToolNames';
 import { getToolModePolicy } from '../services/toolModePolicy';
@@ -107,6 +108,38 @@ const persistChatModeToolSettings = (settings: Record<string, boolean>): void =>
 
 let settingsMutationVersion = 0;
 
+const runtimeStatusToServerStatus = (
+  snapshot: MCPRuntimeServerSnapshot,
+): MCPServer['status'] => {
+  if (snapshot.status === 'ready') return 'online';
+  if (snapshot.status === 'failed' || snapshot.status === 'reconnecting') return 'degraded';
+  return 'offline';
+};
+
+const mergeMCPRuntimeSnapshot = (
+  servers: MCPServer[],
+  runtimeSnapshot: MCPRuntimeSnapshotDto | null,
+): MCPServer[] => {
+  if (!runtimeSnapshot?.servers.length) return servers;
+  const latestByServerId = new Map<string, MCPRuntimeServerSnapshot>();
+  for (const snapshot of runtimeSnapshot.servers) {
+    const current = latestByServerId.get(snapshot.key.serverId);
+    if (!current || snapshot.updatedAt > current.updatedAt) {
+      latestByServerId.set(snapshot.key.serverId, snapshot);
+    }
+  }
+  return servers.map((server) => {
+    const snapshot = latestByServerId.get(server.id);
+    if (!snapshot) return server;
+    return {
+      ...server,
+      status: runtimeStatusToServerStatus(snapshot),
+      lastErrorCode: snapshot.lastErrorCode ?? null,
+      lastError: snapshot.lastError ?? null,
+    };
+  });
+};
+
 interface ToolsStore {
   // Internal Tools
   internalTools: Record<string, Tool>;
@@ -122,6 +155,7 @@ interface ToolsStore {
 
   // Actions
   loadSettings: () => Promise<void>;
+  refreshMCPRuntimeSnapshot: () => Promise<void>;
   toggleTool: (toolId: string) => Promise<void>;
   toggleMCPServer: (serverId: string) => Promise<void>;
   upsertMCPServer: (server: MCPServer) => Promise<void>;
@@ -157,9 +191,10 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     const hydrationVersion = settingsMutationVersion;
     set({ isLoading: true, lastError: null });
     try {
-      const [toolsDto, mcpServersDto] = await Promise.all([
+      const [toolsDto, mcpServersDto, runtimeSnapshot] = await Promise.all([
         services.getToolSettings(),
         services.getMCPServerSettings(),
+        services.mcpRuntimeGetSnapshot().catch(() => null),
       ]);
 
       const loadedTools = toolsDto.tools as unknown as Record<string, Tool>;
@@ -214,10 +249,11 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       const loadedMcpServers = Object.values(mcpServersDto.servers)
         .filter((server): server is MCPServer => Boolean(server && typeof server === 'object' && 'id' in server))
         .map(normalizeMCPServer);
-      const nextMcpServers =
+      const baseMcpServers =
         shouldPreserveLocalState && currentState.mcpServers.length > 0
           ? currentState.mcpServers
           : loadedMcpServers;
+      const nextMcpServers = mergeMCPRuntimeSnapshot(baseMcpServers, runtimeSnapshot);
 
       set({
         internalTools: nextInternalTools,
@@ -230,6 +266,17 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         isLoading: false,
         lastError: toServiceError(error).message,
       });
+    }
+  },
+
+  refreshMCPRuntimeSnapshot: async () => {
+    try {
+      const runtimeSnapshot = await services.mcpRuntimeGetSnapshot();
+      set((state) => ({
+        mcpServers: mergeMCPRuntimeSnapshot(state.mcpServers, runtimeSnapshot),
+      }));
+    } catch {
+      // Remote runtimes may not expose persistent MCP snapshots.
     }
   },
 
