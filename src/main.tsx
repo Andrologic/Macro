@@ -1,3 +1,5 @@
+import { PersistenceHealthNotifications } from "./components/notifications/PersistenceHealthNotifications";
+import { restoreBackupBrowserState } from "./services/localBackup";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import type { Root } from "react-dom/client";
@@ -92,20 +94,20 @@ const renderApp = (): void => {
   root.render(
     <React.StrictMode>
       <ThemeProvider>
+        <PersistenceHealthNotifications />
         {appTree}
       </ThemeProvider>
     </React.StrictMode>,
   );
 };
 
-void initializeConfigRuntime()
-  .then(() => Promise.all([initializeI18n(), refreshWebSearchSettings()]))
-  .then(() => {
-    installConfigRuntimeEffects();
-  })
+void restoreBackupBrowserState()
+  .then(() => initializeConfigRuntime()
+    .then(() => Promise.all([initializeI18n(), refreshWebSearchSettings()]))
+    .then(() => { installConfigRuntimeEffects(); })
+    .catch((error) => { console.error("Failed to initialize Macro runtime:", error); })
+    .finally(renderApp))
   .catch((error) => {
-    console.error("Failed to initialize Macro runtime:", error);
-  })
-  .finally(() => {
-    renderApp();
+    // Do not hydrate Chat against a partially restored profile.
+    rootElement.textContent = `Profile restoration could not finish: ${String(error)}. Original browser data and native rollback archive are preserved. Free local storage and restart Macro to retry.`;
   });

@@ -2433,5 +2433,19 @@
     "searchingFiles": "Recherche de fichiers...",
     "noMatchingSlashContext": "Aucun contexte correspondant.",
     "noSlashContext": "Aucun contexte disponible."
+  },
+  "backup": {
+    "title": "Sauvegarde et restauration",
+    "scope": "Profil local : conversations, pièces jointes enregistrées, checkpoints de code, brouillons et préférences globales. Les dossiers des projets et leurs métadonnées Git sont exclus. Conservez une copie séparée de vos projets. Archive limitée à 256 Mio ; restauration avec la même version de Macro.",
+    "secrets": "Les identifiants des fournisseurs, les variables d’environnement et les en-têtes MCP sont exclus des exports portables. Reconnectez les fournisseurs après restauration. Les conversations et fichiers restent des données privées ; conservez l’archive en lieu sûr.",
+    "recovery": "Récupération nécessaire. Les données originales sont conservées.",
+    "path": "Chemin absolu du fichier de sauvegarde local",
+    "export": "Préparer une sauvegarde",
+    "restore": "Restaurer une sauvegarde",
+    "confirmTitle": "Confirmer l’opération sur le profil",
+    "confirmRestore": "Au prochain démarrage, cette archive remplacera votre profil local. Macro la valide d’abord et conserve le profil précédent pour récupération. Arrêtez les tâches en cours et quittez immédiatement après confirmation. Restaurer ce fichier ?",
+    "confirmExport": "Arrêtez les tâches en cours avant de continuer. Macro créera l’archive au prochain démarrage, avant l’ouverture de la base et de la configuration. Préparer cette sauvegarde ?",
+    "confirm": "Confirmer",
+    "scheduled": "Opération préparée. Quittez complètement Macro, puis rouvrez-le. Ne modifiez plus cette session avant de quitter."
   }
 }

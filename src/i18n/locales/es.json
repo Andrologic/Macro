@@ -2417,5 +2417,19 @@
     "searchingFiles": "Buscando archivos...",
     "noMatchingSlashContext": "No hay contexto coincidente.",
     "noSlashContext": "No hay contexto disponible."
+  },
+  "backup": {
+    "scheduled": "Operación preparada. Cierra Macro por completo y vuelve a abrirlo. No cambies esta sesión antes de salir.",
+    "title": "Copia de seguridad y restauración",
+    "scope": "Perfil local: conversaciones, adjuntos guardados, puntos de control del código, borradores y preferencias globales. Se excluyen las carpetas de proyectos y sus metadatos Git. Guarda una copia separada de los proyectos. Máximo 256 MiB; restaura con la misma versión de Macro.",
+    "secrets": "Las credenciales de proveedores, variables de entorno y cabeceras MCP se excluyen de las exportaciones portátiles. Vuelve a conectar los proveedores tras restaurar. Las conversaciones y archivos siguen siendo datos privados; guarda el archivo en un lugar seguro.",
+    "recovery": "Se requiere recuperación. Los datos originales se conservan.",
+    "path": "Ruta absoluta del archivo de copia local",
+    "export": "Preparar copia",
+    "restore": "Restaurar copia",
+    "confirmTitle": "Confirmar operación del perfil",
+    "confirmRestore": "En el próximo inicio, este archivo reemplazará tu perfil local. Macro lo valida primero y conserva el perfil anterior para recuperarlo. Detén las tareas y sal inmediatamente después de confirmar. ¿Restaurar este archivo?",
+    "confirmExport": "Detén las tareas en curso. Macro creará la copia en el próximo inicio, antes de abrir la base de datos y la configuración. ¿Preparar esta copia?",
+    "confirm": "Confirmar"
   }
 }

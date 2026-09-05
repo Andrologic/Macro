@@ -1,3 +1,4 @@
+import { reportPersistenceIssue, clearPersistenceIssue } from "../../services/persistenceHealth";
 import type {
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
@@ -55,14 +56,15 @@ const isFinitePositiveDimension = (value: unknown): value is number | undefined 
 const isMessageImageAttachment = (value: unknown): value is MessageImageAttachment => {
   if (!isRecord(value)) return false;
   return (
-    isBoundedString(value.id) &&
+    isBoundedString(value.id) && value.id.length > 0 &&
     isBoundedString(value.mimeType, 256) &&
-    value.mimeType.startsWith("image/") &&
+    /^image\/[a-z0-9.+-]+$/.test(value.mimeType) &&
     isBoundedString(value.dataUrl, MAX_COMPOSER_DRAFT_IMAGE_DATA_URL_LENGTH) &&
     value.dataUrl.startsWith(`data:${value.mimeType};base64,`) &&
+    /^[A-Za-z0-9+/]+={0,2}$/.test(value.dataUrl.slice(value.dataUrl.indexOf(",") + 1)) &&
     isFinitePositiveDimension(value.width) &&
     isFinitePositiveDimension(value.height) &&
-    isBoundedString(value.createdAt, 128)
+    isBoundedString(value.createdAt, 128) && Number.isFinite(Date.parse(value.createdAt))
   );
 };
 
@@ -172,7 +174,7 @@ export const saveComposerDraftsToStorage = (
       JSON.stringify(draftsByContextKey),
     );
   } catch {
-    // Keep the in-memory draft when local storage is unavailable or full.
+    reportPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY, "The composer draft could not be saved. Keep this session open.");
   }
 };
 
@@ -228,37 +230,56 @@ export const saveQuestionnaireDraftsToStorage = (
       JSON.stringify(draftsByConversationId),
     );
   } catch {
-    // Ignore storage errors.
+    reportPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY, "The questionnaire draft could not be saved. Keep this session open.");
   }
 };
 
-export const loadMessageImagesFromStorage = (): Record<
-  string,
-  MessageImageAttachment[]
-> => {
+export const MAX_MESSAGE_IMAGES_STORAGE_LENGTH = 40_000_000;
+const MAX_MESSAGES_WITH_IMAGES = 2_000;
+
+const parseMessageImages = (raw: string, recover = false): Record<string, MessageImageAttachment[]> => {
+  if (raw.length > MAX_MESSAGE_IMAGES_STORAGE_LENGTH) throw new Error("Stored message images exceed the recovery limit. Original data preserved.");
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed)) throw new Error("Invalid stored message images. Original data preserved.");
+  const entries = Object.entries(parsed);
+  if (entries.length > MAX_MESSAGES_WITH_IMAGES) throw new Error("Too many stored message images. Original data preserved.");
+  const valid = entries.filter(([key, images]) => key.length > 0 && isBoundedString(key) && Array.isArray(images) && images.length <= MAX_COMPOSER_DRAFT_IMAGES && images.every(isMessageImageAttachment));
+  if (valid.length !== entries.length) {
+    if (!recover) throw new Error("Invalid stored message images. Original data preserved.");
+    reportPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY, "Some stored message images are invalid. Valid images were recovered; the original data is preserved.");
+  }
+  return Object.fromEntries(valid) as Record<string, MessageImageAttachment[]>;
+};
+
+export const loadMessageImagesFromStorage = (): Record<string, MessageImageAttachment[]> => {
   if (!hasLocalStorage()) return {};
   try {
     const raw = window.localStorage.getItem(MESSAGE_IMAGES_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!isRecord(parsed)) return {};
-    return parsed as Record<string, MessageImageAttachment[]>;
-  } catch {
+    clearPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY);
+    const images = raw === null ? {} : parseMessageImages(raw, true);
+    return images;
+  } catch (error) {
+    reportPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY, String(error));
     return {};
   }
 };
 
 export const saveMessageImagesToStorage = (
   imagesByMessageId: Record<string, MessageImageAttachment[]>,
-) => {
-  if (!hasLocalStorage()) return;
+): boolean => {
+  if (!hasLocalStorage()) return false;
   try {
-    window.localStorage.setItem(
-      MESSAGE_IMAGES_STORAGE_KEY,
-      JSON.stringify(imagesByMessageId),
-    );
-  } catch {
-    // Ignore storage errors.
+    // Validate the previous value before replacing it, including after a failed load.
+    const previous = window.localStorage.getItem(MESSAGE_IMAGES_STORAGE_KEY);
+    if (previous !== null) parseMessageImages(previous);
+    const serialized = JSON.stringify(imagesByMessageId);
+    parseMessageImages(serialized);
+    window.localStorage.setItem(MESSAGE_IMAGES_STORAGE_KEY, serialized);
+    clearPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY);
+    return true;
+  } catch (error) {
+    reportPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY, String(error));
+    return false;
   }
 };
 
