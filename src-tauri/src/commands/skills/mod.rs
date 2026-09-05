@@ -1083,24 +1083,24 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
 }
 
 fn try_discover_skill_roots(base: &Path) -> CommandResult<Vec<PathBuf>> {
-    let Ok(metadata) = fs::symlink_metadata(base) else {
-        return Ok(Vec::new());
+    let metadata = match fs::symlink_metadata(base) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(command_error(format!(
+                "Failed to inspect skill discovery root {}: {error}",
+                base.display()
+            )))
+        }
     };
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Ok(Vec::new());
     }
 
     let mut roots = Vec::new();
-    let mut visited_dirs = 0_usize;
+    let mut discovered_dirs = 1_usize;
     let mut stack = vec![(base.to_path_buf(), 0_usize)];
     while let Some((current, depth)) = stack.pop() {
-        visited_dirs += 1;
-        if visited_dirs > MAX_DISCOVERY_DIRS {
-            return Err(command_error(format!(
-                "Skill discovery exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
-                base.display()
-            )));
-        }
         if find_skill_file(&current).is_some() {
             roots.push(current.clone());
         }
@@ -1108,24 +1108,40 @@ fn try_discover_skill_roots(base: &Path) -> CommandResult<Vec<PathBuf>> {
             continue;
         }
 
-        let Ok(entries) = fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = fs::read_dir(&current).map_err(|error| {
+            command_error(format!(
+                "Failed to read skill discovery directory {}: {error}",
+                current.display()
+            ))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                command_error(format!("Failed to read a skill discovery entry: {error}"))
+            })?;
             let path = entry.path();
-            let Ok(relative) = path.strip_prefix(base) else {
-                continue;
-            };
+            let relative = path
+                .strip_prefix(base)
+                .map_err(|error| command_error(error.to_string()))?;
             if has_hidden_path_component(relative) {
                 continue;
             }
             if path_has_ignored_discovery_component(relative) {
                 continue;
             }
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                command_error(format!(
+                    "Failed to inspect skill discovery path {}: {error}",
+                    path.display()
+                ))
+            })?;
             if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                discovered_dirs += 1;
+                if discovered_dirs > MAX_DISCOVERY_DIRS {
+                    return Err(command_error(format!(
+                        "Skill discovery exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
+                        base.display()
+                    )));
+                }
                 stack.push((path, depth + 1));
             }
         }
@@ -3097,6 +3113,18 @@ mod tests {
         assert!(error
             .message
             .contains("Skill hashing exceeded the 33554432-byte budget"));
+    }
+
+    #[test]
+    fn discovery_directory_budget_fails_before_the_pending_stack_can_exceed_it() {
+        let project = tempdir().expect("project");
+        for index in 0..MAX_DISCOVERY_DIRS {
+            fs::create_dir(project.path().join(format!("skill-{index}")))
+                .expect("create discovery directory");
+        }
+
+        let error = try_discover_skill_roots(project.path()).expect_err("directory budget");
+        assert!(error.message.contains("directory budget"));
     }
 
     #[tokio::test]

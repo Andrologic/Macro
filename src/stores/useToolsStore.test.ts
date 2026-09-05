@@ -335,4 +335,49 @@ describe('useToolsStore chat toolbox policy', () => {
       lastError: 'Reconnect circuit timed out',
     });
   });
+
+  it('clears a recovered legacy runtime error even when its snapshot has no code', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    const snapshotMock = services.mcpRuntimeGetSnapshot as unknown as {
+      mockResolvedValueOnce: (value: unknown) => void;
+    };
+    const key = {
+      serverId: 'github',
+      projectId: null,
+      projectIds: [],
+      configGeneration: 1,
+    };
+    snapshotMock.mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:05.000Z',
+      servers: [{
+        key,
+        status: 'failed',
+        lastError: 'Legacy reconnect failed',
+        updatedAt: '2026-09-05T20:00:04.000Z',
+      }],
+    });
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+    expect(useToolsStore.getState().mcpServers[0]).toMatchObject({
+      status: 'degraded',
+      lastErrorCode: null,
+      lastError: 'Legacy reconnect failed',
+    });
+
+    snapshotMock.mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:07.000Z',
+      servers: [{
+        key,
+        status: 'ready',
+        updatedAt: '2026-09-05T20:00:06.000Z',
+      }],
+    });
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+    expect(useToolsStore.getState().mcpServers[0]).toMatchObject({
+      status: 'online',
+      lastErrorCode: null,
+      lastError: null,
+    });
+  });
 });

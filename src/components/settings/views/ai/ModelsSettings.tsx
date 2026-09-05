@@ -208,8 +208,8 @@ export const ModelsSettings: React.FC = () => {
     setIsRefreshingCatalog(true);
     try {
       const status = await refreshModelContextCatalog({ force: true });
+      if (!status.error) await refreshLoadedModelContextCatalog(providerId);
       setCatalogStatus(status);
-      await refreshLoadedModelContextCatalog(providerId);
       return status;
     } finally {
       setIsRefreshingCatalog(false);

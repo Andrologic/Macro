@@ -597,4 +597,29 @@ describe('ModelsSettings metadata model config', () => {
     expect(container!.textContent).toContain('Catalog synchronized');
     expect(container!.textContent).not.toContain('Bundled snapshot in use');
   });
+
+  it('keeps a forced synchronization error visible without refreshing the cached catalog', async () => {
+    refreshCatalogMock.mockResolvedValueOnce({
+      lastFetchedAt: '2026-09-05T08:00:00.000Z',
+      source: 'cache',
+      stale: true,
+      error: 'Models.dev returned 503',
+    });
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+    const refreshButton = Array.from(container!.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Refresh catalog')
+    );
+    await act(async () => {
+      refreshButton?.click();
+      await flush();
+    });
+
+    expect(refreshLoadedCatalogMock).not.toHaveBeenCalled();
+    expect(container!.textContent).toContain('Latest catalog refresh failed: {{error}}');
+  });
 });

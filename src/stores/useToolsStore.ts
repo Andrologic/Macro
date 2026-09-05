@@ -133,7 +133,8 @@ const mergeMCPRuntimeSnapshot = (
     if (!snapshot) return server;
     const snapshotHasError = Boolean(snapshot.lastErrorCode || snapshot.lastError);
     const recoveredRuntimeError = snapshot.status === 'ready'
-      && server.lastErrorCode?.startsWith('MCP_RUNTIME_') === true;
+      && (server.status === 'degraded'
+        || server.lastErrorCode?.startsWith('MCP_RUNTIME_') === true);
     return {
       ...server,
       status: runtimeStatusToServerStatus(snapshot),
