@@ -608,5 +608,6 @@
   "partialCommitHelp": "Certains dépôts sont commités. Reprenez pour committer uniquement les dépôts restants prêts.",
   "reviewProgress": "{{reviewed}} / {{total}} différences de fichiers ouvertes",
   "nextUnreviewedDiff": "Différence non ouverte suivante",
-  "resumeRemainingCommits": "Reprendre les commits restants"
+  "resumeRemainingCommits": "Reprendre les commits restants",
+  "detachedReviewDraft": "Ce fichier ne figure plus dans la revue. Copiez votre brouillon non enregistré avant de fermer ; les actions sur le fichier sont indisponibles."
 }

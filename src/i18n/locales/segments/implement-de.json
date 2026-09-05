@@ -608,5 +608,6 @@
   "partialCommitHelp": "Einige Repositories sind committet. Fahre fort, um nur die verbleibenden bereiten Repositories zu committen.",
   "reviewProgress": "{{reviewed}} / {{total}} Datei-Diffs geöffnet",
   "nextUnreviewedDiff": "Nächster ungeöffneter Diff",
-  "resumeRemainingCommits": "Verbleibende Commits fortsetzen"
+  "resumeRemainingCommits": "Verbleibende Commits fortsetzen",
+  "detachedReviewDraft": "Diese Datei ist nicht mehr in der Prüfung. Kopiere den ungespeicherten Entwurf vor dem Schließen; Dateiaktionen sind nicht verfügbar."
 }

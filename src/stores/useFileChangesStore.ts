@@ -1777,7 +1777,9 @@ export const createFileChangesStore = (
     const refreshed = get();
     if (refreshed.currentTaskId !== state.currentTaskId || refreshed.lastError || refreshed.reviewSuspension) return;
     set((current) => ({ staleDirectRepositoryId: null,
-      repositories: updateRepositoryState(current.repositories, repositoryId, (repository) => ({ ...repository, lastError: null })),
+      repositories: updateRepositoryState(current.repositories, repositoryId, (repository) => ({ ...repository,
+        lastError: repository.changes.some((change) => !change.canEdit && change.id === current.diffModalSession?.changeId && current.diffModalSession?.isDirty)
+          ? repository.lastError : null })),
     }));
     const target = refreshed.selectedDiffTarget;
     if (target) {
@@ -2002,6 +2004,19 @@ export const createFileChangesStore = (
         return;
       }
 
+      const latestSession = get().diffModalSession;
+      if (sameTask && latestSession?.isDirty && !findDiffTargetChange(repositories, get().selectedDiffTarget)) {
+        const previousChange = previousState.repositories
+          .find((repository) => repository.id === latestSession.repositoryId)
+          ?.changes.find((change) => change.id === latestSession.changeId);
+        const repository = repositories.find((candidate) => candidate.id === latestSession.repositoryId);
+        if (previousChange && repository) {
+          repository.changes.push({ ...previousChange, canEdit: false, requiresHydration: false,
+            hasPendingVisibleChange: false, hasValidatedStage: false });
+          repository.lastError = tChanges('implement.detachedReviewDraft',
+            'This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable.');
+        }
+      }
       const derivedReviewState = deriveReviewState(repositories);
       const latestDiffModalState = resolveLatestDiffModalSessionAfterRefresh({
         repositories,

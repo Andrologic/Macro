@@ -608,5 +608,6 @@
   "partialCommitHelp": "Some repositories are committed. Resume to commit only the remaining ready repositories.",
   "reviewProgress": "{{reviewed}} / {{total}} file diffs opened",
   "nextUnreviewedDiff": "Next unopened diff",
-  "resumeRemainingCommits": "Resume remaining commits"
+  "resumeRemainingCommits": "Resume remaining commits",
+  "detachedReviewDraft": "This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable."
 }

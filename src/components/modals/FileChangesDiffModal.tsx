@@ -602,7 +602,7 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
                     variant="primary"
                     size="sm"
                     onClick={() => void saveRightDraft()}
-                    disabled={isSaving}
+                    disabled={isSaving || !change.canEdit}
                     className="bg-primary text-primary-foreground hover:bg-primary/90"
                   >
                     {t('implement.saveDraft', 'Save draft')}

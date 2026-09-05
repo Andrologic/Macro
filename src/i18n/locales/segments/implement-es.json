@@ -608,5 +608,6 @@
   "partialCommitHelp": "Algunos repositorios ya tienen commit. Reanuda para confirmar solo los repositorios restantes preparados.",
   "reviewProgress": "{{reviewed}} / {{total}} diferencias de archivos abiertas",
   "nextUnreviewedDiff": "Siguiente diferencia sin abrir",
-  "resumeRemainingCommits": "Reanudar commits restantes"
+  "resumeRemainingCommits": "Reanudar commits restantes",
+  "detachedReviewDraft": "Este archivo ya no está en la revisión. Copia el borrador sin guardar antes de cerrar; las acciones del archivo no están disponibles."
 }
