@@ -22,6 +22,7 @@ export interface WorkflowAttentionContext {
   selectedProjectId: string | null;
   scopedProjectIds: string[];
   tasks: CatalogedImplementTask[];
+  taskCatalogLoadId?: string | null;
 }
 
 export interface WorkflowChatAttentionState {
@@ -64,7 +65,173 @@ export type WorkflowAttentionEvent =
       taskId: string;
       taskTitle: string;
       conversationId: string | null;
+      catalogScope: {
+        selectedGroupId: string | null;
+        selectedProjectId: string | null;
+      };
+      catalogLoadId: string | null;
     };
+
+const haveSameConversationAttentionShape = (
+  previous: Conversation[],
+  next: Conversation[],
+): boolean => {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+
+  return previous.every((conversation, index) => {
+    const candidate = next[index];
+    return Boolean(
+      candidate &&
+      conversation.id === candidate.id &&
+      conversation.scope_mode === candidate.scope_mode &&
+      conversation.task_id === candidate.task_id &&
+      conversation.group_id === candidate.group_id &&
+      conversation.project_id === candidate.project_id,
+    );
+  });
+};
+
+const haveSameQuestionnaireShape = (
+  previous: ChatMessage['questionnaire'],
+  next: ChatMessage['questionnaire'],
+): boolean => {
+  if (previous === next) return true;
+  if (!previous || !next) return previous === next;
+  if (previous.questions.length !== next.questions.length) return false;
+
+  return previous.questions.every((question, index) => {
+    const candidate = next.questions[index];
+    return Boolean(
+      candidate &&
+      question.id === candidate.id &&
+      question.prompt === candidate.prompt,
+    );
+  });
+};
+
+const haveSameMessageAttentionShape = (
+  previous: ChatMessage[],
+  next: ChatMessage[],
+): boolean => {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+
+  return previous.every((message, index) => {
+    const candidate = next[index];
+    return Boolean(
+      candidate &&
+      message.id === candidate.id &&
+      message.conversation_id === candidate.conversation_id &&
+      message.role === candidate.role &&
+      haveSameQuestionnaireShape(message.questionnaire, candidate.questionnaire),
+    );
+  });
+};
+
+const haveSameConversationMessageAttentionShape = (
+  previous: Record<string, ChatMessage[]>,
+  next: Record<string, ChatMessage[]>,
+): boolean => {
+  if (previous === next) return true;
+  const previousIds = Object.keys(previous);
+  const nextIds = Object.keys(next);
+  if (previousIds.length !== nextIds.length) return false;
+
+  return previousIds.every((conversationId) =>
+    Object.prototype.hasOwnProperty.call(next, conversationId) &&
+    haveSameMessageAttentionShape(previous[conversationId]!, next[conversationId]!),
+  );
+};
+
+const haveSameQuestionnaireDraftAttentionShape = (
+  previous: Record<string, ConversationQuestionnaireDraft>,
+  next: Record<string, ConversationQuestionnaireDraft>,
+): boolean => {
+  if (previous === next) return true;
+  const previousIds = Object.keys(previous);
+  const nextIds = Object.keys(next);
+  if (previousIds.length !== nextIds.length) return false;
+
+  return previousIds.every((conversationId) => {
+    const previousDraft = previous[conversationId];
+    const nextDraft = next[conversationId];
+    return Boolean(
+      previousDraft &&
+      nextDraft &&
+      previousDraft.mode === nextDraft.mode &&
+      previousDraft.assistantMessageId === nextDraft.assistantMessageId &&
+      previousDraft.responseMessageId === nextDraft.responseMessageId,
+    );
+  });
+};
+
+const haveSameApprovalAttentionShape = (
+  previous: Record<string, PendingToolApproval | undefined>,
+  next: Record<string, PendingToolApproval | undefined>,
+): boolean => {
+  if (previous === next) return true;
+  const conversationIds = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  for (const conversationId of conversationIds) {
+    if (previous[conversationId]?.toolCallId !== next[conversationId]?.toolCallId) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const haveSameLoadStatus = (
+  previous: WorkflowChatAttentionState['messageLoadStatusByConversationId'],
+  next: WorkflowChatAttentionState['messageLoadStatusByConversationId'],
+): boolean => {
+  if (previous === next) return true;
+  const previousEntries = Object.entries(previous ?? {});
+  const nextEntries = Object.entries(next ?? {});
+  if (previousEntries.length !== nextEntries.length) return false;
+  return previousEntries.every(([conversationId, status]) => next?.[conversationId] === status);
+};
+
+export const hasChatAttentionStateChanged = (
+  previous: WorkflowChatAttentionState,
+  next: WorkflowChatAttentionState,
+): boolean =>
+  previous.hydrationStatus !== next.hydrationStatus ||
+  !haveSameLoadStatus(
+    previous.messageLoadStatusByConversationId,
+    next.messageLoadStatusByConversationId,
+  ) ||
+  !haveSameConversationAttentionShape(previous.conversations, next.conversations) ||
+  !haveSameMessageAttentionShape(previous.messages, next.messages) ||
+  !haveSameConversationMessageAttentionShape(
+    previous.messagesByConversationId,
+    next.messagesByConversationId,
+  ) ||
+  !haveSameQuestionnaireDraftAttentionShape(
+    previous.questionnaireDraftsByConversationId,
+    next.questionnaireDraftsByConversationId,
+  ) ||
+  !haveSameApprovalAttentionShape(
+    previous.pendingToolApprovalByConversationId,
+    next.pendingToolApprovalByConversationId,
+  );
+
+export const hasReviewAttentionStateChanged = (
+  previous: CatalogedImplementTask[],
+  next: CatalogedImplementTask[],
+): boolean => {
+  if (previous === next) return false;
+  if (previous.length !== next.length) return true;
+
+  return previous.some((task, index) => {
+    const candidate = next[index];
+    return !candidate ||
+      task.id !== candidate.id ||
+      task.node_id !== candidate.node_id ||
+      task.status !== candidate.status ||
+      task.title !== candidate.title ||
+      task.conversation_id !== candidate.conversation_id;
+  });
+};
 
 const getConversationMessages = (
   state: WorkflowChatAttentionState,
@@ -250,6 +417,11 @@ export const detectNewReviewAttentionEvents = (
         taskId: task.id,
         taskTitle: task.title,
         conversationId,
+        catalogScope: {
+          selectedGroupId: context.selectedGroupId,
+          selectedProjectId: context.selectedProjectId,
+        },
+        catalogLoadId: context.taskCatalogLoadId ?? null,
       },
     ];
   });

@@ -58,7 +58,10 @@ interface NotificationCenterStore {
   markAllRead: () => void;
 }
 
-export const NOTIFICATION_CENTER_MAX_ITEMS = 100;
+// Historical notifications are bounded independently from live workflow requests.
+// A pending request remains available until reconciliation proves it was resolved.
+export const NOTIFICATION_CENTER_MAX_HISTORY_ITEMS = 100;
+export const NOTIFICATION_CENTER_MAX_ITEMS = NOTIFICATION_CENTER_MAX_HISTORY_ITEMS;
 // Keep startup persistence independent from the services chunk. The matching
 // preference key remains PREF_KEYS.NOTIFICATION_CENTER_ITEMS for writes.
 export const NOTIFICATION_CENTER_STORAGE_KEY = 'macro_notificationCenterItems';
@@ -219,9 +222,7 @@ export const sanitizeNotificationCenterItems = (value: unknown): NotificationCen
     ))
     .map(normalizeLegacyNotificationCenterItem);
 
-  return coalesceNotificationCenterItems(normalizedItems)
-    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
-    .slice(0, NOTIFICATION_CENTER_MAX_ITEMS);
+  return retainNotificationCenterItems(coalesceNotificationCenterItems(normalizedItems));
 };
 
 const normalizeLegacyNotificationCenterItem = (
@@ -278,6 +279,41 @@ const coalesceNotificationCenterItems = (
   }
 
   return Array.from(byId.values());
+};
+
+const sortNotificationCenterItems = (
+  items: NotificationCenterItem[],
+): NotificationCenterItem[] =>
+  items.sort(
+    (left, right) =>
+      new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+  );
+
+export const isWorkflowAttentionActionSource = (
+  item: NotificationCenterItem,
+): boolean =>
+  item.variant === 'actionable' &&
+  item.category === 'task_attention_required' &&
+  item.workflowNavigation !== undefined;
+
+const retainNotificationCenterItems = (
+  items: NotificationCenterItem[],
+): NotificationCenterItem[] => {
+  const pendingWorkflowItems: NotificationCenterItem[] = [];
+  const historyItems: NotificationCenterItem[] = [];
+
+  for (const item of sortNotificationCenterItems(items)) {
+    if (isWorkflowAttentionActionSource(item)) {
+      pendingWorkflowItems.push(item);
+    } else if (historyItems.length < NOTIFICATION_CENTER_MAX_HISTORY_ITEMS) {
+      historyItems.push(item);
+    }
+  }
+
+  return sortNotificationCenterItems([
+    ...pendingWorkflowItems,
+    ...historyItems,
+  ]);
 };
 
 export const readNotificationCenterItemsFromStorage = (): NotificationCenterItem[] => {
@@ -394,12 +430,10 @@ export const useNotificationCenterStore = create<NotificationCenterStore>((set, 
           }
         : normalizedItem;
 
-    const nextItems = [
+    const nextItems = retainNotificationCenterItems([
       nextItem,
       ...get().items.filter((existingItem) => existingItem.id !== normalizedItem.id),
-    ]
-      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
-      .slice(0, NOTIFICATION_CENTER_MAX_ITEMS);
+    ]);
 
     set({ items: nextItems });
     persistNotificationCenterItems(nextItems);

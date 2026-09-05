@@ -10,6 +10,8 @@ import {
   detectNewChatAttentionEvents,
   getActiveChatAttentionKeys,
   detectNewReviewAttentionEvents,
+  hasChatAttentionStateChanged,
+  hasReviewAttentionStateChanged,
   type WorkflowAttentionEvent,
 } from '../../services/workflowAttentionEvents';
 import { getScopedProjectIds } from '../../services/globalProjects';
@@ -20,6 +22,7 @@ import { notify } from '../ui/toastService';
 
 const getAttentionContext = () => {
   const appState = useAppStore.getState();
+  const taskState = useTaskStore.getState();
   return {
     appForeground: isAppForeground(),
     mode: appState.mode,
@@ -35,7 +38,8 @@ const getAttentionContext = () => {
       appState.selectedGroupId,
       appState.selectedProjectId,
     ),
-    tasks: useTaskStore.getState().tasks,
+    tasks: taskState.tasks,
+    taskCatalogLoadId: taskState.lastSuccessfulCatalogLoad?.loadId ?? null,
   };
 };
 
@@ -44,7 +48,12 @@ export const emitWorkflowAttentionNotification = (
   t: TFunction,
 ): void => {
   const workflowNavigation: WorkflowNotificationNavigation = event.kind === 'review'
-    ? { kind: 'review', taskId: event.taskId }
+    ? {
+        kind: 'review',
+        taskId: event.taskId,
+        catalogScope: event.catalogScope,
+        ...(event.catalogLoadId ? { catalogLoadId: event.catalogLoadId } : {}),
+      }
     : { kind: 'conversation', requestKind: event.kind, conversationId: event.conversationId };
   const action = {
     label: t('notifications.workflow.openAction', 'Open'),
@@ -106,7 +115,8 @@ export const emitWorkflowAttentionNotification = (
 // Resolution removes the obsolete call to action. Loading an old request never emits it again.
 export const reconcileWorkflowAttentionNotifications = (): void => {
   const chat = useChatStore.getState();
-  const tasks = useTaskStore.getState().tasks;
+  const taskState = useTaskStore.getState();
+  const tasks = taskState.tasks;
   const center = useNotificationCenterStore.getState();
   const activeKeys = getActiveChatAttentionKeys(chat);
   const remove = (item: (typeof center.items)[number]) => {
@@ -118,7 +128,21 @@ export const reconcileWorkflowAttentionNotifications = (): void => {
     if (!navigation) continue;
     if (navigation.kind === 'review') {
       const task = resolveTaskReference(tasks, navigation.taskId);
-      if (task && task.status !== 'InReview') remove(item);
+      const successfulLoad = taskState.lastSuccessfulCatalogLoad;
+      const taskAbsenceIsConfirmed = Boolean(
+        navigation.catalogScope &&
+        successfulLoad &&
+        navigation.catalogLoadId !== successfulLoad.loadId &&
+        navigation.catalogScope.selectedGroupId === successfulLoad.selectedGroupId &&
+        navigation.catalogScope.selectedProjectId === successfulLoad.selectedProjectId &&
+        !successfulLoad.taskIds.includes(navigation.taskId),
+      );
+      if (
+        (task && task.status !== 'InReview') ||
+        (!task && taskAbsenceIsConfirmed)
+      ) {
+        remove(item);
+      }
       continue;
     }
     if (chat.hydrationStatus !== 'ready') continue;
@@ -132,10 +156,22 @@ export const reconcileWorkflowAttentionNotifications = (): void => {
   }
 };
 
-export const subscribeToWorkflowAttentionNotifications = (t: TFunction) => {
+export interface WorkflowAttentionSubscriptionDiagnostics {
+  onChatRecalculation?: () => void;
+  onTaskRecalculation?: () => void;
+}
+
+export const subscribeToWorkflowAttentionNotifications = (
+  t: TFunction,
+  diagnostics?: WorkflowAttentionSubscriptionDiagnostics,
+) => {
   void initializeDesktopNotifications();
   reconcileWorkflowAttentionNotifications();
   const unsubscribeChat = useChatStore.subscribe((nextState, previousState) => {
+    if (!hasChatAttentionStateChanged(previousState, nextState)) {
+      return;
+    }
+    diagnostics?.onChatRecalculation?.();
     const events = detectNewChatAttentionEvents(
       previousState,
       nextState,
@@ -145,6 +181,14 @@ export const subscribeToWorkflowAttentionNotifications = (t: TFunction) => {
     reconcileWorkflowAttentionNotifications();
   });
   const unsubscribeTasks = useTaskStore.subscribe((nextState, previousState) => {
+    if (
+      previousState.isLoading === nextState.isLoading &&
+      previousState.lastSuccessfulCatalogLoad === nextState.lastSuccessfulCatalogLoad &&
+      !hasReviewAttentionStateChanged(previousState.tasks, nextState.tasks)
+    ) {
+      return;
+    }
+    diagnostics?.onTaskRecalculation?.();
     const events = detectNewReviewAttentionEvents(
       previousState.tasks,
       nextState.tasks,
