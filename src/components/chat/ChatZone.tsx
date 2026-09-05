@@ -2716,7 +2716,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   };
 
-  const appendPastedImages = async (files: File[]) => {
+  const appendPastedImages = async (files: File[], targetContextKey?: string) => {
     const nextImages: MessageImageAttachment[] = [];
     const originalContextKey = renderedComposerDraftContextKeyRef.current;
     let releaseImport: (() => void) | undefined;
@@ -2737,7 +2737,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         });
       }
 
-      if (originalContextKey !== renderedComposerDraftContextKeyRef.current) {
+      if (originalContextKey !== renderedComposerDraftContextKeyRef.current && targetContextKey !== renderedComposerDraftContextKeyRef.current) {
         throw new Error('Composer changed during image import');
       }
       if (nextImages.length > 0) {
@@ -2800,8 +2800,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   const handleAttachConversationFiles = useCallback(async (
     files: FileList | readonly File[],
-  ): Promise<boolean> => {
-    if (files.length === 0) return false;
+  ): Promise<string | null> => {
+    if (files.length === 0) return null;
     let releaseImport: (() => void) | undefined;
     const originalContextKey = renderedComposerDraftContextKeyRef.current;
     try {
@@ -2816,12 +2816,29 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       if (originalContextKey !== renderedComposerDraftContextKeyRef.current) {
         throw new Error(t('chat.contextToolbox.importContextChanged', 'Conversation changed. No files were added; select them again.'));
       }
+      const draftBeforeCreation = latestComposerDraftRef.current;
+      if (!selectedConversationId) {
+        saveComposerDraftForContext(originalContextKey, draftBeforeCreation);
+      }
       const conversationId = await ensureConversation();
       if (!conversationId) {
         throw new Error(t('chat.contextToolbox.conversationRequired', 'Select a task or plan before attaching files.'));
       }
+      const targetContextKey = `conversation:${conversationId}`;
+      if (!selectedConversationId) {
+        migrateComposerDraftContext(originalContextKey, targetContextKey);
+        // Selection can render before ensureConversation resolves. Restore the
+        // migrated snapshot only if this is still the newly created conversation.
+        if (renderedComposerDraftContextKeyRef.current === originalContextKey || renderedComposerDraftContextKeyRef.current === targetContextKey) {
+          setInputValue(draftBeforeCreation.text);
+          setComposerImages([...draftBeforeCreation.images]);
+          composerEditorRef.current?.setText(draftBeforeCreation.text, draftBeforeCreation.contextRefs);
+          clearComposerContextRefs();
+          draftBeforeCreation.contextRefs.forEach(addComposerContextRef);
+        }
+      }
       await persistConversationAttachments(prepared, conversationId, addCitationAndPersist);
-      return true;
+      return targetContextKey;
     } catch (error) {
       console.error('Failed to attach composer files:', error);
       const attachmentError = error instanceof ConversationAttachmentError ? error : null;
@@ -2868,7 +2885,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       notify.error(t('chat.contextToolbox.fileReadFailedTitle', 'Could not attach files'), {
         description,
       });
-      return false;
+      return null;
     } finally {
       releaseImport?.();
     }
@@ -2876,6 +2893,11 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     addCitationAndPersist,
     composerFileCitations,
     ensureConversation,
+    selectedConversationId,
+    saveComposerDraftForContext,
+    migrateComposerDraftContext,
+    clearComposerContextRefs,
+    addComposerContextRef,
     t,
   ]);
 
@@ -2887,9 +2909,13 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     try {
       const imageFiles = files.filter((file) => file.type.startsWith('image/'));
       const textFiles = files.filter((file) => !file.type.startsWith('image/'));
-      const textAccepted = textFiles.length === 0 || await handleAttachConversationFiles(textFiles);
-      if (textAccepted && imageFiles.length > 0 && originalContextKey === renderedComposerDraftContextKeyRef.current) {
-        await appendPastedImages(imageFiles);
+      const targetContextKey = textFiles.length === 0 ? originalContextKey : await handleAttachConversationFiles(textFiles);
+      if (targetContextKey && imageFiles.length > 0) {
+        if (originalContextKey === renderedComposerDraftContextKeyRef.current || targetContextKey === renderedComposerDraftContextKeyRef.current) {
+          await appendPastedImages(imageFiles, targetContextKey);
+        } else {
+          notify.error(t('chat.imageImportContextChanged', 'Conversation changed. Images were not added; select them again.'));
+        }
       }
     } finally {
       attachmentImportInFlightRef.current = false;

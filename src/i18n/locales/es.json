@@ -449,6 +449,7 @@
     "maximize": "maximizar"
   },
   "chat": {
+    "imageImportContextChanged": "La conversación ha cambiado. No se añadieron las imágenes; selecciónalas de nuevo.",
     "imageImportFailed": "No se añadieron imágenes. Usa PNG, JPEG, GIF o WebP válidos: máximo 2 MB por imagen, 8 MB en total y 10 imágenes.",
     "newChat": "Nuevo chat",
     "newConversation": "Nueva conversación",

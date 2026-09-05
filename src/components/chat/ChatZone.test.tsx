@@ -945,7 +945,7 @@ describe('ChatZone', () => {
     return editor;
   };
 
-  const pasteComposerImage = async (): Promise<void> => {
+  const pasteComposerImage = async (attach?: (file: File) => Promise<void>): Promise<void> => {
     const initialFileReader = globalThis.FileReader;
     const initialImage = globalThis.Image;
     class TestFileReader {
@@ -984,6 +984,10 @@ describe('ChatZone', () => {
     });
 
     try {
+      if (attach) {
+        await attach(file);
+        return;
+      }
       await act(async () => {
         getComposerEditor().dispatchEvent(pasteEvent);
         await new Promise((resolve) => window.setTimeout(resolve, 20));
@@ -1210,9 +1214,43 @@ describe('ChatZone', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 20));
       });
       expect(imageSlice).not.toHaveBeenCalled();
+      expect(notifyErrorMock).toHaveBeenCalled();
       expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
     } finally {
       persisted.resolve('citation-id');
+      useCitationsStore.setState({ addCitationAndPersist: originalPersist });
+    }
+  });
+
+  it('migrates the whole draft and imports mixed-batch images when attachments create the conversation', async () => {
+    const originalPersist = useCitationsStore.getState().addCitationAndPersist;
+    useCitationsStore.setState({ addCitationAndPersist: mock(async () => 'citation-id') });
+    chatState = {
+      ...chatState,
+      selectedConversationId: null,
+      conversations: [],
+      ensureConversationForCurrentMode: mock(async () => {
+        useChatStore.setState({ selectedConversationId: 'conv-1', conversations: [buildConversation()] });
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+        return 'conv-1';
+      }),
+    };
+    try {
+      await act(async () => { requireRoot().render(<ChatZone />); });
+      await setComposerText('Keep this draft when creating the conversation.');
+      await pasteComposerImage();
+      await pasteComposerImage(async image => {
+        const input = requireContainer().querySelector<HTMLInputElement>('input[type="file"]')!;
+        Object.defineProperty(input, 'files', { value: [new File(['notes'], 'notes.txt', { type: 'text/plain' }), image] });
+        await act(async () => {
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          await new Promise((resolve) => window.setTimeout(resolve, 80));
+        });
+      });
+      expect(chatState.selectedConversationId).toBe('conv-1');
+      expect(getComposerEditor().value).toBe('Keep this draft when creating the conversation.');
+      expect(requireContainer().querySelectorAll('img[alt="Pasted image"]').length).toBe(2);
+    } finally {
       useCitationsStore.setState({ addCitationAndPersist: originalPersist });
     }
   });

@@ -444,6 +444,7 @@
     "maximize": "最大化する"
   },
   "chat": {
+    "imageImportContextChanged": "会話が変更されました。画像は追加されていません。もう一度選択してください。",
     "imageImportFailed": "画像は追加されませんでした。有効なPNG、JPEG、GIF、WebPを使用してください。1画像2 MB、合計8 MB、最大10画像です。",
     "newChat": "新しいチャット",
     "newConversation": "新しい会話",

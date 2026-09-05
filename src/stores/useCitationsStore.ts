@@ -37,7 +37,7 @@ interface CitationsState {
   citations: Citation[];
 
   // Actions
-  hydrateConversationCitations: (conversationId: string) => Promise<void>;
+  hydrateConversationCitations: (conversationId: string, options?: { throwOnError?: boolean }) => Promise<void>;
   ensureCitationContentLoaded: (id: string) => Promise<Citation | null>;
   ensureConversationCitationContentsLoaded: (
     conversationId: string,
@@ -188,7 +188,7 @@ const contentLoadPromisesByCitationId = new Map<string, Promise<Citation | null>
 export const useCitationsStore = create<CitationsState>((set, get) => ({
   citations: [],
 
-  hydrateConversationCitations: async (conversationId) => {
+  hydrateConversationCitations: async (conversationId, options) => {
     if (!tauriIpc.isTauriAvailable()) return;
     try {
       const loaded = (await tauriIpc.listConversationCitations(conversationId))
@@ -202,6 +202,7 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
       }));
     } catch (error) {
       console.warn('[citations] Failed to hydrate conversation citations:', error);
+      if (options?.throwOnError) throw error;
     }
   },
 

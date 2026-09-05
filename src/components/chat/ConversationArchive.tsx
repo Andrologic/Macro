@@ -168,7 +168,7 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   const handleExport = async (format: 'json' | 'markdown') => {
     try {
       await ensureMessagesLoaded(conversation.id);
-      await hydrateConversationCitations(conversation.id);
+      await hydrateConversationCitations(conversation.id, { throwOnError: true });
       const citations = await ensureConversationCitationContentsLoaded(conversation.id);
       const conversationMessages = getConversationMessages(conversation.id).map(
         (message) => ({
