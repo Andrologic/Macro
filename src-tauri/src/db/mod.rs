@@ -63,7 +63,7 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 }
 
 /// Create a pool for the given database path.
-async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
+pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
     let options = SqliteConnectOptions::from_str(&db_url)?

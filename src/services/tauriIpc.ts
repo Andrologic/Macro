@@ -4410,3 +4410,12 @@ export async function safeInvoke<T>(
     throw error;
   }
 }
+
+export interface LocalBackupStatus {
+  message: string;
+  browser: Record<string, string> | null;
+}
+export const localBackupSchedule = (operation: 'export' | 'restore', path: string, browser: Record<string, string>, confirmed: boolean): Promise<void> =>
+  invoke('local_backup_schedule', { operation, path, browser, confirmed });
+export const localBackupStatus = (): Promise<LocalBackupStatus> => invoke('local_backup_status');
+export const localBackupAcknowledge = (): Promise<void> => invoke('local_backup_acknowledge');

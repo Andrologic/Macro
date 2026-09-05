@@ -1,3 +1,4 @@
+import { reportPersistenceIssue, clearPersistenceIssue } from "./persistenceHealth";
 import type {
   AgentCodeCheckpoint,
   AgentCodeCheckpointFileSnapshot,
@@ -178,57 +179,38 @@ const parseCheckpoint = (value: unknown): AgentCodeCheckpoint | null => {
   };
 };
 
-const parseCheckpoints = (
-  raw: string | null | undefined,
-): AgentCodeCheckpoint[] => {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map(parseCheckpoint)
-      .filter((checkpoint): checkpoint is AgentCodeCheckpoint =>
-        Boolean(checkpoint),
-      );
-  } catch {
-    return [];
+export class CheckpointRecoveryRequiredError extends Error {
+  readonly code = "CHECKPOINT_RECOVERY_REQUIRED";
+  constructor() {
+    super("Checkpoint history is damaged or incompatible. The original data has been preserved. Restore a valid backup before modifying this history.");
+    this.name = "CheckpointRecoveryRequiredError";
   }
-};
+}
 
-const parseCheckpointHistory = (
+export const parseCheckpointHistory = (
   raw: string | null | undefined,
 ): AgentCodeCheckpointHistory => {
-  if (!raw) {
+  if (raw === null || raw === undefined) {
     return { checkpoints: [], oldestCompleteSequence: null };
   }
-
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      return {
-        checkpoints: parseCheckpoints(raw),
-        oldestCompleteSequence: null,
-      };
-    }
-
-    if (!isRecord(parsed) || !Array.isArray(parsed.checkpoints)) {
-      return { checkpoints: [], oldestCompleteSequence: null };
-    }
-
-    return {
-      checkpoints: parsed.checkpoints
-        .map(parseCheckpoint)
-        .filter((checkpoint): checkpoint is AgentCodeCheckpoint =>
-          Boolean(checkpoint),
-        ),
-      oldestCompleteSequence:
-        typeof parsed.oldestCompleteSequence === "number"
-          ? parsed.oldestCompleteSequence
-          : null,
-    };
+    parsed = JSON.parse(raw);
   } catch {
-    return { checkpoints: [], oldestCompleteSequence: null };
+    throw new CheckpointRecoveryRequiredError();
   }
+  const legacy = Array.isArray(parsed);
+  if (!legacy && (!isRecord(parsed) || parsed.version !== STORED_CHECKPOINTS_VERSION || !Array.isArray(parsed.checkpoints))) {
+    throw new CheckpointRecoveryRequiredError();
+  }
+  const entries = legacy ? parsed : (parsed as Record<string, unknown>).checkpoints;
+  const checkpoints = (entries as unknown[]).map(parseCheckpoint);
+  const oldest = legacy ? null : (parsed as Record<string, unknown>).oldestCompleteSequence;
+  if (checkpoints.some((item) => item === null) ||
+      (oldest !== null && oldest !== undefined && (typeof oldest !== "number" || !Number.isSafeInteger(oldest) || oldest < 0))) {
+    throw new CheckpointRecoveryRequiredError();
+  }
+  return { checkpoints: checkpoints as AgentCodeCheckpoint[], oldestCompleteSequence: (oldest as number | null | undefined) ?? null };
 };
 
 const readLocalStorageRaw = (conversationId: string): string | null => {
@@ -259,18 +241,17 @@ export const serializeAgentCodeCheckpointHistory = (
 export const loadAgentCodeCheckpointHistory = async (
   conversationId: string,
 ): Promise<AgentCodeCheckpointHistory> => {
-  if (tauriIpc.isTauriAvailable()) {
-    try {
-      const record = await tauriIpc.dbGetAppSetting(
-        getStorageKey(conversationId),
-      );
-      return parseCheckpointHistory(record?.value_json ?? null);
-    } catch {
-      return parseCheckpointHistory(readLocalStorageRaw(conversationId));
-    }
+  try {
+    const raw = tauriIpc.isTauriAvailable()
+      ? (await tauriIpc.dbGetAppSetting(getStorageKey(conversationId)))?.value_json ?? null
+      : readLocalStorageRaw(conversationId);
+    const history = parseCheckpointHistory(raw);
+    clearPersistenceIssue(getStorageKey(conversationId));
+    return history;
+  } catch (error) {
+    reportPersistenceIssue(getStorageKey(conversationId), error instanceof Error ? error.message : String(error));
+    throw error;
   }
-
-  return parseCheckpointHistory(readLocalStorageRaw(conversationId));
 };
 
 export const loadAgentCodeCheckpoints = async (
@@ -300,7 +281,6 @@ export const saveAgentCodeCheckpoints = async (
         ? tauriIpc
             .dbGetAppSetting(getStorageKey(conversationId))
             .then((record) => record?.value_json ?? null)
-            .catch(() => readLocalStorageRaw(conversationId))
         : Promise.resolve(readLocalStorageRaw(conversationId)));
       const previousOldestCompleteSequence =
         parseCheckpointHistory(previousRaw).oldestCompleteSequence;
@@ -329,6 +309,10 @@ export const saveAgentCodeCheckpoints = async (
   checkpointWriteQueues.set(conversationId, write);
   try {
     await write;
+    clearPersistenceIssue(getStorageKey(conversationId));
+  } catch (error) {
+    reportPersistenceIssue(getStorageKey(conversationId), error instanceof Error ? error.message : String(error));
+    throw error;
   } finally {
     if (checkpointWriteQueues.get(conversationId) === write) {
       checkpointWriteQueues.delete(conversationId);

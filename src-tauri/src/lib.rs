@@ -5,6 +5,7 @@ pub mod config;
 pub mod core;
 mod db;
 mod dev_overrides;
+mod local_backup;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
 #[cfg(target_os = "macos")]
@@ -378,11 +379,7 @@ pub fn run() {
     // Initialize logging
     init_logging();
 
-    // Load configuration
-    let config = load_config().expect("Failed to load configuration");
-
     tracing::info!("Starting Macro application");
-    tracing::info!("Configured workspace path: {:?}", config.workspace_path);
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -457,17 +454,9 @@ pub fn run() {
                 }
             }
 
-            let mut config = config;
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
             let app_data_dir = app_handle.path().app_data_dir()?;
-            let state_manager =
-                state_manager::StateManager::initialize(&app_data_dir).map_err(|error| {
-                    std::io::Error::other(format!(
-                        "Failed to initialize Macro state storage: {error}"
-                    ))
-                })?;
-            app.manage(state_manager);
             let app_config_dir = app_handle.path().app_config_dir()?;
             let config_root = config::resolve_config_root(&app_config_dir).map_err(|error| {
                 std::io::Error::other(format!(
@@ -475,6 +464,22 @@ pub fn run() {
                     error.message
                 ))
             })?;
+            tauri::async_runtime::block_on(local_backup::process_startup(
+                &app_data_dir,
+                &config_root,
+            ))
+            .map_err(std::io::Error::other)?;
+            // Prepared recovery must run before parsing potentially damaged runtime.json.
+            let mut config =
+                load_config().map_err(|error| std::io::Error::other(error.to_string()))?;
+            tracing::info!("Configured workspace path: {:?}", config.workspace_path);
+            let state_manager =
+                state_manager::StateManager::initialize(&app_data_dir).map_err(|error| {
+                    std::io::Error::other(format!(
+                        "Failed to initialize Macro state storage: {error}"
+                    ))
+                })?;
+            app.manage(state_manager);
             let config_manager = tauri::async_runtime::block_on(config::ConfigManager::initialize(
                 config_root.clone(),
             ))
@@ -597,6 +602,9 @@ pub fn run() {
             config::config_reject_pending_change,
             config::config_list_pending_changes,
             config::config_list_orphan_secrets,
+            local_backup::local_backup_schedule,
+            local_backup::local_backup_status,
+            local_backup::local_backup_acknowledge,
             config::config_delete_orphan_secret,
             config::config_list,
             config::config_get,

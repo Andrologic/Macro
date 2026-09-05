@@ -2413,5 +2413,19 @@
     "searchingFiles": "Dateien werden gesucht...",
     "noMatchingSlashContext": "Kein passender Kontext.",
     "noSlashContext": "Kein Kontext verfügbar."
+  },
+  "backup": {
+    "scheduled": "Der Vorgang ist vorbereitet. Beenden Sie Macro vollständig und öffnen Sie es erneut. Ändern Sie diese Sitzung bis dahin nicht.",
+    "title": "Sicherung und Wiederherstellung",
+    "scope": "Lokales Profil: Gespräche, gespeicherte Anhänge, Code-Checkpoints, Entwürfe und globale Einstellungen. Projektordner und Git-Metadaten sind ausgeschlossen. Sichern Sie Ihre Projekte separat. Maximal 256 MiB; Wiederherstellung mit derselben Macro-Version.",
+    "secrets": "Zugangsdaten der Anbieter, MCP-Umgebungsvariablen und Header sind von portablen Exporten ausgeschlossen. Verbinden Sie Anbieter nach der Wiederherstellung erneut. Gespräche und Dateien bleiben private Daten; bewahren Sie das Archiv sicher auf.",
+    "recovery": "Wiederherstellung erforderlich. Die Originaldaten bleiben erhalten.",
+    "path": "Absoluter Pfad zur lokalen Sicherungsdatei",
+    "export": "Sicherung vorbereiten",
+    "restore": "Sicherung wiederherstellen",
+    "confirmTitle": "Profilvorgang bestätigen",
+    "confirmRestore": "Beim nächsten Start ersetzt dieses Archiv Ihr lokales Profil. Macro prüft es zuvor und bewahrt das vorherige Profil zur Wiederherstellung auf. Stoppen Sie laufende Aufgaben und beenden Sie Macro sofort nach der Bestätigung. Diese Datei wiederherstellen?",
+    "confirmExport": "Stoppen Sie laufende Aufgaben. Macro erstellt das Archiv beim nächsten Start, bevor Datenbank und Konfiguration geöffnet werden. Sicherung vorbereiten?",
+    "confirm": "Bestätigen"
   }
 }

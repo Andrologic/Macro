@@ -4,6 +4,7 @@ import {
   buildAgentCodeReplayPreview,
   buildAgentCodeReplayRollbackPreview,
   serializeAgentCodeCheckpointHistory,
+  parseCheckpointHistory,
 } from "./agentCodeCheckpoints";
 
 const message = (
@@ -51,6 +52,14 @@ const checkpoint = (
 });
 
 describe("agentCodeCheckpoints", () => {
+  it("distinguishes missing history from corrupt and unsupported data", () => {
+    expect(parseCheckpointHistory(null).checkpoints).toEqual([]);
+    for (const raw of ["", "{", "{}", '[{"id":"broken"}]', '{"version":99,"checkpoints":[]}']) {
+      expect(() => parseCheckpointHistory(raw)).toThrow("original data has been preserved");
+    }
+    expect(parseCheckpointHistory(JSON.stringify([checkpoint(1, "a", "x", true, true)])).checkpoints).toHaveLength(1);
+  });
+
   it("lists created untracked files for deletion when replaying before them", () => {
     const messages = [
       message("user-1", "user", "2026-05-11T10:00:00.000Z"),
@@ -858,6 +867,13 @@ describe("agentCodeCheckpoints", () => {
     });
 
     await module.saveAgentCodeCheckpoints("conv-1", checkpoints);
+
+    const validRaw = settings.get(storageKey)!;
+    settings.set(storageKey, "{corrupted");
+    await expect(module.loadAgentCodeCheckpointHistory("conv-1")).rejects.toThrow("preserved");
+    await expect(module.saveAgentCodeCheckpoints("conv-1", [])).rejects.toThrow("preserved");
+    expect(settings.get(storageKey)).toBe("{corrupted");
+    settings.set(storageKey, validRaw);
 
     const persisted = JSON.parse(settings.get(storageKey)!);
     expect(persisted.version).toBe(2);

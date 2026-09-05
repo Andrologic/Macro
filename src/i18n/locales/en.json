@@ -2479,5 +2479,19 @@
     "searchingFiles": "Searching files...",
     "noMatchingSlashContext": "No matching context.",
     "noSlashContext": "No context available."
+  },
+  "backup": {
+    "scheduled": "Operation prepared. Quit Macro completely, then reopen it. Keep this session unchanged until you quit.",
+    "title": "Backup and restore",
+    "scope": "Local profile: conversations, stored attachments, code checkpoints, drafts and global preferences. Project folders and their Git metadata are excluded. Keep a separate copy of your projects. Maximum archive size: 256 MiB; restore with the same Macro version.",
+    "secrets": "Provider credentials, MCP environment variables and headers are excluded from portable exports. Reconnect providers after restoring. Conversation and file contents remain private data; store the archive securely.",
+    "recovery": "Recovery required. Original data preserved.",
+    "path": "Absolute path to the local backup file",
+    "export": "Prepare backup",
+    "restore": "Restore backup",
+    "confirmTitle": "Confirm profile operation",
+    "confirmRestore": "At the next startup, this archive will replace your local profile. Macro validates it first and keeps the previous profile for recovery. Stop current tasks and quit immediately after confirming. Restore this file?",
+    "confirmExport": "Stop current tasks before continuing. Macro will create the archive at the next startup, while the database and configuration are closed. Prepare this backup?",
+    "confirm": "Confirm"
   }
 }
