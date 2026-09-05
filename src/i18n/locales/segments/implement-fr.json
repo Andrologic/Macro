@@ -602,5 +602,12 @@
       "invalid_repo": "Dépôt invalide"
     }
   },
-  "wslCapabilities": "Pour les projets WSL, la synchronisation des métadonnées, les worktrees de tâche, la revue des fichiers et le parcours de fusion sont indisponibles. Les opérations Git courantes restent disponibles. Utilisez un clone local pour ces parcours de tâche."
+  "wslCapabilities": "Pour les projets WSL, la synchronisation des métadonnées, les worktrees de tâche, la revue des fichiers et le parcours de fusion sont indisponibles. Les opérations Git courantes restent disponibles. Utilisez un clone local pour ces parcours de tâche.",
+  "expiredReviewHelp": "Cette revue directe a expiré ou ses fichiers ont changé. Actualisez-la, examinez les différences actuelles, puis validez à nouveau. Votre navigation et votre brouillon non enregistré sont conservés.",
+  "refreshReview": "Actualiser la revue",
+  "partialCommitHelp": "Certains dépôts sont commités. Reprenez pour committer uniquement les dépôts restants prêts.",
+  "reviewProgress": "{{reviewed}} / {{total}} différences de fichiers ouvertes",
+  "nextUnreviewedDiff": "Différence non ouverte suivante",
+  "resumeRemainingCommits": "Reprendre les commits restants",
+  "detachedReviewDraft": "Ce fichier ne figure plus dans la revue. Copiez votre brouillon non enregistré avant de fermer ; les actions sur le fichier sont indisponibles."
 }

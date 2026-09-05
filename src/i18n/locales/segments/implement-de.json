@@ -602,5 +602,12 @@
       "invalid_repo": "Ungültiges Repository"
     }
   },
-  "wslCapabilities": "Für WSL-Projekte sind Metadatensynchronisierung, Aufgaben-Worktrees, Dateiprüfung und der Merge-Workflow nicht verfügbar. Grundlegende Git-Operationen bleiben verfügbar. Verwende für diese Aufgaben einen lokalen Klon."
+  "wslCapabilities": "Für WSL-Projekte sind Metadatensynchronisierung, Aufgaben-Worktrees, Dateiprüfung und der Merge-Workflow nicht verfügbar. Grundlegende Git-Operationen bleiben verfügbar. Verwende für diese Aufgaben einen lokalen Klon.",
+  "expiredReviewHelp": "Diese direkte Prüfung ist abgelaufen oder ihre Dateien wurden geändert. Aktualisiere sie, prüfe die aktuellen Unterschiede und bestätige erneut. Navigation und ungespeicherter Entwurf bleiben erhalten.",
+  "refreshReview": "Prüfung aktualisieren",
+  "partialCommitHelp": "Einige Repositories sind committet. Fahre fort, um nur die verbleibenden bereiten Repositories zu committen.",
+  "reviewProgress": "{{reviewed}} / {{total}} Datei-Diffs geöffnet",
+  "nextUnreviewedDiff": "Nächster ungeöffneter Diff",
+  "resumeRemainingCommits": "Verbleibende Commits fortsetzen",
+  "detachedReviewDraft": "Diese Datei ist nicht mehr in der Prüfung. Kopiere den ungespeicherten Entwurf vor dem Schließen; Dateiaktionen sind nicht verfügbar."
 }
