@@ -2663,11 +2663,13 @@ export async function gitWorktreeInspect(params: {
   repoPath: string;
   taskId: string;
   branchName?: string | null;
+  readOnly?: boolean;
 }): Promise<GitWorktreeInspectionDto> {
   return invoke<GitWorktreeInspectionDto>("git_worktree_inspect", {
     repoPath: params.repoPath,
     taskId: params.taskId,
     branchName: params.branchName ?? null,
+    ...(params.readOnly === undefined ? {} : { readOnly: params.readOnly }),
   });
 }
 
