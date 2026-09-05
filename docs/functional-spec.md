@@ -382,7 +382,7 @@ Exemples :
 - navigation directe dans les projets, groupes et plans en mode Architect
 
 Chaque panneau gauche propose une recherche locale propre à son mode. Implement
-recherche uniquement les tâches, Chat uniquement les conversations et Architect
+recherche uniquement les tâches, Chat dans les titres, descriptions et messages des conversations, et Architect
 uniquement les plans. Une icône compacte dans l'en-tête du panneau ouvre le
 champ à la place du titre, sans ajouter de bandeau ni modifier durablement la
 hauteur du panneau. Le filtre s'applique dès la saisie, sans tenir compte de la
@@ -390,6 +390,11 @@ casse ni des accents. Une requête vide restitue la liste courante. Les filtres,
 les archives et le tri déjà actifs restent appliqués aux résultats. Une
 recherche sans correspondance affiche un état vide explicite. Choisir un
 résultat déclenche la même sélection que dans la liste non filtrée.
+
+Dans Chat, les correspondances trouvées dans les messages affichent un extrait.
+La sélection charge la conversation si nécessaire, puis place le message trouvé
+dans la zone visible. La recherche du contenu reste locale, indexée et paginée.
+Elle ne charge pas les transcriptions de toutes les conversations dans le frontend.
 
 Les filtres structurants des listes principales survivent aux changements de
 mode et aux redémarrages. Implement conserve le projet, le statut et la vue
@@ -416,6 +421,13 @@ En mode Chat, la sélection multiple reste compacte tant qu'elle n'est pas utili
 Le clic droit reprend les actions déjà disponibles sans créer une voie parallèle : sur un projet, il ouvre le choix du type de plan, l'action de développement ou de réduction et la gestion des projets ; sur un plan, il ouvre les actions d'épinglage, de renommage, d'archivage, de restauration ou de suppression selon ses capacités. Chaque ligne de plan affiche explicitement son type à la place d'un indicateur de statut non légendé.
 
 Les archives ne constituent pas une section dépliable dans l'arborescence active. Un bouton à icône dans l'en-tête du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, de façon cohérente avec le mode Implement et sans réserver une barre en bas du panneau. Les actions d'archives et de création utilisent le même bouton carré dans les deux modes ; leur intitulé reste disponible au survol et pour les technologies d'assistance. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
+
+Le navigateur complet des projets sépare lui aussi les projets actifs des
+archives. Archiver un groupe archive chacun de ses projets sans retirer le
+groupe, les plans, les tâches ni les conversations liés. La restauration remet
+chaque projet dans son statut antérieur à l'archivage. Un projet peut être
+archivé ou restauré individuellement, y compris lorsqu'il appartient à un
+groupe.
 
 L'état vide central dépend du catalogue du projet sélectionné. Si aucun plan n'existe et que le projet est modifiable, il propose explicitement de créer le premier plan et ouvre le choix contextuel du type de plan. Si aucun plan n'existe et qu'aucun projet de la portée n'est modifiable, il explique qu'un projet doit d'abord être rendu modifiable et ouvre la gestion des projets. Le libellé « Sélectionner un plan » n'apparaît que lorsqu'au moins un plan est réellement disponible. Le panneau central demande explicitement l'état courant au navigateur lors de son montage afin de ne pas dépendre de l'ordre de chargement des panneaux.
 

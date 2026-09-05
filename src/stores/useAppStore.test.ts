@@ -356,6 +356,8 @@ const getAppBootstrapMock = mock(async () => ({
   planNodes: bootstrapPlanNodes,
   predictedBranches: bootstrapPredictedBranches,
 }));
+const archiveProjectMock = mock(async (_data: { projectId: string }): Promise<void> => undefined);
+const archiveProjectGroupMock = mock(async (_data: { groupId: string }): Promise<void> => undefined);
 const createProjectMock = mock(async (data: { name: string; path?: string }) => {
   const project: ProjectRecord = {
     id: `project-${data.name.toLowerCase()}`,
@@ -533,6 +535,8 @@ const registerUseAppStoreMocks = async () => {
   mock.module('../services', () => ({
     services: {
       getAppBootstrap: getAppBootstrapMock,
+      archiveProject: archiveProjectMock,
+      archiveProjectGroup: archiveProjectGroupMock,
       createProject: createProjectMock,
       createProjectWithGitSetup: createProjectWithGitSetupMock,
       createNewProjectRepo: createNewProjectRepoMock,
@@ -544,6 +548,8 @@ const registerUseAppStoreMocks = async () => {
   mock.module('../services/index.ts', () => ({
     services: {
       getAppBootstrap: getAppBootstrapMock,
+      archiveProject: archiveProjectMock,
+      archiveProjectGroup: archiveProjectGroupMock,
       createProject: createProjectMock,
       createProjectWithGitSetup: createProjectWithGitSetupMock,
       createNewProjectRepo: createNewProjectRepoMock,
@@ -753,6 +759,94 @@ describe('useAppStore architect plan resolution', () => {
     expect(useAppStore.getState().projectSwitchPolicy).toBe('reset_on_switch');
     expect(setProjectSwitchPolicyMock).toHaveBeenCalledWith('reset_on_switch');
   });
+
+  for (const kind of ['project', 'group'] as const) {
+    for (const navigate of [false, true]) {
+      it(`preserves current selection during deferred ${kind} archive, navigation=${navigate}`, async () => {
+        const { useAppStore } = await loadIsolatedUseAppStore();
+        const group = buildProjectGroup();
+        const projectId = group.projects[0].id;
+        const other = { id: 'other', name: 'Other', path: '/repos/other' };
+        bootstrapProjectGroups = [group];
+        bootstrapStandaloneProjects = [other];
+        useAppStore.setState({
+          projectGroups: [group] as never,
+          standaloneProjects: [other] as never,
+          selectedGroupId: kind === 'group' ? group.id : null,
+          selectedProjectId: kind === 'project' ? projectId : null,
+          selectedTaskId: 'old-task',
+        });
+        let finish!: () => void;
+        const pending = new Promise<void>((resolve) => { finish = resolve; });
+        if (kind === 'project') archiveProjectMock.mockImplementationOnce(() => pending);
+        else archiveProjectGroupMock.mockImplementationOnce(() => pending);
+        const operation = kind === 'project'
+          ? useAppStore.getState().archiveProject(projectId)
+          : useAppStore.getState().archiveProjectGroup(group.id);
+        if (navigate) useAppStore.setState({ selectedGroupId: null, selectedProjectId: other.id, selectedTaskId: 'new-task' });
+        finish();
+        await operation;
+        expect(useAppStore.getState().selectedProjectId).toBe(navigate ? other.id : null);
+        expect(useAppStore.getState().selectedGroupId).toBeNull();
+        expect(useAppStore.getState().selectedTaskId).toBe(navigate ? 'new-task' : null);
+      });
+    }
+  }
+
+  it('preserves navigation while the registry snapshot is pending', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const projects = ['a', 'b'].map((id) => ({ id, name: id, path: `/repos/${id}` }));
+    useAppStore.setState({ standaloneProjects: projects as never, projectGroups: [], selectedProjectId: 'a', selectedGroupId: null });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    getAppBootstrapMock.mockImplementationOnce(async () => {
+      await pending;
+      return { plan: null, standaloneProjects: projects, projectGroups: [], planNodes: [], predictedBranches: [] };
+    });
+    const operation = useAppStore.getState().refreshProjectRegistry();
+    useAppStore.setState({ selectedProjectId: 'b', selectedTaskId: 'task-b' });
+    finish();
+    await operation;
+    expect(useAppStore.getState().selectedProjectId).toBe('b');
+    expect(useAppStore.getState().selectedTaskId).toBe('task-b');
+    expect(upsertLocalSessionContextStateMock).toHaveBeenLastCalledWith(expect.objectContaining({ selectedProjectId: 'b' }));
+    expect(reconcileLocalProjectRegistryStateMock).toHaveBeenLastCalledWith(expect.objectContaining({ selectedProjectId: 'b' }));
+  });
+
+  for (const phase of ['persist', 'reconcile'] as const) {
+    it(`repairs stale session writes when navigation happens during refresh ${phase}`, async () => {
+      const { useAppStore } = await loadIsolatedUseAppStore();
+      const projects = ['a', 'b'].map((id) => ({ id, name: id, path: `/repos/${id}` }));
+      bootstrapStandaloneProjects = projects;
+      bootstrapProjectGroups = [];
+      useAppStore.setState({ standaloneProjects: projects as never, projectGroups: [], selectedProjectId: 'a', selectedGroupId: null });
+      let finish!: () => void;
+      let started!: () => void;
+      const pending = new Promise<void>((resolve) => { finish = resolve; });
+      const entered = new Promise<void>((resolve) => { started = resolve; });
+      if (phase === 'persist') {
+        upsertLocalSessionContextStateMock.mockImplementationOnce(async (input) => {
+          started();
+          await pending;
+          sessionContext = buildSessionContextFromInput(input);
+          return sessionContext;
+        });
+      } else {
+        reconcileLocalProjectRegistryStateMock.mockImplementationOnce(async () => {
+          started();
+          await pending;
+        });
+      }
+      const operation = useAppStore.getState().refreshProjectRegistry();
+      await entered;
+      useAppStore.setState({ selectedProjectId: 'b' });
+      finish();
+      await operation;
+      expect(useAppStore.getState().selectedProjectId).toBe('b');
+      expect(upsertLocalSessionContextStateMock).toHaveBeenLastCalledWith(expect.objectContaining({ selectedProjectId: 'b' }));
+      expect(reconcileLocalProjectRegistryStateMock).toHaveBeenLastCalledWith(expect.objectContaining({ selectedProjectId: 'b' }));
+    });
+  }
 
   it('resolves durable project creation before Architect hydration finishes', async () => {
     bootstrapProjectGroups = [];

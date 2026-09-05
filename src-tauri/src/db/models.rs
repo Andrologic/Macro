@@ -169,6 +169,25 @@ pub struct Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSearchResult {
+    pub message_id: String,
+    pub conversation_id: String,
+    pub conversation_title: String,
+    pub conversation_description: Option<String>,
+    pub role: String,
+    pub snippet: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSearchPage {
+    pub results: Vec<MessageSearchResult>,
+    pub next_offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationCompactionStateRecord {
     pub conversation_id: String,
     pub up_to_message_id: String,

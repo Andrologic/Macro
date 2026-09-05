@@ -488,6 +488,15 @@ Le module `db` porte :
 - les modèles et repositories
 - les commandes de persistance de conversations, messages, providers et contextes locaux
 
+La migration `004_message_search` crée un index FTS5 externe sur le contenu des
+messages. Trois triggers le synchronisent avec les insertions, modifications et
+suppressions. Le repository reçoit la liste des conversations admissibles et
+applique cette portée avant la pagination, puis expose une recherche bornée et
+paginée ainsi qu'une reconstruction déterministe de l'index depuis `messages`.
+La validation des sauvegardes compare les tables, les définitions des tables
+virtuelles, les index applicatifs, les vues et les triggers au schéma de
+référence produit par la version courante de Macro.
+
 ### 9.4 `fs`
 
 Le module `fs` porte :
@@ -513,7 +522,7 @@ Le module `workspace` porte :
 - le bootstrap du workspace
 - la liste des groupes et projets
 - la persistance du fichier `workspace.json`
-- les opérations de création, import, renommage, archivage et fermeture de projets
+- les opérations de création, import, renommage, archivage, restauration et fermeture de projets
 
 ### 9.7 `ai`
 
