@@ -602,5 +602,11 @@
       "invalid_repo": "Repositorio no válido"
     }
   },
-  "wslCapabilities": "En proyectos WSL no están disponibles la sincronización de metadatos, los worktrees de tareas, la revisión de archivos ni el flujo de fusión. Las operaciones básicas de Git siguen disponibles. Usa un clon local para estos flujos."
+  "wslCapabilities": "En proyectos WSL no están disponibles la sincronización de metadatos, los worktrees de tareas, la revisión de archivos ni el flujo de fusión. Las operaciones básicas de Git siguen disponibles. Usa un clon local para estos flujos.",
+  "expiredReviewHelp": "Esta revisión directa ha caducado o sus archivos han cambiado. Actualízala, inspecciona las diferencias actuales y vuelve a validar. Se conservan la navegación y el borrador sin guardar.",
+  "refreshReview": "Actualizar revisión",
+  "partialCommitHelp": "Algunos repositorios ya tienen commit. Reanuda para confirmar solo los repositorios restantes preparados.",
+  "reviewProgress": "{{reviewed}} / {{total}} diferencias de archivos abiertas",
+  "nextUnreviewedDiff": "Siguiente diferencia sin abrir",
+  "resumeRemainingCommits": "Reanudar commits restantes"
 }

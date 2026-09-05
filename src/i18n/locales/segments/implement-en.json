@@ -602,5 +602,11 @@
       "invalid_repo": "Invalid repository"
     }
   },
-  "wslCapabilities": "For WSL projects, metadata synchronization, task worktrees, file review and the merge workflow are unavailable. Basic Git operations remain available. Use a local clone for these task workflows."
+  "wslCapabilities": "For WSL projects, metadata synchronization, task worktrees, file review and the merge workflow are unavailable. Basic Git operations remain available. Use a local clone for these task workflows.",
+  "expiredReviewHelp": "This direct review expired or its files changed. Refresh it, inspect the current diffs, then validate again. Your navigation and unsaved draft are preserved.",
+  "refreshReview": "Refresh review",
+  "partialCommitHelp": "Some repositories are committed. Resume to commit only the remaining ready repositories.",
+  "reviewProgress": "{{reviewed}} / {{total}} file diffs opened",
+  "nextUnreviewedDiff": "Next unopened diff",
+  "resumeRemainingCommits": "Resume remaining commits"
 }

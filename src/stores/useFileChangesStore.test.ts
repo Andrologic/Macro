@@ -732,6 +732,120 @@ describe('useFileChangesStore', () => {
     useFileChangesStore.getState().resetReviewState();
   });
 
+  it('invalidates an opened diff when content changes with identical lengths and statistics', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.markChangeReviewed(repositoryIdA, changeIdA);
+    const before = store.getChange(repositoryIdA, changeIdA)!;
+    expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(true);
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const value = 3;\nconsole.log(value);';
+    await store.loadCurrentChanges({ silent: true });
+    const after = store.getChange(repositoryIdA, changeIdA)!;
+    expect([after.modifiedContent.length, after.additions, after.deletions])
+      .toEqual([before.modifiedContent.length, before.additions, before.deletions]);
+    expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(false);
+    currentFiles[worktreeAPath]['src/main.ts'] = before.modifiedContent;
+    await store.loadCurrentChanges({ silent: true });
+    expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(false);
+  });
+
+  it('keeps snapshots lazy and rereads only opened contents to detect equal-length deferred changes', async () => {
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA)!;
+    const original = repository.changes[0];
+    let content = original.modifiedContent;
+    const reviewFile = mock(async () => ({ path: original.path, status: original.status,
+      headExists: true, indexExists: true, worktreeExists: true,
+      headContent: original.originalContent, indexContent: original.indexContent, worktreeContent: content,
+      pendingDiff: { originalContent: original.indexContent, modifiedContent: content, additions: 1, deletions: 1, hunks: [] },
+      fullDiff: { originalContent: original.originalContent, modifiedContent: content, additions: 1, deletions: 1, hunks: [] },
+      hasValidatedStage: false, validatedRemovedLineNumbers: [], validatedAddedLineNumbers: [],
+      isBinary: false, tooLarge: false, language: 'typescript',
+    }));
+    appStoreState.selectedProjectId = 'project-a';
+    const deferredStore = createFileChangesStore({
+      tauri: { isTauriAvailable: () => true, gitStatus: gitStatusMock, gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock, gitMergeCheck: gitMergeCheckMock, gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock, fsReadFileWithOptions: fsReadFileWithOptionsMock, fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock, gitAdd: gitAddMock, gitCommit: gitCommitMock,
+        gitReviewSnapshot: mock(async () => ({ branch: repository.branchName, stagedPaths: [],
+          changes: [{ ...original, requiresHydration: true, originalContent: '', indexContent: '', modifiedContent: '',
+            isBinary: false, tooLarge: false }], conflictedFiles: [], mergeInProgress: false, isClean: false })),
+        gitReviewFile: reviewFile,
+      }, getGitFlowBaseBranch: () => 'develop', getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState, setTaskState: () => undefined,
+    });
+    const store = deferredStore.getState();
+    await store.loadCurrentChanges();
+    expect(reviewFile).not.toHaveBeenCalled();
+    store.markChangeReviewed(repositoryIdA, changeIdA);
+    expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(false);
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    store.markChangeReviewed(repositoryIdA, changeIdA);
+    expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(true);
+    store.closeDiffModal();
+    await store.loadCurrentChanges({ silent: true });
+    expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(true);
+    content = content.replace('2', '3');
+    await store.loadCurrentChanges({ silent: true });
+    expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(false);
+    const count = reviewFile.mock.calls.length;
+    await store.loadCurrentChanges({ silent: true });
+    expect(reviewFile.mock.calls.length).toBe(count);
+  });
+
+  it('refuses WSL review before inspecting worktrees or running Git review commands', async () => {
+    const originalGetter = appStoreState.getProjectById;
+    try {
+      appStoreState.getProjectById = (id) => {
+        const project = originalGetter(id);
+        return project && id === 'project-a' ? { ...project, path: '//wsl.localhost/Ubuntu/home/project-a' } : project;
+      };
+      await useFileChangesStore.getState().loadCurrentChanges();
+      expect(useFileChangesStore.getState().lastError).toContain('For WSL projects');
+      expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+      expect(gitStatusMock).not.toHaveBeenCalled();
+    } finally { appStoreState.getProjectById = originalGetter; }
+  });
+
+  it('moves to unopened pending diffs across repositories without staging or completing the task', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openNextUnreviewedDiff();
+    expect(useFileChangesStore.getState().selectedDiffTarget?.changeId).toBe(changeIdA);
+    store.markChangeReviewed(repositoryIdA, changeIdA);
+    store.openNextUnreviewedDiff();
+    expect(useFileChangesStore.getState().selectedDiffTarget?.changeId).toBe(changeIdB);
+    store.markChangeReviewed(repositoryIdB, changeIdB);
+    store.openNextUnreviewedDiff();
+    expect(useFileChangesStore.getState().selectedDiffTarget?.changeId).toBe(changeIdB);
+    expect(gitAddMock).not.toHaveBeenCalled();
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('resumes only the remaining repository after a partial commit and store reload', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    await store.stageAllTaskChanges();
+    gitCommitMock.mockImplementationOnce(commitRepository);
+    gitCommitMock.mockImplementationOnce(async () => { throw new Error('Commit rejected'); });
+    await expect(store.commitAllReadyTaskRepositories()).rejects.toThrow('project-b: Commit rejected');
+    gitMergeCheckMock.mockImplementation(async ({ repoPath }: { repoPath: string }) => ({
+      mergeable: true, conflictFiles: [], hasChanges: repoPath === worktreeAPath,
+      ahead: repoPath === worktreeAPath ? 1 : 0, behind: 0,
+    }));
+    store.resetReviewState();
+    await store.loadCurrentChanges();
+    expect(store.getRepository(repositoryIdA)?.commitState).toBe('committed');
+    expect(store.getRepository(repositoryIdB)?.stagedPaths).toEqual(['README.md']);
+    const result = await store.commitAllReadyTaskRepositories();
+    expect(result.commits.map((commit) => commit.committedRepositoryId)).toEqual([repositoryIdB]);
+    expect(gitCommitMock.mock.calls.map(([input]) => input.repoPath))
+      .toEqual([worktreeAPath, worktreeBPath, worktreeBPath]);
+    expect(setTaskStatusMock).not.toHaveBeenCalled();
+  });
+
   it('builds absolute file paths with normalized separators', () => {
     expect(resolveChangeFilePath('C:\\repos\\macro\\', 'src\\main.ts')).toBe('C:/repos/macro/src/main.ts');
   });
@@ -860,6 +974,7 @@ describe('useFileChangesStore', () => {
       requestId: expect.stringContaining('direct-restore'),
     });
     directRestoreConflict = true;
+    useFileChangesStore.getState().openDiffModal(directRepositoryId, changeId!);
     await expect(
       useFileChangesStore.getState().revertChanges(directRepositoryId, [changeId!])
     ).rejects.toEqual({ code: 'REVISION_CONFLICT', message: 'raw backend message' });
@@ -867,6 +982,21 @@ describe('useFileChangesStore', () => {
       'The file changed after this review loaded. Refresh the review before retrying.'
     );
     directRestoreConflict = false;
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBe(directRepositoryId);
+    const selectedBeforeRefresh = useFileChangesStore.getState().selectedDiffTarget;
+    useFileChangesStore.getState().updateRightDraft('unsaved review edit');
+    const snapshotCalls = directReviewSnapshotMock.mock.calls.length;
+    await useFileChangesStore.getState().loadCurrentChanges({ silent: true });
+    expect(directReviewSnapshotMock.mock.calls.length).toBe(snapshotCalls);
+    await expect(useFileChangesStore.getState().stageChanges(directRepositoryId, [changeId!])).rejects.toThrow('Refresh review');
+    await useFileChangesStore.getState().refreshExpiredReview();
+    expect(useFileChangesStore.getState().selectedDiffTarget).toEqual(selectedBeforeRefresh);
+    expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe('unsaved review edit');
+    expect(useFileChangesStore.getState().diffModalSession?.isDirty).toBe(true);
+    expect(useFileChangesStore.getState().getRepository(directRepositoryId)?.lastError).toBeNull();
+    useFileChangesStore.getState().resetRightDraft();
+    expect(useFileChangesStore.getState().reviewedChanges).toEqual({});
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBeNull();
 
     await useFileChangesStore.getState().stageChanges(directRepositoryId, [changeId!]);
     const result = await useFileChangesStore.getState().commitAllReadyTaskRepositories();

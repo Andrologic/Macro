@@ -794,6 +794,22 @@ workflow de merge. En l'absence de données de review pour cette tâche, la cart
 propose d'ouvrir la review. Les validations et opérations Git restent dans leur
 parcours de review habituel.
 
+L'état « diff ouvert » porte sur les contenus exacts affichés. Un changement de
+contenu l'invalide même si les compteurs et les longueurs restent identiques.
+Les fichiers chargés à la demande ne comptent qu'après leur chargement. La
+navigation vers le prochain diff non ouvert traverse les dépôts et affiche la
+progression ; elle ne valide aucun fichier et ne termine pas la tâche.
+
+Si un commit réussit dans un dépôt et échoue dans le suivant, le panneau conserve
+le bilan par dépôt. La reprise vise les dépôts restants prêts à committer. Après
+rechargement, les états Git permettent de retrouver les dépôts déjà commités.
+Il n'existe pas de transaction Git globale entre ces dépôts.
+
+Une revue directe expirée ou devenue périmée propose un rafraîchissement
+explicite. Il conserve le fichier sélectionné et le brouillon non enregistré,
+retire les états de lecture périmés et recharge l'autorisation backend. Il ne
+relance pas automatiquement la validation ou la restauration refusée.
+
 ### 14.5 Édition manuelle autorisée pendant la review
 
 Macro doit rester majoritairement en lecture seule.

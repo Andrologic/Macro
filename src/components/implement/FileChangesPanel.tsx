@@ -1,3 +1,5 @@
+import { getProjectCapabilities } from '../../services/projectCapabilities';
+import { ProjectCapabilitiesNotice } from '../project/ProjectCapabilitiesNotice';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../stores/useAppStore';
@@ -725,7 +727,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [isFinishingTask, setIsFinishingTask] = useState(false);
   const finishingTaskIdRef = useRef<string | null>(null);
-  const [reviewedChangeSignatures, setReviewedChangeSignatures] = useState<Record<string, string>>({});
+
   const [reviewedArtifactSignatures, setReviewedArtifactSignatures] = useState<Record<string, string>>({});
   const [pendingRevertScope, setPendingRevertScope] = useState<{
     repositoryId: string;
@@ -781,6 +783,10 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     stageAllTaskChanges,
     revertChanges,
     commitAllReadyTaskRepositories,
+    isChangeReviewed,
+    openNextUnreviewedDiff,
+    staleDirectRepositoryId,
+    refreshExpiredReview,
     getOverallStats,
   } = useFileChangesStore();
   useEffect(() => () => cancelReviewLoad(), [cancelReviewLoad]);
@@ -824,6 +830,13 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const canUseDedicatedCommitModel = Boolean(dedicatedCommitProviderId && dedicatedCommitModelId);
   const isWorkspaceMissing = isProjectWorkspaceMissing(workspaceState);
   const hasRepositoryScope = workspaceState.scopedProjectIds.length > 0;
+  const unsupportedReviewProjects = [...new Set([...workspaceState.scopedProjectIds,
+    ...(currentTask?.execution_targets?.map((target) => target.projectId) ?? [])])]
+    .flatMap((id) => {
+      const project = getProjectById(id);
+      return project && !getProjectCapabilities(project).review ? [project] : [];
+    });
+  const hasUnsupportedReviewProject = unsupportedReviewProjects.length > 0;
   const isPlanFinalizationTask = isPlanFinalizationTaskSource(currentTask?.task_source);
   const hasActiveMergeWorkflow = Boolean(currentMergeWorkflowRuntime);
   const hasResourcePressureError = isTooManyOpenFilesMessage(lastError);
@@ -1340,7 +1353,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         );
 
         if (hasMergeWorkflowContext) {
-          await loadMergeWorkflowReview(currentTask.id, { force: true });
+          if (!hasUnsupportedReviewProject) await loadMergeWorkflowReview(currentTask.id, { force: true });
           return;
         }
 
@@ -1375,6 +1388,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     loadCurrentChanges,
     loadMergeWorkflowReview,
     postAssistantRefreshToken,
+    hasUnsupportedReviewProject,
     selectedTaskId,
     selectedTaskHasPendingQuestionnaire,
   ]);
@@ -1383,21 +1397,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     () => artifactPanelState?.entries ?? [],
     [artifactPanelState?.entries]
   );
-  const currentChangeSignatures = useMemo(() => {
-    const signatures: Record<string, string> = {};
-    repositories.forEach((repository) => {
-      repository.changes.forEach((change) => {
-        signatures[`${repository.id}:${change.id}`] = [
-          change.status,
-          change.additions,
-          change.deletions,
-          change.modifiedContent.length,
-          change.indexContent.length,
-        ].join(':');
-      });
-    });
-    return signatures;
-  }, [repositories]);
   const currentArtifactSignatures = useMemo(
     () => Object.fromEntries(
       artifactEntries.map((entry) => [
@@ -1409,14 +1408,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   );
 
   useEffect(() => {
-    setReviewedChangeSignatures((current) => Object.fromEntries(
-      Object.entries(current).filter(
-        ([key, signature]) => currentChangeSignatures[key] === signature
-      )
-    ));
-  }, [currentChangeSignatures]);
-
-  useEffect(() => {
     setReviewedArtifactSignatures((current) => Object.fromEntries(
       Object.entries(current).filter(
         ([key, signature]) => currentArtifactSignatures[key] === signature
@@ -1424,23 +1415,8 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     ));
   }, [currentArtifactSignatures]);
 
-  const markChangeReviewed = useCallback((repositoryId: string, changeId: string) => {
-    const key = `${repositoryId}:${changeId}`;
-    const signature = currentChangeSignatures[key];
-    if (!signature) return;
-    setReviewedChangeSignatures((current) => ({ ...current, [key]: signature }));
-  }, [currentChangeSignatures]);
-
-  const areChangesReviewed = useCallback(
-    (repositoryId: string, changeIds: string[]) => changeIds.every((changeId) => {
-      const key = `${repositoryId}:${changeId}`;
-      return Boolean(
-        currentChangeSignatures[key] &&
-        reviewedChangeSignatures[key] === currentChangeSignatures[key]
-      );
-    }),
-    [currentChangeSignatures, reviewedChangeSignatures]
-  );
+  const areChangesReviewed = (repositoryId: string, changeIds: string[]) =>
+    changeIds.every((changeId) => isChangeReviewed(repositoryId, changeId));
 
   const markArtifactReviewed = useCallback((artifactId: string) => {
     const signature = currentArtifactSignatures[artifactId];
@@ -1566,6 +1542,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const hasTaskCommittedRepositories =
     reviewSummary.hasCommittedRepositories || Object.keys(executionRecords).length > 0;
   const canFinishTask =
+    !hasUnsupportedReviewProject &&
     !isCommitting &&
     !isGeneratingCommitMessages &&
     currentTask !== null &&
@@ -1577,6 +1554,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     ownArtifactPendingReviewCount === 0 &&
     hasTaskCommittedRepositories;
   const isValidateChangesDisabled =
+    Boolean(staleDirectRepositoryId) ||
     isCommitting ||
     isGeneratingCommitMessages ||
     !hasPendingValidation ||
@@ -1919,6 +1897,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     if (
       !currentTask ||
       hasReviewSuspension ||
+      hasUnsupportedReviewProject ||
       isCommitting ||
       isGeneratingCommitMessages ||
       isFinishingTask ||
@@ -1927,7 +1906,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     finishingTaskIdRef.current = currentTask.id;
     setIsFinishingTask(true);
     try {
-      if (!isDirectTaskReview) {
+      if (!isDirectTaskReview && !hasUnsupportedReviewProject) {
         const mergeRuntime = await loadMergeWorkflowReview(currentTask.id, { force: true });
         if (mergeWorkflowNeedsUserDecision(mergeRuntime)) {
           resetReviewState();
@@ -1970,7 +1949,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
       : isDirectEditReview
         ? t('implement.acceptDirectChanges', 'Accept changes')
-        : t('implement.commitChangesGeneric', 'Commit');
+        : hasTaskCommittedRepositories && hasReadyToCommit
+          ? t('implement.resumeRemainingCommits', 'Resume remaining commits')
+          : t('implement.commitChangesGeneric', 'Commit');
 
   const actionLabels = {
     staged: isDirectEditReview
@@ -2051,6 +2032,12 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     );
   }
 
+  if (hasUnsupportedReviewProject) {
+    return <aside className={cn('h-full w-full border-l border-border bg-card p-3', className)}>
+      {unsupportedReviewProjects.map((project) => <ProjectCapabilitiesNotice key={project.id} project={project} />)}
+    </aside>;
+  }
+
   if (currentTask && (isPlanFinalizationTask || currentMergeWorkflowRuntime)) {
     return <MergeWorkflowTaskPanel task={currentTask} className={className} />;
   }
@@ -2096,6 +2083,21 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         ref={repositoryListRef}
         className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto py-2"
       >
+        {staleDirectRepositoryId && <div role="alert" className="mx-3 rounded-md border border-amber-500/30 p-3 text-xs">
+          <p>{t('implement.expiredReviewHelp', 'This direct review expired or its files changed. Refresh it, inspect the current diffs, then validate again. Your navigation and unsaved draft are preserved.')}</p>
+          <Button size="sm" variant="secondary" onClick={() => void refreshExpiredReview()}>
+            {t('implement.refreshReview', 'Refresh review')}
+          </Button>
+        </div>}
+        {repositories.some((repository) => repository.commitState === 'committed') && hasReadyToCommit &&
+          <p role="status" className="px-4 py-2 text-xs text-muted-foreground">{t('implement.partialCommitHelp', 'Some repositories are committed. Resume to commit only the remaining ready repositories.')}</p>}
+        {pendingChangeCount > 0 && <div className="flex items-center justify-between gap-2 px-4 py-1 text-xs">
+          <span>{t('implement.reviewProgress', '{{reviewed}} / {{total}} file diffs opened', {
+            reviewed: overallStats.pendingVisibleFileCount - unreviewedPendingFileCount, total: overallStats.pendingVisibleFileCount })}</span>
+          <Button size="sm" variant="ghost" disabled={unreviewedPendingFileCount === 0 || Boolean(staleDirectRepositoryId)} onClick={openNextUnreviewedDiff}>
+            {t('implement.nextUnreviewedDiff', 'Next unopened diff')}
+          </Button>
+        </div>}
         {isLoading && (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
             {t('implement.loadingRepositoryChanges', 'Loading repository changes...')}
@@ -2360,7 +2362,6 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                         depth={0}
                         selectedChangeId={repository.selectedChangeId}
                         onFileClick={(changeId) => {
-                          markChangeReviewed(repository.id, changeId);
                           openDiffModal(repository.id, changeId);
                         }}
                         onStageChanges={(changeIds) => {

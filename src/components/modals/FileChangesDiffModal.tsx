@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   useFileChangesStore,
@@ -148,6 +148,14 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
       .find((candidate) => candidate.id === currentSession.repositoryId)
       ?.changes.find((candidate) => candidate.id === currentSession.changeId);
   });
+  const markChangeReviewed = useFileChangesStore((state) => state.markChangeReviewed);
+  const openNextUnreviewedDiff = useFileChangesStore((state) => state.openNextUnreviewedDiff);
+  const staleDirectRepositoryId = useFileChangesStore((state) => state.staleDirectRepositoryId);
+  const refreshExpiredReview = useFileChangesStore((state) => state.refreshExpiredReview);
+  const repositories = useFileChangesStore((state) => state.repositories);
+  const reviewedChanges = useFileChangesStore((state) => state.reviewedChanges);
+  const openedTarget = useRef<string | null>(null);
+  const recordedTarget = useRef<string | null>(null);
   const stageChanges = useFileChangesStore((state) => state.stageChanges);
   const unstageChanges = useFileChangesStore((state) => state.unstageChanges);
   const revertChanges = useFileChangesStore((state) => state.revertChanges);
@@ -164,7 +172,7 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
     session?.isHydratingFullContext || (repository && change && repository.loadingChangeId === change.id)
   );
   const isSaving = Boolean(session?.isSaving || (repository && change && repository.savingChangeId === change.id));
-  const isBusy = isHydrating || isSaving;
+  const isBusy = isHydrating || isSaving || Boolean(staleDirectRepositoryId);
   const isDirty = session?.isDirty === true;
   const diffLayout: 'split' | 'left-only' | 'right-only' = change?.status === 'added'
     ? 'right-only'
@@ -178,6 +186,18 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
   const canRevertChunks = Boolean(
     diffLayout === 'split' && change?.canEdit && hasPendingValidation && !isHydrating
   );
+
+  useEffect(() => {
+    const visit = change ? `${change.id}:${session?.reviewVisitId ?? 0}` : null;
+    if (openedTarget.current !== visit) {
+      openedTarget.current = visit;
+      recordedTarget.current = null;
+    }
+    if (!session || !change || isHydrating || (change.requiresHydration && !change.isBinary && !change.tooLarge) || staleDirectRepositoryId ||
+        recordedTarget.current === change.id) return;
+    recordedTarget.current = change.id;
+    markChangeReviewed(session.repositoryId, change.id);
+  }, [change, isHydrating, markChangeReviewed, session, staleDirectRepositoryId]);
 
   useEffect(() => {
     if (!session) return;
@@ -269,8 +289,10 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
 
   const handleValidate = useCallback(async () => {
     if (!repository || !change || !change.hasPendingVisibleChange || isBusy || isDirty) return;
-    await stageChanges(repository.id, [change.id]);
-    onClose();
+    try {
+      await stageChanges(repository.id, [change.id]);
+      onClose();
+    } catch { /* The store retains the actionable error in the review. */ }
   }, [change, isBusy, isDirty, onClose, repository, stageChanges]);
 
   const handleUnstage = useCallback(async () => {
@@ -280,7 +302,7 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
 
   const handleRevert = useCallback(async () => {
     if (!repository || !change || !change.hasPendingVisibleChange || isBusy || isDirty) return;
-    await revertChanges(repository.id, [change.id]);
+    try { await revertChanges(repository.id, [change.id]); } catch { /* Store error is shown below. */ }
   }, [change, isBusy, isDirty, repository, revertChanges]);
 
   const handleNavigation = useCallback((changeId: string) => {
@@ -387,6 +409,17 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
             </p>
           </div>
 
+          <div className="px-3 pb-2 text-xs text-muted-foreground">
+            {t('implement.reviewProgress', '{{reviewed}} / {{total}} file diffs opened', {
+              reviewed: repositories.reduce((count, repo) => count + repo.changes.filter((file) =>
+                file.hasPendingVisibleChange && reviewedChanges[file.id] &&
+                useFileChangesStore.getState().isChangeReviewed(repo.id, file.id)).length, 0),
+              total: repositories.flatMap((repo) => repo.changes).filter((file) => file.hasPendingVisibleChange).length,
+            })}
+            <Button size="sm" variant="ghost" disabled={isBusy || isDirty} onClick={openNextUnreviewedDiff}>
+              {t('implement.nextUnreviewedDiff', 'Next unopened diff')}
+            </Button>
+          </div>
           <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
             {repository.changes.map((candidate) => {
               const isCurrent = candidate.id === change.id;
@@ -477,8 +510,13 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
             </div>
           </header>
 
+        {staleDirectRepositoryId && <div role="alert" className="mx-4 mb-2 shrink-0 rounded-md border border-amber-500/30 bg-background p-3 text-xs">
+          <p>{t('implement.expiredReviewHelp', 'This direct review expired or its files changed. Refresh it, inspect the current diffs, then validate again. Your navigation and unsaved draft are preserved.')}</p>
+          <Button size="sm" variant="secondary" onClick={() => void refreshExpiredReview()}>{t('implement.refreshReview', 'Refresh review')}</Button>
+        </div>}
+
           <div className="relative min-h-0 flex-1 bg-muted/5">
-            {repository.lastError && (
+            {repository.lastError && !staleDirectRepositoryId && (
               <div className="absolute inset-x-4 top-4 z-20 rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 {repository.lastError}
               </div>

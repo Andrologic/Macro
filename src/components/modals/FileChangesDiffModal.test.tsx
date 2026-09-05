@@ -492,6 +492,32 @@ describe('FileChangesDiffModal', () => {
     expect(unstageChangesMock).toHaveBeenCalledWith('repo-1', ['change-2']);
   });
 
+  it('records a diff only after hydration and invalidates equal-length edits without automatically reviewing them again', async () => {
+    repository.changes = repository.changes.map((change) => change.id === diffSession.changeId
+      ? { ...change, requiresHydration: true } : change);
+    diffSession.isHydratingFullContext = true;
+    seedStore();
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+    expect(useFileChangesStore.getState().isChangeReviewed(repository.id, diffSession.changeId)).toBe(false);
+    await act(async () => {
+      repository = { ...repository, changes: repository.changes.map((change) => ({ ...change, requiresHydration: false })) };
+      useFileChangesStore.setState({ repositories: [repository], diffModalSession: { ...diffSession, isHydratingFullContext: false } });
+      await flushRender();
+    });
+    expect(useFileChangesStore.getState().isChangeReviewed(repository.id, diffSession.changeId)).toBe(true);
+    await act(async () => {
+      repository = { ...repository, changes: repository.changes.map((change) => ({ ...change,
+        modifiedContent: change.modifiedContent.replace(/./, 'X') })) };
+      useFileChangesStore.setState({ repositories: [repository] });
+      await flushRender();
+    });
+    expect(useFileChangesStore.getState().isChangeReviewed(repository.id, diffSession.changeId)).toBe(false);
+    expect(stageChangesMock).not.toHaveBeenCalled();
+  });
+
   it('validates the current file from the footer by staging it', async () => {
     seedStore();
 

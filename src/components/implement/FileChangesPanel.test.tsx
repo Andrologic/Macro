@@ -455,6 +455,11 @@ const reviewAllPendingFileDiffs = async () => {
     expect(fileButton).toBeDefined();
     act(() => {
       fileButton?.click();
+      // This suite mocks modal opening; simulate the viewer's loaded-content receipt.
+      for (const repository of useFileChangesStore.getState().repositories) {
+        const change = repository.changes.find((candidate) => candidate.path.endsWith(fileName));
+        if (change) useFileChangesStore.getState().markChangeReviewed(repository.id, change.id);
+      }
     });
     await flushRender();
   }
@@ -894,6 +899,22 @@ describe('FileChangesPanel', () => {
     }
     await clearPreferencesForTest();
     mock.restore();
+  });
+
+  it('shows the WSL capability notice instead of the merge workflow entry', async () => {
+    seedStores(buildRepository(false), { taskOverrides: { task_source: 'plan_finalization' } });
+    const originalGetter = useAppStore.getState().getProjectById;
+    useAppStore.setState({ getProjectById: (id) => {
+      const project = originalGetter(id);
+      return project ? { ...project, pathKind: 'wsl' as const } : undefined;
+    } });
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain('For WSL projects');
+    expect(document.body.textContent).toContain('Basic Git operations remain available');
+    expect(document.body.querySelector('[data-merge-workflow-task-panel]')).toBeNull();
   });
 
   it('renders validate and revert actions for pending scopes', async () => {
