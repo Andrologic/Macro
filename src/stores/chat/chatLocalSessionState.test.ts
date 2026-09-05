@@ -68,6 +68,7 @@ const draft: ConversationQuestionnaireDraft = {
 describe("chatLocalSessionState", () => {
   beforeEach(() => {
     installWindowStorage();
+    usePersistenceHealth.setState({ issues: {} });
   });
 
   afterEach(() => {
@@ -87,6 +88,24 @@ describe("chatLocalSessionState", () => {
     );
 
     expect(loadQuestionnaireDraftsFromStorage()).toEqual({ valid: draft });
+  });
+
+  it("clears draft persistence alerts after storage recovers", () => {
+    const localStorage = window.localStorage;
+    const setItem = localStorage.setItem;
+    localStorage.setItem = () => { throw new Error("quota"); };
+
+    saveComposerDraftsToStorage({});
+    saveQuestionnaireDraftsToStorage({});
+    expect(usePersistenceHealth.getState().issues).toEqual({
+      macro_chat_composer_drafts_v1: "The composer draft could not be saved. Keep this session open.",
+      macro_chat_questionnaire_drafts: "The questionnaire draft could not be saved. Keep this session open.",
+    });
+
+    localStorage.setItem = setItem;
+    saveComposerDraftsToStorage({});
+    saveQuestionnaireDraftsToStorage({});
+    expect(usePersistenceHealth.getState().issues).toEqual({});
   });
 
   it("updates questionnaire draft maps without mutating the previous value", () => {

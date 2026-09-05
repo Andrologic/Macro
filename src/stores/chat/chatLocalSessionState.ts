@@ -173,6 +173,7 @@ export const saveComposerDraftsToStorage = (
       COMPOSER_DRAFTS_STORAGE_KEY,
       JSON.stringify(draftsByContextKey),
     );
+    clearPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY);
   } catch {
     reportPersistenceIssue(COMPOSER_DRAFTS_STORAGE_KEY, "The composer draft could not be saved. Keep this session open.");
   }
@@ -229,6 +230,7 @@ export const saveQuestionnaireDraftsToStorage = (
       QUESTIONNAIRE_DRAFTS_STORAGE_KEY,
       JSON.stringify(draftsByConversationId),
     );
+    clearPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY);
   } catch {
     reportPersistenceIssue(QUESTIONNAIRE_DRAFTS_STORAGE_KEY, "The questionnaire draft could not be saved. Keep this session open.");
   }

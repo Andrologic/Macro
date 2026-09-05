@@ -231,6 +231,14 @@ async fn check_database(path: &Path) -> Result<()> {
     }
     db.close().await.map_err(|e| e.to_string())
 }
+
+async fn check_database_startup(path: &Path) -> Result<()> {
+    let pool = crate::db::create_pool(path)
+        .await
+        .map_err(|error| format!("Database startup check failed: {error}"))?;
+    pool.close().await;
+    Ok(())
+}
 async fn snapshot_database(source: &Path, target: &Path, portable: bool) -> Result<()> {
     let mut db = connection(source).await?;
     sqlx::query("VACUUM INTO ?")
@@ -455,7 +463,9 @@ async fn validate(archive: &Archive) -> Result<()> {
     if !archive.files.contains_key("data/macro.db") {
         return Err("Backup has no database".into());
     }
-    check_database(&temp.path().join("macro.db")).await
+    let database = temp.path().join("macro.db");
+    check_database(&database).await?;
+    check_database_startup(&database).await
 }
 fn raw_destination(name: &str, data: &Path, config: &Path) -> Result<PathBuf> {
     if ["data/macro.db-wal", "data/macro.db-shm"].contains(&name) {
@@ -1121,6 +1131,37 @@ mod tests {
             process_startup(&data, &config).await.unwrap();
             assert_eq!(fs::read(data.join("macro.db")).unwrap(), current);
         }
+    }
+    #[tokio::test]
+    async fn rejects_database_that_cannot_recreate_unique_indexes_before_replacing_profile() {
+        let (temp, data, config) = profile().await;
+        let current = fs::read(data.join("macro.db")).unwrap();
+        let mut archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let database = temp.path().join("archive.db");
+        let entry = archive.files.get_mut("data/macro.db").unwrap();
+        fs::write(&database, STANDARD.decode(&entry.data).unwrap()).unwrap();
+        let mut db = connection(&database).await.unwrap();
+        sqlx::query("DROP INDEX idx_git_repositories_path")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO git_repositories (id, project_id, path, created_at, updated_at) VALUES ('repo-1', 'project-1', '/duplicate', '2026-09-05', '2026-09-05'), ('repo-2', 'project-2', '/duplicate', '2026-09-05', '2026-09-05')")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let bytes = fs::read(database).unwrap();
+        entry.sha256 = hash(&bytes);
+        entry.data = STANDARD.encode(bytes);
+
+        assert!(validate(&archive).await.is_err());
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+
+        assert_eq!(fs::read(data.join("macro.db")).unwrap(), current);
+        assert!(!data.join("local-backup/restoring.json").exists());
     }
     #[tokio::test]
     async fn sqlite_wal_snapshot_includes_committed_rows_and_removes_credentials() {
