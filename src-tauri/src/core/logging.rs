@@ -121,6 +121,7 @@ pub fn init_logging() {
                     .with(
                         tracing_subscriber::fmt::layer()
                             .with_ansi(false)
+                            .json()
                             .with_writer(non_blocking),
                     )
                     .init();

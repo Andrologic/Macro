@@ -3,7 +3,7 @@ use crate::commands::mcp::{McpRuntimeManager, McpRuntimeStatus};
 use crate::commands::{DbInitializationState, DbPool};
 use crate::config::ConfigManager;
 use crate::core::platform_log_dir;
-use chrono::Utc;
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -481,17 +481,17 @@ fn read_bounded_log_tail(path: &Path) -> Result<(String, bool), String> {
 }
 
 fn parse_safe_log_event(line: &str) -> Option<SafeLogEvent> {
-    let mut fields = line.split_whitespace();
-    let timestamp = fields.next()?;
-    let level = fields.next()?;
-    let raw_target = fields.next()?.trim_end_matches(':');
-    if timestamp.len() > 40
-        || !timestamp
-            .chars()
-            .all(|character| character.is_ascii_digit() || "-:.+TZ".contains(character))
-    {
-        return None;
-    }
+    // File logs use one JSON object per event. Message newlines are escaped by
+    // the formatter, so user-controlled continuation lines cannot imitate a
+    // trusted event prefix and enter the diagnostic projection.
+    let event: Value = serde_json::from_str(line).ok()?;
+    let timestamp = event.get("timestamp")?.as_str()?;
+    let level = event.get("level")?.as_str()?;
+    let raw_target = event.get("target")?.as_str()?;
+    let timestamp = DateTime::parse_from_rfc3339(timestamp)
+        .ok()?
+        .to_utc()
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
     if !matches!(level, "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR") {
         return None;
     }
@@ -509,7 +509,7 @@ fn parse_safe_log_event(line: &str) -> Option<SafeLogEvent> {
         _ => return None,
     };
     Some(SafeLogEvent {
-        timestamp: timestamp.into(),
+        timestamp,
         level: level.into(),
         target: target.to_string(),
     })
@@ -647,10 +647,16 @@ mod tests {
 
     #[test]
     fn log_parser_drops_messages_secrets_and_private_paths() {
-        let line =
-            "2026-09-06T10:11:12.000Z INFO macro_lib::db: token=secret /Users/private source code";
-        let event = parse_safe_log_event(line).unwrap();
+        let line = serde_json::json!({
+            "timestamp":"2026-09-06T10:11:12.123456Z",
+            "level":"INFO",
+            "target":"macro_lib::db",
+            "fields":{"message":"token=secret /Users/private source code"}
+        })
+        .to_string();
+        let event = parse_safe_log_event(&line).unwrap();
         let serialized = serde_json::to_string(&event).unwrap();
+        assert_eq!(event.timestamp, "2026-09-06T10:11:12.123Z");
         assert_eq!(event.target, "macro_lib");
         assert!(!serialized.contains("secret"));
         assert!(!serialized.contains("/Users"));
@@ -658,15 +664,25 @@ mod tests {
         assert_eq!(safe_token("darwin-aarch64"), Some("darwin-aarch64".into()));
         assert_eq!(safe_token("/Users/private/token"), None);
 
-        let spoofed_continuation =
-            "2026-09-06T10:11:12.000Z INFO macro_lib::sk-proj-secret private message";
-        let spoofed = parse_safe_log_event(spoofed_continuation).unwrap();
+        let spoofed_target = serde_json::json!({
+            "timestamp":"2026-09-06T10:11:12Z",
+            "level":"INFO",
+            "target":"macro_lib::sk-proj-secret",
+            "fields":{"message":"private message"}
+        })
+        .to_string();
+        let spoofed = parse_safe_log_event(&spoofed_target).unwrap();
         assert_eq!(spoofed.target, "macro_lib");
         assert!(!serde_json::to_string(&spoofed)
             .unwrap()
             .contains("sk-proj-secret"));
+        assert!(parse_safe_log_event("123456 INFO macro: private continuation").is_none());
+        assert!(
+            parse_safe_log_event(r#"{"timestamp":"123456","level":"INFO","target":"macro"}"#)
+                .is_none()
+        );
         assert!(parse_safe_log_event(
-            "2026-09-06T10:11:12.000Z INFO sk-proj-secret private message"
+            r#"{"timestamp":"2026-09-06T10:11:12Z","level":"INFO","target":"sk-proj-secret"}"#
         )
         .is_none());
     }
