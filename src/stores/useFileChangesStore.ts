@@ -2092,19 +2092,22 @@ export const createFileChangesStore = (
       }
 
       const serviceError = toServiceError(error);
+      const latestState = get();
+      const canPreserveLatestReview = sameScope && latestState.currentTaskId === task.id;
       if (isReviewSuspendingError(serviceError)) {
-        const preservedState = sameScope
+        const preservedState = canPreserveLatestReview
           ? {
-              repositories: previousState.repositories,
-              reviewSummary: previousState.reviewSummary,
-              selectedDiffTarget: previousState.selectedDiffTarget,
-              diffModalSession: previousState.diffModalSession,
-              isDiffModalOpen: previousState.isDiffModalOpen,
+              repositories: latestState.repositories,
+              reviewSummary: latestState.reviewSummary,
+              selectedDiffTarget: latestState.selectedDiffTarget,
+              diffModalSession: latestState.diffModalSession,
+              isDiffModalOpen: latestState.isDiffModalOpen,
             }
           : resetLoadState;
         set({
           currentTaskId: task.id,
-          currentTaskLoadState: sameScope && previousState.repositories.length > 0 ? 'ready' : 'invalid_mapping',
+          currentTaskLoadState:
+            canPreserveLatestReview && latestState.repositories.length > 0 ? 'ready' : 'invalid_mapping',
           currentTaskLoadMessage: null,
           ...preservedState,
           isLoading: false,
@@ -2115,13 +2118,26 @@ export const createFileChangesStore = (
         return;
       }
 
+      const preserveExpiredRefreshState = options?.refreshExpired === true && canPreserveLatestReview;
+      const preservedState = preserveExpiredRefreshState
+        ? {
+            repositories: latestState.repositories,
+            reviewSummary: latestState.reviewSummary,
+            selectedDiffTarget: latestState.selectedDiffTarget,
+            diffModalSession: latestState.diffModalSession,
+            isDiffModalOpen: latestState.isDiffModalOpen,
+          }
+        : resetLoadState;
       set({
-        ...resetLoadState,
+        ...preservedState,
         currentTaskId: task.id,
-        currentTaskLoadState: 'invalid_mapping',
+        currentTaskLoadState:
+          preserveExpiredRefreshState && latestState.repositories.length > 0
+            ? 'ready'
+            : 'invalid_mapping',
         currentTaskLoadMessage: null,
         isLoading: false,
-        executionRecords: {},
+        executionRecords: preserveExpiredRefreshState ? executionRecords : {},
         lastError:
           serviceError.message ||
           tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
@@ -2136,6 +2152,10 @@ export const createFileChangesStore = (
     if (taskId && taskId !== suspension.taskId) return;
     if (selectedTask?.id !== suspension.taskId || suspension.retrying) return;
     set({ reviewSuspension: { ...suspension, retrying: true } });
+    if (get().staleDirectRepositoryId) {
+      await get().refreshExpiredReview();
+      return;
+    }
     await get().loadCurrentChanges({
       silent: get().repositories.length > 0,
       preserveReviewSuspension: true,

@@ -877,12 +877,16 @@ describe('useFileChangesStore', () => {
     let directAccepted = false;
     let directRestoreRevision = 'v1:test';
     let refreshSnapshotGate: Promise<void> | null = null;
+    let refreshSnapshotFailure: unknown = null;
     let markRefreshSnapshotStarted: (() => void) | null = null;
     const directReviewSnapshotMock = mock(async () => {
       const gate = refreshSnapshotGate;
       if (gate) {
         markRefreshSnapshotStarted?.();
         await gate;
+      }
+      if (refreshSnapshotFailure) {
+        throw refreshSnapshotFailure;
       }
       return {
         branch: 'direct',
@@ -1042,14 +1046,64 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().staleDirectRepositoryId).toBe(directRepositoryId);
     appStoreState.selectedTaskId = 'task-6';
 
+    refreshSnapshotFailure = new Error('expired review refresh failed');
+    refreshSnapshotGate = new Promise<void>((resolve) => {
+      releaseRefreshSnapshot = resolve;
+    });
+    const failedRefreshStarted = new Promise<void>((resolve) => {
+      markRefreshSnapshotStarted = resolve;
+    });
+    const failedRefresh = useFileChangesStore.getState().refreshExpiredReview();
+    await failedRefreshStarted;
+    useFileChangesStore.getState().updateRightDraft('edit made while refresh was pending');
+    releaseRefreshSnapshot();
+    await failedRefresh;
+    refreshSnapshotGate = null;
+
+    const failedRefreshState = useFileChangesStore.getState();
+    expect(failedRefreshState.staleDirectRepositoryId).toBe(directRepositoryId);
+    expect(failedRefreshState.selectedDiffTarget).toEqual(selectedBeforeRefresh);
+    expect(failedRefreshState.diffModalSession?.rightDraftContent).toBe('edit made while refresh was pending');
+    expect(failedRefreshState.isDiffModalOpen).toBe(true);
+    expect(failedRefreshState.getRepository(directRepositoryId)).toBeDefined();
+    expect(failedRefreshState.lastError).toContain('expired review refresh failed');
+    await expect(failedRefreshState.saveRightDraft()).rejects.toThrow('Refresh review');
+    expect(fsWriteFileMock).not.toHaveBeenCalled();
+
+    refreshSnapshotFailure = null;
     await useFileChangesStore.getState().refreshExpiredReview();
     expect(useFileChangesStore.getState().selectedDiffTarget).toEqual(selectedBeforeRefresh);
-    expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe('unsaved review edit');
+    expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe('edit made while refresh was pending');
     expect(useFileChangesStore.getState().diffModalSession?.isDirty).toBe(true);
+    expect(useFileChangesStore.getState().lastError).toBeNull();
     expect(useFileChangesStore.getState().getRepository(directRepositoryId)?.lastError).toBeNull();
     useFileChangesStore.getState().resetRightDraft();
     expect(useFileChangesStore.getState().reviewedChanges).toEqual({});
     expect(useFileChangesStore.getState().staleDirectRepositoryId).toBeNull();
+
+    directRestoreConflict = true;
+    await expect(
+      useFileChangesStore.getState().revertChanges(directRepositoryId, [changeId!])
+    ).rejects.toEqual({ code: 'REVISION_CONFLICT', message: 'raw backend message' });
+    directRestoreConflict = false;
+    useFileChangesStore.getState().updateRightDraft('draft kept through suspension');
+    refreshSnapshotFailure = {
+      code: 'GIT_OBJECT_MISSING',
+      message: 'A required Git object is missing.',
+      details: { retryAttempted: true, worktreeModified: false },
+    };
+
+    await useFileChangesStore.getState().refreshExpiredReview();
+    expect(useFileChangesStore.getState().reviewSuspension?.error.code).toBe('GIT_OBJECT_MISSING');
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBe(directRepositoryId);
+    expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe('draft kept through suspension');
+
+    refreshSnapshotFailure = null;
+    await useFileChangesStore.getState().retrySuspendedReview('task-6');
+    expect(useFileChangesStore.getState().reviewSuspension).toBeNull();
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBeNull();
+    expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe('draft kept through suspension');
+    useFileChangesStore.getState().resetRightDraft();
 
     await useFileChangesStore.getState().stageChanges(directRepositoryId, [changeId!]);
     const result = await useFileChangesStore.getState().commitAllReadyTaskRepositories();
