@@ -879,6 +879,9 @@ describe('useFileChangesStore', () => {
     let refreshSnapshotGate: Promise<void> | null = null;
     let refreshSnapshotFailure: unknown = null;
     let markRefreshSnapshotStarted: (() => void) | null = null;
+    let directStageGate: Promise<void> | null = null;
+    let directStageFailure: unknown = null;
+    let markDirectStageStarted: (() => void) | null = null;
     const directReviewSnapshotMock = mock(async () => {
       const gate = refreshSnapshotGate;
       if (gate) {
@@ -918,6 +921,14 @@ describe('useFileChangesStore', () => {
       };
     });
     const directStagePathsMock = mock(async () => {
+      const gate = directStageGate;
+      if (gate) {
+        markDirectStageStarted?.();
+        await gate;
+      }
+      if (directStageFailure) {
+        throw directStageFailure;
+      }
       directStaged = true;
     });
     const directAcceptChangesMock = mock(async () => {
@@ -970,6 +981,40 @@ describe('useFileChangesStore', () => {
     }));
     const changeId = directRepository?.changes[0]?.id;
     expect(changeId).toBeTruthy();
+
+    let releaseDirectStage: () => void = () => undefined;
+    directStageGate = new Promise<void>((resolve) => {
+      releaseDirectStage = resolve;
+    });
+    const directStageStarted = new Promise<void>((resolve) => {
+      markDirectStageStarted = resolve;
+    });
+    directStageFailure = { code: 'REVISION_CONFLICT', message: 'late conflict from task 6' };
+    const lateStage = useFileChangesStore.getState().stageChanges(directRepositoryId, [changeId!]);
+    await directStageStarted;
+
+    appStoreState.selectedTaskId = 'task-1';
+    appStoreState.selectedProjectId = 'project-b';
+    await useFileChangesStore.getState().loadCurrentChanges();
+    useFileChangesStore.getState().markChangeReviewed(repositoryIdB, changeIdB);
+    const taskBReceipt = useFileChangesStore.getState().reviewedChanges[changeIdB];
+    expect(taskBReceipt).toBeDefined();
+
+    releaseDirectStage();
+    await expect(lateStage).rejects.toEqual(directStageFailure);
+
+    const taskBAfterLateStage = useFileChangesStore.getState();
+    expect(taskBAfterLateStage.currentTaskId).toBe('task-1');
+    expect(taskBAfterLateStage.staleDirectRepositoryId).toBeNull();
+    expect(taskBAfterLateStage.reviewedChanges[changeIdB]).toEqual(taskBReceipt);
+    expect(taskBAfterLateStage.lastError).toBeNull();
+    expect(taskBAfterLateStage.getRepository(repositoryIdB)?.lastError).toBeNull();
+
+    directStageGate = null;
+    directStageFailure = null;
+    appStoreState.selectedTaskId = 'task-6';
+    appStoreState.selectedProjectId = 'project-a';
+    await useFileChangesStore.getState().loadCurrentChanges();
 
     useFileChangesStore.getState().openDiffModal(directRepositoryId, changeId!);
     directRestoreRevision = 'v1:newer-poll';
