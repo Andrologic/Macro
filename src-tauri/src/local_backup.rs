@@ -214,7 +214,14 @@ async fn check_database(path: &Path) -> Result<()> {
             return Err(format!("Incompatible backup table: {table}"));
         }
     }
-    let schema_query = "SELECT type || ':' || name || ':' || coalesce(sql, '') FROM sqlite_master WHERE type IN ('trigger', 'view') ORDER BY type, name";
+    let schema_query = r#"
+        SELECT type || ':' || name || ':' || sql
+        FROM sqlite_master
+        WHERE type IN ('trigger', 'view')
+           OR (type = 'table' AND lower(trim(sql)) LIKE 'create virtual table%')
+           OR (type = 'index' AND sql IS NOT NULL)
+        ORDER BY type, name
+    "#;
     let actual_schema: Vec<String> = sqlx::query_scalar(schema_query)
         .fetch_all(&mut db)
         .await
@@ -224,7 +231,7 @@ async fn check_database(path: &Path) -> Result<()> {
         .await
         .map_err(|e| e.to_string())?;
     if actual_schema != expected_schema {
-        return Err("Backup database triggers and views do not match this Macro version".into());
+        return Err("Backup database schema objects do not match this Macro version".into());
     }
     reference.close().await;
     let violations = sqlx::query("PRAGMA foreign_key_check")
@@ -1198,7 +1205,42 @@ mod tests {
         entry.data = STANDARD.encode(bytes);
 
         let error = validate(&archive).await.expect_err("reject extra trigger");
-        assert!(error.contains("triggers and views do not match"));
+        assert!(error.contains("schema objects do not match"));
+    }
+
+    #[tokio::test]
+    async fn rejects_database_with_modified_message_search_definition() {
+        let (temp, data, config) = profile().await;
+        let mut archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let database = temp.path().join("archive-modified-search.db");
+        let entry = archive.files.get_mut("data/macro.db").unwrap();
+        fs::write(&database, STANDARD.decode(&entry.data).unwrap()).unwrap();
+        let mut db = connection(&database).await.unwrap();
+        sqlx::query("DROP TABLE message_search")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE VIRTUAL TABLE message_search USING fts5(content, content = 'messages', content_rowid = 'rowid', tokenize = 'porter')",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO message_search(message_search) VALUES ('rebuild')")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let bytes = fs::read(database).unwrap();
+        entry.sha256 = hash(&bytes);
+        entry.data = STANDARD.encode(bytes);
+
+        let error = validate(&archive)
+            .await
+            .expect_err("reject modified FTS definition");
+        assert!(error.contains("schema objects do not match"));
     }
     #[tokio::test]
     async fn sqlite_wal_snapshot_includes_committed_rows_and_removes_credentials() {
