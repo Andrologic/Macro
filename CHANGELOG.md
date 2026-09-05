@@ -8,10 +8,10 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 New features target 0.1.5; its scope is not yet defined.
 
-## 0.1.4 (Unreleased)
+## 0.1.4 - 2026-09-05
 
-Feature scope frozen on 2026-09-05. Only reviewed regression, security, and
-release-validation fixes remain eligible. This version has not been published.
+Published on GitHub and the Stable update channel after validation of the
+macOS universal, Windows x64/ARM64, and Linux x64 packages.
 
 ### Added
 
