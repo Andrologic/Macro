@@ -32,6 +32,7 @@ import { getPlanKindIconName } from '../../services/planKindPresentation';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
+import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { ProjectIcon } from '../project/ProjectIcon';
@@ -41,7 +42,7 @@ import { ConfirmPromptModal } from '../ui/ConfirmPromptModal';
 import { notify } from '../ui/toastService';
 import { PlanFormModal } from './PlanFormModal';
 import {
-  ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT,
+  registerArchitectPlanSelectorRequestHandler,
   registerArchitectPlanSelectorStatePublisher,
   type ArchitectPlanSelectorRequestDetail,
   type ArchitectPlanSelectorStateDetail,
@@ -122,7 +123,10 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [expandedScopeIds, setExpandedScopeIds] = useState<string[]>([]);
   const [pinnedPlanIds, setPinnedPlanIds] = useState<string[]>([]);
   const [expandedPlanLists, setExpandedPlanLists] = useState<string[]>([]);
-  const [showArchived, setShowArchived] = useState(false);
+  const showArchived = useViewFilterStore((state) => state.architect.showArchived);
+  const setArchitectShowArchived = useViewFilterStore(
+    (state) => state.setArchitectShowArchived,
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -142,6 +146,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   const [mutatingPlanId, setMutatingPlanId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const pendingPrimaryRequestRef = useRef<ArchitectPlanSelectorRequestDetail | null>(null);
   const scopeCreateButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
   const scopes = useMemo(
@@ -262,6 +267,9 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         branches: result.snapshot.branches,
         scopes,
       }));
+      if (result.snapshot.errors.length > 0) {
+        setError(t('architect.projectNavigator.loadError', 'Impossible de charger les plans.'));
+      }
     } catch (loadError) {
       if (requestId !== requestIdRef.current) return;
       const message = loadError instanceof Error
@@ -516,7 +524,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
     scope: ArchitectNavigatorScope,
     planKind: ArchitectPlanKind,
   ) => {
-    if (creatingScopeId || isBusy) return;
+    if (creatingScopeId || isBusy || isLoading || error) return;
     const editableProjectIds = scope.projects.filter(isProjectPlanActionable).map((project) => project.id);
     const contextProjectIds = scope.projectIds.filter((projectId) => !editableProjectIds.includes(projectId));
     if (editableProjectIds.length === 0) {
@@ -555,7 +563,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
       setCreatingScopeId(null);
       setCreatingPlanKind(null);
     }
-  }, [activateArchitectPlan, creatingScopeId, isBusy, refreshPlans, selectScope, t]);
+  }, [activateArchitectPlan, creatingScopeId, error, isBusy, isLoading, refreshPlans, selectScope, t]);
 
   const confirmScopeRename = useCallback(async (value: string) => {
     if (!scopeToRename || isRenamingScope) return;
@@ -586,16 +594,25 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   }, [isRenamingScope, renameProject, renameProjectGroup, scopeToRename, t]);
 
   useEffect(() => {
-    const handleRequest = (event: Event) => {
-      const detail = (event as CustomEvent<ArchitectPlanSelectorRequestDetail>).detail;
+    const handleRequest = (detail: ArchitectPlanSelectorRequestDetail) => {
       if (detail?.action !== 'primary') return;
+      if (isLoading) {
+        pendingPrimaryRequestRef.current = detail;
+        return;
+      }
+      pendingPrimaryRequestRef.current = null;
+      if (error) return;
       if (selectedScope) {
         if (!expandedScopeIds.includes(selectedScope.id)) {
           persistExpandedScopes([...expandedScopeIds, selectedScope.id]);
         }
-        const selectedPlans = entriesByScope.get(selectedScope.id) ?? [];
+        const selectedPlans = catalogEntriesByScope.get(selectedScope.id) ?? [];
         if (selectedPlans.length === 0) {
           setLeftPanelOpen(true);
+          if (!selectedScope.projects.some(isProjectPlanActionable)) {
+            openProjectNavigator();
+            return;
+          }
           const anchorRect = detail.anchorRect
             ?? scopeCreateButtonRefs.current.get(selectedScope.id)?.getBoundingClientRect();
           if (anchorRect) {
@@ -606,9 +623,14 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         openProjectNavigator();
       }
     };
-    window.addEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
-    return () => window.removeEventListener(ARCHITECT_PLAN_SELECTOR_REQUEST_EVENT, handleRequest);
-  }, [entriesByScope, expandedScopeIds, openProjectNavigator, openScopeCreateMenu, persistExpandedScopes, selectedScope, setLeftPanelOpen]);
+    const unregister = registerArchitectPlanSelectorRequestHandler(handleRequest);
+    const pendingRequest = pendingPrimaryRequestRef.current;
+    if (!isLoading && pendingRequest) {
+      pendingPrimaryRequestRef.current = null;
+      handleRequest(pendingRequest);
+    }
+    return unregister;
+  }, [catalogEntriesByScope, error, expandedScopeIds, isLoading, openProjectNavigator, openScopeCreateMenu, persistExpandedScopes, selectedScope, setLeftPanelOpen]);
 
   useEffect(() => {
     if (!openPlanMenuKey && !scopeCreateMenu && !scopeContextMenu) return;
@@ -825,7 +847,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         >
           {createMenuPlanKinds.map((planKind) => {
             const isCreatingKind = creatingScopeId === createMenuScope.id && creatingPlanKind === planKind;
-            const canCreatePlan = createMenuScope.projects.some(isProjectPlanActionable);
+            const canCreatePlan = !isLoading && !error && createMenuScope.projects.some(isProjectPlanActionable);
             return (
               <button
                 key={planKind}
@@ -942,7 +964,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               setOpenPlanMenuKey(null);
               setScopeCreateMenu(null);
               setScopeContextMenu(null);
-              setShowArchived((current) => !current);
+              setArchitectShowArchived(!showArchived);
             }}
             data-tour-id="architect-archive-toggle"
           />
@@ -1033,7 +1055,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
               const showAll = hasSearchQuery || expandedPlanLists.includes(scope.id);
               const visibleEntries = showAll ? scopeEntries : scopeEntries.slice(0, MAX_VISIBLE_PLANS_PER_SCOPE);
               const hiddenCount = scopeEntries.length - visibleEntries.length;
-              const canCreatePlan = scope.projects.some(isProjectPlanActionable);
+              const canCreatePlan = !isLoading && !error && scope.projects.some(isProjectPlanActionable);
               return (
                 <div
                   key={scope.id}

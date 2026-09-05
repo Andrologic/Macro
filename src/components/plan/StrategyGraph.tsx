@@ -34,8 +34,10 @@ import {
   mapPlanNodeStatusToTaskStatus,
   resolvePlanNodeStatusIndicatorState,
   resolveRunningTaskIds,
+  resolveTaskStatusIndicatorState,
   type TaskStatusIndicatorState,
 } from '../../services/taskStatusPresentation';
+import { resolveTaskMergeWorkflowPresentationState } from '../../services/taskMergeWorkflowPresentation';
 import {
   resolvePlanNodeTodoPresentation,
 } from '../../services/planNodeTodos';
@@ -201,6 +203,7 @@ const WAITING_EDGE_TASK_STATUSES = new Set<TaskStatus>(['AwaitingResponse']);
 const BLOCKED_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
   'blocked',
   'failed',
+  'merge_partial',
   'merge_blocked',
   'merge_failed',
 ]);
@@ -208,7 +211,6 @@ const ACTIVE_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
   'running',
   'in_review',
   'merging',
-  'merge_partial',
 ]);
 const WAITING_EDGE_INDICATOR_STATES = new Set<TaskStatusIndicatorState>([
   'awaiting_response',
@@ -223,8 +225,6 @@ const resolveEdgeFlowPresentation = (
   targetState: TaskStatusIndicatorState,
 ): EdgeFlowPresentation => {
   if (
-    BLOCKED_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
-    BLOCKED_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
     BLOCKED_EDGE_INDICATOR_STATES.has(sourceState) ||
     BLOCKED_EDGE_INDICATOR_STATES.has(targetState)
   ) {
@@ -238,8 +238,6 @@ const resolveEdgeFlowPresentation = (
   }
 
   if (
-    WAITING_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
-    WAITING_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
     WAITING_EDGE_INDICATOR_STATES.has(sourceState) ||
     WAITING_EDGE_INDICATOR_STATES.has(targetState)
   ) {
@@ -253,10 +251,47 @@ const resolveEdgeFlowPresentation = (
   }
 
   if (
-    ACTIVE_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
-    ACTIVE_EDGE_TASK_STATUSES.has(targetTaskStatus) ||
     ACTIVE_EDGE_INDICATOR_STATES.has(sourceState) ||
     ACTIVE_EDGE_INDICATOR_STATES.has(targetState)
+  ) {
+    return {
+      tone: 'active',
+      duration: '2.1s',
+      opacity: 0.56,
+      width: 48,
+      shouldAnimate: true,
+    };
+  }
+
+  if (
+    BLOCKED_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    BLOCKED_EDGE_TASK_STATUSES.has(targetTaskStatus)
+  ) {
+    return {
+      tone: 'blocked',
+      duration: '0s',
+      opacity: 0.18,
+      width: 36,
+      shouldAnimate: false,
+    };
+  }
+
+  if (
+    WAITING_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    WAITING_EDGE_TASK_STATUSES.has(targetTaskStatus)
+  ) {
+    return {
+      tone: 'waiting',
+      duration: '2.1s',
+      opacity: 0.56,
+      width: 48,
+      shouldAnimate: true,
+    };
+  }
+
+  if (
+    ACTIVE_EDGE_TASK_STATUSES.has(sourceTaskStatus) ||
+    ACTIVE_EDGE_TASK_STATUSES.has(targetTaskStatus)
   ) {
     return {
       tone: 'active',
@@ -624,7 +659,12 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       conversationCompactionStatusById: state.conversationCompactionStatusById,
     }))
   );
-  const tasks = useTaskStore((state) => state.tasks);
+  const { tasks, mergeWorkflowRuntimeByTaskId } = useTaskStore(
+    useShallow((state) => ({
+      tasks: state.tasks,
+      mergeWorkflowRuntimeByTaskId: state.mergeWorkflowRuntimeByTaskId,
+    }))
+  );
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoveredNodeRect, setHoveredNodeRect] = useState<DOMRect | null>(null);
   const [hoveredFrozenBadge, setHoveredFrozenBadge] = useState<FrozenBadgeTooltipState | null>(null);
@@ -709,6 +749,23 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const taskStatusById = useMemo(
     () => new Map(tasks.map((task) => [task.id, task.status])),
     [tasks]
+  );
+  const dependencyBlockedTaskIds = useMemo(
+    () => new Set(tasks.filter((task) => task.is_blocked).map((task) => task.id)),
+    [tasks]
+  );
+  const mergeWorkflowPresentationByTaskId = useMemo(
+    () => new Map(
+      tasks.map((task) => [
+        task.id,
+        resolveTaskMergeWorkflowPresentationState(
+          mergeWorkflowRuntimeByTaskId[task.id] ?? null,
+          task.merge_workflow_summary ?? null,
+          task.status
+        ),
+      ])
+    ),
+    [mergeWorkflowRuntimeByTaskId, tasks]
   );
   const activeStrategyMutationPreview = useMemo(
     () =>
@@ -1275,25 +1332,31 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
     (node: Pick<PlanNode, 'id' | 'status'>): TaskStatusIndicatorState => {
       const isAssistantRunning = runningTaskIds.has(node.id);
       const taskStatus = taskStatusById.get(node.id) ?? null;
+      const mergeWorkflowPresentation = mergeWorkflowPresentationByTaskId.get(node.id) ?? null;
       if (isPlanFinalizationTaskId(node.id)) {
-        if (isAssistantRunning) return 'running';
-        const resolvedStatus = taskStatus ?? mapPlanNodeStatusToTaskStatus(node.status);
-        if (resolvedStatus === 'Completed') return 'completed';
-        if (resolvedStatus === 'Failed') return 'failed';
-        return 'plan_finalization';
+        return resolveTaskStatusIndicatorState(
+          taskStatus ?? mapPlanNodeStatusToTaskStatus(node.status),
+          isAssistantRunning,
+          'plan_finalization',
+          mergeWorkflowPresentation,
+          dependencyBlockedTaskIds.has(node.id)
+        );
       }
 
       return resolvePlanNodeStatusIndicatorState({
         nodeStatus: node.status,
         taskStatus,
         isAssistantRunning,
+        isDependencyBlocked: dependencyBlockedTaskIds.has(node.id),
+        mergeWorkflowRuntime: mergeWorkflowPresentation,
       });
     },
-    [runningTaskIds, taskStatusById]
+    [dependencyBlockedTaskIds, mergeWorkflowPresentationByTaskId, runningTaskIds, taskStatusById]
   );
   const getNodeStatusTone = useCallback(
     (node: Pick<PlanNode, 'id' | 'status'>) => {
-      if (runningTaskIds.has(node.id)) {
+      const indicatorState = getNodeIndicatorState(node);
+      if (indicatorState === 'running') {
         return {
           color: 'text-amber-500',
           bgColor: 'bg-amber-500/20',
@@ -1301,12 +1364,28 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
       }
 
       const taskStatus = getNodeTaskStatus(node.id, node.status);
+      if (
+        indicatorState === 'blocked' ||
+        indicatorState === 'merge_blocked' ||
+        indicatorState === 'merge_partial'
+      ) {
+        return {
+          color: taskStatusColors.Blocked,
+          bgColor: taskStatusBgColors.Blocked,
+        };
+      }
+      if (indicatorState === 'failed' || indicatorState === 'merge_failed') {
+        return {
+          color: taskStatusColors.Failed,
+          bgColor: taskStatusBgColors.Failed,
+        };
+      }
       return {
-        color: taskStatusColors[taskStatus],
-        bgColor: taskStatusBgColors[taskStatus],
+        color: taskStatusColors[taskStatus] ?? taskStatusColors.Pending,
+        bgColor: taskStatusBgColors[taskStatus] ?? taskStatusBgColors.Pending,
       };
     },
-    [getNodeTaskStatus, runningTaskIds]
+    [getNodeIndicatorState, getNodeTaskStatus]
   );
   const hoveredNodeData = layoutData.nodes.find(n => n.id === hoveredNodeId);
   const hoveredNodeTone = hoveredNodeData ? getNodeStatusTone(hoveredNodeData) : null;

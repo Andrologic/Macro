@@ -391,6 +391,24 @@ les archives et le tri déjà actifs restent appliqués aux résultats. Une
 recherche sans correspondance affiche un état vide explicite. Choisir un
 résultat déclenche la même sélection que dans la liste non filtrée.
 
+Les filtres structurants des listes principales survivent aux changements de
+mode et aux redémarrages. Implement conserve le projet, le statut et la vue
+archivée. Le filtre « À traiter » regroupe les questionnaires actifs, les demandes
+d'approbation d'outil actives ou restaurées et les tâches en review. Une tâche
+n'y apparaît qu'une fois. Les tâches terminées ou archivées et les simples
+blocages de dépendances n'y entrent pas. Une demande active reste accessible
+même si la tâche porte aussi un blocage. Avant le chargement de la conversation,
+une attente durable reste visible, sauf si une exécution ou un workflow de
+merge indique déjà une autre activité. Le filtre se combine au projet et à la
+recherche. Un second clic sur le filtre actif affiche tous les statuts. Changer
+de projet conserve le filtre choisi ; consulter les archives le suspend et le
+retour aux tâches actives le rétablit. Une approbation en attente remplace le
+spinner par l'indicateur d'attente utilisateur, même si le moteur est encore en
+streaming. Ouvrir cette tâche donne accès à la conversation de la demande.
+Architect et Chat conservent la vue active ou archivée. Les requêtes
+de recherche, la sélection multiple et les filtres propres aux boîtes de
+dialogue ou au terminal restent limités à la session d'interaction en cours.
+
 En mode Architect, le panneau gauche est la surface canonique de sélection du contexte et du plan. Il présente une seule profondeur : les groupes ou projets au premier niveau, puis leurs plans directement en dessous. La flèche et la ligne d'un projet basculent toutes deux son état développé ou réduit, même s'il ne contient encore aucun plan ; l'action « Créer le premier plan » suit cet état. Les plans épinglés sont proposés comme raccourcis sans dupliquer leur état. Le bouton d'ajout crée un projet, le bouton de gestion ouvre le navigateur de projets complet et le bouton associé à chaque projet ouvre le choix des types de plans compatibles avec son workflow Git.
 
 En mode Chat, la sélection multiple reste compacte tant qu'elle n'est pas utilisée. Son déclencheur est un bouton à icône placé dans l'en-tête, immédiatement avant la création d'une conversation. Le bandeau indiquant le nombre de conversations sélectionnées et les actions groupées n'est rendu qu'après activation du mode ; il s'ouvre à zéro sélection et disparaît à l'annulation.
@@ -399,7 +417,7 @@ Le clic droit reprend les actions déjà disponibles sans créer une voie parall
 
 Les archives ne constituent pas une section dépliable dans l'arborescence active. Un bouton à icône dans l'en-tête du panneau permet de basculer entre les plans actifs et une vue dédiée aux plans archivés, de façon cohérente avec le mode Implement et sans réserver une barre en bas du panneau. Les actions d'archives et de création utilisent le même bouton carré dans les deux modes ; leur intitulé reste disponible au survol et pour les technologies d'assistance. Cette vue conserve les actions de restauration et de suppression sans mélanger les plans archivés aux projets en cours.
 
-L'état vide central dépend du catalogue du projet sélectionné. Si aucun plan n'existe et que le projet est modifiable, il propose explicitement de créer le premier plan et ouvre le choix contextuel du type de plan. Le libellé « Sélectionner un plan » n'apparaît que lorsqu'au moins un plan est réellement disponible. Le panneau central demande explicitement l'état courant au navigateur lors de son montage afin de ne pas dépendre de l'ordre de chargement des panneaux.
+L'état vide central dépend du catalogue du projet sélectionné. Si aucun plan n'existe et que le projet est modifiable, il propose explicitement de créer le premier plan et ouvre le choix contextuel du type de plan. Si aucun plan n'existe et qu'aucun projet de la portée n'est modifiable, il explique qu'un projet doit d'abord être rendu modifiable et ouvre la gestion des projets. Le libellé « Sélectionner un plan » n'apparaît que lorsqu'au moins un plan est réellement disponible. Le panneau central demande explicitement l'état courant au navigateur lors de son montage afin de ne pas dépendre de l'ordre de chargement des panneaux.
 
 Sa largeur est propre au mode Architect afin de conserver une arborescence compacte, même si les panneaux des modes Implement ou Chat ont été agrandis. Le projet sélectionné et le plan actif utilisent des traitements visuels distincts : le premier définit la portée, le second représente le contenu actuellement ouvert.
 
@@ -502,6 +520,8 @@ L'interface doit permettre d'identifier clairement :
 
 L'interface doit afficher toutes les tâches de tous les projets par défaut et permettre de les filtrer par projet.
 Le mode Implement ne dépend pas du sélecteur de projet global du header.
+
+Lorsqu'une tâche est active, l'en-tête de la zone centrale affiche son titre puis une ligne de contexte compacte. Cette ligne indique, dans l'ordre, le plan d'origine lorsqu'il est connu, le projet ou le nombre de projets concernés, puis la branche de travail lorsqu'elle existe. Le plan est absent pour une tâche autonome sans plan catalogué. La branche est absente pour une tâche directe ou sans branche préparée. La ligne entière est masquée hors du mode Implement et lorsqu'aucune tâche n'est sélectionnée. Les valeurs viennent du catalogue de tâches et du registre de projets existants ; l'affichage ne conserve aucun état métier supplémentaire.
 
 ---
 
@@ -734,6 +754,17 @@ Pendant l'exécution d'une tâche, l'IA peut :
 - lancer un build
 - préparer des changements pour review
 
+### Approbations interrompues
+
+Une demande d'approbation d'outil survit au redémarrage comme demande interrompue.
+Le footer propose de reprendre dans un nouveau tour ou d'ignorer la demande.
+La reprise recharge le contexte actuel et applique la politique d'outils courante.
+Elle ne vaut pas approbation de l'ancienne commande et ne restaure aucun droit de
+session. L'agent doit vérifier les effets déjà produits avant de répéter une action.
+La demande initiale reste consultable dans l'historique. Si le nouveau tour échoue
+avant tout envoi, la demande reste disponible. Le refus, l'arrêt, la suppression,
+l'archivage et la fin de tâche invalident l'attente.
+
 ### 14.4 Review humaine
 
 Une review humaine est obligatoire à la fin de chaque tâche.
@@ -752,6 +783,16 @@ L'utilisateur doit pouvoir :
 Si un objet Git nécessaire à la review reste absent après une actualisation et une seule relance, Macro suspend les actualisations automatiques de cette review. L’interface précise qu’aucun fichier de travail n’a été modifié, propose de réessayer et donne accès aux détails Git. Une nouvelle tentative explicite, un changement de tâche ou une modification des métadonnées de review peut reprendre le chargement. Un changement d’état sans lien avec la review ne la relance pas. Macro ne lance aucune réparation destructive pour traiter cette erreur.
 
 Pour un projet sans Git, la review repose sur l’historique interne de Macro. Si ce checkpoint est absent, lié à un autre projet ou incomplet, le panneau suspend ses actualisations et nomme le checkpoint interne, pas un dépôt Git utilisateur. Macro conserve l’historique disponible et les fichiers du projet. Une réparation qui pourrait perdre un état accepté n’est jamais automatique.
+
+La carte de la file indique la prochaine action de review pour une tâche à un
+ou plusieurs dépôts : valider les changements du projet concerné, committer ce
+projet ou ouvrir la review. Pour un projet en mode d'exécution direct, elle
+indique d'accepter les changements. Le résumé des dépôts ne couvre pas les
+artefacts : il ne suffit donc pas à annoncer que la tâche peut être terminée. Une tâche de finalisation indique de finaliser le plan. Ces
+indications utilisent le résumé de la review chargée et les états existants du
+workflow de merge. En l'absence de données de review pour cette tâche, la carte
+propose d'ouvrir la review. Les validations et opérations Git restent dans leur
+parcours de review habituel.
 
 ### 14.5 Édition manuelle autorisée pendant la review
 
@@ -1041,6 +1082,12 @@ Les notifications doivent au minimum couvrir :
 - exécution terminée
 
 Si le runtime ne supporte pas les notifications bureau, les modes bureau ne doivent pas être proposés et une configuration bureau déjà persistée doit retomber sur une notification in-app plutôt que perdre l'événement.
+
+La catégorie « besoin d'attention sur une tâche » couvre trois transitions : l'apparition d'un questionnaire sans réponse, l'apparition d'une demande d'approbation d'outil et le passage d'une tâche existante vers `InReview`. La clé de la notification combine le type de demande avec l'identifiant du message, de l'appel d'outil ou de la tâche. Une mise à jour du même état ne crée donc pas de doublon. L'hydratation d'un état déjà en attente, la résolution de la demande et une demande déjà affichée dans le contexte actif d'une fenêtre au premier plan ne produisent pas de notification. Une fenêtre inactive ou minimisée reçoit les nouvelles demandes selon les préférences de canal, même si leur conversation ou tâche est sélectionnée.
+
+Le centre de notifications conserve un descripteur de navigation typé, sans callback ni paramètres d'outil. Le bouton d'ouverture reste disponible après relance. Le clic relit la conversation et l'identité durable de la tâche ; une cible supprimée ne change pas la sélection. Les appels à l'action résolus sont retirés dès que leur état chargé permet de le déterminer.
+
+L'action d'une notification de questionnaire ou d'approbation ouvre sa conversation et sa tâche lorsqu'elle en possède une. L'action d'une review ouvre la tâche dans le mode Implement et restaure sa conversation connue. Le système ne possède pas encore de route stable vers un dépôt ou un fichier précis de la review : la navigation s'arrête donc volontairement au contexte sûr de la tâche.
 
 ---
 

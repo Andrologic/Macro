@@ -66,6 +66,7 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
   onDeny,
 }) => {
   const { t } = useTranslation();
+  const interrupted = pendingApproval.recoveryState === 'interrupted';
   const [isDenying, setIsDenying] = useState(false);
   const [denyReason, setDenyReason] = useState('');
   const skillId = pendingApproval.toolId === 'skill_run_script'
@@ -142,7 +143,7 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
                   {t('chat.toolApprovalLabel', 'Tool approval')}
                 </span>
                 <p className="pr-1 text-sm font-medium leading-5 text-foreground text-balance">
-                  {pendingApproval.summary}
+                  {interrupted ? t('chat.toolApprovalInterrupted', 'This tool request was interrupted.') : pendingApproval.summary}
                 </p>
               </div>
               <span
@@ -161,6 +162,7 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
               </span>
             </div>
 
+            {interrupted && <p className="text-xs text-muted-foreground">{t('chat.toolApprovalInterruptedHint', 'Resume starts a new turn that checks the current workspace and requests fresh approval if needed. The original request remains in the history.')}</p>}
             {pendingApproval.detail && (
               <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border/70 bg-background/55 px-2.5 py-2">
                 <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
@@ -268,15 +270,12 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
                 variant="secondary"
                 size="sm"
                 onClick={onAllowOnce}
-                title={t(
-                  'chat.toolApprovalAllowOnceHint',
-                  'Approve only this exact request.'
-                )}
+                title={interrupted ? t('chat.toolApprovalResume', 'Resume with a new turn') : t('chat.toolApprovalAllowOnceHint', 'Approve only this exact request.')}
                 className="h-9 rounded-lg px-3"
               >
-                {t('chat.toolApprovalAllowOnce', 'Allow once')}
+                {interrupted ? t('chat.toolApprovalResume', 'Resume with a new turn') : t('chat.toolApprovalAllowOnce', 'Allow once')}
               </Button>
-              {pendingApproval.canApproveForConversation !== false && (
+              {!interrupted && pendingApproval.canApproveForConversation !== false && (
                 <Button
                   type="button"
                   size="sm"
@@ -298,14 +297,14 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => setIsDenying(true)}
+              onClick={() => interrupted ? onDeny() : setIsDenying(true)}
               title={t(
                 'chat.toolApprovalDenyHint',
                 'Block this request and optionally explain why.'
               )}
               className="ml-auto h-9 rounded-lg border border-border/70 px-3"
             >
-              {t('chat.toolApprovalDeny', 'Refuse')}
+              {interrupted ? t('chat.toolApprovalDismiss', 'Dismiss') : t('chat.toolApprovalDeny', 'Refuse')}
             </Button>
           </div>
         )}

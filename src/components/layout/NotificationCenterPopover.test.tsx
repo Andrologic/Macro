@@ -162,6 +162,24 @@ describe('NotificationCenterPopover', () => {
     );
   });
 
+  it('renders an Open button for a restored workflow descriptor without session closures', async () => {
+    const { NotificationCenterPopover } = await loadNotificationCenterPopover();
+    useNotificationCenterStore.setState({ items: [{
+      id: 'restored-workflow', level: 'info', variant: 'actionable',
+      category: 'task_attention_required', title: 'Question waiting',
+      createdAt: '2026-04-12T10:00:00.000Z', readAt: null,
+      workflowNavigation: { kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-1' },
+    }] });
+    await act(async () => {
+      root?.render(<NotificationCenterPopover isOpen anchorRef={{ current: anchor }} onClose={() => undefined} />);
+    });
+    const button = Array.from(document.body.querySelectorAll('button')).find((candidate) => candidate.textContent === 'Open');
+    expect(button).toBeDefined();
+    expect(button?.disabled).toBe(false);
+    await act(async () => { button?.click(); });
+    expect(executeRegisteredNotificationActionMock).toHaveBeenCalledWith('restored-workflow', 0);
+  });
+
   it('falls back to a snapshot label when an actionable item was restored without session actions', async () => {
     const { NotificationCenterPopover } = await loadNotificationCenterPopover();
 

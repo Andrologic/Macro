@@ -1066,6 +1066,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     hydrationStatus,
     restoreStatus,
     lastError,
+    toolApprovalRecoveryError,
+    dismissToolApprovalRecoveryError,
     stopStreaming,
     sendMessage,
     submitDuringActiveTurn = async () => 'steered' as const,
@@ -1125,6 +1127,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     hydrationStatus: state.hydrationStatus,
     restoreStatus: state.restoreStatus,
     lastError: state.lastError,
+    toolApprovalRecoveryError: state.toolApprovalRecoveryError,
+    dismissToolApprovalRecoveryError: state.dismissToolApprovalRecoveryError,
     stopStreaming: state.stopStreaming,
     sendMessage: state.sendMessage,
     submitDuringActiveTurn: state.submitDuringActiveTurn,
@@ -1920,6 +1924,50 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       count: selectedTaskScopedProjectIds.length,
     });
   }, [projectNameById, selectedTaskScopedProjectIds, t]);
+  const selectedTaskContextProjectSummary = useMemo(() => {
+    if (selectedTaskProjectIds.length === 0) {
+      return t('implement.noRepositorySelected', 'No project');
+    }
+
+    if (selectedTaskProjectIds.length === 1) {
+      const projectId = selectedTaskProjectIds[0]!;
+      return projectNameById.get(projectId) || projectId;
+    }
+
+    return t('implement.multiProjectTask', '{{count}} projects', {
+      count: selectedTaskProjectIds.length,
+    });
+  }, [projectNameById, selectedTaskProjectIds, t]);
+  const selectedTaskContextItems = useMemo(() => {
+    if (mode !== 'Implement' || !selectedTask) {
+      return [];
+    }
+
+    const planTitle = selectedTask.plan_title?.trim();
+    const executionTargets = selectedTask.execution_targets ?? [];
+    const isDirectTask =
+      selectedTask.task_kind === 'direct' ||
+      (executionTargets.length > 0 &&
+        executionTargets.every((target) => target.executionMode === 'direct'));
+    const branchName = isDirectTask ? null : selectedTask.branch_name?.trim();
+    return [
+      ...(planTitle
+        ? [{ label: t('implement.taskContextPlan', 'Plan'), value: planTitle }]
+        : []),
+      {
+        label: t(
+          selectedTaskProjectIds.length === 1
+            ? 'implement.taskContextProject'
+            : 'implement.taskContextProjects',
+          selectedTaskProjectIds.length === 1 ? 'Project' : 'Projects'
+        ),
+        value: selectedTaskContextProjectSummary,
+      },
+      ...(branchName
+        ? [{ label: t('implement.taskContextBranch', 'Branch'), value: branchName }]
+        : []),
+    ];
+  }, [mode, selectedTask, selectedTaskContextProjectSummary, selectedTaskProjectIds.length, t]);
   const canStartImplementExecution = Boolean(
     selectedTaskRequiresKickoff &&
       selectedTask &&
@@ -2024,7 +2072,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return {
         icon: 'check-square' as const,
         title: `${t('header.implement', 'Implement')} - ${selectedTask?.title || t('implement.selectTaskShort', 'Select a task')}`,
-        subtitle: projectScopeLabel || currentConversation?.title || null,
+        subtitle: null,
       };
     }
 
@@ -2069,19 +2117,38 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     architectPlanSelectorState.planCount === 0 &&
     architectPlanSelectorState.canCreate
       ? 'create'
-      : 'select';
-  const isMissingArchitectPlanActionLoading =
-    architectPlanSelectorState?.status === 'loading';
-  const missingArchitectPlanActionLabel = isMissingArchitectPlanActionLoading
+      : architectPlanSelectorState?.status === 'ready' &&
+          architectPlanSelectorState.planCount === 0 &&
+          !architectPlanSelectorState.canCreate
+        ? 'configure'
+        : 'select';
+  const isMissingArchitectPlanActionPending =
+    !architectPlanSelectorState || architectPlanSelectorState.status === 'loading';
+  const isMissingArchitectPlanActionUnavailable =
+    architectPlanSelectorState?.status === 'error';
+  const isMissingArchitectPlanActionDisabled =
+    architectPlanSelectorState?.status !== 'ready';
+  const missingArchitectPlanActionLabel = isMissingArchitectPlanActionPending
     ? t('architect.planSelector.loadingShort', 'Loading')
+    : isMissingArchitectPlanActionUnavailable
+      ? t('architect.planSelector.unavailableShort', 'Unavailable')
     : missingArchitectPlanActionKind === 'create'
       ? t('architect.createPlanAction', 'Create a plan')
+      : missingArchitectPlanActionKind === 'configure'
+        ? t('architect.projectNavigator.manageProjects', 'Manage projects')
       : t('architect.selectPlanAction', 'Select a plan');
-  const missingArchitectPlanMessage = missingArchitectPlanActionKind === 'create'
+  const missingArchitectPlanMessage = isMissingArchitectPlanActionUnavailable
+    ? t('architect.projectNavigator.loadError', 'Unable to load plans.')
+    : missingArchitectPlanActionKind === 'create'
     ? t(
         'architect.createFirstPlanToStart',
         'Create your first plan to start architecting.',
       )
+    : missingArchitectPlanActionKind === 'configure'
+      ? t(
+          'architect.configureProjectToCreatePlan',
+          'Make a project editable before creating a plan.',
+        )
     : architectPlanSelectorState?.status === 'ready' && architectPlanSelectorState.canSelect
       ? t(
           'architect.selectExistingPlanToStart',
@@ -3486,11 +3553,29 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
             )}
             <div className="min-w-0">
               <h1 className="text-sm font-medium text-foreground truncate">{modeHeader.title}</h1>
-              {modeHeader.subtitle && (
+              {mode === 'Implement' && selectedTaskContextItems.length > 0 ? (
+                <div
+                  className="mt-0.5 flex min-w-0 items-center gap-1 overflow-hidden text-xs text-muted-foreground"
+                  data-testid="implement-active-task-context"
+                  title={selectedTaskContextItems
+                    .map(({ label, value }) => `${label}: ${value}`)
+                    .join(' • ')}
+                >
+                  {selectedTaskContextItems.map(({ label, value }, index) => (
+                    <React.Fragment key={label}>
+                      {index > 0 && <span aria-hidden="true">•</span>}
+                      <span className="min-w-0 truncate">
+                        <span className="font-medium text-foreground/70">{label}:</span>{' '}
+                        {value}
+                      </span>
+                    </React.Fragment>
+                  ))}
+                </div>
+              ) : modeHeader.subtitle ? (
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="text-muted-foreground text-xs truncate">{modeHeader.subtitle}</span>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
 
@@ -3569,25 +3654,29 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   ref={missingArchitectPlanActionRef}
                   type="button"
                   onClick={handleMissingArchitectPlanAction}
-                  disabled={isMissingArchitectPlanActionLoading}
+                  disabled={isMissingArchitectPlanActionDisabled}
                   data-tour-id="architect-empty-plan-action"
                   className={cn(
                     'inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition-colors',
-                    isMissingArchitectPlanActionLoading
+                    isMissingArchitectPlanActionPending
                       ? 'border-border bg-muted text-muted-foreground cursor-wait'
+                      : isMissingArchitectPlanActionDisabled
+                        ? 'border-border bg-muted text-muted-foreground cursor-not-allowed'
                       : 'border-primary/30 bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground'
                   )}
                 >
                   <Icon
                     name={
-                      isMissingArchitectPlanActionLoading
+                      isMissingArchitectPlanActionPending
                         ? 'loader'
                         : missingArchitectPlanActionKind === 'create'
                           ? 'plus'
+                          : missingArchitectPlanActionKind === 'configure'
+                            ? 'settings'
                           : 'list'
                     }
                     size={14}
-                    className={cn(isMissingArchitectPlanActionLoading && 'animate-spin')}
+                    className={cn(isMissingArchitectPlanActionPending && 'animate-spin')}
                   />
                   {missingArchitectPlanActionLabel}
                 </button>
@@ -3712,6 +3801,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         {(showManualDraftComposerNotice ||
           (selectedTask && isSelectedTaskDependencyBlocked && currentMessages.length === 0) ||
           composerError ||
+          toolApprovalRecoveryError ||
           showSkillNativeToolWarning ||
           isSelectedConversationArchived) && (
           <ChatFloatingNoticeStack>
@@ -3727,6 +3817,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       )
                     : t('chat.runtimeErrorFallback', 'Macro could not complete this action. Review the details, then try again.'),
                 })}
+              />
+            )}
+
+            {toolApprovalRecoveryError && (
+              <ActionableErrorCallout
+                className="shadow-lg shadow-black/15 backdrop-blur"
+                compact
+                presentation={{
+                  ...presentServiceError(toolApprovalRecoveryError, {
+                    fallbackBody: t('chat.toolApprovalRecoveryWarning', 'Some saved tool requests could not be restored. Their data has been kept. You can close this notice and continue chatting.'),
+                  }),
+                  severity: 'warning',
+                  nextStep: null,
+                }}
+                actionLabel={t('common.close', 'Close')}
+                onAction={dismissToolApprovalRecoveryError}
               />
             )}
 
@@ -3880,7 +3986,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                     <p className="text-xs text-muted-foreground">
                       {selectedTask.description || t('implement.noTaskDescription', 'No task description provided.')}
                     </p>
-                    <div className="flex flex-wrap gap-1.5 text-[10px]">
+                    <div
+                      className="flex flex-wrap gap-1.5 text-[10px]"
+                      data-testid="implement-execution-brief-context"
+                    >
                       <span className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border/70 bg-background/40 px-2 py-0.5 font-semibold text-muted-foreground">
                         <Icon name="git-branch" size={10} className="shrink-0" />
                         {selectedTask.branch_name}
@@ -3918,7 +4027,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
               </div>
             )}
 
-            {activePendingToolApproval ? (
+            {activePendingToolApproval && !isSelectedConversationArchived ? (
               <Suspense fallback={null}>
                 <ToolApprovalFooter
                   pendingApproval={activePendingToolApproval}

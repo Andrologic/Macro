@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   getReleaseNote,
   normalizePendingUpdateReleaseNote,
@@ -8,6 +9,24 @@ import {
 } from './releaseNotes';
 
 describe('release notes', () => {
+  it('ships localized 0.1.4 notes consistent with the release document', () => {
+    const french = getReleaseNote('0.1.4', 'fr-FR');
+    const english = getReleaseNote('0.1.4', 'en-US');
+    const document = readFileSync(
+      new URL('../../dev/release/notes/0.1.4.md', import.meta.url), 'utf8',
+    );
+
+    expect(french?.version).toBe('0.1.4');
+    expect(french?.content).toBe(document.trim());
+    expect(english?.content).toContain('## Resume an interrupted approval');
+    expect(getReleaseNote('0.1.4', 'de-DE')).toEqual(english);
+    expect(resolveReleaseNote('0.1.4', 'fr-FR', {
+      version: '0.1.4', content: 'Untranslated updater notes',
+    })).toEqual(french);
+    expect(shouldShowReleaseNote(french, [])).toBe(true);
+    expect(shouldShowReleaseNote(french, ['0.1.4'])).toBe(false);
+  });
+
   it('ships bootstrap notes for supported public versions', () => {
     expect(getReleaseNote('0.1.0', 'en')).not.toBeNull();
     expect(getReleaseNote('0.1.2', 'en')?.content).toContain(

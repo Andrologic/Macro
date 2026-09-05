@@ -6,6 +6,29 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+New features target 0.1.5; its scope is not yet defined.
+
+## 0.1.4 (Unreleased)
+
+Feature scope frozen on 2026-09-05. Only reviewed regression, security, and
+release-validation fixes remain eligible. This version has not been published.
+
+### Added
+
+- Added attention notifications for questionnaires, tool approvals, and pending reviews, including when the desktop window is inactive.
+- Added a persistent Needs attention filter for pending requests and task reviews, combined with project filtering and search.
+- Added review guidance in task cards for validating or committing a repository, accepting direct changes, and opening the review.
+- Added active task context and project management access in Implement.
+- Added persistent project, status, and archive filters in Implement, and archive filters in Architect and Chat.
+- Added recovery for interrupted tool approvals through a new turn using current context and tool policy, without restoring session permissions or authorizing the old request.
+
+### Fixed
+
+- Distinguished waiting for a user response from task and dependency blocks.
+- Fixed Architect empty states to reflect available plans and editing permissions.
+- Standardized project icon dimensions and corrected French translations.
+- Preserved notification destinations across restarts and removed resolved requests from the notification center.
+
 ## 0.1.3
 
 ### Added

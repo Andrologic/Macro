@@ -5,7 +5,7 @@ import { useNotificationCenterStore } from '../../stores/useNotificationCenterSt
 import { Icon } from '../ui/Icon';
 import { ActionableNotificationTemplate } from '../ui/notifications/ActionableNotificationTemplate';
 import { InformationalNotificationTemplate } from '../ui/notifications/InformationalNotificationTemplate';
-import { executeRegisteredNotificationAction } from '../ui/toastService';
+import { executeRegisteredNotificationAction, getNotificationCenterActions } from '../ui/toastService';
 import {
   calculateNotificationCenterPosition,
   groupNotificationCenterItemsByDate,
@@ -205,14 +205,14 @@ export const NotificationCenterPopover: React.FC<NotificationCenterPopoverProps>
                           title={item.title}
                           description={item.description}
                           onDismiss={() => removeItem(item.id)}
-                          actions={item.sessionActions}
-                          interactive={Boolean(item.sessionActions?.length)}
+                          actions={getNotificationCenterActions(item)}
+                          interactive={Boolean(getNotificationCenterActions(item)?.length)}
                           pendingActionIndex={item.pendingActionIndex ?? null}
                           onActionClick={(actionIndex) => {
                             void executeRegisteredNotificationAction(item.id, actionIndex);
                           }}
                           snapshotLabel={
-                            item.sessionActions?.length
+                            getNotificationCenterActions(item)?.length
                               ? undefined
                               : t('notifications.actionRequired', 'Action required')
                           }

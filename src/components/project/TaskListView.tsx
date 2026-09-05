@@ -164,11 +164,18 @@ export const TaskListView: React.FC<TaskListViewProps> = ({ projectId }) => {
                 task.status,
                 isAssistantRunning,
                 null,
-                mergeWorkflowPresentation
+                mergeWorkflowPresentation,
+                task.is_blocked
               );
               const indicatorColor = isAssistantRunning
                 ? 'text-amber-500'
-                : indicatorColors[task.status];
+                : indicatorState === 'blocked' ||
+                    indicatorState === 'merge_blocked' ||
+                    indicatorState === 'merge_partial'
+                  ? indicatorColors.Blocked
+                  : indicatorState === 'failed' || indicatorState === 'merge_failed'
+                    ? indicatorColors.Failed
+                  : indicatorColors[task.status] ?? indicatorColors.Pending;
 
               return (
                 <button

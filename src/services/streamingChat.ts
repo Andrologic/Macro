@@ -3418,7 +3418,7 @@ const streamChatViaNativeToolCallingProvider = async (
           providerType === 'chatgpt' &&
           isEmptyTerminalChatGptTurn(turnContent, validToolCalls)
         ) {
-          throw new Error('Reponse ChatGPT vide apres execution des outils.');
+          throw new Error('Réponse ChatGPT vide après exécution des outils.');
         }
         completeNativeStream(
           recoveryCause && !isIncompleteCompletionReason(turnResult.completionReason)

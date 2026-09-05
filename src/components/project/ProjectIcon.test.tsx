@@ -44,11 +44,38 @@ describe('ProjectIcon', () => {
     expect(image?.dataset.projectIcon).toBe('public/favicon.svg');
   });
 
+  it('uses the requested CSS box while preserving the resolved image proportions', async () => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <ProjectIcon
+          project={{ id: 'non-square-icon', path: '/projects/non-square-icon' }}
+          size={18}
+          resolveIcon={async () => ({
+            dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+            sourcePath: 'public/tall-icon.svg',
+            revision: 'revision-1',
+          })}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const image = container?.querySelector('img');
+    expect(image?.style.width).toBe('18px');
+    expect(image?.style.height).toBe('18px');
+    expect(image?.classList.contains('object-contain')).toBe(true);
+  });
+
   it('keeps the folder fallback when no icon is found', async () => {
     await renderIcon('project-without-icon', async () => null);
 
     expect(container?.querySelector('img')).toBeNull();
-    expect(container?.querySelector('svg')).not.toBeNull();
+    const fallback = container?.querySelector('svg');
+    expect(fallback?.getAttribute('width')).toBe('16');
+    expect(fallback?.getAttribute('height')).toBe('16');
   });
 
   it('resolves again when a project id is reused for another path', async () => {

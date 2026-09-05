@@ -1,3 +1,4 @@
+import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalRecovery.scenarios';
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type {
   AgentType,
@@ -722,6 +723,7 @@ let chatSnapshotMessages: Array<{
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
+  tool_traces_json?: string | null;
 }> = [];
 type ArchitectPlanConversationSyncRecord = {
   conversation_id: string;
@@ -2505,6 +2507,8 @@ const useChatStoreScenarioContext = {
   appState,
   projectGroups,
   appSettingValues,
+  dbSetAppSettingMock,
+  dbDeleteAppSettingMock,
   activateArchitectPlanForTest,
   architectPlanConversationSyncRecords,
   architectPlanMessages,
@@ -3344,6 +3348,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
   registerReplayAndEditingScenarios(useChatStoreScenarioContext);
   registerImplementPolicyScenarios(useChatStoreScenarioContext);
+  registerToolApprovalRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);
 });
 

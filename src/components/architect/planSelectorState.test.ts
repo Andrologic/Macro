@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { ArchitectPlanSummary } from '../../services/architectPlanService';
 import {
+  canUsePlanSelectorCreation,
   computePlanSelectorEmptyState,
   computePlanSelectorRefreshState,
   resolveVerifiedPlanDeletionRecovery,
@@ -32,6 +33,27 @@ const buildPlanSummary = (
 });
 
 describe('planSelectorState', () => {
+  it('allows creation only after a successful catalog load for an editable scope', () => {
+    expect(canUsePlanSelectorCreation({
+      canCreateForScope: true,
+      hasError: false,
+      hasLoadedPlans: true,
+      isLoading: false,
+    })).toBe(true);
+    expect(canUsePlanSelectorCreation({
+      canCreateForScope: true,
+      hasError: false,
+      hasLoadedPlans: false,
+      isLoading: true,
+    })).toBe(false);
+    expect(canUsePlanSelectorCreation({
+      canCreateForScope: true,
+      hasError: true,
+      hasLoadedPlans: true,
+      isLoading: false,
+    })).toBe(false);
+  });
+
   it('recognizes verified deletion success while warning only for pending linked conversation cleanup', () => {
     expect(resolveVerifiedPlanDeletionRecovery({
       mutationApplied: true,

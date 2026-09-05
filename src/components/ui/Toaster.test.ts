@@ -979,6 +979,25 @@ describe('toast wrapper', () => {
     expect(useNotificationCenterStore.getState().items[0]?.pendingActionIndex).toBeUndefined();
   });
 
+  it('restores and executes a persisted navigation button without replaying session mutations', async () => {
+    const navigate = mock(async (_navigation: unknown) => undefined);
+    mock.module('../../services/openWorkflowNotificationContext', () => ({ openWorkflowNotificationContext: navigate }));
+    const mutation = mock(() => undefined);
+    notify.actionRequired('Question waiting', {
+      category: 'task_attention_required', notificationKey: 'persisted-workflow',
+      actions: [{ label: 'Open', onClick: mutation }],
+      workflowNavigation: { kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-current' },
+    });
+    const item = useNotificationCenterStore.getState().items.find((candidate) => candidate.id === 'persisted-workflow')!;
+    expect(item.workflowNavigation).toEqual({ kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-current' });
+    const { sessionActions: _actions, sessionToastId: _toast, ...persisted } = item;
+    useNotificationCenterStore.setState({ items: [JSON.parse(JSON.stringify(persisted))] });
+    await expect(__testables.executeRegisteredNotificationAction('persisted-workflow', 0)).resolves.toBe(true);
+    expect(navigate).toHaveBeenCalledWith({ kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-current' });
+    expect(mutation).not.toHaveBeenCalled();
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+  });
+
   it('keeps the toast open when dismissOnSuccess is false', async () => {
     const [action] = __testables.normalizeNotificationActions([
       {

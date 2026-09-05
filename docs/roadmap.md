@@ -31,6 +31,11 @@ Un écart devenu obsolète doit être supprimé.
 
 ## 3. État actuel synthétique
 
+La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.4`.
+La configuration Tauri reprend la version de `package.json`. Cette version est
+figée fonctionnellement depuis le 5 septembre 2026 et n'est pas publiée.
+Les installateurs multiplateformes restent à valider.
+
 L'application dispose déjà d'une base solide :
 
 - shell desktop React + Tauri fonctionnel
@@ -46,6 +51,12 @@ L'application dispose déjà d'une base solide :
 - lifecycle des plans maintenant robuste sur le socle desktop local-first
 - sync `@macro` maintenant structurée avec états exploitables, actions explicites et erreurs remontées proprement
 - merge conflicts pilotés par Macro maintenant détectés, bloqués en fail-closed et traités via un workflow assisté de résolution et reprise
+- questionnaires à choix rapides et réponses libres présents dans les conversations
+- notifications in-app et desktop configurables par catégorie, avec repli in-app lorsque le runtime desktop n'est pas disponible
+- démarrage manuel des tâches autonomes avec progression visible et reprise sûre après échec
+- recherche locale compacte dans les listes Architect, Implement et Chat
+- brouillons de composer persistants par conversation ou tâche
+- tâches directes Git et édition directe des projets sans Git, avec checkpoints internes pour la review
 - couches de services, stores et IPC déjà structurées
 - fondation headless expérimentale présente dans le code, sans capacité produit exposée
 
@@ -53,9 +64,35 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 
 - expérience Implement encore partiellement inachevée
 - automatisation et orchestration encore à fiabiliser
-- notifications et supervision distante non finalisées
 - articulation desktop / remote / mobile encore incomplète
 - expérience multi-plan et multi-projet encore à consolider de bout en bout
+
+### 3.1 Périmètre figé de la 0.1.4
+
+La boucle d'attention desktop est intégrée dans la version locale `0.1.4`.
+Les notifications et la file « À traiter » ramènent aux demandes en attente.
+Le périmètre est figé sur le code intégré au commit `22c16fea`. La branche
+locale `release/0.1.4` conserve le jalon de stabilisation. Seuls les correctifs
+de régression, de sécurité ou nécessaires à la validation de la release peuvent
+encore entrer dans la 0.1.4. Ils doivent être revus et validés avant intégration.
+Les nouvelles fonctionnalités sont réservées à la 0.1.5, dont le périmètre reste
+à décider. La préparation locale ne vaut pas publication.
+
+Écarts résolus dans le code :
+
+- notifications des questionnaires, approbations et reviews lorsque leur contexte n'est pas au premier plan, avec destination conservée dans le centre après redémarrage
+- filtre « À traiter » persistant, combiné au projet et à la recherche
+- approbations interrompues restaurées comme demandes à reprendre dans un nouveau tour ou à ignorer, sans restaurer les droits de session
+- attente utilisateur distincte des blocages de tâche et de dépendance
+- prochaine action de review indiquée d'après les données chargées, avec retour vers la review lorsque la complétion reste à vérifier
+- contexte de la tâche active, filtres persistants et accès aux projets depuis Implement
+- états vides Architect adaptés aux plans disponibles et aux droits de modification
+- dimensions des icônes de projet et traductions françaises corrigées
+
+Le kernel distant public, la supervision mobile, les comptes, la synchronisation
+connectée, un système de plugins, l'édition complète des fichiers en review et
+une nouvelle politique de merge automatique restent hors périmètre de la
+`0.1.4`.
 
 ---
 
@@ -87,6 +124,9 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - robustesse multi-plans parallèles
 - lisibilité du mode Architect quand plusieurs plans coexistent
 
+État consolidé en `0.1.4` :
+- états vides adaptés aux plans disponibles et aux droits de modification
+
 ### 4.3 Mode Implement
 
 État attendu :
@@ -97,6 +137,8 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - commits et intégration bien verrouillés
 
 État déjà consolidé :
+- démarrage manuel des tâches, avec progression de leur préparation
+- questionnaires à réponses suggérées ou libres
 - dérivation et agrégation de tâches depuis plusieurs plans exécutables côté desktop
 - catalogue/backend de listing des tâches maintenant découplé du seul plan actif et d'une seule branche cible
 - filtrage de la file par plan
@@ -106,10 +148,11 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - review multi-dépôts côté Implement maintenant lisible dans la file et dans la review
 - navigation explicite dépôt par dépôt, commits distincts par dépôt et complétion de tâche unifiée
 - verrouillage des états fantômes entre review, commit par dépôt et complétion finale
+- file « À traiter », reprise des approbations interrompues et prochaine action de review en `0.1.4`
+- contexte de tâche, filtres persistants et gestion des projets accessibles dans Implement
 
 État à consolider :
 - UX de la review et de l'édition ciblée
-- questions IA à réponses rapides réellement branchées
 - articulation claire entre review de tâche, commit, validation finale de plan et merge
 - comportement global du mode quand plusieurs plans et plusieurs projets sont actifs en même temps
 
@@ -188,8 +231,14 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - demandes d'attention claires
 - réponses rapides depuis mobile
 
+État déjà consolidé :
+- notifications in-app et desktop disponibles
+- préférences locales par catégorie et par canal
+- repli vers l'in-app lorsque les notifications bureau ne sont pas supportées
+- notifications reliées aux questionnaires, approbations et reviews, avec navigation persistante dans le centre
+- reprise explicite des approbations interrompues après redémarrage
+
 État à consolider :
-- système de notification encore absent ou incomplet
 - protocole d'échange entre exécution et client mobile
 - définition de la supervision distante comme expérience produit complète
 
@@ -223,17 +272,14 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 
 ## 5. Chantiers prioritaires
 
-### 5.1 Priorité 1 - Stabiliser le cœur desktop
+### 5.1 Boucle d'attention desktop intégrée en 0.1.4
 
-Objectif :
-- rendre l'expérience desktop suffisamment robuste pour servir de base produit
-
-Chantiers :
-- finir la boucle Architect -> Implement -> Review -> Commit -> Validation de plan
-- durcir le workflow Git de plan
-- fiabiliser les transitions de tâches
-- finaliser l'UX de review et d'édition ciblée
-- stabiliser la lisibilité du multi-plan côté Implement dans la review et la finalisation
+Les écarts de notification, de restauration des approbations et de filtrage
+sont résolus dans le code local. Les contrôles locaux et les parcours Tauri
+vérifiés passent. Les installateurs multiplateformes et une reprise complète
+avec un fournisseur IA réel restent à valider avant publication.
+Les évolutions suivantes portent sur
+l'ergonomie de review et la supervision distante.
 
 ### 5.2 Priorité 2 - Rendre le multi-projet réellement premium
 
@@ -242,9 +288,7 @@ Objectif :
 
 Chantiers :
 - clarifier la structure groupe / projet / plan / tâche
-- fiabiliser les tâches multi-projets
-- garantir la qualité des commits par projet
-- améliorer navigation, filtres et lisibilité de contexte
+- améliorer la lisibilité de la progression et des commits par dépôt
 - mieux articuler finalisation de plan, review et navigation quand plusieurs plans restent actifs en parallèle
 
 ### 5.3 Priorité 3 - Fiabiliser l'autonomie assistée
@@ -253,8 +297,6 @@ Objectif :
 - rendre l'IA capable d'avancer longtemps sans dégrader la qualité de supervision
 
 Chantiers :
-- démarrage manuel des tâches bien borné
-- questions IA à choix rapides
 - gestion claire des points de blocage
 - exécution test/build observable et interprétable
 
@@ -264,7 +306,6 @@ Objectif :
 - permettre la poursuite du travail hors du poste principal
 
 Chantiers :
-- notifications desktop d'abord
 - socle de supervision mobile ensuite
 - protocoles de questions/réponses à distance
 - review et validation à distance
@@ -365,20 +406,27 @@ Critère de sortie :
 - la synthèse de plans, la file de tâches et les filtres restent maintenant cohérents quand plusieurs plans vivants coexistent dans un même groupe, sans régression sur les tâches hors plan
 - le prochain verrou majeur de la phase redevient la lisibilité UX du multi-projet et l'articulation review / finalisation quand plusieurs plans restent actifs
 
-Prochaine tranche recommandée après merge 0.1 :
-- lisibilité UX groupe / projet / plan / tâche côté Implement
-- clarté des filtres, de la navigation et de la review quand plusieurs plans et plusieurs dépôts restent actifs en parallèle
-- meilleure articulation entre review de tâche multi-projet, validation globale de plan et finalisation
+Tranche intégrée dans la `0.1.4` locale :
+- contexte de tâche active, filtres persistants et accès à la gestion des projets
+- file « À traiter » et prochaine action de review pour un ou plusieurs dépôts
+
+L'ergonomie globale de review et de finalisation multi-plan reste à consolider.
 
 ### Phase 4 - Automatisation et supervision
 
 Livrables :
-- démarrage manuel des tâches abouti
-- notifications desktop
-- système de questions/réponses rapides
+- notifications des questionnaires, approbations et reviews
+- retour vers la bonne action depuis chaque demande d'attention
+- restauration des demandes en attente après redémarrage
+- prochaine action de review et progression multi-dépôts explicites
 
 Critère de sortie :
 - l'utilisateur peut laisser Macro avancer puis reprendre la main efficacement
+
+État :
+- le démarrage manuel, les questionnaires et le système de notifications desktop sont livrés
+- les notifications, la navigation persistante, la reprise des approbations interrompues et la file « À traiter » sont intégrées en `0.1.4` locale
+- les contrôles locaux et les parcours Tauri vérifiés passent ; les installateurs multiplateformes et une reprise complète avec un fournisseur IA réel restent à valider avant publication
 
 ### Phase 5 - Remote kernel et mobile supervision
 
@@ -437,7 +485,7 @@ Cette roadmap doit être mise à jour lorsque :
 
 - une phase est terminée
 - une priorité change
-- un nouveau chantier majeur apparait
+- un nouveau chantier majeur apparaît
 - une décision produit ferme un sujet ouvert
 
 Chaque entrée importante de roadmap doit pouvoir être reliée à :

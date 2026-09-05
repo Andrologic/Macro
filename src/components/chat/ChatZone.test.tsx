@@ -15,6 +15,7 @@ import {
 import { createStoreHookMock } from '../../test-utils/storeHookMock';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
+import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
 import { registerArchitectScenarios } from './__tests__/architect.scenarios';
 import { registerCompactionScenarios } from './__tests__/compaction.scenarios';
@@ -128,22 +129,7 @@ export type MockChatState = {
       draftTextByStepId: Record<string, string>;
     }
   >;
-  pendingToolApprovalByConversationId: Record<
-    string,
-    {
-      conversationId: string;
-      assistantMessageId: string;
-      toolCallId: string;
-        toolId: string;
-        actionGroup: 'observe' | 'change' | 'escape';
-        riskLevel: 'strict' | 'balanced' | 'yolo';
-        isDestructive?: boolean;
-        summary: string;
-        detail?: string;
-        args?: Record<string, unknown>;
-        rememberKey: string;
-    }
-  >;
+  pendingToolApprovalByConversationId: Record<string, PendingToolApproval>;
   skillTurnFeedbackByMessageId: Record<string, unknown>;
   getPendingToolApproval: ReturnType<typeof mock>;
   approvePendingToolApprovalOnce: ReturnType<typeof mock>;
@@ -162,6 +148,8 @@ export type MockChatState = {
   isStreaming: boolean;
   sendState: 'idle' | 'preparing' | 'streaming' | 'error';
   lastError: string | null;
+  toolApprovalRecoveryError: string | null;
+  dismissToolApprovalRecoveryError: ReturnType<typeof mock>;
   stopStreaming: ReturnType<typeof mock>;
   sendMessage: ReturnType<typeof mock>;
   submitDuringActiveTurn: ReturnType<typeof mock>;
@@ -238,13 +226,18 @@ export type TaskState = {
     draft?: boolean;
     task_source?: 'architect' | 'standalone' | 'plan_finalization';
     standalone_kind?: 'legacy' | 'manual_feature' | null;
+    task_kind?: 'feature' | 'bugfix' | 'hotfix' | 'direct' | null;
     is_blocked?: boolean;
     blocked_by?: string[];
     status?: string;
-    execution_targets?: Array<{ projectId: string }>;
+    execution_targets?: Array<{
+      projectId: string;
+      executionMode?: 'git' | 'direct';
+    }>;
     project_ids?: string[];
     project_id?: string | null;
     plan_id?: string | null;
+    plan_title?: string | null;
     branch_name?: string;
     dependencies?: string[];
     estimated_changes?: Array<{ operation: string; path: string }>;
@@ -317,14 +310,19 @@ const useTaskStore = createStoreHookMock(() => taskState, (nextState) => {
   taskState = nextState;
 });
 const translationMock = createTranslationMock({
+  'errors.degraded.fallback.dynamic': '{{message}}',
   'chat.typeMessage': 'Type your message',
   'chat.stop': 'Stop',
   'chat.newConversation': 'New Conversation',
   'architect.selectPlanToStart': 'Select or create a plan to start architecting.',
   'architect.createFirstPlanToStart': 'Create your first plan to start architecting.',
   'architect.selectExistingPlanToStart': 'Select a plan to start architecting.',
+  'architect.configureProjectToCreatePlan': 'Make a project editable before creating a plan.',
   'architect.createPlanAction': 'Create a plan',
   'architect.selectPlanAction': 'Select a plan',
+  'architect.projectNavigator.manageProjects': 'Manage projects',
+  'architect.projectNavigator.loadError': 'Unable to load plans.',
+  'architect.planSelector.unavailableShort': 'Unavailable',
   'chat.toolTurnLimitNoticeTitle': 'Tool turn limit reached',
   'chat.toolTurnLimitNoticeDescription': 'Macro stopped the agent loop. Change it in Settings > General > Max agent turns.',
   'chat.toolTurnLimitFallbackTitle': 'Tool turn limit reached',
@@ -803,6 +801,8 @@ const resetState = () => {
     isStreaming: false,
     sendState: 'idle',
     lastError: null,
+    toolApprovalRecoveryError: null,
+    dismissToolApprovalRecoveryError: mock(() => undefined),
     stopStreaming: mock(() => undefined),
     sendMessage: mock(async () => ({ status: 'sent' })),
     submitDuringActiveTurn: mock(async () => 'steered'),

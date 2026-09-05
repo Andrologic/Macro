@@ -1442,12 +1442,15 @@ interface AppStore {
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
   strategyMutationPreview: StrategyMutationPreview | null;
-  setMode: (mode: AppMode) => void;
+  setMode: (mode: AppMode, options?: { ensureAutoPlan?: boolean }) => void;
   setAgentType: (agentType: AgentType) => void;
   setTheme: (themeId: string) => void;
   setCurrentPlan: (plan: Plan | null) => void;
   setProjectGroups: (groups: ProjectGroup[]) => void;
-  setSelectedGroup: (groupId: string | null) => void;
+  setSelectedGroup: (
+    groupId: string | null,
+    options?: { restoreProjectContext?: boolean; ensureAutoPlan?: boolean },
+  ) => void;
   setSelectedProject: (projectId: string | null) => void;
   setSelectedTask: (taskId: string | null) => void;
   setTaskSortOption: (option: TaskSortOption) => void;
@@ -1748,7 +1751,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   predictedBranches: [],
   strategyMutationPreview: null,
 
-  setMode: (mode) => {
+  setMode: (mode, options) => {
     const previousMode = get().mode;
     set({ mode });
     void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, mode);
@@ -1758,7 +1761,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedProjectId,
       mode,
     });
-    if (mode === "Architect" && previousMode !== "Architect") {
+    if (
+      mode === "Architect" &&
+      previousMode !== "Architect" &&
+      options?.ensureAutoPlan !== false
+    ) {
       void ensureAutoPlanForSelection({
         groupId: selectedGroupId,
         projectId: selectedProjectId,
@@ -1795,7 +1802,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       };
     }),
 
-  setSelectedGroup: (groupId) => {
+  setSelectedGroup: (groupId, options) => {
     const state = get();
     const previousGroupId = state.selectedGroupId;
     const previousProjectId = state.selectedProjectId;
@@ -1829,17 +1836,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await persistSessionContext({
         selectedGroupId: groupId,
         selectedProjectId: nextFocusProjectId,
-        mode: state.mode,
+        mode: get().mode,
       });
 
-      if (groupId && get().projectSwitchPolicy === "resume_per_project") {
+      if (
+        options?.restoreProjectContext !== false &&
+        groupId &&
+        get().projectSwitchPolicy === "resume_per_project"
+      ) {
         await restoreProjectContext(groupId, nextFocusProjectId);
       }
 
-      await ensureAutoPlanForSelection({
-        groupId,
-        projectId: nextFocusProjectId,
-      });
+      if (options?.ensureAutoPlan !== false) {
+        await ensureAutoPlanForSelection({
+          groupId,
+          projectId: nextFocusProjectId,
+        });
+      }
     })();
   },
 
