@@ -36,7 +36,7 @@ interface TestChatState {
 }
 
 interface TestTaskState {
-  isLoading?: boolean;
+  isLoading: boolean;
   tasks: CatalogedImplementTask[];
 }
 
@@ -153,9 +153,12 @@ const updateChatState = (patch: Partial<TestChatState>) => {
   chatListeners.forEach((listener) => listener(chatState, previousState));
 };
 
-const updateTaskState = (tasks: CatalogedImplementTask[]) => {
+const updateTaskState = (
+  tasks: CatalogedImplementTask[],
+  patch: Partial<TestTaskState> = {},
+) => {
   const previousState = taskState;
-  taskState = { tasks };
+  taskState = { ...taskState, ...patch, tasks };
   taskListeners.forEach((listener) => listener(taskState, previousState));
 };
 
@@ -230,7 +233,7 @@ beforeEach(() => {
       return 'conversation-fallback';
     }),
   };
-  taskState = { tasks: [makeTask('InProgress')] };
+  taskState = { isLoading: false, tasks: [makeTask('InProgress')] };
 });
 
 describe('workflow attention notification subscriptions', () => {
@@ -334,6 +337,49 @@ describe('workflow attention notification subscriptions', () => {
     chatState.messageLoadStatusByConversationId = { [conversation.id]: 'ready' };
     reconcileWorkflowAttentionNotifications();
     expect(useNotificationCenterStore.getState().items).toEqual([]);
+  });
+
+  it('removes an orphaned review only after the task catalog finishes loading', () => {
+    const item = {
+      id: 'workflow-attention:review:task-1',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: { kind: 'review' as const, taskId: 'task-1' },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = { isLoading: true, tasks: [] };
+
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+
+    taskState = { isLoading: false, tasks: [] };
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+  });
+
+  it('reconciles orphaned reviews when task loading completes without task changes', () => {
+    const item = {
+      id: 'workflow-attention:review:deleted-task',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: { kind: 'review' as const, taskId: 'deleted-task' },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = { isLoading: true, tasks: [] };
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    updateTaskState([], { isLoading: false });
+
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    unsubscribe();
   });
 
   it('emits one questionnaire notification and honors its explicit Architect group', async () => {
@@ -492,7 +538,7 @@ describe('workflow attention notification subscriptions', () => {
   it('emits one review notification and routes its action to the task', async () => {
     const conversation = makeConversation();
     chatState = { ...chatState, conversations: [conversation] };
-    taskState = { tasks: [makeTask('InProgress')] };
+    taskState = { isLoading: false, tasks: [makeTask('InProgress')] };
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
 
     updateTaskState([makeTask('InReview')]);
@@ -546,7 +592,7 @@ describe('workflow attention notification subscriptions', () => {
       conversations: [conversation],
       selectConversation: mock(async () => false),
     };
-    taskState = { tasks: [makeTask('InProgress')] };
+    taskState = { isLoading: false, tasks: [makeTask('InProgress')] };
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
     updateTaskState([makeTask('InReview')]);
 
@@ -648,7 +694,7 @@ describe('workflow attention notification subscriptions', () => {
   });
 
   it('skips review recalculation when task updates do not change attention', () => {
-    taskState = { tasks: [makeTask('InProgress')] };
+    taskState = { isLoading: false, tasks: [makeTask('InProgress')] };
     let taskRecalculations = 0;
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t, {
       onTaskRecalculation: () => {

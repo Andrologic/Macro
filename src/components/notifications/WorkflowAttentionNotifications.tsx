@@ -108,7 +108,8 @@ export const emitWorkflowAttentionNotification = (
 // Resolution removes the obsolete call to action. Loading an old request never emits it again.
 export const reconcileWorkflowAttentionNotifications = (): void => {
   const chat = useChatStore.getState();
-  const tasks = useTaskStore.getState().tasks;
+  const taskState = useTaskStore.getState();
+  const tasks = taskState.tasks;
   const center = useNotificationCenterStore.getState();
   const activeKeys = getActiveChatAttentionKeys(chat);
   const remove = (item: (typeof center.items)[number]) => {
@@ -120,7 +121,12 @@ export const reconcileWorkflowAttentionNotifications = (): void => {
     if (!navigation) continue;
     if (navigation.kind === 'review') {
       const task = resolveTaskReference(tasks, navigation.taskId);
-      if (task && task.status !== 'InReview') remove(item);
+      if (
+        (task && task.status !== 'InReview') ||
+        (!task && taskState.isLoading === false)
+      ) {
+        remove(item);
+      }
       continue;
     }
     if (chat.hydrationStatus !== 'ready') continue;
@@ -159,7 +165,10 @@ export const subscribeToWorkflowAttentionNotifications = (
     reconcileWorkflowAttentionNotifications();
   });
   const unsubscribeTasks = useTaskStore.subscribe((nextState, previousState) => {
-    if (!hasReviewAttentionStateChanged(previousState.tasks, nextState.tasks)) {
+    if (
+      previousState.isLoading === nextState.isLoading &&
+      !hasReviewAttentionStateChanged(previousState.tasks, nextState.tasks)
+    ) {
       return;
     }
     diagnostics?.onTaskRecalculation?.();
