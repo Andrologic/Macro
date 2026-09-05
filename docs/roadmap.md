@@ -33,8 +33,8 @@ Un écart devenu obsolète doit être supprimé.
 
 La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.4`.
 La configuration Tauri reprend la version de `package.json`. Cette version est
-en préparation locale et n'est pas publiée. Les installateurs multiplateformes
-restent à valider.
+figée fonctionnellement depuis le 5 septembre 2026 et n'est pas publiée.
+Les installateurs multiplateformes restent à valider.
 
 L'application dispose déjà d'une base solide :
 
@@ -67,11 +67,16 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 - articulation desktop / remote / mobile encore incomplète
 - expérience multi-plan et multi-projet encore à consolider de bout en bout
 
-### 3.1 Périmètre confirmé de la 0.1.4
+### 3.1 Périmètre figé de la 0.1.4
 
 La boucle d'attention desktop est intégrée dans la version locale `0.1.4`.
 Les notifications et la file « À traiter » ramènent aux demandes en attente.
-La préparation locale ne vaut pas publication.
+Le périmètre est figé sur le code intégré au commit `22c16fea`. La branche
+locale `release/0.1.4` conserve le jalon de stabilisation. Seuls les correctifs
+de régression, de sécurité ou nécessaires à la validation de la release peuvent
+encore entrer dans la 0.1.4. Ils doivent être revus et validés avant intégration.
+Les nouvelles fonctionnalités sont réservées à la 0.1.5, dont le périmètre reste
+à décider. La préparation locale ne vaut pas publication.
 
 Écarts résolus dans le code :
 
@@ -270,8 +275,10 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 ### 5.1 Boucle d'attention desktop intégrée en 0.1.4
 
 Les écarts de notification, de restauration des approbations et de filtrage
-sont résolus dans le code local. La validation d'ensemble et les installateurs
-restent à vérifier avant publication. Les évolutions suivantes portent sur
+sont résolus dans le code local. Les contrôles locaux et les parcours Tauri
+vérifiés passent. Les installateurs multiplateformes et une reprise complète
+avec un fournisseur IA réel restent à valider avant publication.
+Les évolutions suivantes portent sur
 l'ergonomie de review et la supervision distante.
 
 ### 5.2 Priorité 2 - Rendre le multi-projet réellement premium
@@ -419,7 +426,7 @@ Critère de sortie :
 État :
 - le démarrage manuel, les questionnaires et le système de notifications desktop sont livrés
 - les notifications, la navigation persistante, la reprise des approbations interrompues et la file « À traiter » sont intégrées en `0.1.4` locale
-- les parcours de validation d'ensemble et les installateurs restent à vérifier avant publication
+- les contrôles locaux et les parcours Tauri vérifiés passent ; les installateurs multiplateformes et une reprise complète avec un fournisseur IA réel restent à valider avant publication
 
 ### Phase 5 - Remote kernel et mobile supervision
 

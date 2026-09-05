@@ -6,7 +6,12 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+New features target 0.1.5; its scope is not yet defined.
+
 ## 0.1.4 (Unreleased)
+
+Feature scope frozen on 2026-09-05. Only reviewed regression, security, and
+release-validation fixes remain eligible. This version has not been published.
 
 ### Added
 
