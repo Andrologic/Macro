@@ -37,6 +37,7 @@ interface TestChatState {
 
 interface TestTaskState {
   isLoading: boolean;
+  lastError: string | null;
   tasks: CatalogedImplementTask[];
 }
 
@@ -233,7 +234,7 @@ beforeEach(() => {
       return 'conversation-fallback';
     }),
   };
-  taskState = { isLoading: false, tasks: [makeTask('InProgress')] };
+  taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
 });
 
 describe('workflow attention notification subscriptions', () => {
@@ -351,12 +352,12 @@ describe('workflow attention notification subscriptions', () => {
       workflowNavigation: { kind: 'review' as const, taskId: 'task-1' },
     };
     useNotificationCenterStore.setState({ items: [item] });
-    taskState = { isLoading: true, tasks: [] };
+    taskState = { isLoading: true, lastError: null, tasks: [] };
 
     reconcileWorkflowAttentionNotifications();
     expect(useNotificationCenterStore.getState().items).toHaveLength(1);
 
-    taskState = { isLoading: false, tasks: [] };
+    taskState = { isLoading: false, lastError: null, tasks: [] };
     reconcileWorkflowAttentionNotifications();
     expect(useNotificationCenterStore.getState().items).toEqual([]);
   });
@@ -373,10 +374,33 @@ describe('workflow attention notification subscriptions', () => {
       workflowNavigation: { kind: 'review' as const, taskId: 'deleted-task' },
     };
     useNotificationCenterStore.setState({ items: [item] });
-    taskState = { isLoading: true, tasks: [] };
+    taskState = { isLoading: true, lastError: null, tasks: [] };
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
 
     updateTaskState([], { isLoading: false });
+
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    unsubscribe();
+  });
+
+  it('keeps an orphaned review after a failed catalog load and removes it after recovery', () => {
+    const item = {
+      id: 'workflow-attention:review:temporarily-missing',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: { kind: 'review' as const, taskId: 'temporarily-missing' },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = { isLoading: false, lastError: 'Catalog unavailable', tasks: [] };
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+
+    updateTaskState([], { lastError: null });
 
     expect(useNotificationCenterStore.getState().items).toEqual([]);
     unsubscribe();
@@ -538,7 +562,7 @@ describe('workflow attention notification subscriptions', () => {
   it('emits one review notification and routes its action to the task', async () => {
     const conversation = makeConversation();
     chatState = { ...chatState, conversations: [conversation] };
-    taskState = { isLoading: false, tasks: [makeTask('InProgress')] };
+    taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
 
     updateTaskState([makeTask('InReview')]);
@@ -592,7 +616,7 @@ describe('workflow attention notification subscriptions', () => {
       conversations: [conversation],
       selectConversation: mock(async () => false),
     };
-    taskState = { isLoading: false, tasks: [makeTask('InProgress')] };
+    taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
     updateTaskState([makeTask('InReview')]);
 
@@ -694,7 +718,7 @@ describe('workflow attention notification subscriptions', () => {
   });
 
   it('skips review recalculation when task updates do not change attention', () => {
-    taskState = { isLoading: false, tasks: [makeTask('InProgress')] };
+    taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
     let taskRecalculations = 0;
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t, {
       onTaskRecalculation: () => {

@@ -123,7 +123,7 @@ export const reconcileWorkflowAttentionNotifications = (): void => {
       const task = resolveTaskReference(tasks, navigation.taskId);
       if (
         (task && task.status !== 'InReview') ||
-        (!task && taskState.isLoading === false)
+        (!task && taskState.isLoading === false && taskState.lastError === null)
       ) {
         remove(item);
       }
@@ -167,6 +167,7 @@ export const subscribeToWorkflowAttentionNotifications = (
   const unsubscribeTasks = useTaskStore.subscribe((nextState, previousState) => {
     if (
       previousState.isLoading === nextState.isLoading &&
+      previousState.lastError === nextState.lastError &&
       !hasReviewAttentionStateChanged(previousState.tasks, nextState.tasks)
     ) {
       return;
