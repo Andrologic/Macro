@@ -59,6 +59,7 @@ interface ComposerEditorProps {
   editable: boolean;
   readOnly?: boolean;
   placeholder: string;
+  accessibleName?: string;
   onTextChange: (text: string) => void;
   onSend: () => void;
   onPromptHistory?: (direction: 'up' | 'down') => void;
@@ -241,6 +242,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
     editable,
     readOnly = false,
     placeholder,
+    accessibleName,
     onTextChange,
     onSend,
     onPromptHistory,
@@ -468,6 +470,7 @@ const InnerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
           contentEditable={
             <ContentEditable
               data-shortcut-chat-input="true"
+              aria-label={accessibleName ?? placeholder}
               className={cn(
                 'flex-1 min-w-[100px] bg-transparent border-0 outline-none text-sm text-foreground',
                 'min-h-[32px] max-h-[120px] overflow-y-auto px-1 py-[6.5px] leading-[1.35]',

@@ -47,6 +47,12 @@ describe('useCitationsStore', () => {
     useCitationsStore.setState({ citations: [] });
   });
 
+  it('propagates inventory failures to strict export callers instead of reporting an empty inventory', async () => {
+    listConversationCitationsMock.mockImplementation(async () => { throw new Error('Inventory unavailable'); });
+    await expect(useCitationsStore.getState().hydrateConversationCitations('conv', { throwOnError: true })).rejects.toThrow('Inventory unavailable');
+    await expect(useCitationsStore.getState().hydrateConversationCitations('conv')).resolves.toBeUndefined();
+  });
+
   it('hydrates persisted conversation citations from Tauri IPC without loading full content', async () => {
     listConversationCitationsMock.mockImplementationOnce(async () => [
       {

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
+import { useCitationsStore } from '../../stores/useCitationsStore';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
@@ -28,6 +29,10 @@ import {
   toggleConversationIdInSet,
 } from './conversationArchiveState';
 import { useVirtualList } from '../../hooks/useVirtualList';
+import {
+  buildConversationMarkdownExport,
+  getConversationExportBaseName,
+} from '../../services/conversationExport';
 
 interface ConversationArchiveProps {
   className?: string;
@@ -123,6 +128,12 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     getConversationMessages,
     getMessageImages,
   } = useChatStore();
+  const hydrateConversationCitations = useCitationsStore(
+    (state) => state.hydrateConversationCitations,
+  );
+  const ensureConversationCitationContentsLoaded = useCitationsStore(
+    (state) => state.ensureConversationCitationContentsLoaded,
+  );
   const isHighlighted = isMultiSelectMode ? isChecked : isCurrentConversation;
 
   useEffect(() => {
@@ -154,9 +165,11 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     }
   };
 
-  const handleExport = async () => {
+  const handleExport = async (format: 'json' | 'markdown') => {
     try {
       await ensureMessagesLoaded(conversation.id);
+      await hydrateConversationCitations(conversation.id, { throwOnError: true });
+      const citations = await ensureConversationCitationContentsLoaded(conversation.id);
       const conversationMessages = getConversationMessages(conversation.id).map(
         (message) => ({
           ...message,
@@ -166,13 +179,19 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
       const exportData = {
         conversation,
         messages: conversationMessages,
+        citations,
         exportedAt: new Date().toISOString(),
       };
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const content = format === 'json'
+        ? JSON.stringify(exportData, null, 2)
+        : buildConversationMarkdownExport(exportData);
+      const extension = format === 'json' ? 'json' : 'md';
+      const mimeType = format === 'json' ? 'application/json' : 'text/markdown';
+      const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `${conversation.title.replace(/\s+/g, '_')}_export.json`;
+      anchor.download = `${getConversationExportBaseName(conversation.title)}_export.${extension}`;
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
@@ -300,12 +319,21 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => void handleExport()}
+              onClick={() => void handleExport('json')}
               disabled={isDeleting}
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="download" size={12} />
-              {t('common.export', 'Export')}
+              {t('chat.exportJson', 'Export JSON')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExport('markdown')}
+              disabled={isDeleting}
+              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+            >
+              <Icon name="file-text" size={12} />
+              {t('chat.exportMarkdown', 'Export Markdown')}
             </button>
             <button
               type="button"

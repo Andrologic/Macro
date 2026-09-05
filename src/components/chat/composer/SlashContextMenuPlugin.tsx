@@ -86,6 +86,7 @@ interface SlashContextUsageRecord {
 const SLASH_CONTEXT_USAGE_KEY = 'macro.slashContextUsage.v1';
 const MAX_SLASH_ITEMS = 8;
 const SLASH_MENU_WIDTH = 448;
+const SLASH_MENU_ID = 'macro-composer-slash-menu';
 const EMPTY_STANDALONE_PROJECTS: Project[] = [];
 
 const loadSlashContextUsage = (): Record<string, SlashContextUsageRecord> => {
@@ -525,6 +526,29 @@ export const SlashContextMenuPlugin: React.FC = () => {
     setActiveIndex((index) => Math.min(index, Math.max(menuItems.length - 1, 0)));
   }, [menuItems.length]);
 
+  useEffect(() => {
+    const editorRoot = editor.getRootElement();
+    if (!editorRoot || !trigger) return undefined;
+    const activeItem = menuItems[activeIndex];
+    editorRoot.setAttribute('aria-autocomplete', 'list');
+    editorRoot.setAttribute('aria-controls', SLASH_MENU_ID);
+    editorRoot.setAttribute('aria-expanded', 'true');
+    editorRoot.setAttribute('aria-haspopup', 'listbox');
+    if (activeItem) {
+      editorRoot.setAttribute('aria-activedescendant', `${SLASH_MENU_ID}-option-${activeIndex}`);
+    } else {
+      editorRoot.removeAttribute('aria-activedescendant');
+    }
+
+    return () => {
+      editorRoot.removeAttribute('aria-autocomplete');
+      editorRoot.removeAttribute('aria-controls');
+      editorRoot.removeAttribute('aria-expanded');
+      editorRoot.removeAttribute('aria-haspopup');
+      editorRoot.removeAttribute('aria-activedescendant');
+    };
+  }, [activeIndex, editor, menuItems, trigger]);
+
   const closeMenu = useCallback(() => {
     setTrigger(null);
     setActiveIndex(0);
@@ -674,6 +698,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
   const menu = (
     <div
       ref={menuRef}
+      id={SLASH_MENU_ID}
+      role="listbox"
+      aria-label={t('composer.slashMenuLabel', 'Insert context or command')}
       data-slash-context-menu="true"
       className="fixed z-50 w-[28rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border/80 bg-card/95 p-1 text-sm shadow-xl backdrop-blur"
       style={{
@@ -723,6 +750,10 @@ export const SlashContextMenuPlugin: React.FC = () => {
               return (
                 <div
                   key={item.key}
+                  id={`${SLASH_MENU_ID}-option-${index}`}
+                  role="option"
+                  aria-selected={active}
+                  aria-disabled="true"
                   data-slash-context-option={optionKey}
                   title={tooltip}
                   className={cn(
@@ -766,7 +797,9 @@ export const SlashContextMenuPlugin: React.FC = () => {
             return (
               <button
                 key={item.key}
+                id={`${SLASH_MENU_ID}-option-${index}`}
                 type="button"
+                role="option"
                 data-slash-context-option={optionKey}
                 aria-selected={active}
                 title={tooltip}

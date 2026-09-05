@@ -3,10 +3,11 @@ import React from 'react';
 import { act } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import type { ContextReference } from '../../../types';
 
 interface TestComposerEditorHandle {
   clear: () => void;
-  setText: (text: string) => void;
+  setText: (text: string, contextRefs?: readonly ContextReference[]) => void;
   insertTextAtSelection: (text: string, spacing?: 'preserve' | 'contextual') => string;
   getTextContent: () => string;
   focus: () => void;
@@ -16,11 +17,13 @@ interface MockComposerEditorProps {
   editable: boolean;
   readOnly?: boolean;
   placeholder: string;
+  accessibleName?: string;
   onTextChange: (text: string) => void;
   onSend: () => void;
 }
 
 let loadedEditorText = '';
+let loadedEditorContextRefs: readonly ContextReference[] = [];
 
 const MockComposerEditor = React.forwardRef<TestComposerEditorHandle, MockComposerEditorProps>(
   (props, ref) => {
@@ -29,8 +32,9 @@ const MockComposerEditor = React.forwardRef<TestComposerEditorHandle, MockCompos
         loadedEditorText = '';
         props.onTextChange('');
       },
-      setText: (text: string) => {
+      setText: (text: string, contextRefs = []) => {
         loadedEditorText = text;
+        loadedEditorContextRefs = contextRefs;
         props.onTextChange(text);
       },
       insertTextAtSelection: (text: string) => {
@@ -48,6 +52,7 @@ const MockComposerEditor = React.forwardRef<TestComposerEditorHandle, MockCompos
         data-testid="loaded-composer-editor"
         aria-disabled={props.editable ? 'false' : 'true'}
         aria-readonly={props.readOnly ? 'true' : 'false'}
+        aria-label={props.accessibleName ?? props.placeholder}
       >
         {loadedEditorText || props.placeholder}
       </div>
@@ -86,6 +91,7 @@ describe('LazyComposerEditor', () => {
 
     mock.restore();
     loadedEditorText = '';
+    loadedEditorContextRefs = [];
     mock.module('./ComposerEditor', () => ({
       __esModule: true,
       ComposerEditor: MockComposerEditor,
@@ -324,6 +330,43 @@ describe('LazyComposerEditor', () => {
     });
 
     expect(onTextChange.mock.calls.map((call) => call[0])).toEqual(['loaded initial']);
+  });
+
+  it('keeps context references while the rich editor loads', async () => {
+    const editorRef = React.createRef<TestComposerEditorHandle>();
+    const contextRefs = [{
+      id: 'src/App.tsx',
+      kind: 'file',
+      title: 'App.tsx',
+      data: {
+        id: 'src/App.tsx',
+        path: 'src/App.tsx',
+        relativePath: 'src/App.tsx',
+      },
+    }] satisfies ContextReference[];
+
+    await act(async () => {
+      flushSync(() => {
+        root.render(
+          <LazyComposerEditor
+            ref={editorRef}
+            editable
+            accessibleName="Message composer"
+            placeholder="Message"
+            onTextChange={() => undefined}
+            onSend={() => undefined}
+          />
+        );
+      });
+      editorRef.current?.setText('[file: App.tsx]', contextRefs);
+    });
+    await waitForLoadedEditor();
+
+    expect(loadedEditorText).toBe('[file: App.tsx]');
+    expect(loadedEditorContextRefs).toEqual(contextRefs);
+    expect(
+      container.querySelector('[data-testid="loaded-composer-editor"]')?.getAttribute('aria-label'),
+    ).toBe('Message composer');
   });
 
 });

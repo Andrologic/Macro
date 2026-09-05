@@ -11,12 +11,15 @@ import { cn } from '../../../utils/cn';
 import { isPrimaryComposerSubmitKey } from './composerSubmitKey';
 import type { ComposerEditorHandle } from './ComposerEditor';
 import type { MentionSurface } from './MentionNode';
+import type { ContextReference } from '../../../types';
+import { useChatStore } from '../../../stores/useChatStore';
 import { prepareContextualTextInsertion } from './composerTextInsertion';
 
 interface LazyComposerEditorProps {
   editable: boolean;
   readOnly?: boolean;
   placeholder: string;
+  accessibleName?: string;
   onTextChange: (text: string) => void;
   onSend: () => void;
   onPromptHistory?: (direction: 'up' | 'down') => void;
@@ -32,13 +35,14 @@ type ComposerEditorComponent = ForwardRefExoticComponent<
 
 const syncComposerText = (
   editorRef: React.RefObject<ComposerEditorHandle | null>,
-  text: string
+  text: string,
+  contextRefs: readonly ContextReference[],
 ) => {
   if (!editorRef.current) {
     return false;
   }
 
-  editorRef.current.setText(text);
+  editorRef.current.setText(text, contextRefs);
   return true;
 };
 
@@ -47,6 +51,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
     editable,
     readOnly = false,
     placeholder,
+    accessibleName,
     onTextChange,
     onSend,
     onPromptHistory,
@@ -60,6 +65,8 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
     const loadedEditorRef = useRef<ComposerEditorHandle>(null);
     const fallbackTextareaRef = useRef<HTMLTextAreaElement>(null);
     const fallbackTextRef = useRef(initialText);
+    const fallbackContextRefsRef = useRef<readonly ContextReference[]>(useChatStore.getState().composerContextRefs);
+    const shouldSyncOnLoadRef = useRef(initialText.length > 0);
     const lastInitialTextRef = useRef(initialText);
 
     useEffect(() => {
@@ -87,12 +94,17 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
     }, []);
 
     useEffect(() => {
-      if (!LoadedEditor || fallbackTextRef.current.length === 0) {
+      if (!LoadedEditor || !shouldSyncOnLoadRef.current) {
         return;
       }
 
       const syncOnNextFrame = () => {
-        syncComposerText(loadedEditorRef, fallbackTextRef.current);
+        shouldSyncOnLoadRef.current = false;
+        syncComposerText(
+          loadedEditorRef,
+          fallbackTextRef.current,
+          fallbackContextRefsRef.current,
+        );
       };
 
       const frameId = window.requestAnimationFrame(syncOnNextFrame);
@@ -108,9 +120,10 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
 
       lastInitialTextRef.current = initialText;
       fallbackTextRef.current = initialText;
+      shouldSyncOnLoadRef.current = true;
 
       if (loadedEditorRef.current) {
-        loadedEditorRef.current.setText(initialText);
+        loadedEditorRef.current.setText(initialText, fallbackContextRefsRef.current);
         return;
       }
 
@@ -124,6 +137,8 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
     useImperativeHandle(ref, () => ({
       clear: () => {
         fallbackTextRef.current = '';
+        fallbackContextRefsRef.current = [];
+        shouldSyncOnLoadRef.current = false;
 
         if (loadedEditorRef.current) {
           loadedEditorRef.current.clear();
@@ -135,11 +150,13 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
         }
         onTextChange('');
       },
-      setText: (text: string) => {
+      setText: (text: string, contextRefs: readonly ContextReference[] = useChatStore.getState().composerContextRefs) => {
         fallbackTextRef.current = text;
+        fallbackContextRefsRef.current = contextRefs;
+        shouldSyncOnLoadRef.current = true;
 
         if (loadedEditorRef.current) {
-          loadedEditorRef.current.setText(text);
+          loadedEditorRef.current.setText(text, contextRefs);
           return;
         }
 
@@ -164,6 +181,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
             })
           : text;
         textarea.setRangeText(insertion, start, end, 'end');
+        shouldSyncOnLoadRef.current = true;
         fallbackTextRef.current = textarea.value;
         onTextChange(textarea.value);
         textarea.focus();
@@ -193,6 +211,7 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           editable={editable}
           readOnly={readOnly}
           placeholder={placeholder}
+          accessibleName={accessibleName}
           onTextChange={onTextChange}
           onSend={onSend}
           onPromptHistory={onPromptHistory}
@@ -212,9 +231,11 @@ export const LazyComposerEditor = forwardRef<ComposerEditorHandle, LazyComposerE
           disabled={!editable}
           readOnly={readOnly}
           aria-readonly={readOnly || undefined}
+          aria-label={accessibleName ?? placeholder}
           placeholder={placeholder}
           onChange={(event) => {
             fallbackTextRef.current = event.target.value;
+            shouldSyncOnLoadRef.current = true;
             onTextChange(event.target.value);
           }}
           onKeyDown={(event) => {
