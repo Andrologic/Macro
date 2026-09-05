@@ -2126,6 +2126,8 @@ describe('useFileChangesStore', () => {
   });
 
   it('preserves an unsaved draft when its file disappears during refresh and disables writes', async () => {
+    const otherChangeId = `${repositoryIdA}::src/other.ts`;
+    currentFiles[worktreeAPath]['src/other.ts'] = 'export const other = true;\n';
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
     store.openDiffModal(repositoryIdA, changeIdA);
@@ -2134,10 +2136,23 @@ describe('useFileChangesStore', () => {
     await store.loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
     expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe('recover this unsaved draft');
     expect(useFileChangesStore.getState().isDiffModalOpen).toBe(true);
+    expect(useFileChangesStore.getState().diffModalSession?.detachedWarning).toBe(
+      'This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable.'
+    );
+    expect(store.getRepository(repositoryIdA)?.lastError).toBeNull();
     expect(store.getChange(repositoryIdA, changeIdA)?.canEdit).toBe(false);
     expect(store.getChange(repositoryIdA, changeIdA)?.hasPendingVisibleChange).toBe(false);
+    expect(store.getChange(repositoryIdA, otherChangeId)?.hasPendingVisibleChange).toBe(true);
     await store.saveRightDraft();
     expect(fsWriteFileMock).not.toHaveBeenCalled();
+
+    store.closeDiffModal();
+    await store.loadCurrentChanges({ silent: true });
+
+    const refreshedState = useFileChangesStore.getState();
+    expect(refreshedState.diffModalSession).toBeNull();
+    expect(refreshedState.getRepository(repositoryIdA)?.lastError).toBeNull();
+    expect(refreshedState.getChange(repositoryIdA, otherChangeId)?.hasPendingVisibleChange).toBe(true);
   });
 
   it('closes a diff modal when its file disappears during a silent refresh', async () => {

@@ -515,6 +515,12 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
           <Button size="sm" variant="secondary" onClick={() => void refreshExpiredReview()}>{t('implement.refreshReview', 'Refresh review')}</Button>
         </div>}
 
+          {session.detachedWarning && !staleDirectRepositoryId && (
+            <div role="alert" className="mx-4 mb-2 shrink-0 rounded-md border border-amber-500/30 bg-background p-3 text-xs">
+              {session.detachedWarning}
+            </div>
+          )}
+
           <div className="relative min-h-0 flex-1 bg-muted/5">
             {repository.lastError && !staleDirectRepositoryId && (
               <div className="absolute inset-x-4 top-4 z-20 rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive">

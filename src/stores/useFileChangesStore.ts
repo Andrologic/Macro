@@ -191,6 +191,7 @@ export interface FileDiffModalSession {
   isDirty: boolean;
   isSaving: boolean;
   isHydratingFullContext: boolean;
+  detachedWarning?: string | null;
   directSnapshotId?: string;
   restoreRevision?: string;
 }
@@ -1362,6 +1363,7 @@ const buildDiffModalSession = (
   isDirty: false,
   isSaving: false,
   isHydratingFullContext: false,
+  detachedWarning: null,
   ...overrides,
 });
 
@@ -1421,6 +1423,14 @@ const resolveLatestDiffModalSessionAfterRefresh = ({
     };
   }
 
+  const detachedWarning = session.isDirty && !refreshedChange.canEdit &&
+    !refreshedChange.hasPendingVisibleChange && !refreshedChange.hasValidatedStage
+    ? tChanges(
+      'implement.detachedReviewDraft',
+      'This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable.'
+    )
+    : null;
+
   return {
     selectedDiffTarget: target,
     diffModalSession: {
@@ -1432,6 +1442,7 @@ const resolveLatestDiffModalSessionAfterRefresh = ({
       lastLoadedModifiedContent: refreshedChange.modifiedContent,
       isSaving: false,
       isHydratingFullContext: false,
+      detachedWarning,
     },
     isDiffModalOpen: true,
   };
@@ -1778,8 +1789,7 @@ export const createFileChangesStore = (
     if (refreshed.currentTaskId !== state.currentTaskId || refreshed.lastError || refreshed.reviewSuspension) return;
     set((current) => ({ staleDirectRepositoryId: null,
       repositories: updateRepositoryState(current.repositories, repositoryId, (repository) => ({ ...repository,
-        lastError: repository.changes.some((change) => !change.canEdit && change.id === current.diffModalSession?.changeId && current.diffModalSession?.isDirty)
-          ? repository.lastError : null })),
+        lastError: null })),
     }));
     const target = refreshed.selectedDiffTarget;
     if (target) {
@@ -2013,8 +2023,6 @@ export const createFileChangesStore = (
         if (previousChange && repository) {
           repository.changes.push({ ...previousChange, canEdit: false, requiresHydration: false,
             hasPendingVisibleChange: false, hasValidatedStage: false });
-          repository.lastError = tChanges('implement.detachedReviewDraft',
-            'This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable.');
         }
       }
       const derivedReviewState = deriveReviewState(repositories);
