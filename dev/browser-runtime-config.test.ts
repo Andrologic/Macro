@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { validateQaBrowserRuntimeConfig } from './browser-runtime-config.mjs';
 
 test('requires an isolated identifier and the browser RPC capability', () => {
@@ -13,4 +14,9 @@ test('requires an isolated identifier and the browser RPC capability', () => {
     identifier: config.identifier,
     app: { security: { capabilities: [] } },
   })).toThrow('debug RPC');
+});
+
+test('the default browser runtime config is isolated from the production profile', () => {
+  const config = JSON.parse(readFileSync('src-tauri/tauri.browser-debug.conf.json', 'utf8'));
+  expect(validateQaBrowserRuntimeConfig(config)).toBe(config);
 });

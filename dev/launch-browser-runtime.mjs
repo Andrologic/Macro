@@ -7,10 +7,8 @@ const token = randomBytes(32).toString('hex');
 const customConfig = process.env.MACRO_TAURI_BROWSER_CONFIG;
 const configPath = customConfig
   ? resolve(customConfig)
-  : 'src-tauri/tauri.browser-debug.conf.json';
-if (customConfig) {
-  validateQaBrowserRuntimeConfig(JSON.parse(readFileSync(configPath, 'utf8')));
-}
+  : resolve('src-tauri/tauri.browser-debug.conf.json');
+validateQaBrowserRuntimeConfig(JSON.parse(readFileSync(configPath, 'utf8')));
 const child = Bun.spawn(
   [
     'bun',

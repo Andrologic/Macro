@@ -1,4 +1,5 @@
 {
+  "identifier": "com.macro.desktop.qa.browser",
   "build": {
     "beforeDevCommand": "bun run build:ai-runtime && bun run dev:browser-runtime"
   },

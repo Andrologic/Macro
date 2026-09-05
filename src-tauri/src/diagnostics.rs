@@ -294,19 +294,22 @@ async fn database_diagnostic(pool: &DbPool, app: &AppHandle) -> DatabaseDiagnost
     let recovery = crate::local_backup::local_backup_status(app.clone())
         .map(|status| recovery_status(&status.message).to_string())
         .unwrap_or_else(|_| "unavailable".to_string());
-    let DbInitializationState::Ready(database) = pool.current() else {
-        let status = match pool.current() {
-            DbInitializationState::Initializing => "initializing",
-            DbInitializationState::Failed(_) => "failed",
-            DbInitializationState::Ready(_) => unreachable!(),
-        };
-        return DatabaseDiagnostic {
-            status: status.into(),
-            integrity: "notChecked".into(),
-            migration_count: None,
-            latest_migration: None,
-            recovery,
-        };
+    let database = match pool.current() {
+        DbInitializationState::Ready(database) => database,
+        state => {
+            let status = match state {
+                DbInitializationState::Initializing => "initializing",
+                DbInitializationState::Failed(_) => "failed",
+                DbInitializationState::Ready(_) => unreachable!(),
+            };
+            return DatabaseDiagnostic {
+                status: status.into(),
+                integrity: "notChecked".into(),
+                migration_count: None,
+                latest_migration: None,
+                recovery,
+            };
+        }
     };
     let integrity = sqlx::query_scalar::<_, String>("PRAGMA quick_check(1)")
         .fetch_one(&database)
@@ -472,7 +475,7 @@ fn parse_safe_log_event(line: &str) -> Option<SafeLogEvent> {
     let mut fields = line.split_whitespace();
     let timestamp = fields.next()?;
     let level = fields.next()?;
-    let target = fields.next()?.trim_end_matches(':');
+    let raw_target = fields.next()?.trim_end_matches(':');
     if timestamp.len() > 40
         || !timestamp
             .chars()
@@ -483,17 +486,23 @@ fn parse_safe_log_event(line: &str) -> Option<SafeLogEvent> {
     if !matches!(level, "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR") {
         return None;
     }
-    if target.len() > 96
-        || !target
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "_:.-".contains(character))
-    {
-        return None;
-    }
+    // Log messages may contain line breaks and imitate the text formatter's
+    // prefix. Never copy an arbitrary third field: reduce known targets to a
+    // fixed component label so message content cannot enter the report.
+    let target = match raw_target.split("::").next()? {
+        "macro" => "macro",
+        "macro_lib" => "macro_lib",
+        "tauri" => "tauri",
+        "tauri_remote_ui" => "tauri_remote_ui",
+        "sqlx" => "sqlx",
+        "tracing" => "tracing",
+        "wry" => "wry",
+        _ => return None,
+    };
     Some(SafeLogEvent {
         timestamp: timestamp.into(),
         level: level.into(),
-        target: target.into(),
+        target: target.to_string(),
     })
 }
 
@@ -569,12 +578,24 @@ mod tests {
             "2026-09-06T10:11:12.000Z INFO macro_lib::db: token=secret /Users/private source code";
         let event = parse_safe_log_event(line).unwrap();
         let serialized = serde_json::to_string(&event).unwrap();
-        assert_eq!(event.target, "macro_lib::db");
+        assert_eq!(event.target, "macro_lib");
         assert!(!serialized.contains("secret"));
         assert!(!serialized.contains("/Users"));
         assert!(!serialized.contains("source code"));
         assert_eq!(safe_token("darwin-aarch64"), Some("darwin-aarch64".into()));
         assert_eq!(safe_token("/Users/private/token"), None);
+
+        let spoofed_continuation =
+            "2026-09-06T10:11:12.000Z INFO macro_lib::sk-proj-secret private message";
+        let spoofed = parse_safe_log_event(spoofed_continuation).unwrap();
+        assert_eq!(spoofed.target, "macro_lib");
+        assert!(!serde_json::to_string(&spoofed)
+            .unwrap()
+            .contains("sk-proj-secret"));
+        assert!(parse_safe_log_event(
+            "2026-09-06T10:11:12.000Z INFO sk-proj-secret private message"
+        )
+        .is_none());
     }
 
     #[test]
