@@ -117,7 +117,7 @@ export function validateWorkflowDocument(document, filePath) {
     ) {
       fail('develop synchronization deduplication must verify an exact successful main CI run.');
     }
-    for (const jobName of ['linux', 'windows']) {
+    for (const jobName of ['linux', 'windows', 'macos']) {
       if (!String(document.jobs[jobName]?.if ?? '').includes("reusable_validation != 'true'")) {
         fail(`job "${jobName}" must run unless an exact main CI result is reusable.`);
       }

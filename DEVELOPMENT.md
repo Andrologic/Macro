@@ -46,6 +46,8 @@ The repo uses:
 | `bun run version:check` | Verify synchronized version manifests. |
 | `bun run ci` | Run the full local CI pipeline. |
 | `bun run release:preflight` | Validate `main`, the release tag, full CI, and local native packaging. |
+| `bun run release:toolchain:diagnose` | Report the resolved Rust tools, installed targets, and native packaging prerequisites. |
+| `bun run test:native:recovery-smoke` | Run the bounded updater, migration, and restore-recovery native checks used on Windows and macOS. |
 
 ## Environment Variables
 
@@ -152,6 +154,19 @@ Local validation and release publication are separate steps. Passing local
 checks does not validate installers for every supported platform or publish a
 release. Windows and Linux release packages are built in GitHub Actions;
 local macOS universal builds remain available for smoke testing.
+
+The release preflight starts with `release:toolchain:diagnose`. It checks the
+`rustc` and Cargo binaries actually resolved from `PATH`, compares `rustc` with
+`rust-toolchain.toml`, lists installed targets, and probes platform packaging
+prerequisites. A newer system compiler does not satisfy this check when it masks
+the pinned compiler. Fix `PATH` or the rustup override before continuing; the
+diagnostic does not skip or weaken any later release gate.
+
+Ordinary CI adds a bounded native recovery smoke on Windows and macOS when native
+or release configuration changes. It runs one regression each for durable updater
+replacement, database migration, and interrupted profile restoration. Linux still
+runs the complete native validation profile. These smoke jobs compile and test
+native code, but they do not build or publish installers.
 
 ## Validation
 

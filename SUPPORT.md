@@ -12,15 +12,20 @@ The maintainers prioritize issues related to:
 - core Architect, Implement, and Chat workflows;
 - local Git, worktree, review, and commit flows;
 - local provider secret storage;
-- signed and notarized universal macOS release artifacts;
-- signed Windows x64 NSIS installations;
+- universal macOS artifacts for Apple Silicon and Intel Macs, signed with an Apple Developer ID and notarized;
+- Windows x64 and Windows ARM64 NSIS installations. These installers are intentionally not Authenticode-signed in the 0.1 release line;
 - Linux x64 AppImage, deb, and rpm installations.
+
+Updater signatures are separate from operating-system code signing. Macro verifies
+Tauri updater archives with the minisign-compatible updater key on macOS, Windows,
+and Linux. This verification does not make a Windows installer Authenticode-signed.
 
 ## Best-Effort Areas
 
 The following areas are useful to report but may not receive immediate fixes during 0.1:
 
-- weekly prerelease builds;
+- preview builds. A scheduled workflow produces nightly builds from `develop` after
+  validation, while release candidates use a manually supplied `x.y.z-rc.n` version;
 - remote transport and browser-only operation;
 - explicit development-only headless kernel workflows;
 - custom provider edge cases;
