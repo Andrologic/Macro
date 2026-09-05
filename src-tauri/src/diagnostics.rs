@@ -275,12 +275,7 @@ fn safe_effective_config(effective: &BTreeMap<String, Value>) -> BTreeMap<String
             let value = effective.get(*document)?.pointer(pointer)?;
             let safe = match value {
                 Value::Bool(_) | Value::Number(_) => value.clone(),
-                Value::String(text)
-                    if text.len() <= 64
-                        && !text
-                            .chars()
-                            .any(|character| matches!(character, '/' | '\\' | ':')) =>
-                {
+                Value::String(text) if is_allowlisted_config_string(document, pointer, text) => {
                     value.clone()
                 }
                 _ => return None,
@@ -288,6 +283,20 @@ fn safe_effective_config(effective: &BTreeMap<String, Value>) -> BTreeMap<String
             Some((format!("{document}{pointer}"), safe))
         })
         .collect()
+}
+
+fn is_allowlisted_config_string(document: &str, pointer: &str, value: &str) -> bool {
+    let allowed: &[&str] = match (document, pointer) {
+        ("settings", "/language") => &["en", "fr", "es", "de", "ja", "ko"],
+        ("settings", "/appearance/zoomMode") => &["auto", "override"],
+        ("settings", "/code/overflowMode") => &["wrap", "horizontal_scroll"],
+        ("agents", "/reviewPresentation") => &["focused", "full"],
+        ("tools", "/riskLevel") => &["strict", "balanced", "yolo"],
+        ("tools", "/projectSwitchPolicy") => &["resume_per_project", "reset_on_switch"],
+        ("git", "/completionMergePolicy") => &["merge_commit", "fast_forward"],
+        _ => return false,
+    };
+    allowed.contains(&value)
 }
 
 async fn database_diagnostic(pool: &DbPool, app: &AppHandle) -> DatabaseDiagnostic {
@@ -570,6 +579,70 @@ mod tests {
         assert!(!serialized.contains("top-secret"));
         assert!(!serialized.contains("private prompt"));
         assert!(!serialized.contains("/Users/private"));
+    }
+
+    #[test]
+    fn safe_configuration_omits_unknown_string_values() {
+        let effective = BTreeMap::from([
+            (
+                "settings".into(),
+                serde_json::json!({
+                    "language":"client@example.com",
+                    "appearance":{"zoomMode":"sk-proj-secret"},
+                    "code":{"overflowMode":"private note"}
+                }),
+            ),
+            (
+                "agents".into(),
+                serde_json::json!({"reviewPresentation":"client@example.com"}),
+            ),
+            (
+                "tools".into(),
+                serde_json::json!({
+                    "riskLevel":"sk-proj-secret",
+                    "projectSwitchPolicy":"private note"
+                }),
+            ),
+            (
+                "git".into(),
+                serde_json::json!({"completionMergePolicy":"client@example.com"}),
+            ),
+        ]);
+        let safe = safe_effective_config(&effective);
+
+        assert!(safe.is_empty());
+    }
+
+    #[test]
+    fn safe_configuration_keeps_recognized_string_values() {
+        let effective = BTreeMap::from([
+            (
+                "settings".into(),
+                serde_json::json!({
+                    "language":"ja",
+                    "appearance":{"zoomMode":"override"},
+                    "code":{"overflowMode":"horizontal_scroll"}
+                }),
+            ),
+            (
+                "agents".into(),
+                serde_json::json!({"reviewPresentation":"full"}),
+            ),
+            (
+                "tools".into(),
+                serde_json::json!({
+                    "riskLevel":"strict",
+                    "projectSwitchPolicy":"reset_on_switch"
+                }),
+            ),
+            (
+                "git".into(),
+                serde_json::json!({"completionMergePolicy":"fast_forward"}),
+            ),
+        ]);
+        let safe = safe_effective_config(&effective);
+
+        assert_eq!(safe.len(), 7);
     }
 
     #[test]
