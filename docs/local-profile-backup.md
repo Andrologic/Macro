@@ -33,19 +33,29 @@ migration versions, tables and column shapes, configuration validity, paths,
 checksums and size. Archives are limited to 256 MiB and 10,000 file entries;
 private checkpoint traversal also has a depth and entry budget.
 
-Before replacing a valid current profile, Macro saves a private rollback archive
-in `<app-data>/local-backup/rollback.json`. Its exact path is shown after a
-successful restore. That file can be selected in the same restoration UI to
-return to the prior profile. It is overwritten only by a later restoration.
-It may retain private configuration values and must remain local.
+Before replacing the current profile, Macro preserves its managed files as raw
+bytes, including SQLite WAL/SHM and invalid configuration or state files, in a
+new private `<app-data>/local-backup/preserved-<id>.json` file. Each preservation
+has its own name and is retained. Its exact path appears after restoration.
+Checksums are verified again after writing this file. If any required file
+cannot be read or the preservation cannot be saved, no profile file is replaced.
+A damaged but readable database or runtime configuration does not prevent a
+prepared restoration.
 
-An interrupted native replacement leaves a journal. On the next startup, Macro
-restores the prior profile before opening SQLite or configuration. If browser
-storage cannot accept restored images or drafts, Macro restores the prior
-browser values and blocks Chat hydration. Free browser storage and restart to
-retry; the native rollback archive is retained. An unreadable current database
-or invalid current configuration prevents creation of the rollback archive and
-therefore blocks restoration instead of discarding the original files.
+An interrupted native replacement leaves a journal pointing to that private
+preservation. On the next startup, Macro restores the prior raw files before
+opening SQLite or parsing configuration. If the previous profile was damaged,
+its damaged bytes remain recoverable. A healthy private preservation can also
+be selected in the restoration UI; Macro first normalizes its SQLite WAL in a
+temporary directory and performs the ordinary compatibility checks. A damaged
+preservation is retained for recovery of its original file bytes, not accepted
+as a valid replacement profile.
+
+If browser storage cannot accept restored images or drafts, Macro restores the
+prior browser values and blocks Chat hydration. Free browser storage and restart
+to retry. After a successful application and acknowledgement, the webview reloads
+once so all stores start from the restored values. Private preservation files
+may contain sensitive configuration values and must remain local.
 
 Checkpoint corruption never becomes an empty history on the desktop. It is
 reported and prevents replacing the affected record. Message image recovery

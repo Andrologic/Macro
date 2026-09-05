@@ -379,11 +379,7 @@ pub fn run() {
     // Initialize logging
     init_logging();
 
-    // Load configuration
-    let config = load_config().expect("Failed to load configuration");
-
     tracing::info!("Starting Macro application");
-    tracing::info!("Configured workspace path: {:?}", config.workspace_path);
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -458,7 +454,6 @@ pub fn run() {
                 }
             }
 
-            let mut config = config;
             let app_handle = app.handle().clone();
             let pool_state = app.state::<DbPool>().inner().clone();
             let app_data_dir = app_handle.path().app_data_dir()?;
@@ -474,6 +469,10 @@ pub fn run() {
                 &config_root,
             ))
             .map_err(std::io::Error::other)?;
+            // Prepared recovery must run before parsing potentially damaged runtime.json.
+            let mut config =
+                load_config().map_err(|error| std::io::Error::other(error.to_string()))?;
+            tracing::info!("Configured workspace path: {:?}", config.workspace_path);
             let state_manager =
                 state_manager::StateManager::initialize(&app_data_dir).map_err(|error| {
                     std::io::Error::other(format!(

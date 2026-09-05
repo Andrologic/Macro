@@ -118,6 +118,14 @@ fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+fn remove_durable(path: &Path) -> Result<()> {
+    fs::remove_file(path).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    fs::File::open(path.parent().ok_or("Missing parent")?)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
 fn destination(name: &str, data: &Path, config: &Path) -> Result<PathBuf> {
     if name.contains('\\') || name.contains(':') || name.len() > 4096 {
         return Err("Unsafe backup path".into());
@@ -422,6 +430,9 @@ async fn validate(archive: &Archive) -> Result<()> {
         if name == "data/macro.db" {
             fs::write(temp.path().join("macro.db"), &bytes).map_err(|e| e.to_string())?;
         }
+        if name == "data/state.json" {
+            crate::state_manager::validate_backup_state(&bytes)?;
+        }
         if name.starts_with("config/") {
             let value: serde_json::Value =
                 serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
@@ -446,6 +457,108 @@ async fn validate(archive: &Archive) -> Result<()> {
     }
     check_database(&temp.path().join("macro.db")).await
 }
+fn raw_destination(name: &str, data: &Path, config: &Path) -> Result<PathBuf> {
+    if ["data/macro.db-wal", "data/macro.db-shm"].contains(&name) {
+        return Ok(data.join(name.strip_prefix("data/").unwrap()));
+    }
+    destination(name, data, config)
+}
+fn add_optional_raw(files: &mut BTreeMap<String, Entry>, name: String, path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => add_file(files, name, read_bounded(path)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+fn capture_raw(data: &Path, config: &Path, browser: BTreeMap<String, String>) -> Result<Archive> {
+    validate_browser(&browser)?;
+    let mut files = BTreeMap::new();
+    for file in ["macro.db", "macro.db-wal", "macro.db-shm", "state.json"] {
+        add_optional_raw(&mut files, format!("data/{file}"), &data.join(file))?;
+    }
+    let checkpoints = data.join("direct-checkpoints");
+    match fs::symlink_metadata(&checkpoints) {
+        Ok(_) => collect_tree(data, &checkpoints, &mut files)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    for file in CONFIG_FILES {
+        for relative in [
+            file.to_string(),
+            format!(".runtime/approved/user/{file}"),
+            format!(".runtime/pending/user/{file}"),
+        ] {
+            add_optional_raw(
+                &mut files,
+                format!("config/{relative}"),
+                &config.join(relative),
+            )?;
+        }
+    }
+    Ok(Archive {
+        format: "macro-raw-profile".into(),
+        version: 1,
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        files,
+        browser_sha256: hash(&serde_json::to_vec(&browser).map_err(|e| e.to_string())?),
+        browser,
+    })
+}
+fn validate_raw(archive: &Archive) -> Result<()> {
+    if archive.format != "macro-raw-profile" || archive.version != 1 || archive.files.len() > 10_000
+    {
+        return Err("Invalid preserved profile format".into());
+    }
+    validate_browser(&archive.browser)?;
+    if archive.browser_sha256
+        != hash(&serde_json::to_vec(&archive.browser).map_err(|e| e.to_string())?)
+    {
+        return Err("Preserved browser checksum mismatch".into());
+    }
+    let mut total = 0usize;
+    for (name, entry) in &archive.files {
+        raw_destination(name, Path::new("data"), Path::new("config"))?;
+        total = total
+            .checked_add(entry.data.len())
+            .ok_or("Preserved profile too large")?;
+        if total > LIMIT as usize {
+            return Err("Preserved profile too large".into());
+        }
+        let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
+        if hash(&bytes) != entry.sha256 {
+            return Err("Preserved file checksum mismatch".into());
+        }
+    }
+    Ok(())
+}
+fn preserve_raw(archive: &Archive, path: &Path) -> Result<()> {
+    validate_raw(archive)?;
+    let bytes = serde_json::to_vec(archive).map_err(|e| e.to_string())?;
+    if bytes.len() > LIMIT as usize {
+        return Err("Current profile exceeds preservation limit".into());
+    }
+    write_new(path, &bytes)?;
+    #[cfg(unix)]
+    fs::File::open(path.parent().ok_or("Missing preservation directory")?)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| e.to_string())?;
+    validate_raw(&load_archive(path)?)
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreJournal {
+    preserved: String,
+}
+fn preserved_path(dir: &Path, journal: &RestoreJournal) -> Result<PathBuf> {
+    let id = journal
+        .preserved
+        .strip_prefix("preserved-")
+        .and_then(|name| name.strip_suffix(".json"))
+        .ok_or("Invalid preservation journal")?;
+    uuid::Uuid::parse_str(id).map_err(|e| e.to_string())?;
+    Ok(dir.join(&journal.preserved))
+}
+
 fn safe_parent(path: &Path, root: &Path) -> Result<()> {
     let mut current = root.to_path_buf();
     for part in path
@@ -463,9 +576,19 @@ fn safe_parent(path: &Path, root: &Path) -> Result<()> {
     Ok(())
 }
 fn apply(archive: &Archive, data: &Path, config: &Path) -> Result<()> {
+    apply_files(archive, data, config, false)
+}
+fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Result<()> {
+    let target = |name: &str| {
+        if raw {
+            raw_destination(name, data, config)
+        } else {
+            destination(name, data, config)
+        }
+    };
     // At startup only: SQLite and config writers have not been initialized.
     for name in archive.files.keys() {
-        let path = destination(name, data, config)?;
+        let path = target(name)?;
         safe_parent(
             &path,
             if name.starts_with("data/") {
@@ -488,7 +611,7 @@ fn apply(archive: &Archive, data: &Path, config: &Path) -> Result<()> {
     collect_tree(data, &data.join("direct-checkpoints"), &mut existing)?;
     for name in existing.keys() {
         if !archive.files.contains_key(name) {
-            fs::remove_file(destination(name, data, config)?).map_err(|e| e.to_string())?;
+            fs::remove_file(target(name)?).map_err(|e| e.to_string())?;
         }
     }
     for file in CONFIG_FILES {
@@ -507,8 +630,11 @@ fn apply(archive: &Archive, data: &Path, config: &Path) -> Result<()> {
     if !archive.files.contains_key("data/state.json") && data.join("state.json").exists() {
         fs::remove_file(data.join("state.json")).map_err(|e| e.to_string())?;
     }
+    if raw && !archive.files.contains_key("data/macro.db") && data.join("macro.db").exists() {
+        fs::remove_file(data.join("macro.db")).map_err(|e| e.to_string())?;
+    }
     for (name, entry) in &archive.files {
-        let path = destination(name, data, config)?;
+        let path = target(name)?;
         let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
         atomic(&path, &bytes)?;
     }
@@ -518,16 +644,57 @@ fn load_archive(path: &Path) -> Result<Archive> {
     serde_json::from_slice(&read_bounded(path)?).map_err(|e| e.to_string())
 }
 
+async fn load_restore_archive(path: &Path) -> Result<Archive> {
+    let mut archive = load_archive(path)?;
+    if archive.format == "macro-raw-profile" {
+        validate_raw(&archive)?;
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        for name in ["data/macro.db", "data/macro.db-wal", "data/macro.db-shm"] {
+            if let Some(entry) = archive.files.get(name) {
+                let bytes = STANDARD
+                    .decode(&entry.data)
+                    .map_err(|error| error.to_string())?;
+                write_new(
+                    &temp.path().join(name.strip_prefix("data/").unwrap()),
+                    &bytes,
+                )?;
+            }
+        }
+        let normalized = temp.path().join("normalized.db");
+        snapshot_database(&temp.path().join("macro.db"), &normalized, false).await?;
+        archive.files.remove("data/macro.db-wal");
+        archive.files.remove("data/macro.db-shm");
+        archive.files.remove("data/macro.db");
+        add_file(
+            &mut archive.files,
+            "data/macro.db".into(),
+            read_bounded(&normalized)?,
+        )?;
+        archive.format = "macro-local-profile".into();
+    }
+    validate(&archive).await?;
+    Ok(archive)
+}
+
 /// Called before any subsystem opens the profile. An interrupted mutation rolls back first.
 pub async fn process_startup(data: &Path, config: &Path) -> Result<()> {
+    process_startup_with_preserver(data, config, preserve_raw).await
+}
+async fn process_startup_with_preserver(
+    data: &Path,
+    config: &Path,
+    preserve: fn(&Archive, &Path) -> Result<()>,
+) -> Result<()> {
     let dir = data.join("local-backup");
     safe_parent(&dir, dir.parent().ok_or("Missing profile root")?)?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let journal = dir.join("restoring.json");
     if journal.exists() {
-        let original = load_archive(&dir.join("rollback.json"))?;
-        validate(&original).await?;
-        apply(&original, data, config)?;
+        let marker: RestoreJournal =
+            serde_json::from_slice(&read_bounded(&journal)?).map_err(|e| e.to_string())?;
+        let original = load_archive(&preserved_path(&dir, &marker)?)?;
+        validate_raw(&original)?;
+        apply_files(&original, data, config, true)?;
         let status = BackupStatus {
             message: "Interrupted restoration rolled back. Previous profile recovered.".into(),
             browser: Some(original.browser),
@@ -536,7 +703,7 @@ pub async fn process_startup(data: &Path, config: &Path) -> Result<()> {
             &dir.join("status.json"),
             &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
         )?;
-        fs::remove_file(&journal).map_err(|e| e.to_string())?;
+        remove_durable(&journal)?;
     }
     let request_path = dir.join("request.json");
     if !request_path.exists() {
@@ -544,7 +711,6 @@ pub async fn process_startup(data: &Path, config: &Path) -> Result<()> {
     }
     let request: Request =
         serde_json::from_slice(&read_bounded(&request_path)?).map_err(|e| e.to_string())?;
-    fs::remove_file(&request_path).map_err(|e| e.to_string())?;
     let result = async {
         if request.operation == "export" {
             let archive = capture(data, config, request.browser, true).await?;
@@ -554,21 +720,20 @@ pub async fn process_startup(data: &Path, config: &Path) -> Result<()> {
             write_new(Path::new(&request.path), &bytes)?;
             Ok(BackupStatus { message: format!("Backup saved: {}", request.path), browser: None })
         } else if request.operation == "restore" {
-            let archive = load_archive(&dir.join("incoming.json"))?; validate(&archive).await?;
-            let original = capture(data, config, request.browser, false).await?;
-            validate(&original).await?;
-            let rollback_bytes = serde_json::to_vec(&original).map_err(|e| e.to_string())?;
-            if rollback_bytes.len() > LIMIT as usize { return Err("Previous profile exceeds the rollback limit".into()); }
-            atomic(&dir.join("rollback.json"), &rollback_bytes)?;
-            atomic(&journal, b"{}")?;
+            let archive = load_restore_archive(&dir.join("incoming.json")).await?;
+            let original = capture_raw(data, config, request.browser)?;
+            let marker = RestoreJournal { preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()) };
+            let preservation = preserved_path(&dir, &marker)?;
+            preserve(&original, &preservation)?;
+            atomic(&journal, &serde_json::to_vec(&marker).map_err(|e| e.to_string())?)?;
             if let Err(error) = apply(&archive, data, config) {
-                apply(&original, data, config).map_err(|rollback| format!("Restore failed: {error}. Rollback failed: {rollback}. Original preserved in {}", dir.display()))?;
-                fs::remove_file(&journal).map_err(|e| e.to_string())?;
+                apply_files(&original, data, config, true).map_err(|rollback| format!("Restore failed: {error}. Rollback failed: {rollback}. Original preserved in {}", dir.display()))?;
+                remove_durable(&journal)?;
                 return Err(error);
             }
-            let status = BackupStatus { message: format!("Profile restored. Previous profile retained in {}", dir.join("rollback.json").display()), browser: Some(archive.browser) };
+            let status = BackupStatus { message: format!("Profile restored. Previous profile retained in {}", preservation.display()), browser: Some(archive.browser) };
             atomic(&dir.join("status.json"), &serde_json::to_vec(&status).map_err(|e| e.to_string())?)?;
-            fs::remove_file(&journal).map_err(|e| e.to_string())?;
+            remove_durable(&journal)?;
             Ok(status)
         } else { Err("Unknown backup operation".into()) }
     }.await;
@@ -584,7 +749,8 @@ pub async fn process_startup(data: &Path, config: &Path) -> Result<()> {
     atomic(
         &dir.join("status.json"),
         &serde_json::to_vec(&status).map_err(|e| e.to_string())?,
-    )
+    )?;
+    remove_durable(&request_path)
 }
 
 #[tauri::command]
@@ -615,8 +781,7 @@ pub async fn local_backup_schedule(
         return Err("A profile operation is already pending. Restart Macro first.".into());
     }
     if operation == "restore" {
-        let archive = load_archive(Path::new(&path))?;
-        validate(&archive).await?;
+        let archive = load_restore_archive(Path::new(&path)).await?;
         atomic(
             &dir.join("incoming.json"),
             &serde_json::to_vec(&archive).map_err(|e| e.to_string())?,
@@ -783,8 +948,21 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(content, "attachment contents");
-        let rollback = load_archive(&dir.join("rollback.json")).unwrap();
-        validate(&rollback).await.unwrap();
+        let preserved = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("preserved-")
+            })
+            .unwrap();
+        let rollback = load_archive(&preserved).unwrap();
+        validate_raw(&rollback).unwrap();
+        validate(&load_restore_archive(&preserved).await.unwrap())
+            .await
+            .unwrap();
         assert_eq!(
             STANDARD
                 .decode(&rollback.files["data/direct-checkpoints/example/objects/snapshot"].data)
@@ -809,22 +987,140 @@ mod tests {
     #[tokio::test]
     async fn startup_recovers_interrupted_restore_and_preserves_rollback_archive() {
         let (_temp, data, config) = profile().await;
-        let original = capture(&data, &config, BTreeMap::new(), false)
-            .await
-            .unwrap();
+        let original = capture_raw(&data, &config, BTreeMap::new()).unwrap();
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
+        let marker = RestoreJournal {
+            preserved: format!("preserved-{}.json", uuid::Uuid::new_v4()),
+        };
+        let preserved = preserved_path(&dir, &marker).unwrap();
+        preserve_raw(&original, &preserved).unwrap();
         atomic(
-            &dir.join("rollback.json"),
-            &serde_json::to_vec(&original).unwrap(),
+            &dir.join("restoring.json"),
+            &serde_json::to_vec(&marker).unwrap(),
         )
         .unwrap();
-        atomic(&dir.join("restoring.json"), b"{}").unwrap();
         fs::write(data.join("macro.db"), b"failed replacement").unwrap();
         process_startup(&data, &config).await.unwrap();
         check_database(&data.join("macro.db")).await.unwrap();
-        assert!(dir.join("rollback.json").exists());
+        assert!(preserved.exists());
         assert!(!dir.join("restoring.json").exists());
+    }
+    fn queue_restore(data: &Path, archive: &Archive) {
+        let dir = data.join("local-backup");
+        fs::create_dir_all(&dir).unwrap();
+        atomic(
+            &dir.join("incoming.json"),
+            &serde_json::to_vec(archive).unwrap(),
+        )
+        .unwrap();
+        atomic(
+            &dir.join("request.json"),
+            &serde_json::to_vec(&Request {
+                operation: "restore".into(),
+                path: String::new(),
+                browser: BTreeMap::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    #[tokio::test]
+    async fn restores_valid_archive_over_corrupt_profile_and_preserves_exact_original_bytes() {
+        let (_temp, data, config) = profile().await;
+        fs::write(
+            config.join("runtime.json"),
+            br#"{"$schema":"runtime.schema.json","schemaVersion":1}"#,
+        )
+        .unwrap();
+        fs::write(
+            data.join("state.json"),
+            br#"{"schemaVersion":1,"values":{}}"#,
+        )
+        .unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        for (path, bytes) in [
+            (data.join("macro.db"), &b"damaged database"[..]),
+            (data.join("macro.db-wal"), &b"damaged wal"[..]),
+            (config.join("runtime.json"), &b"{damaged runtime"[..]),
+            (data.join("state.json"), &b"damaged state"[..]),
+        ] {
+            fs::write(path, bytes).unwrap();
+        }
+        assert!(crate::core::config::test_load_config_from_runtime_file(
+            config.join("runtime.json")
+        )
+        .is_err());
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        check_database(&data.join("macro.db")).await.unwrap();
+        assert!(crate::core::config::test_load_config_from_runtime_file(
+            config.join("runtime.json")
+        )
+        .is_ok());
+        let dir = data.join("local-backup");
+        let preserved = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("preserved-")
+            })
+            .unwrap();
+        let raw = load_archive(&preserved).unwrap();
+        validate_raw(&raw).unwrap();
+        for (name, bytes) in [
+            ("data/macro.db", &b"damaged database"[..]),
+            ("data/macro.db-wal", &b"damaged wal"[..]),
+            ("config/runtime.json", &b"{damaged runtime"[..]),
+            ("data/state.json", &b"damaged state"[..]),
+        ] {
+            assert_eq!(STANDARD.decode(&raw.files[name].data).unwrap(), bytes);
+        }
+    }
+    #[tokio::test]
+    async fn preservation_failure_leaves_damaged_current_files_untouched() {
+        let (_temp, data, config) = profile().await;
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        fs::write(data.join("macro.db"), b"current damaged bytes").unwrap();
+        queue_restore(&data, &archive);
+        process_startup_with_preserver(&data, &config, |_, _| {
+            Err("Injected preservation write failure".into())
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            fs::read(data.join("macro.db")).unwrap(),
+            b"current damaged bytes"
+        );
+        assert!(!data.join("local-backup/restoring.json").exists());
+        assert!(fs::read_to_string(data.join("local-backup/status.json"))
+            .unwrap()
+            .contains("Injected preservation"));
+    }
+    #[tokio::test]
+    async fn rejects_invalid_and_future_native_state_before_replacing_profile() {
+        let (_temp, data, config) = profile().await;
+        let current = fs::read(data.join("macro.db")).unwrap();
+        for bytes in [
+            b"not json".as_slice(),
+            br#"{"schemaVersion":999,"values":{}}"#.as_slice(),
+        ] {
+            let mut archive = capture(&data, &config, BTreeMap::new(), true)
+                .await
+                .unwrap();
+            add_file(&mut archive.files, "data/state.json".into(), bytes.to_vec()).unwrap();
+            assert!(validate(&archive).await.is_err());
+            queue_restore(&data, &archive);
+            process_startup(&data, &config).await.unwrap();
+            assert_eq!(fs::read(data.join("macro.db")).unwrap(), current);
+        }
     }
     #[tokio::test]
     async fn sqlite_wal_snapshot_includes_committed_rows_and_removes_credentials() {
