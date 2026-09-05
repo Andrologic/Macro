@@ -795,6 +795,67 @@ describe('useFileChangesStore', () => {
     expect(reviewFile.mock.calls.length).toBe(count);
   });
 
+  it.each(['clean', 'dirty', 'late'] as const)('rehydrates navigation during a lazy snapshot and preserves drafts: %s', async (scenario) => {
+    await useFileChangesStore.getState().loadCurrentChanges();
+    const repository = useFileChangesStore.getState().getRepository(repositoryIdA)!;
+    const original = repository.changes[0];
+    let content = original.modifiedContent;
+    const dirty = scenario === 'dirty';
+    let releaseOldFile!: () => void;
+    const oldFileGate = new Promise<void>((resolve) => { releaseOldFile = resolve; });
+    let fileReads = 0;
+    let releaseSnapshot!: () => void;
+    let snapshotGate: Promise<void> | undefined;
+    const reviewFile = mock(async () => {
+      const firstRead = ++fileReads === 1;
+      const file = { path: original.path, status: original.status,
+      headExists: true, indexExists: true, worktreeExists: true,
+      headContent: original.originalContent, indexContent: original.indexContent, worktreeContent: content,
+      pendingDiff: { originalContent: original.indexContent, modifiedContent: content, additions: 1, deletions: 1, hunks: [] },
+      fullDiff: { originalContent: original.originalContent, modifiedContent: content, additions: 1, deletions: 1, hunks: [] },
+      hasValidatedStage: false, validatedRemovedLineNumbers: [], validatedAddedLineNumbers: [],
+      isBinary: false, tooLarge: false, language: 'typescript',
+      };
+      if (scenario === 'late' && firstRead) await oldFileGate;
+      return file;
+    });
+    appStoreState.selectedProjectId = 'project-a';
+    const deferredStore = createFileChangesStore({
+      tauri: { isTauriAvailable: () => true, gitStatus: gitStatusMock, gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock, gitMergeCheck: gitMergeCheckMock, gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock, fsReadFileWithOptions: fsReadFileWithOptionsMock, fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock, gitAdd: gitAddMock, gitCommit: gitCommitMock,
+        gitReviewSnapshot: mock(async () => { await snapshotGate; return { branch: repository.branchName, stagedPaths: [],
+          changes: [{ ...original, requiresHydration: true, originalContent: '', indexContent: '', modifiedContent: '',
+            isBinary: false, tooLarge: false }], conflictedFiles: [], mergeInProgress: false, isClean: false }; }),
+        gitReviewFile: reviewFile,
+      }, getGitFlowBaseBranch: () => 'develop', getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState, setTaskState: () => undefined,
+    });
+    const store = deferredStore.getState();
+    await store.loadCurrentChanges();
+    snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    const refresh = store.loadCurrentChanges({ silent: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (scenario !== 'late') expect(deferredStore.getState().diffModalSession?.rightDraftContent).toBe(content);
+    if (dirty) store.updateRightDraft('draft written during refresh');
+    content = content.replace('2', '3');
+    releaseSnapshot();
+    await refresh;
+    releaseOldFile();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const state = deferredStore.getState();
+    expect(state.selectedDiffTarget).toEqual({ repositoryId: repositoryIdA, changeId: changeIdA });
+    expect(state.diffModalSession?.rightDraftContent).toBe(dirty ? 'draft written during refresh' : content);
+    expect(state.diffModalSession?.lastLoadedModifiedContent).toBe(content);
+    expect(state.diffModalSession?.isHydratingFullContext).toBe(false);
+    expect(store.getChange(repositoryIdA, changeIdA)?.requiresHydration).toBe(false);
+    expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(false);
+    expect(reviewFile).toHaveBeenCalledTimes(2);
+  });
+
   it('refuses WSL review before inspecting worktrees or running Git review commands', async () => {
     const originalGetter = appStoreState.getProjectById;
     try {

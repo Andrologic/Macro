@@ -1423,6 +1423,7 @@ const resolveLatestDiffModalSessionAfterRefresh = ({
     };
   }
 
+  const needsHydration = Boolean(refreshedChange.requiresHydration && !refreshedChange.isBinary && !refreshedChange.tooLarge);
   const detachedWarning = session.isDirty && !refreshedChange.canEdit &&
     !refreshedChange.hasPendingVisibleChange && !refreshedChange.hasValidatedStage
     ? tChanges(
@@ -1435,13 +1436,13 @@ const resolveLatestDiffModalSessionAfterRefresh = ({
     selectedDiffTarget: target,
     diffModalSession: {
       ...session,
-      originalContent: refreshedChange.originalContent,
-      rightDraftContent: session.isDirty
+      originalContent: needsHydration ? session.originalContent : refreshedChange.originalContent,
+      rightDraftContent: session.isDirty || needsHydration
         ? session.rightDraftContent
         : refreshedChange.modifiedContent,
-      lastLoadedModifiedContent: refreshedChange.modifiedContent,
+      lastLoadedModifiedContent: needsHydration ? session.lastLoadedModifiedContent : refreshedChange.modifiedContent,
       isSaving: false,
-      isHydratingFullContext: false,
+      isHydratingFullContext: needsHydration,
       detachedWarning,
     },
     isDiffModalOpen: true,
@@ -1529,6 +1530,7 @@ export const createFileChangesStore = (
   return create<FileChangesState>((set, get) => {
     let reviewRequestSequence = 0;
     let reviewVisitSequence = 0;
+    let hydrationGeneration = 0;
     let mutationRequestSequence = 0;
     const activeMutationRequests = new Map<string, number>();
     let expiredReviewRefreshPromise: Promise<void> | null = null;
@@ -1577,6 +1579,7 @@ export const createFileChangesStore = (
       }
       const requestTaskId = resolveSelectedTask(deps)?.id ?? null;
       const requestLoadId = get().loadRequestId;
+      const requestHydrationGeneration = hydrationGeneration;
 
       set((state) => ({
         repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -1676,7 +1679,8 @@ export const createFileChangesStore = (
           };
         }
 
-        if (get().loadRequestId !== requestLoadId) {
+        if (get().loadRequestId !== requestLoadId || hydrationGeneration !== requestHydrationGeneration ||
+            resolveSelectedTask(deps)?.id !== requestTaskId) {
           return;
         }
 
@@ -1708,7 +1712,8 @@ export const createFileChangesStore = (
           };
         });
       } catch (error) {
-        if (get().loadRequestId !== requestLoadId) {
+        if (get().loadRequestId !== requestLoadId || hydrationGeneration !== requestHydrationGeneration ||
+            resolveSelectedTask(deps)?.id !== requestTaskId) {
           return;
         }
         const serviceError = withReviewProjectContext(error, repository.projectId);
@@ -2097,6 +2102,8 @@ export const createFileChangesStore = (
         selectedDiffTarget: latestDiffModalState.selectedDiffTarget,
       });
 
+      // Responses started against the replaced repositories must not overwrite this snapshot.
+      hydrationGeneration += 1;
       set({
         currentTaskId: task.id,
         currentTaskLoadState: 'ready',
@@ -2113,6 +2120,10 @@ export const createFileChangesStore = (
         reviewSuspension: null,
         executionRecords,
       });
+      const visibleTarget = latestDiffModalState.selectedDiffTarget;
+      if (visibleTarget && latestDiffModalState.diffModalSession?.isHydratingFullContext) {
+        await hydrateDiffModalFile(visibleTarget.repositoryId, visibleTarget.changeId);
+      }
     } catch (error) {
       cancelActiveReviewRequests();
       if (isStaleRequest(nextLoadRequestId, task.id)) {
