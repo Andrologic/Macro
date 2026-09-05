@@ -39,6 +39,7 @@ interface TestTaskState {
   isLoading: boolean;
   lastError: string | null;
   lastSuccessfulCatalogLoad?: {
+    loadId: string;
     revision: number;
     selectedGroupId: string | null;
     selectedProjectId: string | null;
@@ -358,6 +359,7 @@ describe('workflow attention notification subscriptions', () => {
       workflowNavigation: {
         kind: 'review' as const,
         taskId: 'task-1',
+        catalogLoadId: 'load-before-review',
         catalogScope: {
           selectedGroupId: 'group-current',
           selectedProjectId: 'project-current',
@@ -375,6 +377,7 @@ describe('workflow attention notification subscriptions', () => {
       lastError: null,
       tasks: [],
       lastSuccessfulCatalogLoad: {
+        loadId: 'load-after-review',
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
@@ -397,6 +400,7 @@ describe('workflow attention notification subscriptions', () => {
       workflowNavigation: {
         kind: 'review' as const,
         taskId: 'deleted-task',
+        catalogLoadId: 'load-before-review',
         catalogScope: {
           selectedGroupId: 'group-current',
           selectedProjectId: 'project-current',
@@ -410,6 +414,7 @@ describe('workflow attention notification subscriptions', () => {
     updateTaskState([], {
       isLoading: false,
       lastSuccessfulCatalogLoad: {
+        loadId: 'load-after-review',
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
@@ -433,6 +438,7 @@ describe('workflow attention notification subscriptions', () => {
       workflowNavigation: {
         kind: 'review' as const,
         taskId: 'temporarily-missing',
+        catalogLoadId: 'load-before-review',
         catalogScope: {
           selectedGroupId: 'group-current',
           selectedProjectId: 'project-current',
@@ -448,6 +454,7 @@ describe('workflow attention notification subscriptions', () => {
     updateTaskState([], {
       lastError: null,
       lastSuccessfulCatalogLoad: {
+        loadId: 'load-after-review',
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
@@ -471,6 +478,7 @@ describe('workflow attention notification subscriptions', () => {
       workflowNavigation: {
         kind: 'review' as const,
         taskId: 'temporarily-missing',
+        catalogLoadId: 'load-before-review',
         catalogScope: {
           selectedGroupId: 'group-current',
           selectedProjectId: 'project-current',
@@ -500,6 +508,7 @@ describe('workflow attention notification subscriptions', () => {
       workflowNavigation: {
         kind: 'review' as const,
         taskId: 'other-scope',
+        catalogLoadId: 'load-before-review',
         catalogScope: {
           selectedGroupId: 'group-other',
           selectedProjectId: 'project-other',
@@ -512,6 +521,7 @@ describe('workflow attention notification subscriptions', () => {
       lastError: null,
       tasks: [],
       lastSuccessfulCatalogLoad: {
+        loadId: 'load-after-review',
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
@@ -536,6 +546,7 @@ describe('workflow attention notification subscriptions', () => {
       workflowNavigation: {
         kind: 'review' as const,
         taskId: 'task-1',
+        catalogLoadId: 'load-with-review',
         catalogScope: {
           selectedGroupId: 'group-current',
           selectedProjectId: 'project-current',
@@ -549,6 +560,7 @@ describe('workflow attention notification subscriptions', () => {
       lastError: null,
       tasks: [loadedReview],
       lastSuccessfulCatalogLoad: {
+        loadId: 'load-with-review',
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
@@ -562,6 +574,7 @@ describe('workflow attention notification subscriptions', () => {
 
     updateTaskState([], {
       lastSuccessfulCatalogLoad: {
+        loadId: 'load-without-review',
         revision: 2,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',
@@ -569,6 +582,46 @@ describe('workflow attention notification subscriptions', () => {
       },
     });
     expect(useNotificationCenterStore.getState().items).toEqual([]);
+    unsubscribe();
+  });
+
+  it('does not use a catalog snapshot that predates a locally created review', () => {
+    const item = {
+      id: 'workflow-attention:review:task-1',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'task-1',
+        catalogLoadId: 'load-before-review',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = {
+      isLoading: false,
+      lastError: null,
+      tasks: [makeTask('InReview')],
+      lastSuccessfulCatalogLoad: {
+        loadId: 'load-before-review',
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [],
+      },
+    };
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    updateTaskState([]);
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
     unsubscribe();
   });
 

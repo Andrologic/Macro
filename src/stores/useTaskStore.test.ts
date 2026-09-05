@@ -678,6 +678,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
       expect(useTaskStore.getState().tasks.map((task: ImplementTask) => task.id)).toEqual(['task-b']);
       expect(appStoreState.selectedTaskId).toBe('task-b');
       expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toEqual({
+        loadId: expect.any(String),
         revision: 1,
         selectedGroupId: 'group-b',
         selectedProjectId: 'project-b',
@@ -719,6 +720,7 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
       });
 
       expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toEqual({
+        loadId: expect.any(String),
         revision: 1,
         selectedGroupId: 'group-current',
         selectedProjectId: 'project-current',

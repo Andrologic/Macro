@@ -136,11 +136,19 @@ import { devLogger } from '../utils/devLogger';
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
 export interface SuccessfulTaskCatalogLoad {
+  loadId: string;
   revision: number;
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   taskIds: string[];
 }
+
+let successfulTaskCatalogLoadSequence = 0;
+
+const createSuccessfulTaskCatalogLoadId = (): string =>
+  typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${++successfulTaskCatalogLoadSequence}`;
 
 export interface TaskCompletionRepositoryRecord {
   projectId: string;
@@ -2919,6 +2927,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         lastError: null,
         isLoading: false,
         lastSuccessfulCatalogLoad: {
+          loadId: createSuccessfulTaskCatalogLoadId(),
           revision: (get().lastSuccessfulCatalogLoad?.revision ?? 0) + 1,
           selectedGroupId: appStateAtStart.selectedGroupId,
           selectedProjectId: appStateAtStart.selectedProjectId,

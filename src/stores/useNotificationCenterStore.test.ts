@@ -110,6 +110,7 @@ describe('useNotificationCenterStore', () => {
       workflowNavigation: {
         kind: 'review',
         taskId: 'task-3',
+        catalogLoadId: 'catalog-load-3',
         catalogScope: {
           selectedGroupId: 'group-1',
           selectedProjectId: null,
@@ -118,6 +119,7 @@ describe('useNotificationCenterStore', () => {
     })])[0]?.workflowNavigation).toEqual({
       kind: 'review',
       taskId: 'task-3',
+      catalogLoadId: 'catalog-load-3',
       catalogScope: {
         selectedGroupId: 'group-1',
         selectedProjectId: null,

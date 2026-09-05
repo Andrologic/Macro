@@ -216,6 +216,7 @@ describe('workflow attention events', () => {
           selectedGroupId: null,
           selectedProjectId: null,
         },
+        catalogLoadId: null,
       }),
     ]);
     expect(

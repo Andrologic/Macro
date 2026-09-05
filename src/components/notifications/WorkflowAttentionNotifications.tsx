@@ -22,6 +22,7 @@ import { notify } from '../ui/toastService';
 
 const getAttentionContext = () => {
   const appState = useAppStore.getState();
+  const taskState = useTaskStore.getState();
   return {
     appForeground: isAppForeground(),
     mode: appState.mode,
@@ -37,7 +38,8 @@ const getAttentionContext = () => {
       appState.selectedGroupId,
       appState.selectedProjectId,
     ),
-    tasks: useTaskStore.getState().tasks,
+    tasks: taskState.tasks,
+    taskCatalogLoadId: taskState.lastSuccessfulCatalogLoad?.loadId ?? null,
   };
 };
 
@@ -46,7 +48,12 @@ export const emitWorkflowAttentionNotification = (
   t: TFunction,
 ): void => {
   const workflowNavigation: WorkflowNotificationNavigation = event.kind === 'review'
-    ? { kind: 'review', taskId: event.taskId, catalogScope: event.catalogScope }
+    ? {
+        kind: 'review',
+        taskId: event.taskId,
+        catalogScope: event.catalogScope,
+        ...(event.catalogLoadId ? { catalogLoadId: event.catalogLoadId } : {}),
+      }
     : { kind: 'conversation', requestKind: event.kind, conversationId: event.conversationId };
   const action = {
     label: t('notifications.workflow.openAction', 'Open'),
@@ -125,6 +132,7 @@ export const reconcileWorkflowAttentionNotifications = (): void => {
       const taskAbsenceIsConfirmed = Boolean(
         navigation.catalogScope &&
         successfulLoad &&
+        navigation.catalogLoadId !== successfulLoad.loadId &&
         navigation.catalogScope.selectedGroupId === successfulLoad.selectedGroupId &&
         navigation.catalogScope.selectedProjectId === successfulLoad.selectedProjectId &&
         !successfulLoad.taskIds.includes(navigation.taskId),

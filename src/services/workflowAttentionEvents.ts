@@ -22,6 +22,7 @@ export interface WorkflowAttentionContext {
   selectedProjectId: string | null;
   scopedProjectIds: string[];
   tasks: CatalogedImplementTask[];
+  taskCatalogLoadId?: string | null;
 }
 
 export interface WorkflowChatAttentionState {
@@ -68,6 +69,7 @@ export type WorkflowAttentionEvent =
         selectedGroupId: string | null;
         selectedProjectId: string | null;
       };
+      catalogLoadId: string | null;
     };
 
 const haveSameConversationAttentionShape = (
@@ -419,6 +421,7 @@ export const detectNewReviewAttentionEvents = (
           selectedGroupId: context.selectedGroupId,
           selectedProjectId: context.selectedProjectId,
         },
+        catalogLoadId: context.taskCatalogLoadId ?? null,
       },
     ];
   });

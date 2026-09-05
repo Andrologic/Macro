@@ -4,6 +4,7 @@ export type WorkflowNotificationNavigation =
   | {
       kind: 'review';
       taskId: string;
+      catalogLoadId?: string;
       catalogScope?: {
         selectedGroupId: string | null;
         selectedProjectId: string | null;
@@ -32,6 +33,9 @@ export const sanitizeWorkflowNotificationNavigation = (
     return {
       kind: 'review',
       taskId: candidate.taskId,
+      ...(validId(candidate.catalogLoadId)
+        ? { catalogLoadId: candidate.catalogLoadId }
+        : {}),
       ...(catalogScope &&
         validScopeValue(catalogScope.selectedGroupId) &&
         validScopeValue(catalogScope.selectedProjectId)
