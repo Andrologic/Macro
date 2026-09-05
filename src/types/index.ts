@@ -423,6 +423,7 @@ export interface MCPServer {
   maxConcurrentOperations?: number;
   disabledTools?: string[];
   tools?: MCPTool[];
+  lastErrorCode?: string | null;
   lastError?: string | null;
   discoveredAt?: string | null;
   config?: Record<string, unknown> & { enabled?: boolean };

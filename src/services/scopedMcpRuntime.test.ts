@@ -206,7 +206,7 @@ describe('scoped MCP runtime', () => {
     const callTool = mock(async () => ({
       content: 'backend exploded',
       isError: true,
-      rawResult: {},
+      rawResult: { error: { code: 'MCP_BACKEND_EXPLODED' } },
     }));
     const runtime = await resolveScopedMcpRuntime(
       { failing_server: stdioDefinition },
@@ -216,7 +216,10 @@ describe('scoped MCP runtime', () => {
 
     await expect(callScopedMcpTool('mcp__failing_server__boom', {}, runtime.servers, {
       deps: { mcpRuntimeCallTool: callTool },
-    })).rejects.toThrow('backend exploded');
+    })).rejects.toMatchObject({
+      code: 'MCP_BACKEND_EXPLODED',
+      message: 'backend exploded',
+    });
   });
 
   it('throws a typed error when the requested tool is absent from the frozen catalog', async () => {

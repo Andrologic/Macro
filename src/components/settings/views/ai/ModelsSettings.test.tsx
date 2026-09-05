@@ -12,6 +12,15 @@ let loadMetadataModelConfigMock: ReturnType<typeof mock>;
 let saveMetadataModelConfigMock: ReturnType<typeof mock>;
 let addManualModelMock: ReturnType<typeof mock>;
 let updateManualModelMock: ReturnType<typeof mock>;
+let refreshCatalogMock: ReturnType<typeof mock>;
+let refreshLoadedCatalogMock: ReturnType<typeof mock>;
+let catalogStatus: {
+  lastFetchedAt: string | null;
+  source: 'cache' | 'network' | 'snapshot';
+  stale: boolean;
+  error: string | null;
+};
+let catalogStatusListeners: Set<(status: typeof catalogStatus) => void>;
 let settingsSearchQuery: string;
 const translate = (_key: string, fallback?: string) => fallback ?? _key;
 
@@ -63,8 +72,22 @@ const loadModelsSettings = async () => {
       setProviderModelContextWindowOverride: mock(async () => undefined),
       updateProviderSettings: mock(async () => undefined),
       scanModelsForProvider: mock(async () => []),
+      refreshLoadedModelContextCatalog: refreshLoadedCatalogMock,
       getAvailableReasoningEfforts: () => [],
     }),
+  }));
+
+  mock.module('../../../../services/modelContextCatalog', () => ({
+    MODELS_DEV_URL: 'https://models.dev/api.json',
+    MODEL_CONTEXT_CATALOG_TTL_MS: 300_000,
+    lookupModelContextCatalogLimit: () => null,
+    lookupModelReasoningCatalogCapability: () => null,
+    getModelContextCatalogStatus: () => catalogStatus,
+    subscribeModelContextCatalogStatus: (listener: (status: typeof catalogStatus) => void) => {
+      catalogStatusListeners.add(listener);
+      return () => catalogStatusListeners.delete(listener);
+    },
+    refreshModelContextCatalog: (params: unknown) => refreshCatalogMock(params),
   }));
 
   mock.module('../../../../services/metadataModelPreference', () => ({
@@ -181,6 +204,7 @@ describe('ModelsSettings metadata model config', () => {
       'provider-b': [model('provider-b', 'model-b')],
     };
     metadataModelConfigListeners = new Set();
+    catalogStatusListeners = new Set();
     loadMetadataModelConfigMock = mock(async () => {
       const persisted = window.localStorage.getItem('macro_metadataModelConfig');
       if (persisted !== null) return JSON.parse(persisted);
@@ -200,6 +224,19 @@ describe('ModelsSettings metadata model config', () => {
     });
     addManualModelMock = mock(async () => undefined);
     updateManualModelMock = mock(async () => undefined);
+    catalogStatus = {
+      lastFetchedAt: null,
+      source: 'snapshot',
+      stale: true,
+      error: null,
+    };
+    refreshCatalogMock = mock(async () => ({
+      lastFetchedAt: '2026-09-05T08:00:00.000Z',
+      source: 'network' as const,
+      stale: false,
+      error: null,
+    }));
+    refreshLoadedCatalogMock = mock(async () => undefined);
     window.localStorage.clear();
     settingsSearchQuery = '';
     container = document.createElement('div');
@@ -511,5 +548,78 @@ describe('ModelsSettings metadata model config', () => {
 
     expect(container!.textContent).toContain('No models match the current filter.');
     expect(container!.textContent).toContain('Metadata generation');
+  });
+
+  it('distinguishes a missing catalog sync and refreshes it from settings', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    expect(container!.textContent).toContain(
+      'Catalog metadata has not been synchronized. Bundled snapshot in use.'
+    );
+    const refreshButton = Array.from(container!.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Refresh catalog')
+    );
+    await act(async () => {
+      refreshButton?.click();
+      await flush();
+    });
+
+    expect(refreshCatalogMock).toHaveBeenCalledWith({ force: true });
+    expect(refreshLoadedCatalogMock).toHaveBeenCalledWith(undefined);
+    expect(container!.textContent).toContain('Catalog synchronized');
+  });
+
+  it('updates the visible catalog state after an external synchronization', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    catalogStatus = {
+      lastFetchedAt: new Date().toISOString(),
+      source: 'network',
+      stale: false,
+      error: null,
+    };
+    await act(async () => {
+      for (const listener of catalogStatusListeners) listener(catalogStatus);
+      await flush();
+    });
+
+    expect(container!.textContent).toContain('Catalog synchronized');
+    expect(container!.textContent).not.toContain('Bundled snapshot in use');
+  });
+
+  it('keeps a forced synchronization error visible without refreshing the cached catalog', async () => {
+    refreshCatalogMock.mockResolvedValueOnce({
+      lastFetchedAt: '2026-09-05T08:00:00.000Z',
+      source: 'cache',
+      stale: true,
+      error: 'Models.dev returned 503',
+    });
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+    const refreshButton = Array.from(container!.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Refresh catalog')
+    );
+    await act(async () => {
+      refreshButton?.click();
+      await flush();
+    });
+
+    expect(refreshLoadedCatalogMock).not.toHaveBeenCalled();
+    expect(container!.textContent).toContain('Latest catalog refresh failed: {{error}}');
   });
 });

@@ -2,30 +2,33 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let fetchMock: ReturnType<typeof mock>;
 let nativeWebFetchMock: ReturnType<typeof mock>;
+let nativeWebSearchMock: ReturnType<typeof mock>;
 let importCounter = 0;
 
 const loadWebSearch = async (options: { tauriAvailable?: boolean } = {}) => {
   mock.restore();
   fetchMock = mock();
   nativeWebFetchMock = mock();
+  nativeWebSearchMock = mock();
   mock.module('@tauri-apps/plugin-http', () => ({
     fetch: fetchMock,
   }));
   mock.module('./tauriIpc', () => ({
     isTauriAvailable: () => options.tauriAvailable ?? false,
     webFetchExecute: nativeWebFetchMock,
-    webSearchExecute: mock(),
+    webSearchExecute: nativeWebSearchMock,
   }));
   importCounter += 1;
   return import(`./webSearch.ts?web-search-test=${importCounter}`);
 };
 
-const jsonResponse = (payload: unknown, ok = true, status = 200) => ({
-  ok,
-  status,
-  json: mock(async () => payload),
-  text: mock(async () => JSON.stringify(payload)),
-});
+const jsonResponse = (payload: unknown, ok = true, status = 200) => new Response(
+  JSON.stringify(payload),
+  {
+    status: ok ? status : status >= 400 ? status : 500,
+    headers: { 'Content-Type': 'application/json' },
+  },
+);
 
 describe('webSearch provider contracts', () => {
   beforeEach(() => {
@@ -122,6 +125,78 @@ describe('webSearch provider contracts', () => {
         score: 1,
       },
     ]);
+  });
+
+  it('rejects oversized success and HTTP error bodies before JSON parsing', async () => {
+    const { webSearch } = await loadWebSearch();
+    let oversizedBodyCancelled = false;
+    fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({
+      cancel: () => {
+        oversizedBodyCancelled = true;
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Length': String(4 * 1024 * 1024 + 1) },
+    }));
+    await expect(webSearch('too large', {
+      provider: 'tavily',
+      tavilyApiKey: 'test',
+    })).rejects.toThrow('4194304-byte limit');
+    expect(oversizedBodyCancelled).toBe(true);
+
+    fetchMock.mockResolvedValueOnce(new Response('x', {
+      status: 429,
+      headers: { 'Content-Length': String(64 * 1024 + 1) },
+    }));
+    await expect(webSearch('too large', {
+      provider: 'brave',
+      braveApiKey: 'test',
+    })).rejects.toThrow('65536-byte limit');
+  });
+
+  it('forwards caller cancellation to the bounded provider request', async () => {
+    const { webSearch } = await loadWebSearch();
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise(
+      (_resolve, reject) => init.signal?.addEventListener('abort', () => {
+        const error = new Error('cancelled');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true }),
+    ));
+    const controller = new AbortController();
+    const request = webSearch('cancel me', {
+      provider: 'tavily',
+      tavilyApiKey: 'test',
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('cancels configured native searches before dispatch and while awaiting a result', async () => {
+    const { webSearch } = await loadWebSearch({ tauriAvailable: true });
+    const alreadyCancelled = new AbortController();
+    alreadyCancelled.abort();
+    await expect(webSearch('do not dispatch', {
+      configured: true,
+      signal: alreadyCancelled.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(nativeWebSearchMock).not.toHaveBeenCalled();
+
+    let resolveNative!: (results: []) => void;
+    nativeWebSearchMock.mockImplementationOnce(() => new Promise<[]>((resolve) => {
+      resolveNative = resolve;
+    }));
+    const inFlight = new AbortController();
+    const request = webSearch('cancel native wait', {
+      configured: true,
+      signal: inFlight.signal,
+    });
+    inFlight.abort();
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(nativeWebSearchMock).toHaveBeenCalledTimes(1);
+    resolveNative([]);
   });
 
   it('embeds fetched page favicons as data URLs', async () => {

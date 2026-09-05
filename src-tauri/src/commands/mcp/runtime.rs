@@ -194,6 +194,7 @@ impl RuntimeEntry {
                 negotiated_era: None,
                 negotiated_protocol_version: None,
                 protocol_decision_reason: None,
+                last_error_code: None,
                 last_error: None,
                 updated_at: now(),
             },
@@ -456,6 +457,7 @@ impl McpRuntimeManager {
                 entry.snapshot.negotiated_era = connection.negotiated_era;
                 entry.snapshot.negotiated_protocol_version = connection.negotiated_protocol_version;
                 entry.snapshot.protocol_decision_reason = connection.protocol_decision_reason;
+                entry.snapshot.last_error_code = None;
                 entry.snapshot.last_error = None;
                 entry.snapshot.updated_at = now();
                 entry.concurrency = Arc::new(Semaphore::new(
@@ -466,6 +468,7 @@ impl McpRuntimeManager {
             }
             Err(error) => {
                 entry.snapshot.status = McpRuntimeStatus::Failed;
+                entry.snapshot.last_error_code = Some(error.code.to_string());
                 entry.snapshot.last_error = Some(error.to_string());
                 entry.snapshot.updated_at = now();
                 Err(error)
@@ -504,6 +507,7 @@ impl McpRuntimeManager {
                 negotiated_era: None,
                 negotiated_protocol_version: None,
                 protocol_decision_reason: None,
+                last_error_code: None,
                 last_error: None,
                 updated_at: now(),
             };
@@ -590,7 +594,7 @@ impl McpRuntimeManager {
             Ok(tools) => tools,
             Err(error) => {
                 if error.code != OPERATION_CANCELLED && session.is_closed() {
-                    self.schedule_reconnect(key.clone(), error.to_string());
+                    self.schedule_reconnect(key.clone(), error.clone());
                 }
                 return Err(error);
             }
@@ -712,20 +716,20 @@ impl McpRuntimeManager {
         drop(permit);
         if let Err(error) = &result {
             if error.code != OPERATION_CANCELLED && session.is_closed() {
-                self.schedule_reconnect(key.clone(), error.to_string());
+                self.schedule_reconnect(key.clone(), error.clone());
             }
         }
         result
     }
 
-    fn schedule_reconnect(&self, key: McpRuntimeKey, reason: String) {
+    fn schedule_reconnect(&self, key: McpRuntimeKey, reason: McpRuntimeError) {
         let runtime = self.clone();
         tokio::spawn(async move {
             runtime.reconnect_after_failure(&key, reason).await;
         });
     }
 
-    async fn reconnect_after_failure(&self, key: &McpRuntimeKey, reason: String) {
+    async fn reconnect_after_failure(&self, key: &McpRuntimeKey, reason: McpRuntimeError) {
         if self.shutting_down.load(Ordering::Acquire) {
             return;
         }
@@ -739,7 +743,8 @@ impl McpRuntimeManager {
                 return;
             }
             entry.snapshot.status = McpRuntimeStatus::Reconnecting;
-            entry.snapshot.last_error = Some(reason);
+            entry.snapshot.last_error_code = Some(reason.code.to_string());
+            entry.snapshot.last_error = Some(reason.to_string());
             entry.snapshot.updated_at = now();
             (entry.session.take(), entry.config_fingerprint.clone())
         };
@@ -755,6 +760,7 @@ impl McpRuntimeManager {
         let started = Instant::now();
         let reconnect_budget = Duration::from_secs(30);
         let mut last_error = "MCP reconnect did not run.".to_string();
+        let mut last_error_code = "MCP_RUNTIME_RECONNECT_FAILED".to_string();
 
         for attempt in 0..5usize {
             let delay = Duration::from_millis(500u64.saturating_mul(1u64 << attempt.min(3)));
@@ -815,6 +821,7 @@ impl McpRuntimeManager {
                     Ok(result) => result,
                     Err(_) => {
                         last_error = "MCP reconnect exceeded its 30-second circuit budget.".into();
+                        last_error_code = "MCP_RUNTIME_RECONNECT_TIMEOUT".into();
                         break;
                     }
                 };
@@ -867,6 +874,7 @@ impl McpRuntimeManager {
                     entry.snapshot.negotiated_protocol_version =
                         connection.negotiated_protocol_version;
                     entry.snapshot.protocol_decision_reason = connection.protocol_decision_reason;
+                    entry.snapshot.last_error_code = None;
                     entry.snapshot.last_error = None;
                     entry.snapshot.updated_at = now();
                     entry.concurrency = Arc::new(Semaphore::new(
@@ -876,6 +884,7 @@ impl McpRuntimeManager {
                     return;
                 }
                 Err(error) => {
+                    last_error_code = error.code.to_string();
                     last_error = error.to_string();
                     let mut state = self.state.lock().await;
                     let Some(entry) = state.entries.get_mut(&logical_key) else {
@@ -886,6 +895,7 @@ impl McpRuntimeManager {
                     {
                         return;
                     }
+                    entry.snapshot.last_error_code = Some(last_error_code.clone());
                     entry.snapshot.last_error = Some(last_error.clone());
                     entry.snapshot.updated_at = now();
                 }
@@ -897,6 +907,7 @@ impl McpRuntimeManager {
             if entry.snapshot.key == *key && entry.snapshot.status == McpRuntimeStatus::Reconnecting
             {
                 entry.snapshot.status = McpRuntimeStatus::Failed;
+                entry.snapshot.last_error_code = Some(last_error_code);
                 entry.snapshot.last_error = Some(format!(
                     "MCP reconnect circuit opened after repeated failures: {last_error}"
                 ));
@@ -918,6 +929,7 @@ impl McpRuntimeManager {
                 .values_mut()
                 .filter_map(|entry| {
                     entry.snapshot.status = McpRuntimeStatus::Disconnected;
+                    entry.snapshot.last_error_code = None;
                     entry.snapshot.last_error = None;
                     entry.snapshot.updated_at = now();
                     entry.catalog = None;
@@ -1029,6 +1041,7 @@ impl McpRuntimeManager {
             entry.snapshot.negotiated_era = None;
             entry.snapshot.negotiated_protocol_version = None;
             entry.snapshot.protocol_decision_reason = None;
+            entry.snapshot.last_error_code = Some(error.code.to_string());
             entry.snapshot.last_error = Some(error.to_string());
             entry.snapshot.updated_at = now();
             entry.config_fingerprint = "invalid".to_string();
@@ -1764,6 +1777,10 @@ mod tests {
             })
         );
         assert_eq!(snapshot.servers[0].status, McpRuntimeStatus::Failed);
+        assert_eq!(
+            snapshot.servers[0].last_error_code.as_deref(),
+            Some(CONNECTOR_UNAVAILABLE)
+        );
         assert!(snapshot.servers[0]
             .last_error
             .as_deref()
