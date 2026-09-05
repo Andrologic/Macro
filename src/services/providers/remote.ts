@@ -258,6 +258,14 @@ export const archiveProject = async (_data: {
   projectId: string;
 }): Promise<ProjectDto> => remoteUnsupported('archiveProject');
 
+export const restoreProjectGroup = async (_data: {
+  groupId: string;
+}): Promise<{ projectGroup: ProjectGroup }> => remoteUnsupported('restoreProjectGroup');
+
+export const restoreProject = async (_data: {
+  projectId: string;
+}): Promise<ProjectDto> => remoteUnsupported('restoreProject');
+
 export const removeProjectGroup = async (_data: {
   groupId: string;
 }): Promise<{ projectGroups: ProjectGroup[] }> => remoteUnsupported('removeProjectGroup');
@@ -466,6 +474,8 @@ export const provider: ServiceProvider = {
   previewProjectAccessChange,
   archiveProjectGroup,
   archiveProject,
+  restoreProjectGroup,
+  restoreProject,
   removeProjectGroup,
   removeProject,
   debugResetProject,

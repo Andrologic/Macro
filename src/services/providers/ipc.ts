@@ -489,6 +489,20 @@ export const archiveProject = async (data: {
   return { project };
 };
 
+export const restoreProjectGroup = async (data: {
+  groupId: string;
+}): Promise<{ projectGroup: ProjectGroup }> => {
+  const projectGroup = await tauriIpc.workspaceRestoreProjectGroup({ groupId: data.groupId });
+  return { projectGroup };
+};
+
+export const restoreProject = async (data: {
+  projectId: string;
+}): Promise<ProjectDto> => {
+  const project = await tauriIpc.workspaceRestoreProject({ projectId: data.projectId });
+  return { project };
+};
+
 export const removeProjectGroup = async (data: {
   groupId: string;
 }): Promise<{ projectGroups: ProjectGroup[] }> => {
@@ -667,6 +681,8 @@ export const provider: ServiceProvider = {
   previewProjectAccessChange,
   archiveProjectGroup,
   archiveProject,
+  restoreProjectGroup,
+  restoreProject,
   removeProjectGroup,
   removeProject,
   debugResetProject,

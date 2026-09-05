@@ -612,6 +612,11 @@ export interface Project {
   wslLinuxPath?: string | null;
   created_at: string;
   status: ProjectStatus;
+  archivedAt?: string | null;
+  archivedFromStatus?: Exclude<ProjectStatus, 'archived'> | null;
+  groupArchivePreviousStatus?: ProjectStatus | null;
+  groupArchivePreviousArchivedAt?: string | null;
+  groupArchivePreviousArchivedFromStatus?: Exclude<ProjectStatus, 'archived'> | null;
   gitFlowSettings?: ProjectGitFlowSettings;
   userReadOnly?: boolean;
   directEdit?: boolean;

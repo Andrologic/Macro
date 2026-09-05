@@ -137,6 +137,10 @@ export const services = {
     callProviderMethod('archiveProjectGroup', data),
   archiveProject: (data: Parameters<ServiceProvider['archiveProject']>[0]) =>
     callProviderMethod('archiveProject', data),
+  restoreProjectGroup: (data: Parameters<ServiceProvider['restoreProjectGroup']>[0]) =>
+    callProviderMethod('restoreProjectGroup', data),
+  restoreProject: (data: Parameters<ServiceProvider['restoreProject']>[0]) =>
+    callProviderMethod('restoreProject', data),
   removeProjectGroup: (data: Parameters<ServiceProvider['removeProjectGroup']>[0]) =>
     callProviderMethod('removeProjectGroup', data),
   removeProject: (data: Parameters<ServiceProvider['removeProject']>[0]) =>
