@@ -137,6 +137,17 @@ describe("chatLocalSessionState", () => {
     expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toBeDefined();
   });
 
+  it("recovers valid images beside an invalid image without replacing the raw history", () => {
+    const image = { id: "valid", mimeType: "image/png", dataUrl: "data:image/png;base64,YQ==", createdAt: "2026-09-05T10:00:00Z" };
+    const raw = JSON.stringify({ message: [image, { id: "invalid", dataUrl: "bad" }] });
+    window.localStorage.setItem("macro_chat_message_images", raw);
+    const recovered = loadMessageImagesFromStorage();
+    expect(recovered).toEqual({ message: [image] });
+    expect(saveMessageImagesToStorage(recovered)).toBe(false);
+    expect(window.localStorage.getItem("macro_chat_message_images")).toBe(raw);
+    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toBeDefined();
+  });
+
   it("rejects oversized history before parsing it", () => {
     window.localStorage.setItem("macro_chat_message_images", " ".repeat(40_000_001));
     expect(loadMessageImagesFromStorage()).toEqual({});

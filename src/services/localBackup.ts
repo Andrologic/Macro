@@ -25,11 +25,13 @@ export const applyBackupBrowserState = (browser: Record<string, string>): void =
   }
 };
 
-export const restoreBackupBrowserState = async (): Promise<void> => {
-  if (!ipc.isTauriAvailable()) return;
+export const restoreBackupBrowserState = async (): Promise<boolean> => {
+  if (!ipc.isTauriAvailable()) return false;
   const status = await ipc.localBackupStatus();
   if (status.browser !== null) {
     applyBackupBrowserState(status.browser);
     await ipc.localBackupAcknowledge();
+    return true;
   }
+  return false;
 };

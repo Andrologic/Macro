@@ -243,12 +243,22 @@ const parseMessageImages = (raw: string, recover = false): Record<string, Messag
   if (!isRecord(parsed)) throw new Error("Invalid stored message images. Original data preserved.");
   const entries = Object.entries(parsed);
   if (entries.length > MAX_MESSAGES_WITH_IMAGES) throw new Error("Too many stored message images. Original data preserved.");
-  const valid = entries.filter(([key, images]) => key.length > 0 && isBoundedString(key) && Array.isArray(images) && images.length <= MAX_COMPOSER_DRAFT_IMAGES && images.every(isMessageImageAttachment));
-  if (valid.length !== entries.length) {
+  const valid: Array<[string, MessageImageAttachment[]]> = [];
+  let damaged = false;
+  for (const [key, images] of entries) {
+    if (!key || !isBoundedString(key) || !Array.isArray(images) || images.length > MAX_COMPOSER_DRAFT_IMAGES) {
+      damaged = true;
+      continue;
+    }
+    const recovered = images.filter(isMessageImageAttachment);
+    if (recovered.length !== images.length) damaged = true;
+    if (recovered.length > 0 || images.length === 0) valid.push([key, recovered]);
+  }
+  if (damaged) {
     if (!recover) throw new Error("Invalid stored message images. Original data preserved.");
     reportPersistenceIssue(MESSAGE_IMAGES_STORAGE_KEY, "Some stored message images are invalid. Valid images were recovered; the original data is preserved.");
   }
-  return Object.fromEntries(valid) as Record<string, MessageImageAttachment[]>;
+  return Object.fromEntries(valid);
 };
 
 export const loadMessageImagesFromStorage = (): Record<string, MessageImageAttachment[]> => {

@@ -102,11 +102,19 @@ const renderApp = (): void => {
 };
 
 void restoreBackupBrowserState()
-  .then(() => initializeConfigRuntime()
-    .then(() => Promise.all([initializeI18n(), refreshWebSearchSettings()]))
-    .then(() => { installConfigRuntimeEffects(); })
-    .catch((error) => { console.error("Failed to initialize Macro runtime:", error); })
-    .finally(renderApp))
+  .then((restored) => {
+    // Stores can read localStorage while their modules are imported. Reload once
+    // after durable acknowledgement so every store starts from restored values.
+    if (restored) {
+      window.location.reload();
+      return;
+    }
+    return initializeConfigRuntime()
+      .then(() => Promise.all([initializeI18n(), refreshWebSearchSettings()]))
+      .then(() => { installConfigRuntimeEffects(); })
+      .catch((error) => { console.error("Failed to initialize Macro runtime:", error); })
+      .finally(renderApp);
+  })
   .catch((error) => {
     // Do not hydrate Chat against a partially restored profile.
     rootElement.textContent = `Profile restoration could not finish: ${String(error)}. Original browser data and native rollback archive are preserved. Free local storage and restart Macro to retry.`;
