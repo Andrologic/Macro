@@ -2128,10 +2128,10 @@ export const createFileChangesStore = (
         await hydrateDiffModalFile(visibleTarget.repositoryId, visibleTarget.changeId);
       }
     } catch (error) {
-      cancelActiveReviewRequests();
       if (isStaleRequest(nextLoadRequestId, task.id)) {
         return;
       }
+      cancelActiveReviewRequests();
 
       const serviceError = toServiceError(error);
       const latestState = get();

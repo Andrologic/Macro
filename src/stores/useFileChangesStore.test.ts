@@ -1632,6 +1632,71 @@ describe('useFileChangesStore', () => {
     expect(gitCancelReviewMock).toHaveBeenCalledWith(requestId);
   });
 
+  it('does not cancel the current task snapshot when an old task snapshot rejects late', async () => {
+    appStoreState.selectedProjectId = 'project-a';
+    let rejectOldSnapshot!: (error: Error) => void;
+    let releaseCurrentSnapshot!: () => void;
+    let markOldStarted!: () => void;
+    let markCurrentStarted!: () => void;
+    const oldStarted = new Promise<void>((resolve) => { markOldStarted = resolve; });
+    const currentStarted = new Promise<void>((resolve) => { markCurrentStarted = resolve; });
+    const oldGate = new Promise<never>((_, reject) => { rejectOldSnapshot = reject; });
+    const currentGate = new Promise<void>((resolve) => { releaseCurrentSnapshot = resolve; });
+    let currentRequestId: string | undefined;
+    const gitReviewSnapshotMock = mock(async (_repoPath: string, requestId?: string) => {
+      if (appStoreState.selectedTaskId === 'task-1') {
+        markOldStarted();
+        return oldGate;
+      }
+      currentRequestId = requestId;
+      markCurrentStarted();
+      await currentGate;
+      return { branch: 'feature/task-a', changes: [], stagedPaths: [],
+        conflictedFiles: [], mergeInProgress: false, isClean: true };
+    });
+    const gitCancelReviewMock = mock(async (_requestId: string) => undefined);
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        gitReviewSnapshot: gitReviewSnapshotMock,
+        gitCancelReview: gitCancelReviewMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: () => undefined,
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    const oldLoad = useFileChangesStore.getState().loadCurrentChanges();
+    await oldStarted;
+    appStoreState.selectedTaskId = 'task-2';
+    const currentLoad = useFileChangesStore.getState().loadCurrentChanges();
+    await currentStarted;
+    rejectOldSnapshot(new Error('old task snapshot rejected'));
+    await oldLoad;
+    const cancelledRequests = gitCancelReviewMock.mock.calls.map(([requestId]) => requestId);
+    releaseCurrentSnapshot();
+    await currentLoad;
+    expect(currentRequestId).toBeDefined();
+    expect(cancelledRequests).not.toContain(currentRequestId);
+    expect(useFileChangesStore.getState().currentTaskId).toBe('task-2');
+    expect(useFileChangesStore.getState().currentTaskLoadState).toBe('ready');
+    expect(useFileChangesStore.getState().getRepository(repositoryIdA)).toBeDefined();
+    expect(useFileChangesStore.getState().lastError).toBeNull();
+  });
+
   it('cancels sibling review requests when one repository snapshot fails', async () => {
     const pendingRequestIds: string[] = [];
     const gitReviewSnapshotMock = mock(async (repoPath: string, requestId?: string) => {
