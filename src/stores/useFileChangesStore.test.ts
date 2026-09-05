@@ -985,6 +985,8 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().staleDirectRepositoryId).toBe(directRepositoryId);
     const selectedBeforeRefresh = useFileChangesStore.getState().selectedDiffTarget;
     useFileChangesStore.getState().updateRightDraft('unsaved review edit');
+    await expect(useFileChangesStore.getState().saveRightDraft()).rejects.toThrow('Refresh review');
+    expect(fsWriteFileMock).not.toHaveBeenCalled();
     const snapshotCalls = directReviewSnapshotMock.mock.calls.length;
     await useFileChangesStore.getState().loadCurrentChanges({ silent: true });
     expect(directReviewSnapshotMock.mock.calls.length).toBe(snapshotCalls);

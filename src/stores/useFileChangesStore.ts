@@ -2606,6 +2606,7 @@ export const createFileChangesStore = (
   },
 
   saveRightDraft: async () => {
+    if (get().staleDirectRepositoryId) throw new Error(tChanges('implement.refreshReview', 'Refresh review'));
     const session = get().diffModalSession;
     if (!session) return;
     const repository = get().getRepository(session.repositoryId);
