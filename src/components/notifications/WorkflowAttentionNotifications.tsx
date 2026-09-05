@@ -10,6 +10,8 @@ import {
   detectNewChatAttentionEvents,
   getActiveChatAttentionKeys,
   detectNewReviewAttentionEvents,
+  hasChatAttentionStateChanged,
+  hasReviewAttentionStateChanged,
   type WorkflowAttentionEvent,
 } from '../../services/workflowAttentionEvents';
 import { getScopedProjectIds } from '../../services/globalProjects';
@@ -132,10 +134,22 @@ export const reconcileWorkflowAttentionNotifications = (): void => {
   }
 };
 
-export const subscribeToWorkflowAttentionNotifications = (t: TFunction) => {
+export interface WorkflowAttentionSubscriptionDiagnostics {
+  onChatRecalculation?: () => void;
+  onTaskRecalculation?: () => void;
+}
+
+export const subscribeToWorkflowAttentionNotifications = (
+  t: TFunction,
+  diagnostics?: WorkflowAttentionSubscriptionDiagnostics,
+) => {
   void initializeDesktopNotifications();
   reconcileWorkflowAttentionNotifications();
   const unsubscribeChat = useChatStore.subscribe((nextState, previousState) => {
+    if (!hasChatAttentionStateChanged(previousState, nextState)) {
+      return;
+    }
+    diagnostics?.onChatRecalculation?.();
     const events = detectNewChatAttentionEvents(
       previousState,
       nextState,
@@ -145,6 +159,10 @@ export const subscribeToWorkflowAttentionNotifications = (t: TFunction) => {
     reconcileWorkflowAttentionNotifications();
   });
   const unsubscribeTasks = useTaskStore.subscribe((nextState, previousState) => {
+    if (!hasReviewAttentionStateChanged(previousState.tasks, nextState.tasks)) {
+      return;
+    }
+    diagnostics?.onTaskRecalculation?.();
     const events = detectNewReviewAttentionEvents(
       previousState.tasks,
       nextState.tasks,

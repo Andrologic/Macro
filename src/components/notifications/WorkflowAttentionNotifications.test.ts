@@ -591,4 +591,80 @@ describe('workflow attention notification subscriptions', () => {
     expect(notifyActionRequired).not.toHaveBeenCalled();
     unsubscribe();
   });
+
+  it('skips attention recalculation for ordinary streaming fragments', () => {
+    const conversation = makeConversation();
+    const streamingMessage: ChatMessage = {
+      id: 'streaming-message',
+      task_id: conversation.task_id ?? '',
+      conversation_id: conversation.id,
+      role: 'assistant',
+      content: '',
+      timestamp: '2026-09-04T10:01:00.000Z',
+    };
+    chatState = {
+      ...chatState,
+      conversations: [conversation],
+      messages: [streamingMessage],
+      messagesByConversationId: { [conversation.id]: [streamingMessage] },
+    };
+    let chatRecalculations = 0;
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t, {
+      onChatRecalculation: () => {
+        chatRecalculations += 1;
+      },
+    });
+
+    const streamUpdateCount = 250;
+    for (let index = 0; index < streamUpdateCount; index += 1) {
+      const updatedMessage = {
+        ...chatState.messages[0]!,
+        content: `${chatState.messages[0]!.content}x`,
+      };
+      updateChatState({
+        conversations: [{
+          ...chatState.conversations[0]!,
+          last_message: updatedMessage.content,
+          updated_at: new Date(Date.UTC(2026, 8, 4, 10, 1, index)).toISOString(),
+        }],
+        messages: [updatedMessage],
+        messagesByConversationId: { [conversation.id]: [updatedMessage] },
+      });
+    }
+
+    expect(streamUpdateCount).toBe(250);
+    expect(chatRecalculations).toBe(0);
+    expect(notifyActionRequired).not.toHaveBeenCalled();
+
+    const questionnaire = makeQuestionnaire(conversation);
+    updateChatState({
+      messages: [questionnaire],
+      messagesByConversationId: { [conversation.id]: [questionnaire] },
+    });
+
+    expect(chatRecalculations).toBe(1);
+    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('skips review recalculation when task updates do not change attention', () => {
+    taskState = { tasks: [makeTask('InProgress')] };
+    let taskRecalculations = 0;
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t, {
+      onTaskRecalculation: () => {
+        taskRecalculations += 1;
+      },
+    });
+
+    updateTaskState([{
+      ...taskState.tasks[0]!,
+      description: 'A progress-only update',
+    }]);
+    expect(taskRecalculations).toBe(0);
+
+    updateTaskState([makeTask('InReview')]);
+    expect(taskRecalculations).toBe(1);
+    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
 });
