@@ -1529,6 +1529,7 @@ export const createFileChangesStore = (
   return create<FileChangesState>((set, get) => {
     let reviewRequestSequence = 0;
     let reviewVisitSequence = 0;
+    let expiredReviewRefreshPromise: Promise<void> | null = null;
     const reviewRequestNamespace = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     const activeReviewRequestIds = new Set<string>();
     const nextReviewRequestId = (scope: string): string => {
@@ -1779,25 +1780,53 @@ export const createFileChangesStore = (
     }
   },
   refreshExpiredReview: async () => {
-    const state = get();
-    const repositoryId = state.staleDirectRepositoryId;
-    if (!repositoryId) return;
-    set({ reviewedChanges: Object.fromEntries(Object.entries(state.reviewedChanges)
-      .filter(([id]) => !state.getRepository(repositoryId)?.changes.some((change) => change.id === id))) });
-    await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true, refreshExpired: true });
-    const refreshed = get();
-    if (refreshed.currentTaskId !== state.currentTaskId || refreshed.lastError || refreshed.reviewSuspension) return;
-    set((current) => ({ staleDirectRepositoryId: null,
-      repositories: updateRepositoryState(current.repositories, repositoryId, (repository) => ({ ...repository,
-        lastError: null })),
-    }));
-    const target = refreshed.selectedDiffTarget;
-    if (target) {
-      const repository = refreshed.getRepository(target.repositoryId);
-      set((current) => ({ diffModalSession: current.diffModalSession ? { ...current.diffModalSession,
-        directSnapshotId: repository?.directSnapshotId,
-        restoreRevision: repository?.restoreRevisions?.[get().getChange(target.repositoryId, target.changeId)?.path ?? ''],
-      } : null }));
+    if (expiredReviewRefreshPromise) {
+      await expiredReviewRefreshPromise;
+      return;
+    }
+
+    const refreshPromise = (async () => {
+      const state = get();
+      const repositoryId = state.staleDirectRepositoryId;
+      if (!repositoryId) return;
+      set({ reviewedChanges: Object.fromEntries(Object.entries(state.reviewedChanges)
+        .filter(([id]) => !state.getRepository(repositoryId)?.changes.some((change) => change.id === id))) });
+      const loadPromise = get().loadCurrentChanges({
+        silent: true,
+        preserveDiffModalSession: true,
+        refreshExpired: true,
+      });
+      const refreshLoadRequestId = get().loadRequestId;
+      await loadPromise;
+      const refreshed = get();
+      if (
+        refreshed.loadRequestId !== refreshLoadRequestId ||
+        refreshed.currentTaskId !== state.currentTaskId ||
+        resolveSelectedTask(deps)?.id !== state.currentTaskId ||
+        refreshed.currentTaskLoadState !== 'ready' ||
+        refreshed.lastError ||
+        refreshed.reviewSuspension
+      ) return;
+      set((current) => ({ staleDirectRepositoryId: null,
+        repositories: updateRepositoryState(current.repositories, repositoryId, (repository) => ({ ...repository,
+          lastError: null })),
+      }));
+      const target = refreshed.selectedDiffTarget;
+      if (target) {
+        const repository = refreshed.getRepository(target.repositoryId);
+        set((current) => ({ diffModalSession: current.diffModalSession ? { ...current.diffModalSession,
+          directSnapshotId: repository?.directSnapshotId,
+          restoreRevision: repository?.restoreRevisions?.[get().getChange(target.repositoryId, target.changeId)?.path ?? ''],
+        } : null }));
+      }
+    })();
+    expiredReviewRefreshPromise = refreshPromise;
+    try {
+      await refreshPromise;
+    } finally {
+      if (expiredReviewRefreshPromise === refreshPromise) {
+        expiredReviewRefreshPromise = null;
+      }
     }
   },
 

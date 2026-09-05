@@ -876,34 +876,43 @@ describe('useFileChangesStore', () => {
     let directStaged = false;
     let directAccepted = false;
     let directRestoreRevision = 'v1:test';
-    const directReviewSnapshotMock = mock(async () => ({
-      branch: 'direct',
-      stagedPaths: directStaged && !directAccepted ? ['src/main.ts'] : [],
-      changes: directAccepted ? [] : [{
-        path: 'src/main.ts',
-        status: 'modified',
-        additions: 1,
-        deletions: 1,
-        hasPendingVisibleChange: !directStaged,
-        hasValidatedStage: directStaged,
-        validatedRemovedLineNumbers: directStaged ? [1] : [],
-        validatedAddedLineNumbers: directStaged ? [1] : [],
-        isBinary: false,
-        tooLarge: false,
-        requiresHydration: false,
-        originalContent: 'const value = 1;',
-        indexContent: directStaged ? 'const value = 2;' : 'const value = 1;',
-        modifiedContent: 'const value = 2;',
-        language: 'TypeScript',
-        hunks: [],
-      }],
-      conflictedFiles: [],
-      mergeInProgress: false,
-      isClean: directAccepted,
-      hasAcceptedChanges: directAccepted,
-      snapshotId: `snapshot-${directRestoreRevision}`,
-      restoreRevisions: { 'src/main.ts': directRestoreRevision },
-    }));
+    let refreshSnapshotGate: Promise<void> | null = null;
+    let markRefreshSnapshotStarted: (() => void) | null = null;
+    const directReviewSnapshotMock = mock(async () => {
+      const gate = refreshSnapshotGate;
+      if (gate) {
+        markRefreshSnapshotStarted?.();
+        await gate;
+      }
+      return {
+        branch: 'direct',
+        stagedPaths: directStaged && !directAccepted ? ['src/main.ts'] : [],
+        changes: directAccepted ? [] : [{
+          path: 'src/main.ts',
+          status: 'modified',
+          additions: 1,
+          deletions: 1,
+          hasPendingVisibleChange: !directStaged,
+          hasValidatedStage: directStaged,
+          validatedRemovedLineNumbers: directStaged ? [1] : [],
+          validatedAddedLineNumbers: directStaged ? [1] : [],
+          isBinary: false,
+          tooLarge: false,
+          requiresHydration: false,
+          originalContent: 'const value = 1;',
+          indexContent: directStaged ? 'const value = 2;' : 'const value = 1;',
+          modifiedContent: 'const value = 2;',
+          language: 'TypeScript',
+          hunks: [],
+        }],
+        conflictedFiles: [],
+        mergeInProgress: false,
+        isClean: directAccepted,
+        hasAcceptedChanges: directAccepted,
+        snapshotId: `snapshot-${directRestoreRevision}`,
+        restoreRevisions: { 'src/main.ts': directRestoreRevision },
+      };
+    });
     const directStagePathsMock = mock(async () => {
       directStaged = true;
     });
@@ -991,6 +1000,48 @@ describe('useFileChangesStore', () => {
     await useFileChangesStore.getState().loadCurrentChanges({ silent: true });
     expect(directReviewSnapshotMock.mock.calls.length).toBe(snapshotCalls);
     await expect(useFileChangesStore.getState().stageChanges(directRepositoryId, [changeId!])).rejects.toThrow('Refresh review');
+
+    let releaseRefreshSnapshot: () => void = () => undefined;
+    refreshSnapshotGate = new Promise<void>((resolve) => {
+      releaseRefreshSnapshot = resolve;
+    });
+    const refreshSnapshotStarted = new Promise<void>((resolve) => {
+      markRefreshSnapshotStarted = resolve;
+    });
+    const firstRefresh = useFileChangesStore.getState().refreshExpiredReview();
+    const secondRefresh = useFileChangesStore.getState().refreshExpiredReview();
+    await refreshSnapshotStarted;
+
+    expect(directReviewSnapshotMock.mock.calls.length).toBe(snapshotCalls + 1);
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBe(directRepositoryId);
+    await expect(useFileChangesStore.getState().saveRightDraft()).rejects.toThrow('Refresh review');
+    expect(fsWriteFileMock).not.toHaveBeenCalled();
+
+    useFileChangesStore.getState().cancelReviewLoad();
+    releaseRefreshSnapshot();
+    await Promise.all([firstRefresh, secondRefresh]);
+    refreshSnapshotGate = null;
+
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBe(directRepositoryId);
+    await expect(useFileChangesStore.getState().saveRightDraft()).rejects.toThrow('Refresh review');
+    expect(fsWriteFileMock).not.toHaveBeenCalled();
+
+    refreshSnapshotGate = new Promise<void>((resolve) => {
+      releaseRefreshSnapshot = resolve;
+    });
+    const refreshAfterTaskChangeStarted = new Promise<void>((resolve) => {
+      markRefreshSnapshotStarted = resolve;
+    });
+    const refreshBeforeTaskChange = useFileChangesStore.getState().refreshExpiredReview();
+    await refreshAfterTaskChangeStarted;
+    appStoreState.selectedTaskId = 'task-1';
+    releaseRefreshSnapshot();
+    await refreshBeforeTaskChange;
+    refreshSnapshotGate = null;
+
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBe(directRepositoryId);
+    appStoreState.selectedTaskId = 'task-6';
+
     await useFileChangesStore.getState().refreshExpiredReview();
     expect(useFileChangesStore.getState().selectedDiffTarget).toEqual(selectedBeforeRefresh);
     expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe('unsaved review edit');
