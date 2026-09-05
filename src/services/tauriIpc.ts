@@ -1526,11 +1526,13 @@ export interface MessageSearchPage {
 
 export async function searchMessages(params: {
   query: string;
+  conversationIds: string[];
   limit?: number;
   offset?: number;
 }): Promise<MessageSearchPage> {
   return invoke<MessageSearchPage>("db_search_messages", {
     query: params.query,
+    conversationIds: params.conversationIds,
     limit: params.limit ?? 25,
     offset: params.offset ?? 0,
   });

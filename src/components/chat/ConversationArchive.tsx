@@ -528,12 +528,17 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     [chatConversationIds],
   );
 
-  const runMessageSearch = useCallback(async (query: string, offset: number, append: boolean) => {
+  const runMessageSearch = useCallback(async (
+    query: string,
+    conversationIds: string[],
+    offset: number,
+    append: boolean,
+  ) => {
     const requestId = ++messageSearchRequestRef.current;
     setIsMessageSearchLoading(true);
     setMessageSearchError(null);
     try {
-      const page = await searchMessages({ query, offset, limit: 25 });
+      const page = await searchMessages({ query, conversationIds, offset, limit: 25 });
       if (requestId !== messageSearchRequestRef.current) return;
       setMessageSearchResults((current) => append ? [...current, ...page.results] : page.results);
       setMessageSearchNextOffset(page.nextOffset);
@@ -547,21 +552,31 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     }
   }, []);
 
+  const searchableConversationIds = useMemo(
+    () => chatConversations
+      .filter((conversation) => archivedIds.has(conversation.id) === showArchived)
+      .map((conversation) => conversation.id),
+    [archivedIds, chatConversations, showArchived],
+  );
+
   useEffect(() => {
+    messageSearchRequestRef.current += 1;
+    setMessageSearchResults([]);
+    setMessageSearchNextOffset(null);
+    setMessageSearchError(null);
+    setIsMessageSearchLoading(false);
     const query = searchQuery.trim();
     if (query.length < 2) {
-      messageSearchRequestRef.current += 1;
-      setMessageSearchResults([]);
-      setMessageSearchNextOffset(null);
-      setMessageSearchError(null);
-      setIsMessageSearchLoading(false);
       return;
     }
     const timeout = window.setTimeout(() => {
-      void runMessageSearch(query, 0, false);
+      void runMessageSearch(query, searchableConversationIds, 0, false);
     }, 180);
-    return () => window.clearTimeout(timeout);
-  }, [runMessageSearch, searchQuery]);
+    return () => {
+      window.clearTimeout(timeout);
+      messageSearchRequestRef.current += 1;
+    };
+  }, [runMessageSearch, searchQuery, searchableConversationIds]);
 
   const visibleMessageSearchResults = useMemo(
     () => messageSearchResults.filter((result) =>
@@ -1166,7 +1181,12 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
               <button
                 type="button"
                 disabled={isMessageSearchLoading}
-                onClick={() => void runMessageSearch(searchQuery.trim(), messageSearchNextOffset, true)}
+                onClick={() => void runMessageSearch(
+                  searchQuery.trim(),
+                  searchableConversationIds,
+                  messageSearchNextOffset,
+                  true,
+                )}
                 className="mt-1 w-full rounded-md px-2 py-1.5 text-xs text-primary hover:bg-accent disabled:opacity-50"
               >
                 {t('chat.loadMoreMessageResults', 'Load more')}

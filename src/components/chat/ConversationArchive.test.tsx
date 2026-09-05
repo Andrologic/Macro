@@ -29,10 +29,16 @@ describe('ConversationArchive', () => {
   const initialChatState = useChatStore.getState();
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
-  let invokeMock = mock(async (_command?: string): Promise<unknown> => undefined);
+  let invokeMock = mock(async (
+    _command?: string,
+    _payload?: Record<string, unknown>,
+  ): Promise<unknown> => undefined);
 
   beforeEach(() => {
-    invokeMock = mock(async (_command?: string): Promise<unknown> => undefined);
+    invokeMock = mock(async (
+      _command?: string,
+      _payload?: Record<string, unknown>,
+    ): Promise<unknown> => undefined);
     installTauriRuntimeMock(invokeMock as never);
     useViewFilterStore.setState({
       chat: { ...DEFAULT_CHAT_VIEW_FILTERS },
@@ -283,7 +289,10 @@ describe('ConversationArchive', () => {
   });
 
   it('opens an indexed message result and focuses the message after loading its conversation', async () => {
-    invokeMock = mock(async (command?: string): Promise<unknown> => {
+    invokeMock = mock(async (
+      command?: string,
+      _payload?: Record<string, unknown>,
+    ): Promise<unknown> => {
       if (command === 'db_search_messages') {
         return {
           results: [{
@@ -336,6 +345,12 @@ describe('ConversationArchive', () => {
       '[data-message-search-result="message-not-loaded"]',
     );
     expect(invokeMock.mock.calls.some((call) => call[0] === 'db_search_messages')).toBe(true);
+    expect(invokeMock.mock.calls.find((call) => call[0] === 'db_search_messages')?.[1]).toMatchObject({
+      conversationIds: ['conversation-1'],
+      query: 'needle',
+      limit: 25,
+      offset: 0,
+    });
     expect(result?.textContent).toContain('Indexed needle');
     await act(async () => {
       result?.click();

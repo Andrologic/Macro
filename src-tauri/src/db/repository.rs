@@ -27,6 +27,7 @@ fn message_search_expression(query: &str) -> Option<String> {
 pub async fn search_messages(
     pool: &SqlitePool,
     query: &str,
+    conversation_ids: &[String],
     limit: i64,
     offset: i64,
 ) -> DbResult<MessageSearchPage> {
@@ -36,6 +37,14 @@ pub async fn search_messages(
             next_offset: None,
         });
     };
+    if conversation_ids.is_empty() {
+        return Ok(MessageSearchPage {
+            results: Vec::new(),
+            next_offset: None,
+        });
+    }
+    let conversation_scope = serde_json::to_string(conversation_ids)
+        .map_err(|error| DbError::Validation(format!("Invalid message search scope: {error}")))?;
     let limit = limit.clamp(1, MESSAGE_SEARCH_MAX_LIMIT);
     let offset = offset.max(0);
     let rows = sqlx::query(
@@ -52,11 +61,13 @@ pub async fn search_messages(
         JOIN messages ON messages.rowid = message_search.rowid
         JOIN conversations ON conversations.id = messages.conversation_id
         WHERE message_search MATCH ?
+          AND messages.conversation_id IN (SELECT value FROM json_each(?))
         ORDER BY bm25(message_search), messages.created_at DESC, messages.id ASC
         LIMIT ? OFFSET ?
         "#,
     )
     .bind(expression)
+    .bind(conversation_scope)
     .bind(limit + 1)
     .bind(offset)
     .fetch_all(pool)
@@ -3423,7 +3434,8 @@ mod tests {
         )
         .await;
 
-        let inserted = search_messages(&pool, "alpha", 25, 0)
+        let scope = vec!["conversation-search".to_string()];
+        let inserted = search_messages(&pool, "alpha", &scope, 25, 0)
             .await
             .expect("search inserted message");
         assert_eq!(inserted.results.len(), 1);
@@ -3433,13 +3445,13 @@ mod tests {
             .execute(&pool)
             .await
             .expect("edit indexed message");
-        assert!(search_messages(&pool, "alpha", 25, 0)
+        assert!(search_messages(&pool, "alpha", &scope, 25, 0)
             .await
             .expect("search old content")
             .results
             .is_empty());
         assert_eq!(
-            search_messages(&pool, "beta", 25, 0)
+            search_messages(&pool, "beta", &scope, 25, 0)
                 .await
                 .expect("search edited content")
                 .results
@@ -3451,7 +3463,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("clear search index");
-        assert!(search_messages(&pool, "beta", 25, 0)
+        assert!(search_messages(&pool, "beta", &scope, 25, 0)
             .await
             .expect("search empty index")
             .results
@@ -3460,7 +3472,7 @@ mod tests {
             .await
             .expect("rebuild search index");
         assert_eq!(
-            search_messages(&pool, "beta", 25, 0)
+            search_messages(&pool, "beta", &scope, 25, 0)
                 .await
                 .expect("search rebuilt index")
                 .results
@@ -3472,7 +3484,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("delete indexed message");
-        assert!(search_messages(&pool, "beta", 25, 0)
+        assert!(search_messages(&pool, "beta", &scope, 25, 0)
             .await
             .expect("search deleted message")
             .results
@@ -3485,7 +3497,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            search_messages(&pool, "restored", 25, 0)
+            search_messages(&pool, "restored", &scope, 25, 0)
                 .await
                 .expect("search restored message")
                 .results
@@ -3508,16 +3520,54 @@ mod tests {
             .await;
         }
 
-        let first = search_messages(&pool, "pagination", 2, 0)
+        let scope = vec!["conversation-page".to_string()];
+        let first = search_messages(&pool, "pagination", &scope, 2, 0)
             .await
             .expect("first search page");
         assert_eq!(first.results.len(), 2);
         assert_eq!(first.next_offset, Some(2));
-        let second = search_messages(&pool, "pagination", 2, first.next_offset.unwrap())
+        let second = search_messages(&pool, "pagination", &scope, 2, first.next_offset.unwrap())
             .await
             .expect("second search page");
         assert_eq!(second.results.len(), 1);
         assert_eq!(second.next_offset, None);
+    }
+
+    #[tokio::test]
+    async fn message_search_filters_conversation_scope_before_pagination() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "conversation-excluded", "Excluded").await;
+        seed_search_conversation(&pool, "conversation-allowed", "Allowed").await;
+        for index in 0..30 {
+            seed_search_message(
+                &pool,
+                &format!("message-a-excluded-{index:02}"),
+                "conversation-excluded",
+                "scoped pagination marker",
+            )
+            .await;
+        }
+        seed_search_message(
+            &pool,
+            "message-z-allowed",
+            "conversation-allowed",
+            "scoped pagination marker",
+        )
+        .await;
+
+        let allowed_scope = vec!["conversation-allowed".to_string()];
+        let page = search_messages(&pool, "scoped", &allowed_scope, 25, 0)
+            .await
+            .expect("search allowed conversation scope");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].message_id, "message-z-allowed");
+        assert_eq!(page.next_offset, None);
+
+        let empty = search_messages(&pool, "scoped", &[], 25, 0)
+            .await
+            .expect("search empty conversation scope");
+        assert!(empty.results.is_empty());
+        assert_eq!(empty.next_offset, None);
     }
 
     #[tokio::test]
