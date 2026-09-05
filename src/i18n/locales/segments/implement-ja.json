@@ -575,5 +575,32 @@
   "diffRenderFailedDescription": "変更パネルは開いたままです。このファイルを閉じて再試行するか、ファイルを直接確認してください。",
   "reviewBeforeValidation": "変更を検証する前に、保留中の各差分を開いてください。",
   "reviewArtifactBeforeValidation": "検証する前にこの成果物を開いてください。",
-  "taskCommandsPlanMutationActive": "このプランをアーカイブまたは削除する前に、実行中のタスクコマンドを停止してください。"
+  "taskCommandsPlanMutationActive": "このプランをアーカイブまたは削除する前に、実行中のタスクコマンドを停止してください。",
+  "worktreeDiagnostic": {
+    "title": "ワークツリーの診断",
+    "repository": "リポジトリ",
+    "path": "ワークツリーのパス",
+    "expectedBranch": "期待するブランチ",
+    "branch": "現在のブランチ",
+    "state": "状態",
+    "changes": "変更",
+    "unknown": "不明",
+    "dirty": "変更あり",
+    "clean": "変更なし",
+    "repaired": "修復しました",
+    "refused": "修復できませんでした",
+    "repair": "安全に修復",
+    "refresh": "更新",
+    "stopBeforeRepair": "修復前にタスクを停止してください。アーカイブ済みタスクはここでは修復できません。",
+    "branchMismatch": "別のブランチが使われています。変更を保存し、期待するブランチに戻してください。",
+    "protection": "修復は既存のファイルを保持します。ファイルがあるパスは安全な場所にバックアップしてから再試行してください。更新で現在の状態を確認できます。 登録情報のバックアップは共通Gitディレクトリ内のmacro-worktree-backupsに保存されます。",
+    "states": {
+      "absent": "なし",
+      "ready": "準備完了",
+      "stale_registration": "古い登録",
+      "orphan_path": "未登録のパス",
+      "invalid_repo": "無効なリポジトリ"
+    }
+  },
+  "wslCapabilities": "WSLプロジェクトではメタデータ同期、タスクのワークツリー、ファイルレビュー、マージワークフローは利用できません。基本的なGit操作は利用できます。これらのタスクにはローカルクローンを使用してください。"
 }

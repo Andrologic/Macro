@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ProjectCapabilitiesNotice } from '../project/ProjectCapabilitiesNotice';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { Switch } from '../ui/Switch';
@@ -132,6 +133,7 @@ export const TaskProjectCommandsModal: React.FC<TaskProjectCommandsModalProps> =
                 </span>
               </div>
 
+              <ProjectCapabilitiesNotice project={{ path: project.projectPath }} />
               <div className="mt-3">
                 <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {t('implement.worktreeSetupCommandLabel', 'Worktree setup command')}

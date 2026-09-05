@@ -575,5 +575,32 @@
   "diffRenderFailedDescription": "Das Änderungen-Panel blieb geöffnet. Schließe diese Datei und versuche es erneut, oder prüfe die Datei direkt.",
   "reviewBeforeValidation": "Öffnen Sie jeden ausstehenden Diff, bevor Sie die Änderungen bestätigen.",
   "reviewArtifactBeforeValidation": "Öffnen Sie dieses Artefakt, bevor Sie es bestätigen.",
-  "taskCommandsPlanMutationActive": "Beenden Sie aktive Aufgabenbefehle, bevor Sie diesen Plan archivieren oder löschen."
+  "taskCommandsPlanMutationActive": "Beenden Sie aktive Aufgabenbefehle, bevor Sie diesen Plan archivieren oder löschen.",
+  "worktreeDiagnostic": {
+    "title": "Worktree-Diagnose",
+    "repository": "Repository",
+    "path": "Worktree-Pfad",
+    "expectedBranch": "Erwarteter Branch",
+    "branch": "Aktueller Branch",
+    "state": "Status",
+    "changes": "Änderungen",
+    "unknown": "Unbekannt",
+    "dirty": "Änderungen vorhanden",
+    "clean": "Sauber",
+    "repaired": "Worktree repariert",
+    "refused": "Reparatur fehlgeschlagen",
+    "repair": "Sicher reparieren",
+    "refresh": "Aktualisieren",
+    "stopBeforeRepair": "Stoppe die Aufgabe vor der Reparatur. Archivierte Aufgaben können hier nicht repariert werden.",
+    "branchMismatch": "Dieser Worktree verwendet einen anderen Branch. Sichere deine Änderungen und wechsle zum erwarteten Branch.",
+    "protection": "Die Reparatur erhält vorhandene Dateien. Verschiebe einen belegten Pfad zuerst an einen sicheren Sicherungsort. Aktualisieren prüft den aktuellen Status. Registrierungssicherungen bleiben in macro-worktree-backups im gemeinsamen Git-Verzeichnis.",
+    "states": {
+      "absent": "Fehlt",
+      "ready": "Bereit",
+      "stale_registration": "Veraltete Registrierung",
+      "orphan_path": "Nicht registrierter Pfad",
+      "invalid_repo": "Ungültiges Repository"
+    }
+  },
+  "wslCapabilities": "Für WSL-Projekte sind Metadatensynchronisierung, Aufgaben-Worktrees, Dateiprüfung und der Merge-Workflow nicht verfügbar. Grundlegende Git-Operationen bleiben verfügbar. Verwende für diese Aufgaben einen lokalen Klon."
 }

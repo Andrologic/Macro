@@ -575,5 +575,32 @@
   "diffRenderFailedDescription": "The changes panel stayed open. Close this file and retry, or inspect the file directly.",
   "reviewBeforeValidation": "Open every pending diff before validating changes.",
   "reviewArtifactBeforeValidation": "Open this artifact before validating it.",
-  "taskCommandsPlanMutationActive": "Stop active task commands before archiving or deleting this plan."
+  "taskCommandsPlanMutationActive": "Stop active task commands before archiving or deleting this plan.",
+  "worktreeDiagnostic": {
+    "title": "Worktree diagnostic",
+    "repository": "Repository",
+    "path": "Worktree path",
+    "expectedBranch": "Expected branch",
+    "branch": "Current branch",
+    "state": "State",
+    "changes": "Changes",
+    "unknown": "Unknown",
+    "dirty": "Changes present",
+    "clean": "Clean",
+    "repaired": "Worktree repaired",
+    "refused": "Repair could not complete",
+    "repair": "Repair safely",
+    "refresh": "Refresh",
+    "stopBeforeRepair": "Stop the task before repairing its worktree. Archived tasks cannot be repaired here.",
+    "branchMismatch": "This worktree uses another branch. Preserve your changes and check out the expected branch before retrying.",
+    "protection": "Repair preserves existing content. If a path contains files, move it to a safe backup location before retrying. Refresh checks its current state. Registration backups remain in macro-worktree-backups inside the common Git directory.",
+    "states": {
+      "absent": "Absent",
+      "ready": "Ready",
+      "stale_registration": "Stale registration",
+      "orphan_path": "Unregistered path",
+      "invalid_repo": "Invalid repository"
+    }
+  },
+  "wslCapabilities": "For WSL projects, metadata synchronization, task worktrees, file review and the merge workflow are unavailable. Basic Git operations remain available. Use a local clone for these task workflows."
 }

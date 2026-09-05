@@ -3002,7 +3002,7 @@ async fn wsl_git_remote_add_origin(repo_path: &WslProjectPath, url: &str) -> Res
 fn unsupported_wsl_git_operation(name: &str) -> BackendError {
     BackendError::Git {
         message: format!(
-            "L'operation Git WSL '{}' n'est pas encore prise en charge sans fallback Windows.",
+            "L'opération Git WSL '{}' n'est pas encore prise en charge sans fallback Windows.",
             name
         ),
     }
@@ -3144,7 +3144,7 @@ fn resolve_macro_workspace_path(
 fn ensure_macro_workspace_not_wsl(workspace: &Path) -> Result<()> {
     if parse_wsl_unc_path(&workspace.to_string_lossy()).is_some() {
         return Err(BackendError::Git {
-            message: "Les metadata @macro pour WSL doivent etre gerees via Git Linux; ce flux n'est pas encore porte sans fallback Windows.".to_string(),
+            message: "Les métadonnées @macro pour WSL doivent être gérées via Git Linux ; ce flux n'est pas encore porté sans fallback Windows.".to_string(),
         });
     }
     Ok(())
@@ -11660,6 +11660,7 @@ pub async fn git_worktree_inspect(
     repo_path: String,
     task_id: String,
     branch_name: Option<String>,
+    read_only: Option<bool>,
 ) -> Result<GitWorktreeInspectionDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_worktree_inspect"));
@@ -11675,7 +11676,9 @@ pub async fn git_worktree_inspect(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        let inspection = if let Some(branch_name) = branch_name
+        let inspection = if read_only.unwrap_or(false) {
+            git_state.diagnose_task_worktree(&repo, &task_id, branch_name.as_deref())?
+        } else if let Some(branch_name) = branch_name
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())

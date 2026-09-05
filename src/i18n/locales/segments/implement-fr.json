@@ -575,5 +575,32 @@
   "diffRenderFailedDescription": "Le panneau des changements est resté ouvert. Fermez ce fichier et réessayez, ou inspectez directement le fichier.",
   "reviewBeforeValidation": "Ouvrez chaque diff en attente avant de valider les changements.",
   "reviewArtifactBeforeValidation": "Ouvrez cet artefact avant de le valider.",
-  "taskCommandsPlanMutationActive": "Arrêtez les commandes de tâches actives avant d’archiver ou de supprimer ce plan."
+  "taskCommandsPlanMutationActive": "Arrêtez les commandes de tâches actives avant d’archiver ou de supprimer ce plan.",
+  "worktreeDiagnostic": {
+    "title": "Diagnostic du worktree",
+    "repository": "Dépôt",
+    "path": "Chemin du worktree",
+    "expectedBranch": "Branche attendue",
+    "branch": "Branche actuelle",
+    "state": "État",
+    "changes": "Modifications",
+    "unknown": "Inconnu",
+    "dirty": "Modifications présentes",
+    "clean": "Propre",
+    "repaired": "Worktree réparé",
+    "refused": "La réparation n’a pas abouti",
+    "repair": "Réparer sans perte",
+    "refresh": "Actualiser",
+    "stopBeforeRepair": "Arrêtez la tâche avant de réparer son worktree. Les tâches archivées ne peuvent pas être réparées ici.",
+    "branchMismatch": "Ce worktree utilise une autre branche. Préservez vos modifications et revenez sur la branche attendue avant de réessayer.",
+    "protection": "La réparation préserve le contenu existant. Si un chemin contient des fichiers, déplacez-le vers une sauvegarde sûre avant de réessayer. Actualiser vérifie son état actuel. Les sauvegardes des enregistrements restent dans macro-worktree-backups, dans le répertoire Git commun.",
+    "states": {
+      "absent": "Absent",
+      "ready": "Prêt",
+      "stale_registration": "Enregistrement périmé",
+      "orphan_path": "Chemin non enregistré",
+      "invalid_repo": "Dépôt invalide"
+    }
+  },
+  "wslCapabilities": "Pour les projets WSL, la synchronisation des métadonnées, les worktrees de tâche, la revue des fichiers et le parcours de fusion sont indisponibles. Les opérations Git courantes restent disponibles. Utilisez un clone local pour ces parcours de tâche."
 }
