@@ -1156,6 +1156,67 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).not.toContain('notes_[draft].md');
   });
 
+  it('blocks button and keyboard sends during image validation and resets the file input after failure', async () => {
+    const sample = createDeferred<ArrayBuffer>();
+    const file = new File(['invalid image'], 'broken.png', { type: 'image/png' });
+    file.slice = () => ({ arrayBuffer: () => sample.promise }) as Blob;
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    await setComposerText('Wait for my attachment');
+    const input = requireContainer().querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    Object.defineProperty(input, 'value', { configurable: true, writable: true, value: 'broken.png' });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(requireContainer().querySelector<HTMLButtonElement>('[data-tour-id="chat-send-button"]')?.disabled).toBe(true);
+    await clickSendButton();
+    await act(async () => { await (latestComposerProps?.onSend as () => Promise<void>)(); });
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    await act(async () => {
+      sample.resolve(new ArrayBuffer(12));
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    expect(input.value).toBe('');
+    expect(getComposerEditor().value).toBe('Wait for my attachment');
+    await clickSendButton();
+    expect(chatState.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not import images into another conversation after mixed-batch text persistence', async () => {
+    const persisted = createDeferred<string>();
+    const originalPersist = useCitationsStore.getState().addCitationAndPersist;
+    const persist = mock(() => persisted.promise);
+    useCitationsStore.setState({ addCitationAndPersist: persist });
+    chatState = { ...chatState, conversations: [buildConversation(), { ...buildConversation(), id: 'conv-2' }] };
+    const image = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'draft.png', { type: 'image/png' });
+    const imageSlice = mock(image.slice.bind(image));
+    image.slice = imageSlice;
+    try {
+      await act(async () => { requireRoot().render(<ChatZone />); });
+      const input = requireContainer().querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, 'files', { value: [new File(['notes'], 'notes.txt', { type: 'text/plain' }), image] });
+      await act(async () => {
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+      });
+      expect(persist).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        useChatStore.setState({ selectedConversationId: 'conv-2' });
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+      });
+      await act(async () => {
+        persisted.resolve('citation-id');
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+      });
+      expect(imageSlice).not.toHaveBeenCalled();
+      expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    } finally {
+      persisted.resolve('citation-id');
+      useCitationsStore.setState({ addCitationAndPersist: originalPersist });
+    }
+  });
+
   it('clears the composer as soon as an accepted send starts preparing', async () => {
     const sendDeferred = createDeferred<{ status: 'sent' }>();
     chatState = {

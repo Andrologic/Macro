@@ -1252,6 +1252,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
   const [isAttachingFiles, setIsAttachingFiles] = useState(false);
+  const attachmentImportInFlightRef = useRef(false);
   const [manualCompactionPhase, setManualCompactionPhase] =
     useState<ManualCompactionPhase>('idle');
   const [manualCompactionFeedback, setManualCompactionFeedback] =
@@ -2721,7 +2722,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     let releaseImport: (() => void) | undefined;
     try {
       releaseImport = acquireAttachmentImport();
-      setIsAttachingFiles(true);
       await validateImageAttachments(files, composerImages.length, composerImages.reduce(
         (sum, image) => sum + Math.ceil((image.dataUrl.length - image.dataUrl.indexOf(',') - 1) * 3 / 4), 0,
       ));
@@ -2751,7 +2751,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       });
     } finally {
       releaseImport?.();
-      setIsAttachingFiles(false);
     }
   };
 
@@ -2779,24 +2778,30 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
-    if (isComposerDisabled || isSpeechEnhancing || isAttachingFiles) return;
+    if (isComposerDisabled || isSpeechEnhancing || attachmentImportInFlightRef.current) return;
+    const originalContextKey = renderedComposerDraftContextKeyRef.current;
     const directFiles = Array.from(event.clipboardData.items || [])
       .filter((item) => item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
       .filter((file): file is File => Boolean(file));
 
-    const files = directFiles.length > 0 ? directFiles : await readImageFilesFromClipboardApi();
-    if (files.length === 0) return;
-
-    event.preventDefault();
-    await appendPastedImages(files);
+    attachmentImportInFlightRef.current = true;
+    setIsAttachingFiles(true);
+    try {
+      const files = directFiles.length > 0 ? directFiles : await readImageFilesFromClipboardApi();
+      if (files.length === 0 || originalContextKey !== renderedComposerDraftContextKeyRef.current) return;
+      event.preventDefault();
+      await appendPastedImages(files);
+    } finally {
+      attachmentImportInFlightRef.current = false;
+      setIsAttachingFiles(false);
+    }
   };
 
   const handleAttachConversationFiles = useCallback(async (
     files: FileList | readonly File[],
   ): Promise<boolean> => {
-    if (files.length === 0 || isAttachingFiles) return false;
-    setIsAttachingFiles(true);
+    if (files.length === 0) return false;
     let releaseImport: (() => void) | undefined;
     const originalContextKey = renderedComposerDraftContextKeyRef.current;
     try {
@@ -2866,24 +2871,30 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       return false;
     } finally {
       releaseImport?.();
-      setIsAttachingFiles(false);
-      if (composerFileInputRef.current) composerFileInputRef.current.value = '';
     }
   }, [
     addCitationAndPersist,
     composerFileCitations,
     ensureConversation,
-    isAttachingFiles,
     t,
   ]);
 
   const addComposerFiles = async (files: readonly File[]) => {
-    if (isComposerDisabled || isSpeechEnhancing || isAttachingFiles || composerEditSession || goalComposerEditSession) return;
-    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
-    const textFiles = files.filter((file) => !file.type.startsWith('image/'));
-    const textAccepted = textFiles.length === 0 || await handleAttachConversationFiles(textFiles);
-    if (textAccepted && imageFiles.length > 0) {
-      await appendPastedImages(imageFiles);
+    if (isComposerDisabled || isSpeechEnhancing || attachmentImportInFlightRef.current || composerEditSession || goalComposerEditSession) return;
+    const originalContextKey = renderedComposerDraftContextKeyRef.current;
+    attachmentImportInFlightRef.current = true;
+    setIsAttachingFiles(true);
+    try {
+      const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+      const textFiles = files.filter((file) => !file.type.startsWith('image/'));
+      const textAccepted = textFiles.length === 0 || await handleAttachConversationFiles(textFiles);
+      if (textAccepted && imageFiles.length > 0 && originalContextKey === renderedComposerDraftContextKeyRef.current) {
+        await appendPastedImages(imageFiles);
+      }
+    } finally {
+      attachmentImportInFlightRef.current = false;
+      setIsAttachingFiles(false);
+      if (composerFileInputRef.current) composerFileInputRef.current.value = '';
     }
   };
 
@@ -2946,7 +2957,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     textOverride?: string,
     activeBehaviorOverride?: 'steer' | 'queue',
   ) => {
-    if (isComposerDisabled || activeQuestionnaire) return;
+    if (isComposerDisabled || activeQuestionnaire || attachmentImportInFlightRef.current) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
@@ -3526,6 +3537,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const canSend =
+    !isAttachingFiles &&
     !isComposerDisabled &&
     !activeQuestionnaire &&
     !isConversationPending &&
