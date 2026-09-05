@@ -1,6 +1,10 @@
 import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { validateQaBrowserRuntimeConfig } from './browser-runtime-config.mjs';
+import { join } from 'node:path';
+import {
+  resolveQaBrowserLogDirectory,
+  validateQaBrowserRuntimeConfig,
+} from './browser-runtime-config.mjs';
 
 test('requires an isolated identifier and the browser RPC capability', () => {
   const config = {
@@ -19,4 +23,12 @@ test('requires an isolated identifier and the browser RPC capability', () => {
 test('the default browser runtime config is isolated from the production profile', () => {
   const config = JSON.parse(readFileSync('src-tauri/tauri.browser-debug.conf.json', 'utf8'));
   expect(validateQaBrowserRuntimeConfig(config)).toBe(config);
+  const logDirectory = resolveQaBrowserLogDirectory(config, '/tmp');
+  expect(logDirectory).toBe(join(
+    '/tmp',
+    'macro-browser-runtime',
+    'com.macro.desktop.qa.browser',
+    'logs',
+  ));
+  expect(logDirectory).not.toBe(join('/tmp', 'com.macro.desktop', 'logs'));
 });

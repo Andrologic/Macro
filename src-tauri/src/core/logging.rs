@@ -57,6 +57,11 @@ impl<W: Write> Write for DailySizeLimitedWriter<W> {
 }
 
 pub(crate) fn platform_log_dir() -> Option<PathBuf> {
+    #[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+    if std::env::var("MACRO_TAURI_BROWSER_BRIDGE").as_deref() == Ok("1") {
+        return browser_runtime_log_dir();
+    }
+
     #[cfg(target_os = "windows")]
     {
         let local_app_data = std::env::var_os("LOCALAPPDATA")?;
@@ -77,6 +82,38 @@ pub(crate) fn platform_log_dir() -> Option<PathBuf> {
         let home = std::env::var_os("HOME")?;
         Some(PathBuf::from(home).join(".local/state/macro/logs"))
     }
+}
+
+#[cfg(all(debug_assertions, feature = "browser-runtime-debug"))]
+fn browser_runtime_log_dir() -> Option<PathBuf> {
+    let candidate = PathBuf::from(std::env::var_os("MACRO_TAURI_BROWSER_LOG_DIR")?);
+    let temporary_root = std::env::temp_dir();
+    if !is_isolated_browser_log_dir(&candidate, &temporary_root) {
+        return None;
+    }
+    fs::create_dir_all(&candidate).ok()?;
+    let canonical_candidate = fs::canonicalize(&candidate).ok()?;
+    let canonical_temporary_root = fs::canonicalize(&temporary_root).ok()?;
+    canonical_candidate
+        .starts_with(canonical_temporary_root)
+        .then_some(canonical_candidate)
+}
+
+#[cfg(any(test, all(debug_assertions, feature = "browser-runtime-debug")))]
+fn is_isolated_browser_log_dir(candidate: &Path, temporary_root: &Path) -> bool {
+    candidate.is_absolute()
+        && candidate.starts_with(temporary_root)
+        && candidate.file_name().is_some_and(|name| name == "logs")
+        && !candidate.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+        && candidate
+            .strip_prefix(temporary_root)
+            .ok()
+            .is_some_and(|relative| relative.components().count() >= 3)
 }
 
 pub fn init_logging() {
@@ -156,5 +193,30 @@ mod tests {
         assert!(writer.inner.is_empty());
         assert_eq!(writer.write(b"a").expect("write succeeds"), 1);
         assert_eq!(writer.inner, b"a");
+    }
+
+    #[test]
+    fn browser_log_directory_must_stay_below_the_temporary_root() {
+        let temporary_root = std::env::temp_dir();
+        let isolated = temporary_root
+            .join("macro-browser-runtime")
+            .join("com.macro.desktop.qa.test")
+            .join("logs");
+        assert!(is_isolated_browser_log_dir(&isolated, &temporary_root));
+
+        let traversal = temporary_root
+            .join("macro-browser-runtime")
+            .join("..")
+            .join("..")
+            .join("com.macro.desktop")
+            .join("logs");
+        assert!(!is_isolated_browser_log_dir(&traversal, &temporary_root));
+
+        let outside = temporary_root
+            .parent()
+            .unwrap_or_else(|| Path::new(std::path::MAIN_SEPARATOR_STR))
+            .join("com.macro.desktop")
+            .join("logs");
+        assert!(!is_isolated_browser_log_dir(&outside, &temporary_root));
     }
 }

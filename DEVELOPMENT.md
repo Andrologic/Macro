@@ -98,6 +98,8 @@ Automated checks that exercise mutable state must use a separate Tauri identifie
 not only a temporary `MACRO_CONFIG_DIR`. Set `MACRO_TAURI_BROWSER_CONFIG` to an
 absolute merged browser-runtime config whose identifier matches
 `com.macro.desktop.qa.*`. The launcher rejects the ordinary production identifier.
+It also derives a dedicated log directory under the operating system's temporary
+directory; the QA host therefore neither reads nor writes Macro's production logs.
 Before creating fixtures, inspect the native process's open SQLite files and call
 `workspace_get_bootstrap`; continue only when both point to the intended isolated
 profile and synthetic workspace.

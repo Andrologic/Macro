@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 export const QA_IDENTIFIER = /^com\.macro\.desktop\.qa\.[a-z0-9-]{6,48}$/;
 
 export function validateQaBrowserRuntimeConfig(config) {
@@ -10,4 +12,12 @@ export function validateQaBrowserRuntimeConfig(config) {
     throw new Error('The custom browser runtime config must enable the debug RPC capability.');
   }
   return config;
+}
+
+export function resolveQaBrowserLogDirectory(config, temporaryDirectory) {
+  const validated = validateQaBrowserRuntimeConfig(config);
+  if (typeof temporaryDirectory !== 'string' || temporaryDirectory.length === 0) {
+    throw new Error('The browser runtime log root must be a temporary directory.');
+  }
+  return join(temporaryDirectory, 'macro-browser-runtime', validated.identifier, 'logs');
 }
