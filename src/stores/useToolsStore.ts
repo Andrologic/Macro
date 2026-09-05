@@ -131,11 +131,22 @@ const mergeMCPRuntimeSnapshot = (
   return servers.map((server) => {
     const snapshot = latestByServerId.get(server.id);
     if (!snapshot) return server;
+    const snapshotHasError = Boolean(snapshot.lastErrorCode || snapshot.lastError);
+    const recoveredRuntimeError = snapshot.status === 'ready'
+      && server.lastErrorCode?.startsWith('MCP_RUNTIME_') === true;
     return {
       ...server,
       status: runtimeStatusToServerStatus(snapshot),
-      lastErrorCode: snapshot.lastErrorCode ?? null,
-      lastError: snapshot.lastError ?? null,
+      lastErrorCode: snapshotHasError
+        ? snapshot.lastErrorCode ?? null
+        : recoveredRuntimeError
+          ? null
+          : server.lastErrorCode ?? null,
+      lastError: snapshotHasError
+        ? snapshot.lastError ?? null
+        : recoveredRuntimeError
+          ? null
+          : server.lastError ?? null,
     };
   });
 };

@@ -2,19 +2,21 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let fetchMock: ReturnType<typeof mock>;
 let nativeWebFetchMock: ReturnType<typeof mock>;
+let nativeWebSearchMock: ReturnType<typeof mock>;
 let importCounter = 0;
 
 const loadWebSearch = async (options: { tauriAvailable?: boolean } = {}) => {
   mock.restore();
   fetchMock = mock();
   nativeWebFetchMock = mock();
+  nativeWebSearchMock = mock();
   mock.module('@tauri-apps/plugin-http', () => ({
     fetch: fetchMock,
   }));
   mock.module('./tauriIpc', () => ({
     isTauriAvailable: () => options.tauriAvailable ?? false,
     webFetchExecute: nativeWebFetchMock,
-    webSearchExecute: mock(),
+    webSearchExecute: nativeWebSearchMock,
   }));
   importCounter += 1;
   return import(`./webSearch.ts?web-search-test=${importCounter}`);
@@ -170,6 +172,31 @@ describe('webSearch provider contracts', () => {
     controller.abort();
 
     await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('cancels configured native searches before dispatch and while awaiting a result', async () => {
+    const { webSearch } = await loadWebSearch({ tauriAvailable: true });
+    const alreadyCancelled = new AbortController();
+    alreadyCancelled.abort();
+    await expect(webSearch('do not dispatch', {
+      configured: true,
+      signal: alreadyCancelled.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(nativeWebSearchMock).not.toHaveBeenCalled();
+
+    let resolveNative!: (results: []) => void;
+    nativeWebSearchMock.mockImplementationOnce(() => new Promise<[]>((resolve) => {
+      resolveNative = resolve;
+    }));
+    const inFlight = new AbortController();
+    const request = webSearch('cancel native wait', {
+      configured: true,
+      signal: inFlight.signal,
+    });
+    inFlight.abort();
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(nativeWebSearchMock).toHaveBeenCalledTimes(1);
+    resolveNative([]);
   });
 
   it('embeds fetched page favicons as data URLs', async () => {

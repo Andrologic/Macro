@@ -239,6 +239,26 @@ describe('useToolsStore chat toolbox policy', () => {
     ).rejects.toThrow('Access denied by MCP server');
     expect(useToolsStore.getState().mcpServers[0]?.status).toBe('online');
     expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe('MCP_ACCESS_DENIED');
+
+    (services.mcpRuntimeGetSnapshot as unknown as {
+      mockResolvedValueOnce: (value: unknown) => void;
+    }).mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:05.000Z',
+      servers: [{
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        status: 'ready',
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-09-05T20:00:04.000Z',
+      }],
+    });
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+    expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe('MCP_ACCESS_DENIED');
   });
 
   it('degrades a server only when the persistent runtime reports a transport failure', async () => {
@@ -263,6 +283,26 @@ describe('useToolsStore chat toolbox policy', () => {
     expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe(
       'MCP_RUNTIME_CALL_TOOL_FAILED'
     );
+
+    (services.mcpRuntimeGetSnapshot as unknown as {
+      mockResolvedValueOnce: (value: unknown) => void;
+    }).mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:05.000Z',
+      servers: [{
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        status: 'ready',
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-09-05T20:00:04.000Z',
+      }],
+    });
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+    expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBeNull();
   });
 
   it('hydrates autonomous runtime failures and their codes from the MCP snapshot', async () => {

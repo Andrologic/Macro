@@ -25,6 +25,21 @@ const WEB_SEARCH_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 const WEB_SEARCH_ERROR_MAX_BYTES = 64 * 1024;
 const responseCleanup = new WeakMap<Response, () => void>();
 
+const abortReason = (signal: AbortSignal): Error => {
+  if (signal.reason instanceof Error) return signal.reason;
+  return new DOMException('Web search cancelled.', 'AbortError');
+};
+
+const waitForSearchOrAbort = <T>(request: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  if (!signal) return request;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    request.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+};
+
 export interface WebFetchResult {
   url: string;
   title: string;
@@ -106,7 +121,8 @@ export async function webSearch(
   }
 
   if (options.configured && isTauriAvailable()) {
-    return webSearchExecute({ query, includeRawContent });
+    if (signal?.aborted) throw abortReason(signal);
+    return waitForSearchOrAbort(webSearchExecute({ query, includeRawContent }), signal);
   }
 
   throw new Error('No search API key configured. Please add a Tavily or Brave Search API key in settings.');
