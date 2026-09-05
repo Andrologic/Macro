@@ -250,9 +250,11 @@ describe('useToolsStore chat toolbox policy', () => {
       message: 'Transport closed',
     });
 
-    await expect(
-      useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
-    ).rejects.toThrow('Transport closed');
+    const call = useToolsStore.getState().callMCPTool('mcp__github__list_issues', {});
+    await expect(call).rejects.toMatchObject({
+      code: 'MCP_RUNTIME_CALL_TOOL_FAILED',
+      message: expect.stringContaining('Transport closed'),
+    });
     expect(useToolsStore.getState().mcpServers[0]?.status).toBe('degraded');
     expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe(
       'MCP_RUNTIME_CALL_TOOL_FAILED'

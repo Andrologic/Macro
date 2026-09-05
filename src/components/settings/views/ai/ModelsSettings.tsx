@@ -37,7 +37,9 @@ import {
 } from '../../../../services/reasoningCatalog';
 import {
   getModelContextCatalogStatus,
+  MODEL_CONTEXT_CATALOG_TTL_MS,
   refreshModelContextCatalog,
+  subscribeModelContextCatalogStatus,
   type ModelContextCatalogStatus,
 } from '../../../../services/modelContextCatalog';
 import {
@@ -178,6 +180,18 @@ export const ModelsSettings: React.FC = () => {
   const [metadataModelConfig, setMetadataModelConfig] = useState<MetadataModelConfig | null>(null);
   const manualModelActionsRef = useRef<HTMLDivElement | null>(null);
   const manualModelActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => subscribeModelContextCatalogStatus(setCatalogStatus), []);
+
+  useEffect(() => {
+    if (!catalogStatus.lastFetchedAt || catalogStatus.stale) return;
+    const expiresAt = Date.parse(catalogStatus.lastFetchedAt) + MODEL_CONTEXT_CATALOG_TTL_MS;
+    const timeout = window.setTimeout(
+      () => setCatalogStatus(getModelContextCatalogStatus()),
+      Math.max(0, expiresAt - Date.now()) + 25,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [catalogStatus.lastFetchedAt, catalogStatus.stale]);
   const [metadataModelConfigPersistence] = useState(
     () => new MetadataModelConfigPersistence({
       save: saveMetadataModelConfig,

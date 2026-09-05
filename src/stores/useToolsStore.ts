@@ -632,7 +632,11 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         () => undefined
       );
       set({ mcpServers: nextServers, lastError: message });
-      throw new Error(`Error executing MCP tool ${resolved.tool.name} on ${resolved.server.name}: ${message}`);
+      const transportError = new Error(
+        `Error executing MCP tool ${resolved.tool.name} on ${resolved.server.name}: ${message}`
+      ) as Error & { code: string };
+      transportError.code = normalizedError.code;
+      throw transportError;
     }
   },
 

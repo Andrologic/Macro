@@ -130,6 +130,13 @@ let lastStatus: ModelContextCatalogStatus = {
   error: null,
 };
 let refreshPromise: Promise<ModelContextCatalogStatus> | null = null;
+const statusListeners = new Set<(status: ModelContextCatalogStatus) => void>();
+
+const setLastStatus = (status: ModelContextCatalogStatus): ModelContextCatalogStatus => {
+  lastStatus = status;
+  for (const listener of statusListeners) listener(status);
+  return status;
+};
 
 const toPositiveInteger = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -371,19 +378,25 @@ export const getModelContextCatalogStatus = (): ModelContextCatalogStatus => {
   };
 };
 
+export const subscribeModelContextCatalogStatus = (
+  listener: (status: ModelContextCatalogStatus) => void,
+): (() => void) => {
+  statusListeners.add(listener);
+  return () => statusListeners.delete(listener);
+};
+
 export const refreshModelContextCatalog = async (params: {
   force?: boolean;
   fetchImpl?: typeof tauriFetch;
 } = {}): Promise<ModelContextCatalogStatus> => {
   const cached = readCachedCatalog();
   if (!params.force && cached && isFresh(cached)) {
-    lastStatus = {
+    return setLastStatus({
       lastFetchedAt: cached.fetchedAt,
       source: 'cache',
       stale: false,
       error: null,
-    };
-    return lastStatus;
+    });
   }
   if (refreshPromise) return refreshPromise;
 
@@ -401,23 +414,21 @@ export const refreshModelContextCatalog = async (params: {
       const fetchedAt = new Date().toISOString();
       const catalog: CachedCatalog = { fetchedAt, providers };
       writeCachedCatalog(catalog);
-      lastStatus = {
+      return setLastStatus({
         lastFetchedAt: fetchedAt,
         source: 'network',
         stale: false,
         error: null,
-      };
-      return lastStatus;
+      });
     } catch (error) {
       const fallback = cached ?? getSnapshotCatalog();
       loadedCatalog = fallback;
-      lastStatus = {
+      return setLastStatus({
         lastFetchedAt: cached?.fetchedAt ?? null,
         source: cached ? 'cache' : 'snapshot',
         stale: true,
         error: error instanceof Error ? error.message : String(error),
-      };
-      return lastStatus;
+      });
     } finally {
       refreshPromise = null;
     }
@@ -435,6 +446,7 @@ export const __testables = {
   reset: () => {
     loadedCatalog = null;
     refreshPromise = null;
+    statusListeners.clear();
     lastStatus = {
       lastFetchedAt: null,
       source: 'snapshot',

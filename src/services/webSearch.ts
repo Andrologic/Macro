@@ -237,6 +237,7 @@ const readBoundedResponseBytes = async (
   try {
     const contentLength = Number(response.headers.get('content-length'));
     if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      await response.body?.cancel().catch(() => undefined);
       throw new Error(`${provider} response exceeds the ${maxBytes}-byte limit.`);
     }
     const reader = response.body?.getReader();

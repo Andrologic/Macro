@@ -20,6 +20,7 @@ let catalogStatus: {
   stale: boolean;
   error: string | null;
 };
+let catalogStatusListeners: Set<(status: typeof catalogStatus) => void>;
 let settingsSearchQuery: string;
 const translate = (_key: string, fallback?: string) => fallback ?? _key;
 
@@ -82,6 +83,10 @@ const loadModelsSettings = async () => {
     lookupModelContextCatalogLimit: () => null,
     lookupModelReasoningCatalogCapability: () => null,
     getModelContextCatalogStatus: () => catalogStatus,
+    subscribeModelContextCatalogStatus: (listener: (status: typeof catalogStatus) => void) => {
+      catalogStatusListeners.add(listener);
+      return () => catalogStatusListeners.delete(listener);
+    },
     refreshModelContextCatalog: (params: unknown) => refreshCatalogMock(params),
   }));
 
@@ -199,6 +204,7 @@ describe('ModelsSettings metadata model config', () => {
       'provider-b': [model('provider-b', 'model-b')],
     };
     metadataModelConfigListeners = new Set();
+    catalogStatusListeners = new Set();
     loadMetadataModelConfigMock = mock(async () => {
       const persisted = window.localStorage.getItem('macro_metadataModelConfig');
       if (persisted !== null) return JSON.parse(persisted);
@@ -567,5 +573,28 @@ describe('ModelsSettings metadata model config', () => {
     expect(refreshCatalogMock).toHaveBeenCalledWith({ force: true });
     expect(refreshLoadedCatalogMock).toHaveBeenCalledWith(undefined);
     expect(container!.textContent).toContain('Catalog synchronized');
+  });
+
+  it('updates the visible catalog state after an external synchronization', async () => {
+    const { ModelsSettings } = await loadModelsSettings();
+    await act(async () => {
+      root = createRoot(container!);
+      root.render(<ModelsSettings />);
+      await flush();
+    });
+
+    catalogStatus = {
+      lastFetchedAt: new Date().toISOString(),
+      source: 'network',
+      stale: false,
+      error: null,
+    };
+    await act(async () => {
+      for (const listener of catalogStatusListeners) listener(catalogStatus);
+      await flush();
+    });
+
+    expect(container!.textContent).toContain('Catalog synchronized');
+    expect(container!.textContent).not.toContain('Bundled snapshot in use');
   });
 });

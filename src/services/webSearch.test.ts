@@ -127,7 +127,12 @@ describe('webSearch provider contracts', () => {
 
   it('rejects oversized success and HTTP error bodies before JSON parsing', async () => {
     const { webSearch } = await loadWebSearch();
-    fetchMock.mockResolvedValueOnce(new Response('x', {
+    let oversizedBodyCancelled = false;
+    fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({
+      cancel: () => {
+        oversizedBodyCancelled = true;
+      },
+    }), {
       status: 200,
       headers: { 'Content-Length': String(4 * 1024 * 1024 + 1) },
     }));
@@ -135,6 +140,7 @@ describe('webSearch provider contracts', () => {
       provider: 'tavily',
       tavilyApiKey: 'test',
     })).rejects.toThrow('4194304-byte limit');
+    expect(oversizedBodyCancelled).toBe(true);
 
     fetchMock.mockResolvedValueOnce(new Response('x', {
       status: 429,
