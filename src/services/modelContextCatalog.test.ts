@@ -156,6 +156,26 @@ describe('modelContextCatalog', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('keeps the latest forced refresh error when a fresh cache is reused', async () => {
+    const fetchedAt = new Date().toISOString();
+    __testables.writeCachedCatalog({ fetchedAt, providers: {} });
+    const failedStatus = await refreshModelContextCatalog({
+      force: true,
+      fetchImpl: mock(async () => new Response('{}', { status: 503 })) as never,
+    });
+    expect(failedStatus.error).toBe('Models.dev returned 503');
+
+    const cachedStatus = await refreshModelContextCatalog({
+      fetchImpl: mock(async () => new Response('{}', { status: 200 })) as never,
+    });
+    expect(cachedStatus).toMatchObject({
+      lastFetchedAt: fetchedAt,
+      source: 'cache',
+      stale: false,
+      error: 'Models.dev returned 503',
+    });
+  });
+
   it('distinguishes a missing synchronization from a stale cached catalog', () => {
     expect(getModelContextCatalogStatus()).toMatchObject({
       lastFetchedAt: null,

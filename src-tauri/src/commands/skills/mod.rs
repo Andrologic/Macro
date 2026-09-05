@@ -122,16 +122,9 @@ fn metadata_change_token(metadata: &fs::Metadata) -> i128 {
 fn skill_tree_stamp(root: &Path) -> CommandResult<SkillTreeStamp> {
     let mut entries = Vec::new();
     let mut stack = vec![root.to_path_buf()];
-    let mut visited_dirs = 0usize;
+    let mut discovered_dirs = 1usize;
     let mut visited_files = 0usize;
     while let Some(current) = stack.pop() {
-        visited_dirs += 1;
-        if visited_dirs > MAX_DISCOVERY_DIRS {
-            return Err(command_error(format!(
-                "Skill tree discovery exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
-                root.display()
-            )));
-        }
         let directory_entries = fs::read_dir(&current).map_err(|error| {
             command_error(format!(
                 "Failed to read skill tree {}: {error}",
@@ -174,6 +167,13 @@ fn skill_tree_stamp(root: &Path) -> CommandResult<SkillTreeStamp> {
                 change_token: metadata_change_token(&metadata),
             });
             if metadata.is_dir() {
+                discovered_dirs += 1;
+                if discovered_dirs > MAX_DISCOVERY_DIRS {
+                    return Err(command_error(format!(
+                        "Skill tree discovery exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
+                        root.display()
+                    )));
+                }
                 stack.push(path);
             } else if metadata.is_file() {
                 visited_files += 1;
@@ -193,16 +193,9 @@ fn skill_tree_stamp(root: &Path) -> CommandResult<SkillTreeStamp> {
 fn hash_skill_tree(root: &Path) -> CommandResult<String> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
-    let mut visited_dirs = 0usize;
+    let mut discovered_dirs = 1usize;
     let mut total_bytes = 0u64;
     while let Some(current) = stack.pop() {
-        visited_dirs += 1;
-        if visited_dirs > MAX_DISCOVERY_DIRS {
-            return Err(command_error(format!(
-                "Skill hashing exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
-                root.display()
-            )));
-        }
         let entries = fs::read_dir(&current).map_err(|error| {
             command_error(format!(
                 "Failed to read skill tree {}: {error}",
@@ -231,6 +224,13 @@ fn hash_skill_tree(root: &Path) -> CommandResult<String> {
                 continue;
             }
             if metadata.is_dir() {
+                discovered_dirs += 1;
+                if discovered_dirs > MAX_DISCOVERY_DIRS {
+                    return Err(command_error(format!(
+                        "Skill hashing exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
+                        root.display()
+                    )));
+                }
                 stack.push(path);
             } else if metadata.is_file() {
                 if files.len() >= MAX_SKILL_TREE_FILES {
@@ -3116,7 +3116,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_directory_budget_fails_before_the_pending_stack_can_exceed_it() {
+    fn directory_budgets_fail_before_pending_stacks_can_exceed_them() {
         let project = tempdir().expect("project");
         for index in 0..MAX_DISCOVERY_DIRS {
             fs::create_dir(project.path().join(format!("skill-{index}")))
@@ -3124,6 +3124,10 @@ mod tests {
         }
 
         let error = try_discover_skill_roots(project.path()).expect_err("directory budget");
+        assert!(error.message.contains("directory budget"));
+        let error = skill_tree_stamp(project.path()).expect_err("stamp directory budget");
+        assert!(error.message.contains("directory budget"));
+        let error = hash_skill_tree(project.path()).expect_err("hash directory budget");
         assert!(error.message.contains("directory budget"));
     }
 

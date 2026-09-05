@@ -395,7 +395,7 @@ export const refreshModelContextCatalog = async (params: {
       lastFetchedAt: cached.fetchedAt,
       source: 'cache',
       stale: false,
-      error: null,
+      error: lastStatus.lastFetchedAt === cached.fetchedAt ? lastStatus.error : null,
     });
   }
   if (refreshPromise) return refreshPromise;
