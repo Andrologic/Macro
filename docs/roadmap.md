@@ -33,8 +33,9 @@ Un écart devenu obsolète doit être supprimé.
 
 La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.4`.
 La configuration Tauri reprend la version de `package.json`. Cette version est
-figée fonctionnellement depuis le 5 septembre 2026 et n'est pas publiée.
-Les installateurs multiplateformes restent à valider.
+publiée depuis le 5 septembre 2026 sur GitHub et le canal de mises à jour stable.
+Les paquets macOS universel, Windows x64/ARM64 et Linux x64 ont été construits
+et contrôlés par le workflow de release.
 
 L'application dispose déjà d'une base solide :
 
@@ -69,14 +70,13 @@ En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiq
 
 ### 3.1 Périmètre figé de la 0.1.4
 
-La boucle d'attention desktop est intégrée dans la version locale `0.1.4`.
+La boucle d'attention desktop est livrée dans la version `0.1.4`.
 Les notifications et la file « À traiter » ramènent aux demandes en attente.
 Le périmètre est figé sur le code intégré au commit `22c16fea`. La branche
-locale `release/0.1.4` conserve le jalon de stabilisation. Seuls les correctifs
-de régression, de sécurité ou nécessaires à la validation de la release peuvent
-encore entrer dans la 0.1.4. Ils doivent être revus et validés avant intégration.
-Les nouvelles fonctionnalités sont réservées à la 0.1.5, dont le périmètre reste
-à décider. La préparation locale ne vaut pas publication.
+locale `release/0.1.4` conserve le jalon de stabilisation. Le tag immuable
+`v0.1.4` pointe sur le commit `156c067a`, validé puis publié. Les corrections
+ultérieures feront l'objet d'une nouvelle version. Les nouvelles fonctionnalités
+sont réservées à la 0.1.5, dont le périmètre reste à décider.
 
 Écarts résolus dans le code :
 
@@ -276,8 +276,9 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 
 Les écarts de notification, de restauration des approbations et de filtrage
 sont résolus dans le code local. Les contrôles locaux et les parcours Tauri
-vérifiés passent. Les installateurs multiplateformes et une reprise complète
-avec un fournisseur IA réel restent à valider avant publication.
+vérifiés passent. Les paquets multiplateformes, leurs empreintes et les cinq
+manifestes publics du canal stable sont validés. Une reprise complète avec un
+fournisseur IA réel reste à exercer en complément des tests automatisés.
 Les évolutions suivantes portent sur
 l'ergonomie de review et la supervision distante.
 
@@ -406,7 +407,7 @@ Critère de sortie :
 - la synthèse de plans, la file de tâches et les filtres restent maintenant cohérents quand plusieurs plans vivants coexistent dans un même groupe, sans régression sur les tâches hors plan
 - le prochain verrou majeur de la phase redevient la lisibilité UX du multi-projet et l'articulation review / finalisation quand plusieurs plans restent actifs
 
-Tranche intégrée dans la `0.1.4` locale :
+Tranche livrée dans la `0.1.4` :
 - contexte de tâche active, filtres persistants et accès à la gestion des projets
 - file « À traiter » et prochaine action de review pour un ou plusieurs dépôts
 
@@ -425,8 +426,8 @@ Critère de sortie :
 
 État :
 - le démarrage manuel, les questionnaires et le système de notifications desktop sont livrés
-- les notifications, la navigation persistante, la reprise des approbations interrompues et la file « À traiter » sont intégrées en `0.1.4` locale
-- les contrôles locaux et les parcours Tauri vérifiés passent ; les installateurs multiplateformes et une reprise complète avec un fournisseur IA réel restent à valider avant publication
+- les notifications, la navigation persistante, la reprise des approbations interrompues et la file « À traiter » sont livrées en `0.1.4`
+- la release multiplateforme est publiée et les cinq manifestes stables publics sont validés ; une reprise complète avec un fournisseur IA réel reste à exercer en complément des tests automatisés
 
 ### Phase 5 - Remote kernel et mobile supervision
 
