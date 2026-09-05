@@ -225,6 +225,7 @@ const normalizeCommitErrorMessage = (raw: string, t: TranslateFn): string => {
 };
 
 interface FolderTreeItemProps {
+  mutationsDisabled?: boolean;
   repositoryId: string;
   node: FolderNode;
   depth: number;
@@ -243,6 +244,7 @@ interface FolderTreeItemProps {
 }
 
 interface ScopeActionRailProps {
+  mutationsDisabled?: boolean;
   onValidate?: () => void;
   showValidate?: boolean;
   validateDisabled?: boolean;
@@ -258,6 +260,7 @@ interface ScopeActionRailProps {
 }
 
 const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
+  mutationsDisabled = false,
   onValidate,
   showValidate = Boolean(onValidate),
   validateDisabled = false,
@@ -282,7 +285,7 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
         className="h-7 w-7 px-0"
         title={labels.validate}
         aria-label={labels.validate}
-        disabled={validateDisabled}
+        disabled={mutationsDisabled || validateDisabled}
         onClick={(event) => {
           event.stopPropagation();
           onValidate?.();
@@ -299,6 +302,7 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
         className="h-7 w-7 px-0"
         title={labels.unstage}
         aria-label={labels.unstage}
+        disabled={mutationsDisabled}
         onClick={(event) => {
           event.stopPropagation();
           onUnstage();
@@ -315,6 +319,7 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
         className="h-7 w-7 px-0"
         title={labels.revert}
         aria-label={labels.revert}
+        disabled={mutationsDisabled}
         onClick={(event) => {
           event.stopPropagation();
           onRevert();
@@ -327,6 +332,7 @@ const ScopeActionRail: React.FC<ScopeActionRailProps> = ({
 );
 
 const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
+  mutationsDisabled = false,
   repositoryId,
   node,
   depth,
@@ -377,6 +383,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
           </button>
           {(pendingChangeIds.length > 0 || stagedChangeIds.length > 0) && (
             <ScopeActionRail
+              mutationsDisabled={mutationsDisabled}
               showValidate={pendingChangeIds.length > 0}
               validateDisabled={!canValidateChanges(pendingChangeIds)}
               onValidate={pendingChangeIds.length > 0 && canValidateChanges(pendingChangeIds) ? () => onStageChanges(pendingChangeIds) : undefined}
@@ -391,6 +398,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
           <div>
             {node.children.map((child) => (
               <FolderTreeItem
+                mutationsDisabled={mutationsDisabled}
                 repositoryId={repositoryId}
                 key={child.path}
                 node={child}
@@ -474,6 +482,7 @@ const FolderTreeItem: React.FC<FolderTreeItemProps> = ({
       </button>
       {(change.hasPendingVisibleChange || change.hasValidatedStage) && (
         <ScopeActionRail
+          mutationsDisabled={mutationsDisabled}
           showValidate={change.hasPendingVisibleChange}
           validateDisabled={!canValidateChanges([change.id])}
           onValidate={change.hasPendingVisibleChange && canValidateChanges([change.id]) ? () => onStageChanges([change.id]) : undefined}
@@ -1542,6 +1551,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const hasTaskCommittedRepositories =
     reviewSummary.hasCommittedRepositories || Object.keys(executionRecords).length > 0;
   const canFinishTask =
+    !staleDirectRepositoryId &&
     !hasUnsupportedReviewProject &&
     !isCommitting &&
     !isGeneratingCommitMessages &&
@@ -1570,7 +1580,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         'implement.noRemainingChangesToValidate',
         'No remaining unstaged changes to validate.'
       );
-  const isCommitDisabled = isCommitting || isGeneratingCommitMessages || !hasReadyToCommit;
+  const isCommitDisabled = Boolean(staleDirectRepositoryId) || isCommitting || isGeneratingCommitMessages || !hasReadyToCommit;
   const commitDisabledReason = isGeneratingCommitMessages
     ? t('implement.generatingCommitMessages', 'Preparing commit messages...')
     : t('implement.noValidatedChangesToCommit', 'Validate changes before commit.');
@@ -1619,7 +1629,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
       messagesByRepositoryId?: Record<string, string>;
     } = {}
   ) => {
-    if (isCommitting || isGeneratingCommitMessages || !hasReadyToCommit) return;
+    if (useFileChangesStore.getState().staleDirectRepositoryId || isCommitting || isGeneratingCommitMessages || !hasReadyToCommit) return;
     const commitTaskId = selectedTaskId;
     setCommitMessageGenerationError(null);
 
@@ -1898,6 +1908,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
 
   const handleFinishTask = async () => {
     if (
+      useFileChangesStore.getState().staleDirectRepositoryId ||
       !currentTask ||
       hasReviewSuspension ||
       hasUnsupportedReviewProject ||
@@ -1911,6 +1922,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     try {
       if (!isDirectTaskReview && !hasUnsupportedReviewProject) {
         const mergeRuntime = await loadMergeWorkflowReview(currentTask.id, { force: true });
+        if (useFileChangesStore.getState().staleDirectRepositoryId) return;
         if (mergeWorkflowNeedsUserDecision(mergeRuntime)) {
           resetReviewState();
           return;
@@ -2288,6 +2300,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                 </div>
                 {repository.commitState === 'idle' && repositoryActionCount > 0 && (
                   <ScopeActionRail
+                    mutationsDisabled={Boolean(staleDirectRepositoryId)}
                     showValidate={repositoryChangeIds.length > 0}
                     validateDisabled={
                       repositoryChangeIds.length > 0 &&
@@ -2359,6 +2372,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
                       )}
                     {!repositoryError && repository.commitState === 'idle' && folderTree.map((node) => (
                       <FolderTreeItem
+                        mutationsDisabled={Boolean(staleDirectRepositoryId)}
                         repositoryId={repository.id}
                         key={node.path}
                         node={node}
@@ -2817,6 +2831,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           isCommitting={isCommitting}
           isGeneratingCommitMessages={isGeneratingCommitMessages}
           hasInvalidMessage={hasInvalidEditedCommitMessage}
+          commitDisabled={Boolean(staleDirectRepositoryId)}
           onCancel={() => setCommitMessageEditState(null)}
           onRetryGeneration={() => {
             setCommitMessageEditState(null);

@@ -985,6 +985,104 @@ describe('useFileChangesStore', () => {
     expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
   });
 
+  it('blocks checkpoint mutations after a conflict until the expired review refresh finishes', async () => {
+    appStoreState.selectedGroupId = null;
+    appStoreState.selectedProjectId = 'project-a';
+    appStoreState.selectedTaskId = 'task-6';
+    const staged = new Set(['src/main.ts']);
+    let conflict = true;
+    let refreshGate: Promise<void> | undefined;
+    let markRefreshStarted!: () => void;
+    const directReviewSnapshotMock = mock(async () => {
+      if (refreshGate) { markRefreshStarted(); await refreshGate; }
+      return {
+        branch: 'direct', stagedPaths: [...staged], snapshotId: 'snapshot-current', restoreRevisions: {},
+        changes: ['src/main.ts', 'src/other.ts'].map((path) => ({
+          path, status: 'modified', additions: 1, deletions: 1,
+          hasPendingVisibleChange: !staged.has(path), hasValidatedStage: staged.has(path),
+          validatedRemovedLineNumbers: [], validatedAddedLineNumbers: [],
+          isBinary: false, tooLarge: false, requiresHydration: false,
+          originalContent: 'old', indexContent: staged.has(path) ? 'new' : 'old', modifiedContent: 'new',
+          language: 'TypeScript', hunks: [],
+        })),
+        conflictedFiles: [], mergeInProgress: false, isClean: false, hasAcceptedChanges: false,
+      };
+    });
+    const directStagePathsMock = mock(async ({ paths }: { paths: string[] }) => {
+      if (conflict) throw { code: 'REVISION_CONFLICT', message: 'snapshot expired' };
+      paths.forEach((path) => staged.add(path));
+    });
+    const directUnstagePathsMock = mock(async ({ paths }: { paths: string[] }) => {
+      paths.forEach((path) => staged.delete(path));
+    });
+    const directAcceptChangesMock = mock(async () => 'checkpoint-hash');
+    useFileChangesStore = createFileChangesStore({
+      tauri: {
+        isTauriAvailable: () => true,
+        gitStatus: gitStatusMock,
+        gitWorktreeInspect: gitWorktreeInspectMock,
+        gitDiff: gitDiffMock,
+        gitMergeCheck: gitMergeCheckMock,
+        gitReadFilePair: gitReadFilePairMock,
+        fsExists: fsExistsMock,
+        fsReadFileWithOptions: fsReadFileWithOptionsMock,
+        fsWriteFile: fsWriteFileMock,
+        gitRestorePaths: gitRestorePathsMock,
+        gitAdd: gitAddMock,
+        gitCommit: gitCommitMock,
+        directCheckpointEnsure: directCheckpointEnsureMock,
+        directReviewSnapshot: directReviewSnapshotMock,
+        directStagePaths: directStagePathsMock,
+        directUnstagePaths: directUnstagePathsMock,
+        directAcceptChanges: directAcceptChangesMock,
+      },
+      getGitFlowBaseBranch: () => 'develop',
+      getAppState: () => appStoreState,
+      getTaskState: () => taskStoreState,
+      setTaskState: (partial) => {
+        if (partial.branchWorktrees) {
+          taskStoreState.branchWorktrees = partial.branchWorktrees;
+        }
+      },
+      generateCommitMessages: generateCommitMessagesMock,
+    });
+
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    const stagedId = `${directRepositoryId}::src/main.ts`;
+    const pendingId = `${directRepositoryId}::src/other.ts`;
+    await expect(store.stageChanges(directRepositoryId, [pendingId])).rejects.toBeDefined();
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBe(directRepositoryId);
+    const assertBlocked = async () => {
+      await expect(store.unstageChanges(directRepositoryId, [stagedId])).rejects.toThrow('Refresh review');
+      await expect(store.commitStagedChanges(directRepositoryId, 'feat: accept changes')).rejects.toThrow('Refresh review');
+      await expect(store.commitAllReadyTaskRepositories()).rejects.toThrow('Refresh review');
+      await expect(store.stageAllTaskChanges()).rejects.toThrow('Refresh review');
+      await expect(store.stageAllChanges(directRepositoryId)).rejects.toThrow('Refresh review');
+      await expect(store.revertChanges(directRepositoryId, [pendingId])).rejects.toThrow('Refresh review');
+      expect(directUnstagePathsMock).not.toHaveBeenCalled();
+      expect(directAcceptChangesMock).not.toHaveBeenCalled();
+      expect(directStagePathsMock).toHaveBeenCalledTimes(1);
+    };
+    await assertBlocked();
+    let releaseRefresh!: () => void;
+    refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    const refreshStarted = new Promise<void>((resolve) => { markRefreshStarted = resolve; });
+    const refreshing = store.refreshExpiredReview();
+    await refreshStarted;
+    await assertBlocked();
+    releaseRefresh();
+    await refreshing;
+    refreshGate = undefined;
+    expect(useFileChangesStore.getState().staleDirectRepositoryId).toBeNull();
+    await store.unstageChanges(directRepositoryId, [stagedId]);
+    expect(directUnstagePathsMock).toHaveBeenCalledTimes(1);
+    conflict = false;
+    await store.stageChanges(directRepositoryId, [pendingId]);
+    await store.commitStagedChanges(directRepositoryId, 'feat: accept changes');
+    expect(directAcceptChangesMock).toHaveBeenCalledTimes(1);
+  });
+
   it('reviews and accepts direct edits without invoking project Git commands', async () => {
     directProjectMode = false;
     appStoreState.selectedGroupId = null;

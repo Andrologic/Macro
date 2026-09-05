@@ -1406,6 +1406,60 @@ describe('FileChangesPanel', () => {
     expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 
+  it('disables commit and unstage actions while an expired review is waiting for refresh', async () => {
+    const repository = buildRepository(true);
+    seedStores(repository);
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    const refreshExpiredReviewMock = mock(async () => {
+      await refreshGate;
+      useFileChangesStore.setState({ staleDirectRepositoryId: null });
+    });
+    await act(async () => {
+      useFileChangesStore.setState({ staleDirectRepositoryId: repository.id, refreshExpiredReview: refreshExpiredReviewMock });
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+    const unstageButtons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[aria-label="Unstage"]'));
+    expect(commitButton?.disabled).toBe(true);
+    expect(unstageButtons.length).toBeGreaterThan(0);
+    expect(unstageButtons.every((button) => button.disabled)).toBe(true);
+    await act(async () => {
+      commitButton?.click();
+      unstageButtons.forEach((button) => button.click());
+      Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Refresh review')?.click();
+      await flushRender();
+    });
+    expect(refreshExpiredReviewMock).toHaveBeenCalledTimes(1);
+    expect(commitButton?.disabled).toBe(true);
+    expect(unstageButtons.every((button) => button.disabled)).toBe(true);
+    expect(commitAllReadyTaskRepositoriesMock).not.toHaveBeenCalled();
+    expect(unstageChangesMock).not.toHaveBeenCalled();
+    await act(async () => { releaseRefresh(); await flushRender(); });
+    expect(commitButton?.disabled).toBe(false);
+    expect(unstageButtons.every((button) => !button.disabled)).toBe(true);
+    commitAllReadyTaskRepositoriesMock.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Review generated message'), {
+        name: 'SmartCommitMessageGenerationError',
+        generatedMessages: { repositories: [{
+          repositoryId: repository.id, type: 'feat', scope: null, subject: 'valid message', body: null,
+        }] },
+      });
+    });
+    await act(async () => { commitButton?.click(); await flushRender(); });
+    const modalCommit = document.body.querySelector<HTMLButtonElement>('[role="dialog"] button:last-child');
+    expect(modalCommit?.textContent).toContain('Commit');
+    expect(modalCommit?.disabled).toBe(false);
+    await act(async () => {
+      useFileChangesStore.setState({ staleDirectRepositoryId: repository.id });
+      await flushRender();
+    });
+    expect(modalCommit?.disabled).toBe(true);
+  });
+
   it('keeps Commit as the primary action while a repository is ready to commit', async () => {
     const repository = buildRepository(true);
     seedStores(repository);

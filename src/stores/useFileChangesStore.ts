@@ -1549,6 +1549,9 @@ export const createFileChangesStore = (
       }
       activeReviewRequestIds.clear();
     };
+    const ensureReviewFresh = () => {
+      if (get().staleDirectRepositoryId) throw new Error(tChanges('implement.refreshReview', 'Refresh review'));
+    };
     const beginMutationRequest = (repository: ReviewRepositoryState) => {
       const requestId = ++mutationRequestSequence;
       activeMutationRequests.set(repository.id, requestId);
@@ -2278,7 +2281,7 @@ export const createFileChangesStore = (
   },
 
   stageChanges: async (repositoryId, changeIds) => {
-    if (get().staleDirectRepositoryId === repositoryId) throw new Error(tChanges('implement.refreshReview', 'Refresh review'));
+    ensureReviewFresh();
     if (changeIds.length === 0) {
       return;
     }
@@ -2402,6 +2405,7 @@ export const createFileChangesStore = (
   },
 
   unstageChanges: async (repositoryId, changeIds) => {
+    ensureReviewFresh();
     if (changeIds.length === 0) {
       return;
     }
@@ -2514,6 +2518,7 @@ export const createFileChangesStore = (
   },
 
   stageAllChanges: async (repositoryId) => {
+    ensureReviewFresh();
     if (!repositoryId) return;
     const repository = get().getRepository(repositoryId);
     if (!repository) return;
@@ -2526,6 +2531,7 @@ export const createFileChangesStore = (
   },
 
   stageAllTaskChanges: async () => {
+    ensureReviewFresh();
     const targetRepositoryIds = get().repositories
       .filter((repository) =>
         repository.commitState === 'idle' &&
@@ -2550,7 +2556,7 @@ export const createFileChangesStore = (
   },
 
   revertChanges: async (repositoryId, changeIds) => {
-    if (get().staleDirectRepositoryId === repositoryId) throw new Error(tChanges('implement.refreshReview', 'Refresh review'));
+    ensureReviewFresh();
     if (changeIds.length === 0) {
       return;
     }
@@ -2739,7 +2745,7 @@ export const createFileChangesStore = (
   },
 
   saveRightDraft: async () => {
-    if (get().staleDirectRepositoryId) throw new Error(tChanges('implement.refreshReview', 'Refresh review'));
+    ensureReviewFresh();
     const session = get().diffModalSession;
     if (!session) return;
     const repository = get().getRepository(session.repositoryId);
@@ -2791,6 +2797,7 @@ export const createFileChangesStore = (
         expectedRevision = current.revision;
       }
 
+      ensureReviewFresh();
       await deps.tauri.fsWriteFile({
         path,
         content: nextContent,
@@ -2884,6 +2891,7 @@ export const createFileChangesStore = (
   },
 
   commitStagedChanges: async (repositoryId, message, internalOptions = {}) => {
+    ensureReviewFresh();
     const task = ensureReviewTask(deps);
     const requestGeneration = taskReviewGeneration;
     const isCurrentReview = () => taskReviewGeneration === requestGeneration &&
@@ -2969,6 +2977,7 @@ export const createFileChangesStore = (
           }
         }
         await ensureNoForeignStagedFiles(deps, repository.worktreePath, repository.stagedPaths);
+        ensureReviewFresh();
         hash = await deps.tauri.gitCommit({
           repoPath: repository.worktreePath,
           message: commitMessage,
@@ -3081,6 +3090,7 @@ export const createFileChangesStore = (
   },
 
   commitAllReadyTaskRepositories: async (options = {}) => {
+    ensureReviewFresh();
     if (get().isCommitting || get().isGeneratingCommitMessages) throw new Error(
       tChanges('implement.commitInProgress', 'Committing changes...'));
     const task = ensureReviewTask(deps);

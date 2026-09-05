@@ -22,6 +22,7 @@ interface CommitMessageEditorModalProps {
   isCommitting: boolean;
   isGeneratingCommitMessages: boolean;
   hasInvalidMessage: boolean;
+  commitDisabled?: boolean;
   onCancel: () => void;
   onRetryGeneration: () => void;
   onCommit: () => void;
@@ -38,6 +39,7 @@ export const CommitMessageEditorModal: React.FC<CommitMessageEditorModalProps> =
   isCommitting,
   isGeneratingCommitMessages,
   hasInvalidMessage,
+  commitDisabled = false,
   onCancel,
   onRetryGeneration,
   onCommit,
@@ -165,7 +167,7 @@ export const CommitMessageEditorModal: React.FC<CommitMessageEditorModalProps> =
           <Button
             size="sm"
             onClick={onCommit}
-            disabled={isCommitting || hasInvalidMessage}
+            disabled={isCommitting || hasInvalidMessage || commitDisabled}
           >
             {t('implement.commitChangesGeneric', 'Commit')}
           </Button>
