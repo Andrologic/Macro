@@ -105,6 +105,24 @@ describe('useNotificationCenterStore', () => {
       variant: 'actionable', category: 'task_attention_required',
       workflowNavigation: { kind: 'approveTool', toolCallId: 'tool-1' },
     })])[0]?.workflowNavigation).toBeUndefined();
+    expect(restarted.sanitizeNotificationCenterItems([createNotificationItem(3, {
+      variant: 'actionable', category: 'task_attention_required',
+      workflowNavigation: {
+        kind: 'review',
+        taskId: 'task-3',
+        catalogScope: {
+          selectedGroupId: 'group-1',
+          selectedProjectId: null,
+        },
+      },
+    })])[0]?.workflowNavigation).toEqual({
+      kind: 'review',
+      taskId: 'task-3',
+      catalogScope: {
+        selectedGroupId: 'group-1',
+        selectedProjectId: null,
+      },
+    });
   });
 
   it('upserts info, warning, and error items with newest first', () => {

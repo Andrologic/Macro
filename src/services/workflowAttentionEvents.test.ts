@@ -212,6 +212,10 @@ describe('workflow attention events', () => {
         kind: 'review',
         key: 'workflow-attention:review:review',
         conversationId: 'conversation-review',
+        catalogScope: {
+          selectedGroupId: null,
+          selectedProjectId: null,
+        },
       }),
     ]);
     expect(

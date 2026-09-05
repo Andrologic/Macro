@@ -64,6 +64,10 @@ export type WorkflowAttentionEvent =
       taskId: string;
       taskTitle: string;
       conversationId: string | null;
+      catalogScope: {
+        selectedGroupId: string | null;
+        selectedProjectId: string | null;
+      };
     };
 
 const haveSameConversationAttentionShape = (
@@ -411,6 +415,10 @@ export const detectNewReviewAttentionEvents = (
         taskId: task.id,
         taskTitle: task.title,
         conversationId,
+        catalogScope: {
+          selectedGroupId: context.selectedGroupId,
+          selectedProjectId: context.selectedProjectId,
+        },
       },
     ];
   });

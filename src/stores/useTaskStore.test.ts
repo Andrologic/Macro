@@ -677,6 +677,51 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
 
       expect(useTaskStore.getState().tasks.map((task: ImplementTask) => task.id)).toEqual(['task-b']);
       expect(appStoreState.selectedTaskId).toBe('task-b');
+      expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toEqual({
+        revision: 1,
+        selectedGroupId: 'group-b',
+        selectedProjectId: 'project-b',
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+  });
+
+  it('publishes catalog success only for a current successful refresh', async () => {
+    const originalListTasks = services.listTasks;
+    appStoreState.selectedGroupId = 'group-current';
+    appStoreState.selectedProjectId = 'project-current';
+    services.listTasks = mock(async () => {
+      throw new Error('Catalog unavailable');
+    });
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+
+      expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toBeNull();
+      useTaskStore.getState().setTasks([]);
+      expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toBeNull();
+
+      services.listTasks = mock(async () => ({
+        tasks: [],
+        plans: [],
+        hasStandaloneTasks: false,
+        source: 'empty' as const,
+      }));
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+
+      expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toEqual({
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+      });
     } finally {
       services.listTasks = originalListTasks;
     }

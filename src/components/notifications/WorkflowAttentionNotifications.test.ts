@@ -38,6 +38,11 @@ interface TestChatState {
 interface TestTaskState {
   isLoading: boolean;
   lastError: string | null;
+  lastSuccessfulCatalogLoad?: {
+    revision: number;
+    selectedGroupId: string | null;
+    selectedProjectId: string | null;
+  } | null;
   tasks: CatalogedImplementTask[];
 }
 
@@ -349,7 +354,14 @@ describe('workflow attention notification subscriptions', () => {
       title: 'Review ready',
       createdAt: '2026-09-04T10:00:00.000Z',
       readAt: null,
-      workflowNavigation: { kind: 'review' as const, taskId: 'task-1' },
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'task-1',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
     };
     useNotificationCenterStore.setState({ items: [item] });
     taskState = { isLoading: true, lastError: null, tasks: [] };
@@ -357,7 +369,16 @@ describe('workflow attention notification subscriptions', () => {
     reconcileWorkflowAttentionNotifications();
     expect(useNotificationCenterStore.getState().items).toHaveLength(1);
 
-    taskState = { isLoading: false, lastError: null, tasks: [] };
+    taskState = {
+      isLoading: false,
+      lastError: null,
+      tasks: [],
+      lastSuccessfulCatalogLoad: {
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+      },
+    };
     reconcileWorkflowAttentionNotifications();
     expect(useNotificationCenterStore.getState().items).toEqual([]);
   });
@@ -371,19 +392,33 @@ describe('workflow attention notification subscriptions', () => {
       title: 'Review ready',
       createdAt: '2026-09-04T10:00:00.000Z',
       readAt: null,
-      workflowNavigation: { kind: 'review' as const, taskId: 'deleted-task' },
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'deleted-task',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
     };
     useNotificationCenterStore.setState({ items: [item] });
     taskState = { isLoading: true, lastError: null, tasks: [] };
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
 
-    updateTaskState([], { isLoading: false });
+    updateTaskState([], {
+      isLoading: false,
+      lastSuccessfulCatalogLoad: {
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+      },
+    });
 
     expect(useNotificationCenterStore.getState().items).toEqual([]);
     unsubscribe();
   });
 
-  it('keeps an orphaned review after a failed catalog load and removes it after recovery', () => {
+  it('keeps an orphaned review after a failed catalog load and removes it after a recovered snapshot', () => {
     const item = {
       id: 'workflow-attention:review:temporarily-missing',
       level: 'info' as const,
@@ -392,7 +427,14 @@ describe('workflow attention notification subscriptions', () => {
       title: 'Review ready',
       createdAt: '2026-09-04T10:00:00.000Z',
       readAt: null,
-      workflowNavigation: { kind: 'review' as const, taskId: 'temporarily-missing' },
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'temporarily-missing',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
     };
     useNotificationCenterStore.setState({ items: [item] });
     taskState = { isLoading: false, lastError: 'Catalog unavailable', tasks: [] };
@@ -400,10 +442,81 @@ describe('workflow attention notification subscriptions', () => {
 
     expect(useNotificationCenterStore.getState().items).toHaveLength(1);
 
-    updateTaskState([], { lastError: null });
+    updateTaskState([], {
+      lastError: null,
+      lastSuccessfulCatalogLoad: {
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+      },
+    });
 
     expect(useNotificationCenterStore.getState().items).toEqual([]);
     unsubscribe();
+  });
+
+  it('does not treat clearing a generic task error as a successful catalog recovery', () => {
+    const item = {
+      id: 'workflow-attention:review:temporarily-missing',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'temporarily-missing',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = { isLoading: false, lastError: 'Catalog unavailable', tasks: [] };
+    const failedCatalogTasks = taskState.tasks;
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    updateTaskState(failedCatalogTasks, { lastError: null });
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it('keeps a review that belongs to a different loaded catalog scope', () => {
+    const item = {
+      id: 'workflow-attention:review:other-scope',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'other-scope',
+        catalogScope: {
+          selectedGroupId: 'group-other',
+          selectedProjectId: 'project-other',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = {
+      isLoading: false,
+      lastError: null,
+      tasks: [],
+      lastSuccessfulCatalogLoad: {
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+      },
+    };
+
+    reconcileWorkflowAttentionNotifications();
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
   });
 
   it('emits one questionnaire notification and honors its explicit Architect group', async () => {

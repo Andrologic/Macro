@@ -46,7 +46,7 @@ export const emitWorkflowAttentionNotification = (
   t: TFunction,
 ): void => {
   const workflowNavigation: WorkflowNotificationNavigation = event.kind === 'review'
-    ? { kind: 'review', taskId: event.taskId }
+    ? { kind: 'review', taskId: event.taskId, catalogScope: event.catalogScope }
     : { kind: 'conversation', requestKind: event.kind, conversationId: event.conversationId };
   const action = {
     label: t('notifications.workflow.openAction', 'Open'),
@@ -121,9 +121,16 @@ export const reconcileWorkflowAttentionNotifications = (): void => {
     if (!navigation) continue;
     if (navigation.kind === 'review') {
       const task = resolveTaskReference(tasks, navigation.taskId);
+      const successfulLoad = taskState.lastSuccessfulCatalogLoad;
+      const taskAbsenceIsConfirmed = Boolean(
+        navigation.catalogScope &&
+        successfulLoad &&
+        navigation.catalogScope.selectedGroupId === successfulLoad.selectedGroupId &&
+        navigation.catalogScope.selectedProjectId === successfulLoad.selectedProjectId,
+      );
       if (
         (task && task.status !== 'InReview') ||
-        (!task && taskState.isLoading === false && taskState.lastError === null)
+        (!task && taskAbsenceIsConfirmed)
       ) {
         remove(item);
       }
@@ -167,7 +174,7 @@ export const subscribeToWorkflowAttentionNotifications = (
   const unsubscribeTasks = useTaskStore.subscribe((nextState, previousState) => {
     if (
       previousState.isLoading === nextState.isLoading &&
-      previousState.lastError === nextState.lastError &&
+      previousState.lastSuccessfulCatalogLoad === nextState.lastSuccessfulCatalogLoad &&
       !hasReviewAttentionStateChanged(previousState.tasks, nextState.tasks)
     ) {
       return;
