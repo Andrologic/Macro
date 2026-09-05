@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   declaredRustChannel,
   evaluateToolchainDiagnostic,
+  platformPrerequisiteCommands,
   requiredRustTargets,
 } from './toolchain-diagnostic.mjs';
 
@@ -13,6 +14,12 @@ describe('release toolchain diagnostic', () => {
       'x86_64-apple-darwin',
     ]);
     expect(requiredRustTargets('win32', 'arm64')).toEqual(['aarch64-pc-windows-msvc']);
+    expect(platformPrerequisiteCommands('win32')).toEqual([
+      ['powershell', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'],
+      ['where.exe', 'cl.exe'],
+      ['where.exe', 'link.exe'],
+      ['where.exe', 'rc.exe'],
+    ]);
   });
 
   test('fails on a shadowed compiler, missing target, or prerequisite', () => {

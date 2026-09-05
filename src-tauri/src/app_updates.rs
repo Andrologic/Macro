@@ -120,12 +120,18 @@ pub(crate) fn diagnostic_manifest(app: &AppHandle) -> Result<Option<StagedUpdate
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    atomic_write_with(path, bytes, persist_temporary_file)
+    atomic_write_with(path, bytes, persist_temporary_file, sync_parent_directory)
 }
 
-fn atomic_write_with<F>(path: &Path, bytes: &[u8], persist: F) -> Result<(), String>
+fn atomic_write_with<F, S>(
+    path: &Path,
+    bytes: &[u8],
+    persist: F,
+    sync_parent: S,
+) -> Result<(), String>
 where
     F: FnOnce(NamedTempFile, &Path) -> Result<(), String>,
+    S: FnOnce(&Path) -> Result<(), String>,
 {
     let parent = path
         .parent()
@@ -141,7 +147,18 @@ where
         .and_then(|_| temporary.as_file().sync_all())
         .map_err(|error| format!("Impossible d'enregistrer la mise à jour : {error}"))?;
     persist(temporary, path)?;
-    sync_parent_directory(parent)
+    if let Err(error) = sync_parent(parent) {
+        // The rename is the commit point: returning an ordinary error here
+        // would falsely promise callers that the previous file still exists.
+        // Keep the committed state and surface the durability uncertainty in
+        // local logs without including the private cache path.
+        tracing::warn!(
+            action = "update_atomic_write_directory_sync_failed",
+            reason = %error,
+            "The update state was replaced, but directory durability could not be confirmed."
+        );
+    }
+    Ok(())
 }
 
 fn persist_temporary_file(temporary: NamedTempFile, path: &Path) -> Result<(), String> {
@@ -695,9 +712,9 @@ mod tests {
 
     use super::{
         atomic_write, atomic_write_with, clean_shutdown_matches, clear_staged_update_directory,
-        package_digest, read_manifest_file, staged_update_belongs_to_current_install,
-        verify_update_signature, CleanShutdownMarker, DownloadProgressEvent, StagedUpdateManifest,
-        StagedUpdatePhase,
+        package_digest, persist_temporary_file, read_manifest_file,
+        staged_update_belongs_to_current_install, sync_parent_directory, verify_update_signature,
+        CleanShutdownMarker, DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
     };
 
     const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
@@ -746,13 +763,101 @@ mod tests {
         let path = directory.path().join("manifest.json");
         std::fs::write(&path, b"usable-old-state").unwrap();
 
-        let result = atomic_write_with(&path, b"new-state", |_temporary, _destination| {
-            Err("simulated replacement failure".to_string())
-        });
+        let result = atomic_write_with(
+            &path,
+            b"new-state",
+            |_temporary, _destination| Err("simulated replacement failure".to_string()),
+            sync_parent_directory,
+        );
 
         assert_eq!(result, Err("simulated replacement failure".to_string()));
         assert_eq!(std::fs::read(&path).unwrap(), b"usable-old-state");
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn atomic_write_preserves_previous_file_on_native_replacement_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        std::fs::write(&path, b"usable-old-state").unwrap();
+
+        #[cfg(unix)]
+        let result = {
+            use std::os::unix::fs::PermissionsExt;
+            let original_mode = std::fs::metadata(directory.path())
+                .unwrap()
+                .permissions()
+                .mode();
+            atomic_write_with(
+                &path,
+                b"new-state",
+                |temporary, destination| {
+                    std::fs::set_permissions(
+                        directory.path(),
+                        std::fs::Permissions::from_mode(0o500),
+                    )
+                    .unwrap();
+                    match temporary.persist(destination) {
+                        Ok(_) => {
+                            std::fs::set_permissions(
+                                directory.path(),
+                                std::fs::Permissions::from_mode(original_mode),
+                            )
+                            .unwrap();
+                            Ok(())
+                        }
+                        Err(error) => {
+                            std::fs::set_permissions(
+                                directory.path(),
+                                std::fs::Permissions::from_mode(original_mode),
+                            )
+                            .unwrap();
+                            let message =
+                                format!("Impossible de finaliser la mise à jour : {}", error.error);
+                            drop(error);
+                            Err(message)
+                        }
+                    }
+                },
+                sync_parent_directory,
+            )
+        };
+
+        #[cfg(windows)]
+        let result = {
+            use std::os::windows::fs::OpenOptionsExt;
+            let locked = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&path)
+                .unwrap();
+            let result = atomic_write_with(
+                &path,
+                b"new-state",
+                persist_temporary_file,
+                sync_parent_directory,
+            );
+            drop(locked);
+            result
+        };
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"usable-old-state");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn atomic_write_keeps_committed_state_when_directory_sync_is_uncertain() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        std::fs::write(&path, b"old-state").unwrap();
+
+        let result = atomic_write_with(&path, b"new-state", persist_temporary_file, |_parent| {
+            Err("simulated directory sync failure".to_string())
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"new-state");
     }
 
     #[test]

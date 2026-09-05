@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 export const NATIVE_RECOVERY_TESTS = Object.freeze([
   'app_updates::tests::atomic_write_replaces_the_previous_file',
-  'app_updates::tests::atomic_write_keeps_the_previous_file_when_replacement_fails',
+  'app_updates::tests::atomic_write_preserves_previous_file_on_native_replacement_failure',
   'db::tests::create_pool_applies_agent_run_migration_to_existing_baseline',
   'local_backup::tests::startup_recovers_interrupted_restore_and_preserves_rollback_archive',
 ]);

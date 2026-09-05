@@ -28,6 +28,32 @@ export function requiredRustTargets(platform, architecture) {
   return [];
 }
 
+export function platformPrerequisiteCommands(platform) {
+  if (platform === 'darwin') {
+    return [
+      ['xcode-select', '-p'],
+      ['xcrun', '--find', 'lipo'],
+    ];
+  }
+  if (platform === 'linux') {
+    return [
+      ['pkg-config', '--exists', 'gtk+-3.0'],
+      ['pkg-config', '--exists', 'webkit2gtk-4.1'],
+      ['dpkg-deb', '--version'],
+      ['rpmbuild', '--version'],
+    ];
+  }
+  if (platform === 'win32') {
+    return [
+      ['powershell', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'],
+      ['where.exe', 'cl.exe'],
+      ['where.exe', 'link.exe'],
+      ['where.exe', 'rc.exe'],
+    ];
+  }
+  return [];
+}
+
 export function evaluateToolchainDiagnostic(input) {
   const missingTargets = input.requiredTargets.filter((target) => !input.installedTargets.includes(target));
   const failedProbes = input.probes.filter((entry) => !entry.ok).map((entry) => entry.command);
@@ -53,17 +79,8 @@ export function collectToolchainDiagnostic(platform = process.platform, architec
   const cargo = probe('cargo', ['--version']);
   const targets = probe('rustup', ['target', 'list', '--installed']);
   const probes = [probe('bun', ['--version']), probe('git', ['--version']), rustc, cargo, targets];
-  if (platform === 'darwin') {
-    probes.push(probe('xcode-select', ['-p']), probe('xcrun', ['--find', 'lipo']));
-  } else if (platform === 'linux') {
-    probes.push(
-      probe('pkg-config', ['--exists', 'gtk+-3.0']),
-      probe('pkg-config', ['--exists', 'webkit2gtk-4.1']),
-      probe('dpkg-deb', ['--version']),
-      probe('rpmbuild', ['--version']),
-    );
-  } else if (platform === 'win32') {
-    probes.push(probe('powershell', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']));
+  for (const [command, ...args] of platformPrerequisiteCommands(platform)) {
+    probes.push(probe(command, args));
   }
   return evaluateToolchainDiagnostic({
     declaredChannel,
