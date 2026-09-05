@@ -6,6 +6,91 @@ use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
 
+const MESSAGE_SEARCH_MAX_LIMIT: i64 = 50;
+
+fn message_search_expression(query: &str) -> Option<String> {
+    let terms = query
+        .split_whitespace()
+        .filter_map(|term| {
+            let normalized = term.trim_matches(|character: char| !character.is_alphanumeric());
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(format!("\"{}\"*", normalized.replace('"', "\"\"")))
+            }
+        })
+        .take(8)
+        .collect::<Vec<_>>();
+    (!terms.is_empty()).then(|| terms.join(" AND "))
+}
+
+pub async fn search_messages(
+    pool: &SqlitePool,
+    query: &str,
+    limit: i64,
+    offset: i64,
+) -> DbResult<MessageSearchPage> {
+    let Some(expression) = message_search_expression(query) else {
+        return Ok(MessageSearchPage {
+            results: Vec::new(),
+            next_offset: None,
+        });
+    };
+    let limit = limit.clamp(1, MESSAGE_SEARCH_MAX_LIMIT);
+    let offset = offset.max(0);
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            messages.id AS message_id,
+            messages.conversation_id,
+            conversations.title AS conversation_title,
+            conversations.description AS conversation_description,
+            messages.role,
+            snippet(message_search, 0, '', '', ' … ', 24) AS snippet,
+            messages.created_at
+        FROM message_search
+        JOIN messages ON messages.rowid = message_search.rowid
+        JOIN conversations ON conversations.id = messages.conversation_id
+        WHERE message_search MATCH ?
+        ORDER BY bm25(message_search), messages.created_at DESC, messages.id ASC
+        LIMIT ? OFFSET ?
+        "#,
+    )
+    .bind(expression)
+    .bind(limit + 1)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    let has_more = rows.len() as i64 > limit;
+    let results = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(|row| MessageSearchResult {
+            message_id: row.get("message_id"),
+            conversation_id: row.get("conversation_id"),
+            conversation_title: row.get("conversation_title"),
+            conversation_description: row.get("conversation_description"),
+            role: row.get("role"),
+            snippet: row.get("snippet"),
+            created_at: row.get("created_at"),
+        })
+        .collect();
+
+    Ok(MessageSearchPage {
+        results,
+        next_offset: has_more.then_some(offset + limit),
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn rebuild_message_search_index(pool: &SqlitePool) -> DbResult<()> {
+    sqlx::query("INSERT INTO message_search(message_search) VALUES ('rebuild')")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ReplayRecoverySnapshot {
     replay_id: String,
@@ -3296,6 +3381,143 @@ mod tests {
         let db_path = temp_dir.path().join("macro.db");
         let pool = create_pool(&db_path).await.expect("db pool");
         (temp_dir, pool)
+    }
+
+    async fn seed_search_conversation(pool: &SqlitePool, id: &str, title: &str) {
+        sqlx::query(
+            "INSERT INTO conversations (id, title, scope_mode, created_at, updated_at) VALUES (?, ?, 'chat', '2026-09-05T10:00:00Z', '2026-09-05T10:00:00Z')",
+        )
+        .bind(id)
+        .bind(title)
+        .execute(pool)
+        .await
+        .expect("seed search conversation");
+    }
+
+    async fn seed_search_message(
+        pool: &SqlitePool,
+        id: &str,
+        conversation_id: &str,
+        content: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, 'user', ?, '2026-09-05T10:00:00Z')",
+        )
+        .bind(id)
+        .bind(conversation_id)
+        .bind(content)
+        .execute(pool)
+        .await
+        .expect("seed search message");
+    }
+
+    #[tokio::test]
+    async fn message_search_tracks_insert_update_delete_and_rebuild() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "conversation-search", "Searchable conversation").await;
+        seed_search_message(
+            &pool,
+            "message-search",
+            "conversation-search",
+            "alpha initial text",
+        )
+        .await;
+
+        let inserted = search_messages(&pool, "alpha", 25, 0)
+            .await
+            .expect("search inserted message");
+        assert_eq!(inserted.results.len(), 1);
+        assert_eq!(inserted.results[0].message_id, "message-search");
+
+        sqlx::query("UPDATE messages SET content = 'beta edited text' WHERE id = 'message-search'")
+            .execute(&pool)
+            .await
+            .expect("edit indexed message");
+        assert!(search_messages(&pool, "alpha", 25, 0)
+            .await
+            .expect("search old content")
+            .results
+            .is_empty());
+        assert_eq!(
+            search_messages(&pool, "beta", 25, 0)
+                .await
+                .expect("search edited content")
+                .results
+                .len(),
+            1
+        );
+
+        sqlx::query("DELETE FROM message_search")
+            .execute(&pool)
+            .await
+            .expect("clear search index");
+        assert!(search_messages(&pool, "beta", 25, 0)
+            .await
+            .expect("search empty index")
+            .results
+            .is_empty());
+        rebuild_message_search_index(&pool)
+            .await
+            .expect("rebuild search index");
+        assert_eq!(
+            search_messages(&pool, "beta", 25, 0)
+                .await
+                .expect("search rebuilt index")
+                .results
+                .len(),
+            1
+        );
+
+        sqlx::query("DELETE FROM messages WHERE id = 'message-search'")
+            .execute(&pool)
+            .await
+            .expect("delete indexed message");
+        assert!(search_messages(&pool, "beta", 25, 0)
+            .await
+            .expect("search deleted message")
+            .results
+            .is_empty());
+        seed_search_message(
+            &pool,
+            "message-search",
+            "conversation-search",
+            "beta restored text",
+        )
+        .await;
+        assert_eq!(
+            search_messages(&pool, "restored", 25, 0)
+                .await
+                .expect("search restored message")
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn message_search_is_bounded_and_paginated() {
+        let (_temp_dir, pool) = test_pool().await;
+        seed_search_conversation(&pool, "conversation-page", "Paged conversation").await;
+        for index in 0..3 {
+            seed_search_message(
+                &pool,
+                &format!("message-page-{index}"),
+                "conversation-page",
+                "pagination marker",
+            )
+            .await;
+        }
+
+        let first = search_messages(&pool, "pagination", 2, 0)
+            .await
+            .expect("first search page");
+        assert_eq!(first.results.len(), 2);
+        assert_eq!(first.next_offset, Some(2));
+        let second = search_messages(&pool, "pagination", 2, first.next_offset.unwrap())
+            .await
+            .expect("second search page");
+        assert_eq!(second.results.len(), 1);
+        assert_eq!(second.next_offset, None);
     }
 
     #[tokio::test]

@@ -13,6 +13,7 @@ import {
 } from '../../services/viewFilterPreferences';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
+import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -28,8 +29,11 @@ describe('ConversationArchive', () => {
   const initialChatState = useChatStore.getState();
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
+  let invokeMock = mock(async (_command?: string): Promise<unknown> => undefined);
 
   beforeEach(() => {
+    invokeMock = mock(async (_command?: string): Promise<unknown> => undefined);
+    installTauriRuntimeMock(invokeMock as never);
     useViewFilterStore.setState({
       chat: { ...DEFAULT_CHAT_VIEW_FILTERS },
       isHydrated: true,
@@ -68,6 +72,7 @@ describe('ConversationArchive', () => {
     root = null;
     useChatStore.setState(initialChatState, true);
     useConversationArchiveStore.setState({ archivedConversationIds: new Set() });
+    removeTauriRuntimeMock();
   });
 
   it('keeps multi-select compact until the header button activates its toolbar', async () => {
@@ -275,5 +280,69 @@ describe('ConversationArchive', () => {
 
     expect(selected).toBe(true);
     expect(selectConversation).toHaveBeenCalledWith('conversation-1');
+  });
+
+  it('opens an indexed message result and focuses the message after loading its conversation', async () => {
+    invokeMock = mock(async (command?: string): Promise<unknown> => {
+      if (command === 'db_search_messages') {
+        return {
+          results: [{
+            messageId: 'message-not-loaded',
+            conversationId: 'conversation-1',
+            conversationTitle: 'Conversation active',
+            conversationDescription: null,
+            role: 'user',
+            snippet: 'Indexed needle in the transcript',
+            createdAt: '2026-08-16T10:00:00.000Z',
+          }],
+          nextOffset: null,
+        };
+      }
+      return undefined;
+    });
+    installTauriRuntimeMock(invokeMock as never);
+    const selectConversation = mock(async () => true);
+    useChatStore.setState({ selectConversation: selectConversation as never });
+    const focusedMessages: string[] = [];
+    const focusListener = (event: Event) => {
+      focusedMessages.push((event as CustomEvent<{ messageId: string }>).detail.messageId);
+    };
+    window.addEventListener('macro:focus-message', focusListener);
+
+    await act(async () => {
+      root?.render(<ConversationArchive />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="chat-search-toggle"]')
+        ?.click();
+      await flushRender();
+    });
+    const input = document.body.querySelector<HTMLInputElement>(
+      '[data-tour-id="chat-conversation-search"] input',
+    );
+    const propsKey = Object.keys(input ?? {}).find((key) => key.startsWith('__reactProps$'));
+    const inputProps = (input as unknown as Record<string, { onChange?: (event: unknown) => void }>)[propsKey!];
+    await act(async () => {
+      inputProps.onChange?.({ target: { value: 'needle' } });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await flushRender();
+    });
+
+    const result = document.body.querySelector<HTMLButtonElement>(
+      '[data-message-search-result="message-not-loaded"]',
+    );
+    expect(invokeMock.mock.calls.some((call) => call[0] === 'db_search_messages')).toBe(true);
+    expect(result?.textContent).toContain('Indexed needle');
+    await act(async () => {
+      result?.click();
+      await flushRender();
+    });
+    expect(selectConversation).toHaveBeenCalledWith('conversation-1');
+    expect(focusedMessages).toEqual(['message-not-loaded']);
+    window.removeEventListener('macro:focus-message', focusListener);
   });
 });

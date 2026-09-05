@@ -176,22 +176,15 @@ async fn check_database(path: &Path) -> Result<()> {
     if check != "ok" {
         return Err("SQLite integrity check failed".into());
     }
-    let unexpected: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type IN ('trigger', 'view')")
-            .fetch_one(&mut db)
-            .await
-            .map_err(|e| e.to_string())?;
-    if unexpected != 0 {
-        return Err("Backup contains unsupported database triggers or views".into());
-    }
     let versions: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
             .fetch_all(&mut db)
             .await
             .map_err(|e| e.to_string())?;
-    if versions.iter().any(|v| ![1, 2, 3].contains(v))
+    if versions.iter().any(|v| ![1, 2, 3, 4].contains(v))
         || !versions.contains(&1)
         || !versions.contains(&3)
+        || !versions.contains(&4)
     {
         return Err("Incompatible database schema".into());
     }
@@ -220,6 +213,18 @@ async fn check_database(path: &Path) -> Result<()> {
         if actual != expected {
             return Err(format!("Incompatible backup table: {table}"));
         }
+    }
+    let schema_query = "SELECT type || ':' || name || ':' || coalesce(sql, '') FROM sqlite_master WHERE type IN ('trigger', 'view') ORDER BY type, name";
+    let actual_schema: Vec<String> = sqlx::query_scalar(schema_query)
+        .fetch_all(&mut db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let expected_schema: Vec<String> = sqlx::query_scalar(schema_query)
+        .fetch_all(&reference)
+        .await
+        .map_err(|e| e.to_string())?;
+    if actual_schema != expected_schema {
+        return Err("Backup database triggers and views do not match this Macro version".into());
     }
     reference.close().await;
     let violations = sqlx::query("PRAGMA foreign_key_check")
@@ -888,6 +893,13 @@ mod tests {
         assert_eq!(title, "Original");
         assert_eq!(raw, "{broken but preserved");
         assert_eq!(archive.browser, browser);
+        let indexed_message: String = sqlx::query_scalar(
+            "SELECT messages.id FROM message_search JOIN messages ON messages.rowid = message_search.rowid WHERE message_search MATCH 'Representative'",
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+        assert_eq!(indexed_message, "message");
     }
     #[tokio::test]
     async fn startup_export_and_restore_round_trip_with_attachments_and_preferences() {
@@ -1162,6 +1174,31 @@ mod tests {
 
         assert_eq!(fs::read(data.join("macro.db")).unwrap(), current);
         assert!(!data.join("local-backup/restoring.json").exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_database_with_non_reference_trigger() {
+        let (temp, data, config) = profile().await;
+        let mut archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let database = temp.path().join("archive-trigger.db");
+        let entry = archive.files.get_mut("data/macro.db").unwrap();
+        fs::write(&database, STANDARD.decode(&entry.data).unwrap()).unwrap();
+        let mut db = connection(&database).await.unwrap();
+        sqlx::query(
+            "CREATE TRIGGER unexpected_backup_trigger AFTER INSERT ON settings BEGIN SELECT 1; END",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.close().await.unwrap();
+        let bytes = fs::read(database).unwrap();
+        entry.sha256 = hash(&bytes);
+        entry.data = STANDARD.encode(bytes);
+
+        let error = validate(&archive).await.expect_err("reject extra trigger");
+        assert!(error.contains("triggers and views do not match"));
     }
     #[tokio::test]
     async fn sqlite_wal_snapshot_includes_committed_rows_and_removes_credentials() {

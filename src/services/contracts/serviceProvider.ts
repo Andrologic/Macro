@@ -232,6 +232,12 @@ export interface ServiceProvider {
   archiveProject: (data: {
     projectId: string;
   }) => Promise<ProjectDto>;
+  restoreProjectGroup: (data: {
+    groupId: string;
+  }) => Promise<{ projectGroup: ProjectGroup }>;
+  restoreProject: (data: {
+    projectId: string;
+  }) => Promise<ProjectDto>;
   removeProjectGroup: (data: {
     groupId: string;
   }) => Promise<{ projectGroups: ProjectGroup[] }>;

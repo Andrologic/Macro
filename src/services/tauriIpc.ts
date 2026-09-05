@@ -1509,6 +1509,33 @@ export async function listMessages(
   return invoke<DbMessage[]>("db_list_messages", { conversationId });
 }
 
+export interface MessageSearchResult {
+  messageId: string;
+  conversationId: string;
+  conversationTitle: string;
+  conversationDescription: string | null;
+  role: string;
+  snippet: string;
+  createdAt: string;
+}
+
+export interface MessageSearchPage {
+  results: MessageSearchResult[];
+  nextOffset: number | null;
+}
+
+export async function searchMessages(params: {
+  query: string;
+  limit?: number;
+  offset?: number;
+}): Promise<MessageSearchPage> {
+  return invoke<MessageSearchPage>("db_search_messages", {
+    query: params.query,
+    limit: params.limit ?? 25,
+    offset: params.offset ?? 0,
+  });
+}
+
 export async function dbGetArchitectPlanConversationSync(
   conversationId: string,
 ): Promise<DbArchitectPlanConversationSync | null> {
@@ -3194,6 +3221,22 @@ export async function workspaceArchiveProject(params: {
   projectId: string;
 }): Promise<Project> {
   return invoke<Project>("workspace_archive_project", {
+    projectId: params.projectId,
+  });
+}
+
+export async function workspaceRestoreProjectGroup(params: {
+  groupId: string;
+}): Promise<ProjectGroup> {
+  return invoke<ProjectGroup>("workspace_restore_project_group", {
+    groupId: params.groupId,
+  });
+}
+
+export async function workspaceRestoreProject(params: {
+  projectId: string;
+}): Promise<Project> {
+  return invoke<Project>("workspace_restore_project", {
     projectId: params.projectId,
   });
 }

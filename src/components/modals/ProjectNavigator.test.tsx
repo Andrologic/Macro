@@ -37,8 +37,8 @@ mock.module('@dnd-kit/core', () => ({
   DragOverlay: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   PointerSensor: function PointerSensor() {},
   closestCenter: mock(() => null),
-  useDraggable: mock(() => ({
-    attributes: {},
+  useDraggable: mock(({ disabled }: { disabled?: boolean } = {}) => ({
+    attributes: disabled ? { 'aria-disabled': true } : {},
     listeners: {},
     setNodeRef: mock(() => undefined),
     isDragging: false,
@@ -163,6 +163,7 @@ describe('ProjectNavigator', () => {
   let closeMock = mock(() => undefined);
   let createProjectGroupMock = mock(async (_name: string, _projectIds: string[]) => undefined);
   let moveProjectToGroupMock = mock(async (_projectId: string, _groupId: string | null) => undefined);
+  let restoreProjectMock = mock(async (_projectId: string) => undefined);
 
   beforeEach(() => {
     latestDndContextProps = null;
@@ -170,6 +171,7 @@ describe('ProjectNavigator', () => {
     closeMock = mock(() => undefined);
     createProjectGroupMock = mock(async (_name: string, _projectIds: string[]) => undefined);
     moveProjectToGroupMock = mock(async (_projectId: string, _groupId: string | null) => undefined);
+    restoreProjectMock = mock(async (_projectId: string) => undefined);
     useAppStore.setState({
       standaloneProjects: [makeProject('project-solo', 'Solo')],
       projectGroups: [makeGroup()],
@@ -179,6 +181,7 @@ describe('ProjectNavigator', () => {
       projectRegistryRepairSummary: null,
       createProjectGroup: createProjectGroupMock as never,
       moveProjectToGroup: moveProjectToGroupMock as never,
+      restoreProject: restoreProjectMock as never,
     });
 
     container = document.createElement('div');
@@ -469,5 +472,36 @@ describe('ProjectNavigator', () => {
     });
 
     expect(moveProjectToGroupMock).toHaveBeenCalledWith('project-api', null);
+  });
+
+  it('separates active projects from archives and restores an archived project', async () => {
+    useAppStore.setState({
+      standaloneProjects: [
+        makeProject('project-active', 'Active project'),
+        { ...makeProject('project-archived', 'Archived project'), status: 'archived' },
+      ],
+      projectGroups: [],
+    });
+    await renderNavigator();
+
+    expect(document.body.querySelector('[data-project-id="project-active"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-project-id="project-archived"]')).toBeNull();
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Show archived projects"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('[data-project-id="project-active"]')).toBeNull();
+    const archivedProject = document.body.querySelector('[data-project-id="project-archived"]');
+    expect(archivedProject).not.toBeNull();
+    expect(archivedProject?.getAttribute('aria-disabled')).toBeNull();
+    await openProjectMenu('project-archived');
+    await act(async () => {
+      findButton('Restore').click();
+      await Promise.resolve();
+    });
+    expect(restoreProjectMock).toHaveBeenCalledWith('project-archived');
   });
 });

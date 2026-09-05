@@ -1480,6 +1480,10 @@ interface AppStore {
     confirmedMigration?: boolean,
     directEdit?: boolean,
   ) => Promise<void>;
+  archiveProjectGroup: (groupId: string) => Promise<void>;
+  restoreProjectGroup: (groupId: string) => Promise<void>;
+  archiveProject: (projectId: string) => Promise<void>;
+  restoreProject: (projectId: string) => Promise<void>;
   removeProjectGroup: (groupId: string) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
   debugResetProject: (projectId: string) => Promise<{
@@ -3007,6 +3011,64 @@ export const useAppStore = create<AppStore>((set, get) => ({
         code: normalized.code,
         details: normalized.details ?? null,
       });
+      throw normalized;
+    }
+  },
+
+  archiveProjectGroup: async (groupId) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const state = get();
+      const group = state.projectGroups.find((candidate) => candidate.id === groupId);
+      if (!group) throw new Error("Project group no longer exists in Macro.");
+      await services.archiveProjectGroup({ groupId });
+      if (state.selectedGroupId === groupId || group.projects.some((project) => project.id === state.selectedProjectId)) {
+        set({ selectedGroupId: null, selectedProjectId: null, selectedTaskId: null });
+      }
+      await get().refreshProjectRegistry();
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  restoreProjectGroup: async (groupId) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      await services.restoreProjectGroup({ groupId });
+      await get().refreshProjectRegistry();
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  archiveProject: async (projectId) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      const state = get();
+      await services.archiveProject({ projectId });
+      if (state.selectedProjectId === projectId) {
+        set({ selectedProjectId: null, selectedTaskId: null });
+      }
+      await get().refreshProjectRegistry();
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
+      throw normalized;
+    }
+  },
+
+  restoreProject: async (projectId) => {
+    set({ isLoading: true, lastError: null });
+    try {
+      await services.restoreProject({ projectId });
+      await get().refreshProjectRegistry();
+    } catch (error) {
+      const normalized = toServiceError(error);
+      set({ isLoading: false, lastError: normalized.message });
       throw normalized;
     }
   },
