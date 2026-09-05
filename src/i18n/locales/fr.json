@@ -945,6 +945,7 @@
     "skills": "Skills",
     "architect": "Workflow Git",
     "shortcuts": "Raccourcis",
+    "diagnostics": "Diagnostics",
     "desc": {
       "general": "Configurer les préférences de langue, d'application et d'approbation",
       "appearance": "Personnaliser l'apparence et la convivialité de l'application",
@@ -954,6 +955,7 @@
       "prompts": "Personnaliser les prompts système utilisés par Macro",
       "architect": "Configurer les modèles de nommage des cibles et des branches d’Architect",
       "shortcuts": "Configurer les raccourcis clavier et les raccourcis clavier",
+      "diagnostics": "Générer et vérifier un rapport d’assistance local",
       "providers": "Configurer les clés API et les points de terminaison",
       "models": "Gérer les paramètres des modèles disponibles",
       "notifications": "Configurer les canaux de notification pour les événements clés des workflows",
@@ -990,6 +992,20 @@
       "orphanSecrets": "Secrets orphelins",
       "orphanSecretsDescription": "Les secrets sont conservés lorsqu’un fournisseur ou une intégration est supprimé. Supprimez-les ici uniquement s’ils ne sont plus nécessaires.",
       "noOrphanSecrets": "Aucun secret orphelin."
+    },
+    "diagnostic": {
+      "title": "Rapport de diagnostic local",
+      "description": "Vérifiez un rapport expurgé avant de l’enregistrer pour l’assistance. Rien n’est envoyé automatiquement.",
+      "contents": "Le rapport contient la version de Macro, des réglages effectifs non secrets, l’état de la base et de la récupération, les états MCP et updater, ainsi que des métadonnées de logs bornées.",
+      "exclusions": "Les secrets, prompts, code source, chemins privés, contenus utilisateur et messages de logs bruts sont exclus.",
+      "generate": "Générer l’aperçu",
+      "regenerate": "Régénérer l’aperçu",
+      "generateFailed": "Impossible de générer le rapport de diagnostic",
+      "preview": "Aperçu du rapport",
+      "save": "Enregistrer le rapport",
+      "saveTitle": "Enregistrer le rapport de diagnostic",
+      "saved": "Rapport de diagnostic enregistré",
+      "saveFailed": "Impossible d’enregistrer le rapport de diagnostic"
     },
     "updates": "Mises à jour",
     "language_region": "Langue et région",

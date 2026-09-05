@@ -17,6 +17,7 @@ import { ArchitectGitFlowView } from './views/ArchitectGitFlowView';
 import { useAppVersion } from '../../hooks/useAppVersion';
 import { Dialog } from '../ui/Dialog';
 import { SettingsSearchProvider } from './search/SettingsSearch';
+import { DiagnosticsView } from './views/DiagnosticsView';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
@@ -51,6 +52,7 @@ export const SettingsModal: React.FC = () => {
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
     { id: 'architect', icon: 'git-branch', label: t('settings.architect') || 'Git workflow' },
     { id: 'shortcuts', icon: 'zap', label: t('settings.shortcuts') || 'Shortcuts' },
+    { id: 'diagnostics', icon: 'file-text', label: t('settings.diagnostics') || 'Diagnostics' },
   ];
 
   return (
@@ -137,6 +139,7 @@ export const SettingsModal: React.FC = () => {
                 {activeSettingsTab === 'prompts' && <PromptsView />}
                 {activeSettingsTab === 'architect' && <ArchitectGitFlowView />}
                 {activeSettingsTab === 'shortcuts' && <ShortcutsView />}
+                {activeSettingsTab === 'diagnostics' && <DiagnosticsView />}
               </div>
             </div>
           </div>

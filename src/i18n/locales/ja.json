@@ -917,6 +917,7 @@
     "skills": "Skills",
     "architect": "Git ワークフロー",
     "shortcuts": "ショートカット",
+    "diagnostics": "診断",
     "desc": {
       "skills": "再利用可能なエージェントスキルとそのソースを管理します",
       "prompts": "Macro が使用するシステムプロンプトをカスタマイズします",
@@ -926,6 +927,7 @@
       "tools": "外部ツールと MCP サーバーを構成する",
       "architect": "Architect のターゲットとブランチの命名パターンを構成する",
       "shortcuts": "キーボード ショートカットとキー バインドを構成する",
+      "diagnostics": "ローカルサポートレポートを生成して確認する",
       "providers": "API キーとエンドポイントを構成する",
       "models": "利用可能なモデルパラメータを管理する",
       "notifications": "主要なワークフローイベントの通知チャネルを設定する",
@@ -962,6 +964,20 @@
       "orphanSecrets": "Orphaned secrets",
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
+    },
+    "diagnostic": {
+      "title": "ローカル診断レポート",
+      "description": "サポート用に保存する前に、秘匿情報を除いたレポートを確認できます。自動送信は行いません。",
+      "contents": "レポートには Macro のバージョン、秘密を含まない有効な設定、データベースと復旧状態、MCP と更新機能の状態、件数を制限したログメタデータが含まれます。",
+      "exclusions": "秘密、プロンプト、ソースコード、個人パス、ユーザーコンテンツ、ログ本文は含まれません。",
+      "generate": "プレビューを生成",
+      "regenerate": "プレビューを再生成",
+      "generateFailed": "診断レポートを生成できませんでした",
+      "preview": "レポートのプレビュー",
+      "save": "レポートを保存",
+      "saveTitle": "診断レポートを保存",
+      "saved": "診断レポートを保存しました",
+      "saveFailed": "診断レポートを保存できませんでした"
     },
     "updates": "更新",
     "language_region": "言語と地域",

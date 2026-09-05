@@ -19,3 +19,4 @@ pub use environment::init_process_environment;
 pub use error::BackendError;
 pub use error::Result;
 pub use logging::init_logging;
+pub(crate) use logging::platform_log_dir;

@@ -4365,6 +4365,20 @@ export async function appInstallerCloseRespond(accepted: boolean): Promise<void>
   return invoke<void>('app_installer_close_respond', { accepted });
 }
 
+export interface AppDiagnosticReportPreviewDto {
+  reportId: string;
+  suggestedFileName: string;
+  content: string;
+}
+
+export async function appDiagnosticGenerate(): Promise<AppDiagnosticReportPreviewDto> {
+  return invoke<AppDiagnosticReportPreviewDto>('app_diagnostic_generate');
+}
+
+export async function appDiagnosticSave(reportId: string, path: string): Promise<void> {
+  return invoke<void>('app_diagnostic_save', { reportId, path });
+}
+
 // ============ Utility ============
 
 /**

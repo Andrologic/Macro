@@ -115,7 +115,8 @@ export type SettingsTab =
   | "skills"
   | "shortcuts"
   | "prompts"
-  | "architect";
+  | "architect"
+  | "diagnostics";
 export type UiZoomMode = "auto" | "override";
 export type MetadataSyncState = "clean" | "pending" | "failed" | "conflict";
 export type { MetadataMissingUpstreamPolicy };

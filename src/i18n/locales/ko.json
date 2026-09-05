@@ -917,6 +917,7 @@
     "skills": "Skills",
     "architect": "Git workflow",
     "shortcuts": "단축키",
+    "diagnostics": "진단",
     "desc": {
       "skills": "재사용 가능한 에이전트 스킬과 소스를 관리합니다",
       "prompts": "Macro가 사용하는 시스템 프롬프트를 사용자 지정합니다",
@@ -926,6 +927,7 @@
       "tools": "외부 도구 및 MCP 서버 구성",
       "architect": "Architect 대상 및 분기 이름 지정 패턴 구성",
       "shortcuts": "키보드 단축키 및 키 바인딩 구성",
+      "diagnostics": "로컬 지원 보고서 생성 및 검토",
       "providers": "API 키 및 엔드포인트 구성",
       "models": "사용 가능한 모델 매개변수 관리",
       "notifications": "주요 워크플로 이벤트에 대한 알림 채널 구성",
@@ -962,6 +964,20 @@
       "orphanSecrets": "Orphaned secrets",
       "orphanSecretsDescription": "Secrets are preserved when a provider or integration is removed. Delete them here only when they are no longer needed.",
       "noOrphanSecrets": "No orphaned secrets."
+    },
+    "diagnostic": {
+      "title": "로컬 진단 보고서",
+      "description": "지원용으로 저장하기 전에 민감 정보가 제거된 보고서를 검토하세요. 자동으로 전송되지 않습니다.",
+      "contents": "보고서에는 Macro 버전, 비밀이 아닌 유효 설정, 데이터베이스 및 복구 상태, MCP 및 업데이터 상태, 제한된 로그 메타데이터가 포함됩니다.",
+      "exclusions": "비밀, 프롬프트, 소스 코드, 개인 경로, 사용자 콘텐츠 및 원시 로그 메시지는 제외됩니다.",
+      "generate": "미리보기 생성",
+      "regenerate": "미리보기 다시 생성",
+      "generateFailed": "진단 보고서를 생성하지 못했습니다",
+      "preview": "보고서 미리보기",
+      "save": "보고서 저장",
+      "saveTitle": "진단 보고서 저장",
+      "saved": "진단 보고서가 저장되었습니다",
+      "saveFailed": "진단 보고서를 저장하지 못했습니다"
     },
     "updates": "업데이트",
     "language_region": "언어 및 지역",

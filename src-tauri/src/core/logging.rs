@@ -56,7 +56,7 @@ impl<W: Write> Write for DailySizeLimitedWriter<W> {
     }
 }
 
-fn platform_log_dir() -> Option<PathBuf> {
+pub(crate) fn platform_log_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let local_app_data = std::env::var_os("LOCALAPPDATA")?;

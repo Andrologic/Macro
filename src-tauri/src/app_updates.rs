@@ -115,6 +115,10 @@ fn read_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String
     read_manifest_file(&manifest_path(app)?)
 }
 
+pub(crate) fn diagnostic_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String> {
+    read_manifest(app)
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     atomic_write_with(path, bytes, persist_temporary_file)
 }
