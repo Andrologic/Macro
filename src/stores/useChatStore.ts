@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers, sameApprovalExecutionScope } from "../services/toolApprovalRecovery";
 import {
   AppMode,
   AgentType,
@@ -1005,6 +1006,7 @@ interface ArchitectPlanNamingRecoveryState {
 type PendingToolApprovalResolution =
   | { kind: "allow_once" }
   | { kind: "allow_conversation" }
+  | { kind: "expired" }
   | { kind: "deny"; reason?: string };
 
 type ConversationMessageLoadStatus = "idle" | "loading" | "ready" | "error";
@@ -1093,6 +1095,8 @@ interface ChatStore {
     ConversationQuestionnaireDraft
   >;
   pendingToolApprovalByConversationId: Record<string, PendingToolApproval | undefined>;
+  toolApprovalRecoveryError: string | null;
+  dismissToolApprovalRecoveryError: () => void;
   conversationApprovalGrantsByConversationId: Record<
     string,
     ConversationApprovalGrant[]
@@ -1505,6 +1509,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     (resolution: PendingToolApprovalResolution) => void
   >();
   const pendingToolApprovalQueues = new Map<string, Promise<void>>();
+  let toolApprovalRuntimeEpoch = 0;
   const pendingAgentCodeReplayRollbacksByConversationId = new Map<
     string,
     () => Promise<void>
@@ -2029,6 +2034,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     assistantMessageId: string,
     toolCallId: string,
     status: ToolTrace["status"],
+    fallbackTrace?: Pick<ToolTrace, "tool_name" | "detail">,
   ) => {
     set((state) => {
       const targetIndex = state.messageIndexById[assistantMessageId];
@@ -2038,12 +2044,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         return state;
       }
 
-      const currentTraces = currentMessage.tool_traces ?? [];
+      let currentTraces = currentMessage.tool_traces ?? [];
+      const missingTrace = fallbackTrace && !currentTraces.some((trace) => trace.tool_call_id === toolCallId);
+      if (missingTrace) currentTraces = [...currentTraces, { ...fallbackTrace, tool_call_id: toolCallId, status }];
       if (currentTraces.length === 0) {
         return state;
       }
 
-      let didChange = false;
+      let didChange = Boolean(missingTrace);
       const nextToolTraces = currentTraces.map((trace) => {
         if (trace.tool_call_id !== toolCallId || trace.status === status) {
           return trace;
@@ -2078,8 +2086,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const clearConversationSecurityState = (conversationId: string) => {
+  const approvalMutationVersions = new Map<string, number>();
+
+  const clearConversationSecurityState = (conversationId: string, preserveInterrupted = false) => {
+    if (preserveInterrupted && get().pendingToolApprovalByConversationId[conversationId]?.recoveryState === "interrupted") return;
     const pendingApproval = get().pendingToolApprovalByConversationId[conversationId];
+    if (pendingApproval || get().hydrationStatus === "hydrating") {
+      if (pendingApproval) updateAssistantToolTraceStatus(pendingApproval.assistantMessageId, pendingApproval.toolCallId, "denied");
+      const message = pendingApproval ? get().getConversationMessages(conversationId).find((candidate) => candidate.id === pendingApproval.assistantMessageId) : null;
+      void (async () => {
+        if (message) await persistAssistantPartialStreamResult(message);
+        await persistToolApprovalRecovery(conversationId, null);
+      })().catch((error) => set({ lastError: toServiceError(error).message }));
+    }
+    approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
     if (pendingApproval) {
       const resolverKey = getPendingToolApprovalResolverKey(
         conversationId,
@@ -2107,6 +2127,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversationApprovalGrantsByConversationId: nextGrants,
       };
     });
+  };
+
+  const resolvingInterruptedApprovals = new Set<string>();
+  const resolveInterruptedToolApproval = async (conversationId: string, resume: boolean) => {
+    const approval = get().pendingToolApprovalByConversationId[conversationId];
+    if (approval?.recoveryState !== "interrupted" || resolvingInterruptedApprovals.has(conversationId)) return;
+    const conversation = get().conversations.find((candidate) => candidate.id === conversationId);
+    const task = conversation?.task_id ? useTaskStore.getState().getTaskById(conversation.task_id) : null;
+    if (!conversation || task?.status === "Completed" || useConversationArchiveStore.getState().archivedConversationIds.has(conversationId)) {
+      clearConversationSecurityState(conversationId);
+      return;
+    }
+    resolvingInterruptedApprovals.add(conversationId);
+    try {
+      await ensureMessagesLoadedForConversation(conversationId);
+      if (get().pendingToolApprovalByConversationId[conversationId] !== approval) return;
+      // The marker remains a retry action even if closing the trace or sending fails.
+      updateAssistantToolTraceStatus(approval.assistantMessageId, approval.toolCallId, "denied");
+      const message = get().getConversationMessages(conversationId).find((candidate) => candidate.id === approval.assistantMessageId);
+      if (!message) throw new Error("The interrupted tool request could not be loaded.");
+      await persistAssistantPartialStreamResult(message);
+      if (get().pendingToolApprovalByConversationId[conversationId] !== approval) return;
+      if (resume) {
+        if (get().selectedConversationId !== conversationId || useAppStore.getState().mode !== conversation.scope_mode) {
+          throw new Error(i18n.t('chat.toolApprovalResumeContext', 'Open this conversation in its original mode before resuming.'));
+        }
+        const result = await get().sendMessage({
+          conversationId, taskId: conversation.task_id, contextRefs: [],
+          content: i18n.t('chat.toolApprovalResumePrompt', 'Resume the interrupted work. The previous tool approval expired and grants no permission. Inspect the current workspace and tool policy, verify prior effects before repeating any action, and propose a fresh request when approval is required.'),
+        });
+        if (result.status === "cancelled") throw new Error(i18n.t('chat.toolApprovalResumeCancelled', 'The new turn did not start. You can resume again.'));
+      }
+      if (get().pendingToolApprovalByConversationId[conversationId] !== approval) return;
+      await persistToolApprovalRecovery(conversationId, null);
+      if (get().pendingToolApprovalByConversationId[conversationId] === approval) clearConversationSecurityState(conversationId);
+    } finally {
+      resolvingInterruptedApprovals.delete(conversationId);
+    }
   };
 
   const persistAiSelections = () => {
@@ -3372,6 +3430,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   queueMicrotask(() => {
+    useConversationArchiveStore.subscribe((next, previous) => {
+      for (const conversationId of next.archivedConversationIds) {
+        if (!previous.archivedConversationIds.has(conversationId)) get().stopConversationStream(conversationId);
+      }
+    });
     ensureTaskAwaitingResponseSync();
   });
 
@@ -5389,6 +5452,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     let executionContext = operation.executionContext;
+    let executionMcpServers = operation.mcpServers;
+    let executionMcpProjectIds = operation.scopedTurnConfiguration?.projectIds ?? executionContext.projectIds;
     const riskLevel = operation.riskLevel;
     if (!isCurrentOperation()) {
       return TOOL_EXECUTION_ABORTED_RESULT;
@@ -5468,6 +5533,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (securityEvaluation.decision === "ask") {
+      const approvalEpoch = toolApprovalRuntimeEpoch;
       const resolvedToolCallId =
         toolCallId ??
         `${normalizedToolName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -5489,48 +5555,117 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const resolution = await serializeToolApproval(
         conversationId,
-        () => {
+        async () => {
           if (!isCurrentOperation()) {
-            return Promise.resolve<PendingToolApprovalResolution>({ kind: "deny" });
+            return Promise.resolve<PendingToolApprovalResolution>({ kind: "expired" });
           }
+          if (get().pendingToolApprovalByConversationId[conversationId]?.recoveryState === "interrupted") {
+            return { kind: "deny", reason: "Resolve the interrupted tool request before continuing." } as PendingToolApprovalResolution;
+          }
+          // Persist the transcript first. The recovery marker contains identifiers only.
+          updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "pending_approval", { tool_name: normalizedToolName, detail: pendingApproval.detail });
+          const assistantMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
+          try {
+            if (assistantMessage) await persistAssistantPartialStreamResult(assistantMessage);
+            await persistToolApprovalRecovery(conversationId, pendingApproval);
+          } catch (error) {
+            if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
+            updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "denied");
+            const closedMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
+            try {
+              if (closedMessage) await persistAssistantPartialStreamResult(closedMessage);
+            } catch {
+              // Persistence is unavailable; retain an explicit recovery action in this session.
+              set((state) => ({ pendingToolApprovalByConversationId: {
+                ...state.pendingToolApprovalByConversationId,
+                [conversationId]: { ...pendingApproval, recoveryState: "interrupted", canApproveForConversation: false },
+              } }));
+            }
+            throw error;
+          }
+          if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
+          if (!isCurrentOperation()) {
+            await persistToolApprovalRecovery(conversationId, null);
+            return { kind: "deny" } as PendingToolApprovalResolution;
+          }
+          approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
           return new Promise<PendingToolApprovalResolution>((resolve) => {
-          pendingToolApprovalResolvers.set(
-            getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
-            resolve,
-          );
-          set((state) => ({
-            pendingToolApprovalByConversationId: {
-              ...state.pendingToolApprovalByConversationId,
-              [conversationId]: pendingApproval,
-            },
-          }));
-          if (toolCallId) {
-            updateAssistantToolTraceStatus(
-              assistantMessageId,
-              resolvedToolCallId,
-              "pending_approval",
+            pendingToolApprovalResolvers.set(
+              getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
+              resolve,
             );
-          }
+            set((state) => ({
+              pendingToolApprovalByConversationId: {
+                ...state.pendingToolApprovalByConversationId,
+                [conversationId]: pendingApproval,
+              },
+            }));
+          }).then(async (result) => {
+            try {
+              if (result.kind === "expired" || approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
+              if (result.kind !== "deny" && isCurrentOperation()) {
+                const revalidate = async (): Promise<PendingToolApprovalResolution> => {
+                  const currentExecutionContext = resolveConversationExecutionContext(conversationId);
+                  const currentConfiguration = await loadScopedTurnConfiguration({
+                    projectIds: currentExecutionContext.projectIds,
+                    focusProjectId: currentExecutionContext.focusedProjectId,
+                    mode: modeAtSend,
+                  });
+                  if (operation.scopedTurnConfiguration && !currentConfiguration) {
+                    throw new Error("The current project tool policy could not be verified.");
+                  }
+                  const currentRiskLevel = currentConfiguration?.riskLevel ?? await loadToolRiskLevelPreference();
+                  let currentToolEnabled = applyScopedToolRestrictions([normalizedToolName], currentConfiguration).length > 0;
+                  if (isMCPToolId(normalizedToolName)) {
+                    const toolsState = useToolsStore.getState();
+                    const currentMcpRuntime = currentConfiguration
+                      ? await resolveScopedMcpRuntime(currentConfiguration.mcpServers, toolsState.mcpServers ?? [], { projectIds: currentConfiguration.projectIds })
+                      : { servers: toolsState.mcpServers ?? [], tools: toolsState.getEnabledMCPTools() };
+                    currentToolEnabled = currentToolEnabled && currentMcpRuntime.tools.some((tool) => tool.id === normalizedToolName);
+                    executionMcpServers = currentMcpRuntime.servers;
+                    executionMcpProjectIds = currentConfiguration?.projectIds ?? currentExecutionContext.projectIds;
+                  } else {
+                    currentToolEnabled = currentToolEnabled && await isSourceToolEnabled(normalizedToolName, modeAtSend, agentTypeAtSend);
+                  }
+                  if (!isCurrentOperation()) return { kind: "deny" } as PendingToolApprovalResolution;
+                  if (currentRiskLevel !== riskLevel || !currentToolEnabled ||
+                      !sameApprovalExecutionScope(currentExecutionContext, executionContext)) {
+                    return { kind: "deny", reason: "The tool policy or workspace changed while approval was pending. Inspect the current context and request approval again." } as PendingToolApprovalResolution;
+                  }
+
+                  return result;
+                };
+                result = await revalidate();
+              }
+              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
+              // Close the durable trace before dropping its only recovery action.
+              updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "denied");
+              const closedMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
+              if (closedMessage) await persistAssistantPartialStreamResult(closedMessage);
+              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
+              await persistToolApprovalRecovery(conversationId, null);
+              set((state) => {
+                if (state.pendingToolApprovalByConversationId[conversationId] !== pendingApproval) return state;
+                const next = { ...state.pendingToolApprovalByConversationId };
+                delete next[conversationId];
+                return { pendingToolApprovalByConversationId: next };
+              });
+              return result;
+            } catch (error) {
+              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
+              set((state) => state.pendingToolApprovalByConversationId[conversationId] !== pendingApproval ? state : ({ pendingToolApprovalByConversationId: {
+                ...state.pendingToolApprovalByConversationId,
+                [conversationId]: { ...pendingApproval, recoveryState: "interrupted", canApproveForConversation: false },
+              } }));
+              throw error;
+            } finally {
+              if (approvalEpoch === toolApprovalRuntimeEpoch) pendingToolApprovalResolvers.delete(getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId));
+            }
           });
         },
       );
 
-      pendingToolApprovalResolvers.delete(
-        getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
-      );
-      set((state) => {
-        if (!state.pendingToolApprovalByConversationId[conversationId]) {
-          return state;
-        }
-        const nextPendingApprovals = {
-          ...state.pendingToolApprovalByConversationId,
-        };
-        delete nextPendingApprovals[conversationId];
-        return {
-          pendingToolApprovalByConversationId: nextPendingApprovals,
-        };
-      });
-
+      if (resolution.kind === "expired") return TOOL_EXECUTION_ABORTED_RESULT;
       if (resolution.kind === "deny") {
         if (toolCallId) {
           updateAssistantToolTraceStatus(
@@ -5558,6 +5693,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
+
 
       if (
         resolution.kind === "allow_conversation" &&
@@ -5700,11 +5836,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const result = await callScopedMcpTool(
         normalizedToolName,
         args,
-        operation.mcpServers,
+        executionMcpServers,
         {
-          projectIds:
-            operation.scopedTurnConfiguration?.projectIds ??
-            operation.executionContext.projectIds,
+          projectIds: executionMcpProjectIds,
           signal,
         },
       );
@@ -11878,7 +12012,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       state.selectedConversationId &&
       state.selectedConversationId !== conversationId
     ) {
-      clearConversationSecurityState(state.selectedConversationId);
+      clearConversationSecurityState(state.selectedConversationId, true);
     }
 
     set((current) => ({
@@ -12026,7 +12160,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const clearConversationSelection = (mode: AppMode) => {
     const previousSelectedConversationId = get().selectedConversationId;
     if (previousSelectedConversationId) {
-      clearConversationSecurityState(previousSelectedConversationId);
+      clearConversationSecurityState(previousSelectedConversationId, true);
     }
     set((current) => ({
       selectedConversationId: null,
@@ -12759,6 +12893,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const hydrateChatSnapshot = async (): Promise<void> => {
+    const approvalVersionsAtHydration = new Map(approvalMutationVersions);
     conversationCompactionStateCache.clear();
     agentCodeCheckpointLoadPromisesByConversationId.clear();
     messageLoadPromisesByConversationId.clear();
@@ -13044,7 +13179,47 @@ export const useChatStore = create<ChatStore>((set, get) => {
       archivedConversationIds,
     );
 
+    const restoredApprovals: Record<string, PendingToolApproval> = {};
+    let markers: Record<string, string> = {};
+    let toolApprovalRecoveryError: string | null = null;
+    try {
+      const recovery = await loadToolApprovalRecoveryMarkers();
+      markers = recovery.markers;
+      toolApprovalRecoveryError = recovery.warning;
+    } catch (error) {
+      // Preserve unknown/corrupt recovery data, while keeping chat accessible.
+      toolApprovalRecoveryError = toServiceError(error).message;
+    }
+    for (const [conversationId, marker] of Object.entries(markers)) {
+      try {
+        const conversation = visibleConversations.find((candidate) => candidate.id === conversationId);
+        const task = conversation?.task_id ? useTaskStore.getState().getTaskById(conversation.task_id) : null;
+        const eligible = conversation && !archivedConversationIds.has(conversationId) && task?.status !== "Completed";
+        const transcript = eligible ? await loadConversationMessages(chatPersistenceAdapters, { conversationId, conversations }) : [];
+        if ((approvalMutationVersions.get(conversationId) ?? 0) !== (approvalVersionsAtHydration.get(conversationId) ?? 0)) continue;
+        const restored = eligible ? restoreToolApprovalRecovery(marker, conversationId, transcript) : null;
+        if (restored) {
+          restoredApprovals[conversationId] = restored;
+          const existingIds = new Set(visibleMessages.map((message) => message.id));
+          visibleMessages.push(...transcript.filter((message) => !existingIds.has(message.id)));
+          loadedConversationIds.add(conversationId);
+        } else await persistToolApprovalRecovery(conversationId, null);
+      } catch (error) {
+        toolApprovalRecoveryError = toServiceError(error).message;
+      }
+    }
+    for (const [conversationId, version] of approvalMutationVersions) {
+      if (version !== (approvalVersionsAtHydration.get(conversationId) ?? 0)) {
+        delete restoredApprovals[conversationId];
+        const approval = get().pendingToolApprovalByConversationId[conversationId];
+        if (approval) restoredApprovals[conversationId] = approval;
+      }
+    }
+
     set({
+      pendingToolApprovalByConversationId: restoredApprovals,
+      toolApprovalRecoveryError,
+      conversationApprovalGrantsByConversationId: {},
       conversations: visibleConversations,
       ...buildMessageState(visibleMessages),
       messageLoadStatusByConversationId: Object.fromEntries(
@@ -13529,6 +13704,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageImagesByMessageId: {},
     questionnaireDraftsByConversationId: loadQuestionnaireDraftsFromStorage(),
     pendingToolApprovalByConversationId: {},
+    toolApprovalRecoveryError: null,
     conversationApprovalGrantsByConversationId: {},
     skillTurnFeedbackByMessageId: {},
     architectPlanNamingRecovery: null,
@@ -13585,6 +13761,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       scheduleImplementAwaitingResponseReconciliation();
     },
+
+    dismissToolApprovalRecoveryError: () => set({ toolApprovalRecoveryError: null }),
 
     clearLastError: () =>
       set((state) => ({
@@ -14906,6 +15084,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!pendingApproval) {
         return;
       }
+      if (pendingApproval.recoveryState === "interrupted") {
+        void resolveInterruptedToolApproval(conversationId, true).catch((error) => set({ lastError: toServiceError(error).message }));
+        return;
+      }
+      approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
       pendingToolApprovalResolvers
         .get(
           getPendingToolApprovalResolverKey(
@@ -14922,6 +15105,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!pendingApproval) {
         return;
       }
+      if (pendingApproval.recoveryState === "interrupted") {
+        void resolveInterruptedToolApproval(conversationId, true).catch((error) => set({ lastError: toServiceError(error).message }));
+        return;
+      }
+      approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
       pendingToolApprovalResolvers
         .get(
           getPendingToolApprovalResolverKey(
@@ -14943,6 +15131,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!pendingApproval) {
         return;
       }
+      if (pendingApproval.recoveryState === "interrupted") {
+        void resolveInterruptedToolApproval(conversationId, false).catch((error) => set({ lastError: toServiceError(error).message }));
+        return;
+      }
+      approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
       pendingToolApprovalResolvers
         .get(
           getPendingToolApprovalResolverKey(
@@ -15671,6 +15864,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           });
         }
         const persistedUserMessage = userMessage;
+        if (get().pendingToolApprovalByConversationId[conversationId]?.recoveryState === "interrupted") {
+          await persistToolApprovalRecovery(conversationId, null).catch((error) => set({ toolApprovalRecoveryError: toServiceError(error).message }));
+          clearConversationSecurityState(conversationId);
+        }
         const sentWithoutAssistantResult = () => ({
           status: "sent" as const,
           conversationId,
@@ -16465,6 +16662,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     initializeCritical: async () => {
+      // Retire waiters, then drain in-flight writes before reading recovery data.
+      const retiredApprovalQueues = [...pendingToolApprovalQueues.values()];
+      toolApprovalRuntimeEpoch += 1;
+      for (const resolve of pendingToolApprovalResolvers.values()) resolve({ kind: "expired" });
+      pendingToolApprovalResolvers.clear();
+      pendingToolApprovalQueues.clear();
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
       });
@@ -16506,6 +16709,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messageLoadStatusByConversationId: {},
       });
       try {
+        await Promise.allSettled(retiredApprovalQueues);
         aiSelections = normalizeAIContextSelections(
           await loadPreference<PersistedAIContextSelections>(
             PREF_KEYS.AI_CONTEXT_SELECTIONS,

@@ -2735,6 +2735,16 @@ pub(crate) async fn delete_path_internal_unlocked(
     }
 
     let path_buf = PathBuf::from(&path);
+    let lexical_target = if path_buf.is_absolute() {
+        normalize_path(&path_buf)
+    } else {
+        normalize_path(&workspace.join(&path_buf))
+    };
+    if lexical_target == normalize_path(workspace) {
+        return Err(BackendError::FilesystemInvalidPath {
+            message: "Refusing to delete the workspace root.".to_string(),
+        });
+    }
     // Validate the symlink destination, but keep the lexical path so deletion
     // removes the link itself instead of the file or directory it points to.
     let validated_path = validate_path_for_write(&path_buf, workspace)?;

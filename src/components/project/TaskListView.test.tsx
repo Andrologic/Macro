@@ -25,7 +25,10 @@ describe('TaskListView', () => {
   let selectConversationMock: ReturnType<typeof mock>;
   let conversationsData: Array<Record<string, unknown>> = [];
 
-  const seedStores = (taskStatus: TaskStatus, options?: { isStreaming?: boolean }) => {
+  const seedStores = (
+    taskStatus: TaskStatus,
+    options?: { isStreaming?: boolean; isBlocked?: boolean }
+  ) => {
     const conversationRuntimeById = options?.isStreaming
       ? {
           'conversation-1': {
@@ -62,6 +65,7 @@ describe('TaskListView', () => {
             status: taskStatus,
             project_id: 'project-1',
             dependencies: [],
+            is_blocked: options?.isBlocked ?? false,
           },
         ],
       } as never,
@@ -79,6 +83,7 @@ describe('TaskListView', () => {
         (conversationsData.find((conversation) => conversation.task_id === taskId) ??
           null) as never,
     });
+
   };
 
   beforeEach(() => {
@@ -129,6 +134,36 @@ describe('TaskListView', () => {
     expect(indicator?.getAttribute('data-task-status-indicator-pulse')).toBe('awaiting_response');
     expect(indicator?.querySelectorAll('.task-status-awaiting-response__wave').length).toBe(1);
     expect(indicator?.className).toContain('text-amber-500');
+  });
+
+  it('renders a blocked indicator when a waiting task has a dependency blocker', async () => {
+    seedStores('AwaitingResponse', { isBlocked: true });
+
+    await act(async () => {
+      root?.render(<TaskListView projectId="project-1" />);
+      await flushRender();
+    });
+
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="blocked"]'
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator?.className).toContain('text-orange-500');
+  });
+
+  it('falls back safely when persisted task status is unknown', async () => {
+    seedStores('Paused' as TaskStatus);
+
+    await act(async () => {
+      root?.render(<TaskListView projectId="project-1" />);
+      await flushRender();
+    });
+
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="idle_prompt"]'
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator?.className).toContain('text-muted-foreground');
   });
 
   it('renders a spinner for the task that is currently streaming', async () => {

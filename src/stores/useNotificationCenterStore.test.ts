@@ -87,6 +87,25 @@ describe('useNotificationCenterStore', () => {
     });
   });
 
+  it('restores only typed workflow navigation and drops executable or extra persisted data', async () => {
+    notificationStore = await loadNotificationCenterStore();
+    notificationStore.useNotificationCenterStore.getState().upsertItem(createNotificationItem(1, {
+      variant: 'actionable', category: 'task_attention_required',
+      workflowNavigation: { kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-1', secret: 'not-persisted' },
+      sessionActions: [{ label: 'Open', variant: 'primary', dismissOnSuccess: true, onClick: () => undefined }],
+    }));
+    const raw = localStorageMock.getItem(notificationStore.NOTIFICATION_CENTER_STORAGE_KEY)!;
+    expect(raw).not.toContain('secret');
+    expect(raw).not.toContain('sessionActions');
+    const restarted = await loadNotificationCenterStore();
+    expect(restarted.useNotificationCenterStore.getState().items[0]?.workflowNavigation).toEqual({ kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-1' });
+    expect(restarted.useNotificationCenterStore.getState().items[0]?.sessionActions).toBeUndefined();
+    expect(restarted.sanitizeNotificationCenterItems([createNotificationItem(2, {
+      variant: 'actionable', category: 'task_attention_required',
+      workflowNavigation: { kind: 'approveTool', toolCallId: 'tool-1' },
+    })])[0]?.workflowNavigation).toBeUndefined();
+  });
+
   it('upserts info, warning, and error items with newest first', () => {
     const store = notificationStore.useNotificationCenterStore.getState();
 

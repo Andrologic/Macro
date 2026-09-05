@@ -33,6 +33,131 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
     setComposerText,
   } = context;
 
+  it('shows the selected task plan, project, and branch in the Implement header', async () => {
+    context.appState = {
+      ...context.appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-context',
+    };
+    context.taskState = {
+      ...context.taskState,
+      tasks: [{
+        id: 'task-context',
+        title: 'Clarify active context',
+        task_source: 'architect',
+        status: 'InProgress',
+        execution_targets: [{ projectId: 'project-1' }],
+        project_ids: ['project-1'],
+        project_id: 'project-1',
+        plan_id: 'plan-1',
+        plan_title: 'Macro 0.1.4',
+        branch_name: 'feature/active-context',
+        dependencies: [],
+        estimated_changes: [],
+        description: '',
+      }],
+    };
+
+    await act(async () => {
+      requireRoot().render(renderChatZone());
+    });
+
+    const header = requireContainer().querySelector('[data-chat-conversation-header]');
+    const taskContext = header?.querySelector('[data-testid="implement-active-task-context"]');
+    expect(header?.textContent).toContain('Implement - Clarify active context');
+    expect(taskContext?.textContent).toContain('Plan: Macro 0.1.4');
+    expect(taskContext?.textContent).toContain('Project: API');
+    expect(taskContext?.textContent).toContain('Branch: feature/active-context');
+    expect(taskContext?.getAttribute('title')).toBe(
+      'Plan: Macro 0.1.4 • Project: API • Branch: feature/active-context'
+    );
+  });
+
+  it('omits unavailable task context fields and hides the row without an active task', async () => {
+    context.appState = {
+      ...context.appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-direct',
+    };
+    context.taskState = {
+      ...context.taskState,
+      tasks: [{
+        id: 'task-direct',
+        title: 'Edit directly',
+        task_source: 'standalone',
+        task_kind: 'direct',
+        status: 'InProgress',
+        project_ids: ['project-1'],
+        project_id: 'project-1',
+        plan_id: null,
+        plan_title: null,
+        branch_name: 'direct',
+        dependencies: [],
+        estimated_changes: [],
+        description: '',
+      }],
+    };
+
+    await act(async () => {
+      requireRoot().render(renderChatZone());
+    });
+
+    const directContext = requireContainer().querySelector(
+      '[data-testid="implement-active-task-context"]'
+    );
+    expect(directContext?.textContent).toContain('Project: API');
+    expect(directContext?.textContent).not.toContain('Plan:');
+    expect(directContext?.textContent).not.toContain('Branch:');
+
+    await act(async () => {
+      context.appState = { ...context.appState, selectedTaskId: null };
+      context.emitAppStore();
+    });
+
+    expect(requireContainer().querySelector(
+      '[data-testid="implement-active-task-context"]'
+    )).toBeNull();
+  });
+
+  it('shows the full multi-project task scope independently of the global project scope', async () => {
+    context.appState = {
+      ...context.appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-multi-project',
+    };
+    context.taskState = {
+      ...context.taskState,
+      tasks: [{
+        id: 'task-multi-project',
+        title: 'Coordinate clients',
+        task_source: 'architect',
+        status: 'InProgress',
+        execution_targets: [
+          { projectId: 'project-1', executionMode: 'git' },
+          { projectId: 'project-2', executionMode: 'git' },
+        ],
+        project_ids: ['project-1', 'project-2'],
+        project_id: 'project-1',
+        plan_id: 'plan-1',
+        plan_title: 'Multi-client release',
+        branch_name: 'feature/clients',
+        dependencies: [],
+        estimated_changes: [],
+        description: '',
+      }],
+    };
+
+    await act(async () => {
+      requireRoot().render(renderChatZone());
+    });
+
+    const taskContext = requireContainer().querySelector(
+      '[data-testid="implement-active-task-context"]'
+    );
+    expect(taskContext?.textContent).toContain('Projects: 2 projects');
+    expect(taskContext?.textContent).not.toContain('Project: API');
+  });
+
   it('shows manual draft guidance above the composer only before the first message', async () => {
     context.appState = {
       ...context.appState,
@@ -795,8 +920,11 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
       requireRoot().render(renderChatZone());
     });
 
-    expect(requireContainer().textContent).toContain('API');
-    expect(requireContainer().textContent).not.toContain('3 repositories');
+    const briefContext = requireContainer().querySelector(
+      '[data-testid="implement-execution-brief-context"]'
+    );
+    expect(briefContext?.textContent).toContain('API');
+    expect(briefContext?.textContent).not.toContain('3 repositories');
   });
 
   it('keeps a repository count in the kickoff summary when the scoped task still targets multiple repos', async () => {
@@ -848,7 +976,9 @@ export const registerImplementScenarios = (context: ImplementScenarioContext) =>
       requireRoot().render(renderChatZone());
     });
 
-    expect(requireContainer().textContent).toContain('3 repositories');
+    expect(requireContainer().querySelector(
+      '[data-testid="implement-execution-brief-context"]'
+    )?.textContent).toContain('3 repositories');
   });
 
 };

@@ -1,3 +1,4 @@
+import type { WorkflowNotificationNavigation } from '../../../services/workflowNotificationNavigation';
 import type { ReactNode } from 'react';
 import type { NotificationCategory } from '../../../services/notificationChannels';
 
@@ -22,6 +23,7 @@ export interface NotificationTemplateContent {
 }
 
 export interface NotificationTemplateSnapshot {
+  workflowNavigation?: WorkflowNotificationNavigation;
   variant: NotificationVariant;
   title: string;
   description?: string;
@@ -44,4 +46,5 @@ export interface ActionableNotificationInput
   title: string;
   tone?: ActionableNotificationTone;
   actions: NotificationTemplateActionSpec[];
+  workflowNavigation?: WorkflowNotificationNavigation;
 }

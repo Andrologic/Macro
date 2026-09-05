@@ -56,6 +56,11 @@ const OnboardingGuide = lazy(() =>
     default: module.OnboardingGuide,
   })),
 );
+const WorkflowAttentionNotifications = lazy(() =>
+  import("./components/notifications/WorkflowAttentionNotifications").then(
+    (module) => ({ default: module.WorkflowAttentionNotifications }),
+  ),
+);
 
 const INITIAL_BOOTSTRAP_SNAPSHOT: AppBootstrapSnapshot = {
   phase: "idle",
@@ -203,6 +208,9 @@ const App: React.FC = () => {
 
   useEffect(() => {
     void useConversationArchiveStore.getState().hydrateArchivedConversationIds();
+    void import("./stores/useViewFilterStore").then(({ useViewFilterStore }) =>
+      useViewFilterStore.getState().hydrate(),
+    );
   }, [bootstrapRetryKey]);
 
   // Ref to track panels that were auto-collapsed during resize
@@ -524,6 +532,9 @@ const App: React.FC = () => {
       </Suspense>
 
       <Toaster />
+      <Suspense fallback={null}>
+        <WorkflowAttentionNotifications />
+      </Suspense>
 
       <Suspense fallback={null}>
         <OnboardingGuide />

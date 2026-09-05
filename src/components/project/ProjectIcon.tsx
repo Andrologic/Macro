@@ -130,6 +130,7 @@ export const ProjectIcon: React.FC<ProjectIconProps> = ({
       alt=""
       width={size}
       height={size}
+      style={{ width: size, height: size }}
       data-project-icon={icon.sourcePath}
       draggable={false}
       className={cn('shrink-0 rounded-sm object-contain', className)}

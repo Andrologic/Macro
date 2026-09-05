@@ -3,6 +3,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PlanNodeArtifactContract, ProjectGitFlowSettings, TaskStatus } from '../../types';
+import type { MergeWorkflowRuntimeState } from '../../services/mergeWorkflow';
 
 type AppMode = 'Chat' | 'Architect' | 'Implement';
 
@@ -127,6 +128,7 @@ type ChatStoreState = {
 
 type TaskStoreState = {
   tasks: MockTask[];
+  mergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState>;
   refreshFromPlan: ReturnType<typeof mock>;
   activateTask: ReturnType<typeof mock>;
 };
@@ -477,6 +479,7 @@ const resetState = () => {
 
   taskState = {
     tasks: [],
+    mergeWorkflowRuntimeByTaskId: {},
     refreshFromPlan: mock(async () => undefined),
     activateTask: mock(async (taskId: string) => {
       useAppStore.getState().setSelectedTask(taskId);
@@ -491,6 +494,7 @@ const seedStores = (
     isStreaming?: boolean;
     includeConversation?: boolean;
     selectedConversationId?: string | null;
+    isBlocked?: boolean;
   },
 ) => {
   const includeConversation = options?.includeConversation ?? true;
@@ -549,7 +553,7 @@ const seedStores = (
         assigned_branch: 'feature/graph',
         blocked_by: [],
         dependencies: [],
-        is_blocked: false,
+        is_blocked: options?.isBlocked ?? false,
         plan_id: 'plan-1',
         plan_title: 'Plan One',
         sequence_index: 0,
@@ -663,7 +667,7 @@ describe('StrategyGraph', () => {
     );
   });
 
-  it('renders a synthetic finalization node after terminal strategy leaves only', async () => {
+  it('projects a synthetic finalization node from plan state when no task exists', async () => {
     useAppStore.setState({
       selectedGroupId: 'group-1',
       selectedProjectId: null,
@@ -756,7 +760,28 @@ describe('StrategyGraph', () => {
       document.querySelector('[data-graph-edge-source="task-a"][data-graph-edge-target="plan-finalization:plan-1"]')
     ).toBeNull();
     expect(
-      document.body.querySelector('[data-task-status-indicator-state="plan_finalization"]')
+      document.body.querySelector('[data-task-status-indicator-state="blocked"]')
+    ).not.toBeNull();
+
+    act(() => {
+      useAppStore.setState({
+        activePlanContext: {
+          ...useAppStore.getState().activePlanContext!,
+          status: 'completed',
+        },
+        planNodes: useAppStore.getState().planNodes.map((node) => ({
+          ...node,
+          status: 'completed',
+        })),
+      });
+    });
+    await flushRender();
+
+    const finalizationNode = document.querySelector(
+      '[data-graph-node-id="plan-finalization:plan-1"]'
+    );
+    expect(
+      finalizationNode?.querySelector('[data-task-status-indicator-state="completed"]')
     ).not.toBeNull();
 
     const branchesButton = Array.from(document.querySelectorAll('button')).find((button) =>
@@ -771,6 +796,76 @@ describe('StrategyGraph', () => {
 
     expect(document.querySelectorAll('[data-branch-card="true"]')).toHaveLength(3);
     expect(document.querySelector('[data-branch-task="plan-finalization:plan-1"]')).toBeNull();
+  });
+
+  it('renders a blocked synthetic finalization node when its task has dependency blockers', async () => {
+    useAppStore.setState({
+      selectedGroupId: 'group-1',
+      selectedProjectId: null,
+      projectGroups: [
+        {
+          id: 'group-1',
+          name: 'Project Group',
+          isOpen: true,
+          projects: [makeProject('project-1', '/tmp/project-1', 'Project One')],
+        },
+      ],
+      activePlanContext: {
+        id: 'plan-1',
+        slug: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'validated',
+        targetBranch: 'develop',
+      },
+      planNodes: [
+        {
+          id: 'task-1',
+          title: 'Terminal task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+      ],
+      predictedBranches: [],
+    });
+    useTaskStore.setState({
+      tasks: [
+        {
+          id: 'plan-finalization:plan-1',
+          title: 'Finalize Plan One',
+          status: 'AwaitingResponse',
+          task_source: 'plan_finalization',
+          draft: false,
+          archived_at: null,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          assigned_branch: 'develop',
+          blocked_by: ['Terminal task'],
+          dependencies: ['task-1'],
+          is_blocked: true,
+          plan_id: 'plan-1',
+          plan_title: 'Plan One',
+          sequence_index: Number.MAX_SAFE_INTEGER,
+          execution_targets: [{ projectId: 'project-1' }],
+        },
+      ],
+    });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    const finalizationNode = document.querySelector(
+      '[data-graph-node-id="plan-finalization:plan-1"]'
+    );
+    expect(finalizationNode).not.toBeNull();
+    expect(
+      finalizationNode?.querySelector('[data-task-status-indicator-state="blocked"]')
+    ).not.toBeNull();
+    expect(finalizationNode?.querySelector('.text-red-500')).not.toBeNull();
   });
 
   it('renders a pulsing dot when the linked task awaits a response', async () => {
@@ -792,6 +887,79 @@ describe('StrategyGraph', () => {
     expect(indicator?.parentElement?.className).toContain('text-amber-500');
   });
 
+  it('renders a blocked tone when a waiting task has a structured dependency blocker', async () => {
+    seedStores('AwaitingResponse', { isBlocked: true });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="blocked"]'
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator?.parentElement?.className).toContain('text-red-500');
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')
+    ).toBeNull();
+  });
+
+  it('renders merge blockers ahead of a stale waiting status', async () => {
+    seedStores('AwaitingResponse');
+    useTaskStore.setState({
+      mergeWorkflowRuntimeByTaskId: {
+        'task-1': {
+          taskId: 'task-1',
+          kind: 'task_completion',
+          phase: 'blocked',
+          taskStatus: 'AwaitingResponse',
+          review: {
+            taskId: 'task-1',
+            title: 'Architect node',
+            taskSource: 'architect',
+            planId: 'plan-1',
+            planTitle: 'Plan One',
+            targetBranch: 'develop',
+          },
+          repositories: [],
+          blockedRepositories: [],
+          message: 'Resolve merge blockers.',
+          lastLoadedAt: '2026-09-04T10:00:00.000Z',
+        },
+      },
+    });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="merge_blocked"]'
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator?.parentElement?.className).toContain('text-red-500');
+    expect(
+      document.body.querySelector('[data-task-status-indicator-state="awaiting_response"]')
+    ).toBeNull();
+  });
+
+  it('falls back safely when persisted task status is unknown', async () => {
+    seedStores('Paused' as TaskStatus);
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    const indicator = document.body.querySelector(
+      '[data-task-status-indicator-state="idle_prompt"]'
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator?.parentElement?.className).toContain('text-muted-foreground');
+  });
+
   it('renders a spinner when the linked task is streaming', async () => {
     seedStores('InProgress', { isStreaming: true });
 
@@ -809,6 +977,7 @@ describe('StrategyGraph', () => {
     nodes: MockPlanNode[],
     taskStatuses: Record<string, TaskStatus>,
     hoverNodeId: string,
+    runningTaskId?: string,
   ) => {
     seedStores('Pending', { includeConversation: false, selectedConversationId: null });
     useAppStore.setState({
@@ -836,6 +1005,21 @@ describe('StrategyGraph', () => {
         execution_targets: [{ projectId: 'project-1' }],
       })),
     });
+    if (runningTaskId) {
+      useChatStore.setState({
+        conversations: [{ id: 'conversation-edge', task_id: runningTaskId }],
+        conversationRuntimeById: {
+          'conversation-edge': {
+            phase: 'streaming',
+            sessionId: 'session-edge',
+            assistantMessageId: 'assistant-edge',
+            abortController: null,
+            lastError: null,
+          },
+        },
+        selectedConversationId: 'conversation-edge',
+      });
+    }
 
     act(() => {
       root?.render(<StrategyGraph />);
@@ -964,6 +1148,70 @@ describe('StrategyGraph', () => {
     expect(edge?.getAttribute('data-graph-edge-flow-animated')).toBe('true');
   });
 
+  it('uses active edge flow when execution overrides a stale blocked status', async () => {
+    await renderStatusEdgeGraph(
+      [
+        {
+          id: 'task-a',
+          title: 'Running source',
+          type: 'task',
+          status: 'blocked',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-b',
+          title: 'Dependent',
+          type: 'task',
+          status: 'pending',
+          dependencies: ['task-a'],
+          projectId: 'project-1',
+        },
+      ],
+      { 'task-a': 'Blocked', 'task-b': 'Pending' },
+      'task-a',
+      'task-a',
+    );
+
+    const edge = document.querySelector(
+      '[data-graph-edge-source="task-a"][data-graph-edge-target="task-b"]'
+    );
+    expect(edge?.getAttribute('data-graph-edge-flow-tone')).toBe('active');
+    expect(edge?.getAttribute('data-graph-edge-flow-animated')).toBe('true');
+  });
+
+  it('uses active edge flow when execution overrides a stale waiting status', async () => {
+    await renderStatusEdgeGraph(
+      [
+        {
+          id: 'task-a',
+          title: 'Foundation',
+          type: 'task',
+          status: 'completed',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+        {
+          id: 'task-b',
+          title: 'Running target',
+          type: 'task',
+          status: 'in-progress',
+          dependencies: ['task-a'],
+          projectId: 'project-1',
+        },
+      ],
+      { 'task-a': 'Completed', 'task-b': 'AwaitingResponse' },
+      'task-b',
+      'task-b',
+    );
+
+    const edge = document.querySelector(
+      '[data-graph-edge-source="task-a"][data-graph-edge-target="task-b"]'
+    );
+    expect(edge?.getAttribute('data-graph-edge-flow-tone')).toBe('active');
+    expect(edge?.getAttribute('data-graph-edge-flow-animated')).toBe('true');
+  });
+
   it('keeps upstream and downstream hovered graph edges at matching base opacity and width', async () => {
     await renderStatusEdgeGraph(
       [
@@ -1025,7 +1273,11 @@ describe('StrategyGraph', () => {
     });
     await flushRender();
 
-    expect(document.body.querySelector('[data-icon="lock"], .lucide-lock')).toBeNull();
+    expect(
+      document
+        .querySelector('[data-graph-node-id="task-1"]')
+        ?.querySelector('[data-icon="lock"], .lucide-lock')
+    ).toBeNull();
 
     const graphNode = Array.from(document.querySelectorAll('g')).find(
       (element) => (element as SVGGElement).style?.cursor === 'pointer'
