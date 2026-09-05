@@ -1103,6 +1103,8 @@ La catégorie « besoin d'attention sur une tâche » couvre trois transitions :
 
 Le centre de notifications conserve un descripteur de navigation typé, sans callback ni paramètres d'outil. Le bouton d'ouverture reste disponible après relance. Le clic relit la conversation et l'identité durable de la tâche ; une cible supprimée ne change pas la sélection. Les appels à l'action résolus sont retirés dès que leur état chargé permet de le déterminer.
 
+Le plafond de rétention s'applique à l'historique. Les demandes de workflow encore susceptibles d'être actives restent conservées séparément jusqu'à ce que la réconciliation avec les conversations et les tâches chargées confirme leur résolution. Une activité supérieure au plafond historique ne masque donc pas les actions en attente après une relance.
+
 L'action d'une notification de questionnaire ou d'approbation ouvre sa conversation et sa tâche lorsqu'elle en possède une. L'action d'une review ouvre la tâche dans le mode Implement et restaure sa conversation connue. Le système ne possède pas encore de route stable vers un dépôt ou un fichier précis de la review : la navigation s'arrête donc volontairement au contexte sûr de la tâche.
 
 ---
