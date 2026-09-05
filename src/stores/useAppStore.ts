@@ -3022,7 +3022,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const group = state.projectGroups.find((candidate) => candidate.id === groupId);
       if (!group) throw new Error("Project group no longer exists in Macro.");
       await services.archiveProjectGroup({ groupId });
-      if (state.selectedGroupId === groupId || group.projects.some((project) => project.id === state.selectedProjectId)) {
+      const currentState = get();
+      if (currentState.selectedGroupId === groupId || group.projects.some((project) => project.id === currentState.selectedProjectId)) {
         set({ selectedGroupId: null, selectedProjectId: null, selectedTaskId: null });
       }
       await get().refreshProjectRegistry();
@@ -3048,9 +3049,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   archiveProject: async (projectId) => {
     set({ isLoading: true, lastError: null });
     try {
-      const state = get();
       await services.archiveProject({ projectId });
-      if (state.selectedProjectId === projectId) {
+      if (get().selectedProjectId === projectId) {
         set({ selectedProjectId: null, selectedTaskId: null });
       }
       await get().refreshProjectRegistry();
@@ -4661,7 +4661,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         selectedGroupId: previousState.selectedGroupId,
         selectedProjectId: previousState.selectedProjectId,
       });
-      const normalizedRegistry = snapshot.normalizedRegistry;
+      const currentState = get();
+      const normalizedRegistry = normalizeProjectRegistry({
+        ...snapshot.normalizedRegistry,
+        selectedGroupId: currentState.selectedGroupId,
+        selectedProjectId: currentState.selectedProjectId,
+      });
+      if (currentState.selectedGroupId === null && currentState.selectedProjectId === null) {
+        normalizedRegistry.selectedGroupId = null;
+        normalizedRegistry.selectedProjectId = null;
+      }
       const nextRecentProjects = reconcileRememberedProjects(
         normalizedRegistry,
         previousState.recentProjects,
@@ -4703,17 +4712,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
         PREF_KEYS.MACRO_ENABLED_PROJECTS,
         nextMacroEnabledProjects,
       );
-      await persistSessionContext({
-        selectedGroupId: normalizedRegistry.selectedGroupId,
-        selectedProjectId: normalizedRegistry.selectedProjectId,
-        mode: previousState.mode,
-      });
-      await reconcileProjectRegistryDependencies({
-        standaloneProjects: normalizedRegistry.standaloneProjects,
-        projectGroups: normalizedRegistry.projectGroups,
-        selectedGroupId: normalizedRegistry.selectedGroupId,
-        selectedProjectId: normalizedRegistry.selectedProjectId,
-      });
+      // A navigation can also happen while persisting or reconciling the session.
+      // Repair an obsolete write with the current selection before finishing.
+      while (true) {
+        const selection = get();
+        const selectionChanged = () => {
+          const latest = get();
+          return latest.selectedGroupId !== selection.selectedGroupId ||
+            latest.selectedProjectId !== selection.selectedProjectId ||
+            latest.mode !== selection.mode;
+        };
+        await persistSessionContext({
+          selectedGroupId: selection.selectedGroupId,
+          selectedProjectId: selection.selectedProjectId,
+          mode: selection.mode,
+        });
+        if (selectionChanged()) continue;
+        await reconcileProjectRegistryDependencies({
+          standaloneProjects: get().standaloneProjects,
+          projectGroups: get().projectGroups,
+          selectedGroupId: selection.selectedGroupId,
+          selectedProjectId: selection.selectedProjectId,
+        });
+        if (!selectionChanged()) break;
+      }
     } catch (error) {
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
