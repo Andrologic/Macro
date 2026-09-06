@@ -43,6 +43,24 @@ Les permissions distinguent la supervision, les réponses aux questionnaires,
 les approbations d'outils et les reviews Git. `approve_tools` est obligatoire
 pour résoudre une ressource `tool_approval` ; `respond` ne suffit pas.
 
+Toute opération liée à une instance exige une session `active` et une
+`instance_access` de cette session vers cette instance avec l'état `granted`.
+La permission minimale est fermée par opération :
+
+| Opération | Autorisation minimale |
+| --- | --- |
+| lire les ressources d'une instance, paginer ou reprendre ses événements | `supervise` |
+| `run.start`, `run.cancel` | `supervise` |
+| `decision.resolve` | `respond` |
+| `tool_approval.resolve` | `approve_tools` |
+| `review.submit` | `review` |
+| lire ou révoquer ses propres sessions et accès | session authentifiée du même compte |
+
+Le serveur filtre aussi chaque événement avant de l'émettre. Une permission de
+mutation n'accorde pas implicitement `supervise`, et inversement. Une commande
+sans accès accordé ou sans permission requise produit `forbidden` ; une session
+inactive produit `unauthorized` ou `session_revoked` selon son état.
+
 Les références forment une portée hiérarchique. Une tâche appartient à une
 instance et un workspace, puis liste ses projets d'action et ses projets de
 contexte. Un run et une décision restent liés à cette tâche unique. Une review
@@ -55,8 +73,8 @@ valide. Le mode `git` ou `direct` est figé par projet dans les
 
 Une session `revoked` porte `revoked_at`, alors qu'une autre session ne le porte
 pas. Une session `expired` porte `expires_at`. Un run `running`,
-`waiting_decision` ou `completed` porte `started_at`. Tout run terminal porte
-`finished_at` ; un run non terminal ne le porte pas.
+`waiting_decision`, `waiting_tool_approval` ou `completed` porte `started_at`.
+Tout run terminal porte `finished_at` ; un run non terminal ne le porte pas.
 
 ## Révisions et commandes
 
@@ -95,6 +113,11 @@ contexte d'exécution et la portée au moment de l'acceptation. Une portée
 `conversation` ne s'applique qu'au même outil et à la même clé interne de
 permission ; cette clé n'est jamais envoyée au mobile.
 
+Une approbation liée à un run ajoute ensemble `workspace_id`, `task_id` et
+`run_id` dans sa référence. Une conversation autonome les omet tous. Le run
+utilise alors `waiting_tool_approval` et la même référence comme `waiting_on` ;
+un run en `waiting_decision` attend exclusivement une `decisionRef`.
+
 Une `review` Git reste une troisième ressource distincte. Son verdict enregistre
 l'état de la review et n'autorise ni merge, ni push, ni changement de branche.
 
@@ -113,6 +136,12 @@ fournit un `resume_cursor`. `resume_request` reprend après le dernier couple
 fixe ni durée de rétention ni stockage central. Un serveur qui ne peut plus
 reprendre ce couple répond avec l'erreur typée `cursor_expired`.
 
+Les événements `decision.requested` et `decision.resolved` portent
+respectivement un snapshot `pending` et `resolved`. Les événements
+`tool_approval.requested`, `tool_approval.resolved`, `tool_approval.expired` et
+`tool_approval.interrupted` portent l'état du même nom. Les événements génériques `task.updated`, `run.updated` et
+`review.updated` peuvent porter tout état valide de leur ressource.
+
 ## Invariants relationnels
 
 JSON Schema valide la forme de chaque message. Les règles suivantes complètent
@@ -125,7 +154,8 @@ la validation et font partie du contrat :
 - la référence `waiting_on` d'un run reprend la même portée jusqu'au run ;
 - les projets d'action et de contexte d'une tâche sont distincts ;
 - chaque projet d'action possède exactement une cible d'exécution ;
-- seul un run `waiting_decision` porte `waiting_on`, qui est alors obligatoire ;
+- seuls les runs `waiting_decision` et `waiting_tool_approval` portent
+  `waiting_on`, qui est alors obligatoire et du type correspondant ;
 - une décision répond une fois à chaque étape ;
 - une réponse égale à un choix de son étape est un choix ; toute autre chaîne
   respecte `free_text_allowed` ;
@@ -136,9 +166,12 @@ la validation et font partie du contrat :
 - une approbation d'outil expose seulement `approve` ou `deny` ; seule une
   approbation porte une portée, qui appartient à `allowed_scopes` ;
 - seule une approbation d'outil `resolved` porte une résolution ;
-- le run lié à une approbation, lorsqu'il existe, appartient à la même instance ;
+- la portée de run d'une approbation est absente ou complète ; lorsqu'un run
+  l'attend, ses identifiants instance, workspace, tâche et run sont identiques ;
 - le type de chaque élément d'une page correspond à `item_type` ;
 - la révision d'un événement correspond à celle de son snapshot ;
+- le nom d'un événement de décision ou d'approbation correspond à l'état de son
+  snapshot ;
 - une révocation de session cible le compte de l'acteur ;
 - les événements d'un lot appartiennent au flux annoncé et leurs séquences
   continuent sans doublon ni trou ;
@@ -162,6 +195,8 @@ effectue ces contrôles après la validation du message :
   correspond encore à celui enregistré par Macro ;
 - une demande d'approbation `interrupted`, `expired` ou déjà `resolved` est
   refusée ;
+- la conversation et l'appel d'outil de la demande appartiennent encore au run
+  indiqué par sa référence, lorsqu'elle porte une portée de run ;
 - `review.ref.project_id` correspond à une cible `git` de la tâche liée au run ;
 - `base_sha` et `head_sha` existent dans ce dépôt au moment de créer la review.
 

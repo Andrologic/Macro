@@ -8,8 +8,10 @@
     "event_batch.events MUST use its stream_id and contiguous sequence values after after_sequence",
     "event_batch.next_cursor and next_sequence MUST equal its last event, or the after values when empty",
     "session.revoke issued_by.account_id MUST equal target.account_id",
+    "instance-scoped operations MUST use an active session with granted instance access and the permission defined by the authorization matrix",
     "decision.resolve answers MUST use distinct step_id values",
     "tool_approval.resolve grant_scope MUST be allowed by the current target resource",
+    "decision and tool approval event names MUST match snapshot state",
     "page.item_type MUST equal the type of every item",
     "command_result.resulting_revision MUST NOT be lower than previous_revision"
   ],
@@ -304,7 +306,14 @@
         "resource": { "$ref": "common.schema.json#/$defs/decisionRef" },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "snapshot": { "$ref": "supervision.schema.json#/$defs/decision" }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "event_type": { "const": "decision.requested" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "pending" } } } } },
+          "else": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "resolved" } } } } }
+        }
+      ]
     },
     "toolApprovalEvent": {
       "type": "object",
@@ -313,7 +322,7 @@
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "event" },
-        "event_type": { "enum": ["tool_approval.requested", "tool_approval.updated"] },
+        "event_type": { "enum": ["tool_approval.requested", "tool_approval.resolved", "tool_approval.expired", "tool_approval.interrupted"] },
         "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
         "sequence": { "type": "integer", "minimum": 1 },
         "resume_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
@@ -321,7 +330,25 @@
         "resource": { "$ref": "common.schema.json#/$defs/toolApprovalRef" },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "snapshot": { "$ref": "supervision.schema.json#/$defs/toolApproval" }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "event_type": { "const": "tool_approval.requested" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "pending" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool_approval.resolved" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "resolved" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool_approval.expired" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "expired" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "tool_approval.interrupted" } } },
+          "then": { "properties": { "snapshot": { "type": "object", "properties": { "state": { "const": "interrupted" } } } } }
+        }
+      ]
     },
     "reviewEvent": {
       "type": "object",

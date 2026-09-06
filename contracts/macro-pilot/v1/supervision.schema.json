@@ -8,7 +8,6 @@
     "decision steps MUST use distinct identifiers and choices MUST be distinct within each step",
     "decision resolution MUST answer every step exactly once using a listed choice string or allowed free text",
     "tool approval resolution grant_scope MUST belong to allowed_scopes",
-    "tool approval related_run MUST belong to the same instance as its ref",
     "run.waiting_on MUST identify the same instance, workspace, task, and run as run.ref",
     "review.related_run MUST identify the same instance, workspace, task, and run as review.ref"
   ],
@@ -54,7 +53,7 @@
           "items": { "$ref": "#/$defs/taskExecutionTarget" }
         },
         "title": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 },
-        "state": { "enum": ["queued", "running", "waiting_decision", "review_ready", "blocked", "completed", "failed", "cancelled"] },
+        "state": { "enum": ["queued", "running", "waiting_decision", "waiting_tool_approval", "review_ready", "blocked", "completed", "failed", "cancelled"] },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       }
@@ -67,25 +66,59 @@
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "run" },
         "ref": { "$ref": "common.schema.json#/$defs/runRef" },
-        "state": { "enum": ["pending", "running", "waiting_decision", "completed", "failed", "cancelled", "interrupted"] },
+        "state": { "enum": ["pending", "running", "waiting_decision", "waiting_tool_approval", "completed", "failed", "cancelled", "interrupted"] },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" },
-        "waiting_on": { "$ref": "common.schema.json#/$defs/decisionRef" }
+        "waiting_on": {
+          "oneOf": [
+            { "$ref": "common.schema.json#/$defs/decisionRef" },
+            { "$ref": "common.schema.json#/$defs/toolApprovalRef" }
+          ]
+        }
       },
       "allOf": [
         {
           "if": { "properties": { "state": { "const": "waiting_decision" } } },
           "then": {
-            "properties": { "waiting_on": true },
+            "properties": { "waiting_on": { "$ref": "common.schema.json#/$defs/decisionRef" } },
             "required": ["waiting_on"]
-          },
-          "else": { "properties": { "waiting_on": false } }
+          }
         },
         {
-          "if": { "properties": { "state": { "enum": ["running", "waiting_decision", "completed"] } } },
+          "if": { "properties": { "state": { "const": "waiting_tool_approval" } } },
+          "then": {
+            "properties": {
+              "waiting_on": {
+                "allOf": [
+                  { "$ref": "common.schema.json#/$defs/toolApprovalRef" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "workspace_id": true,
+                      "task_id": true,
+                      "run_id": true
+                    },
+                    "required": ["workspace_id", "task_id", "run_id"]
+                  }
+                ]
+              }
+            },
+            "required": ["waiting_on"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": { "not": { "enum": ["waiting_decision", "waiting_tool_approval"] } }
+            }
+          },
+          "then": { "properties": { "waiting_on": false } }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["running", "waiting_decision", "waiting_tool_approval", "completed"] } } },
           "then": {
             "properties": { "started_at": true },
             "required": ["started_at"]
@@ -211,7 +244,6 @@
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "tool_approval" },
         "ref": { "$ref": "common.schema.json#/$defs/toolApprovalRef" },
-        "related_run": { "$ref": "common.schema.json#/$defs/runRef" },
         "state": { "enum": ["pending", "resolved", "expired", "interrupted"] },
         "tool_id": { "$ref": "common.schema.json#/$defs/sourceId" },
         "action_group": { "enum": ["observe", "change", "escape"] },

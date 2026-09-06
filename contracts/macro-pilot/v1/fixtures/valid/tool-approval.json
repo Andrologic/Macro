@@ -4,16 +4,12 @@
   "ref": {
     "type": "tool_approval",
     "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract",
+    "run_id": "run:pilot-contract:01",
     "conversation_id": "conv-1",
     "assistant_message_id": "msg-1",
     "tool_call_id": "call-1"
-  },
-  "related_run": {
-    "type": "run",
-    "instance_id": "instance:studio-mac",
-    "workspace_id": "workspace:macro-suite",
-    "task_id": "task:pilot-contract",
-    "run_id": "run:pilot-contract:01"
   },
   "state": "resolved",
   "tool_id": "terminal_run",

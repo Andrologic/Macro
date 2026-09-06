@@ -29,7 +29,10 @@ sans ambiguïté en `git` ou `direct`, l'export est refusé avec
 
 Les états `Pending`, `InProgress`, `AwaitingResponse`, `InReview`, `Blocked`,
 `Completed` et `Failed` deviennent respectivement `queued`, `running`,
-`waiting_decision`, `review_ready`, `blocked`, `completed` et `failed`.
+un état d'attente typé, `review_ready`, `blocked`, `completed` et `failed`.
+`AwaitingResponse` devient `waiting_decision` quand le questionnaire est la
+demande active, ou `waiting_tool_approval` quand Macro attend l'autorisation
+d'un appel d'outil.
 
 Un run et ses décisions prolongent l'identité de cette tâche unique. Ils ne sont
 pas dupliqués pour chaque projet. Une review Git ajoute `project_id` parce que
@@ -75,8 +78,9 @@ transformer en `QuestionnairePayload` :
   reprennent les champs d'affichage après expurgation ;
 - `allowed_scopes` vaut `["once"]` quand `canApproveForConversation` est
   `false`, sinon `["once", "conversation"]` ;
-- `related_run` est ajouté seulement si la conversation appartient à un run
-  connu ;
+- `ref.workspace_id`, `task_id` et `run_id` sont ajoutés ensemble seulement si
+  la conversation appartient à un run connu ; une conversation autonome les
+  omet tous ;
 - `recoveryState: "interrupted"` devient l'état `interrupted` et ne peut pas
   être résolu à distance.
 
@@ -87,6 +91,11 @@ commande. Les résultats runtime `allow_once` et `allow_conversation` deviennent
 `verdict: "approve"` avec `grant_scope: "once"` ou `"conversation"`. Le résultat
 `deny` devient `verdict: "deny"` avec un motif optionnel. `expired` est un état,
 pas une troisième décision utilisateur.
+
+Un run suspendu par cette demande utilise `waiting_tool_approval` et reprend la
+même référence dans `waiting_on`. Les champs instance, workspace, tâche et run
+de cette référence sont alors obligatoires et identiques à ceux du run. Un run
+attendant un questionnaire conserve `waiting_decision` et une `decisionRef`.
 
 Une review Git n'utilise pas cette ressource. Elle reste liée à ses SHA et son
 verdict ne déclenche aucune opération Git implicite.

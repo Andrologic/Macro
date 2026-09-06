@@ -136,9 +136,17 @@
       "properties": {
         "type": { "const": "tool_approval" },
         "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "workspace_id": { "$ref": "#/$defs/opaqueId" },
+        "task_id": { "$ref": "#/$defs/opaqueId" },
+        "run_id": { "$ref": "#/$defs/opaqueId" },
         "conversation_id": { "$ref": "#/$defs/sourceId" },
         "assistant_message_id": { "$ref": "#/$defs/sourceId" },
         "tool_call_id": { "$ref": "#/$defs/sourceId" }
+      },
+      "dependentRequired": {
+        "workspace_id": ["task_id", "run_id"],
+        "task_id": ["workspace_id", "run_id"],
+        "run_id": ["workspace_id", "task_id"]
       }
     },
     "reviewRef": {
