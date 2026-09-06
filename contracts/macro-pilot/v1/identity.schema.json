@@ -5,6 +5,7 @@
   "oneOf": [
     { "$ref": "#/$defs/account" },
     { "$ref": "#/$defs/deviceSession" },
+    { "$ref": "#/$defs/instanceAccess" },
     { "$ref": "#/$defs/instance" },
     { "$ref": "#/$defs/workspace" },
     { "$ref": "#/$defs/project" }
@@ -58,6 +59,36 @@
         }
       ]
     },
+    "instanceAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "state", "permissions", "granted_at", "revision"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "instance_access" },
+        "ref": { "$ref": "common.schema.json#/$defs/instanceAccessRef" },
+        "state": { "enum": ["granted", "revoked"] },
+        "permissions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["supervise", "respond", "review"] }
+        },
+        "granted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "revoked_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "revoked" } } },
+          "then": {
+            "properties": { "revoked_at": true },
+            "required": ["revoked_at"]
+          },
+          "else": { "properties": { "revoked_at": false } }
+        }
+      ]
+    },
     "instance": {
       "type": "object",
       "additionalProperties": false,
@@ -93,13 +124,14 @@
     "project": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "type", "ref", "label", "vcs", "revision"],
+      "required": ["contract_version", "type", "ref", "label", "state", "repository_state", "revision"],
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "project" },
         "ref": { "$ref": "common.schema.json#/$defs/projectRef" },
         "label": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 120 },
-        "vcs": { "const": "git" },
+        "state": { "enum": ["active", "paused", "archived"] },
+        "repository_state": { "enum": ["unknown", "ready", "not_git", "unborn"] },
         "revision": { "$ref": "common.schema.json#/$defs/revision" }
       }
     }

@@ -5,11 +5,10 @@
     "type": "project",
     "instance_id": "instance:studio-mac",
     "workspace_id": "workspace:macro-suite",
-    "project_id": "project:macro-desktop"
+    "project_id": "project:macro-mobile"
   },
-  "label": "Macro",
+  "label": "Macro Pilot",
   "state": "active",
-  "repository_state": "ready",
-  "machine_path": "/Users/example/Macro",
-  "revision": 12
+  "repository_state": "not_git",
+  "revision": 2
 }

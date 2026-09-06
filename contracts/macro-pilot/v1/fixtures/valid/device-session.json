@@ -3,7 +3,6 @@
   "type": "device_session",
   "ref": {
     "type": "session",
-    "instance_id": "instance:studio-mac",
     "account_id": "account:github:583231",
     "session_id": "session:phone:01J8T"
   },

@@ -9,19 +9,34 @@
     "run_id": "run:pilot-contract:01",
     "decision_id": "decision:connection:01"
   },
-  "state": "pending",
+  "state": "resolved",
   "steps": [
     {
       "step_id": "step:connection-mode",
       "prompt": "How should the client connect?",
       "choices": [
         { "choice_id": "choice:connection:auto", "label": "Automatic" },
-        { "choice_id": "choice:connection:auto", "label": "Local only" },
+        { "choice_id": "choice:connection:local", "label": "Local only" },
         { "choice_id": "choice:connection:manual", "label": "Manual" }
       ],
       "free_text_allowed": false
     }
   ],
-  "revision": 1,
+  "resolution": {
+    "answers": [
+      {
+        "step_id": "step:connection-mode",
+        "kind": "free_text",
+        "text": "Use a private tunnel."
+      }
+    ],
+    "resolved_by": {
+      "account_id": "account:github:583231",
+      "session_id": "session:phone:01J8T",
+      "device_id": "device:iphone:01J8T"
+    },
+    "resolved_at": "2026-09-06T12:01:00Z"
+  },
+  "revision": 2,
   "created_at": "2026-09-06T12:00:00Z"
 }

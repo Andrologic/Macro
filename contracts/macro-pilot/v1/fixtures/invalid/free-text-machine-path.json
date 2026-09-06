@@ -5,9 +5,12 @@
     "type": "task",
     "instance_id": "instance:studio-mac",
     "workspace_id": "workspace:macro-suite",
-    "project_id": "project:macro-desktop",
     "task_id": "task:pilot-contract"
   },
+  "project_ids": ["project:macro-desktop"],
+  "execution_targets": [
+    { "project_id": "project:macro-desktop", "execution_mode": "git" }
+  ],
   "title": "Read /Users/alice/private.txt",
   "state": "queued",
   "revision": 1,

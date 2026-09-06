@@ -2,8 +2,8 @@
   "contract_version": "1.0",
   "type": "command",
   "kind": "decision.resolve",
-  "command_id": "command:decision:resolve:01",
-  "idempotency_key": "phone01-decision01-0001",
+  "command_id": "command:decision:resolve:03",
+  "idempotency_key": "phone01-decision03-0001",
   "expected_revision": 1,
   "target": {
     "type": "decision",
@@ -11,7 +11,7 @@
     "workspace_id": "workspace:macro-suite",
     "task_id": "task:pilot-contract",
     "run_id": "run:pilot-contract:01",
-    "decision_id": "decision:topology:01"
+    "decision_id": "decision:connection:01"
   },
   "issued_by": {
     "account_id": "account:github:583231",
@@ -27,9 +27,9 @@
         "choice_id": "choice:connection:auto"
       },
       {
-        "step_id": "step:constraints",
+        "step_id": "step:connection-mode",
         "kind": "free_text",
-        "text": "Keep the connection on the trusted local network."
+        "text": "Use the automatic connection."
       }
     ]
   }

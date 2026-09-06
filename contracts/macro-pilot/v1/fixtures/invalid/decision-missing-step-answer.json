@@ -7,7 +7,7 @@
     "workspace_id": "workspace:macro-suite",
     "task_id": "task:pilot-contract",
     "run_id": "run:pilot-contract:01",
-    "decision_id": "decision:topology:01"
+    "decision_id": "decision:connection:01"
   },
   "state": "resolved",
   "steps": [
@@ -19,18 +19,17 @@
         { "choice_id": "choice:connection:local", "label": "Local only" },
         { "choice_id": "choice:connection:manual", "label": "Manual" }
       ],
-      "free_text_allowed": true
+      "free_text_allowed": false
     },
     {
       "step_id": "step:constraints",
-      "prompt": "Which connection constraint should Macro respect?",
+      "prompt": "Which constraint should Macro respect?",
       "choices": [
-        { "choice_id": "choice:constraints:none", "label": "No extra constraint" },
-        { "choice_id": "choice:constraints:lan", "label": "Local network only" },
-        { "choice_id": "choice:constraints:vpn", "label": "VPN required" }
+        { "choice_id": "choice:constraints:none", "label": "None" },
+        { "choice_id": "choice:constraints:lan", "label": "Local network" },
+        { "choice_id": "choice:constraints:vpn", "label": "VPN" }
       ],
-      "free_text_allowed": true,
-      "free_text_placeholder": "Describe another constraint"
+      "free_text_allowed": true
     }
   ],
   "resolution": {
@@ -39,11 +38,6 @@
         "step_id": "step:connection-mode",
         "kind": "choice",
         "choice_id": "choice:connection:auto"
-      },
-      {
-        "step_id": "step:constraints",
-        "kind": "free_text",
-        "text": "Keep the connection on the trusted local network."
       }
     ],
     "resolved_by": {

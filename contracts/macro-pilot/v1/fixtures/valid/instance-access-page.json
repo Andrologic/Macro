@@ -1,0 +1,36 @@
+{
+  "contract_version": "1.0",
+  "type": "page",
+  "item_type": "instance_access",
+  "items": [
+    {
+      "contract_version": "1.0",
+      "type": "instance_access",
+      "ref": {
+        "type": "instance_access",
+        "account_id": "account:github:583231",
+        "session_id": "session:phone:01J8T",
+        "instance_id": "instance:studio-mac"
+      },
+      "state": "granted",
+      "permissions": ["supervise", "respond", "review"],
+      "granted_at": "2026-09-06T10:05:00Z",
+      "revision": 1
+    },
+    {
+      "contract_version": "1.0",
+      "type": "instance_access",
+      "ref": {
+        "type": "instance_access",
+        "account_id": "account:github:583231",
+        "session_id": "session:phone:01J8T",
+        "instance_id": "instance:travel-mac"
+      },
+      "state": "granted",
+      "permissions": ["supervise", "respond"],
+      "granted_at": "2026-09-06T10:06:00Z",
+      "revision": 1
+    }
+  ],
+  "has_more": false
+}

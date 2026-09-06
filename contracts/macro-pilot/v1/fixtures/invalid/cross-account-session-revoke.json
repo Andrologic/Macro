@@ -7,7 +7,6 @@
   "expected_revision": 1,
   "target": {
     "type": "session",
-    "instance_id": "instance:studio-mac",
     "account_id": "account:github:583231",
     "session_id": "session:phone:01J8T"
   },

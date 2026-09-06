@@ -42,12 +42,22 @@
     "sessionRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "instance_id", "account_id", "session_id"],
+      "required": ["type", "account_id", "session_id"],
       "properties": {
         "type": { "const": "session" },
-        "instance_id": { "$ref": "#/$defs/opaqueId" },
         "account_id": { "$ref": "#/$defs/opaqueId" },
         "session_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "instanceAccessRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "account_id", "session_id", "instance_id"],
+      "properties": {
+        "type": { "const": "instance_access" },
+        "account_id": { "$ref": "#/$defs/opaqueId" },
+        "session_id": { "$ref": "#/$defs/opaqueId" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" }
       }
     },
     "workspaceRef": {
@@ -74,24 +84,22 @@
     "taskRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "instance_id", "workspace_id", "project_id", "task_id"],
+      "required": ["type", "instance_id", "workspace_id", "task_id"],
       "properties": {
         "type": { "const": "task" },
         "instance_id": { "$ref": "#/$defs/opaqueId" },
         "workspace_id": { "$ref": "#/$defs/opaqueId" },
-        "project_id": { "$ref": "#/$defs/opaqueId" },
         "task_id": { "$ref": "#/$defs/opaqueId" }
       }
     },
     "runRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "instance_id", "workspace_id", "project_id", "task_id", "run_id"],
+      "required": ["type", "instance_id", "workspace_id", "task_id", "run_id"],
       "properties": {
         "type": { "const": "run" },
         "instance_id": { "$ref": "#/$defs/opaqueId" },
         "workspace_id": { "$ref": "#/$defs/opaqueId" },
-        "project_id": { "$ref": "#/$defs/opaqueId" },
         "task_id": { "$ref": "#/$defs/opaqueId" },
         "run_id": { "$ref": "#/$defs/opaqueId" }
       }
@@ -99,12 +107,11 @@
     "decisionRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "instance_id", "workspace_id", "project_id", "task_id", "run_id", "decision_id"],
+      "required": ["type", "instance_id", "workspace_id", "task_id", "run_id", "decision_id"],
       "properties": {
         "type": { "const": "decision" },
         "instance_id": { "$ref": "#/$defs/opaqueId" },
         "workspace_id": { "$ref": "#/$defs/opaqueId" },
-        "project_id": { "$ref": "#/$defs/opaqueId" },
         "task_id": { "$ref": "#/$defs/opaqueId" },
         "run_id": { "$ref": "#/$defs/opaqueId" },
         "decision_id": { "$ref": "#/$defs/opaqueId" }
@@ -128,6 +135,7 @@
       "oneOf": [
         { "$ref": "#/$defs/instanceRef" },
         { "$ref": "#/$defs/sessionRef" },
+        { "$ref": "#/$defs/instanceAccessRef" },
         { "$ref": "#/$defs/workspaceRef" },
         { "$ref": "#/$defs/projectRef" },
         { "$ref": "#/$defs/taskRef" },

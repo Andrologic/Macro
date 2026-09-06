@@ -3,10 +3,12 @@
   "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/supervision.schema.json",
   "title": "Macro Pilot supervision resources 1.0",
   "x-semantic-rules": [
-    "decision.resolution.choice_id MUST match an entry in decision.choices",
-    "decision.choices MUST use distinct choice_id values",
-    "run.waiting_on MUST identify the same instance, workspace, project, task, and run as run.ref",
-    "review.related_run MUST identify the same instance, workspace, project, task, and run as review.ref"
+    "task project_ids and context_project_ids MUST be disjoint and unique",
+    "task execution_targets MUST identify each actionable project exactly once",
+    "decision steps and their choices MUST use distinct identifiers",
+    "decision resolution MUST answer every step exactly once using a listed choice or allowed free text",
+    "run.waiting_on MUST identify the same instance, workspace, task, and run as run.ref",
+    "review.related_run MUST identify the same instance, workspace, task, and run as review.ref"
   ],
   "oneOf": [
     { "$ref": "#/$defs/task" },
@@ -15,16 +17,41 @@
     { "$ref": "#/$defs/review" }
   ],
   "$defs": {
+    "taskExecutionTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "execution_mode"],
+      "properties": {
+        "project_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "execution_mode": { "enum": ["git", "direct"] }
+      }
+    },
     "task": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "type", "ref", "title", "state", "revision", "updated_at"],
+      "required": ["contract_version", "type", "ref", "project_ids", "execution_targets", "title", "state", "revision", "updated_at"],
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "task" },
         "ref": { "$ref": "common.schema.json#/$defs/taskRef" },
+        "project_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/opaqueId" }
+        },
+        "context_project_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/opaqueId" }
+        },
+        "execution_targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/taskExecutionTarget" }
+        },
         "title": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 },
-        "state": { "enum": ["queued", "running", "waiting_decision", "review_ready", "completed", "failed", "cancelled"] },
+        "state": { "enum": ["queued", "running", "waiting_decision", "review_ready", "blocked", "completed", "failed", "cancelled"] },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       }
@@ -66,12 +93,58 @@
         "description": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 1000 }
       }
     },
+    "decisionStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step_id", "prompt", "choices", "free_text_allowed"],
+      "properties": {
+        "step_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "prompt": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 },
+        "choices": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/decisionChoice" }
+        },
+        "free_text_allowed": { "type": "boolean" },
+        "free_text_placeholder": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "decisionAnswer": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["step_id", "kind", "choice_id"],
+          "properties": {
+            "step_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+            "kind": { "const": "choice" },
+            "choice_id": { "$ref": "common.schema.json#/$defs/opaqueId" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["step_id", "kind", "text"],
+          "properties": {
+            "step_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+            "kind": { "const": "free_text" },
+            "text": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 }
+          }
+        }
+      ]
+    },
     "decisionResolution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["choice_id", "resolved_by", "resolved_at"],
+      "required": ["answers", "resolved_by", "resolved_at"],
       "properties": {
-        "choice_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "answers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/decisionAnswer" }
+        },
         "resolved_by": { "$ref": "common.schema.json#/$defs/actorRef" },
         "resolved_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       }
@@ -79,18 +152,17 @@
     "decision": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "type", "ref", "state", "prompt", "choices", "revision", "created_at"],
+      "required": ["contract_version", "type", "ref", "state", "steps", "revision", "created_at"],
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "decision" },
         "ref": { "$ref": "common.schema.json#/$defs/decisionRef" },
         "state": { "enum": ["pending", "resolved", "expired", "cancelled"] },
-        "prompt": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 },
-        "choices": {
+        "steps": {
           "type": "array",
           "minItems": 1,
           "maxItems": 20,
-          "items": { "$ref": "#/$defs/decisionChoice" }
+          "items": { "$ref": "#/$defs/decisionStep" }
         },
         "resolution": { "$ref": "#/$defs/decisionResolution" },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },

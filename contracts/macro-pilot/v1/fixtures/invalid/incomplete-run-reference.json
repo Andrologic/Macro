@@ -9,7 +9,6 @@
     "type": "run",
     "instance_id": "instance:studio-mac",
     "workspace_id": "workspace:macro-suite",
-    "project_id": "project:macro-desktop",
     "run_id": "run:pilot-contract:01"
   },
   "issued_by": {

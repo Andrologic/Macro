@@ -8,6 +8,7 @@
     "event_batch.events MUST use its stream_id and contiguous sequence values after after_sequence",
     "event_batch.next_cursor and next_sequence MUST equal its last event, or the after values when empty",
     "session.revoke issued_by.account_id MUST equal target.account_id",
+    "decision.resolve answers MUST use distinct step_id values",
     "page.item_type MUST equal the type of every item",
     "command_result.resulting_revision MUST NOT be lower than previous_revision"
   ],
@@ -109,9 +110,14 @@
         "payload": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["choice_id"],
+          "required": ["answers"],
           "properties": {
-            "choice_id": { "$ref": "common.schema.json#/$defs/opaqueId" }
+            "answers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": { "$ref": "supervision.schema.json#/$defs/decisionAnswer" }
+            }
           }
         }
       }
@@ -312,7 +318,7 @@
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "page_request" },
-        "item_type": { "enum": ["account", "device_session", "instance", "workspace", "project", "task", "run", "decision", "review"] },
+        "item_type": { "enum": ["account", "device_session", "instance_access", "instance", "workspace", "project", "task", "run", "decision", "review"] },
         "scope": { "$ref": "common.schema.json#/$defs/resourceRef" },
         "cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
         "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
@@ -325,7 +331,7 @@
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "page" },
-        "item_type": { "enum": ["account", "device_session", "instance", "workspace", "project", "task", "run", "decision", "review"] },
+        "item_type": { "enum": ["account", "device_session", "instance_access", "instance", "workspace", "project", "task", "run", "decision", "review"] },
         "items": {
           "type": "array",
           "maxItems": 200,

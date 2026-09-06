@@ -5,18 +5,31 @@
     "type": "decision",
     "instance_id": "instance:studio-mac",
     "workspace_id": "workspace:macro-suite",
-    "project_id": "project:macro-desktop",
     "task_id": "task:pilot-contract",
     "run_id": "run:pilot-contract:01",
-    "decision_id": "decision:topology:01"
+    "decision_id": "decision:connection:01"
   },
   "state": "pending",
-  "prompt": "Choose one option.",
-  "choices": [
-    { "choice_id": "choice:topology:local", "label": "Local" }
+  "steps": [
+    {
+      "step_id": "step:connection-mode",
+      "prompt": "How should the client connect?",
+      "choices": [
+        { "choice_id": "choice:connection:auto", "label": "Automatic" },
+        { "choice_id": "choice:connection:local", "label": "Local only" },
+        { "choice_id": "choice:connection:manual", "label": "Manual" }
+      ],
+      "free_text_allowed": false
+    }
   ],
   "resolution": {
-    "choice_id": "choice:topology:local",
+    "answers": [
+      {
+        "step_id": "step:connection-mode",
+        "kind": "choice",
+        "choice_id": "choice:connection:auto"
+      }
+    ],
     "resolved_by": {
       "account_id": "account:github:583231",
       "session_id": "session:phone:01J8T",

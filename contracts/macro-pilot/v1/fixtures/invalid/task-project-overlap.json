@@ -7,14 +7,13 @@
     "workspace_id": "workspace:macro-suite",
     "task_id": "task:pilot-contract"
   },
-  "project_ids": ["project:macro-desktop", "project:macro-mobile"],
-  "context_project_ids": ["project:macro-site"],
+  "project_ids": ["project:macro-desktop"],
+  "context_project_ids": ["project:macro-desktop"],
   "execution_targets": [
-    { "project_id": "project:macro-desktop", "execution_mode": "git" },
-    { "project_id": "project:macro-mobile", "execution_mode": "direct" }
+    { "project_id": "project:macro-desktop", "execution_mode": "git" }
   ],
   "title": "Define the Macro Pilot contract",
-  "state": "waiting_decision",
-  "revision": 7,
+  "state": "queued",
+  "revision": 1,
   "updated_at": "2026-09-06T12:00:00Z"
 }

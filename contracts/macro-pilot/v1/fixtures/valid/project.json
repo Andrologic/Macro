@@ -8,6 +8,7 @@
     "project_id": "project:macro-desktop"
   },
   "label": "Macro",
-  "vcs": "git",
+  "state": "active",
+  "repository_state": "ready",
   "revision": 12
 }

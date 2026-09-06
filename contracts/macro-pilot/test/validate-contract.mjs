@@ -9,6 +9,23 @@ const testDirectory = dirname(fileURLToPath(import.meta.url));
 const versionDirectory = join(testDirectory, "..", "v1");
 const fixtureDirectory = join(versionDirectory, "fixtures");
 const rootSchemaId = "https://schemas.macro.andrologic.ai/macro-pilot/v1/schema.json";
+const expectedSemanticRejections = new Set([
+  "cross-account-session-revoke.json",
+  "decision-choice-mismatch.json",
+  "decision-command-duplicate-step.json",
+  "decision-free-text-disallowed.json",
+  "decision-missing-step-answer.json",
+  "decreasing-revision.json",
+  "duplicate-decision-choice.json",
+  "event-batch-duplicate-sequence.json",
+  "event-resource-mismatch.json",
+  "event-revision-mismatch.json",
+  "page-type-mismatch.json",
+  "review-run-mismatch.json",
+  "run-waiting-reference-mismatch.json",
+  "task-project-overlap.json",
+  "task-target-mismatch.json",
+]);
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
@@ -33,7 +50,35 @@ function sameReference(left, right) {
 }
 
 function sameRunScope(left, right) {
-  return sameFields(left, right, ["instance_id", "workspace_id", "project_id", "task_id", "run_id"]);
+  return sameFields(left, right, ["instance_id", "workspace_id", "task_id", "run_id"]);
+}
+
+function duplicateValues(values) {
+  return values.filter((value, index) => values.indexOf(value) !== index);
+}
+
+function decisionAnswerErrors(steps, answers) {
+  const errors = [];
+  if (!Array.isArray(steps) || !Array.isArray(answers)) return errors;
+  const stepsById = new Map(steps.map((step) => [step.step_id, step]));
+  const answerStepIds = answers.map((answer) => answer.step_id);
+  if (duplicateValues(answerStepIds).length > 0) {
+    errors.push("decision answers contain duplicate step_id values");
+  }
+  if (answers.length !== steps.length || answerStepIds.some((stepId) => !stepsById.has(stepId))) {
+    errors.push("decision resolution does not answer every step exactly once");
+  }
+  for (const answer of answers) {
+    const step = stepsById.get(answer.step_id);
+    if (!step) continue;
+    if (answer.kind === "choice" && !step.choices.some((choice) => choice.choice_id === answer.choice_id)) {
+      errors.push(`decision answer for ${answer.step_id} uses an unknown choice_id`);
+    }
+    if (answer.kind === "free_text" && step.free_text_allowed !== true) {
+      errors.push(`decision answer for ${answer.step_id} uses disallowed free text`);
+    }
+  }
+  return errors;
 }
 
 function semanticErrors(message) {
@@ -63,14 +108,44 @@ function semanticErrors(message) {
     errors.push("run.waiting_on differs from run.ref");
   }
 
-  if (message.type === "decision" && Array.isArray(message.choices)) {
-    const choiceIdList = message.choices.map((choice) => choice.choice_id);
-    const choiceIds = new Set(choiceIdList);
-    if (choiceIds.size !== choiceIdList.length) {
-      errors.push("decision.choices contains duplicate choice_id values");
+  if (message.type === "task" && Array.isArray(message.project_ids)) {
+    const contextProjectIds = Array.isArray(message.context_project_ids) ? message.context_project_ids : [];
+    if (message.project_ids.some((projectId) => contextProjectIds.includes(projectId))) {
+      errors.push("task project_ids overlap context_project_ids");
     }
-    if (message.resolution && !choiceIds.has(message.resolution.choice_id)) {
-      errors.push("decision.resolution.choice_id is not present in decision.choices");
+    if (Array.isArray(message.execution_targets)) {
+      const targetProjectIds = message.execution_targets.map((target) => target.project_id);
+      if (
+        duplicateValues(targetProjectIds).length > 0 ||
+        targetProjectIds.length !== message.project_ids.length ||
+        targetProjectIds.some((projectId) => !message.project_ids.includes(projectId))
+      ) {
+        errors.push("task execution_targets do not match project_ids exactly once");
+      }
+    }
+  }
+
+  if (message.type === "decision" && Array.isArray(message.steps)) {
+    const stepIds = message.steps.map((step) => step.step_id);
+    if (duplicateValues(stepIds).length > 0) {
+      errors.push("decision steps contain duplicate step_id values");
+    }
+    for (const step of message.steps) {
+      if (!Array.isArray(step.choices)) continue;
+      const choiceIds = step.choices.map((choice) => choice.choice_id);
+      if (duplicateValues(choiceIds).length > 0) {
+        errors.push(`decision step ${step.step_id} contains duplicate choice_id values`);
+      }
+    }
+    if (message.resolution) {
+      errors.push(...decisionAnswerErrors(message.steps, message.resolution.answers));
+    }
+  }
+
+  if (message.type === "command" && message.kind === "decision.resolve" && Array.isArray(message.payload?.answers)) {
+    const answerStepIds = message.payload.answers.map((answer) => answer.step_id);
+    if (duplicateValues(answerStepIds).length > 0) {
+      errors.push("decision.resolve contains duplicate step_id values");
     }
   }
 
@@ -165,11 +240,13 @@ for (const name of await fixtureNames("invalid")) {
   const fixture = await readJson(join(fixtureDirectory, "invalid", name));
   const schemaValid = validate(fixture);
   const relationErrors = semanticErrors(fixture);
-  if (schemaValid && relationErrors.length === 0) {
+  const expectedSemantic = expectedSemanticRejections.has(name);
+  const rejectedAsExpected = expectedSemantic ? relationErrors.length > 0 : !schemaValid;
+  if (!rejectedAsExpected) {
     failures += 1;
-    console.error(`FAIL invalid/${name} was accepted`);
+    console.error(`FAIL invalid/${name} was not rejected by ${expectedSemantic ? "semantic rules" : "the schema"}`);
   } else {
-    console.log(`PASS invalid/${name} rejected`);
+    console.log(`PASS invalid/${name} rejected by ${expectedSemantic ? "semantic rules" : "the schema"}`);
   }
 }
 

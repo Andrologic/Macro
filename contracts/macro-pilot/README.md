@@ -38,3 +38,5 @@ Read [`docs/macro-pilot/compatibility.md`](../../docs/macro-pilot/compatibility.
 before implementing a consumer. Product choices that are not part of version
 `1.0` are recorded in
 [`docs/macro-pilot/open-decisions.md`](../../docs/macro-pilot/open-decisions.md).
+The mapping to Macro's current task, project, and questionnaire types is in
+[`docs/macro-pilot/macro-type-mapping.md`](../../docs/macro-pilot/macro-type-mapping.md).

@@ -10,7 +10,6 @@
       "type": "task",
       "instance_id": "instance:studio-mac",
       "workspace_id": "workspace:macro-suite",
-      "project_id": "project:macro-desktop",
       "task_id": "task:pilot-contract"
     }
   }

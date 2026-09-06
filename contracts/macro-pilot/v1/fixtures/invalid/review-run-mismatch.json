@@ -14,7 +14,6 @@
     "type": "run",
     "instance_id": "instance:studio-mac",
     "workspace_id": "workspace:other-suite",
-    "project_id": "project:macro-desktop",
     "task_id": "task:pilot-contract",
     "run_id": "run:pilot-contract:01"
   },

@@ -24,18 +24,26 @@ Le compte est indexé par le couple GitHub stable `provider` et `subject`.
 `login`, `display_name` et `avatar_url` sont des données d'affichage mutables.
 Ils ne servent jamais à retrouver ou autoriser le compte.
 
-Chaque appareil reçoit son propre `device_id` et sa propre session. Révoquer une
-session ne révoque pas les autres sessions du compte. Une commande
-`session.revoke` cible explicitement la session concernée et porte son
-`account_id`. Cet identifiant doit correspondre à celui de l'acteur. Le service
-vérifie aussi que la session authentifiée appartient à cet acteur. Il renvoie
-`forbidden` pour une cible d'un autre compte et `unauthorized` si l'identité de
-l'acteur ne correspond pas à la session authentifiée.
+Chaque appareil reçoit son propre `device_id` et sa propre session de compte.
+La session existe avant toute association à une instance et peut accéder à
+plusieurs instances. Chaque autorisation utilise une ressource
+`instance_access` distincte. Révoquer une session ne révoque pas les autres
+sessions du compte. Une commande `session.revoke` cible explicitement la
+session concernée et porte son `account_id`. Cet identifiant doit correspondre
+à celui de l'acteur. Le service vérifie aussi que la session authentifiée
+appartient à cet acteur. Il renvoie `forbidden` pour une cible d'un autre compte
+et `unauthorized` si l'identité de l'acteur ne correspond pas à la session
+authentifiée.
 
-Les références forment une portée hiérarchique. Un run contient les identifiants
-de son instance, workspace, projet et tâche. Une décision et une review ajoutent
-leur identifiant à cette portée. Un consommateur compare toute la portée avant
-d'associer deux ressources.
+Les références forment une portée hiérarchique. Une tâche appartient à une
+instance et un workspace, puis liste ses projets d'action et ses projets de
+contexte. Un run et une décision restent liés à cette tâche unique. Une review
+Git ajoute le projet concerné à la portée du run. Un consommateur compare toute
+la portée avant d'associer deux ressources.
+
+Une ressource `project` publie `repository_state`. La valeur `not_git` est
+valide. Le mode `git` ou `direct` est figé par projet dans les
+`execution_targets` de la tâche.
 
 ## Révisions et commandes
 
@@ -51,6 +59,12 @@ erreur et aucune `resulting_revision`.
 `review.submit` enregistre un verdict sur les SHA `base_sha` et `head_sha` de la
 review. Ce contrat ne lui attribue aucun effet sur une branche, un merge ou un
 push.
+
+Une décision contient une ou plusieurs étapes. Chaque étape expose les trois
+choix utilisés par `QuestionStep` et indique si une réponse libre est permise.
+`decision.resolve` répond à toutes les étapes en une commande et conserve
+`expected_revision`. Une réponse indique explicitement `choice` ou
+`free_text`.
 
 ## Pagination et reprise
 
@@ -75,12 +89,17 @@ la validation et font partie du contrat :
 - la cible `resource` d'un événement est identique à la référence de son
   `snapshot` ;
 - la référence `related_run` d'une review reprend les identifiants instance,
-  workspace, projet, tâche et run de la review ;
+  workspace, tâche et run de la review ;
 - la référence `waiting_on` d'un run reprend la même portée jusqu'au run ;
+- les projets d'action et de contexte d'une tâche sont distincts ;
+- chaque projet d'action possède exactement une cible d'exécution ;
 - seul un run `waiting_decision` porte `waiting_on`, qui est alors obligatoire ;
-- le choix d'une décision résolue existe dans `choices` ;
+- une décision répond une fois à chaque étape ;
+- une réponse par choix utilise un choix de son étape et une réponse libre
+  respecte `free_text_allowed` ;
+- une commande `decision.resolve` répond au plus une fois à chaque étape ;
 - seule une décision `resolved` porte une résolution, qui est alors obligatoire ;
-- les identifiants de choix d'une décision sont uniques ;
+- les identifiants d'étape et de choix sont uniques dans leur portée ;
 - le type de chaque élément d'une page correspond à `item_type` ;
 - la révision d'un événement correspond à celle de son snapshot ;
 - une révocation de session cible le compte de l'acteur ;
@@ -91,6 +110,21 @@ la validation et font partie du contrat :
 
 Le validateur ciblé et les fixtures négatives vérifient ces règles. Chaque
 implémentation doit les reproduire après la validation JSON Schema.
+
+## Validations contre l'état courant
+
+Certaines références demandent les ressources courantes du service. Le service
+effectue ces contrôles après la validation du message :
+
+- une `instance_access` référence une session active du même compte ;
+- l'acteur d'une commande correspond à la session authentifiée ;
+- les réponses de `decision.resolve` couvrent les étapes de la décision à
+  `expected_revision` et respectent leurs choix et leur règle de texte libre ;
+- `review.ref.project_id` correspond à une cible `git` de la tâche liée au run ;
+- `base_sha` et `head_sha` existent dans ce dépôt au moment de créer la review.
+
+Un écart de portée produit `invalid_reference`. Une décision ou une review
+ayant changé de révision produit `stale_revision`.
 
 ## Données autorisées sur le mobile
 
