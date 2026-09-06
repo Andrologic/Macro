@@ -234,6 +234,16 @@ impl ConfigManager {
                     });
                     return Err(error);
                 }
+            } else {
+                let key = DocumentKey {
+                    kind,
+                    scope: scope.clone(),
+                };
+                let mut state = self.state.write().await;
+                state.documents.remove(&key);
+                state.pending_changes.retain(|_, pending| {
+                    pending.pending.document != kind || pending.pending.scope != scope
+                });
             }
         }
         self.state
@@ -2432,6 +2442,51 @@ mod tests {
             second.project_effective["project-123"]["tools"]["builtIn"]["write"],
             json!(false)
         );
+    }
+
+    #[tokio::test]
+    async fn re_registering_a_project_drops_a_deleted_document_overlay() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().expect("metadata");
+        let config_root = metadata.path().join("projects/project-123/config");
+        fs::create_dir_all(&config_root).expect("config root");
+        let mut tools = sparse_document(ConfigDocumentKind::Tools);
+        tools["builtIn"] = json!({ "read": false });
+        let tools_path = config_root.join("tools.json");
+        atomic_write_json(&tools_path, &tools).expect("project tools");
+
+        manager
+            .register_project_root("project-123", metadata.path().to_path_buf())
+            .await
+            .expect("register project");
+        let first = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("first snapshot");
+        assert_eq!(
+            first.project_effective["project-123"]["tools"]["builtIn"]["read"],
+            json!(false)
+        );
+
+        fs::remove_file(&tools_path).expect("delete project tools");
+        manager
+            .register_project_root("project-123", metadata.path().to_path_buf())
+            .await
+            .expect("re-register project");
+        let second = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("second snapshot");
+        assert!(second.project_effective["project-123"]["tools"]["builtIn"]
+            .get("read")
+            .is_none());
+        assert!(!second.documents.iter().any(|document| {
+            document.kind == ConfigDocumentKind::Tools
+                && document.scope
+                    == ConfigScope::Project {
+                        project_id: "project-123".to_string(),
+                    }
+        }));
     }
 
     #[tokio::test]

@@ -450,6 +450,38 @@ async function main() {
         'Resolving an interrupted mutation must never replay its side effect.',
       );
 
+      await writeFile(path.join(addedToolsConfig, 'tools.json'), '{ invalid json');
+      const invalidPolicyRead = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'Implement',
+          tool_id: 'read',
+          args: { path: 'marker.txt' },
+          focused_project_id: 'project-added',
+        }),
+      });
+      assert.equal(
+        invalidPolicyRead.status,
+        403,
+        'A project with an invalid tools policy must be excluded instead of using cached policy.',
+      );
+      const stillAvailableRead = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'Implement',
+          tool_id: 'read',
+          args: { path: 'marker.txt' },
+          focused_project_id: 'project-smoke',
+        }),
+      });
+      assert.equal(
+        stillAvailableRead.status,
+        200,
+        'An invalid project policy must not prevent other registered projects from being served.',
+      );
+
       console.log(`Headless smoke passed on ${baseUrl}.`);
     } catch (error) {
       await stopProcess(processHandle);

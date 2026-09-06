@@ -1004,6 +1004,18 @@ async fn load_project_tools_policy(
         .get_snapshot(&[project_id.to_string()])
         .await
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    if snapshot.documents.iter().any(|document| {
+        document.kind == ConfigDocumentKind::Tools
+            && document.scope
+                == ConfigScope::Project {
+                    project_id: project_id.to_string(),
+                }
+            && document.invalid
+    }) {
+        return Err(format!(
+            "The scoped tools policy for project '{project_id}' is invalid"
+        ));
+    }
     project_tools_from_snapshot(&snapshot, project_id).cloned()
 }
 
