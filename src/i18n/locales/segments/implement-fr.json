@@ -1,4 +1,8 @@
 {
+  "startReview": "Passer en revue",
+  "startReviewBusy": "Terminez le tour en cours ou résolvez la demande d’approbation avant de passer en revue.",
+  "startReviewUnavailable": "Cette tâche ne peut pas passer en revue dans son état actuel.",
+  "startReviewReady": "La tâche est en revue. Envoyez votre prochain message dans sa conversation pour lancer l’agent de revue.",
   "statusAttention": "À traiter",
   "taskNextActionOpenApproval": "Suite : ouvrir la demande d’approbation",
   "taskNextActionFinalizePlan": "Suite : finaliser le plan",

@@ -1,4 +1,8 @@
 {
+  "startReview": "Start review",
+  "startReviewBusy": "Finish the current turn or resolve the tool approval before starting review.",
+  "startReviewUnavailable": "This task cannot enter review in its current state.",
+  "startReviewReady": "Task is in review. Send your next message in its conversation to start the reviewer.",
   "statusAttention": "Needs attention",
   "taskNextActionOpenApproval": "Next: open the approval request",
   "taskNextActionFinalizePlan": "Next: finalize the plan",

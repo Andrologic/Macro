@@ -208,6 +208,7 @@ interface MultiRepoTaskPresentation {
 }
 
 type TaskActionKey =
+  | 'start_review'
   | 'worktree_diagnostic'
   | 'project_settings'
   | 'rename'
@@ -778,6 +779,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   const readOnlyScopeToastRef = useRef<string | null>(null);
   const missingBaseBranchToastRef = useRef<string | number | null>(null);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
+  const startingReviewsRef = useRef(new Set<string>());
   const {
     implement: { projectId: projectFilter, status: statusFilter, showArchived },
     setImplementProjectFilter,
@@ -1604,6 +1606,21 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     }
   };
 
+  const getStartReviewDisabledReason = (
+    task: ImplementTask,
+    busy = runningTaskIds.has(task.id) || attentionByTaskId.get(task.id)?.kind === 'approval',
+  ): string | undefined => {
+    if (!getServiceRuntimeCapabilities().taskMutation) return taskMutationDisabledTitle;
+    if (busy || pendingTaskId === task.id) {
+      return t('implement.startReviewBusy', 'Finish the current turn or resolve the tool approval before starting review.');
+    }
+    if (task.archived_at || task.draft || task.is_blocked || isPlanFinalizationTask(task) ||
+      !['InProgress', 'AwaitingResponse'].includes(task.status)) {
+      return t('implement.startReviewUnavailable', 'This task cannot enter review in its current state.');
+    }
+    return undefined;
+  };
+
   const buildTaskActions = (task: ImplementTask): TaskActionDescriptor[] => {
     if (isPlanFinalizationTask(task)) {
       return [];
@@ -1630,6 +1647,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
       },
     ];
+
+    if (!archived && !task.draft && ['InProgress', 'AwaitingResponse'].includes(task.status)) {
+      const reason = getStartReviewDisabledReason(task);
+      actions.push({ key: 'start_review', label: t('implement.startReview', 'Start review'), icon: 'eye', disabled: Boolean(reason), title: reason });
+    }
 
     if (getWorktreeDiagnosticTargets(task, getProjectById).length > 0) {
       actions.push({ key: 'worktree_diagnostic', label: t('implement.worktreeDiagnostic.title'), icon: 'folder-git-2' });
@@ -1683,6 +1705,35 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
   };
 
   const handleTaskAction = async (task: ImplementTask, action: TaskActionKey) => {
+    if (action === 'start_review') {
+      if (startingReviewsRef.current.has(task.id)) return;
+      const chat = useChatStore.getState();
+      const currentTasks = useTaskStore.getState().tasks;
+      const running = resolveRunningTaskIds({
+        ...chat, tasks: currentTasks, selectedTaskId: useAppStore.getState().selectedTaskId,
+      });
+      const attention = resolveTaskQueueSupervision({ ...chat, tasks: currentTasks, runningTaskIds: running });
+      const currentTask = useTaskStore.getState().getTaskById(task.id);
+      const reason = currentTask ? getStartReviewDisabledReason(currentTask,
+        running.has(task.id) || attention.attentionByTaskId.get(task.id)?.kind === 'approval')
+        : t('implement.startReviewUnavailable', 'This task cannot enter review in its current state.');
+      if (reason) { notify.error(reason); return; }
+      startingReviewsRef.current.add(task.id);
+      setPendingTaskId(task.id);
+      try {
+        await useTaskStore.getState().startReview(task.id);
+        if (useTaskStore.getState().getTaskById(task.id)?.status !== 'InReview') {
+          throw new Error(useTaskStore.getState().lastError || t('implement.startReviewUnavailable', 'This task cannot enter review in its current state.'));
+        }
+        notify.info(t('implement.startReviewReady', 'Task is in review. Send your next message in its conversation to start the reviewer.'));
+      } catch (error) {
+        notify.error(toServiceError(error).message);
+      } finally {
+        startingReviewsRef.current.delete(task.id);
+        setPendingTaskId((current) => current === task.id ? null : current);
+      }
+      return;
+    }
     if (action === 'worktree_diagnostic') {
       setDiagnostic({ task, entries: getWorktreeDiagnosticTargets(task, getProjectById) });
       return;

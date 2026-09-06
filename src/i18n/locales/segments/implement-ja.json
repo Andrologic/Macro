@@ -1,4 +1,8 @@
 {
+  "startReview": "レビューを開始",
+  "startReviewBusy": "レビューを開始する前に、現在のターンを終了するか、ツールの承認要求を解決してください。",
+  "startReviewUnavailable": "このタスクは現在の状態ではレビューに移行できません。",
+  "startReviewReady": "タスクがレビュー状態になりました。このタスクの会話で次のメッセージを送信すると、レビューエージェントが開始します。",
   "statusAttention": "要対応",
   "taskNextActionOpenApproval": "次：承認リクエストを開く",
   "taskNextActionFinalizePlan": "次：プランを完了する",

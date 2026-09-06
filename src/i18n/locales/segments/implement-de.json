@@ -1,4 +1,8 @@
 {
+  "startReview": "Review starten",
+  "startReviewBusy": "Beenden Sie den aktuellen Durchlauf oder klären Sie die Werkzeugfreigabe, bevor Sie das Review starten.",
+  "startReviewUnavailable": "Diese Aufgabe kann im aktuellen Zustand nicht ins Review wechseln.",
+  "startReviewReady": "Die Aufgabe ist im Review. Senden Sie Ihre nächste Nachricht in der zugehörigen Unterhaltung, um den Review-Agenten zu starten.",
   "statusAttention": "Zu erledigen",
   "taskNextActionOpenApproval": "Weiter: Genehmigungsanfrage öffnen",
   "taskNextActionFinalizePlan": "Weiter: Plan abschließen",
