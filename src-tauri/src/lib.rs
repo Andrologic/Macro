@@ -589,6 +589,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::pilot_secrets::pilot_secret_read,
+            commands::pilot_secrets::pilot_secret_write,
+            commands::pilot_secrets::pilot_secret_delete,
             // Database commands
             commands::db_get_initialization_status,
             commands::db_retry_initialize,

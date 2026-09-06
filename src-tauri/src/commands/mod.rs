@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod pilot_secrets;
 mod ast_search;
 mod external_apps;
 pub mod fs;
