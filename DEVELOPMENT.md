@@ -46,6 +46,8 @@ The repo uses:
 | `bun run version:check` | Verify synchronized version manifests. |
 | `bun run ci` | Run the full local CI pipeline. |
 | `bun run release:preflight` | Validate `main`, the release tag, full CI, and local native packaging. |
+| `bun run release:toolchain:diagnose` | Report the resolved Rust tools, installed targets, and native packaging prerequisites. |
+| `bun run test:native:recovery-smoke` | Run the bounded updater, migration, and restore-recovery native checks used on Windows and macOS. |
 
 ## Environment Variables
 
@@ -91,6 +93,16 @@ a hostile process already running on the machine. The WebSocket server also
 requires the exact `http://127.0.0.1:1422` browser origin and binds only to
 `127.0.0.1:1430`. Always use `bun run tauri:dev:browser`; do not expose either
 local port through a proxy.
+
+Automated checks that exercise mutable state must use a separate Tauri identifier,
+not only a temporary `MACRO_CONFIG_DIR`. Set `MACRO_TAURI_BROWSER_CONFIG` to an
+absolute merged browser-runtime config whose identifier matches
+`com.macro.desktop.qa.*`. The launcher rejects the ordinary production identifier.
+It also derives a dedicated log directory under the operating system's temporary
+directory; the QA host therefore neither reads nor writes Macro's production logs.
+Before creating fixtures, inspect the native process's open SQLite files and call
+`workspace_get_bootstrap`; continue only when both point to the intended isolated
+profile and synthetic workspace.
 
 ## Local Provider Configuration
 
@@ -152,6 +164,19 @@ Local validation and release publication are separate steps. Passing local
 checks does not validate installers for every supported platform or publish a
 release. Windows and Linux release packages are built in GitHub Actions;
 local macOS universal builds remain available for smoke testing.
+
+The release preflight starts with `release:toolchain:diagnose`. It checks the
+`rustc` and Cargo binaries actually resolved from `PATH`, compares `rustc` with
+`rust-toolchain.toml`, lists installed targets, and probes platform packaging
+prerequisites. A newer system compiler does not satisfy this check when it masks
+the pinned compiler. Fix `PATH` or the rustup override before continuing; the
+diagnostic does not skip or weaken any later release gate.
+
+Ordinary CI adds a bounded native recovery smoke on Windows and macOS when native
+or release configuration changes. It runs one regression each for durable updater
+replacement, database migration, and interrupted profile restoration. Linux still
+runs the complete native validation profile. These smoke jobs compile and test
+native code, but they do not build or publish installers.
 
 ## Validation
 

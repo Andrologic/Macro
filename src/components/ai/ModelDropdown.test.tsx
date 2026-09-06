@@ -81,4 +81,34 @@ describe('ModelDropdown', () => {
     expect(container.textContent).toContain('Qwen3.6-35B-A3B');
     expect(container.textContent).toContain('Qwen3.8-27B');
   });
+
+  it('exposes a named listbox and selects models with the keyboard', async () => {
+    const { ModelDropdown } = await loadModelDropdown();
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<ModelDropdown />);
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>('[data-tour-id="model-dropdown"] > button');
+    expect(trigger?.getAttribute('aria-label')).toBe('Choose AI model');
+    await act(async () => {
+      trigger?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    });
+
+    const options = container.querySelectorAll<HTMLButtonElement>('[role="option"]');
+    expect(container.querySelector('[role="listbox"]')?.getAttribute('aria-label')).toBe('Choose AI model');
+    expect(document.activeElement).toBe(options[0]);
+
+    await act(async () => {
+      options[0]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      options[1]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    });
+
+    expect(selectModelMock).toHaveBeenCalledWith('macro-ai-deep');
+    expect(document.activeElement).toBe(trigger ?? null);
+  });
 });

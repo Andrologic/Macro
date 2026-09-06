@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useChatStore } from '../../stores/useChatStore';
+import { useCitationsStore } from '../../stores/useCitationsStore';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { PREF_KEYS, savePreference } from '../../services/preferences';
@@ -28,6 +29,14 @@ import {
   toggleConversationIdInSet,
 } from './conversationArchiveState';
 import { useVirtualList } from '../../hooks/useVirtualList';
+import {
+  buildConversationMarkdownExport,
+  getConversationExportBaseName,
+} from '../../services/conversationExport';
+import {
+  searchMessages,
+  type MessageSearchResult,
+} from '../../services/tauriIpc';
 
 interface ConversationArchiveProps {
   className?: string;
@@ -123,6 +132,12 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     getConversationMessages,
     getMessageImages,
   } = useChatStore();
+  const hydrateConversationCitations = useCitationsStore(
+    (state) => state.hydrateConversationCitations,
+  );
+  const ensureConversationCitationContentsLoaded = useCitationsStore(
+    (state) => state.ensureConversationCitationContentsLoaded,
+  );
   const isHighlighted = isMultiSelectMode ? isChecked : isCurrentConversation;
 
   useEffect(() => {
@@ -154,9 +169,11 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     }
   };
 
-  const handleExport = async () => {
+  const handleExport = async (format: 'json' | 'markdown') => {
     try {
       await ensureMessagesLoaded(conversation.id);
+      await hydrateConversationCitations(conversation.id, { throwOnError: true });
+      const citations = await ensureConversationCitationContentsLoaded(conversation.id);
       const conversationMessages = getConversationMessages(conversation.id).map(
         (message) => ({
           ...message,
@@ -166,13 +183,19 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
       const exportData = {
         conversation,
         messages: conversationMessages,
+        citations,
         exportedAt: new Date().toISOString(),
       };
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const content = format === 'json'
+        ? JSON.stringify(exportData, null, 2)
+        : buildConversationMarkdownExport(exportData);
+      const extension = format === 'json' ? 'json' : 'md';
+      const mimeType = format === 'json' ? 'application/json' : 'text/markdown';
+      const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `${conversation.title.replace(/\s+/g, '_')}_export.json`;
+      anchor.download = `${getConversationExportBaseName(conversation.title)}_export.${extension}`;
       document.body.appendChild(anchor);
       anchor.click();
       document.body.removeChild(anchor);
@@ -300,12 +323,21 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => void handleExport()}
+              onClick={() => void handleExport('json')}
               disabled={isDeleting}
               className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
             >
               <Icon name="download" size={12} />
-              {t('common.export', 'Export')}
+              {t('chat.exportJson', 'Export JSON')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExport('markdown')}
+              disabled={isDeleting}
+              className="w-full px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent flex items-center gap-2"
+            >
+              <Icon name="file-text" size={12} />
+              {t('chat.exportMarkdown', 'Export Markdown')}
             </button>
             <button
               type="button"
@@ -399,6 +431,11 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
 
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [messageSearchResults, setMessageSearchResults] = useState<MessageSearchResult[]>([]);
+  const [messageSearchNextOffset, setMessageSearchNextOffset] = useState<number | null>(null);
+  const [isMessageSearchLoading, setIsMessageSearchLoading] = useState(false);
+  const [messageSearchError, setMessageSearchError] = useState<string | null>(null);
+  const messageSearchRequestRef = useRef(0);
   const archivedIds = useConversationArchiveStore((state) => state.archivedConversationIds);
   const hydrateArchivedConversationIds = useConversationArchiveStore(
     (state) => state.hydrateArchivedConversationIds
@@ -486,6 +523,79 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
     () => chatConversations.map((conversation) => conversation.id),
     [chatConversations]
   );
+  const chatConversationIdSet = useMemo(
+    () => new Set(chatConversationIds),
+    [chatConversationIds],
+  );
+
+  const runMessageSearch = useCallback(async (
+    query: string,
+    conversationIds: string[],
+    offset: number,
+    append: boolean,
+  ) => {
+    const requestId = ++messageSearchRequestRef.current;
+    setIsMessageSearchLoading(true);
+    setMessageSearchError(null);
+    try {
+      const page = await searchMessages({ query, conversationIds, offset, limit: 25 });
+      if (requestId !== messageSearchRequestRef.current) return;
+      setMessageSearchResults((current) => append ? [...current, ...page.results] : page.results);
+      setMessageSearchNextOffset(page.nextOffset);
+    } catch (error) {
+      if (requestId !== messageSearchRequestRef.current) return;
+      setMessageSearchResults([]);
+      setMessageSearchNextOffset(null);
+      setMessageSearchError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (requestId === messageSearchRequestRef.current) setIsMessageSearchLoading(false);
+    }
+  }, []);
+
+  const searchableConversationIds = useMemo(
+    () => chatConversations
+      .filter((conversation) => archivedIds.has(conversation.id) === showArchived)
+      .map((conversation) => conversation.id),
+    [archivedIds, chatConversations, showArchived],
+  );
+
+  useEffect(() => {
+    messageSearchRequestRef.current += 1;
+    setMessageSearchResults([]);
+    setMessageSearchNextOffset(null);
+    setMessageSearchError(null);
+    setIsMessageSearchLoading(false);
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      void runMessageSearch(query, searchableConversationIds, 0, false);
+    }, 180);
+    return () => {
+      window.clearTimeout(timeout);
+      messageSearchRequestRef.current += 1;
+    };
+  }, [runMessageSearch, searchQuery, searchableConversationIds]);
+
+  const visibleMessageSearchResults = useMemo(
+    () => messageSearchResults.filter((result) =>
+      chatConversationIdSet.has(result.conversationId) &&
+      archivedIds.has(result.conversationId) === showArchived
+    ),
+    [archivedIds, chatConversationIdSet, messageSearchResults, showArchived],
+  );
+
+  const activateMessageSearchResult = useCallback(async (result: MessageSearchResult) => {
+    if (!(await selectConversation(result.conversationId))) return;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.dispatchEvent(new CustomEvent('macro:focus-message', {
+          detail: { messageId: result.messageId },
+        }));
+      });
+    });
+  }, [selectConversation]);
 
   useEffect(() => {
     setSelectedIds((current) => {
@@ -1037,6 +1147,51 @@ export const ConversationArchive: React.FC<ConversationArchiveProps> = ({ classN
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {searchQuery.trim().length >= 2 && (
+          <div className="max-h-64 shrink-0 overflow-y-auto border-b border-border px-2 py-2" data-tour-id="chat-message-search-results">
+            <div className="mb-1 flex items-center gap-2 px-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              <Icon name="message-square" size={12} />
+              {t('chat.messageResults', 'Message results')}
+            </div>
+            {visibleMessageSearchResults.map((result) => (
+              <button
+                key={`${result.conversationId}:${result.messageId}`}
+                type="button"
+                onClick={() => void activateMessageSearchResult(result)}
+                className="w-full rounded-md px-2 py-2 text-left hover:bg-accent"
+                data-message-search-result={result.messageId}
+              >
+                <div className="truncate text-xs font-medium text-foreground">{result.conversationTitle}</div>
+                <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{result.snippet}</div>
+              </button>
+            ))}
+            {isMessageSearchLoading && visibleMessageSearchResults.length === 0 && (
+              <div className="px-2 py-3 text-xs text-muted-foreground">{t('common.loading', 'Loading...')}</div>
+            )}
+            {messageSearchError && (
+              <div className="px-2 py-2 text-xs text-destructive">{t('chat.messageSearchFailed', 'Message search failed.')}</div>
+            )}
+            {!isMessageSearchLoading && !messageSearchError && visibleMessageSearchResults.length === 0 && (
+              <div className="px-2 py-2 text-xs text-muted-foreground">{t('chat.noMessageResults', 'No matching messages')}</div>
+            )}
+            {messageSearchNextOffset !== null && (
+              <button
+                type="button"
+                disabled={isMessageSearchLoading}
+                onClick={() => void runMessageSearch(
+                  searchQuery.trim(),
+                  searchableConversationIds,
+                  messageSearchNextOffset,
+                  true,
+                )}
+                className="mt-1 w-full rounded-md px-2 py-1.5 text-xs text-primary hover:bg-accent disabled:opacity-50"
+              >
+                {t('chat.loadMoreMessageResults', 'Load more')}
+              </button>
+            )}
           </div>
         )}
 

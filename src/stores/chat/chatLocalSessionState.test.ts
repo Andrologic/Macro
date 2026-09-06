@@ -1,3 +1,4 @@
+import { usePersistenceHealth } from "../../services/persistenceHealth";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import type {
@@ -67,6 +68,7 @@ const draft: ConversationQuestionnaireDraft = {
 describe("chatLocalSessionState", () => {
   beforeEach(() => {
     installWindowStorage();
+    usePersistenceHealth.setState({ issues: {} });
   });
 
   afterEach(() => {
@@ -86,6 +88,24 @@ describe("chatLocalSessionState", () => {
     );
 
     expect(loadQuestionnaireDraftsFromStorage()).toEqual({ valid: draft });
+  });
+
+  it("clears draft persistence alerts after storage recovers", () => {
+    const localStorage = window.localStorage;
+    const setItem = localStorage.setItem;
+    localStorage.setItem = () => { throw new Error("quota"); };
+
+    saveComposerDraftsToStorage({});
+    saveQuestionnaireDraftsToStorage({});
+    expect(usePersistenceHealth.getState().issues).toEqual({
+      macro_chat_composer_drafts_v1: "The composer draft could not be saved. Keep this session open.",
+      macro_chat_questionnaire_drafts: "The questionnaire draft could not be saved. Keep this session open.",
+    });
+
+    localStorage.setItem = setItem;
+    saveComposerDraftsToStorage({});
+    saveQuestionnaireDraftsToStorage({});
+    expect(usePersistenceHealth.getState().issues).toEqual({});
   });
 
   it("updates questionnaire draft maps without mutating the previous value", () => {
@@ -125,6 +145,42 @@ describe("chatLocalSessionState", () => {
         draftTextByStepId: { q2: "draft" },
       },
     });
+  });
+
+  it("preserves corrupt image storage and reports failed writes", () => {
+    window.localStorage.setItem("macro_chat_message_images", '{"message":[{"dataUrl":"bad"}]}');
+    const raw = window.localStorage.getItem("macro_chat_message_images");
+    expect(loadMessageImagesFromStorage()).toEqual({});
+    expect(saveMessageImagesToStorage({})).toBe(false);
+    expect(window.localStorage.getItem("macro_chat_message_images")).toBe(raw);
+    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toBeDefined();
+  });
+
+  it("recovers valid images beside an invalid image without replacing the raw history", () => {
+    const image = { id: "valid", mimeType: "image/png", dataUrl: "data:image/png;base64,YQ==", createdAt: "2026-09-05T10:00:00Z" };
+    const raw = JSON.stringify({ message: [image, { id: "invalid", dataUrl: "bad" }] });
+    window.localStorage.setItem("macro_chat_message_images", raw);
+    const recovered = loadMessageImagesFromStorage();
+    expect(recovered).toEqual({ message: [image] });
+    expect(saveMessageImagesToStorage(recovered)).toBe(false);
+    expect(window.localStorage.getItem("macro_chat_message_images")).toBe(raw);
+    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toBeDefined();
+  });
+
+  it("rejects oversized history before parsing it", () => {
+    window.localStorage.setItem("macro_chat_message_images", " ".repeat(40_000_001));
+    expect(loadMessageImagesFromStorage()).toEqual({});
+    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toContain("limit");
+  });
+
+  it("reports quota failures without losing the prior image record", () => {
+    window.localStorage.setItem("macro_chat_message_images", "{}");
+    const previous = window.localStorage.setItem;
+    window.localStorage.setItem = () => { throw new Error("quota"); };
+    expect(saveMessageImagesToStorage({})).toBe(false);
+    expect(usePersistenceHealth.getState().issues.macro_chat_message_images).toContain("quota");
+    window.localStorage.setItem = previous;
+    expect(window.localStorage.getItem("macro_chat_message_images")).toBe("{}");
   });
 
   it("persists message images", () => {

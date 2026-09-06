@@ -2015,7 +2015,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ensure_task_worktree_repairs_orphan_path_without_registration() {
+    fn test_ensure_task_worktree_preserves_orphan_path_without_registration() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());
         let state = GitState::new();
@@ -2024,13 +2024,287 @@ mod tests {
         fs::create_dir_all(&orphan_path).expect("create orphan path");
         fs::write(orphan_path.join("README.md"), "orphan").expect("write orphan file");
 
+        let error = state
+            .ensure_task_worktree(&repo, "orphan", "task-orphan", None, None, &[])
+            .expect_err("preserve orphan contents");
+        assert!(error.to_string().contains("preserve data"));
+        assert_eq!(
+            fs::read_to_string(orphan_path.join("README.md")).unwrap(),
+            "orphan"
+        );
+        assert!(repo.find_worktree("taskorphan").is_err());
+
+        // Moving the content out explicitly leaves a safely repairable empty directory.
+        fs::rename(orphan_path.join("README.md"), temp.path().join("saved.md")).unwrap();
         let repaired = state
             .ensure_task_worktree(&repo, "orphan", "task-orphan", None, None, &[])
-            .expect("repaired worktree");
-
+            .unwrap();
         assert_eq!(repaired.status, TaskWorktreeEnsureStatus::Repaired);
         assert!(repaired.worktree_path.join(".git").exists());
-        assert!(repo.find_worktree("taskorphan").is_ok());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("saved.md")).unwrap(),
+            "orphan"
+        );
+    }
+
+    #[test]
+    fn test_ensure_worktree_preserves_stale_registration_index() {
+        for integration in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let repo = init_repo(temp.path());
+            let state = GitState::new();
+            let path = if integration {
+                state
+                    .ensure_branch_worktree(&repo, "staged", "feature/staged", None, &[])
+                    .unwrap()
+                    .worktree_path
+            } else {
+                state
+                    .ensure_task_worktree(&repo, "staged", "feature/staged", None, None, &[])
+                    .unwrap()
+                    .worktree_path
+            };
+            let worktree = Repository::open(&path).unwrap();
+            let detached_commit = {
+                let parent = worktree.head().unwrap().peel_to_commit().unwrap();
+                let tree = parent.tree().unwrap();
+                let signature = git2::Signature::now("Tester", "tester@example.com").unwrap();
+                worktree
+                    .commit(
+                        None,
+                        &signature,
+                        &signature,
+                        "detached work",
+                        &tree,
+                        &[&parent],
+                    )
+                    .unwrap()
+            };
+            worktree.set_head_detached(detached_commit).unwrap();
+            worktree.set_head("refs/heads/feature/staged").unwrap();
+            fs::write(path.join("README.md"), "staged unique content").unwrap();
+            let mut index = worktree.index().unwrap();
+            index.add_path(Path::new("README.md")).unwrap();
+            index.write().unwrap();
+            let staged_blob = index.get_path(Path::new("README.md"), 0).unwrap().id;
+            let original_index = fs::read(worktree.path().join("index")).unwrap();
+            drop(index);
+            drop(worktree);
+            fs::remove_dir_all(&path).unwrap();
+            if integration {
+                state
+                    .ensure_branch_worktree(&repo, "staged", "feature/staged", None, &[])
+                    .unwrap();
+            } else {
+                state
+                    .ensure_task_worktree(&repo, "staged", "feature/staged", None, None, &[])
+                    .unwrap();
+            }
+            let backup = fs::read_dir(repo.commondir().join("macro-worktree-backups"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            assert_eq!(fs::read(backup.join("index")).unwrap(), original_index);
+            assert!(Repository::open(&path).is_ok());
+            let output = background_command("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args(["prune", "--expire=now"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                repo.find_blob(staged_blob).unwrap().content(),
+                b"staged unique content"
+            );
+            assert!(repo.find_commit(detached_commit).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_diagnose_task_worktree_does_not_repair_git_file() {
+        let temp = TempDir::new().unwrap();
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let path = state
+            .ensure_task_worktree(&repo, "inspect", "feature/inspect", None, None, &[])
+            .unwrap()
+            .worktree_path;
+        fs::write(path.join(".git"), "gitdir: /missing/macro-diagnostic-test").unwrap();
+        fs::write(path.join("README.md"), "keep dirty work").unwrap();
+        let inspection = state
+            .diagnose_task_worktree(&repo, "inspect", Some("feature/inspect"))
+            .unwrap();
+        assert_ne!(inspection.status, TaskWorktreeStatus::Ready);
+        assert_eq!(
+            fs::read_to_string(path.join(".git")).unwrap(),
+            "gitdir: /missing/macro-diagnostic-test"
+        );
+        state
+            .ensure_task_worktree(&repo, "inspect", "feature/inspect", None, None, &[])
+            .unwrap();
+        assert!(Repository::open(&path).is_ok());
+        assert_eq!(
+            fs::read_to_string(path.join("README.md")).unwrap(),
+            "keep dirty work"
+        );
+    }
+
+    #[test]
+    fn test_ensure_worktree_preserves_orphan_repository_and_invalid_files() {
+        for integration in [false, true] {
+            for invalid in [false, true] {
+                let temp = TempDir::new().unwrap();
+                let repo = init_repo(temp.path());
+                let state = GitState::new();
+                let path = repo
+                    .workdir()
+                    .unwrap()
+                    .join(".macro/worktrees")
+                    .join(if integration {
+                        "integration-preserve"
+                    } else {
+                        "taskpreserve"
+                    });
+                fs::create_dir_all(&path).unwrap();
+                if invalid {
+                    fs::write(path.join(".git"), "gitdir: /nonexistent/macro-test-admin").unwrap();
+                } else {
+                    let orphan = init_repo(&path);
+                    fs::write(path.join("README.md"), "uncommitted tracked change").unwrap();
+                    assert!(orphan.head().is_ok());
+                }
+                fs::write(path.join("untracked.txt"), "unique untracked work").unwrap();
+                let failed = if integration {
+                    state
+                        .ensure_branch_worktree(&repo, "preserve", "feature/preserve", None, &[])
+                        .is_err()
+                } else {
+                    state
+                        .ensure_task_worktree(
+                            &repo,
+                            "preserve",
+                            "feature/preserve",
+                            None,
+                            None,
+                            &[],
+                        )
+                        .is_err()
+                };
+                assert!(failed);
+                assert_eq!(
+                    fs::read_to_string(path.join("untracked.txt")).unwrap(),
+                    "unique untracked work"
+                );
+                if !invalid {
+                    assert_eq!(
+                        fs::read_to_string(path.join("README.md")).unwrap(),
+                        "uncommitted tracked change"
+                    );
+                    assert!(Repository::open(&path).unwrap().head().is_ok());
+                } else {
+                    assert_eq!(
+                        fs::read_to_string(path.join(".git")).unwrap(),
+                        "gitdir: /nonexistent/macro-test-admin"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_ensure_worktree_refuses_unexpected_branch_and_preserves_registration() {
+        for integration in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let repo = init_repo(temp.path());
+            let state = GitState::new();
+            let path = if integration {
+                state
+                    .ensure_branch_worktree(&repo, "branch-check", "feature/original", None, &[])
+                    .unwrap()
+                    .worktree_path
+            } else {
+                state
+                    .ensure_task_worktree(
+                        &repo,
+                        "branch-check",
+                        "feature/original",
+                        None,
+                        None,
+                        &[],
+                    )
+                    .unwrap()
+                    .worktree_path
+            };
+            fs::write(path.join("untracked.txt"), "preserve me").unwrap();
+            let error = if integration {
+                state
+                    .ensure_branch_worktree(&repo, "branch-check", "feature/expected", None, &[])
+                    .unwrap_err()
+                    .to_string()
+            } else {
+                state
+                    .ensure_task_worktree(
+                        &repo,
+                        "branch-check",
+                        "feature/expected",
+                        None,
+                        None,
+                        &[],
+                    )
+                    .unwrap_err()
+                    .to_string()
+            };
+            assert!(error.contains("expected branch"));
+            assert_eq!(
+                fs::read_to_string(path.join("untracked.txt")).unwrap(),
+                "preserve me"
+            );
+            assert_eq!(
+                Repository::open(&path)
+                    .unwrap()
+                    .head()
+                    .unwrap()
+                    .shorthand()
+                    .ok(),
+                Some("feature/original")
+            );
+            assert!(repo
+                .find_worktree(if integration {
+                    "macro-integration-branch-check"
+                } else {
+                    "taskbranch-check"
+                })
+                .is_ok());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_ensure_worktree_refuses_symlinked_root() {
+        let temp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let repo = init_repo(temp.path());
+        fs::create_dir_all(outside.path().join("worktrees/tasklinked")).unwrap();
+        fs::write(outside.path().join("worktrees/tasklinked/work.txt"), "keep").unwrap();
+        std::os::unix::fs::symlink(outside.path(), temp.path().join(".macro")).unwrap();
+        let state = GitState::new();
+        assert!(state
+            .ensure_task_worktree(&repo, "linked", "feature/linked", None, None, &[])
+            .is_err());
+        assert!(state
+            .ensure_branch_worktree(&repo, "linked", "feature/linked", None, &[])
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(outside.path().join("worktrees/tasklinked/work.txt")).unwrap(),
+            "keep"
+        );
     }
 
     #[test]

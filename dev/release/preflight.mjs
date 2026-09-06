@@ -63,6 +63,7 @@ function verifyRemoteTagAbsent(tag) {
 }
 
 function main() {
+  run(process.execPath, ['dev/release/toolchain-diagnostic.mjs']);
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
   const expectedTag = expectedReleaseTag(packageJson.version);
   const requestedTag = argumentValue('--tag') || expectedTag;

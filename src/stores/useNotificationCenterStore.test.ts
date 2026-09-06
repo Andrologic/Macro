@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { NotificationCenterItem } from './useNotificationCenterStore';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -104,6 +105,26 @@ describe('useNotificationCenterStore', () => {
       variant: 'actionable', category: 'task_attention_required',
       workflowNavigation: { kind: 'approveTool', toolCallId: 'tool-1' },
     })])[0]?.workflowNavigation).toBeUndefined();
+    expect(restarted.sanitizeNotificationCenterItems([createNotificationItem(3, {
+      variant: 'actionable', category: 'task_attention_required',
+      workflowNavigation: {
+        kind: 'review',
+        taskId: 'task-3',
+        catalogLoadId: 'catalog-load-3',
+        catalogScope: {
+          selectedGroupId: 'group-1',
+          selectedProjectId: null,
+        },
+      },
+    })])[0]?.workflowNavigation).toEqual({
+      kind: 'review',
+      taskId: 'task-3',
+      catalogLoadId: 'catalog-load-3',
+      catalogScope: {
+        selectedGroupId: 'group-1',
+        selectedProjectId: null,
+      },
+    });
   });
 
   it('upserts info, warning, and error items with newest first', () => {
@@ -151,6 +172,58 @@ describe('useNotificationCenterStore', () => {
     expect(items).toHaveLength(notificationStore.NOTIFICATION_CENTER_MAX_ITEMS);
     expect(items[0].title).toBe(`Notification ${notificationStore.NOTIFICATION_CENTER_MAX_ITEMS + 4}`);
     expect(items.at(-1)?.title).toBe('Notification 5');
+  });
+
+  it('keeps active workflow requests beyond the history limit across restart', async () => {
+    const store = notificationStore.useNotificationCenterStore.getState();
+    const activeRequestCount = notificationStore.NOTIFICATION_CENTER_MAX_HISTORY_ITEMS + 17;
+
+    for (let index = 0; index < activeRequestCount; index += 1) {
+      store.upsertItem(createNotificationItem(index, {
+        id: `workflow-attention:approval:conversation-${index}:tool-${index}`,
+        variant: 'actionable',
+        category: 'task_attention_required',
+        workflowNavigation: {
+          kind: 'conversation',
+          requestKind: 'approval',
+          conversationId: `conversation-${index}`,
+        },
+      }));
+    }
+    for (
+      let index = activeRequestCount;
+      index < activeRequestCount + notificationStore.NOTIFICATION_CENTER_MAX_HISTORY_ITEMS + 5;
+      index += 1
+    ) {
+      store.upsertItem(createNotificationItem(index));
+    }
+
+    const items = notificationStore.useNotificationCenterStore.getState().items;
+    expect(items.filter(notificationStore.isWorkflowAttentionActionSource)).toHaveLength(
+      activeRequestCount,
+    );
+    expect(items.filter((item: NotificationCenterItem) => !notificationStore.isWorkflowAttentionActionSource(item))).toHaveLength(
+      notificationStore.NOTIFICATION_CENTER_MAX_HISTORY_ITEMS,
+    );
+
+    notificationStore = await loadNotificationCenterStore();
+    const restartedItems = notificationStore.useNotificationCenterStore.getState().items;
+    expect(restartedItems.filter(notificationStore.isWorkflowAttentionActionSource)).toHaveLength(
+      activeRequestCount,
+    );
+    expect(restartedItems.filter((item: NotificationCenterItem) => !notificationStore.isWorkflowAttentionActionSource(item))).toHaveLength(
+      notificationStore.NOTIFICATION_CENTER_MAX_HISTORY_ITEMS,
+    );
+    expect(restartedItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'workflow-attention:approval:conversation-0:tool-0',
+        workflowNavigation: {
+          kind: 'conversation',
+          requestKind: 'approval',
+          conversationId: 'conversation-0',
+        },
+      }),
+    ]));
   });
 
   it('marks all items as read when the center opens', () => {

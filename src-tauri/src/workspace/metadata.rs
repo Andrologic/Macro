@@ -711,6 +711,36 @@ pub struct ProjectDto {
     pub path: String,
     pub created_at: String,
     pub status: String,
+    #[serde(
+        default,
+        rename = "archivedAt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub archived_at: Option<String>,
+    #[serde(
+        default,
+        rename = "archivedFromStatus",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub archived_from_status: Option<String>,
+    #[serde(
+        default,
+        rename = "groupArchivePreviousStatus",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group_archive_previous_status: Option<String>,
+    #[serde(
+        default,
+        rename = "groupArchivePreviousArchivedAt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group_archive_previous_archived_at: Option<String>,
+    #[serde(
+        default,
+        rename = "groupArchivePreviousArchivedFromStatus",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group_archive_previous_archived_from_status: Option<String>,
     #[serde(default, rename = "gitFlowSettings")]
     pub git_flow_settings: ProjectGitFlowSettingsDto,
     #[serde(default, rename = "userReadOnly")]

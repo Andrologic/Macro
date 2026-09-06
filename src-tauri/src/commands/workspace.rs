@@ -1087,6 +1087,30 @@ pub async fn workspace_archive_project(
 }
 
 #[tauri::command]
+pub async fn workspace_restore_project_group(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    group_id: String,
+) -> Result<ProjectGroupDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::restore_project_group(&workspace_path, &metadata_root, &group_id).await
+}
+
+#[tauri::command]
+pub async fn workspace_restore_project(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    git_state: State<'_, GitState>,
+    project_id: String,
+) -> Result<ProjectDto> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root =
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
+    workspace::restore_project(&workspace_path, &metadata_root, &project_id).await
+}
+
+#[tauri::command]
 pub async fn workspace_remove_project_group(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,

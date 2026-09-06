@@ -36,7 +36,15 @@ interface TestChatState {
 }
 
 interface TestTaskState {
-  isLoading?: boolean;
+  isLoading: boolean;
+  lastError: string | null;
+  lastSuccessfulCatalogLoad?: {
+    loadId: string;
+    revision: number;
+    selectedGroupId: string | null;
+    selectedProjectId: string | null;
+    taskIds: string[];
+  } | null;
   tasks: CatalogedImplementTask[];
 }
 
@@ -153,9 +161,12 @@ const updateChatState = (patch: Partial<TestChatState>) => {
   chatListeners.forEach((listener) => listener(chatState, previousState));
 };
 
-const updateTaskState = (tasks: CatalogedImplementTask[]) => {
+const updateTaskState = (
+  tasks: CatalogedImplementTask[],
+  patch: Partial<TestTaskState> = {},
+) => {
   const previousState = taskState;
-  taskState = { tasks };
+  taskState = { ...taskState, ...patch, tasks };
   taskListeners.forEach((listener) => listener(taskState, previousState));
 };
 
@@ -230,7 +241,7 @@ beforeEach(() => {
       return 'conversation-fallback';
     }),
   };
-  taskState = { tasks: [makeTask('InProgress')] };
+  taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
 });
 
 describe('workflow attention notification subscriptions', () => {
@@ -334,6 +345,284 @@ describe('workflow attention notification subscriptions', () => {
     chatState.messageLoadStatusByConversationId = { [conversation.id]: 'ready' };
     reconcileWorkflowAttentionNotifications();
     expect(useNotificationCenterStore.getState().items).toEqual([]);
+  });
+
+  it('removes an orphaned review only after the task catalog finishes loading', () => {
+    const item = {
+      id: 'workflow-attention:review:task-1',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'task-1',
+        catalogLoadId: 'load-before-review',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = { isLoading: true, lastError: null, tasks: [] };
+
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+
+    taskState = {
+      isLoading: false,
+      lastError: null,
+      tasks: [],
+      lastSuccessfulCatalogLoad: {
+        loadId: 'load-after-review',
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [],
+      },
+    };
+    reconcileWorkflowAttentionNotifications();
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+  });
+
+  it('reconciles orphaned reviews when task loading completes without task changes', () => {
+    const item = {
+      id: 'workflow-attention:review:deleted-task',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'deleted-task',
+        catalogLoadId: 'load-before-review',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = { isLoading: true, lastError: null, tasks: [] };
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    updateTaskState([], {
+      isLoading: false,
+      lastSuccessfulCatalogLoad: {
+        loadId: 'load-after-review',
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [],
+      },
+    });
+
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    unsubscribe();
+  });
+
+  it('keeps an orphaned review after a failed catalog load and removes it after a recovered snapshot', () => {
+    const item = {
+      id: 'workflow-attention:review:temporarily-missing',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'temporarily-missing',
+        catalogLoadId: 'load-before-review',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = { isLoading: false, lastError: 'Catalog unavailable', tasks: [] };
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+
+    updateTaskState([], {
+      lastError: null,
+      lastSuccessfulCatalogLoad: {
+        loadId: 'load-after-review',
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [],
+      },
+    });
+
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    unsubscribe();
+  });
+
+  it('does not treat clearing a generic task error as a successful catalog recovery', () => {
+    const item = {
+      id: 'workflow-attention:review:temporarily-missing',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'temporarily-missing',
+        catalogLoadId: 'load-before-review',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = { isLoading: false, lastError: 'Catalog unavailable', tasks: [] };
+    const failedCatalogTasks = taskState.tasks;
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    updateTaskState(failedCatalogTasks, { lastError: null });
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it('keeps a review that belongs to a different loaded catalog scope', () => {
+    const item = {
+      id: 'workflow-attention:review:other-scope',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'other-scope',
+        catalogLoadId: 'load-before-review',
+        catalogScope: {
+          selectedGroupId: 'group-other',
+          selectedProjectId: 'project-other',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = {
+      isLoading: false,
+      lastError: null,
+      tasks: [],
+      lastSuccessfulCatalogLoad: {
+        loadId: 'load-after-review',
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [],
+      },
+    };
+
+    reconcileWorkflowAttentionNotifications();
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+  });
+
+  it('does not confirm review deletion from a local task snapshot mutation', () => {
+    const item = {
+      id: 'workflow-attention:review:task-1',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'task-1',
+        catalogLoadId: 'load-with-review',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    const loadedReview = makeTask('InReview');
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = {
+      isLoading: false,
+      lastError: null,
+      tasks: [loadedReview],
+      lastSuccessfulCatalogLoad: {
+        loadId: 'load-with-review',
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [loadedReview.id],
+      },
+    };
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    updateTaskState([]);
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+
+    updateTaskState([], {
+      lastSuccessfulCatalogLoad: {
+        loadId: 'load-without-review',
+        revision: 2,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [],
+      },
+    });
+    expect(useNotificationCenterStore.getState().items).toEqual([]);
+    unsubscribe();
+  });
+
+  it('does not use a catalog snapshot that predates a locally created review', () => {
+    const item = {
+      id: 'workflow-attention:review:task-1',
+      level: 'info' as const,
+      variant: 'actionable' as const,
+      category: 'task_attention_required' as const,
+      title: 'Review ready',
+      createdAt: '2026-09-04T10:00:00.000Z',
+      readAt: null,
+      workflowNavigation: {
+        kind: 'review' as const,
+        taskId: 'task-1',
+        catalogLoadId: 'load-before-review',
+        catalogScope: {
+          selectedGroupId: 'group-current',
+          selectedProjectId: 'project-current',
+        },
+      },
+    };
+    useNotificationCenterStore.setState({ items: [item] });
+    taskState = {
+      isLoading: false,
+      lastError: null,
+      tasks: [makeTask('InReview')],
+      lastSuccessfulCatalogLoad: {
+        loadId: 'load-before-review',
+        revision: 1,
+        selectedGroupId: 'group-current',
+        selectedProjectId: 'project-current',
+        taskIds: [],
+      },
+    };
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
+
+    updateTaskState([]);
+
+    expect(useNotificationCenterStore.getState().items).toHaveLength(1);
+    unsubscribe();
   });
 
   it('emits one questionnaire notification and honors its explicit Architect group', async () => {
@@ -492,7 +781,7 @@ describe('workflow attention notification subscriptions', () => {
   it('emits one review notification and routes its action to the task', async () => {
     const conversation = makeConversation();
     chatState = { ...chatState, conversations: [conversation] };
-    taskState = { tasks: [makeTask('InProgress')] };
+    taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
 
     updateTaskState([makeTask('InReview')]);
@@ -546,7 +835,7 @@ describe('workflow attention notification subscriptions', () => {
       conversations: [conversation],
       selectConversation: mock(async () => false),
     };
-    taskState = { tasks: [makeTask('InProgress')] };
+    taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
     const unsubscribe = subscribeToWorkflowAttentionNotifications(t);
     updateTaskState([makeTask('InReview')]);
 
@@ -589,6 +878,82 @@ describe('workflow attention notification subscriptions', () => {
     updateChatState({ messages: [] });
 
     expect(notifyActionRequired).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('skips attention recalculation for ordinary streaming fragments', () => {
+    const conversation = makeConversation();
+    const streamingMessage: ChatMessage = {
+      id: 'streaming-message',
+      task_id: conversation.task_id ?? '',
+      conversation_id: conversation.id,
+      role: 'assistant',
+      content: '',
+      timestamp: '2026-09-04T10:01:00.000Z',
+    };
+    chatState = {
+      ...chatState,
+      conversations: [conversation],
+      messages: [streamingMessage],
+      messagesByConversationId: { [conversation.id]: [streamingMessage] },
+    };
+    let chatRecalculations = 0;
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t, {
+      onChatRecalculation: () => {
+        chatRecalculations += 1;
+      },
+    });
+
+    const streamUpdateCount = 250;
+    for (let index = 0; index < streamUpdateCount; index += 1) {
+      const updatedMessage = {
+        ...chatState.messages[0]!,
+        content: `${chatState.messages[0]!.content}x`,
+      };
+      updateChatState({
+        conversations: [{
+          ...chatState.conversations[0]!,
+          last_message: updatedMessage.content,
+          updated_at: new Date(Date.UTC(2026, 8, 4, 10, 1, index)).toISOString(),
+        }],
+        messages: [updatedMessage],
+        messagesByConversationId: { [conversation.id]: [updatedMessage] },
+      });
+    }
+
+    expect(streamUpdateCount).toBe(250);
+    expect(chatRecalculations).toBe(0);
+    expect(notifyActionRequired).not.toHaveBeenCalled();
+
+    const questionnaire = makeQuestionnaire(conversation);
+    updateChatState({
+      messages: [questionnaire],
+      messagesByConversationId: { [conversation.id]: [questionnaire] },
+    });
+
+    expect(chatRecalculations).toBe(1);
+    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('skips review recalculation when task updates do not change attention', () => {
+    taskState = { isLoading: false, lastError: null, tasks: [makeTask('InProgress')] };
+    let taskRecalculations = 0;
+    const unsubscribe = subscribeToWorkflowAttentionNotifications(t, {
+      onTaskRecalculation: () => {
+        taskRecalculations += 1;
+      },
+    });
+
+    updateTaskState([{
+      ...taskState.tasks[0]!,
+      description: 'A progress-only update',
+    }]);
+    expect(taskRecalculations).toBe(0);
+
+    updateTaskState([makeTask('InReview')]);
+    expect(taskRecalculations).toBe(1);
+    expect(notifyActionRequired).toHaveBeenCalledTimes(1);
     unsubscribe();
   });
 });

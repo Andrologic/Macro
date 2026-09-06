@@ -4548,6 +4548,26 @@ pub async fn db_list_messages(
 }
 
 #[tauri::command]
+pub async fn db_search_messages(
+    pool: State<'_, DbPool>,
+    query: String,
+    conversation_ids: Vec<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> CommandResult<MessageSearchPage> {
+    let pool = get_pool(&pool).await?;
+    repository::search_messages(
+        &pool,
+        &query,
+        &conversation_ids,
+        limit.unwrap_or(25),
+        offset.unwrap_or(0),
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
 pub async fn db_create_message(
     pool: State<'_, DbPool>,
     params: DbCreateMessageParams,

@@ -614,6 +614,8 @@ describe("tauriIpc executeWorkspaceTool", () => {
     });
     await tauriIpc.workspaceArchiveProjectGroup({ groupId: "group-1" });
     await tauriIpc.workspaceArchiveProject({ projectId: "project-1" });
+    await tauriIpc.workspaceRestoreProjectGroup({ groupId: "group-1" });
+    await tauriIpc.workspaceRestoreProject({ projectId: "project-1" });
     await tauriIpc.workspaceRemoveProjectGroup({ groupId: "group-1" });
     await tauriIpc.workspaceRemoveProject({ projectId: "project-1" });
     await tauriIpc.workspaceDebugResetProject({ projectId: "project-1", force: true });
@@ -666,6 +668,18 @@ describe("tauriIpc executeWorkspaceTool", () => {
       },
       {
         command: "workspace_archive_project",
+        payload: {
+          projectId: "project-1",
+        },
+      },
+      {
+        command: "workspace_restore_project_group",
+        payload: {
+          groupId: "group-1",
+        },
+      },
+      {
+        command: "workspace_restore_project",
         payload: {
           projectId: "project-1",
         },

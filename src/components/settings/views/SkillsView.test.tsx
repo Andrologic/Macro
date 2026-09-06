@@ -190,6 +190,7 @@ const loadSkillsView = async () => {
 
   mock.module('@tauri-apps/plugin-dialog', () => ({
     open: openDialogMock,
+    save: mock(async () => null),
   }));
 
   mock.module('../../ui/Icon', () => ({

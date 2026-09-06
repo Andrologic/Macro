@@ -455,6 +455,11 @@ const reviewAllPendingFileDiffs = async () => {
     expect(fileButton).toBeDefined();
     act(() => {
       fileButton?.click();
+      // This suite mocks modal opening; simulate the viewer's loaded-content receipt.
+      for (const repository of useFileChangesStore.getState().repositories) {
+        const change = repository.changes.find((candidate) => candidate.path.endsWith(fileName));
+        if (change) useFileChangesStore.getState().markChangeReviewed(repository.id, change.id);
+      }
     });
     await flushRender();
   }
@@ -894,6 +899,22 @@ describe('FileChangesPanel', () => {
     }
     await clearPreferencesForTest();
     mock.restore();
+  });
+
+  it('shows the WSL capability notice instead of the merge workflow entry', async () => {
+    seedStores(buildRepository(false), { taskOverrides: { task_source: 'plan_finalization' } });
+    const originalGetter = useAppStore.getState().getProjectById;
+    useAppStore.setState({ getProjectById: (id) => {
+      const project = originalGetter(id);
+      return project ? { ...project, pathKind: 'wsl' as const } : undefined;
+    } });
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain('For WSL projects');
+    expect(document.body.textContent).toContain('Basic Git operations remain available');
+    expect(document.body.querySelector('[data-merge-workflow-task-panel]')).toBeNull();
   });
 
   it('renders validate and revert actions for pending scopes', async () => {
@@ -1385,6 +1406,60 @@ describe('FileChangesPanel', () => {
     expect(notifySuccessMock).not.toHaveBeenCalled();
   });
 
+  it('disables commit and unstage actions while an expired review is waiting for refresh', async () => {
+    const repository = buildRepository(true);
+    seedStores(repository);
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    const refreshExpiredReviewMock = mock(async () => {
+      await refreshGate;
+      useFileChangesStore.setState({ staleDirectRepositoryId: null });
+    });
+    await act(async () => {
+      useFileChangesStore.setState({ staleDirectRepositoryId: repository.id, refreshExpiredReview: refreshExpiredReviewMock });
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    const commitButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit');
+    const unstageButtons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[aria-label="Unstage"]'));
+    expect(commitButton?.disabled).toBe(true);
+    expect(unstageButtons.length).toBeGreaterThan(0);
+    expect(unstageButtons.every((button) => button.disabled)).toBe(true);
+    await act(async () => {
+      commitButton?.click();
+      unstageButtons.forEach((button) => button.click());
+      Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Refresh review')?.click();
+      await flushRender();
+    });
+    expect(refreshExpiredReviewMock).toHaveBeenCalledTimes(1);
+    expect(commitButton?.disabled).toBe(true);
+    expect(unstageButtons.every((button) => button.disabled)).toBe(true);
+    expect(commitAllReadyTaskRepositoriesMock).not.toHaveBeenCalled();
+    expect(unstageChangesMock).not.toHaveBeenCalled();
+    await act(async () => { releaseRefresh(); await flushRender(); });
+    expect(commitButton?.disabled).toBe(false);
+    expect(unstageButtons.every((button) => !button.disabled)).toBe(true);
+    commitAllReadyTaskRepositoriesMock.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Review generated message'), {
+        name: 'SmartCommitMessageGenerationError',
+        generatedMessages: { repositories: [{
+          repositoryId: repository.id, type: 'feat', scope: null, subject: 'valid message', body: null,
+        }] },
+      });
+    });
+    await act(async () => { commitButton?.click(); await flushRender(); });
+    const modalCommit = document.body.querySelector<HTMLButtonElement>('[role="dialog"] button:last-child');
+    expect(modalCommit?.textContent).toContain('Commit');
+    expect(modalCommit?.disabled).toBe(false);
+    await act(async () => {
+      useFileChangesStore.setState({ staleDirectRepositoryId: repository.id });
+      await flushRender();
+    });
+    expect(modalCommit?.disabled).toBe(true);
+  });
+
   it('keeps Commit as the primary action while a repository is ready to commit', async () => {
     const repository = buildRepository(true);
     seedStores(repository);
@@ -1708,6 +1783,57 @@ describe('FileChangesPanel', () => {
         reasoningEffort: null,
       },
     });
+  });
+
+  it.each(['success', 'error'] as const)('preserves the current task commit dialog after a previous task returns: %s', async (outcome) => {
+    const repository = buildRepository(true);
+    let releaseOldCommit!: () => void;
+    const oldCommitGate = new Promise<void>((resolve) => { releaseOldCommit = resolve; });
+    const generationError = (subject: string) => Object.assign(new Error('Review generated fields'), {
+      name: 'SmartCommitMessageGenerationError',
+      generatedMessages: { repositories: [{
+        repositoryId: repository.id, type: 'feat', scope: null, subject, body: null,
+      }] },
+    });
+    commitAllReadyTaskRepositoriesMock.mockImplementationOnce(async () => {
+      await oldCommitGate;
+      if (outcome === 'error') throw generationError('old task message');
+      return { taskId: 'task-1', taskCompleted: false, taskStatus: 'InProgress', commits: [], repositories: [] };
+    });
+    commitAllReadyTaskRepositoriesMock.mockImplementationOnce(async () => {
+      throw generationError('current task message');
+    });
+    seedStores(repository);
+    await act(async () => {
+      root?.render(<FileChangesPanel />);
+      await flushRender();
+    });
+    const clickCommit = () => Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Commit')?.click();
+    await act(async () => {
+      clickCommit();
+      await flushRender();
+    });
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      useTaskStore.setState({ tasks: [{ ...useTaskStore.getState().tasks[0], id: 'task-2' }] });
+      useAppStore.setState({ selectedTaskId: 'task-2' });
+      await flushRender();
+    });
+    await act(async () => {
+      clickCommit();
+      await flushRender();
+    });
+    expect(commitAllReadyTaskRepositoriesMock).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain('Review commit messages');
+    expect(Array.from(document.body.querySelectorAll('input')).some((input) => input.value === 'current task message')).toBe(true);
+    await act(async () => {
+      releaseOldCommit();
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain('Review commit messages');
+    expect(Array.from(document.body.querySelectorAll('input')).some((input) => input.value === 'current task message')).toBe(true);
+    expect(Array.from(document.body.querySelectorAll('input')).some((input) => input.value === 'old task message')).toBe(false);
   });
 
   it('shows structured commit message editing when generated fields are invalid', async () => {

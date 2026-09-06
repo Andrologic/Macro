@@ -6,12 +6,34 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
-New features target 0.1.5; its scope is not yet defined.
+## 0.1.5 - 2026-09-06
 
-## 0.1.4 (Unreleased)
+### Added
 
-Feature scope frozen on 2026-09-05. Only reviewed regression, security, and
-release-validation fixes remain eligible. This version has not been published.
+- Added guarded file attachments and preserved context references in conversation composers, plus Markdown conversation export.
+- Added project archives and indexed message search with project-scoped results.
+- Added protected worktree diagnostics, WSL capability reporting, local profile backups, and redacted support reports.
+- Added integration diagnostics and safer model-catalog refresh behavior.
+- Added an explicit transition from implementation to reviewer mode.
+
+### Changed
+
+- Reduced redundant notification reconciliation and retained actionable workflow requests across catalog refreshes.
+- Strengthened multi-repository review, commit recovery, and stale-diff handling.
+- Hardened browser-runtime isolation and native recovery checks used by release validation.
+
+### Fixed
+
+- Preserved composer attachments, drafts, and references across asynchronous imports and failed exports.
+- Prevented stale review responses and expired snapshots from mutating newer task state.
+- Validated profile backups before replacement and preserved damaged profiles for recovery.
+- Corrected archive navigation, message-search pagination, updater replacement, and structured Git diagnostic errors.
+- Prevented autonomous runtime and integration failures from being reported as successful operations.
+
+## 0.1.4 - 2026-09-05
+
+Published on GitHub and the Stable update channel after validation of the
+macOS universal, Windows x64/ARM64, and Linux x64 packages.
 
 ### Added
 

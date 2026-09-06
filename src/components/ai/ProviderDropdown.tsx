@@ -1,24 +1,45 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useId, useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { providerHasCredentials, useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { isMacroAiProvider } from '../../config/macroAi';
 import { AndrologicProviderIcon } from './AndrologicProviderIcon';
+import { useDropdownListNavigation } from './useDropdownListNavigation';
 
 export const ProviderDropdown: React.FC = () => {
   const { t } = useTranslation();
   const { providerConfigs, selectedProviderId, selectProvider } = useProviderStore();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const listboxId = useId();
 
   const enabledProviders = providerConfigs.filter((provider) => providerHasCredentials(provider));
   const selectedProvider = providerConfigs.find((p) => p.id === selectedProviderId);
 
   const handleSelect = (providerId: string) => {
     selectProvider(providerId);
-    setIsOpen(false);
   };
+  const {
+    activeIndex,
+    close,
+    handleListKeyDown,
+    handleTriggerKeyDown,
+    open,
+    optionRefs,
+    select,
+    setActiveIndex,
+    triggerRef,
+  } = useDropdownListNavigation({
+    isOpen,
+    setIsOpen,
+    itemCount: enabledProviders.length,
+    selectedIndex: enabledProviders.findIndex((provider) => provider.id === selectedProviderId),
+    onSelect: (index) => {
+      const provider = enabledProviders[index];
+      if (provider) handleSelect(provider.id);
+    },
+  });
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -40,7 +61,14 @@ export const ProviderDropdown: React.FC = () => {
     <div ref={containerRef} className="relative" data-tour-id="provider-dropdown">
       {/* Trigger Button */}
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        ref={triggerRef}
+        type="button"
+        onClick={() => isOpen ? close() : open()}
+        onKeyDown={handleTriggerKeyDown}
+        aria-label={t('chat.providerSelector', 'Choose AI provider')}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? listboxId : undefined}
         className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border hover:border-primary/50 transition-colors w-[140px]"
       >
         <div className="flex items-center gap-2 min-w-0">
@@ -63,16 +91,27 @@ export const ProviderDropdown: React.FC = () => {
       {/* Dropdown */}
       {isOpen && (
         <div
+          id={listboxId}
+          role="listbox"
+          aria-label={t('chat.providerSelector', 'Choose AI provider')}
+          onKeyDown={handleListKeyDown}
           className={cn(
             'absolute z-50 w-48 bottom-full mb-1 bg-card border border-border',
             'rounded-lg shadow-xl max-h-60 overflow-y-auto',
             'flex flex-col'
           )}
         >
-          {enabledProviders.map((provider) => (
+          {enabledProviders.map((provider, index) => (
             <button
               key={provider.id}
-              onClick={() => handleSelect(provider.id)}
+              ref={(element) => { optionRefs.current[index] = element; }}
+              type="button"
+              role="option"
+              aria-selected={selectedProviderId === provider.id}
+              tabIndex={index === activeIndex ? 0 : -1}
+              onFocus={() => setActiveIndex(index)}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => select(index)}
               className={cn(
                 'w-full px-3 py-2 text-left text-sm flex items-center gap-2',
                 'transition-colors',

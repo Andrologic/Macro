@@ -455,6 +455,80 @@ describe('TaskQueue', () => {
     mock.restore();
   });
 
+  const openReviewAction = async () => {
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('button[title="Task actions"]')?.click();
+      await flushRender();
+    });
+    return Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
+      .find((button) => button.textContent === 'Start review');
+  };
+
+  it.each(['InProgress', 'AwaitingResponse'] as const)('enters review from %s without sending a message', async (status) => {
+    seedTasks([makeTask('task-1', status, { conversation_id: 'conversation-1' })]);
+    const setTaskStatus = mock(async (taskId: string, nextStatus: TaskStatus) => {
+      useTaskStore.setState({ tasks: useTaskStore.getState().tasks.map((task) => task.id === taskId ? { ...task, status: nextStatus } : task) });
+    });
+    const sendMessage = mock(async () => { throw new Error('Review action must not send a message'); });
+    useTaskStore.setState({ setTaskStatus });
+    useChatStore.setState({ sendMessage });
+    const action = await openReviewAction();
+    expect(action?.disabled).toBe(false);
+    await act(async () => { action?.click(); await flushRender(); });
+    expect(setTaskStatus).toHaveBeenCalledWith('task-1', 'InReview');
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InReview');
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(notifyMock.info).toHaveBeenCalledWith('Task is in review. Send your next message in its conversation to start the reviewer.');
+  });
+
+  it.each(['silent', 'throw'] as const)('reports a %s review transition failure', async (failure) => {
+    seedTasks([makeTask('task-1', 'InProgress')]);
+    useTaskStore.setState({ startReview: mock(async () => {
+      if (failure === 'throw') throw { code: 'io', message: 'Review persistence failed' };
+      useTaskStore.setState({ lastError: 'Review persistence failed' });
+    }) });
+    const action = await openReviewAction();
+    await act(async () => { action?.click(); await flushRender(); });
+    expect(notifyMock.error).toHaveBeenCalledWith('Review persistence failed');
+    expect(notifyMock.info).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InProgress');
+  });
+
+  it.each(['preparing', 'streaming', 'compacting', 'approval', 'restored'] as const)('blocks review during %s', async (busy) => {
+    seedTasks([makeTask('task-1', 'InProgress', { conversation_id: 'conversation-1' })],
+      busy === 'preparing' || busy === 'streaming' ? { runtimePhase: busy }
+        : busy === 'compacting' ? { compactionPhase: 'compacting' } : undefined);
+    const startReview = mock(async () => undefined);
+    useTaskStore.setState({ startReview });
+    if (busy === 'approval' || busy === 'restored') {
+      useChatStore.setState({ pendingToolApprovalByConversationId: { 'conversation-1': {
+        recoveryState: busy === 'restored' ? 'interrupted' : undefined,
+      } } as never });
+    }
+    const action = await openReviewAction();
+    expect(action?.disabled).toBe(true);
+    await act(async () => { action?.click(); await flushRender(); });
+    expect(startReview).not.toHaveBeenCalled();
+  });
+
+  it.each(['Pending', 'InReview', 'Completed', 'Failed', 'Blocked'] as const)('does not offer review for %s', async (status) => {
+    seedTasks([makeTask('task-1', status)]);
+    expect(await openReviewAction()).toBeUndefined();
+  });
+
+  it.each(['archived', 'draft', 'blocked', 'no-capability'] as const)('respects review availability for %s', async (condition) => {
+    seedTasks([makeTask('task-1', 'InProgress', {
+      archived_at: condition === 'archived' ? '2026-09-06' : null,
+      draft: condition === 'draft', is_blocked: condition === 'blocked',
+    })]);
+    if (condition === 'archived') useViewFilterStore.setState({ implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS, showArchived: true } });
+    if (condition === 'no-capability') removeTauriRuntimeMock();
+    const action = await openReviewAction();
+    if (condition === 'archived' || condition === 'draft') expect(action).toBeUndefined();
+    else expect(action?.disabled).toBe(true);
+  });
+
   it('renders a fixed dot for pending tasks without streaming', async () => {
     seedStores('Pending');
 

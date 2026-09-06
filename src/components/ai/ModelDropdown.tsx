@@ -1,9 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useId, useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useProviderStore } from '../../stores/useProviderStore';
 import { cn } from '../../utils/cn';
 import { Icon } from '../ui/Icon';
 import { SpinnerIcon } from '../ui/SpinnerIcon';
+import { useDropdownListNavigation } from './useDropdownListNavigation';
 
 export const ModelDropdown: React.FC = () => {
   const { t } = useTranslation();
@@ -17,6 +18,7 @@ export const ModelDropdown: React.FC = () => {
 
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const listboxId = useId();
 
   const models = selectedProviderId ? (modelsByProvider[selectedProviderId] || []) : [];
   const enabledModels = models.filter((model) => model.isEnabled !== false);
@@ -24,8 +26,27 @@ export const ModelDropdown: React.FC = () => {
 
   const handleSelect = (modelId: string) => {
     selectModel(modelId);
-    setIsOpen(false);
   };
+  const {
+    activeIndex,
+    close,
+    handleListKeyDown,
+    handleTriggerKeyDown,
+    open,
+    optionRefs,
+    select,
+    setActiveIndex,
+    triggerRef,
+  } = useDropdownListNavigation({
+    isOpen,
+    setIsOpen,
+    itemCount: enabledModels.length,
+    selectedIndex: enabledModels.findIndex((model) => model.id === selectedModelId),
+    onSelect: (index) => {
+      const model = enabledModels[index];
+      if (model) handleSelect(model.id);
+    },
+  });
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -47,8 +68,15 @@ export const ModelDropdown: React.FC = () => {
     <div ref={containerRef} className="relative" data-tour-id="model-dropdown">
       {/* Trigger Button */}
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        ref={triggerRef}
+        type="button"
+        onClick={() => isOpen ? close() : open()}
+        onKeyDown={handleTriggerKeyDown}
         disabled={!selectedProviderId}
+        aria-label={t('chat.modelSelector', 'Choose AI model')}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? listboxId : undefined}
         className={cn(
           'flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-muted/80 border border-border transition-colors',
           selectedProviderId
@@ -73,16 +101,27 @@ export const ModelDropdown: React.FC = () => {
       {/* Dropdown */}
       {isOpen && (
         <div
+          id={listboxId}
+          role="listbox"
+          aria-label={t('chat.modelSelector', 'Choose AI model')}
+          onKeyDown={handleListKeyDown}
           className={cn(
             'absolute z-50 w-[320px] bottom-full mb-1 bg-card border border-border',
             'rounded-lg shadow-xl max-h-96 overflow-y-auto',
             'flex flex-col'
           )}
         >
-          {enabledModels.map((model) => (
+          {enabledModels.map((model, index) => (
             <button
               key={model.id}
-              onClick={() => handleSelect(model.id)}
+              ref={(element) => { optionRefs.current[index] = element; }}
+              type="button"
+              role="option"
+              aria-selected={selectedModelId === model.id}
+              tabIndex={index === activeIndex ? 0 : -1}
+              onFocus={() => setActiveIndex(index)}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => select(index)}
               className={cn(
                 'w-full px-3 py-2 text-left text-sm',
                 'flex flex-col gap-1 transition-colors',

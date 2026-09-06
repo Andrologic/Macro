@@ -488,6 +488,15 @@ Le module `db` porte :
 - les modèles et repositories
 - les commandes de persistance de conversations, messages, providers et contextes locaux
 
+La migration `004_message_search` crée un index FTS5 externe sur le contenu des
+messages. Trois triggers le synchronisent avec les insertions, modifications et
+suppressions. Le repository reçoit la liste des conversations admissibles et
+applique cette portée avant la pagination, puis expose une recherche bornée et
+paginée ainsi qu'une reconstruction déterministe de l'index depuis `messages`.
+La validation des sauvegardes compare les tables, les définitions des tables
+virtuelles, les index applicatifs, les vues et les triggers au schéma de
+référence produit par la version courante de Macro.
+
 ### 9.4 `fs`
 
 Le module `fs` porte :
@@ -513,7 +522,7 @@ Le module `workspace` porte :
 - le bootstrap du workspace
 - la liste des groupes et projets
 - la persistance du fichier `workspace.json`
-- les opérations de création, import, renommage, archivage et fermeture de projets
+- les opérations de création, import, renommage, archivage, restauration et fermeture de projets
 
 ### 9.7 `ai`
 
@@ -752,6 +761,10 @@ Ils sont utilisés pour :
 - éviter de tout faire dans un seul arbre de travail
 - permettre plusieurs exécutions en parallèle
 - conserver une séparation nette entre contextes d'exécution
+
+La réparation des worktrees refuse les chemins non vides et les branches inattendues. Elle peut retirer un dossier vide avec `remove_dir`, sans suppression récursive. Avant de remplacer un enregistrement périmé, elle conserve son administration complète, dont l'index et les reflogs, sous `macro-worktree-backups` dans le répertoire Git commun. Des références sous `refs/macro-worktree-backups` protègent les objets de l'index et les commits de HEAD et de son reflog contre le nettoyage Git. Les fichiers d'un chemin refusé restent à leur emplacement ; l'utilisateur peut déplacer ce chemin vers une sauvegarde puis relancer la réparation.
+
+Le diagnostic de tâche utilise `git_worktree_inspect` avec `readOnly: true` : les inspections n'y réparent pas les liens Git. L'action explicite utilise la création protégée existante puis inspecte de nouveau. Les capacités de projet sont centralisées dans `projectCapabilities` : les refus WSL de métadonnées, worktrees, revue et parcours de fusion ne retirent pas les opérations Git disposant d'une implémentation Linux.
 
 ### 12.5 Branche `@macro`
 

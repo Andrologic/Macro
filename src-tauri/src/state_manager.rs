@@ -26,6 +26,14 @@ impl Default for StateSnapshot {
     }
 }
 
+pub(crate) fn validate_backup_state(raw: &[u8]) -> Result<(), String> {
+    let snapshot: StateSnapshot = serde_json::from_slice(raw).map_err(|error| error.to_string())?;
+    if snapshot.schema_version != STATE_SCHEMA_VERSION {
+        return Err("Unsupported native state version".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct StateManager {
     path: Arc<PathBuf>,

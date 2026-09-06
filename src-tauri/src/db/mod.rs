@@ -39,6 +39,9 @@ const MIGRATION_001_SQL: &str = include_str!("migrations/001_initial.sql");
 const MIGRATION_003_VERSION: i64 = 3;
 const MIGRATION_003_NAME: &str = "003_agent_runs";
 const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
+const MIGRATION_004_VERSION: i64 = 4;
+const MIGRATION_004_NAME: &str = "004_message_search";
+const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -63,7 +66,7 @@ pub async fn init_db(app_handle: &AppHandle) -> DbResult<SqlitePool> {
 }
 
 /// Create a pool for the given database path.
-async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
+pub(crate) async fn create_pool(db_path: &Path) -> DbResult<SqlitePool> {
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
     let options = SqliteConnectOptions::from_str(&db_url)?
@@ -160,6 +163,19 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             MIGRATION_003_VERSION,
             MIGRATION_003_NAME.to_string(),
             MIGRATION_003_SQL.to_string(),
+        )
+        .await?;
+    }
+
+    if !list_applied_migrations(connection)
+        .await?
+        .contains(&MIGRATION_004_VERSION)
+    {
+        apply_migration(
+            connection,
+            MIGRATION_004_VERSION,
+            MIGRATION_004_NAME.to_string(),
+            MIGRATION_004_SQL.to_string(),
         )
         .await?;
     }
@@ -1712,6 +1728,14 @@ mod tests {
         assert_eq!(row.get::<String, _>("name"), "003_agent_runs");
     }
 
+    async fn assert_message_search_migration_applied(pool: &sqlx::SqlitePool) {
+        let row = sqlx::query("SELECT name FROM schema_migrations WHERE version = 4")
+            .fetch_one(pool)
+            .await
+            .expect("migration 004 row");
+        assert_eq!(row.get::<String, _>("name"), "004_message_search");
+    }
+
     async fn apply_baseline_in_transaction(pool: &sqlx::SqlitePool) {
         let mut transaction = pool.begin().await.expect("begin baseline transaction");
         ensure_schema_migrations_table(&mut *transaction)
@@ -1822,6 +1846,7 @@ mod tests {
 
         assert_migration_001_applied(&pool).await;
         assert_agent_runs_migration_applied(&pool).await;
+        assert_message_search_migration_applied(&pool).await;
     }
 
     #[tokio::test]
@@ -1849,6 +1874,7 @@ mod tests {
         let migrated = create_pool(&db_path).await.expect("migrated pool");
         assert_migration_001_applied(&migrated).await;
         assert_agent_runs_migration_applied(&migrated).await;
+        assert_message_search_migration_applied(&migrated).await;
         let table_count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_runs'",
         )

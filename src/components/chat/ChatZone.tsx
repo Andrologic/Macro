@@ -13,6 +13,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useConversationGoalStore } from '../../stores/useConversationGoalStore';
 import { useConversationArchiveStore } from '../../stores/useConversationArchiveStore';
+import { useCitationsStore } from '../../stores/useCitationsStore';
 import { ActionableErrorCallout } from '../shared/ActionableErrorCallout';
 import { presentServiceError } from '../../services/degradedErrorPresentation';
 import type {
@@ -108,6 +109,20 @@ import { parseConversationGoalCommand } from '../../services/conversationGoalCom
 import { StandaloneTaskLaunchProgressCard } from './StandaloneTaskLaunchProgressCard';
 import { isManualDraftPendingInitialization } from '../../services/manualDraftInitialization';
 import { ChatFloatingNotice, ChatFloatingNoticeStack } from './ChatFloatingNotices';
+import {
+  CONVERSATION_ATTACHMENT_ACCEPT,
+  CONVERSATION_ATTACHMENT_EXTENSIONS,
+  ConversationAttachmentError,
+  MAX_CONVERSATION_ATTACHMENT_FILE_BYTES,
+  MAX_CONVERSATION_ATTACHMENT_FILES,
+  MAX_CONVERSATION_ATTACHMENT_TOTAL_BYTES,
+  prepareConversationAttachments,
+  persistConversationAttachments,
+  AttachmentPersistenceError,
+  IMAGE_ATTACHMENT_ACCEPT,
+  validateImageAttachments,
+  acquireAttachmentImport,
+} from '../../services/conversationFileAttachments';
 
 const ConversationGoalBanner = React.lazy(() =>
   import('./ConversationGoalBanner').then((module) => ({
@@ -201,6 +216,14 @@ interface ArchitectButtonAction extends ArchitectToolbarButton {
   displayDescription: string;
 }
 const MANUAL_COMPACTION_RETAINED_USER_TURNS = 2;
+
+const formatComposerAttachmentSize = (sizeBytes?: number): string => {
+  if (typeof sizeBytes !== 'number' || sizeBytes < 1024) {
+    return `${sizeBytes ?? 0} B`;
+  }
+  const sizeKb = sizeBytes / 1024;
+  return sizeKb < 1024 ? `${sizeKb.toFixed(sizeKb >= 10 ? 0 : 1)} KB` : `${(sizeKb / 1024).toFixed(1)} MB`;
+};
 
 type ChatTranslation = ReturnType<typeof useTranslation>['t'];
 
@@ -1228,6 +1251,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [composerImages, setComposerImages] = useState<MessageImageAttachment[]>([]);
+  const [isAttachingFiles, setIsAttachingFiles] = useState(false);
+  const attachmentImportInFlightRef = useRef(false);
   const [manualCompactionPhase, setManualCompactionPhase] =
     useState<ManualCompactionPhase>('idle');
   const [manualCompactionFeedback, setManualCompactionFeedback] =
@@ -1235,6 +1260,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
 
   // Lexical composer ref
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
+  const composerFileInputRef = useRef<HTMLInputElement>(null);
   const pendingSpeechInsertionRef = useRef<SpeechComposerInsertion | null>(null);
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
@@ -1277,6 +1303,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           messages.filter((message) => message.conversation_id === selectedConversationId)
         : EMPTY_RENDER_MESSAGES,
     [messages, messagesByConversationId, selectedConversationId]
+  );
+  const citations = useCitationsStore((state) => state.citations);
+  const addCitationAndPersist = useCitationsStore((state) => state.addCitationAndPersist);
+  const removeCitation = useCitationsStore((state) => state.removeCitation);
+  const composerFileCitations = useMemo(
+    () => selectedConversationId
+      ? citations.filter(
+          (citation) =>
+            citation.conversationId === selectedConversationId &&
+            citation.scope === 'context' &&
+            citation.type === 'file',
+        )
+      : [],
+    [citations, selectedConversationId],
   );
   const activeStandaloneLaunchProgress = selectedConversationId
     ? standaloneTaskLaunchByConversationId[selectedConversationId]
@@ -2668,7 +2708,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         img.onload = () => {
           resolve({ dataUrl, width: img.width, height: img.height });
         };
-        img.onerror = () => resolve({ dataUrl });
+        img.onerror = () => reject(new Error('Invalid image content'));
         img.src = dataUrl;
       };
       reader.onerror = () => reject(reader.error || new Error('Failed to read pasted image'));
@@ -2676,11 +2716,16 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
   };
 
-  const appendPastedImages = async (files: File[]) => {
+  const appendPastedImages = async (files: File[], targetContextKey?: string) => {
     const nextImages: MessageImageAttachment[] = [];
-
-    for (const file of files) {
-      try {
+    const originalContextKey = renderedComposerDraftContextKeyRef.current;
+    let releaseImport: (() => void) | undefined;
+    try {
+      releaseImport = acquireAttachmentImport();
+      await validateImageAttachments(files, composerImages.length, composerImages.reduce(
+        (sum, image) => sum + Math.ceil((image.dataUrl.length - image.dataUrl.indexOf(',') - 1) * 3 / 4), 0,
+      ));
+      for (const file of files) {
         const parsed = await readClipboardImage(file);
         nextImages.push({
           id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -2690,13 +2735,22 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           height: parsed.height,
           createdAt: new Date().toISOString(),
         });
-      } catch (error) {
-        console.error('Failed to parse pasted image:', error);
       }
-    }
 
-    if (nextImages.length > 0) {
-      setComposerImages((prev) => [...prev, ...nextImages]);
+      if (originalContextKey !== renderedComposerDraftContextKeyRef.current && targetContextKey !== renderedComposerDraftContextKeyRef.current) {
+        throw new Error('Composer changed during image import');
+      }
+      if (nextImages.length > 0) {
+        setComposerImages((prev) => [...prev, ...nextImages]);
+      }
+    } catch (error) {
+      notify.error(t('chat.imageImportFailed', 'No images added. Use valid PNG, JPEG, GIF or WebP images, up to 2 MB each, 8 MB total and 10 images.'), {
+        description: error instanceof ConversationAttachmentError && error.code === 'import_busy'
+          ? t('chat.contextToolbox.importBusy', 'An attachment import is already in progress. Try again when it finishes.')
+          : error instanceof ConversationAttachmentError ? error.fileName : undefined,
+      });
+    } finally {
+      releaseImport?.();
     }
   };
 
@@ -2724,16 +2778,158 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const handleComposerPaste = async (event: React.ClipboardEvent<HTMLElement>) => {
+    if (isComposerDisabled || isSpeechEnhancing || attachmentImportInFlightRef.current) return;
+    const originalContextKey = renderedComposerDraftContextKeyRef.current;
     const directFiles = Array.from(event.clipboardData.items || [])
       .filter((item) => item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
       .filter((file): file is File => Boolean(file));
 
-    const files = directFiles.length > 0 ? directFiles : await readImageFilesFromClipboardApi();
-    if (files.length === 0) return;
+    attachmentImportInFlightRef.current = true;
+    setIsAttachingFiles(true);
+    try {
+      const files = directFiles.length > 0 ? directFiles : await readImageFilesFromClipboardApi();
+      if (files.length === 0 || originalContextKey !== renderedComposerDraftContextKeyRef.current) return;
+      event.preventDefault();
+      await appendPastedImages(files);
+    } finally {
+      attachmentImportInFlightRef.current = false;
+      setIsAttachingFiles(false);
+    }
+  };
 
+  const handleAttachConversationFiles = useCallback(async (
+    files: FileList | readonly File[],
+  ): Promise<string | null> => {
+    if (files.length === 0) return null;
+    let releaseImport: (() => void) | undefined;
+    const originalContextKey = renderedComposerDraftContextKeyRef.current;
+    try {
+      releaseImport = acquireAttachmentImport();
+      const prepared = await prepareConversationAttachments(files, {
+        existingBytes: composerFileCitations.reduce(
+          (total, citation) => total + (citation.sizeBytes ?? 0),
+          0,
+        ),
+        existingCount: composerFileCitations.length,
+      });
+      if (originalContextKey !== renderedComposerDraftContextKeyRef.current) {
+        throw new Error(t('chat.contextToolbox.importContextChanged', 'Conversation changed. No files were added; select them again.'));
+      }
+      const draftBeforeCreation = latestComposerDraftRef.current;
+      if (!selectedConversationId) {
+        saveComposerDraftForContext(originalContextKey, draftBeforeCreation);
+      }
+      const conversationId = await ensureConversation();
+      if (!conversationId) {
+        throw new Error(t('chat.contextToolbox.conversationRequired', 'Select a task or plan before attaching files.'));
+      }
+      const targetContextKey = `conversation:${conversationId}`;
+      if (!selectedConversationId) {
+        migrateComposerDraftContext(originalContextKey, targetContextKey);
+        // Selection can render before ensureConversation resolves. Restore the
+        // migrated snapshot only if this is still the newly created conversation.
+        if (renderedComposerDraftContextKeyRef.current === originalContextKey || renderedComposerDraftContextKeyRef.current === targetContextKey) {
+          setInputValue(draftBeforeCreation.text);
+          setComposerImages([...draftBeforeCreation.images]);
+          composerEditorRef.current?.setText(draftBeforeCreation.text, draftBeforeCreation.contextRefs);
+          clearComposerContextRefs();
+          draftBeforeCreation.contextRefs.forEach(addComposerContextRef);
+        }
+      }
+      await persistConversationAttachments(prepared, conversationId, addCitationAndPersist);
+      return targetContextKey;
+    } catch (error) {
+      console.error('Failed to attach composer files:', error);
+      const attachmentError = error instanceof ConversationAttachmentError ? error : null;
+      const description = attachmentError?.code === 'import_busy'
+        ? t('chat.contextToolbox.importBusy', 'An attachment import is already in progress. Try again when it finishes.')
+        : error instanceof AttachmentPersistenceError
+        ? t('chat.contextToolbox.persistenceFailed', 'Saved: {{saved}}. Could not save {{file}}; remaining files were not added.', {
+            saved: error.savedNames.join(', ') || '0', file: error.failedName,
+          })
+        : attachmentError?.code === 'unsupported_type'
+        ? t(
+            'chat.contextToolbox.supportedTextFileTypes',
+            'Only UTF-8 text and code files are supported: {{formats}}.',
+            { formats: CONVERSATION_ATTACHMENT_EXTENSIONS.map((extension) => `.${extension}`).join(', ') },
+          )
+        : attachmentError?.code === 'file_too_large'
+          ? t(
+              'chat.contextToolbox.fileTooLarge',
+              '{{file}} exceeds the {{limit}} MB per-file limit.',
+              {
+                file: attachmentError.fileName ?? '',
+                limit: MAX_CONVERSATION_ATTACHMENT_FILE_BYTES / 1024 / 1024,
+              },
+            )
+          : attachmentError?.code === 'total_too_large'
+            ? t(
+                'chat.contextToolbox.totalTooLarge',
+                'Attachments exceed the cumulative {{limit}} MB limit.',
+                { limit: MAX_CONVERSATION_ATTACHMENT_TOTAL_BYTES / 1024 / 1024 },
+              )
+            : attachmentError?.code === 'too_many_files'
+              ? t(
+                  'chat.contextToolbox.tooManyFiles',
+                  'A conversation can contain at most {{limit}} attached files.',
+                  { limit: MAX_CONVERSATION_ATTACHMENT_FILES },
+                )
+              : attachmentError?.code === 'binary_content'
+                ? t(
+                    'chat.contextToolbox.binaryFileRejected',
+                    '{{file}} contains binary or invalid UTF-8 data.',
+                    { file: attachmentError.fileName ?? '' },
+                  )
+                : error instanceof Error ? error.message : undefined;
+      notify.error(t('chat.contextToolbox.fileReadFailedTitle', 'Could not attach files'), {
+        description,
+      });
+      return null;
+    } finally {
+      releaseImport?.();
+    }
+  }, [
+    addCitationAndPersist,
+    composerFileCitations,
+    ensureConversation,
+    selectedConversationId,
+    saveComposerDraftForContext,
+    migrateComposerDraftContext,
+    clearComposerContextRefs,
+    addComposerContextRef,
+    t,
+  ]);
+
+  const addComposerFiles = async (files: readonly File[]) => {
+    if (isComposerDisabled || isSpeechEnhancing || attachmentImportInFlightRef.current || composerEditSession || goalComposerEditSession) return;
+    const originalContextKey = renderedComposerDraftContextKeyRef.current;
+    attachmentImportInFlightRef.current = true;
+    setIsAttachingFiles(true);
+    try {
+      const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+      const textFiles = files.filter((file) => !file.type.startsWith('image/'));
+      const targetContextKey = textFiles.length === 0 ? originalContextKey : await handleAttachConversationFiles(textFiles);
+      if (targetContextKey && imageFiles.length > 0) {
+        if (originalContextKey === renderedComposerDraftContextKeyRef.current || targetContextKey === renderedComposerDraftContextKeyRef.current) {
+          await appendPastedImages(imageFiles, targetContextKey);
+        } else {
+          notify.error(t('chat.imageImportContextChanged', 'Conversation changed. Images were not added; select them again.'));
+        }
+      }
+    } finally {
+      attachmentImportInFlightRef.current = false;
+      setIsAttachingFiles(false);
+      if (composerFileInputRef.current) composerFileInputRef.current.value = '';
+    }
+  };
+
+  const handleComposerDrop = async (event: React.DragEvent<HTMLElement>) => {
+    const droppedFiles = Array.from(event.dataTransfer.files);
+    if (droppedFiles.length === 0) return;
     event.preventDefault();
-    await appendPastedImages(files);
+    event.stopPropagation();
+    await addComposerFiles(droppedFiles);
   };
 
   const removeComposerImage = (imageId: string) => {
@@ -2787,7 +2983,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     textOverride?: string,
     activeBehaviorOverride?: 'steer' | 'queue',
   ) => {
-    if (isComposerDisabled || activeQuestionnaire) return;
+    if (isComposerDisabled || activeQuestionnaire || attachmentImportInFlightRef.current) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
@@ -3367,6 +3563,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   };
 
   const canSend =
+    !isAttachingFiles &&
     !isComposerDisabled &&
     !activeQuestionnaire &&
     !isConversationPending &&
@@ -3880,9 +4077,28 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
-            {!activeQuestionnaire && !activePendingToolApproval && composerImages.length > 0 && (
-              <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2">
-                {composerImages.map((image) => (
+            {!activeQuestionnaire && !activePendingToolApproval && <input
+              ref={composerFileInputRef}
+              type="file"
+              multiple
+              accept={`${CONVERSATION_ATTACHMENT_ACCEPT},${IMAGE_ATTACHMENT_ACCEPT}`}
+              className="hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                void addComposerFiles(files);
+              }}
+            />}
+            {!activeQuestionnaire &&
+              !activePendingToolApproval &&
+              (composerImages.length > 0 || composerFileCitations.length > 0) && (
+              <div
+                className="flex flex-wrap gap-2 rounded-lg border border-border bg-card/60 p-2"
+                role="group"
+                aria-label={t('chat.composerAttachments', 'Message attachments')}
+              >
+                {composerImages.map((image, index) => (
                   <div key={image.id} className="relative w-16 h-16 rounded-md border border-border overflow-hidden bg-muted/30">
                     <button
                       type="button"
@@ -3890,6 +4106,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       onClick={(event) => openImagePreview(event, image)}
                       className="w-full h-full cursor-zoom-in"
                       title={t('chat.openImage', 'Open image')}
+                      aria-label={t('chat.openAttachedImage', 'Open attached image {{index}}', { index: index + 1 })}
                     >
                       <img src={image.dataUrl} alt={t('chat.pastedImage', 'Pasted image')} className="w-full h-full object-cover" />
                     </button>
@@ -3898,8 +4115,31 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       onClick={() => removeComposerImage(image.id)}
                       className="absolute top-1 right-1 w-5 h-5 rounded-full bg-background/90 border border-border flex items-center justify-center hover:bg-accent transition-colors"
                       title={t('chat.removeImage', 'Remove image')}
+                      aria-label={t('chat.removeAttachedImage', 'Remove attached image {{index}}', { index: index + 1 })}
                     >
                       <Icon name="x" size={11} className="text-muted-foreground" />
+                    </button>
+                  </div>
+                ))}
+                {composerFileCitations.map((citation) => (
+                  <div
+                    key={citation.id}
+                    className="flex h-16 min-w-0 max-w-[16rem] items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5"
+                  >
+                    <Icon name="file-text" size={16} className="shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1" title={citation.snippet}>
+                      <p className="truncate text-xs font-medium text-foreground">{citation.title}</p>
+                      <p className="text-[11px] text-muted-foreground">{formatComposerAttachmentSize(citation.sizeBytes)}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeCitation(citation.id)}
+                      disabled={isComposerDisabled || isAttachingFiles}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                      title={t('chat.removeAttachedFile', 'Remove attached file')}
+                      aria-label={t('chat.removeAttachedFileNamed', 'Remove attached file {{file}}', { file: citation.title })}
+                    >
+                      <Icon name="x" size={12} />
                     </button>
                   </div>
                 ))}
@@ -4094,7 +4334,20 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                       className="absolute scale-75 opacity-0 transition-[opacity,transform] group-hover:scale-100 group-hover:opacity-100 group-focus-visible:scale-100 group-focus-visible:opacity-100"
                     />
                   </button>
-                )}
+                  )}
+                  {!isGoalComposerDraft && !composerEditSession && !goalComposerEditSession && !showSpeechRecordingBar && (
+                    <button
+                      type="button"
+                      data-tour-id="chat-attachment-button"
+                      onClick={() => composerFileInputRef.current?.click()}
+                      disabled={isComposerDisabled || isAttachingFiles}
+                      aria-label={t('chat.addAttachments', 'Add files or images')}
+                      title={t('chat.addAttachments', 'Add files or images')}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Icon name={isAttachingFiles ? 'loader' : 'paperclip'} size={16} className={isAttachingFiles ? 'animate-spin' : undefined} />
+                    </button>
+                  )}
                 <div
                   data-chat-composer-editing={
                     composerEditSession ? 'true' : undefined
@@ -4109,6 +4362,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         : 'border-border bg-card/80'
                   )}
                   onPasteCapture={handleComposerPaste}
+                  onDragOver={(event) => {
+                    if (event.dataTransfer.types.includes('Files')) event.preventDefault();
+                  }}
+                  onDrop={handleComposerDrop}
                   data-tour-id="chat-composer"
                 >
                   <div
@@ -4120,6 +4377,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         ref={composerEditorRef}
                         editable={!!selectedProviderId && !!selectedModelId && !isComposerDisabled}
                         readOnly={isSpeechEnhancing}
+                        accessibleName={t('chat.messageComposer', 'Message composer')}
                         className={isSpeechEnhancing ? 'speech-cleanup-text' : undefined}
                         placeholder={
                           composerEditSession
@@ -4210,8 +4468,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                   )}
                   {isStreaming && !showSpeechRecordingBar && (
                     <button
+                      type="button"
                       onClick={handleStopStreaming}
                       data-tour-id="chat-stop-button"
+                      aria-label={t('chat.stop', 'Stop')}
                       className="rounded-lg bg-red-500 hover:bg-red-600 text-white px-3 h-9 flex items-center gap-2"
                     >
                       <Icon name="square" size={14} />
@@ -4234,8 +4494,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
                         />
                       )}
                       <button
+                        type="button"
                         onClick={handleSend}
                         data-tour-id="chat-send-button"
+                        aria-label={isStreaming
+                          ? t('chat.sendDuringActiveTurn', 'Send during active turn')
+                          : t('chat.send', 'Send')}
                         title={isStreaming
                           ? `${activeTurnSendBehavior === 'steer'
                             ? t('chat.steerActiveTurn', 'Steer active turn')

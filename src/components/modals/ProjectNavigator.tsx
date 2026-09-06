@@ -50,6 +50,7 @@ interface ProjectItemProps {
   busyAction: ProjectOpenAction | null;
   visibleActions: ProjectOpenAction[];
   isSelected?: boolean;
+  dragDisabled?: boolean;
 }
 
 interface MenuPosition {
@@ -137,6 +138,7 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
   busyAction,
   visibleActions,
   isSelected = false,
+  dragDisabled = false,
 }) => {
   const { t } = useTranslation();
   const projectIconName = projectHasGitIntegration(project) ? 'folder-git-2' : 'folder';
@@ -152,6 +154,7 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       projectId: project.id,
       groupId,
     } satisfies ProjectDropData,
+    disabled: dragDisabled,
   });
   const { setNodeRef: setDroppableNodeRef, isOver } = useDroppable({
     id: projectDropId(project.id),
@@ -202,8 +205,8 @@ const ProjectItem: React.FC<ProjectItemProps> = ({
       }}
       data-project-id={project.id}
       onClick={onSelect}
-      {...attributes}
-      {...listeners}
+      {...(dragDisabled ? {} : attributes)}
+      {...(dragDisabled ? {} : listeners)}
       className={cn(
         'flex items-center justify-between px-3 py-2 rounded-lg transition-all duration-200 group cursor-pointer',
         'border border-transparent hover:bg-accent/40',
@@ -503,9 +506,14 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
     debugResetProject,
     openProjectModal,
     openProjectGitFlowModal,
+    archiveProjectGroup,
+    restoreProjectGroup,
+    archiveProject,
+    restoreProject,
   } = useAppStore();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
   const [menuState, setMenuState] = useState<ProjectNavigatorMenuState | null>(null);
   const [draggedProject, setDraggedProject] = useState<Project | null>(null);
   const [inlineGroupDraft, setInlineGroupDraft] = useState<InlineGroupDraft | null>(null);
@@ -543,33 +551,41 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
   );
 
   const filteredGroups = useMemo(() => {
-    if (!searchQuery.trim()) {
-      return projectGroups;
-    }
-
-    const query = searchQuery.toLowerCase();
+    const query = searchQuery.trim().toLowerCase();
     return projectGroups
       .map((group) => ({
         ...group,
         projects: group.projects.filter(
           (project) =>
-            project.name.toLowerCase().includes(query) ||
-            group.name.toLowerCase().includes(query)
+            (project.status === 'archived') === showArchived &&
+            (!query || project.name.toLowerCase().includes(query) || group.name.toLowerCase().includes(query))
         ),
       }))
-      .filter((group) => group.projects.length > 0 || group.name.toLowerCase().includes(query));
-  }, [projectGroups, searchQuery]);
+      .filter((group) => group.projects.length > 0);
+  }, [projectGroups, searchQuery, showArchived]);
 
   const filteredStandaloneProjects = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) {
-      return standaloneProjects;
-    }
-
     return standaloneProjects.filter((project) =>
-      project.name.toLowerCase().includes(query)
+      (project.status === 'archived') === showArchived &&
+      (!query || project.name.toLowerCase().includes(query))
     );
-  }, [searchQuery, standaloneProjects]);
+  }, [searchQuery, showArchived, standaloneProjects]);
+
+  const handleArchiveMutation = async (
+    action: () => Promise<void>,
+    successMessage: string,
+  ) => {
+    try {
+      await action();
+      setMenuState(null);
+      notify.success(successMessage);
+    } catch (error) {
+      notify.error(t('projects.archiveUpdateFailed', 'Unable to update the project archive.'), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  };
 
   const projectsById = useMemo(() => {
     const entries = [
@@ -633,7 +649,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
         ? activeData.projectId
         : parseProjectDragId(String(event.active.id));
     setDraggedProject(null);
-    if (!activeProjectId || !overData || projectManagementDisabled) {
+    if (!activeProjectId || !overData || projectManagementDisabled || showArchived) {
       return;
     }
 
@@ -1061,6 +1077,23 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
             {menuState.type === 'group' ? (
               <>
                 <button
+                  onClick={() => void handleArchiveMutation(
+                    () => showArchived
+                      ? restoreProjectGroup(menuState.group.id)
+                      : archiveProjectGroup(menuState.group.id),
+                    showArchived
+                      ? t('projects.groupRestored', 'Project group restored')
+                      : t('projects.groupArchived', 'Project group archived'),
+                  )}
+                  disabled={projectManagementDisabled}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                >
+                  <Icon name={showArchived ? 'rotate-ccw' : 'archive'} size={12} />
+                  {showArchived ? t('common.restore', 'Restore') : t('common.archive', 'Archive')}
+                </button>
+                {!showArchived && (
+                  <>
+                <button
                   onClick={() => {
                     handleAddSubproject(menuState.group.id);
                   }}
@@ -1099,9 +1132,28 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                   <Icon name="x" size={12} />
                   {t('projects.dissolveGroup', 'Dissolve group')}
                 </button>
+                  </>
+                )}
               </>
             ) : (
               <>
+                <button
+                  onClick={() => void handleArchiveMutation(
+                    () => showArchived
+                      ? restoreProject(menuState.project.id)
+                      : archiveProject(menuState.project.id),
+                    showArchived
+                      ? t('projects.projectRestored', 'Project restored')
+                      : t('projects.projectArchived', 'Project archived'),
+                  )}
+                  disabled={projectManagementDisabled}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                >
+                  <Icon name={showArchived ? 'rotate-ccw' : 'archive'} size={12} />
+                  {showArchived ? t('common.restore', 'Restore') : t('common.archive', 'Archive')}
+                </button>
+                {!showArchived && (
+                  <>
                 <button
                   onClick={() => {
                     if (!projectManagementDisabled) {
@@ -1236,6 +1288,8 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                     </button>
                   </>
                 )}
+                  </>
+                )}
               </>
             )}
           </div>,
@@ -1252,12 +1306,27 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
           <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
             {t('projects.title', 'Projects')}
           </h2>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-accent transition-colors"
-          >
-            <Icon name="x" size={16} className="text-muted-foreground" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setShowArchived((current) => !current);
+                setSearchQuery('');
+                setMenuState(null);
+              }}
+              className={cn('p-1.5 rounded-lg hover:bg-accent transition-colors', showArchived && 'bg-accent text-primary')}
+              title={showArchived ? t('projects.showActive', 'Show active projects') : t('projects.showArchived', 'Show archived projects')}
+              aria-label={showArchived ? t('projects.showActive', 'Show active projects') : t('projects.showArchived', 'Show archived projects')}
+            >
+              <Icon name={showArchived ? 'rotate-ccw' : 'archive'} size={16} />
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-accent transition-colors"
+            >
+              <Icon name="x" size={16} className="text-muted-foreground" />
+            </button>
+          </div>
         </div>
 
         <div className="shrink-0 px-4 py-3 border-b border-border">
@@ -1355,6 +1424,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                             }}
                             busyAction={busyOpenActionByProjectId[project.id] ?? null}
                             visibleActions={visibleQuickActions}
+                            dragDisabled={showArchived}
                             onMenuOpen={(e) => {
                               e.stopPropagation();
                               const trigger = e.currentTarget;
@@ -1449,6 +1519,7 @@ export const ProjectNavigator: React.FC<ProjectNavigatorProps> = ({ isOpen, onCl
                               <ProjectItem
                                 project={project}
                                 groupId={group.id}
+                                dragDisabled={showArchived}
                                 onSelect={() => handleSelectGroup(group.id)}
                                 isSelected={false}
                                 onOpenExternal={(action) => {
