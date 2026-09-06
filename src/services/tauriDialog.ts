@@ -1,4 +1,9 @@
-import { open as nativeOpen, type OpenDialogOptions } from '@tauri-apps/plugin-dialog';
+import {
+  open as nativeOpen,
+  save as nativeSave,
+  type OpenDialogOptions,
+  type SaveDialogOptions,
+} from '@tauri-apps/plugin-dialog';
 import { invoke, isBrowserRuntimeBridgeEnabled } from './tauriRuntimeBridge';
 
 export async function open(
@@ -12,4 +17,9 @@ export async function open(
 ): Promise<string | string[] | null> {
   if (!isBrowserRuntimeBridgeEnabled()) return nativeOpen(options);
   return invoke('plugin:dialog|open', { options });
+}
+
+export async function save(options: SaveDialogOptions = {}): Promise<string | null> {
+  if (!isBrowserRuntimeBridgeEnabled()) return nativeSave(options);
+  return invoke<string | null>('plugin:dialog|save', { options });
 }

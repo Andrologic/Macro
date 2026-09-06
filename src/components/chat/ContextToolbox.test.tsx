@@ -200,6 +200,7 @@ const getMockCitationState = () => ({
   getConversationInterestingSourceCitations: getConversationInterestingSourceCitationsMock,
   getConversationUsedSourceCitations: getConversationUsedSourceCitationsMock,
   addCitation: addCitationMock,
+  addCitationAndPersist: async (citation: Parameters<typeof addCitationMock>[0]) => addCitationMock(citation),
   removeCitation: removeCitationMock,
 });
 const toggleChatToolMock = mock((_toolId: string) => undefined);
@@ -792,9 +793,33 @@ describe('ContextToolbox', () => {
     expect(addCitationMock).not.toHaveBeenCalled();
     expect(container?.textContent).not.toContain('contract.pdf');
     expect(notifyErrorMock).toHaveBeenCalledWith(
-      'Unsupported file type',
+      'Could not attach files',
       expect.objectContaining({
-        description: expect.stringContaining('Only text-based files are supported'),
+        description: expect.stringContaining('Only UTF-8 text and code files are supported'),
+      }),
+    );
+  });
+
+  it('does not persist any file when one item in the batch is binary', async () => {
+    contextCitations = [];
+    const { ContextToolbox } = await loadContextToolbox();
+
+    await act(async () => {
+      root?.render(<ContextToolbox />);
+      await Promise.resolve();
+    });
+
+    await uploadFile(container!, [
+      new File(['Valid text'], 'valid.md', { type: 'text/markdown' }),
+      new File(['prefix\0binary'], 'disguised.txt', { type: 'text/plain' }),
+    ]);
+
+    expect(addCitationMock).not.toHaveBeenCalled();
+    expect(container?.textContent).not.toContain('valid.md');
+    expect(notifyErrorMock).toHaveBeenCalledWith(
+      'Could not attach files',
+      expect.objectContaining({
+        description: expect.stringContaining('binary or invalid UTF-8'),
       }),
     );
   });

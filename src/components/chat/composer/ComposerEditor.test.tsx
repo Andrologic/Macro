@@ -327,6 +327,24 @@ describe('ComposerEditor context references', () => {
     expect(editor?.parentElement?.className).toContain('overflow-y-auto');
   });
 
+  it('gives the editable composer an explicit accessible name', async () => {
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          editable
+          accessibleName="Message composer"
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(
+      container.querySelector('[data-shortcut-chat-input="true"]')?.getAttribute('aria-label'),
+    ).toBe('Message composer');
+  });
+
   it('keeps arrow-key navigation as a text range around context chips', async () => {
     const lexical = await import('lexical');
     const { MentionNode, $createMentionNode } = await import(
@@ -1080,6 +1098,11 @@ describe('ComposerEditor context references', () => {
 
     expect(await openSlashMenu(editorRef, '/agents')).not.toBeNull();
     const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+    const slashMenu = document.body.querySelector('[data-slash-context-menu="true"]');
+    expect(slashMenu?.getAttribute('role')).toBe('listbox');
+    expect(slashMenu?.getAttribute('aria-label')).toBe('Insert context or command');
+    expect(editable?.getAttribute('aria-controls')).toBe(slashMenu?.id);
+    expect(editable?.getAttribute('aria-expanded')).toBe('true');
 
     await act(async () => {
       editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
@@ -1097,6 +1120,34 @@ describe('ComposerEditor context references', () => {
     });
 
     expect(editorRef.current?.getTextContent().trim()).toBe('[skill: better]');
+  });
+
+  it('closes slash context with Escape and keeps focus in the composer', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          accessibleName="Message composer"
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/')).not.toBeNull();
+    const editable = container.querySelector<HTMLElement>('[data-shortcut-chat-input="true"]');
+    editable?.focus();
+    await act(async () => {
+      editable?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('[data-slash-context-menu="true"]')).toBeNull();
+    expect(editable?.getAttribute('aria-controls')).toBeNull();
+    expect(document.activeElement).toBe(editable ?? null);
   });
 
   it('selects the active slash context option with Tab', async () => {

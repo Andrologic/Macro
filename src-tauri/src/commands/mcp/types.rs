@@ -112,6 +112,8 @@ pub struct McpRuntimeServerSnapshot {
     pub negotiated_era: Option<McpProtocolEra>,
     pub negotiated_protocol_version: Option<String>,
     pub protocol_decision_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_code: Option<String>,
     pub last_error: Option<String>,
     pub updated_at: String,
 }

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getProjectCapabilities } from '../services/projectCapabilities';
 import i18n from '../i18n';
 import {
   type ParsedDiffContent,
@@ -105,6 +106,15 @@ export interface FileChangeEntry {
   requiresHydration?: boolean;
 }
 
+/** A receipt refers to the content actually opened, never snapshot statistics. */
+export const isSameReviewedContent = (left: FileChangeEntry, right: FileChangeEntry): boolean =>
+  (left === right || (!left.requiresHydration && !right.requiresHydration && !left.isBinary && !left.tooLarge)) &&
+  left.status === right.status &&
+  left.originalContent === right.originalContent &&
+  left.indexContent === right.indexContent &&
+  left.modifiedContent === right.modifiedContent &&
+  left.isBinary === right.isBinary && left.tooLarge === right.tooLarge;
+
 export interface ReviewRepositoryStats {
   pendingVisibleFileCount: number;
   validatedStagedFileCount: number;
@@ -172,6 +182,7 @@ interface SelectedDiffTarget {
 }
 
 export interface FileDiffModalSession {
+  reviewVisitId?: number;
   repositoryId: string;
   changeId: string;
   originalContent: string;
@@ -180,6 +191,7 @@ export interface FileDiffModalSession {
   isDirty: boolean;
   isSaving: boolean;
   isHydratingFullContext: boolean;
+  detachedWarning?: string | null;
   directSnapshotId?: string;
   restoreRevision?: string;
 }
@@ -188,6 +200,7 @@ interface LoadCurrentChangesOptions {
   silent?: boolean;
   preserveDiffModalSession?: boolean;
   preserveReviewSuspension?: boolean;
+  refreshExpired?: boolean;
 }
 
 const DEBUG_FILE_DIFF_STORAGE_KEY = 'debug:file-diff';
@@ -218,6 +231,7 @@ interface FileChangesProjectRef {
   name?: string | null;
   directEdit?: boolean;
   gitSetupState?: Project['gitSetupState'];
+  pathKind?: Project['pathKind'];
   userReadOnly?: boolean;
   isReadOnly?: boolean;
 }
@@ -1349,6 +1363,7 @@ const buildDiffModalSession = (
   isDirty: false,
   isSaving: false,
   isHydratingFullContext: false,
+  detachedWarning: null,
   ...overrides,
 });
 
@@ -1408,17 +1423,27 @@ const resolveLatestDiffModalSessionAfterRefresh = ({
     };
   }
 
+  const needsHydration = Boolean(refreshedChange.requiresHydration && !refreshedChange.isBinary && !refreshedChange.tooLarge);
+  const detachedWarning = session.isDirty && !refreshedChange.canEdit &&
+    !refreshedChange.hasPendingVisibleChange && !refreshedChange.hasValidatedStage
+    ? tChanges(
+      'implement.detachedReviewDraft',
+      'This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable.'
+    )
+    : null;
+
   return {
     selectedDiffTarget: target,
     diffModalSession: {
       ...session,
-      originalContent: refreshedChange.originalContent,
-      rightDraftContent: session.isDirty
+      originalContent: needsHydration ? session.originalContent : refreshedChange.originalContent,
+      rightDraftContent: session.isDirty || needsHydration
         ? session.rightDraftContent
         : refreshedChange.modifiedContent,
-      lastLoadedModifiedContent: refreshedChange.modifiedContent,
+      lastLoadedModifiedContent: needsHydration ? session.lastLoadedModifiedContent : refreshedChange.modifiedContent,
       isSaving: false,
-      isHydratingFullContext: false,
+      isHydratingFullContext: needsHydration,
+      detachedWarning,
     },
     isDiffModalOpen: true,
   };
@@ -1441,6 +1466,12 @@ interface FileChangesState {
   reviewSuspension: { taskId: string; error: ServiceError; retrying: boolean } | null;
   lastCommitHash: string | null;
   executionRecords: Record<string, TaskCompletionRepositoryRecord>;
+  reviewedChanges: Record<string, FileChangeEntry>;
+  staleDirectRepositoryId: string | null;
+  markChangeReviewed: (repositoryId: string, changeId: string) => void;
+  isChangeReviewed: (repositoryId: string, changeId: string) => boolean;
+  openNextUnreviewedDiff: () => void;
+  refreshExpiredReview: () => Promise<void>;
 
   loadCurrentChanges: (options?: LoadCurrentChangesOptions) => Promise<void>;
   retrySuspendedReview: (taskId?: string) => Promise<void>;
@@ -1498,6 +1529,12 @@ export const createFileChangesStore = (
 
   return create<FileChangesState>((set, get) => {
     let reviewRequestSequence = 0;
+    let reviewVisitSequence = 0;
+    let hydrationGeneration = 0;
+    let taskReviewGeneration = 0;
+    let mutationRequestSequence = 0;
+    const activeMutationRequests = new Map<string, number>();
+    let expiredReviewRefreshPromise: Promise<void> | null = null;
     const reviewRequestNamespace = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     const activeReviewRequestIds = new Set<string>();
     const nextReviewRequestId = (scope: string): string => {
@@ -1512,6 +1549,32 @@ export const createFileChangesStore = (
       }
       activeReviewRequestIds.clear();
     };
+    const ensureReviewFresh = () => {
+      if (get().staleDirectRepositoryId) throw new Error(tChanges('implement.refreshReview', 'Refresh review'));
+    };
+    const beginMutationRequest = (repository: ReviewRepositoryState) => {
+      const requestId = ++mutationRequestSequence;
+      activeMutationRequests.set(repository.id, requestId);
+      return {
+        requestId,
+        taskId: get().currentTaskId,
+        repositoryId: repository.id,
+        worktreePath: repository.worktreePath,
+        reviewVisitSequence,
+      };
+    };
+    const isMutationRequestCurrent = (request: ReturnType<typeof beginMutationRequest>): boolean => {
+      const state = get();
+      return activeMutationRequests.get(request.repositoryId) === request.requestId &&
+        state.currentTaskId === request.taskId &&
+        resolveSelectedTask(deps)?.id === request.taskId &&
+        state.getRepository(request.repositoryId)?.worktreePath === request.worktreePath;
+    };
+    const finishMutationRequest = (request: ReturnType<typeof beginMutationRequest>): void => {
+      if (activeMutationRequests.get(request.repositoryId) === request.requestId) {
+        activeMutationRequests.delete(request.repositoryId);
+      }
+    };
     const hydrateDiffModalFile = async (repositoryId: string, changeId: string) => {
       const repository = get().getRepository(repositoryId);
       const change = get().getChange(repositoryId, changeId);
@@ -1520,6 +1583,7 @@ export const createFileChangesStore = (
       }
       const requestTaskId = resolveSelectedTask(deps)?.id ?? null;
       const requestLoadId = get().loadRequestId;
+      const requestHydrationGeneration = hydrationGeneration;
 
       set((state) => ({
         repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -1619,7 +1683,8 @@ export const createFileChangesStore = (
           };
         }
 
-        if (get().loadRequestId !== requestLoadId) {
+        if (get().loadRequestId !== requestLoadId || hydrationGeneration !== requestHydrationGeneration ||
+            resolveSelectedTask(deps)?.id !== requestTaskId) {
           return;
         }
 
@@ -1651,7 +1716,8 @@ export const createFileChangesStore = (
           };
         });
       } catch (error) {
-        if (get().loadRequestId !== requestLoadId) {
+        if (get().loadRequestId !== requestLoadId || hydrationGeneration !== requestHydrationGeneration ||
+            resolveSelectedTask(deps)?.id !== requestTaskId) {
           return;
         }
         const serviceError = withReviewProjectContext(error, repository.projectId);
@@ -1720,11 +1786,94 @@ export const createFileChangesStore = (
     reviewSuspension: null,
     lastCommitHash: null,
     executionRecords: {},
+    reviewedChanges: {},
+    staleDirectRepositoryId: null,
+
+  markChangeReviewed: (repositoryId, changeId) => {
+    const change = get().getChange(repositoryId, changeId);
+    if (!change || (change.requiresHydration && !change.isBinary && !change.tooLarge)) return;
+    set((state) => ({ reviewedChanges: { ...state.reviewedChanges, [changeId]: change } }));
+  },
+  isChangeReviewed: (repositoryId, changeId) => {
+    const change = get().getChange(repositoryId, changeId);
+    const receipt = get().reviewedChanges[changeId];
+    return Boolean(change && receipt && isSameReviewedContent(receipt, change));
+  },
+  openNextUnreviewedDiff: () => {
+    const state = get();
+    const targets = state.repositories.flatMap((repository) => repository.changes
+      .filter((change) => change.hasPendingVisibleChange)
+      .map((change) => ({ repositoryId: repository.id, changeId: change.id })));
+    const current = targets.findIndex((target) => target.changeId === state.selectedDiffTarget?.changeId);
+    for (let offset = 1; offset <= targets.length; offset += 1) {
+      const target = targets[(current + offset) % targets.length];
+      if (!state.isChangeReviewed(target.repositoryId, target.changeId)) {
+        state.openDiffModal(target.repositoryId, target.changeId);
+        return;
+      }
+    }
+  },
+  refreshExpiredReview: async () => {
+    if (expiredReviewRefreshPromise) {
+      await expiredReviewRefreshPromise;
+      return;
+    }
+
+    const refreshPromise = (async () => {
+      const state = get();
+      const repositoryId = state.staleDirectRepositoryId;
+      if (!repositoryId) return;
+      set({ reviewedChanges: Object.fromEntries(Object.entries(state.reviewedChanges)
+        .filter(([id]) => !state.getRepository(repositoryId)?.changes.some((change) => change.id === id))) });
+      const loadPromise = get().loadCurrentChanges({
+        silent: true,
+        preserveDiffModalSession: true,
+        refreshExpired: true,
+      });
+      const refreshLoadRequestId = get().loadRequestId;
+      await loadPromise;
+      const refreshed = get();
+      if (
+        refreshed.loadRequestId !== refreshLoadRequestId ||
+        refreshed.currentTaskId !== state.currentTaskId ||
+        resolveSelectedTask(deps)?.id !== state.currentTaskId ||
+        refreshed.currentTaskLoadState !== 'ready' ||
+        refreshed.lastError ||
+        refreshed.reviewSuspension
+      ) return;
+      set((current) => ({ staleDirectRepositoryId: null,
+        repositories: updateRepositoryState(current.repositories, repositoryId, (repository) => ({ ...repository,
+          lastError: null })),
+      }));
+      const target = refreshed.selectedDiffTarget;
+      if (target) {
+        const repository = refreshed.getRepository(target.repositoryId);
+        set((current) => ({ diffModalSession: current.diffModalSession ? { ...current.diffModalSession,
+          directSnapshotId: repository?.directSnapshotId,
+          restoreRevision: repository?.restoreRevisions?.[get().getChange(target.repositoryId, target.changeId)?.path ?? ''],
+        } : null }));
+      }
+    })();
+    expiredReviewRefreshPromise = refreshPromise;
+    try {
+      await refreshPromise;
+    } finally {
+      if (expiredReviewRefreshPromise === refreshPromise) {
+        expiredReviewRefreshPromise = null;
+      }
+    }
+  },
 
   loadCurrentChanges: async (options) => {
+    if (get().staleDirectRepositoryId && resolveSelectedTask(deps)?.id === get().currentTaskId && !options?.refreshExpired) return;
     cancelActiveReviewRequests();
     const previousState = get();
     const task = resolveSelectedTask(deps);
+    if (previousState.currentTaskId !== (task?.id ?? null)) {
+      activeMutationRequests.clear();
+      taskReviewGeneration += 1;
+      set({ isCommitting: false, isGeneratingCommitMessages: false });
+    }
     const nextLoadRequestId = previousState.loadRequestId + 1;
 
     const resetLoadState = {
@@ -1772,6 +1921,8 @@ export const createFileChangesStore = (
     }
 
     const sameTask = previousState.currentTaskId === task.id;
+    if (!sameTask) set({ reviewedChanges: {}, staleDirectRepositoryId: null });
+    const reviewedBeforeLoad = sameTask ? previousState.reviewedChanges : {};
     const scopedExecutionTargets = getScopedExecutionTargets(deps, task);
     const requestedRepositoryIds = new Set(
       scopedExecutionTargets.map((target) => buildFileChangesRepositoryId(target))
@@ -1837,6 +1988,13 @@ export const createFileChangesStore = (
         return;
       }
 
+      const unsupportedTarget = scopedExecutionTargets.find((target) => {
+        const project = deps.getAppState().getProjectById(target.projectId);
+        return !getProjectCapabilities(project ?? { path: target.repoPath ?? '' }).review;
+      });
+      if (unsupportedTarget) throw new Error(tChanges('implement.wslCapabilities',
+        'For WSL projects, metadata synchronization, task worktrees, file review and the merge workflow are unavailable. Basic Git operations remain available. Use a local clone for these task workflows.'));
+
       const { unresolvedTargets, hydratedWorktrees } =
         await resolveRepositoryWorktreePaths(deps, scopedExecutionTargets);
 
@@ -1879,7 +2037,7 @@ export const createFileChangesStore = (
           const repositoryId = buildFileChangesRepositoryId(target);
           const reviewRequestId = nextReviewRequestId(`snapshot-${targetIndex}`);
           try {
-            return await loadRepositoryState({
+            const loaded = await loadRepositoryState({
               deps,
               task,
               target,
@@ -1887,6 +2045,31 @@ export const createFileChangesStore = (
               committedRecord: executionRecords[repositoryId],
               reviewRequestId,
             });
+            // Only reread files that the user opened, plus the visible file. Snapshots stay lazy.
+            for (let index = 0; index < loaded.changes.length; index += 1) {
+              const change = loaded.changes[index];
+              const isVisible = sameTask && previousState.selectedDiffTarget?.changeId === change.id;
+              if (!change.requiresHydration || change.isBinary || change.tooLarge ||
+                  (!reviewedBeforeLoad[change.id] && !isVisible)) continue;
+              if (isStaleRequest(nextLoadRequestId, task.id)) return loaded;
+              const fileRequestId = nextReviewRequestId('refresh-file');
+              try {
+                const file = loaded.executionMode === 'direct'
+                  ? await deps.tauri.directReviewFile!({
+                      taskId: task.id, projectPath: loaded.worktreePath, checkpointId: loaded.checkpointId,
+                      path: change.path, status: change.status, requestId: fileRequestId,
+                    })
+                  : deps.tauri.gitReviewFile
+                    ? await deps.tauri.gitReviewFile({
+                        repoPath: loaded.worktreePath, path: change.path, requestId: fileRequestId,
+                      })
+                    : null;
+                if (file) loaded.changes[index] = mapReviewFileToEntry(repositoryId, file, change.hasPendingVisibleChange, change);
+              } finally {
+                activeReviewRequestIds.delete(fileRequestId);
+              }
+            }
+            return loaded;
           } catch (error) {
             throw withReviewProjectContext(error, target.projectId);
           } finally {
@@ -1899,6 +2082,17 @@ export const createFileChangesStore = (
         return;
       }
 
+      const latestSession = get().diffModalSession;
+      if (sameTask && latestSession?.isDirty && !findDiffTargetChange(repositories, get().selectedDiffTarget)) {
+        const previousChange = previousState.repositories
+          .find((repository) => repository.id === latestSession.repositoryId)
+          ?.changes.find((change) => change.id === latestSession.changeId);
+        const repository = repositories.find((candidate) => candidate.id === latestSession.repositoryId);
+        if (previousChange && repository) {
+          repository.changes.push({ ...previousChange, canEdit: false, requiresHydration: false,
+            hasPendingVisibleChange: false, hasValidatedStage: false });
+        }
+      }
       const derivedReviewState = deriveReviewState(repositories);
       const latestDiffModalState = resolveLatestDiffModalSessionAfterRefresh({
         repositories,
@@ -1914,11 +2108,17 @@ export const createFileChangesStore = (
         selectedDiffTarget: latestDiffModalState.selectedDiffTarget,
       });
 
+      // Responses started against the replaced repositories must not overwrite this snapshot.
+      hydrationGeneration += 1;
       set({
         currentTaskId: task.id,
         currentTaskLoadState: 'ready',
         currentTaskLoadMessage: null,
         repositories,
+        reviewedChanges: Object.fromEntries(repositories.flatMap((repository) => repository.changes
+          .filter((change) => reviewedBeforeLoad[change.id] &&
+            isSameReviewedContent(reviewedBeforeLoad[change.id], change))
+          .map((change) => [change.id, reviewedBeforeLoad[change.id]]))),
         reviewSummary: derivedReviewState.reviewSummary,
         ...latestDiffModalState,
         isLoading: false,
@@ -1926,26 +2126,33 @@ export const createFileChangesStore = (
         reviewSuspension: null,
         executionRecords,
       });
+      const visibleTarget = latestDiffModalState.selectedDiffTarget;
+      if (visibleTarget && latestDiffModalState.diffModalSession?.isHydratingFullContext) {
+        await hydrateDiffModalFile(visibleTarget.repositoryId, visibleTarget.changeId);
+      }
     } catch (error) {
-      cancelActiveReviewRequests();
       if (isStaleRequest(nextLoadRequestId, task.id)) {
         return;
       }
+      cancelActiveReviewRequests();
 
       const serviceError = toServiceError(error);
+      const latestState = get();
+      const canPreserveLatestReview = sameScope && latestState.currentTaskId === task.id;
       if (isReviewSuspendingError(serviceError)) {
-        const preservedState = sameScope
+        const preservedState = canPreserveLatestReview
           ? {
-              repositories: previousState.repositories,
-              reviewSummary: previousState.reviewSummary,
-              selectedDiffTarget: previousState.selectedDiffTarget,
-              diffModalSession: previousState.diffModalSession,
-              isDiffModalOpen: previousState.isDiffModalOpen,
+              repositories: latestState.repositories,
+              reviewSummary: latestState.reviewSummary,
+              selectedDiffTarget: latestState.selectedDiffTarget,
+              diffModalSession: latestState.diffModalSession,
+              isDiffModalOpen: latestState.isDiffModalOpen,
             }
           : resetLoadState;
         set({
           currentTaskId: task.id,
-          currentTaskLoadState: sameScope && previousState.repositories.length > 0 ? 'ready' : 'invalid_mapping',
+          currentTaskLoadState:
+            canPreserveLatestReview && latestState.repositories.length > 0 ? 'ready' : 'invalid_mapping',
           currentTaskLoadMessage: null,
           ...preservedState,
           isLoading: false,
@@ -1956,13 +2163,27 @@ export const createFileChangesStore = (
         return;
       }
 
+      const preserveFailedRefreshState = canPreserveLatestReview &&
+        (options?.refreshExpired === true || shouldPreserveModalAfterRefresh);
+      const preservedState = preserveFailedRefreshState
+        ? {
+            repositories: latestState.repositories,
+            reviewSummary: latestState.reviewSummary,
+            selectedDiffTarget: latestState.selectedDiffTarget,
+            diffModalSession: latestState.diffModalSession,
+            isDiffModalOpen: latestState.isDiffModalOpen,
+          }
+        : resetLoadState;
       set({
-        ...resetLoadState,
+        ...preservedState,
         currentTaskId: task.id,
-        currentTaskLoadState: 'invalid_mapping',
+        currentTaskLoadState:
+          preserveFailedRefreshState && latestState.repositories.length > 0
+            ? 'ready'
+            : 'invalid_mapping',
         currentTaskLoadMessage: null,
         isLoading: false,
-        executionRecords: {},
+        executionRecords: preserveFailedRefreshState ? executionRecords : {},
         lastError:
           serviceError.message ||
           tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.'),
@@ -1977,6 +2198,10 @@ export const createFileChangesStore = (
     if (taskId && taskId !== suspension.taskId) return;
     if (selectedTask?.id !== suspension.taskId || suspension.retrying) return;
     set({ reviewSuspension: { ...suspension, retrying: true } });
+    if (get().staleDirectRepositoryId) {
+      await get().refreshExpiredReview();
+      return;
+    }
     await get().loadCurrentChanges({
       silent: get().repositories.length > 0,
       preserveReviewSuspension: true,
@@ -1989,7 +2214,10 @@ export const createFileChangesStore = (
   },
 
   resetReviewState: () => {
+    taskReviewGeneration += 1;
     cancelActiveReviewRequests();
+    activeMutationRequests.clear();
+    set({ reviewedChanges: {}, staleDirectRepositoryId: null });
     set({
       currentTaskId: null,
       currentTaskLoadState: 'idle',
@@ -2026,6 +2254,7 @@ export const createFileChangesStore = (
       ...deriveReviewState(repositories),
       selectedDiffTarget: { repositoryId, changeId },
       diffModalSession: buildDiffModalSession(repositoryId, change, {
+        reviewVisitId: ++reviewVisitSequence,
         isHydratingFullContext: change.requiresHydration && !change.tooLarge && !change.isBinary,
         directSnapshotId: repository?.directSnapshotId,
         restoreRevision: repository?.restoreRevisions?.[change.path],
@@ -2043,6 +2272,7 @@ export const createFileChangesStore = (
       selectedDiffTarget: state.selectedDiffTarget,
       hadSession: Boolean(state.diffModalSession),
     });
+    reviewVisitSequence += 1;
     set({
       selectedDiffTarget: null,
       diffModalSession: null,
@@ -2051,6 +2281,7 @@ export const createFileChangesStore = (
   },
 
   stageChanges: async (repositoryId, changeIds) => {
+    ensureReviewFresh();
     if (changeIds.length === 0) {
       return;
     }
@@ -2079,6 +2310,9 @@ export const createFileChangesStore = (
     const selectedDiffTarget = get().selectedDiffTarget;
     const affectsOpenModal =
       selectedDiffTarget?.repositoryId === repositoryId && targetIds.has(selectedDiffTarget.changeId);
+    const mutationRequest = beginMutationRequest(repository);
+    const isMutationUiCurrent = () => isMutationRequestCurrent(mutationRequest) &&
+      (!affectsOpenModal || reviewVisitSequence === mutationRequest.reviewVisitSequence);
 
     set((state) => ({
       repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -2119,12 +2353,17 @@ export const createFileChangesStore = (
         await deps.tauri.gitAdd({ repoPath: repository.worktreePath, paths });
       }
 
+      if (!isMutationRequestCurrent(mutationRequest)) return;
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
 
-      if (affectsOpenModal) {
+      if (affectsOpenModal && isMutationUiCurrent()) {
         get().closeDiffModal();
       }
     } catch (error) {
+      if (!isMutationRequestCurrent(mutationRequest)) throw error;
+      if (repository.executionMode === 'direct' && toServiceError(error).code === 'REVISION_CONFLICT') {
+        set({ staleDirectRepositoryId: repositoryId, reviewedChanges: {} });
+      }
       const message = toServiceError(error).message ||
         tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
       set((state) => ({
@@ -2134,7 +2373,8 @@ export const createFileChangesStore = (
           lastError: message,
         })),
         diffModalSession:
-          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+          isMutationUiCurrent() && state.diffModalSession &&
+            state.diffModalSession.repositoryId === repositoryId
             ? {
                 ...state.diffModalSession,
                 isSaving: false,
@@ -2144,23 +2384,28 @@ export const createFileChangesStore = (
       }));
       throw error;
     } finally {
-      set((state) => ({
-        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          savingChangeId: null,
-        })),
-        diffModalSession:
-          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
-            ? {
-                ...state.diffModalSession,
-                isSaving: false,
-              }
-            : state.diffModalSession,
-      }));
+      if (isMutationRequestCurrent(mutationRequest)) {
+        set((state) => ({
+          repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            savingChangeId: null,
+          })),
+          diffModalSession:
+            isMutationUiCurrent() && state.diffModalSession &&
+              state.diffModalSession.repositoryId === repositoryId
+              ? {
+                  ...state.diffModalSession,
+                  isSaving: false,
+                }
+              : state.diffModalSession,
+        }));
+      }
+      finishMutationRequest(mutationRequest);
     }
   },
 
   unstageChanges: async (repositoryId, changeIds) => {
+    ensureReviewFresh();
     if (changeIds.length === 0) {
       return;
     }
@@ -2189,6 +2434,9 @@ export const createFileChangesStore = (
     const selectedDiffTarget = get().selectedDiffTarget;
     const affectsOpenModal =
       selectedDiffTarget?.repositoryId === repositoryId && targetIds.has(selectedDiffTarget.changeId);
+    const mutationRequest = beginMutationRequest(repository);
+    const isMutationUiCurrent = () => isMutationRequestCurrent(mutationRequest) &&
+      (!affectsOpenModal || reviewVisitSequence === mutationRequest.reviewVisitSequence);
 
     set((state) => ({
       repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -2225,8 +2473,10 @@ export const createFileChangesStore = (
         });
       }
 
+      if (!isMutationRequestCurrent(mutationRequest)) return;
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
     } catch (error) {
+      if (!isMutationRequestCurrent(mutationRequest)) throw error;
       const message = toServiceError(error).message ||
         tChanges('implement.errors.unstageChangesFailed', 'Failed to unstage changes.');
       set((state) => ({
@@ -2236,7 +2486,8 @@ export const createFileChangesStore = (
           lastError: message,
         })),
         diffModalSession:
-          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+          isMutationUiCurrent() && state.diffModalSession &&
+            state.diffModalSession.repositoryId === repositoryId
             ? {
                 ...state.diffModalSession,
                 isSaving: false,
@@ -2246,23 +2497,28 @@ export const createFileChangesStore = (
       }));
       throw error;
     } finally {
-      set((state) => ({
-        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          savingChangeId: null,
-        })),
-        diffModalSession:
-          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
-            ? {
-                ...state.diffModalSession,
-                isSaving: false,
-              }
-            : state.diffModalSession,
-      }));
+      if (isMutationRequestCurrent(mutationRequest)) {
+        set((state) => ({
+          repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            savingChangeId: null,
+          })),
+          diffModalSession:
+            isMutationUiCurrent() && state.diffModalSession &&
+              state.diffModalSession.repositoryId === repositoryId
+              ? {
+                  ...state.diffModalSession,
+                  isSaving: false,
+                }
+              : state.diffModalSession,
+        }));
+      }
+      finishMutationRequest(mutationRequest);
     }
   },
 
   stageAllChanges: async (repositoryId) => {
+    ensureReviewFresh();
     if (!repositoryId) return;
     const repository = get().getRepository(repositoryId);
     if (!repository) return;
@@ -2275,6 +2531,7 @@ export const createFileChangesStore = (
   },
 
   stageAllTaskChanges: async () => {
+    ensureReviewFresh();
     const targetRepositoryIds = get().repositories
       .filter((repository) =>
         repository.commitState === 'idle' &&
@@ -2299,6 +2556,7 @@ export const createFileChangesStore = (
   },
 
   revertChanges: async (repositoryId, changeIds) => {
+    ensureReviewFresh();
     if (changeIds.length === 0) {
       return;
     }
@@ -2339,6 +2597,9 @@ export const createFileChangesStore = (
       }
       return null;
     })();
+    const mutationRequest = beginMutationRequest(repository);
+    const isMutationUiCurrent = () => isMutationRequestCurrent(mutationRequest) &&
+      (!affectsOpenModal || reviewVisitSequence === mutationRequest.reviewVisitSequence);
 
     set((state) => ({
       repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
@@ -2389,9 +2650,10 @@ export const createFileChangesStore = (
         });
       }
 
+      if (!isMutationRequestCurrent(mutationRequest)) return;
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
 
-      if (affectsOpenModal) {
+      if (affectsOpenModal && isMutationUiCurrent()) {
         const refreshedRepository = get().getRepository(repositoryId);
         if (nextChangeIdAfterRevert && refreshedRepository?.changes.some((change) => change.id === nextChangeIdAfterRevert)) {
           get().openDiffModal(repositoryId, nextChangeIdAfterRevert);
@@ -2400,7 +2662,11 @@ export const createFileChangesStore = (
         }
       }
     } catch (error) {
+      if (!isMutationRequestCurrent(mutationRequest)) throw error;
       const serviceError = toServiceError(error);
+      if (repository.executionMode === 'direct' && serviceError.code === 'REVISION_CONFLICT') {
+        set({ staleDirectRepositoryId: repositoryId, reviewedChanges: {} });
+      }
       const message = serviceError.code === 'REVISION_CONFLICT'
         ? tChanges(
           'implement.errors.reviewChangedSinceLoad',
@@ -2415,7 +2681,8 @@ export const createFileChangesStore = (
           lastError: message,
         })),
         diffModalSession:
-          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
+          isMutationUiCurrent() && state.diffModalSession &&
+            state.diffModalSession.repositoryId === repositoryId
             ? {
               ...state.diffModalSession,
               isSaving: false,
@@ -2425,19 +2692,23 @@ export const createFileChangesStore = (
       }));
       throw error;
     } finally {
-      set((state) => ({
-        repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
-          ...currentRepository,
-          savingChangeId: null,
-        })),
-        diffModalSession:
-          state.diffModalSession && state.diffModalSession.repositoryId === repositoryId
-            ? {
-              ...state.diffModalSession,
-              isSaving: false,
-            }
-            : state.diffModalSession,
-      }));
+      if (isMutationRequestCurrent(mutationRequest)) {
+        set((state) => ({
+          repositories: updateRepositoryState(state.repositories, repositoryId, (currentRepository) => ({
+            ...currentRepository,
+            savingChangeId: null,
+          })),
+          diffModalSession:
+            isMutationUiCurrent() && state.diffModalSession &&
+              state.diffModalSession.repositoryId === repositoryId
+              ? {
+                ...state.diffModalSession,
+                isSaving: false,
+              }
+              : state.diffModalSession,
+        }));
+      }
+      finishMutationRequest(mutationRequest);
     }
   },
 
@@ -2474,6 +2745,7 @@ export const createFileChangesStore = (
   },
 
   saveRightDraft: async () => {
+    ensureReviewFresh();
     const session = get().diffModalSession;
     if (!session) return;
     const repository = get().getRepository(session.repositoryId);
@@ -2487,6 +2759,7 @@ export const createFileChangesStore = (
     }
 
     const nextContent = session.rightDraftContent;
+    const mutationRequest = beginMutationRequest(repository);
 
     set((state) => ({
       repositories: updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
@@ -2524,6 +2797,7 @@ export const createFileChangesStore = (
         expectedRevision = current.revision;
       }
 
+      ensureReviewFresh();
       await deps.tauri.fsWriteFile({
         path,
         content: nextContent,
@@ -2533,6 +2807,17 @@ export const createFileChangesStore = (
         expectedRevision,
       });
 
+      if (!isMutationRequestCurrent(mutationRequest)) return;
+      if (reviewVisitSequence !== mutationRequest.reviewVisitSequence) {
+        set((state) => ({
+          repositories: updateRepositoryState(
+            state.repositories,
+            session.repositoryId,
+            (currentRepository) => ({ ...currentRepository, savingChangeId: null })
+          ),
+        }));
+        return;
+      }
       set((state) => ({
         ...(() => {
           const repositories = updateRepositoryState(state.repositories, session.repositoryId, (currentRepository) => ({
@@ -2558,6 +2843,17 @@ export const createFileChangesStore = (
 
       await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
     } catch (error) {
+      if (!isMutationRequestCurrent(mutationRequest)) throw error;
+      if (reviewVisitSequence !== mutationRequest.reviewVisitSequence) {
+        set((state) => ({
+          repositories: updateRepositoryState(
+            state.repositories,
+            session.repositoryId,
+            (currentRepository) => ({ ...currentRepository, savingChangeId: null })
+          ),
+        }));
+        throw error;
+      }
       const message = toServiceError(error).message ||
         tChanges('implement.errors.loadChangesFailed', 'Failed to load repository changes.');
       set((state) => ({
@@ -2575,6 +2871,8 @@ export const createFileChangesStore = (
         lastError: message,
       }));
       throw error;
+    } finally {
+      finishMutationRequest(mutationRequest);
     }
   },
 
@@ -2593,7 +2891,13 @@ export const createFileChangesStore = (
   },
 
   commitStagedChanges: async (repositoryId, message, internalOptions = {}) => {
+    ensureReviewFresh();
     const task = ensureReviewTask(deps);
+    const requestGeneration = taskReviewGeneration;
+    const isCurrentReview = () => taskReviewGeneration === requestGeneration &&
+      get().currentTaskId === task.id && resolveSelectedTask(deps)?.id === task.id;
+    const initialRepositories = get().repositories.map((entry) =>
+      get().executionRecords[entry.id] || buildCompletionRepositoryRecord(deps, task, entry));
     const repository = get().getRepository(repositoryId);
     const commitMessage = (
       message || repository?.commitMessageDraft || buildDefaultCommitMessage(task.title)
@@ -2673,6 +2977,7 @@ export const createFileChangesStore = (
           }
         }
         await ensureNoForeignStagedFiles(deps, repository.worktreePath, repository.stagedPaths);
+        ensureReviewFresh();
         hash = await deps.tauri.gitCommit({
           repoPath: repository.worktreePath,
           message: commitMessage,
@@ -2686,6 +2991,17 @@ export const createFileChangesStore = (
         branchName: repository.branchName,
         planBranchName: integrationBranchName,
       };
+
+      const result: CommitTaskChangesResult = {
+        hash,
+        taskId: task.id,
+        taskCompleted: false,
+        taskStatus: deps.getTaskState().getTaskById(task.id)?.status ?? null,
+        committedRepositoryId: repositoryId,
+        repositories: initialRepositories,
+      };
+      // Git has committed the original task even if its review is no longer selected.
+      if (!isCurrentReview()) return result;
 
       const currentState = get();
       const nextExecutionRecords = {
@@ -2704,6 +3020,7 @@ export const createFileChangesStore = (
         await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
       }
 
+      if (!isCurrentReview()) return result;
       const refreshedState = get();
       const nextRepositories = refreshedState.repositories.map((currentRepository) => (
         currentRepository.id === repositoryId
@@ -2748,6 +3065,7 @@ export const createFileChangesStore = (
         repositories: completionRecords,
       };
     } catch (error) {
+      if (!isCurrentReview()) throw error;
       const messageText = toServiceError(error).message;
       set((state) => ({
         isCommitting: false,
@@ -2772,7 +3090,15 @@ export const createFileChangesStore = (
   },
 
   commitAllReadyTaskRepositories: async (options = {}) => {
+    ensureReviewFresh();
+    if (get().isCommitting || get().isGeneratingCommitMessages) throw new Error(
+      tChanges('implement.commitInProgress', 'Committing changes...'));
     const task = ensureReviewTask(deps);
+    const requestGeneration = taskReviewGeneration;
+    const isCurrentReview = () => taskReviewGeneration === requestGeneration &&
+      get().currentTaskId === task.id && resolveSelectedTask(deps)?.id === task.id;
+    const initialRepositories = get().repositories.map((repository) =>
+      get().executionRecords[repository.id] || buildCompletionRepositoryRecord(deps, task, repository));
 
     const targetRepositories = getReadyCommitRepositories(get().repositories);
     const targetRepositoryIds = targetRepositories.map((repository) => repository.id);
@@ -2795,8 +3121,8 @@ export const createFileChangesStore = (
     if (!messagesByRepositoryId) {
       set({ isGeneratingCommitMessages: true, lastError: null });
       let generatedMessages: GeneratedCommitMessages;
-      const commitMessageInput = await buildSmartCommitMessageInput(deps, task, targetRepositories);
       try {
+        const commitMessageInput = await buildSmartCommitMessageInput(deps, task, targetRepositories);
         generatedMessages = await generateCommitMessagesWithRetry(
           deps,
           commitMessageInput,
@@ -2806,7 +3132,7 @@ export const createFileChangesStore = (
       } catch (error) {
         const messageText = toServiceError(error).message ||
           tChanges('implement.errors.commitMessageGenerationFailed', 'Could not generate commit messages.');
-        set({
+        if (isCurrentReview()) set({
           isGeneratingCommitMessages: false,
           lastError: null,
         });
@@ -2819,7 +3145,7 @@ export const createFileChangesStore = (
         }
         throw new SmartCommitMessageGenerationError(messageText);
       } finally {
-        set({ isGeneratingCommitMessages: false });
+        if (isCurrentReview()) set({ isGeneratingCommitMessages: false });
       }
 
       messagesByRepositoryId = Object.fromEntries(
@@ -2835,6 +3161,7 @@ export const createFileChangesStore = (
     let attemptedCommit = false;
 
     for (const repositoryId of targetRepositoryIds) {
+      if (!isCurrentReview()) break;
       const repository = get().getRepository(repositoryId);
       if (!repository || !isRepositoryReadyToCommit(repository)) {
         continue;
@@ -2874,7 +3201,7 @@ export const createFileChangesStore = (
       }
     }
 
-    if (attemptedCommit) {
+    if (attemptedCommit && isCurrentReview()) {
       try {
         await get().loadCurrentChanges({ silent: true, preserveDiffModalSession: true });
       } catch (refreshError) {
@@ -2893,10 +3220,10 @@ export const createFileChangesStore = (
     }
 
     const currentState = get();
-    const repositories = currentState.repositories.map((repository) =>
+    const repositories = isCurrentReview() ? currentState.repositories.map((repository) =>
       currentState.executionRecords[repository.id] ||
       buildCompletionRepositoryRecord(deps, task, repository)
-    );
+    ) : initialRepositories;
     const lastCommit = commits[commits.length - 1];
 
     return {

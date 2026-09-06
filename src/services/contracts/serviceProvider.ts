@@ -78,6 +78,7 @@ export interface MCPRuntimeServerSnapshot {
   negotiatedEra?: MCPProtocolEra | null;
   negotiatedProtocolVersion?: string | null;
   protocolDecisionReason?: string | null;
+  lastErrorCode?: string | null;
   lastError?: string | null;
   updatedAt: string;
 }
@@ -230,6 +231,12 @@ export interface ServiceProvider {
     groupId: string;
   }) => Promise<{ projectGroup: ProjectGroup }>;
   archiveProject: (data: {
+    projectId: string;
+  }) => Promise<ProjectDto>;
+  restoreProjectGroup: (data: {
+    groupId: string;
+  }) => Promise<{ projectGroup: ProjectGroup }>;
+  restoreProject: (data: {
     projectId: string;
   }) => Promise<ProjectDto>;
   removeProjectGroup: (data: {

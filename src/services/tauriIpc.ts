@@ -1509,6 +1509,35 @@ export async function listMessages(
   return invoke<DbMessage[]>("db_list_messages", { conversationId });
 }
 
+export interface MessageSearchResult {
+  messageId: string;
+  conversationId: string;
+  conversationTitle: string;
+  conversationDescription: string | null;
+  role: string;
+  snippet: string;
+  createdAt: string;
+}
+
+export interface MessageSearchPage {
+  results: MessageSearchResult[];
+  nextOffset: number | null;
+}
+
+export async function searchMessages(params: {
+  query: string;
+  conversationIds: string[];
+  limit?: number;
+  offset?: number;
+}): Promise<MessageSearchPage> {
+  return invoke<MessageSearchPage>("db_search_messages", {
+    query: params.query,
+    conversationIds: params.conversationIds,
+    limit: params.limit ?? 25,
+    offset: params.offset ?? 0,
+  });
+}
+
 export async function dbGetArchitectPlanConversationSync(
   conversationId: string,
 ): Promise<DbArchitectPlanConversationSync | null> {
@@ -2663,11 +2692,13 @@ export async function gitWorktreeInspect(params: {
   repoPath: string;
   taskId: string;
   branchName?: string | null;
+  readOnly?: boolean;
 }): Promise<GitWorktreeInspectionDto> {
   return invoke<GitWorktreeInspectionDto>("git_worktree_inspect", {
     repoPath: params.repoPath,
     taskId: params.taskId,
     branchName: params.branchName ?? null,
+    ...(params.readOnly === undefined ? {} : { readOnly: params.readOnly }),
   });
 }
 
@@ -3192,6 +3223,22 @@ export async function workspaceArchiveProject(params: {
   projectId: string;
 }): Promise<Project> {
   return invoke<Project>("workspace_archive_project", {
+    projectId: params.projectId,
+  });
+}
+
+export async function workspaceRestoreProjectGroup(params: {
+  groupId: string;
+}): Promise<ProjectGroup> {
+  return invoke<ProjectGroup>("workspace_restore_project_group", {
+    groupId: params.groupId,
+  });
+}
+
+export async function workspaceRestoreProject(params: {
+  projectId: string;
+}): Promise<Project> {
+  return invoke<Project>("workspace_restore_project", {
     projectId: params.projectId,
   });
 }
@@ -4363,6 +4410,20 @@ export async function appInstallerCloseRespond(accepted: boolean): Promise<void>
   return invoke<void>('app_installer_close_respond', { accepted });
 }
 
+export interface AppDiagnosticReportPreviewDto {
+  reportId: string;
+  suggestedFileName: string;
+  content: string;
+}
+
+export async function appDiagnosticGenerate(): Promise<AppDiagnosticReportPreviewDto> {
+  return invoke<AppDiagnosticReportPreviewDto>('app_diagnostic_generate');
+}
+
+export async function appDiagnosticSave(reportId: string, path: string): Promise<void> {
+  return invoke<void>('app_diagnostic_save', { reportId, path });
+}
+
 // ============ Utility ============
 
 /**
@@ -4408,3 +4469,12 @@ export async function safeInvoke<T>(
     throw error;
   }
 }
+
+export interface LocalBackupStatus {
+  message: string;
+  browser: Record<string, string> | null;
+}
+export const localBackupSchedule = (operation: 'export' | 'restore', path: string, browser: Record<string, string>, confirmed: boolean): Promise<void> =>
+  invoke('local_backup_schedule', { operation, path, browser, confirmed });
+export const localBackupStatus = (): Promise<LocalBackupStatus> => invoke('local_backup_status');
+export const localBackupAcknowledge = (): Promise<void> => invoke('local_backup_acknowledge');

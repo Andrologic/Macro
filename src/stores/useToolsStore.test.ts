@@ -82,6 +82,10 @@ const loadUseToolsStore = async () => {
         ],
       })),
       mcpCallTool: mock(async () => ({ content: 'ok' })),
+      mcpRuntimeGetSnapshot: mock(async () => ({
+        generatedAt: '2026-09-05T20:00:00.000Z',
+        servers: [],
+      })),
       mcpRuntimeConnect: mock(async () => ({
         key: {
           serverId: 'github',
@@ -219,16 +223,42 @@ describe('useToolsStore chat toolbox policy', () => {
 
     const { services } = await import('../services');
     (services.mcpRuntimeCallTool as unknown as {
-      mockResolvedValueOnce: (value: { content: string; isError: boolean }) => void;
+      mockResolvedValueOnce: (value: {
+        content: string;
+        isError: boolean;
+        rawResult?: unknown;
+      }) => void;
     }).mockResolvedValueOnce({
       content: 'Access denied by MCP server',
       isError: true,
+      rawResult: { code: 'MCP_ACCESS_DENIED' },
     });
 
     await expect(
       useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
     ).rejects.toThrow('Access denied by MCP server');
     expect(useToolsStore.getState().mcpServers[0]?.status).toBe('online');
+    expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe('MCP_ACCESS_DENIED');
+
+    (services.mcpRuntimeGetSnapshot as unknown as {
+      mockResolvedValueOnce: (value: unknown) => void;
+    }).mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:05.000Z',
+      servers: [{
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        status: 'ready',
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-09-05T20:00:04.000Z',
+      }],
+    });
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+    expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe('MCP_ACCESS_DENIED');
   });
 
   it('degrades a server only when the persistent runtime reports a transport failure', async () => {
@@ -244,9 +274,110 @@ describe('useToolsStore chat toolbox policy', () => {
       message: 'Transport closed',
     });
 
-    await expect(
-      useToolsStore.getState().callMCPTool('mcp__github__list_issues', {})
-    ).rejects.toThrow('Transport closed');
+    const call = useToolsStore.getState().callMCPTool('mcp__github__list_issues', {});
+    await expect(call).rejects.toMatchObject({
+      code: 'MCP_RUNTIME_CALL_TOOL_FAILED',
+      message: expect.stringContaining('Transport closed'),
+    });
     expect(useToolsStore.getState().mcpServers[0]?.status).toBe('degraded');
+    expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBe(
+      'MCP_RUNTIME_CALL_TOOL_FAILED'
+    );
+
+    (services.mcpRuntimeGetSnapshot as unknown as {
+      mockResolvedValueOnce: (value: unknown) => void;
+    }).mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:05.000Z',
+      servers: [{
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        status: 'ready',
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: '2026-09-05T20:00:04.000Z',
+      }],
+    });
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+    expect(useToolsStore.getState().mcpServers[0]?.lastErrorCode).toBeNull();
+  });
+
+  it('hydrates autonomous runtime failures and their codes from the MCP snapshot', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    (services.mcpRuntimeGetSnapshot as unknown as {
+      mockResolvedValueOnce: (value: unknown) => void;
+    }).mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:05.000Z',
+      servers: [{
+        key: {
+          serverId: 'github',
+          projectId: null,
+          projectIds: [],
+          configGeneration: 1,
+        },
+        status: 'failed',
+        lastErrorCode: 'MCP_RUNTIME_RECONNECT_TIMEOUT',
+        lastError: 'Reconnect circuit timed out',
+        updatedAt: '2026-09-05T20:00:04.000Z',
+      }],
+    });
+
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+
+    expect(useToolsStore.getState().mcpServers[0]).toMatchObject({
+      status: 'degraded',
+      lastErrorCode: 'MCP_RUNTIME_RECONNECT_TIMEOUT',
+      lastError: 'Reconnect circuit timed out',
+    });
+  });
+
+  it('clears a recovered legacy runtime error even when its snapshot has no code', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    const snapshotMock = services.mcpRuntimeGetSnapshot as unknown as {
+      mockResolvedValueOnce: (value: unknown) => void;
+    };
+    const key = {
+      serverId: 'github',
+      projectId: null,
+      projectIds: [],
+      configGeneration: 1,
+    };
+    snapshotMock.mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:05.000Z',
+      servers: [{
+        key,
+        status: 'failed',
+        lastError: 'Legacy reconnect failed',
+        updatedAt: '2026-09-05T20:00:04.000Z',
+      }],
+    });
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+    expect(useToolsStore.getState().mcpServers[0]).toMatchObject({
+      status: 'degraded',
+      lastErrorCode: null,
+      lastError: 'Legacy reconnect failed',
+    });
+
+    snapshotMock.mockResolvedValueOnce({
+      generatedAt: '2026-09-05T20:00:07.000Z',
+      servers: [{
+        key,
+        status: 'ready',
+        updatedAt: '2026-09-05T20:00:06.000Z',
+      }],
+    });
+    await useToolsStore.getState().refreshMCPRuntimeSnapshot();
+    expect(useToolsStore.getState().mcpServers[0]).toMatchObject({
+      status: 'online',
+      lastErrorCode: null,
+      lastError: null,
+    });
   });
 });

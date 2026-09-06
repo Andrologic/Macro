@@ -1,4 +1,8 @@
 {
+  "startReview": "Start review",
+  "startReviewBusy": "Finish the current turn or resolve the tool approval before starting review.",
+  "startReviewUnavailable": "This task cannot enter review in its current state.",
+  "startReviewReady": "Task is in review. Send your next message in its conversation to start the reviewer.",
   "statusAttention": "Needs attention",
   "taskNextActionOpenApproval": "Next: open the approval request",
   "taskNextActionFinalizePlan": "Next: finalize the plan",
@@ -575,5 +579,39 @@
   "diffRenderFailedDescription": "The changes panel stayed open. Close this file and retry, or inspect the file directly.",
   "reviewBeforeValidation": "Open every pending diff before validating changes.",
   "reviewArtifactBeforeValidation": "Open this artifact before validating it.",
-  "taskCommandsPlanMutationActive": "Stop active task commands before archiving or deleting this plan."
+  "taskCommandsPlanMutationActive": "Stop active task commands before archiving or deleting this plan.",
+  "worktreeDiagnostic": {
+    "title": "Worktree diagnostic",
+    "repository": "Repository",
+    "path": "Worktree path",
+    "expectedBranch": "Expected branch",
+    "branch": "Current branch",
+    "state": "State",
+    "changes": "Changes",
+    "unknown": "Unknown",
+    "dirty": "Changes present",
+    "clean": "Clean",
+    "repaired": "Worktree repaired",
+    "refused": "Repair could not complete",
+    "repair": "Repair safely",
+    "refresh": "Refresh",
+    "stopBeforeRepair": "Stop the task before repairing its worktree. Archived tasks cannot be repaired here.",
+    "branchMismatch": "This worktree uses another branch. Preserve your changes and check out the expected branch before retrying.",
+    "protection": "Repair preserves existing content. If a path contains files, move it to a safe backup location before retrying. Refresh checks its current state. Registration backups remain in macro-worktree-backups inside the common Git directory.",
+    "states": {
+      "absent": "Absent",
+      "ready": "Ready",
+      "stale_registration": "Stale registration",
+      "orphan_path": "Unregistered path",
+      "invalid_repo": "Invalid repository"
+    }
+  },
+  "wslCapabilities": "For WSL projects, metadata synchronization, task worktrees, file review and the merge workflow are unavailable. Basic Git operations remain available. Use a local clone for these task workflows.",
+  "expiredReviewHelp": "This direct review expired or its files changed. Refresh it, inspect the current diffs, then validate again. Your navigation and unsaved draft are preserved.",
+  "refreshReview": "Refresh review",
+  "partialCommitHelp": "Some repositories are committed. Resume to commit only the remaining ready repositories.",
+  "reviewProgress": "{{reviewed}} / {{total}} file diffs opened",
+  "nextUnreviewedDiff": "Next unopened diff",
+  "resumeRemainingCommits": "Resume remaining commits",
+  "detachedReviewDraft": "This file is no longer in the review. Copy your unsaved draft before closing; file actions are unavailable."
 }

@@ -11,6 +11,7 @@ describe('classifyPaths', () => {
       configuration: false,
       linux: false,
       windows: false,
+      macos: false,
     });
   });
 
@@ -30,6 +31,7 @@ describe('classifyPaths', () => {
     const result = classifyPaths(['src/components/App.tsx']);
     expect(result.linux).toBe(true);
     expect(result.windows).toBe(false);
+    expect(result.macos).toBe(false);
   });
 
   test('runs Linux and Windows validation for Rust changes', () => {
@@ -38,6 +40,7 @@ describe('classifyPaths', () => {
     expect(result.sidecar).toBe(false);
     expect(result.linux).toBe(true);
     expect(result.windows).toBe(true);
+    expect(result.macos).toBe(true);
   });
 
   test('identifies sidecar changes without broadening unrelated native changes', () => {
@@ -51,6 +54,7 @@ describe('classifyPaths', () => {
       expect(result.sidecar).toBe(true);
       expect(result.linux).toBe(true);
       expect(result.windows).toBe(true);
+      expect(result.macos).toBe(true);
     }
   });
 
@@ -68,6 +72,7 @@ describe('classifyPaths', () => {
       expect(result.configuration).toBe(true);
       expect(result.linux).toBe(true);
       expect(result.windows).toBe(true);
+      expect(result.macos).toBe(true);
     }
   });
 
@@ -77,6 +82,7 @@ describe('classifyPaths', () => {
       expect(result.configuration).toBe(true);
       expect(result.linux).toBe(true);
       expect(result.windows).toBe(true);
+      expect(result.macos).toBe(true);
     }
   });
 
@@ -85,6 +91,7 @@ describe('classifyPaths', () => {
     expect(result.configuration).toBe(true);
     expect(result.linux).toBe(true);
     expect(result.windows).toBe(true);
+    expect(result.macos).toBe(true);
   });
 });
 

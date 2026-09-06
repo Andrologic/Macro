@@ -4352,7 +4352,17 @@ pub async fn archive_project_group(
         })?;
 
     for project in group.projects.iter_mut() {
+        if project.group_archive_previous_status.is_none() {
+            project.group_archive_previous_status = Some(project.status.clone());
+            project.group_archive_previous_archived_at = project.archived_at.clone();
+            project.group_archive_previous_archived_from_status =
+                project.archived_from_status.clone();
+        }
+        if project.status != "archived" {
+            project.archived_from_status = Some(project.status.clone());
+        }
         project.status = "archived".to_string();
+        project.archived_at = Some(chrono::Utc::now().to_rfc3339());
     }
 
     let (sanitized_state, _) = persist_sanitized_state(
@@ -4383,7 +4393,11 @@ pub async fn archive_project(
     let mut updated_project: Option<ProjectDto> = None;
 
     if let Some(project) = find_project_by_id_mut_in_state(&mut state, project_id) {
+        if project.status != "archived" {
+            project.archived_from_status = Some(project.status.clone());
+        }
         project.status = "archived".to_string();
+        project.archived_at = Some(chrono::Utc::now().to_rfc3339());
         updated_project = Some(project.clone());
     }
 
@@ -4405,6 +4419,80 @@ pub async fn archive_project(
         .cloned()
         .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {}", project_id)))?;
     Ok(updated_project)
+}
+
+pub async fn restore_project_group(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    group_id: &str,
+) -> Result<ProjectGroupDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let group = state
+        .project_groups
+        .iter_mut()
+        .find(|group| group.id == group_id)
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project group id: {group_id}")))?;
+    for project in &mut group.projects {
+        if let Some(previous_status) = project.group_archive_previous_status.take() {
+            project.status = previous_status;
+            project.archived_at = project.group_archive_previous_archived_at.take();
+            project.archived_from_status =
+                project.group_archive_previous_archived_from_status.take();
+        } else if project.status == "archived" {
+            project.status = project
+                .archived_from_status
+                .take()
+                .unwrap_or_else(|| "active".to_string());
+            project.archived_at = None;
+        }
+    }
+    let (sanitized_state, _) = persist_sanitized_state(
+        workspace_path,
+        metadata_root,
+        state,
+        "restore_project_group",
+    )
+    .await?;
+    sanitized_state
+        .project_groups
+        .into_iter()
+        .find(|group| group.id == group_id)
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project group id: {group_id}")))
+}
+
+pub async fn restore_project(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    project_id: &str,
+) -> Result<ProjectDto> {
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    let project = find_project_by_id_mut_in_state(&mut state, project_id)
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {project_id}")))?;
+    if project.status == "archived" {
+        project.status = project
+            .archived_from_status
+            .take()
+            .unwrap_or_else(|| "active".to_string());
+        project.archived_at = None;
+    }
+    project.group_archive_previous_status = None;
+    project.group_archive_previous_archived_at = None;
+    project.group_archive_previous_archived_from_status = None;
+    let (sanitized_state, _) =
+        persist_sanitized_state(workspace_path, metadata_root, state, "restore_project").await?;
+    sanitized_state
+        .standalone_projects
+        .into_iter()
+        .chain(
+            sanitized_state
+                .project_groups
+                .into_iter()
+                .flat_map(|group| group.projects),
+        )
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| BackendError::Validation(format!("Unknown project id: {project_id}")))
 }
 
 pub async fn remove_project_group(
@@ -5640,6 +5728,11 @@ fn build_recovered_standalone_project_from_workspace_path(
         git_flow_settings: ProjectGitFlowSettingsDto::default(),
         created_at: now,
         status: "active".to_string(),
+        archived_at: None,
+        archived_from_status: None,
+        group_archive_previous_status: None,
+        group_archive_previous_archived_at: None,
+        group_archive_previous_archived_from_status: None,
         user_read_only: false,
         direct_edit: false,
         git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
@@ -7460,6 +7553,11 @@ fn build_project(
             path: project_path,
             created_at: now,
             status: "active".to_string(),
+            archived_at: None,
+            archived_from_status: None,
+            group_archive_previous_status: None,
+            group_archive_previous_archived_at: None,
+            group_archive_previous_archived_from_status: None,
             git_flow_settings: detected_git_flow_settings,
             user_read_only: false,
             direct_edit: false,
@@ -7522,6 +7620,11 @@ async fn build_project_for_add(
             path: project_path,
             created_at: now,
             status: "active".to_string(),
+            archived_at: None,
+            archived_from_status: None,
+            group_archive_previous_status: None,
+            group_archive_previous_archived_at: None,
+            group_archive_previous_archived_from_status: None,
             git_flow_settings: detected_git_flow_settings,
             user_read_only: false,
             direct_edit,
@@ -8392,6 +8495,11 @@ mod tests {
             },
             created_at: "2026-03-14T00:00:00.000Z".to_string(),
             status: "active".to_string(),
+            archived_at: None,
+            archived_from_status: None,
+            group_archive_previous_status: None,
+            group_archive_previous_archived_at: None,
+            group_archive_previous_archived_from_status: None,
             user_read_only: false,
             direct_edit: false,
             git_setup_state: PROJECT_GIT_SETUP_READY.to_string(),
@@ -10503,6 +10611,131 @@ mod tests {
         );
         assert_eq!(repaired.standalone_projects.len(), 1);
         assert_eq!(repaired.standalone_projects[0].id, "project-existing");
+    }
+
+    #[tokio::test]
+    async fn project_and_group_archives_restore_without_removing_registry_entries() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let standalone_path = temp.path().join("standalone");
+        let grouped_path = temp.path().join("grouped");
+        let grouped_peer_path = temp.path().join("grouped-peer");
+        let previously_archived_path = temp.path().join("previously-archived");
+        init_git_repo(&standalone_path, "main", &[]);
+        init_git_repo(&grouped_path, "main", &[]);
+        init_git_repo(&grouped_peer_path, "main", &[]);
+        init_git_repo(&previously_archived_path, "main", &[]);
+        let mut grouped_project =
+            make_project("project-grouped", grouped_path.to_string_lossy().as_ref());
+        grouped_project.status = "paused".to_string();
+        let grouped_peer_project = make_project(
+            "project-grouped-peer",
+            grouped_peer_path.to_string_lossy().as_ref(),
+        );
+        let mut previously_archived_project = make_project(
+            "project-previously-archived",
+            previously_archived_path.to_string_lossy().as_ref(),
+        );
+        previously_archived_project.status = "archived".to_string();
+        previously_archived_project.archived_at = Some("2026-09-01T00:00:00Z".to_string());
+        previously_archived_project.archived_from_status = Some("active".to_string());
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                standalone_projects: vec![make_project(
+                    "project-standalone",
+                    standalone_path.to_string_lossy().as_ref(),
+                )],
+                project_groups: vec![ProjectGroupDto {
+                    id: "group-archive".to_string(),
+                    name: "Archive group".to_string(),
+                    is_open: true,
+                    projects: vec![
+                        grouped_project,
+                        grouped_peer_project,
+                        previously_archived_project,
+                    ],
+                }],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist archive fixture");
+
+        let archived_project =
+            archive_project(&standalone_path, &metadata_root, "project-standalone")
+                .await
+                .expect("archive standalone project");
+        assert_eq!(archived_project.status, "archived");
+        let restored_project =
+            restore_project(&standalone_path, &metadata_root, "project-standalone")
+                .await
+                .expect("restore standalone project");
+        assert_eq!(restored_project.status, "active");
+
+        let mut grouped_project =
+            make_project("project-grouped", grouped_path.to_string_lossy().as_ref());
+        grouped_project.status = "paused".to_string();
+        let grouped_peer_project = make_project(
+            "project-grouped-peer",
+            grouped_peer_path.to_string_lossy().as_ref(),
+        );
+        let mut previously_archived_project = make_project(
+            "project-previously-archived",
+            previously_archived_path.to_string_lossy().as_ref(),
+        );
+        previously_archived_project.status = "archived".to_string();
+        previously_archived_project.archived_at = Some("2026-09-01T00:00:00Z".to_string());
+        previously_archived_project.archived_from_status = Some("active".to_string());
+        persist_state_sync(
+            &metadata_root,
+            &WorkspaceState {
+                project_groups: vec![ProjectGroupDto {
+                    id: "group-archive".to_string(),
+                    name: "Archive group".to_string(),
+                    is_open: true,
+                    projects: vec![
+                        grouped_project,
+                        grouped_peer_project,
+                        previously_archived_project,
+                    ],
+                }],
+                ..WorkspaceState::default()
+            },
+        )
+        .expect("persist group archive fixture");
+
+        let archived_group = archive_project_group(&grouped_path, &metadata_root, "group-archive")
+            .await
+            .expect("archive project group");
+        assert!(archived_group
+            .projects
+            .iter()
+            .all(|project| project.status == "archived"));
+        let restored_group = restore_project_group(&grouped_path, &metadata_root, "group-archive")
+            .await
+            .expect("restore project group");
+        assert_eq!(restored_group.projects.len(), 3);
+        let restored_statuses = restored_group
+            .projects
+            .iter()
+            .map(|project| (project.id.as_str(), project.status.as_str()))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(restored_statuses["project-grouped"], "paused");
+        assert_eq!(restored_statuses["project-grouped-peer"], "active");
+        assert_eq!(restored_statuses["project-previously-archived"], "archived");
+        let previously_archived = restored_group
+            .projects
+            .iter()
+            .find(|project| project.id == "project-previously-archived")
+            .expect("previously archived project");
+        assert_eq!(
+            previously_archived.archived_at.as_deref(),
+            Some("2026-09-01T00:00:00Z")
+        );
+        assert_eq!(
+            previously_archived.archived_from_status.as_deref(),
+            Some("active")
+        );
     }
 
     #[tokio::test]

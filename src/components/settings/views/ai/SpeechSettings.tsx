@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { SpeechProviderConfig } from '../../../../types';
 import { useSpeechToTextStore } from '../../../../stores/useSpeechToTextStore';
@@ -12,6 +12,9 @@ import {
   isMacroAiSpeechProvider,
   MACRO_AI_SPEECH_PROVIDER_ID,
 } from '../../../../config/macroAi';
+import { prepareAudioForSpeechProvider } from '../../../../services/speech/andrologicAudio';
+import { MicrophoneRecorder } from '../../../../services/speech/microphoneRecorder';
+import { SpeechSettingsTestSession } from '../../../../services/speech/speechSettingsTest';
 
 interface ProviderDraft {
   id: string | null;
@@ -67,11 +70,16 @@ export const SpeechSettings: React.FC = () => {
     createProvider,
     updateProvider,
     deleteProvider,
+    transcribe,
   } = useSpeechToTextStore();
   const [draft, setDraft] = useState<ProviderDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [providerToDelete, setProviderToDelete] = useState<SpeechProviderConfig | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [testPhase, setTestPhase] = useState<'idle' | 'requesting' | 'recording' | 'transcribing'>('idle');
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+  const testSessionRef = useRef<SpeechSettingsTestSession | null>(null);
   const selectedProvider = useMemo(
     () => providers.find((provider) => provider.id === selectedProviderId) ?? null,
     [providers, selectedProviderId],
@@ -81,6 +89,91 @@ export const SpeechSettings: React.FC = () => {
   useEffect(() => {
     void initialize();
   }, [initialize]);
+
+  useEffect(() => () => {
+    testSessionRef.current?.cancel();
+    testSessionRef.current = null;
+  }, []);
+
+  const finishMicrophoneTest = async (session: SpeechSettingsTestSession) => {
+    if (testSessionRef.current !== session) return;
+    setTestPhase('transcribing');
+    try {
+      const result = await session.finish();
+      if (testSessionRef.current !== session) return;
+      setTestResult(result.text);
+      setTestError(null);
+    } catch (error) {
+      if (testSessionRef.current !== session) return;
+      if (!(error instanceof Error && error.name === 'AbortError')) {
+        setTestError(error instanceof Error ? error.message : t(
+          'speech.settings.testFailed',
+          'The microphone test failed.',
+        ));
+      }
+    } finally {
+      if (testSessionRef.current === session) {
+        testSessionRef.current = null;
+        setTestPhase('idle');
+      }
+    }
+  };
+
+  const startMicrophoneTest = async () => {
+    if (!selectedProvider) {
+      setTestError(t('speech.settings.testProviderRequired', 'Select an enabled provider before testing.'));
+      setTestResult(null);
+      return;
+    }
+    const recorder = new MicrophoneRecorder();
+    const session = new SpeechSettingsTestSession({
+      recorder,
+      prepareAudio: (recorded, signal) => {
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        return prepareAudioForSpeechProvider(recorded, selectedProvider.id);
+      },
+      transcribe: async (recorded, signal) => {
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        const audio = new Uint8Array(await recorded.blob.arrayBuffer());
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        return transcribe({
+          providerId: selectedProvider.id,
+          audio,
+          mimeType: recorded.mimeType,
+          fileName: recorded.fileName,
+        });
+      },
+    });
+    testSessionRef.current = session;
+    setTestPhase('requesting');
+    setTestResult(null);
+    setTestError(null);
+    let autoStopped = false;
+    try {
+      await session.start(15, () => {
+        autoStopped = true;
+        void finishMicrophoneTest(session);
+      });
+      if (testSessionRef.current === session && !autoStopped) setTestPhase('recording');
+    } catch (error) {
+      if (testSessionRef.current !== session) return;
+      testSessionRef.current = null;
+      setTestPhase('idle');
+      setTestError(error instanceof Error ? error.message : t(
+        'speech.settings.testFailed',
+        'The microphone test failed.',
+      ));
+    }
+  };
+
+  const cancelMicrophoneTest = () => {
+    const session = testSessionRef.current;
+    testSessionRef.current = null;
+    session?.cancel();
+    setTestPhase('idle');
+    setTestError(null);
+    setTestResult(t('speech.settings.testCancelled', 'Microphone test cancelled.'));
+  };
 
   const saveDraft = async () => {
     if (!draft || !draft.name.trim() || !draft.baseUrl.trim() || !draft.model.trim()) {
@@ -229,6 +322,68 @@ export const SpeechSettings: React.FC = () => {
               aria-label={t('speech.settings.enhancementTitle', 'Smart transcript cleanup')}
             />
           </div>
+        </div>
+        <div className="mt-4 border-t border-border pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h5 className="text-sm font-medium text-foreground">
+                {t('speech.settings.testTitle', 'Test microphone and transcription')}
+              </h5>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t(
+                  'speech.settings.testDescription',
+                  'Records up to 15 seconds and sends that recording to the selected provider only for this test.',
+                )}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {testPhase === 'recording' ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const session = testSessionRef.current;
+                    if (session) void finishMicrophoneTest(session);
+                  }}
+                  className="rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                >
+                  {t('speech.settings.testStop', 'Stop and transcribe')}
+                </button>
+              ) : testPhase === 'idle' ? (
+                <button
+                  type="button"
+                  onClick={() => void startMicrophoneTest()}
+                  className="rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                >
+                  {t('speech.settings.testStart', 'Test microphone')}
+                </button>
+              ) : (
+                <span role="status" className="text-sm text-muted-foreground">
+                  {testPhase === 'requesting'
+                    ? t('speech.settings.testRequesting', 'Requesting microphone access...')
+                    : t('speech.settings.testTranscribing', 'Transcribing test...')}
+                </span>
+              )}
+              {testPhase !== 'idle' && (
+                <button
+                  type="button"
+                  onClick={cancelMicrophoneTest}
+                  className="rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
+                >
+                  {t('common.cancel', 'Cancel')}
+                </button>
+              )}
+            </div>
+          </div>
+          {testResult && (
+            <p role="status" className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-3 py-2 text-sm text-foreground">
+              {testResult}
+            </p>
+          )}
+          {testError && (
+            <p role="alert" className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {testError}
+            </p>
+          )}
         </div>
       </section>
 

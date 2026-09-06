@@ -1,4 +1,8 @@
 {
+  "startReview": "Review starten",
+  "startReviewBusy": "Beenden Sie den aktuellen Durchlauf oder klären Sie die Werkzeugfreigabe, bevor Sie das Review starten.",
+  "startReviewUnavailable": "Diese Aufgabe kann im aktuellen Zustand nicht ins Review wechseln.",
+  "startReviewReady": "Die Aufgabe ist im Review. Senden Sie Ihre nächste Nachricht in der zugehörigen Unterhaltung, um den Review-Agenten zu starten.",
   "statusAttention": "Zu erledigen",
   "taskNextActionOpenApproval": "Weiter: Genehmigungsanfrage öffnen",
   "taskNextActionFinalizePlan": "Weiter: Plan abschließen",
@@ -575,5 +579,39 @@
   "diffRenderFailedDescription": "Das Änderungen-Panel blieb geöffnet. Schließe diese Datei und versuche es erneut, oder prüfe die Datei direkt.",
   "reviewBeforeValidation": "Öffnen Sie jeden ausstehenden Diff, bevor Sie die Änderungen bestätigen.",
   "reviewArtifactBeforeValidation": "Öffnen Sie dieses Artefakt, bevor Sie es bestätigen.",
-  "taskCommandsPlanMutationActive": "Beenden Sie aktive Aufgabenbefehle, bevor Sie diesen Plan archivieren oder löschen."
+  "taskCommandsPlanMutationActive": "Beenden Sie aktive Aufgabenbefehle, bevor Sie diesen Plan archivieren oder löschen.",
+  "worktreeDiagnostic": {
+    "title": "Worktree-Diagnose",
+    "repository": "Repository",
+    "path": "Worktree-Pfad",
+    "expectedBranch": "Erwarteter Branch",
+    "branch": "Aktueller Branch",
+    "state": "Status",
+    "changes": "Änderungen",
+    "unknown": "Unbekannt",
+    "dirty": "Änderungen vorhanden",
+    "clean": "Sauber",
+    "repaired": "Worktree repariert",
+    "refused": "Reparatur fehlgeschlagen",
+    "repair": "Sicher reparieren",
+    "refresh": "Aktualisieren",
+    "stopBeforeRepair": "Stoppe die Aufgabe vor der Reparatur. Archivierte Aufgaben können hier nicht repariert werden.",
+    "branchMismatch": "Dieser Worktree verwendet einen anderen Branch. Sichere deine Änderungen und wechsle zum erwarteten Branch.",
+    "protection": "Die Reparatur erhält vorhandene Dateien. Verschiebe einen belegten Pfad zuerst an einen sicheren Sicherungsort. Aktualisieren prüft den aktuellen Status. Registrierungssicherungen bleiben in macro-worktree-backups im gemeinsamen Git-Verzeichnis.",
+    "states": {
+      "absent": "Fehlt",
+      "ready": "Bereit",
+      "stale_registration": "Veraltete Registrierung",
+      "orphan_path": "Nicht registrierter Pfad",
+      "invalid_repo": "Ungültiges Repository"
+    }
+  },
+  "wslCapabilities": "Für WSL-Projekte sind Metadatensynchronisierung, Aufgaben-Worktrees, Dateiprüfung und der Merge-Workflow nicht verfügbar. Grundlegende Git-Operationen bleiben verfügbar. Verwende für diese Aufgaben einen lokalen Klon.",
+  "expiredReviewHelp": "Diese direkte Prüfung ist abgelaufen oder ihre Dateien wurden geändert. Aktualisiere sie, prüfe die aktuellen Unterschiede und bestätige erneut. Navigation und ungespeicherter Entwurf bleiben erhalten.",
+  "refreshReview": "Prüfung aktualisieren",
+  "partialCommitHelp": "Einige Repositories sind committet. Fahre fort, um nur die verbleibenden bereiten Repositories zu committen.",
+  "reviewProgress": "{{reviewed}} / {{total}} Datei-Diffs geöffnet",
+  "nextUnreviewedDiff": "Nächster ungeöffneter Diff",
+  "resumeRemainingCommits": "Verbleibende Commits fortsetzen",
+  "detachedReviewDraft": "Diese Datei ist nicht mehr in der Prüfung. Kopiere den ungespeicherten Entwurf vor dem Schließen; Dateiaktionen sind nicht verfügbar."
 }

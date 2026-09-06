@@ -135,6 +135,21 @@ import { devLogger } from '../utils/devLogger';
 
 type TaskSource = 'architect' | 'mixed' | 'fallback' | 'empty';
 
+export interface SuccessfulTaskCatalogLoad {
+  loadId: string;
+  revision: number;
+  selectedGroupId: string | null;
+  selectedProjectId: string | null;
+  taskIds: string[];
+}
+
+let successfulTaskCatalogLoadSequence = 0;
+
+const createSuccessfulTaskCatalogLoadId = (): string =>
+  typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${++successfulTaskCatalogLoadSequence}`;
+
 export interface TaskCompletionRepositoryRecord {
   projectId: string;
   repoPath: string;
@@ -1871,6 +1886,7 @@ interface TaskStore {
   hasStandaloneTasks: boolean;
   publishedStandaloneTasks: Record<string, boolean>;
   isLoading: boolean;
+  lastSuccessfulCatalogLoad: SuccessfulTaskCatalogLoad | null;
   mergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState>;
   planFinalizationRuntimeByPlanId: Record<string, PlanFinalizationRuntimeState>;
   lastError: string | null;
@@ -2627,6 +2643,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   hasStandaloneTasks: false,
   publishedStandaloneTasks: {},
   isLoading: false,
+  lastSuccessfulCatalogLoad: null,
   mergeWorkflowRuntimeByTaskId: {},
   planFinalizationRuntimeByPlanId: {},
   lastError: null,
@@ -2909,6 +2926,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         source: catalog.source,
         lastError: null,
         isLoading: false,
+        lastSuccessfulCatalogLoad: {
+          loadId: createSuccessfulTaskCatalogLoadId(),
+          revision: (get().lastSuccessfulCatalogLoad?.revision ?? 0) + 1,
+          selectedGroupId: appStateAtStart.selectedGroupId,
+          selectedProjectId: appStateAtStart.selectedProjectId,
+          taskIds: tasks.map((task) => task.id),
+        },
       });
 
       if (restoreSelection) {

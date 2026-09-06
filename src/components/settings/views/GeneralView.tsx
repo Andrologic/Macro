@@ -1,3 +1,4 @@
+import { BackupSettingsSection } from "./BackupSettingsSection";
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { changeLanguage, resolveSupportedLanguage } from '../../../i18n';
@@ -409,6 +410,7 @@ export const GeneralView: React.FC = () => {
                     </div>
                 </div>
             </section>
+            <BackupSettingsSection />
         </div>
     );
 };

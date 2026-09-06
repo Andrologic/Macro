@@ -38,6 +38,7 @@ const loadProjectModal = async () => {
   }));
   mock.module('@tauri-apps/plugin-dialog', () => ({
     open: mock(async () => null),
+    save: mock(async () => null),
   }));
   mock.module('../../services', () => ({
     services: {

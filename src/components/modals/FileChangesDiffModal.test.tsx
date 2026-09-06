@@ -492,6 +492,32 @@ describe('FileChangesDiffModal', () => {
     expect(unstageChangesMock).toHaveBeenCalledWith('repo-1', ['change-2']);
   });
 
+  it('records a diff only after hydration and invalidates equal-length edits without automatically reviewing them again', async () => {
+    repository.changes = repository.changes.map((change) => change.id === diffSession.changeId
+      ? { ...change, requiresHydration: true } : change);
+    diffSession.isHydratingFullContext = true;
+    seedStore();
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+    expect(useFileChangesStore.getState().isChangeReviewed(repository.id, diffSession.changeId)).toBe(false);
+    await act(async () => {
+      repository = { ...repository, changes: repository.changes.map((change) => ({ ...change, requiresHydration: false })) };
+      useFileChangesStore.setState({ repositories: [repository], diffModalSession: { ...diffSession, isHydratingFullContext: false } });
+      await flushRender();
+    });
+    expect(useFileChangesStore.getState().isChangeReviewed(repository.id, diffSession.changeId)).toBe(true);
+    await act(async () => {
+      repository = { ...repository, changes: repository.changes.map((change) => ({ ...change,
+        modifiedContent: change.modifiedContent.replace(/./, 'X') })) };
+      useFileChangesStore.setState({ repositories: [repository] });
+      await flushRender();
+    });
+    expect(useFileChangesStore.getState().isChangeReviewed(repository.id, diffSession.changeId)).toBe(false);
+    expect(stageChangesMock).not.toHaveBeenCalled();
+  });
+
   it('validates the current file from the footer by staging it', async () => {
     seedStore();
 
@@ -507,6 +533,72 @@ describe('FileChangesDiffModal', () => {
 
     expect(stageChangesMock).toHaveBeenCalledTimes(1);
     expect(stageChangesMock).toHaveBeenCalledWith('repo-1', ['change-2']);
+  });
+
+  it('does not close a replacement diff session when validation resolves late', async () => {
+    let releaseValidation: () => void = () => undefined;
+    const pendingValidation = new Promise<void>((resolve) => {
+      releaseValidation = resolve;
+    });
+    stageChangesMock = mock(() => pendingValidation);
+    seedStore();
+    const onClose = mock(() => undefined);
+
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={onClose} />);
+      await flushRender();
+    });
+
+    await act(async () => {
+      findButton('Validate file')?.click();
+      await Promise.resolve();
+    });
+    expect(stageChangesMock).toHaveBeenCalledWith('repo-1', ['change-2']);
+
+    const replacementChange: FileChangeEntry = {
+      ...repository.changes[0],
+      id: 'change-b',
+      path: 'src/task-b.ts',
+      modifiedContent: 'export const taskB = true;',
+    };
+    const replacementRepository: ReviewRepositoryState = {
+      ...repository,
+      id: 'repo-b',
+      projectId: 'project-b',
+      changes: [replacementChange],
+      selectedChangeId: replacementChange.id,
+    };
+    const replacementSession = buildSession({
+      repositoryId: replacementRepository.id,
+      changeId: replacementChange.id,
+      rightDraftContent: 'export const taskB = "draft";',
+      lastLoadedModifiedContent: replacementChange.modifiedContent,
+      isDirty: true,
+    });
+
+    await act(async () => {
+      useFileChangesStore.setState({
+        repositories: [replacementRepository],
+        selectedDiffTarget: {
+          repositoryId: replacementRepository.id,
+          changeId: replacementChange.id,
+        },
+        diffModalSession: replacementSession,
+        isDiffModalOpen: true,
+      });
+      await flushRender();
+    });
+
+    await act(async () => {
+      releaseValidation();
+      await pendingValidation;
+      await flushRender();
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(useFileChangesStore.getState().isDiffModalOpen).toBe(true);
+    expect(useFileChangesStore.getState().diffModalSession).toEqual(replacementSession);
+    expect(document.body.textContent).toContain('task-b.ts');
   });
 
   it('reverts the current pending file from the footer', async () => {

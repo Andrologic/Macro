@@ -93,6 +93,18 @@ describe('CreateImplementTaskDialog task type help', () => {
     removeTauriRuntimeMock();
   });
 
+  it('explains WSL limitations before creation without requesting unsupported start points', async () => {
+    const invoke = mock(async (_command: string) => null);
+    installTauriRuntimeMock(invoke);
+    await act(async () => {
+      root.render(<CreateImplementTaskDialog projects={[project('wsl', 'Ubuntu', 'develop', 'main', { path: '//wsl$/Ubuntu/repo' })]} initialProjectId="wsl" isCreating={false} onClose={() => undefined} onCreate={() => undefined} />);
+    });
+    expect(container.textContent).toContain('Basic Git operations remain available');
+    expect(invoke.mock.calls.map(([command]) => command)).not.toContain('git_task_start_points');
+    expect(container.querySelectorAll('[data-task-kind-available="true"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-task-kind-available="false"]')).toHaveLength(4);
+  });
+
   it('describes every available task type for pointer and keyboard users', async () => {
     await act(async () => {
       root.render(

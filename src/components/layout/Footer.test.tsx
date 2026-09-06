@@ -322,6 +322,7 @@ const loadFooter = async () => {
   mock.module('@tauri-apps/plugin-dialog', () => ({
     open: (options: { directory?: boolean; multiple?: boolean; title?: string }) =>
       openFolderMock(options),
+    save: mock(async () => null),
   }));
 
   mock.module('../../stores/useAppStore', () => ({

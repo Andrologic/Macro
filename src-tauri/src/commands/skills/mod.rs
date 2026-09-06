@@ -7,8 +7,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
@@ -29,6 +31,8 @@ const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;
 const MAX_SCRIPT_TIMEOUT_MS: u64 = 600_000;
 const MAX_DISCOVERY_DEPTH: usize = 6;
 const MAX_DISCOVERY_DIRS: usize = 2_000;
+const MAX_SKILL_TREE_FILES: usize = 4_000;
+const MAX_SKILL_HASH_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SKILL_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
 const MAX_COMPATIBILITY_LENGTH: usize = 500;
@@ -70,19 +74,138 @@ fn skill_diagnostic(severity: &str, code: &str, message: impl Into<String>) -> S
     }
 }
 
-fn hash_skill_tree(root: &Path) -> String {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SkillTreeStampEntry {
+    path: String,
+    kind: u8,
+    len: u64,
+    modified_nanos: u128,
+    change_token: i128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SkillTreeStamp(Vec<SkillTreeStampEntry>);
+
+#[derive(Clone)]
+struct CachedSkillManifest {
+    stamp: SkillTreeStamp,
+    manifest: SkillManifestDto,
+}
+
+static SKILL_MANIFEST_CACHE: OnceLock<Mutex<HashMap<String, CachedSkillManifest>>> =
+    OnceLock::new();
+
+fn skill_manifest_cache() -> &'static Mutex<HashMap<String, CachedSkillManifest>> {
+    SKILL_MANIFEST_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn modified_nanos(metadata: &fs::Metadata) -> u128 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn metadata_change_token(metadata: &fs::Metadata) -> i128 {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.ctime() as i128) * 1_000_000_000_i128 + metadata.ctime_nsec() as i128
+}
+
+#[cfg(not(unix))]
+fn metadata_change_token(metadata: &fs::Metadata) -> i128 {
+    modified_nanos(metadata) as i128
+}
+
+fn skill_tree_stamp(root: &Path) -> CommandResult<SkillTreeStamp> {
+    let mut entries = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    let mut discovered_dirs = 1usize;
+    let mut visited_files = 0usize;
+    while let Some(current) = stack.pop() {
+        let directory_entries = fs::read_dir(&current).map_err(|error| {
+            command_error(format!(
+                "Failed to read skill tree {}: {error}",
+                current.display()
+            ))
+        })?;
+        for entry in directory_entries {
+            let entry = entry.map_err(|error| {
+                command_error(format!("Failed to read a skill tree entry: {error}"))
+            })?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| command_error(error.to_string()))?;
+            if has_hidden_path_component(relative) || path_has_ignored_discovery_component(relative)
+            {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                command_error(format!(
+                    "Failed to inspect skill tree {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            let kind = if metadata.is_dir() {
+                1
+            } else if metadata.is_file() {
+                2
+            } else {
+                0
+            };
+            entries.push(SkillTreeStampEntry {
+                path: relative.to_string_lossy().replace('\\', "/"),
+                kind,
+                len: metadata.len(),
+                modified_nanos: modified_nanos(&metadata),
+                change_token: metadata_change_token(&metadata),
+            });
+            if metadata.is_dir() {
+                discovered_dirs += 1;
+                if discovered_dirs > MAX_DISCOVERY_DIRS {
+                    return Err(command_error(format!(
+                        "Skill tree discovery exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
+                        root.display()
+                    )));
+                }
+                stack.push(path);
+            } else if metadata.is_file() {
+                visited_files += 1;
+                if visited_files > MAX_SKILL_TREE_FILES {
+                    return Err(command_error(format!(
+                        "Skill tree discovery exceeded the {MAX_SKILL_TREE_FILES}-file budget at {}.",
+                        root.display()
+                    )));
+                }
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(SkillTreeStamp(entries))
+}
+
+fn hash_skill_tree(root: &Path) -> CommandResult<String> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
-    let mut visited_dirs = 0usize;
+    let mut discovered_dirs = 1usize;
+    let mut total_bytes = 0u64;
     while let Some(current) = stack.pop() {
-        visited_dirs += 1;
-        if visited_dirs > MAX_DISCOVERY_DIRS {
-            break;
-        }
-        let Ok(entries) = fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = fs::read_dir(&current).map_err(|error| {
+            command_error(format!(
+                "Failed to read skill tree {}: {error}",
+                current.display()
+            ))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                command_error(format!("Failed to read a skill tree entry: {error}"))
+            })?;
             let path = entry.path();
             let Ok(relative) = path.strip_prefix(root) else {
                 continue;
@@ -91,21 +214,47 @@ fn hash_skill_tree(root: &Path) -> String {
             {
                 continue;
             }
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                command_error(format!(
+                    "Failed to inspect skill tree {}: {error}",
+                    path.display()
+                ))
+            })?;
             if metadata.file_type().is_symlink() {
                 continue;
             }
             if metadata.is_dir() {
+                discovered_dirs += 1;
+                if discovered_dirs > MAX_DISCOVERY_DIRS {
+                    return Err(command_error(format!(
+                        "Skill hashing exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
+                        root.display()
+                    )));
+                }
                 stack.push(path);
             } else if metadata.is_file() {
+                if files.len() >= MAX_SKILL_TREE_FILES {
+                    return Err(command_error(format!(
+                        "Skill hashing exceeded the {MAX_SKILL_TREE_FILES}-file budget at {}.",
+                        root.display()
+                    )));
+                }
+                total_bytes = total_bytes
+                    .checked_add(metadata.len())
+                    .ok_or_else(|| command_error("Skill hashing byte budget overflowed."))?;
+                if total_bytes > MAX_SKILL_HASH_BYTES {
+                    return Err(command_error(format!(
+                        "Skill hashing exceeded the {MAX_SKILL_HASH_BYTES}-byte budget at {}.",
+                        root.display()
+                    )));
+                }
                 files.push(path);
             }
         }
     }
     files.sort();
     let mut hasher = Sha256::new();
+    let mut hashed_bytes = 0_u64;
     for path in files {
         let relative = path
             .strip_prefix(root)
@@ -114,12 +263,43 @@ fn hash_skill_tree(root: &Path) -> String {
             .replace('\\', "/");
         hasher.update((relative.len() as u64).to_le_bytes());
         hasher.update(relative.as_bytes());
-        if let Ok(contents) = fs::read(&path) {
-            hasher.update((contents.len() as u64).to_le_bytes());
-            hasher.update(contents);
+        let metadata = fs::metadata(&path).map_err(|error| {
+            command_error(format!(
+                "Failed to inspect skill file {}: {error}",
+                path.display()
+            ))
+        })?;
+        hasher.update(metadata.len().to_le_bytes());
+        let mut file = fs::File::open(&path).map_err(|error| {
+            command_error(format!(
+                "Failed to open skill file {}: {error}",
+                path.display()
+            ))
+        })?;
+        let mut buffer = [0_u8; 16 * 1024];
+        loop {
+            let count = file.read(&mut buffer).map_err(|error| {
+                command_error(format!(
+                    "Failed to hash skill file {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if count == 0 {
+                break;
+            }
+            hashed_bytes = hashed_bytes
+                .checked_add(count as u64)
+                .ok_or_else(|| command_error("Skill hashing byte budget overflowed."))?;
+            if hashed_bytes > MAX_SKILL_HASH_BYTES {
+                return Err(command_error(format!(
+                    "Skill hashing exceeded the {MAX_SKILL_HASH_BYTES}-byte budget while reading {}.",
+                    path.display()
+                )));
+            }
+            hasher.update(&buffer[..count]);
         }
     }
-    format!("sha256:{:x}", hasher.finalize())
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 fn normalize_skill_name(value: &str, fallback: &str) -> String {
@@ -780,8 +960,11 @@ fn collect_resources(
     (resources, diagnostics)
 }
 
-fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
+fn build_manifest_uncached(root: &Path, source: SkillSourceDto) -> CommandResult<SkillManifestDto> {
     let (skill_file, _) = find_skill_file(root).unwrap_or_else(|| (root.join(SKILL_FILE), false));
+    // Hash first so byte and file-count budgets are enforced before any full
+    // manifest or resource read occurs.
+    let content_hash = hash_skill_tree(root)?;
     let parsed = parse_skill_file(&skill_file);
     let normalized_name = normalize_skill_name(
         &parsed.name,
@@ -808,8 +991,6 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
         ),
         _ => format!("global:{}:{}", source.root_id, relative_identity),
     };
-    let content_hash = hash_skill_tree(root);
-
     let mut diagnostics = parsed.diagnostics;
     let (mut references, reference_errors) = collect_resources(root, "references");
     let (mut assets, asset_errors) = collect_resources(root, "assets");
@@ -828,7 +1009,7 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
             .iter()
             .all(|diagnostic| diagnostic.severity != "error");
 
-    SkillManifestDto {
+    Ok(SkillManifestDto {
         id,
         name: parsed.name,
         description: parsed.description,
@@ -851,25 +1032,75 @@ fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
         content_hash,
         validation_errors,
         is_valid,
-    }
+    })
 }
 
-fn discover_skill_roots(base: &Path) -> Vec<PathBuf> {
-    let Ok(metadata) = fs::symlink_metadata(base) else {
-        return Vec::new();
+fn manifest_cache_key(root: &Path, source: &SkillSourceDto) -> String {
+    format!(
+        "{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        root.to_string_lossy(),
+        source.kind,
+        source.namespace,
+        source.root_id,
+        source.priority,
+        source.project_id.as_deref().unwrap_or_default(),
+        source.project_name.as_deref().unwrap_or_default(),
+        source.root_path,
+        source.skill_root_path,
+    )
+}
+
+fn build_manifest_cached(root: &Path, source: SkillSourceDto) -> CommandResult<SkillManifestDto> {
+    let stamp = skill_tree_stamp(root)?;
+    let cache_key = manifest_cache_key(root, &source);
+    if let Some(cached) = skill_manifest_cache()
+        .lock()
+        .map_err(|_| command_error("Skill manifest cache lock is poisoned."))?
+        .get(&cache_key)
+        .filter(|cached| cached.stamp == stamp)
+        .cloned()
+    {
+        return Ok(cached.manifest);
+    }
+
+    let manifest = build_manifest_uncached(root, source)?;
+    skill_manifest_cache()
+        .lock()
+        .map_err(|_| command_error("Skill manifest cache lock is poisoned."))?
+        .insert(
+            cache_key,
+            CachedSkillManifest {
+                stamp,
+                manifest: manifest.clone(),
+            },
+        );
+    Ok(manifest)
+}
+
+#[cfg(test)]
+fn build_manifest(root: &Path, source: SkillSourceDto) -> SkillManifestDto {
+    build_manifest_cached(root, source).expect("build skill manifest")
+}
+
+fn try_discover_skill_roots(base: &Path) -> CommandResult<Vec<PathBuf>> {
+    let metadata = match fs::symlink_metadata(base) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(command_error(format!(
+                "Failed to inspect skill discovery root {}: {error}",
+                base.display()
+            )))
+        }
     };
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let mut roots = Vec::new();
-    let mut visited_dirs = 0_usize;
+    let mut discovered_dirs = 1_usize;
     let mut stack = vec![(base.to_path_buf(), 0_usize)];
     while let Some((current, depth)) = stack.pop() {
-        visited_dirs += 1;
-        if visited_dirs > MAX_DISCOVERY_DIRS {
-            break;
-        }
         if find_skill_file(&current).is_some() {
             roots.push(current.clone());
         }
@@ -877,30 +1108,51 @@ fn discover_skill_roots(base: &Path) -> Vec<PathBuf> {
             continue;
         }
 
-        let Ok(entries) = fs::read_dir(&current) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = fs::read_dir(&current).map_err(|error| {
+            command_error(format!(
+                "Failed to read skill discovery directory {}: {error}",
+                current.display()
+            ))
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                command_error(format!("Failed to read a skill discovery entry: {error}"))
+            })?;
             let path = entry.path();
-            let Ok(relative) = path.strip_prefix(base) else {
-                continue;
-            };
+            let relative = path
+                .strip_prefix(base)
+                .map_err(|error| command_error(error.to_string()))?;
             if has_hidden_path_component(relative) {
                 continue;
             }
             if path_has_ignored_discovery_component(relative) {
                 continue;
             }
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
+            let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                command_error(format!(
+                    "Failed to inspect skill discovery path {}: {error}",
+                    path.display()
+                ))
+            })?;
             if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                discovered_dirs += 1;
+                if discovered_dirs > MAX_DISCOVERY_DIRS {
+                    return Err(command_error(format!(
+                        "Skill discovery exceeded the {MAX_DISCOVERY_DIRS}-directory budget at {}.",
+                        base.display()
+                    )));
+                }
                 stack.push((path, depth + 1));
             }
         }
     }
     roots.sort();
-    roots
+    Ok(roots)
+}
+
+#[cfg(test)]
+fn discover_skill_roots(base: &Path) -> Vec<PathBuf> {
+    try_discover_skill_roots(base).expect("discover skill roots")
 }
 
 struct SkillSearchRoot {
@@ -1172,8 +1424,8 @@ async fn discover_configured_skills(
 
     let mut skills = Vec::new();
     for (root, source) in roots {
-        for skill_root in discover_skill_roots(&root.path) {
-            skills.push(build_manifest(&skill_root, source.clone()));
+        for skill_root in try_discover_skill_roots(&root.path)? {
+            skills.push(build_manifest_cached(&skill_root, source.clone())?);
         }
     }
     resolve_skill_collisions(&mut skills);
@@ -1585,7 +1837,7 @@ pub async fn skills_install_from_local_path(
         )));
     }
     copy_dir_recursive(&source, &destination)?;
-    Ok(build_manifest(&destination, source_descriptor))
+    build_manifest_cached(&destination, source_descriptor)
 }
 
 async fn resolve_configured_destination(
@@ -1798,7 +2050,7 @@ fn create_skill_template_at(
         ))
     })?;
 
-    let skill = build_manifest(&destination, source);
+    let skill = build_manifest_cached(&destination, source)?;
     Ok(SkillTemplateCreateResponse {
         skill,
         folder_path: destination.to_string_lossy().to_string(),
@@ -2807,6 +3059,76 @@ mod tests {
             .expect("detail");
         assert_eq!(detail.skill.description, "Updated docs skill");
         assert!(detail.body.contains("Updated body"));
+    }
+
+    #[test]
+    fn manifest_cache_invalidates_for_same_size_content_changes() {
+        let project = tempdir().expect("project");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("docs");
+        fs::create_dir_all(&skill_dir).expect("mkdir skill");
+        let first_content = "---\nname: docs\ndescription: Alpha\n---\n\nBody A\n";
+        let second_content = "---\nname: docs\ndescription: Bravo\n---\n\nBody B\n";
+        assert_eq!(first_content.len(), second_content.len());
+        fs::write(skill_dir.join(SKILL_FILE), first_content).expect("write first");
+        let source = SkillSourceDto {
+            kind: "project".to_string(),
+            namespace: "agents".to_string(),
+            root_id: "agents".to_string(),
+            priority: 400,
+            project_id: Some("p1".to_string()),
+            project_name: Some("Project".to_string()),
+            root_path: project.path().to_string_lossy().to_string(),
+            skill_root_path: project
+                .path()
+                .join(AGENTS_SKILLS_DIR)
+                .to_string_lossy()
+                .to_string(),
+        };
+
+        let first = build_manifest_cached(&skill_dir, source.clone()).expect("first manifest");
+        std::thread::sleep(Duration::from_millis(10));
+        fs::write(skill_dir.join(SKILL_FILE), second_content).expect("write second");
+        let second = build_manifest_cached(&skill_dir, source).expect("second manifest");
+
+        assert_eq!(second.description, "Bravo");
+        assert_ne!(first.content_hash, second.content_hash);
+    }
+
+    #[test]
+    fn hashing_budget_failures_are_explicit_and_never_return_partial_hashes() {
+        let project = tempdir().expect("project");
+        let skill_dir = project.path().join("oversized");
+        fs::create_dir_all(&skill_dir).expect("mkdir skill");
+        fs::write(
+            skill_dir.join(SKILL_FILE),
+            "---\nname: oversized\ndescription: Oversized\n---\n",
+        )
+        .expect("write skill");
+        let oversized = fs::File::create(skill_dir.join("payload.bin")).expect("create payload");
+        oversized
+            .set_len(MAX_SKILL_HASH_BYTES + 1)
+            .expect("size sparse payload");
+
+        let error = hash_skill_tree(&skill_dir).expect_err("hashing must exceed its budget");
+        assert!(error
+            .message
+            .contains("Skill hashing exceeded the 33554432-byte budget"));
+    }
+
+    #[test]
+    fn directory_budgets_fail_before_pending_stacks_can_exceed_them() {
+        let project = tempdir().expect("project");
+        for index in 0..MAX_DISCOVERY_DIRS {
+            fs::create_dir(project.path().join(format!("skill-{index}")))
+                .expect("create discovery directory");
+        }
+
+        let error = try_discover_skill_roots(project.path()).expect_err("directory budget");
+        assert!(error.message.contains("directory budget"));
+        let error = skill_tree_stamp(project.path()).expect_err("stamp directory budget");
+        assert!(error.message.contains("directory budget"));
+        let error = hash_skill_tree(project.path()).expect_err("hash directory budget");
+        assert!(error.message.contains("directory budget"));
     }
 
     #[tokio::test]

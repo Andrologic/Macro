@@ -19,8 +19,8 @@ pub(crate) use self::ids::{parse_mcp_env_secret_ref, parse_mcp_oauth_client_secr
 use self::stdio::{call_stdio_tool, discover_stdio_tools};
 pub use self::types::{
     McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpRuntimeKey,
-    McpRuntimeSelector, McpRuntimeServerSnapshot, McpRuntimeSnapshotDto, McpServerDto, McpToolDto,
-    McpTransportDto,
+    McpRuntimeSelector, McpRuntimeServerSnapshot, McpRuntimeSnapshotDto, McpRuntimeStatus,
+    McpServerDto, McpToolDto, McpTransportDto,
 };
 use crate::commands::{command_error, CommandResult};
 use crate::config::ConfigManager;

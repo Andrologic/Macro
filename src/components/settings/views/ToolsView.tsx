@@ -35,6 +35,7 @@ export const ToolsView: React.FC = () => {
     internalTools,
     mcpServers,
     loadSettings,
+    refreshMCPRuntimeSnapshot,
     toggleTool,
     toggleMCPServer,
     upsertMCPServer,
@@ -102,6 +103,21 @@ export const ToolsView: React.FC = () => {
     loadSettings();
     void refreshWebSearchSettings().then(setWebSearchSettings);
   }, [loadSettings]);
+
+  useEffect(() => {
+    if (activeToolsTab !== 'mcp') return;
+    let disposed = false;
+    let timeout: number | undefined;
+    const refresh = async () => {
+      await refreshMCPRuntimeSnapshot();
+      if (!disposed) timeout = window.setTimeout(refresh, 2_000);
+    };
+    void refresh();
+    return () => {
+      disposed = true;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    };
+  }, [activeToolsTab, refreshMCPRuntimeSnapshot]);
 
   useEffect(() => {
     let cancelled = false;

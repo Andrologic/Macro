@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 const loadPreferenceMock = mock(async (_key?: string): Promise<unknown> => 'balanced');
 const loadSettingsMock = mock(async () => undefined);
+const refreshMcpRuntimeSnapshotMock = mock(async () => undefined);
 const toggleToolMock = mock(async () => undefined);
 const toggleMcpServerMock = mock(() => undefined);
 const upsertMcpServerMock = mock(async () => undefined);
@@ -94,6 +95,7 @@ const loadToolsView = async () => {
       internalTools,
       mcpServers,
       loadSettings: loadSettingsMock,
+      refreshMCPRuntimeSnapshot: refreshMcpRuntimeSnapshotMock,
       toggleTool: toggleToolMock,
       toggleMCPServer: toggleMcpServerMock,
       upsertMCPServer: upsertMcpServerMock,
@@ -231,6 +233,7 @@ describe('ToolsView', () => {
   beforeEach(() => {
     loadPreferenceMock.mockClear();
     loadSettingsMock.mockClear();
+    refreshMcpRuntimeSnapshotMock.mockClear();
     toggleToolMock.mockClear();
     toggleMcpServerMock.mockClear();
     upsertMcpServerMock.mockClear();

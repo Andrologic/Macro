@@ -1,7 +1,15 @@
 /** Persisted navigation only. Tool approvals and other mutations are never replayed. */
 export type WorkflowNotificationNavigation =
   | { kind: 'conversation'; requestKind: 'approval' | 'questionnaire'; conversationId: string }
-  | { kind: 'review'; taskId: string };
+  | {
+      kind: 'review';
+      taskId: string;
+      catalogLoadId?: string;
+      catalogScope?: {
+        selectedGroupId: string | null;
+        selectedProjectId: string | null;
+      };
+    };
 
 export const sanitizeWorkflowNotificationNavigation = (
   value: unknown,
@@ -16,7 +24,29 @@ export const sanitizeWorkflowNotificationNavigation = (
     return { kind: 'conversation', requestKind: candidate.requestKind, conversationId: candidate.conversationId };
   }
   if (candidate.kind === 'review' && validId(candidate.taskId)) {
-    return { kind: 'review', taskId: candidate.taskId };
+    const rawScope = candidate.catalogScope;
+    const validScopeValue = (value: unknown): value is string | null =>
+      value === null || validId(value);
+    const catalogScope = rawScope && typeof rawScope === 'object'
+      ? rawScope as Record<string, unknown>
+      : null;
+    return {
+      kind: 'review',
+      taskId: candidate.taskId,
+      ...(validId(candidate.catalogLoadId)
+        ? { catalogLoadId: candidate.catalogLoadId }
+        : {}),
+      ...(catalogScope &&
+        validScopeValue(catalogScope.selectedGroupId) &&
+        validScopeValue(catalogScope.selectedProjectId)
+        ? {
+            catalogScope: {
+              selectedGroupId: catalogScope.selectedGroupId,
+              selectedProjectId: catalogScope.selectedProjectId,
+            },
+          }
+        : {}),
+    };
   }
   return undefined;
 };

@@ -4,14 +4,17 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "windows")]
+use std::io::Cursor;
 use std::{
     fs,
-    io::{Cursor, Write},
+    io::Write,
     path::{Path, PathBuf},
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
+use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
 const UPDATE_DIRECTORY: &str = "app-updates";
 const MANIFEST_FILE: &str = "staged-update.json";
@@ -112,26 +115,69 @@ fn read_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String
     read_manifest_file(&manifest_path(app)?)
 }
 
+pub(crate) fn diagnostic_manifest(app: &AppHandle) -> Result<Option<StagedUpdateManifest>, String> {
+    read_manifest(app)
+}
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    atomic_write_with(path, bytes, persist_temporary_file, sync_parent_directory)
+}
+
+fn atomic_write_with<F, S>(
+    path: &Path,
+    bytes: &[u8],
+    persist: F,
+    sync_parent: S,
+) -> Result<(), String>
+where
+    F: FnOnce(NamedTempFile, &Path) -> Result<(), String>,
+    S: FnOnce(&Path) -> Result<(), String>,
+{
     let parent = path
         .parent()
         .ok_or_else(|| "Le chemin de mise à jour est invalide.".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Impossible de créer le cache des mises à jour : {error}"))?;
-    let temporary = path.with_extension("part");
-    {
-        let mut file = fs::File::create(&temporary)
-            .map_err(|error| format!("Impossible de préparer la mise à jour : {error}"))?;
-        file.write_all(bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|error| format!("Impossible d'enregistrer la mise à jour : {error}"))?;
+    let mut temporary = TempFileBuilder::new()
+        .prefix(".macro-update-")
+        .tempfile_in(parent)
+        .map_err(|error| format!("Impossible de préparer la mise à jour : {error}"))?;
+    temporary
+        .write_all(bytes)
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|error| format!("Impossible d'enregistrer la mise à jour : {error}"))?;
+    persist(temporary, path)?;
+    if let Err(error) = sync_parent(parent) {
+        // The rename is the commit point: returning an ordinary error here
+        // would falsely promise callers that the previous file still exists.
+        // Keep the committed state and surface the durability uncertainty in
+        // local logs without including the private cache path.
+        tracing::warn!(
+            action = "update_atomic_write_directory_sync_failed",
+            reason = %error,
+            "The update state was replaced, but directory durability could not be confirmed."
+        );
     }
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| format!("Impossible de remplacer l'ancienne mise à jour : {error}"))?;
-    }
-    fs::rename(&temporary, path)
-        .map_err(|error| format!("Impossible de finaliser la mise à jour : {error}"))
+    Ok(())
+}
+
+fn persist_temporary_file(temporary: NamedTempFile, path: &Path) -> Result<(), String> {
+    temporary
+        .persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("Impossible de finaliser la mise à jour : {}", error.error))
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<(), String> {
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("Impossible de synchroniser le cache des mises à jour : {error}"))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn write_manifest(app: &AppHandle, manifest: &StagedUpdateManifest) -> Result<(), String> {
@@ -665,9 +711,10 @@ mod tests {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
     use super::{
-        clean_shutdown_matches, clear_staged_update_directory, package_digest, read_manifest_file,
-        staged_update_belongs_to_current_install, verify_update_signature, CleanShutdownMarker,
-        DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
+        atomic_write, atomic_write_with, clean_shutdown_matches, clear_staged_update_directory,
+        package_digest, persist_temporary_file, read_manifest_file,
+        staged_update_belongs_to_current_install, sync_parent_directory, verify_update_signature,
+        CleanShutdownMarker, DownloadProgressEvent, StagedUpdateManifest, StagedUpdatePhase,
     };
 
     const TEST_PUBLIC_KEY: &str = "untrusted comment: minisign public key E7620F1842B4E81F\nRWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
@@ -696,6 +743,121 @@ mod tests {
             package_digest(b"macro"),
             "27d66c0dcef19a926429158d80111b954a5c23d076833347da3e27b91e4b423d"
         );
+    }
+
+    #[test]
+    fn atomic_write_replaces_the_previous_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        std::fs::write(&path, b"old-state").unwrap();
+
+        atomic_write(&path, b"new-state").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new-state");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn atomic_write_keeps_the_previous_file_when_replacement_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        std::fs::write(&path, b"usable-old-state").unwrap();
+
+        let result = atomic_write_with(
+            &path,
+            b"new-state",
+            |_temporary, _destination| Err("simulated replacement failure".to_string()),
+            sync_parent_directory,
+        );
+
+        assert_eq!(result, Err("simulated replacement failure".to_string()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"usable-old-state");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn atomic_write_preserves_previous_file_on_native_replacement_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        std::fs::write(&path, b"usable-old-state").unwrap();
+
+        #[cfg(unix)]
+        let result = {
+            use std::os::unix::fs::PermissionsExt;
+            let original_mode = std::fs::metadata(directory.path())
+                .unwrap()
+                .permissions()
+                .mode();
+            atomic_write_with(
+                &path,
+                b"new-state",
+                |temporary, destination| {
+                    std::fs::set_permissions(
+                        directory.path(),
+                        std::fs::Permissions::from_mode(0o500),
+                    )
+                    .unwrap();
+                    match temporary.persist(destination) {
+                        Ok(_) => {
+                            std::fs::set_permissions(
+                                directory.path(),
+                                std::fs::Permissions::from_mode(original_mode),
+                            )
+                            .unwrap();
+                            Ok(())
+                        }
+                        Err(error) => {
+                            std::fs::set_permissions(
+                                directory.path(),
+                                std::fs::Permissions::from_mode(original_mode),
+                            )
+                            .unwrap();
+                            let message =
+                                format!("Impossible de finaliser la mise à jour : {}", error.error);
+                            drop(error);
+                            Err(message)
+                        }
+                    }
+                },
+                sync_parent_directory,
+            )
+        };
+
+        #[cfg(windows)]
+        let result = {
+            use std::os::windows::fs::OpenOptionsExt;
+            let locked = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&path)
+                .unwrap();
+            let result = atomic_write_with(
+                &path,
+                b"new-state",
+                persist_temporary_file,
+                sync_parent_directory,
+            );
+            drop(locked);
+            result
+        };
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"usable-old-state");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn atomic_write_keeps_committed_state_when_directory_sync_is_uncertain() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        std::fs::write(&path, b"old-state").unwrap();
+
+        let result = atomic_write_with(&path, b"new-state", persist_temporary_file, |_parent| {
+            Err("simulated directory sync failure".to_string())
+        });
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"new-state");
     }
 
     #[test]

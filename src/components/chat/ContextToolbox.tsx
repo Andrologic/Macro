@@ -13,6 +13,18 @@ import { Icon, type IconName } from '../ui/Icon';
 import { Input } from '../ui/Input';
 import { Switch } from '../ui/Switch';
 import { notify } from '../ui/toastService';
+import {
+  CONVERSATION_ATTACHMENT_ACCEPT,
+  CONVERSATION_ATTACHMENT_EXTENSIONS,
+  ConversationAttachmentError,
+  MAX_CONVERSATION_ATTACHMENT_FILE_BYTES,
+  MAX_CONVERSATION_ATTACHMENT_FILES,
+  MAX_CONVERSATION_ATTACHMENT_TOTAL_BYTES,
+  prepareConversationAttachments,
+  persistConversationAttachments,
+  AttachmentPersistenceError,
+  acquireAttachmentImport,
+} from '../../services/conversationFileAttachments';
 
 interface ContextToolboxProps {
   className?: string;
@@ -21,95 +33,6 @@ interface ContextToolboxProps {
 type ToolboxTab = 'context' | 'tools' | 'sources';
 type SourceFilter = 'all' | 'interesting' | 'used';
 type SourceSort = 'recent' | 'title' | 'source';
-
-const ACCEPTED_TEXT_EXTENSIONS = new Set([
-  'txt',
-  'md',
-  'markdown',
-  'csv',
-  'tsv',
-  'json',
-  'jsonl',
-  'yaml',
-  'yml',
-  'xml',
-  'html',
-  'htm',
-  'css',
-  'scss',
-  'js',
-  'jsx',
-  'ts',
-  'tsx',
-  'mjs',
-  'cjs',
-  'py',
-  'rb',
-  'go',
-  'rs',
-  'java',
-  'kt',
-  'c',
-  'cc',
-  'cpp',
-  'h',
-  'hpp',
-  'cs',
-  'php',
-  'sh',
-  'bash',
-  'zsh',
-  'fish',
-  'sql',
-  'log',
-  'env',
-  'toml',
-  'ini',
-  'conf',
-]);
-const ACCEPTED_FILE_TYPES = [
-  '.txt',
-  '.md',
-  '.csv',
-  '.json',
-  '.yaml',
-  '.xml',
-  '.html',
-  '.css',
-  '.js',
-  '.ts',
-  '.py',
-  '.sql',
-  '.log',
-];
-const ACCEPTED_FILE_TYPES_LABEL = ACCEPTED_FILE_TYPES.join(', ');
-
-const isSupportedTextFile = (file: File): boolean => {
-  const mimeType = file.type.toLowerCase();
-  if (mimeType.startsWith('text/')) return true;
-  if (
-    [
-      'application/json',
-      'application/xml',
-      'application/x-ndjson',
-      'application/javascript',
-      'application/x-javascript',
-      'application/yaml',
-      'application/x-yaml',
-    ].includes(mimeType)
-  ) return true;
-
-  const extension = file.name.split('.').pop()?.toLowerCase();
-  return Boolean(extension && ACCEPTED_TEXT_EXTENSIONS.has(extension));
-};
-
-const readFile = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsText(file);
-  });
 
 const createManualMessageId = (): string =>
   `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -139,6 +62,7 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const { getChatModeTools, isChatToolEnabled, toggleChatTool } = useToolsStore();
   const citations = useCitationsStore((state) => state.citations);
   const addCitation = useCitationsStore((state) => state.addCitation);
+  const addCitationAndPersist = useCitationsStore((state) => state.addCitationAndPersist);
   const removeCitation = useCitationsStore((state) => state.removeCitation);
   const nativeToolsSupported = useProviderStore((state) => state.selectedSupportsNativeToolCalling());
 
@@ -257,52 +181,72 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
   const handleFileSelect = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setActiveTab('context');
-    const supportedFiles = Array.from(files).filter((file) => {
-      if (!isSupportedTextFile(file)) {
-        notify.error(
-          t('chat.contextToolbox.unsupportedFileType', 'Unsupported file type'),
-          {
-            description: t(
-              'chat.contextToolbox.supportedTextFileTypes',
-              'Only text-based files are supported: {{formats}}.',
-              { formats: ACCEPTED_FILE_TYPES_LABEL }
-            ),
-          }
-        );
-        return false;
-      }
-      return true;
-    });
-    if (supportedFiles.length === 0) {
+    let releaseImport: (() => void) | undefined;
+    try {
+      releaseImport = acquireAttachmentImport();
+      const prepared = await prepareConversationAttachments(files, {
+        existingBytes: fileCitations.reduce(
+          (total, citation) => total + (citation.sizeBytes ?? 0),
+          0,
+        ),
+        existingCount: fileCitations.length,
+      });
+      const conversationId = await ensureConversation();
+      const ids = await persistConversationAttachments(prepared, conversationId, addCitationAndPersist);
+      setContextConversationId(conversationId);
+      setLastAddedContextCitationId(ids.at(-1) ?? null);
+    } catch (error) {
+      console.error('Failed to attach files:', error);
+      const attachmentError = error instanceof ConversationAttachmentError ? error : null;
+      const description = attachmentError?.code === 'import_busy'
+        ? t('chat.contextToolbox.importBusy', 'An attachment import is already in progress. Try again when it finishes.')
+        : error instanceof AttachmentPersistenceError
+        ? t('chat.contextToolbox.persistenceFailed', 'Saved: {{saved}}. Could not save {{file}}; remaining files were not added.', {
+            saved: error.savedNames.join(', ') || '0', file: error.failedName,
+          })
+        : attachmentError?.code === 'unsupported_type'
+        ? t(
+            'chat.contextToolbox.supportedTextFileTypes',
+            'Only UTF-8 text and code files are supported: {{formats}}.',
+            { formats: CONVERSATION_ATTACHMENT_EXTENSIONS.map((extension) => `.${extension}`).join(', ') },
+          )
+        : attachmentError?.code === 'file_too_large'
+          ? t(
+              'chat.contextToolbox.fileTooLarge',
+              '{{file}} exceeds the {{limit}} MB per-file limit.',
+              {
+                file: attachmentError.fileName ?? '',
+                limit: MAX_CONVERSATION_ATTACHMENT_FILE_BYTES / 1024 / 1024,
+              },
+            )
+          : attachmentError?.code === 'total_too_large'
+            ? t(
+                'chat.contextToolbox.totalTooLarge',
+                'Attachments exceed the cumulative {{limit}} MB limit.',
+                { limit: MAX_CONVERSATION_ATTACHMENT_TOTAL_BYTES / 1024 / 1024 },
+              )
+            : attachmentError?.code === 'too_many_files'
+              ? t(
+                  'chat.contextToolbox.tooManyFiles',
+                  'A conversation can contain at most {{limit}} attached files.',
+                  { limit: MAX_CONVERSATION_ATTACHMENT_FILES },
+                )
+              : attachmentError?.code === 'binary_content'
+                ? t(
+                    'chat.contextToolbox.binaryFileRejected',
+                    '{{file}} contains binary or invalid UTF-8 data.',
+                    { file: attachmentError.fileName ?? '' },
+                  )
+                : attachmentError?.fileName;
+      notify.error(
+        t('chat.contextToolbox.fileReadFailedTitle', 'Could not attach files'),
+        { description },
+      );
+    } finally {
+      releaseImport?.();
       if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
     }
-
-    const conversationId = await ensureConversation();
-    for (const file of supportedFiles) {
-      try {
-        const content = await readFile(file);
-        await addContextCitationAndReveal({
-          type: 'file',
-          source: file.name,
-          title: file.name,
-          snippet: content.slice(0, 1000) + (content.length > 1000 ? '...' : ''),
-          content,
-          path: file.name,
-          sizeBytes: file.size,
-        }, conversationId);
-      } catch (error) {
-        console.error('Failed to read file:', error);
-        notify.error(
-          t('chat.contextToolbox.fileReadFailedTitle', 'Could not read file'),
-          {
-            description: file.name,
-          }
-        );
-      }
-    }
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [addContextCitationAndReveal, ensureConversation, t]);
+  }, [addCitationAndPersist, ensureConversation, fileCitations, t]);
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
     if (activeTab !== 'context') return;
@@ -495,7 +439,14 @@ export const ContextToolbox: React.FC<ContextToolboxProps> = ({ className }) => 
           {t('chat.toolbox', 'Toolbox')}
         </h1>
       </div>
-      <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(event) => void handleFileSelect(event.target.files)} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept={CONVERSATION_ATTACHMENT_ACCEPT}
+        className="hidden"
+        onChange={(event) => void handleFileSelect(event.target.files)}
+      />
       <div className="h-10 border-b border-border flex items-center px-2 gap-1" data-tour-id="chat-toolbox-tabs">
         {tabs.map((tab) => (
           <button

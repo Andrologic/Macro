@@ -14,6 +14,54 @@ export interface PendingUpdateReleaseNote {
 type ReleaseNoteLocale = 'en' | 'fr';
 
 const RELEASE_NOTES: Record<string, Record<ReleaseNoteLocale, ReleaseNote>> = {
+  '0.1.5': {
+    en: {
+      version: '0.1.5',
+      eyebrow: 'Safer daily workflows',
+      title: 'Macro 0.1.5',
+      summary: 'Attachments, message search, conversation export, stronger recovery, and clearer diagnostics.',
+      content: `## Conversations and attachments
+
+- Add files to a composer alongside images and keep context references attached to the correct draft.
+- Export a conversation as Markdown, with clear errors when an attachment inventory is unavailable.
+- Search indexed messages within the selected project and navigate archived projects and conversations more reliably.
+
+## Review and recovery
+
+- Multi-repository reviews preserve drafts while snapshots refresh and reject stale responses before they can modify newer state.
+- Local profile backups are validated before restoration. Damaged profiles are preserved so recovery does not erase evidence.
+- Completed implementation tasks can move through an explicit guarded transition into reviewer mode.
+
+## Diagnostics and reliability
+
+- Protected worktree diagnostics, WSL capability reporting, and redacted support reports make local setup problems easier to investigate.
+- Integration and model-catalog refreshes preserve actionable requests and surface real runtime failures.
+- Browser-runtime isolation, updater replacement, and native recovery checks are more robust for release validation.`,
+    },
+    fr: {
+      version: '0.1.5',
+      eyebrow: 'Workflows quotidiens plus sûrs',
+      title: 'Macro 0.1.5',
+      summary: 'Pièces jointes, recherche de messages, export des conversations, récupération renforcée et diagnostics plus clairs.',
+      content: `## Conversations et pièces jointes
+
+- Ajoutez des fichiers au compositeur au même titre que les images et conservez les références de contexte avec le bon brouillon.
+- Exportez une conversation en Markdown, avec une erreur claire lorsque l'inventaire des pièces jointes n'est pas disponible.
+- Recherchez les messages indexés dans le projet sélectionné et parcourez plus fiablement les projets et conversations archivés.
+
+## Review et récupération
+
+- Les reviews multi-dépôts conservent les brouillons pendant l'actualisation des instantanés et rejettent les réponses obsolètes avant qu'elles ne modifient un état plus récent.
+- Les sauvegardes locales de profil sont validées avant restauration. Les profils endommagés sont préservés afin de ne pas effacer les éléments utiles au diagnostic.
+- Une tâche d'implémentation terminée peut passer explicitement et de manière contrôlée en mode reviewer.
+
+## Diagnostics et fiabilité
+
+- Les diagnostics protégés des worktrees, l'état des capacités WSL et les rapports d'assistance expurgés facilitent l'analyse des problèmes locaux.
+- Les intégrations et l'actualisation du catalogue de modèles conservent les demandes à traiter et exposent les véritables erreurs d'exécution.
+- L'isolation du runtime navigateur, le remplacement des mises à jour et les contrôles de récupération native sont plus robustes pour valider une release.`,
+    },
+  },
   '0.1.4': {
     en: {
       version: '0.1.4',

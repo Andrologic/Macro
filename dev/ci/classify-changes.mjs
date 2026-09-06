@@ -76,6 +76,7 @@ export function classifyPaths(inputPaths) {
     configuration,
     linux: !documentationOnly && (frontend || native || configuration),
     windows: !documentationOnly && (native || configuration),
+    macos: !documentationOnly && (native || configuration),
   };
 }
 

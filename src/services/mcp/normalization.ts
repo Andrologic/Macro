@@ -34,6 +34,7 @@ export const normalizeMCPServer = (server: Partial<MCPServer> & { id: string }):
     description: server.description ?? 'Custom MCP server',
     icon: server.icon ?? 'server',
     transport: server.transport,
+    lastErrorCode: server.lastErrorCode ?? null,
     lastError: server.lastError ?? null,
     discoveredAt: server.discoveredAt ?? null,
     config: {
