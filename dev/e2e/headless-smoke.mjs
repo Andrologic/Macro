@@ -161,6 +161,10 @@ async function main() {
         '{"$schema":"./schemas/v1/tools.schema.json","schemaVersion":1}\n',
       ),
       writeFile(
+        path.join(addedToolsConfig, 'agents.json'),
+        '{"$schema":"./schemas/v1/agents.schema.json","schemaVersion":1}\n',
+      ),
+      writeFile(
         workspaceStatePath,
         `${JSON.stringify(workspaceState([initialProject, unavailableProject], 1), null, 2)}\n`,
       ),
@@ -465,6 +469,22 @@ async function main() {
         invalidPolicyRead.status,
         403,
         'A project with an invalid tools policy must be excluded instead of using cached policy.',
+      );
+      await rm(path.join(addedToolsConfig, 'tools.json'));
+      const deletedPolicyRead = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'Implement',
+          tool_id: 'read',
+          args: { path: 'marker.txt' },
+          focused_project_id: 'project-added',
+        }),
+      });
+      assert.equal(
+        deletedPolicyRead.status,
+        403,
+        'Deleting tools.json must not reactivate the global policy while another project document remains.',
       );
       const stillAvailableRead = await fetch(`${baseUrl}/api/v1/tools/execute`, {
         method: 'POST',

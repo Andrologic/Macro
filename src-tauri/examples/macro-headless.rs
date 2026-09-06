@@ -1004,14 +1004,19 @@ async fn load_project_tools_policy(
         .get_snapshot(&[project_id.to_string()])
         .await
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
-    if snapshot.documents.iter().any(|document| {
+    let scoped_tools = snapshot.documents.iter().find(|document| {
         document.kind == ConfigDocumentKind::Tools
             && document.scope
                 == ConfigScope::Project {
                     project_id: project_id.to_string(),
                 }
-            && document.invalid
-    }) {
+    });
+    let Some(scoped_tools) = scoped_tools else {
+        return Err(format!(
+            "No scoped tools policy is loaded for project '{project_id}'"
+        ));
+    };
+    if scoped_tools.invalid {
         return Err(format!(
             "The scoped tools policy for project '{project_id}' is invalid"
         ));
@@ -1417,6 +1422,115 @@ fn remove_abandoned_tool_execution_temporaries(root: &std::path::Path) -> Result
     Ok(())
 }
 
+fn read_tool_execution_record_file(
+    path: &std::path::Path,
+    kind: ToolExecutionJournalKind,
+) -> Result<PersistedToolExecution, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!(
+            "Failed to inspect the tool execution journal {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.len() > MAX_TOOL_EXECUTION_RECORD_BYTES {
+        return Err(format!(
+            "The tool execution journal {} exceeds the per-record size limit",
+            path.display()
+        ));
+    }
+    let raw = std::fs::read(path).map_err(|error| {
+        format!(
+            "Failed to read the tool execution journal {}: {error}",
+            path.display()
+        )
+    })?;
+    let record = serde_json::from_slice::<PersistedToolExecution>(&raw).map_err(|error| {
+        format!(
+            "The tool execution journal {} is invalid: {error}",
+            path.display()
+        )
+    })?;
+    if record.schema_version != TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION {
+        return Err(format!(
+            "The tool execution journal {} uses unsupported schema version {}",
+            path.display(),
+            record.schema_version
+        ));
+    }
+    let state_matches_path = matches!(
+        (kind, &record.state),
+        (
+            ToolExecutionJournalKind::Pending,
+            PersistedToolExecutionState::Pending
+        ) | (
+            ToolExecutionJournalKind::Completed,
+            PersistedToolExecutionState::Completed { .. }
+        )
+    );
+    if !state_matches_path {
+        return Err(format!(
+            "The tool execution journal state does not match {}",
+            path.display()
+        ));
+    }
+    Ok(record)
+}
+
+fn reconcile_completed_tool_execution_pairs(root: &std::path::Path) -> Result<(), String> {
+    let entries = read_tool_execution_journal_entries(root)?;
+    let mut removed = false;
+    for pending_entry in entries
+        .iter()
+        .filter(|entry| entry.kind == ToolExecutionJournalKind::Pending)
+    {
+        let pending = read_tool_execution_record_file(
+            &pending_entry.path,
+            ToolExecutionJournalKind::Pending,
+        )?;
+        if pending_entry.path
+            != tool_execution_journal_path(
+                root,
+                &pending.execution_id,
+                ToolExecutionJournalKind::Pending,
+            )
+        {
+            return Err(format!(
+                "The tool execution journal identity does not match {}",
+                pending_entry.path.display()
+            ));
+        }
+        let completed_path = tool_execution_journal_path(
+            root,
+            &pending.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        if !completed_path.exists() {
+            continue;
+        }
+        let completed =
+            read_tool_execution_record_file(&completed_path, ToolExecutionJournalKind::Completed)?;
+        if completed.execution_id != pending.execution_id
+            || completed.fingerprint != pending.fingerprint
+        {
+            return Err(format!(
+                "The completed tool execution journal does not match {}",
+                pending_entry.path.display()
+            ));
+        }
+        std::fs::remove_file(&pending_entry.path).map_err(|error| {
+            format!(
+                "Failed to retire reconciled pending tool execution record {}: {error}",
+                pending_entry.path.display()
+            )
+        })?;
+        removed = true;
+    }
+    if removed {
+        sync_tool_execution_journal_directory(root)?;
+    }
+    Ok(())
+}
+
 fn remove_completed_journal_entries_to_fit(
     root: &std::path::Path,
     entries: &mut Vec<ToolExecutionJournalEntry>,
@@ -1510,6 +1624,7 @@ async fn persist_pending_tool_execution(
         std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .map_err(|error| format!("Failed to secure the tool execution journal: {error}"))?;
         remove_abandoned_tool_execution_temporaries(&root)?;
+        reconcile_completed_tool_execution_pairs(&root)?;
         let encoded = serde_json::to_vec(&record)
             .map_err(|error| format!("Failed to encode the tool execution journal: {error}"))?;
         if encoded.len() as u64 > MAX_TOOL_EXECUTION_RECORD_BYTES {
@@ -2603,6 +2718,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::os::unix::fs::PermissionsExt::from_mode(0o700),
     )
     .await?;
+    let reconciliation_root = execution_journal_root.clone();
+    tokio::task::spawn_blocking(move || {
+        remove_abandoned_tool_execution_temporaries(&reconciliation_root)?;
+        reconcile_completed_tool_execution_pairs(&reconciliation_root)
+    })
+    .await
+    .map_err(|error| format!("Tool execution journal reconciliation failed: {error}"))??;
     let config_manager = ConfigManager::initialize(config_root)
         .await
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
@@ -3000,6 +3122,53 @@ mod tests {
                 .expect("missing lookup")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn tool_execution_journal_reconciles_a_durable_completed_pending_pair() {
+        let root = TempDir::new().expect("journal root");
+        let pending = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+            execution_id: "execution-crash-window".to_string(),
+            fingerprint: "fingerprint-crash-window".to_string(),
+            state: PersistedToolExecutionState::Pending,
+        };
+        let completed = PersistedToolExecution {
+            state: PersistedToolExecutionState::Completed {
+                response: StoredToolExecution {
+                    status_code: 200,
+                    body: json!({ "result": "written" }),
+                },
+            },
+            ..pending.clone()
+        };
+        let pending_path = tool_execution_journal_path(
+            root.path(),
+            &pending.execution_id,
+            ToolExecutionJournalKind::Pending,
+        );
+        let completed_path = tool_execution_journal_path(
+            root.path(),
+            &completed.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        write_tool_execution_record_atomically(
+            root.path(),
+            &pending_path,
+            &serde_json::to_vec(&pending).expect("encode pending"),
+        )
+        .expect("write pending");
+        write_tool_execution_record_atomically(
+            root.path(),
+            &completed_path,
+            &serde_json::to_vec(&completed).expect("encode completed"),
+        )
+        .expect("write completed");
+
+        reconcile_completed_tool_execution_pairs(root.path()).expect("reconcile journal");
+
+        assert!(!pending_path.exists());
+        assert!(completed_path.exists());
     }
 
     #[tokio::test]

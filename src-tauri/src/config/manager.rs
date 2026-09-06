@@ -2454,6 +2454,11 @@ mod tests {
         tools["builtIn"] = json!({ "read": false });
         let tools_path = config_root.join("tools.json");
         atomic_write_json(&tools_path, &tools).expect("project tools");
+        atomic_write_json(
+            &config_root.join("agents.json"),
+            &sparse_document(ConfigDocumentKind::Agents),
+        )
+        .expect("project agents");
 
         manager
             .register_project_root("project-123", metadata.path().to_path_buf())
@@ -2482,6 +2487,13 @@ mod tests {
             .is_none());
         assert!(!second.documents.iter().any(|document| {
             document.kind == ConfigDocumentKind::Tools
+                && document.scope
+                    == ConfigScope::Project {
+                        project_id: "project-123".to_string(),
+                    }
+        }));
+        assert!(second.documents.iter().any(|document| {
+            document.kind == ConfigDocumentKind::Agents
                 && document.scope
                     == ConfigScope::Project {
                         project_id: "project-123".to_string(),

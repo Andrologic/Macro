@@ -120,10 +120,10 @@ Tool and checkpoint requests require a registered project. If `workspace_path`
 is omitted, the kernel uses that project's current canonical path. The kernel
 reloads the project registry before policy and path checks, so additions,
 removals, path changes, and read-only changes take effect without a restart.
-An inaccessible project, one outside the allowed roots, or one whose scoped
-tools policy is invalid is excluded from the new snapshot and rejected without
-preventing valid projects from being served. Removing a scoped policy removes
-its cached overlay on the next refresh.
+An inaccessible project, one outside the allowed roots, or one whose explicit
+scoped tools policy is missing or invalid is excluded from the new snapshot and
+rejected without preventing valid projects from being served. Removing a
+scoped policy removes its cached overlay on the next refresh.
 Client-declared paths still have to match the current server registry.
 
 Tool and checkpoint response bodies are capped at 64 MiB by both the kernel and
@@ -135,6 +135,8 @@ only `{"resolution":"record_indeterminate"}`, requires the approval bearer,
 and refuses an execution still running in the current process. It converts the
 durable pending record into a durable `REMOTE_MUTATION_OUTCOME_INDETERMINATE`
 result without running the mutation again or deleting its evidence.
+At startup, a fully durable completed record supersedes and retires a matching
+pending record left behind by a crash between the two journal operations.
 
 ## Internal frontend remote transport
 
