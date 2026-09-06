@@ -106,7 +106,7 @@ export const buildConversationMarkdownExport = ({
     lines.push(quoteMarkdown(message.content), '');
 
     if (message.context_refs?.length) {
-      lines.push('#### Context references', '');
+      lines.push('#### Context links', '');
       message.context_refs.forEach((ref) => lines.push(formatContextReference(ref)));
       lines.push('');
     }
