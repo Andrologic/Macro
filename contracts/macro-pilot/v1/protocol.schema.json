@@ -5,6 +5,9 @@
   "x-semantic-rules": [
     "event.resource MUST equal event.snapshot.ref",
     "event.revision MUST equal event.snapshot.revision",
+    "event_batch.events MUST use its stream_id and contiguous sequence values after after_sequence",
+    "event_batch.next_cursor and next_sequence MUST equal its last event, or the after values when empty",
+    "session.revoke issued_by.account_id MUST equal target.account_id",
     "page.item_type MUST equal the type of every item",
     "command_result.resulting_revision MUST NOT be lower than previous_revision"
   ],
@@ -12,6 +15,7 @@
     { "$ref": "#/$defs/command" },
     { "$ref": "#/$defs/commandResult" },
     { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/eventBatch" },
     { "$ref": "#/$defs/pageRequest" },
     { "$ref": "#/$defs/page" },
     { "$ref": "#/$defs/resumeRequest" },
@@ -60,7 +64,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+            "reason": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 500 }
           }
         }
       }
@@ -83,7 +87,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+            "reason": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 500 }
           }
         }
       }
@@ -132,7 +136,7 @@
           "required": ["verdict"],
           "properties": {
             "verdict": { "enum": ["approve", "request_changes"] },
-            "note": { "type": "string", "minLength": 1, "maxLength": 4000 }
+            "note": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 }
           }
         }
       }
@@ -159,7 +163,7 @@
             "unavailable"
           ]
         },
-        "message": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "message": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 1000 },
         "retryable": { "type": "boolean" },
         "resource": { "$ref": "common.schema.json#/$defs/resourceRef" },
         "violations": {
@@ -170,8 +174,8 @@
             "additionalProperties": false,
             "required": ["field", "rule"],
             "properties": {
-              "field": { "type": "string", "minLength": 1, "maxLength": 300 },
-              "rule": { "type": "string", "minLength": 1, "maxLength": 300 }
+              "field": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 },
+              "rule": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 }
             }
           }
         }
@@ -196,7 +200,7 @@
         {
           "if": { "properties": { "outcome": { "const": "rejected" } } },
           "then": {
-            "properties": { "error": true },
+            "properties": { "error": true, "resulting_revision": false },
             "required": ["error"]
           },
           "else": {
@@ -282,6 +286,25 @@
         { "$ref": "#/$defs/reviewEvent" }
       ]
     },
+    "eventBatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "stream_id", "after_cursor", "after_sequence", "events", "next_cursor", "next_sequence"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "event_batch" },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "after_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "after_sequence": { "type": "integer", "minimum": 0 },
+        "events": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/event" }
+        },
+        "next_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "next_sequence": { "type": "integer", "minimum": 0 }
+      }
+    },
     "pageRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -329,12 +352,13 @@
     "resumeRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "type", "stream_id", "after_cursor", "limit"],
+      "required": ["contract_version", "type", "stream_id", "after_cursor", "after_sequence", "limit"],
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "resume_request" },
         "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
         "after_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "after_sequence": { "type": "integer", "minimum": 0 },
         "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
       }
     },

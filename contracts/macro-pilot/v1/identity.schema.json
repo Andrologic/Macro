@@ -25,9 +25,9 @@
           "properties": {
             "provider": { "const": "github" },
             "subject": { "type": "string", "minLength": 1, "maxLength": 255 },
-            "login": { "type": "string", "minLength": 1, "maxLength": 255 },
-            "display_name": { "type": "string", "minLength": 1, "maxLength": 255 },
-            "avatar_url": { "type": "string", "format": "uri" }
+            "login": { "type": "string", "minLength": 1, "maxLength": 39, "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$|^[A-Za-z0-9]$" },
+            "display_name": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 255 },
+            "avatar_url": { "type": "string", "format": "uri", "pattern": "^https://" }
           }
         },
         "revision": { "$ref": "common.schema.json#/$defs/revision" }
@@ -36,13 +36,12 @@
     "deviceSession": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "type", "ref", "device_id", "account_id", "state", "issued_at", "revision"],
+      "required": ["contract_version", "type", "ref", "device_id", "state", "issued_at", "revision"],
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "device_session" },
         "ref": { "$ref": "common.schema.json#/$defs/sessionRef" },
         "device_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
-        "account_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
         "state": { "enum": ["active", "revoked", "expired"] },
         "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" },
@@ -67,7 +66,7 @@
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "instance" },
         "ref": { "$ref": "common.schema.json#/$defs/instanceRef" },
-        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "label": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 120 },
         "connection_state": { "enum": ["reachable", "unreachable", "revoked"] },
         "supported_contract_versions": {
           "type": "array",
@@ -87,7 +86,7 @@
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "workspace" },
         "ref": { "$ref": "common.schema.json#/$defs/workspaceRef" },
-        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "label": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 120 },
         "revision": { "$ref": "common.schema.json#/$defs/revision" }
       }
     },
@@ -99,7 +98,7 @@
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "project" },
         "ref": { "$ref": "common.schema.json#/$defs/projectRef" },
-        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "label": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 120 },
         "vcs": { "const": "git" },
         "revision": { "$ref": "common.schema.json#/$defs/revision" }
       }

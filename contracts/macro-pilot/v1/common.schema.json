@@ -24,6 +24,12 @@
       "type": "string",
       "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
     },
+    "safeText": {
+      "type": "string",
+      "not": {
+        "pattern": "(file://|/Users/|/home/|[A-Za-z]:\\\\|gh[pousr]_|github_pat_|sk-[A-Za-z0-9]{16,}|-----BEGIN [A-Z ]+ PRIVATE KEY-----)"
+      }
+    },
     "instanceRef": {
       "type": "object",
       "additionalProperties": false,
@@ -36,10 +42,11 @@
     "sessionRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "instance_id", "session_id"],
+      "required": ["type", "instance_id", "account_id", "session_id"],
       "properties": {
         "type": { "const": "session" },
         "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "account_id": { "$ref": "#/$defs/opaqueId" },
         "session_id": { "$ref": "#/$defs/opaqueId" }
       }
     },

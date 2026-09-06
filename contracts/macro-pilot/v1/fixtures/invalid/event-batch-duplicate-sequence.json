@@ -1,0 +1,75 @@
+{
+  "contract_version": "1.0",
+  "type": "event_batch",
+  "stream_id": "stream:workspace:macro-suite",
+  "after_cursor": "cursor:41:01J8T",
+  "after_sequence": 41,
+  "events": [
+    {
+      "contract_version": "1.0",
+      "type": "event",
+      "event_type": "task.updated",
+      "stream_id": "stream:workspace:macro-suite",
+      "sequence": 42,
+      "resume_cursor": "cursor:42:first",
+      "emitted_at": "2026-09-06T12:00:00Z",
+      "resource": {
+        "type": "task",
+        "instance_id": "instance:studio-mac",
+        "workspace_id": "workspace:macro-suite",
+        "project_id": "project:macro-desktop",
+        "task_id": "task:pilot-contract"
+      },
+      "revision": 5,
+      "snapshot": {
+        "contract_version": "1.0",
+        "type": "task",
+        "ref": {
+          "type": "task",
+          "instance_id": "instance:studio-mac",
+          "workspace_id": "workspace:macro-suite",
+          "project_id": "project:macro-desktop",
+          "task_id": "task:pilot-contract"
+        },
+        "title": "Define the Macro Pilot contract",
+        "state": "running",
+        "revision": 5,
+        "updated_at": "2026-09-06T12:00:00Z"
+      }
+    },
+    {
+      "contract_version": "1.0",
+      "type": "event",
+      "event_type": "task.updated",
+      "stream_id": "stream:workspace:macro-suite",
+      "sequence": 42,
+      "resume_cursor": "cursor:42:second",
+      "emitted_at": "2026-09-06T12:00:01Z",
+      "resource": {
+        "type": "task",
+        "instance_id": "instance:studio-mac",
+        "workspace_id": "workspace:macro-suite",
+        "project_id": "project:macro-desktop",
+        "task_id": "task:pilot-contract"
+      },
+      "revision": 6,
+      "snapshot": {
+        "contract_version": "1.0",
+        "type": "task",
+        "ref": {
+          "type": "task",
+          "instance_id": "instance:studio-mac",
+          "workspace_id": "workspace:macro-suite",
+          "project_id": "project:macro-desktop",
+          "task_id": "task:pilot-contract"
+        },
+        "title": "Define the Macro Pilot contract",
+        "state": "completed",
+        "revision": 6,
+        "updated_at": "2026-09-06T12:00:01Z"
+      }
+    }
+  ],
+  "next_cursor": "cursor:42:second",
+  "next_sequence": 42
+}

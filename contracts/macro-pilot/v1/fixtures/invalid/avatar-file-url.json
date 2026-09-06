@@ -1,0 +1,12 @@
+{
+  "contract_version": "1.0",
+  "type": "account",
+  "account_id": "account:github:583231",
+  "identity": {
+    "provider": "github",
+    "subject": "583231",
+    "login": "octocat",
+    "avatar_url": "file:///Users/alice/.config/macro/token"
+  },
+  "revision": 3
+}

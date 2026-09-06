@@ -23,7 +23,7 @@
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "task" },
         "ref": { "$ref": "common.schema.json#/$defs/taskRef" },
-        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "title": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 },
         "state": { "enum": ["queued", "running", "waiting_decision", "review_ready", "completed", "failed", "cancelled"] },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
@@ -44,7 +44,17 @@
         "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "waiting_on": { "$ref": "common.schema.json#/$defs/decisionRef" }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "waiting_decision" } } },
+          "then": {
+            "properties": { "waiting_on": true },
+            "required": ["waiting_on"]
+          },
+          "else": { "properties": { "waiting_on": false } }
+        }
+      ]
     },
     "decisionChoice": {
       "type": "object",
@@ -52,8 +62,8 @@
       "required": ["choice_id", "label"],
       "properties": {
         "choice_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
-        "label": { "type": "string", "minLength": 1, "maxLength": 160 },
-        "description": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        "label": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 1000 }
       }
     },
     "decisionResolution": {
@@ -75,7 +85,7 @@
         "type": { "const": "decision" },
         "ref": { "$ref": "common.schema.json#/$defs/decisionRef" },
         "state": { "enum": ["pending", "resolved", "expired", "cancelled"] },
-        "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "prompt": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 },
         "choices": {
           "type": "array",
           "minItems": 1,
@@ -93,7 +103,8 @@
           "then": {
             "properties": { "resolution": true },
             "required": ["resolution"]
-          }
+          },
+          "else": { "properties": { "resolution": false } }
         }
       ]
     },
@@ -116,7 +127,7 @@
           }
         },
         "state": { "enum": ["pending", "changes_requested", "approved", "superseded"] },
-        "verdict_note": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "verdict_note": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       }

@@ -51,6 +51,14 @@ function semanticErrors(message) {
     errors.push("review.related_run differs from review.ref");
   }
 
+  if (
+    message.type === "command" &&
+    message.kind === "session.revoke" &&
+    message.target?.account_id !== message.issued_by?.account_id
+  ) {
+    errors.push("session.revoke target belongs to another account");
+  }
+
   if (message.type === "run" && message.waiting_on && !sameRunScope(message.ref, message.waiting_on)) {
     errors.push("run.waiting_on differs from run.ref");
   }
@@ -82,6 +90,27 @@ function semanticErrors(message) {
 
   if (message.type === "event" && message.snapshot) {
     for (const error of semanticErrors(message.snapshot)) errors.push(`event.snapshot: ${error}`);
+  }
+
+  if (message.type === "event_batch" && Array.isArray(message.events)) {
+    let previousSequence = message.after_sequence;
+    message.events.forEach((event, index) => {
+      if (event.stream_id !== message.stream_id) {
+        errors.push(`event_batch.events[${index}] uses another stream_id`);
+      }
+      if (event.sequence !== previousSequence + 1) {
+        errors.push(`event_batch.events[${index}] sequence is not contiguous`);
+      }
+      previousSequence = event.sequence;
+      for (const error of semanticErrors(event)) errors.push(`event_batch.events[${index}]: ${error}`);
+    });
+    const expectedCursor = message.events.at(-1)?.resume_cursor ?? message.after_cursor;
+    if (message.next_cursor !== expectedCursor) {
+      errors.push("event_batch.next_cursor does not match the last delivered cursor");
+    }
+    if (message.next_sequence !== previousSequence) {
+      errors.push("event_batch.next_sequence does not match the last delivered sequence");
+    }
   }
 
   if (

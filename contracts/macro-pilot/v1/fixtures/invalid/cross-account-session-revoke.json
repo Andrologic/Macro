@@ -2,8 +2,8 @@
   "contract_version": "1.0",
   "type": "command",
   "kind": "session.revoke",
-  "command_id": "command:session:revoke:01",
-  "idempotency_key": "desktop-session-revoke-0001",
+  "command_id": "command:session:revoke:02",
+  "idempotency_key": "desktop-session-revoke-0002",
   "expected_revision": 1,
   "target": {
     "type": "session",
@@ -12,12 +12,10 @@
     "session_id": "session:phone:01J8T"
   },
   "issued_by": {
-    "account_id": "account:github:583231",
-    "session_id": "session:desktop:01J8T",
-    "device_id": "device:desktop:01J8T"
+    "account_id": "account:github:999999",
+    "session_id": "session:desktop:02J8T",
+    "device_id": "device:desktop:02J8T"
   },
   "issued_at": "2026-09-06T12:01:00Z",
-  "payload": {
-    "reason": "Device access removed"
-  }
+  "payload": {}
 }

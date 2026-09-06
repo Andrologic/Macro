@@ -1,0 +1,10 @@
+{
+  "contract_version": "1.0",
+  "type": "error",
+  "request_id": "request:tasks:page:02",
+  "error": {
+    "code": "unavailable",
+    "message": "Provider returned ghp_000000000000000000000000000000000000",
+    "retryable": false
+  }
+}
