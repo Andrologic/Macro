@@ -43,12 +43,14 @@ moteur autonome ni service continuant après fermeture n'est requis.
 
 ## Conservation par la passerelle
 
-La passerelle assure le relais. Sa rétention technique, notamment la durée et
-les données conservées pour la reprise, reste à préciser.
+La passerelle assure le relais. Le [transport natif](native-transport.md) fixe
+une conservation transitoire en mémoire de 60 secondes pour les échanges et
+résultats, sans historique canonique de code ou de conversations. Une éventuelle
+rétention durable supplémentaire reste à préciser.
 
-Le contrat définit curseurs et reprise sans fixer leur durée. Il ne contient
-aucun objet conversation, contenu de fichier ou chemin machine. La politique de
-rétention sera ajoutée seulement après décision.
+Les curseurs de supervision sont gérés par Macro. Le transport prévoit leur
+expiration et la reconstruction des snapshots, sans imposer au desktop une
+durée de conservation de son journal.
 
 ## Effet d'une validation Git mobile
 

@@ -55,15 +55,22 @@ restent exclusivement chez D. Aucun scope de dépôt ou d'email n'est demandé.
 
 | Méthode et route | Corps ou résultat |
 | --- | --- |
-| `POST /auth/attempts` | Corps `{transport_version, client_kind, device_label}` ; `client_kind` vaut `desktop` ou `mobile`, simple indication d'affichage. 201 `{transport_version, attempt_id, poll_secret, user_code, verification_uri, expires_at, interval}`. |
+| `POST /auth/attempts` | Corps `{transport_version, client_kind, device_label, claim_challenge}` ; `client_kind` vaut `desktop` ou `mobile`, simple indication d'affichage. 201 `{transport_version, attempt_id, poll_secret, user_code, verification_uri, expires_at, interval}`. |
 | `POST /auth/attempts/{id}/poll` | Corps `{transport_version}` ; `Authorization: Bearer <poll_secret>`. 202 `{transport_version, status: "pending", interval}` ou 200 `{transport_version, status: "identified", account}` avec compte A1 vérifié. |
-| `POST /auth/attempts/{id}/claim` | Corps `{transport_version, account_id}` ; même preuve. 200 `{transport_version, account, device_session, session_token}`. |
+| `POST /auth/attempts/{id}/claim` | Corps `{transport_version, account_id, claim_secret}` ; même preuve de polling. 200 `{transport_version, account, device_session, session_token}`. |
 | `DELETE /auth/attempts/{id}` | Même preuve, aucun corps ; 204. Annule une tentative non réclamée. |
 
 D génère `attempt_id` et `poll_secret` indépendamment, le secret contient 256
 bits aléatoires cryptographiques encodés base64url. Le secret n'est connu que
 de l'application initiatrice et de D, qui en conserve une empreinte pour
 comparaison constante. L'ID seul n'autorise ni lecture, ni annulation, ni claim.
+Avant la création, l'application génère indépendamment un `claim_secret` de
+256 bits cryptographiques, base64url sans padding, et le garde dans son coffre
+OS. Elle envoie uniquement `claim_challenge`, le SHA-256 des octets ASCII de
+ce secret encodé, également base64url sans padding. D vérifie cette empreinte
+en temps constant lors de chaque claim, y compris ses répétitions. Le vol du
+seul `poll_secret` ne permet donc pas de réclamer ou récupérer un jeton.
+Le secret de claim n'est ni retourné par D ni envoyé au navigateur.
 D borne la tentative au minimum de l'expiration GitHub et de 10 minutes.
 `interval` vaut au moins 5 secondes et respecte les réponses `slow_down` GitHub.
 D ne poll GitHub qu'à cette fréquence, même si plusieurs requêtes natives
@@ -79,19 +86,22 @@ compte. L'application affiche l'identité obtenue et demande confirmation avant
 Une tentative ne peut pas changer de compte après identification.
 
 `claim` crée atomiquement un nouveau `device_id`, une session et un jeton
-aléatoires attribués par D. Aucun ID d'appareil soumis par le client n'est
+attribués par D. Le `session_token` contient 256 bits cryptographiques
+indépendants, base64url sans padding. Aucun ID d'appareil soumis par le client n'est
 accepté comme preuve ou réutilisé. La session expire après 30 jours, sans
 renouvellement implicite ; une nouvelle connexion crée une autre session et
 requiert une nouvelle association. Le jeton reste dans le stockage sécurisé
 de l'OS, jamais dans Git ou les journaux. D conserve son empreinte.
 
-Une répétition de `claim` par la même tentative retourne le même résultat
+Une répétition de `claim` avec les deux secrets de la même tentative retourne le même résultat
 pendant 60 secondes afin de tolérer une réponse perdue. Cette unique copie
 temporaire du jeton est chiffrée au repos avec une clé serveur hors Git ; après
 ce délai, la tentative devient inutilisable. Si le client ne récupère pas le
 résultat, il recommence la connexion ; il ne peut pas recréer des sessions par
 rejeu de l'ancienne tentative. Un autre secret ne peut jamais récupérer le
 résultat. Une session révoquée n'est jamais réémise par ce cache.
+La copie des deux secrets ou du jeton de session permet une usurpation tant
+qu'ils sont valides ; le protocole n'est pas une attestation matérielle.
 
 Les codes sont montrés comme liés à l'application initiatrice : ne pas accepter
 un code envoyé par un tiers. Ce flow résiste à la devinette et au rejeu, mais
@@ -110,14 +120,17 @@ Les précautions générales suivent le
 | --- | --- |
 | `GET /me` | 200 `{transport_version, account, device_session}` pour la session authentifiée. |
 | `POST /directory/query` | Corps `page_request` A1, types limités à `device_session`, `instance_access`, `instance`. Retour `page` A1, limité au compte courant. |
-| `POST /instances` | Corps `{transport_version, label}`. 201 `{transport_version, instance, instance_key, instance_access}`. |
+| `POST /instances` | Corps `{transport_version, creation_id, label, instance_key_hash}`. 201 `{transport_version, instance, instance_access}`. |
 | `POST /instances/{id}/attach` | Corps `{transport_version}` et preuve producteur. 200 `{transport_version, instance, instance_access}` ; lie une nouvelle session du propriétaire au desktop existant. |
 | `POST /instances/{id}/access-requests` | Corps `{transport_version}`. 201 `{transport_version, access_request_id, expires_at}`. |
 | `GET /instances/{id}/access-requests` | Preuve producteur. 200 `{transport_version, requests}` ; liste de `{access_request_id, device_session, device_label, expires_at}`. |
 | `POST /instances/{id}/access-requests/{request}/resolve` | Preuve producteur ; corps `{transport_version, verdict, permissions?}`. Verdict `grant` exige liste de permissions A1, verdict `deny` l'interdit. 200 `{transport_version, status}` où status vaut `granted` ou `denied`. |
 | `POST /instances/{id}/access/{session}/revoke` | Preuve producteur ; corps `{transport_version, expected_revision}`. 200 ressource `instance_access` A1 révoquée. |
 
-La création donne un ID d'instance et une `instance_key` aléatoires côté D,
+Avant la création, C génère une `instance_key` de 256 bits cryptographiques,
+base64url sans padding, et la conserve dans son coffre OS avec `creation_id`.
+Il transmet uniquement `instance_key_hash`, SHA-256 des octets ASCII de la clé
+encodée, base64url sans padding. D attribue l'ID d'instance,
 avec toutes les permissions A1 à la session créatrice. Le compte propriétaire
 est immuable. La preuve producteur combine le jeton d'une session active de ce
 compte et `X-Instance-Key`. Cette clé de 256 bits appartient à cette installation
@@ -127,6 +140,12 @@ L'annonce `client_kind: desktop` ne donne aucun pouvoir sur une instance
 existante. Un mobile malveillant peut créer sa propre instance, jamais prendre
 celle d'un autre client par son ID. En cas de perte de la clé, C crée une nouvelle
 instance ; le protocole ne fournit pas de récupération par connaissance de l'ID.
+
+D traite `creation_id` comme clé d'idempotence liée à la session et conserve
+le résultat non secret jusqu'à son expiration. Un retry de même corps retourne
+la même instance et le même accès ; un corps différent retourne 409. C garde
+la clé localement avant l'envoi et peut donc retrouver le résultat après perte
+de réponse sans créer une instance orpheline. D ne retourne jamais la clé.
 
 `attach` exige cette clé et le même compte. Il rétablit l'accès producteur après
 une nouvelle connexion, sans transférer les droits d'une session mobile.
@@ -141,6 +160,10 @@ deux sessions et le compte commun, puis résout une seule fois la demande.
 Une répétition identique retourne le même statut ; un verdict différent ou une
 demande expirée retourne 409. Le mobile relit sa liste `instance_access` après
 confirmation. La possession d'un ID d'appareil ne suffit jamais pour s'associer.
+Un retry de création pendant ces cinq minutes retourne la même demande et
+le même `access_request_id`, même si elle est déjà résolue. Après expiration,
+la même route crée une nouvelle demande. Le délai n'est jamais prolongé par
+un retry. Le mobile peut toujours retrouver un accès accordé via directory.
 
 ## Acheminement HTTP des messages A1
 
@@ -267,6 +290,10 @@ horloge contrôlée, puis un essai natif réel avant publication :
   faux login, faux compte au claim, ID seul et mauvais poll secret sont refusés ;
 - une tentative expirée, refusée ou réclamée hors fenêtre ne produit aucun jeton ;
   une réponse perdue au claim ne crée pas une seconde session ;
+- un poll secret volé sans claim secret ne retourne aucun jeton, même pendant
+  la fenêtre de répétition ; une empreinte différente échoue ;
+- la perte de réponse à la création d'instance restitue la même instance avec
+  la clé déjà conservée par C ; une association répétée retrouve sa demande ;
 - un autre compte, un appareil auto-déclaré ou un client sans clé producteur ne
   peut ni attacher l'instance ni accorder des accès ni publier de résultats ;
 - un `issued_by` falsifié, une cible étrangère ou un accès révoqué est refusé

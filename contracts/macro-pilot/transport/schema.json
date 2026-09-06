@@ -62,7 +62,22 @@
             "after_sequence": { "type": "integer", "minimum": 0 }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "message": {
+                "type": "object",
+                "required": ["type", "item_type"],
+                "properties": { "type": { "const": "page" }, "item_type": { "const": "task" } }
+              }
+            }
+          },
+          "then": { "properties": { "resume_point": true }, "required": ["resume_point"] },
+          "else": { "properties": { "resume_point": false } }
+        }
+      ]
     }
   },
   "oneOf": [
