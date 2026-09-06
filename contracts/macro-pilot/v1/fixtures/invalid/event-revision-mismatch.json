@@ -1,0 +1,32 @@
+{
+  "contract_version": "1.0",
+  "type": "event",
+  "event_type": "task.updated",
+  "stream_id": "stream:workspace:macro-suite",
+  "sequence": 43,
+  "resume_cursor": "cursor:43:01J8T",
+  "emitted_at": "2026-09-06T12:00:01Z",
+  "resource": {
+    "type": "task",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "project_id": "project:macro-desktop",
+    "task_id": "task:pilot-contract"
+  },
+  "revision": 6,
+  "snapshot": {
+    "contract_version": "1.0",
+    "type": "task",
+    "ref": {
+      "type": "task",
+      "instance_id": "instance:studio-mac",
+      "workspace_id": "workspace:macro-suite",
+      "project_id": "project:macro-desktop",
+      "task_id": "task:pilot-contract"
+    },
+    "title": "Define the Macro Pilot contract",
+    "state": "running",
+    "revision": 5,
+    "updated_at": "2026-09-06T12:00:00Z"
+  }
+}

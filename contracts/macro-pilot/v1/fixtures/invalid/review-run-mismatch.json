@@ -1,0 +1,28 @@
+{
+  "contract_version": "1.0",
+  "type": "review",
+  "ref": {
+    "type": "review",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "project_id": "project:macro-desktop",
+    "task_id": "task:pilot-contract",
+    "run_id": "run:pilot-contract:01",
+    "review_id": "review:pilot-contract:01"
+  },
+  "related_run": {
+    "type": "run",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:other-suite",
+    "project_id": "project:macro-desktop",
+    "task_id": "task:pilot-contract",
+    "run_id": "run:pilot-contract:01"
+  },
+  "git_revision": {
+    "base_sha": "4374eb38566646f8e490306268ddb0371eeff539",
+    "head_sha": "156c067ab4fe3117f9b2e8424cfa63c29490ff5a"
+  },
+  "state": "pending",
+  "revision": 1,
+  "updated_at": "2026-09-06T12:05:00Z"
+}

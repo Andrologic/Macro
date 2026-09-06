@@ -1,0 +1,21 @@
+{
+  "contract_version": "1.0",
+  "type": "decision",
+  "ref": {
+    "type": "decision",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "project_id": "project:macro-desktop",
+    "task_id": "task:pilot-contract",
+    "run_id": "run:pilot-contract:01",
+    "decision_id": "decision:topology:01"
+  },
+  "state": "pending",
+  "prompt": "Choose one option.",
+  "choices": [
+    { "choice_id": "choice:topology:local", "label": "Local" },
+    { "choice_id": "choice:topology:local", "label": "Hosted" }
+  ],
+  "revision": 1,
+  "created_at": "2026-09-06T12:00:00Z"
+}

@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/supervision.schema.json",
+  "title": "Macro Pilot supervision resources 1.0",
+  "x-semantic-rules": [
+    "decision.resolution.choice_id MUST match an entry in decision.choices",
+    "decision.choices MUST use distinct choice_id values",
+    "run.waiting_on MUST identify the same instance, workspace, project, task, and run as run.ref",
+    "review.related_run MUST identify the same instance, workspace, project, task, and run as review.ref"
+  ],
+  "oneOf": [
+    { "$ref": "#/$defs/task" },
+    { "$ref": "#/$defs/run" },
+    { "$ref": "#/$defs/decision" },
+    { "$ref": "#/$defs/review" }
+  ],
+  "$defs": {
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "title", "state", "revision", "updated_at"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "task" },
+        "ref": { "$ref": "common.schema.json#/$defs/taskRef" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "state": { "enum": ["queued", "running", "waiting_decision", "review_ready", "completed", "failed", "cancelled"] },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "state", "revision", "created_at", "updated_at"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "run" },
+        "ref": { "$ref": "common.schema.json#/$defs/runRef" },
+        "state": { "enum": ["pending", "running", "waiting_decision", "completed", "failed", "cancelled", "interrupted"] },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "waiting_on": { "$ref": "common.schema.json#/$defs/decisionRef" }
+      }
+    },
+    "decisionChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["choice_id", "label"],
+      "properties": {
+        "choice_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
+    "decisionResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["choice_id", "resolved_by", "resolved_at"],
+      "properties": {
+        "choice_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "resolved_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "resolved_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "state", "prompt", "choices", "revision", "created_at"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "decision" },
+        "ref": { "$ref": "common.schema.json#/$defs/decisionRef" },
+        "state": { "enum": ["pending", "resolved", "expired", "cancelled"] },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/decisionChoice" }
+        },
+        "resolution": { "$ref": "#/$defs/decisionResolution" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "resolved" } } },
+          "then": {
+            "properties": { "resolution": true },
+            "required": ["resolution"]
+          }
+        }
+      ]
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "related_run", "git_revision", "state", "revision", "updated_at"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "review" },
+        "ref": { "$ref": "common.schema.json#/$defs/reviewRef" },
+        "related_run": { "$ref": "common.schema.json#/$defs/runRef" },
+        "git_revision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["base_sha", "head_sha"],
+          "properties": {
+            "base_sha": { "$ref": "common.schema.json#/$defs/gitSha" },
+            "head_sha": { "$ref": "common.schema.json#/$defs/gitSha" }
+          }
+        },
+        "state": { "enum": ["pending", "changes_requested", "approved", "superseded"] },
+        "verdict_note": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    }
+  }
+}

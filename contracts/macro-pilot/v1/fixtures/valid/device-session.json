@@ -1,0 +1,15 @@
+{
+  "contract_version": "1.0",
+  "type": "device_session",
+  "ref": {
+    "type": "session",
+    "instance_id": "instance:studio-mac",
+    "session_id": "session:phone:01J8T"
+  },
+  "device_id": "device:iphone:01J8T",
+  "account_id": "account:github:583231",
+  "state": "revoked",
+  "issued_at": "2026-09-06T10:00:00Z",
+  "revoked_at": "2026-09-06T12:00:00Z",
+  "revision": 2
+}

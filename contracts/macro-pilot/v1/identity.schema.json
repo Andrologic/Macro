@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/identity.schema.json",
+  "title": "Macro Pilot identity resources 1.0",
+  "oneOf": [
+    { "$ref": "#/$defs/account" },
+    { "$ref": "#/$defs/deviceSession" },
+    { "$ref": "#/$defs/instance" },
+    { "$ref": "#/$defs/workspace" },
+    { "$ref": "#/$defs/project" }
+  ],
+  "$defs": {
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "account_id", "identity", "revision"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "account" },
+        "account_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "subject", "login"],
+          "properties": {
+            "provider": { "const": "github" },
+            "subject": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "login": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "display_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "avatar_url": { "type": "string", "format": "uri" }
+          }
+        },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" }
+      }
+    },
+    "deviceSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "device_id", "account_id", "state", "issued_at", "revision"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "device_session" },
+        "ref": { "$ref": "common.schema.json#/$defs/sessionRef" },
+        "device_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "account_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "state": { "enum": ["active", "revoked", "expired"] },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "revoked_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "revoked" } } },
+          "then": {
+            "properties": { "revoked_at": true },
+            "required": ["revoked_at"]
+          }
+        }
+      ]
+    },
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "label", "connection_state", "supported_contract_versions", "revision"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "instance" },
+        "ref": { "$ref": "common.schema.json#/$defs/instanceRef" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "connection_state": { "enum": ["reachable", "unreachable", "revoked"] },
+        "supported_contract_versions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" }
+        },
+        "last_seen_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "label", "revision"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "workspace" },
+        "ref": { "$ref": "common.schema.json#/$defs/workspaceRef" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" }
+      }
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "label", "vcs", "revision"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "project" },
+        "ref": { "$ref": "common.schema.json#/$defs/projectRef" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "vcs": { "const": "git" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" }
+      }
+    }
+  }
+}

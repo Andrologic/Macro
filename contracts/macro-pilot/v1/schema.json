@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/schema.json",
+  "title": "Macro Pilot wire message 1.0",
+  "description": "Stable envelope types shared by the local service, relay, and mobile client.",
+  "oneOf": [
+    { "$ref": "identity.schema.json" },
+    { "$ref": "supervision.schema.json" },
+    { "$ref": "protocol.schema.json" }
+  ]
+}

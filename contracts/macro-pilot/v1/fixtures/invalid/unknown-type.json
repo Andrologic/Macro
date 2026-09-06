@@ -1,0 +1,5 @@
+{
+  "contract_version": "1.0",
+  "type": "provider_secret",
+  "token": "must-never-cross-the-wire"
+}

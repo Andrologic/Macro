@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/v1/common.schema.json",
+  "title": "Macro Pilot common definitions 1.0",
+  "$defs": {
+    "contractVersion": {
+      "const": "1.0"
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "instanceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id"],
+      "properties": {
+        "type": { "const": "instance" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "sessionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id", "session_id"],
+      "properties": {
+        "type": { "const": "session" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "session_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "workspaceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id", "workspace_id"],
+      "properties": {
+        "type": { "const": "workspace" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "workspace_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "projectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id", "workspace_id", "project_id"],
+      "properties": {
+        "type": { "const": "project" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "workspace_id": { "$ref": "#/$defs/opaqueId" },
+        "project_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "taskRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id", "workspace_id", "project_id", "task_id"],
+      "properties": {
+        "type": { "const": "task" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "workspace_id": { "$ref": "#/$defs/opaqueId" },
+        "project_id": { "$ref": "#/$defs/opaqueId" },
+        "task_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "runRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id", "workspace_id", "project_id", "task_id", "run_id"],
+      "properties": {
+        "type": { "const": "run" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "workspace_id": { "$ref": "#/$defs/opaqueId" },
+        "project_id": { "$ref": "#/$defs/opaqueId" },
+        "task_id": { "$ref": "#/$defs/opaqueId" },
+        "run_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "decisionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id", "workspace_id", "project_id", "task_id", "run_id", "decision_id"],
+      "properties": {
+        "type": { "const": "decision" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "workspace_id": { "$ref": "#/$defs/opaqueId" },
+        "project_id": { "$ref": "#/$defs/opaqueId" },
+        "task_id": { "$ref": "#/$defs/opaqueId" },
+        "run_id": { "$ref": "#/$defs/opaqueId" },
+        "decision_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "reviewRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id", "workspace_id", "project_id", "task_id", "run_id", "review_id"],
+      "properties": {
+        "type": { "const": "review" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "workspace_id": { "$ref": "#/$defs/opaqueId" },
+        "project_id": { "$ref": "#/$defs/opaqueId" },
+        "task_id": { "$ref": "#/$defs/opaqueId" },
+        "run_id": { "$ref": "#/$defs/opaqueId" },
+        "review_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "resourceRef": {
+      "oneOf": [
+        { "$ref": "#/$defs/instanceRef" },
+        { "$ref": "#/$defs/sessionRef" },
+        { "$ref": "#/$defs/workspaceRef" },
+        { "$ref": "#/$defs/projectRef" },
+        { "$ref": "#/$defs/taskRef" },
+        { "$ref": "#/$defs/runRef" },
+        { "$ref": "#/$defs/decisionRef" },
+        { "$ref": "#/$defs/reviewRef" }
+      ]
+    },
+    "actorRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account_id", "session_id", "device_id"],
+      "properties": {
+        "account_id": { "$ref": "#/$defs/opaqueId" },
+        "session_id": { "$ref": "#/$defs/opaqueId" },
+        "device_id": { "$ref": "#/$defs/opaqueId" }
+      }
+    }
+  }
+}

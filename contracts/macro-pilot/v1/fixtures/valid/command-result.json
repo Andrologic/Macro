@@ -1,0 +1,18 @@
+{
+  "contract_version": "1.0",
+  "type": "command_result",
+  "command_id": "command:decision:resolve:01",
+  "idempotency_key": "phone01-decision01-0001",
+  "outcome": "accepted",
+  "target": {
+    "type": "decision",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "project_id": "project:macro-desktop",
+    "task_id": "task:pilot-contract",
+    "run_id": "run:pilot-contract:01",
+    "decision_id": "decision:topology:01"
+  },
+  "previous_revision": 1,
+  "resulting_revision": 2
+}

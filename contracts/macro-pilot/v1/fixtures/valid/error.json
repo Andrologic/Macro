@@ -1,0 +1,17 @@
+{
+  "contract_version": "1.0",
+  "type": "error",
+  "request_id": "request:tasks:page:01",
+  "error": {
+    "code": "stale_revision",
+    "message": "Expected revision 6 but found revision 7.",
+    "retryable": true,
+    "resource": {
+      "type": "task",
+      "instance_id": "instance:studio-mac",
+      "workspace_id": "workspace:macro-suite",
+      "project_id": "project:macro-desktop",
+      "task_id": "task:pilot-contract"
+    }
+  }
+}
