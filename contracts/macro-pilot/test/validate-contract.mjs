@@ -21,8 +21,11 @@ const expectedSemanticRejections = new Set([
   "page-type-mismatch.json",
   "review-run-mismatch.json",
   "run-waiting-reference-mismatch.json",
+  "run-waiting-reply-reference-mismatch.json",
   "task-project-overlap.json",
   "task-target-mismatch.json",
+  "task-reply-missing-context.json",
+  "task-reply-context-outside-wait.json",
   "run-waiting-tool-approval-reference-mismatch.json",
   "tool-approval-scope-mismatch.json",
 ]);
@@ -119,11 +122,20 @@ function semanticErrors(message) {
     errors.push("session.revoke target belongs to another account");
   }
 
-  if (message.type === "run" && message.waiting_on && !sameRunScope(message.ref, message.waiting_on)) {
+  if (message.type === "run" && message.waiting_on && !sameFields(message.ref, message.waiting_on,
+    message.state === "waiting_reply" ? ["instance_id", "workspace_id", "task_id"] : ["instance_id", "workspace_id", "task_id", "run_id"])) {
     errors.push("run.waiting_on differs from run.ref");
   }
 
   if (message.type === "task" && Array.isArray(message.project_ids)) {
+    const missingContext = message.projection?.missing?.includes("reply_context");
+    if (message.state === "waiting_reply" && !message.reply_context && !missingContext) {
+      errors.push("waiting_reply requires a reply context or explicit missing context");
+    }
+    if ((message.reply_context || missingContext) && message.state !== "waiting_reply") {
+      errors.push("reply context belongs only to waiting_reply");
+    }
+    if (message.reply_context && missingContext) errors.push("reply context cannot also be missing");
     const contextProjectIds = Array.isArray(message.context_project_ids) ? message.context_project_ids : [];
     if (message.project_ids.some((projectId) => contextProjectIds.includes(projectId))) {
       errors.push("task project_ids overlap context_project_ids");

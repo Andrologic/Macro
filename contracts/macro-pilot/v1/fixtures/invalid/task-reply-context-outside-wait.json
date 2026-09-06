@@ -1,0 +1,40 @@
+{
+  "contract_version": "1.0",
+  "type": "task",
+  "ref": {
+    "type": "task",
+    "instance_id": "instance:studio-mac",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract"
+  },
+  "project_ids": [
+    "project:macro-desktop",
+    "project:macro-mobile"
+  ],
+  "context_project_ids": [
+    "project:macro-site"
+  ],
+  "execution_targets": [
+    {
+      "project_id": "project:macro-desktop",
+      "execution_mode": "git"
+    },
+    {
+      "project_id": "project:macro-mobile",
+      "execution_mode": "direct"
+    }
+  ],
+  "title": "Define the Macro Pilot contract",
+  "state": "running",
+  "revision": 7,
+  "updated_at": "2026-09-06T12:00:00Z",
+  "reply_context": {
+    "conversation_id": "conv-4",
+    "prompt": "What should I do next?"
+  },
+  "projection": {
+    "missing": [
+      "run_history"
+    ]
+  }
+}

@@ -23,6 +23,12 @@ dépôt privé du site. L'application Flutter et son client restent dans le dép
 privé mobile. Le partage du contrat ne transfère pas ces implémentations dans
 Macro et ne change ni la visibilité ni la licence des dépôts.
 
+Macro conserve sa [licence GNU AGPL v3](../../LICENSE). La visibilité privée
+d'un dépôt n'est pas une exemption de licence. Toute copie de contrats ou de
+fixtures de Macro dans les dépôts privés doit prendre en compte cette licence
+avant distribution. Ce rappel ne conclut pas à la conformité des futurs
+livrables et ne crée aucune exception ; il ne bloque pas le travail local.
+
 Les fichiers, fixtures, documents et commits de Macro doivent pouvoir être
 publics. Sa compilation et ses tests ne doivent pas nécessiter l'accès aux
 dépôts privés. Les fixtures utilisent des données de test synthétiques.

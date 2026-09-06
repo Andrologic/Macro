@@ -19,7 +19,7 @@ const resumePoint = { stream_id: "stream:synthetic", after_cursor: "cursor:synth
 const taskPage = await read("../v1/fixtures/valid/page.json");
 
 for (const message of [exchange, delivery, result]) assert.equal(validate(message), true, ajv.errorsText(validate.errors));
-for (const fixture of ["page-request", "resume-request"]) {
+for (const fixture of ["page-request", "resume-request", "task-reply-command"]) {
   assert.equal(validate({ ...exchange, message: await read(`../v1/fixtures/valid/${fixture}.json`) }), true);
 }
 for (const fixture of ["page", "event-batch", "error"]) {
@@ -33,9 +33,10 @@ for (const forbidden of [
   { ...delivery, actor: { account_id: "account:fake" } },
   { ...exchange, message: await read("../v1/fixtures/valid/session-revoke-command.json") },
   { ...exchange, message: result.message },
+  { ...exchange, message: await read("../v1/fixtures/invalid/task-reply-local-issued-by.json") },
   { ...result, message: command },
   { ...result, resume_point: resumePoint },
   { ...result, message: taskPage },
   { ...result, resume_point: { stream_id: "stream:synthetic", after_sequence: -1, after_cursor: "c" } },
 ]) assert.equal(validate(forbidden), false, "Forbidden transport shape was accepted");
-console.log("Native transport envelopes passed: 8 valid and 10 invalid cases.");
+console.log("Native transport envelopes passed: 9 valid and 11 invalid cases.");

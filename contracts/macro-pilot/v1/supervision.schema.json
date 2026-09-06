@@ -8,7 +8,8 @@
     "decision steps MUST use distinct identifiers and choices MUST be distinct within each step",
     "decision resolution MUST answer every step exactly once using a listed choice string or allowed free text",
     "tool approval resolution grant_scope MUST belong to allowed_scopes",
-    "run.waiting_on MUST identify the same instance, workspace, task, and run as run.ref",
+    "run.waiting_on MUST identify the same instance, workspace, and task as run.ref; decision and approval waits MUST also identify the same run",
+    "task waiting_reply MUST expose reply_context or projection.missing reply_context, never both; other task states MUST expose neither",
     "review.related_run MUST identify the same instance, workspace, task, and run as review.ref"
   ],
   "oneOf": [
@@ -53,7 +54,23 @@
           "items": { "$ref": "#/$defs/taskExecutionTarget" }
         },
         "title": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 },
-        "state": { "enum": ["queued", "running", "waiting_decision", "waiting_tool_approval", "review_ready", "blocked", "completed", "failed", "cancelled"] },
+        "state": { "enum": ["queued", "running", "waiting_reply", "waiting_decision", "waiting_tool_approval", "review_ready", "blocked", "completed", "failed", "cancelled"] },
+        "reply_context": {
+          "type": "object", "additionalProperties": false,
+          "required": ["conversation_id"],
+          "properties": {
+            "conversation_id": { "$ref": "common.schema.json#/$defs/sourceId" },
+            "prompt": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 }
+          }
+        },
+        "projection": {
+          "type": "object", "additionalProperties": false,
+          "required": ["missing"],
+          "properties": { "missing": {
+            "type": "array", "minItems": 1, "uniqueItems": true,
+            "items": { "enum": ["run_history", "reply_context", "review"] }
+          } }
+        },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       }
@@ -66,7 +83,7 @@
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "run" },
         "ref": { "$ref": "common.schema.json#/$defs/runRef" },
-        "state": { "enum": ["pending", "running", "waiting_decision", "waiting_tool_approval", "completed", "failed", "cancelled", "interrupted"] },
+        "state": { "enum": ["pending", "running", "waiting_reply", "waiting_decision", "waiting_tool_approval", "completed", "failed", "cancelled", "interrupted"] },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
@@ -74,12 +91,20 @@
         "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "waiting_on": {
           "oneOf": [
+            { "$ref": "common.schema.json#/$defs/taskRef" },
             { "$ref": "common.schema.json#/$defs/decisionRef" },
             { "$ref": "common.schema.json#/$defs/toolApprovalRef" }
           ]
         }
       },
       "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "waiting_reply" } } },
+          "then": {
+            "properties": { "waiting_on": { "$ref": "common.schema.json#/$defs/taskRef" } },
+            "required": ["waiting_on"]
+          }
+        },
         {
           "if": { "properties": { "state": { "const": "waiting_decision" } } },
           "then": {
@@ -112,13 +137,13 @@
         {
           "if": {
             "properties": {
-              "state": { "not": { "enum": ["waiting_decision", "waiting_tool_approval"] } }
+              "state": { "not": { "enum": ["waiting_reply", "waiting_decision", "waiting_tool_approval"] } }
             }
           },
           "then": { "properties": { "waiting_on": false } }
         },
         {
-          "if": { "properties": { "state": { "enum": ["running", "waiting_decision", "waiting_tool_approval", "completed"] } } },
+          "if": { "properties": { "state": { "enum": ["running", "waiting_reply", "waiting_decision", "waiting_tool_approval", "completed"] } } },
           "then": {
             "properties": { "started_at": true },
             "required": ["started_at"]
@@ -164,7 +189,8 @@
     "decisionResolution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["answers", "resolved_by", "resolved_at"],
+      "required": ["answers", "resolved_by"],
+      "allOf": [{ "$ref": "common.schema.json#/$defs/resolutionProvenance" }],
       "properties": {
         "answers": {
           "type": "array",
@@ -172,14 +198,15 @@
           "maxItems": 20,
           "items": { "$ref": "#/$defs/decisionAnswer" }
         },
-        "resolved_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "resolved_by": { "$ref": "common.schema.json#/$defs/resolutionActor" },
         "resolved_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       }
     },
     "decision": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "type", "ref", "state", "steps", "revision", "created_at"],
+      "required": ["contract_version", "type", "ref", "state", "steps", "revision"],
+      "anyOf": [{ "properties": { "created_at": true }, "required": ["created_at"] }, { "properties": { "observed_at": true }, "required": ["observed_at"] }],
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "decision" },
@@ -192,6 +219,7 @@
           "items": { "$ref": "#/$defs/decisionStep" }
         },
         "resolution": { "$ref": "#/$defs/decisionResolution" },
+        "observed_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
@@ -217,15 +245,16 @@
     "toolApprovalResolution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["verdict", "resolved_by", "resolved_at"],
+      "required": ["verdict", "resolved_by"],
       "properties": {
         "verdict": { "enum": ["approve", "deny"] },
         "grant_scope": { "enum": ["once", "conversation"] },
         "reason": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 500 },
-        "resolved_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "resolved_by": { "$ref": "common.schema.json#/$defs/resolutionActor" },
         "resolved_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       },
       "allOf": [
+        { "$ref": "common.schema.json#/$defs/resolutionProvenance" },
         {
           "if": { "properties": { "verdict": { "const": "approve" } } },
           "then": {
@@ -239,7 +268,8 @@
     "toolApproval": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "type", "ref", "state", "tool_id", "action_group", "risk_level", "is_destructive", "summary", "allowed_scopes", "revision", "created_at"],
+      "required": ["contract_version", "type", "ref", "state", "tool_id", "action_group", "risk_level", "is_destructive", "summary", "allowed_scopes", "revision"],
+      "anyOf": [{ "properties": { "created_at": true }, "required": ["created_at"] }, { "properties": { "observed_at": true }, "required": ["observed_at"] }],
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "tool_approval" },
@@ -259,6 +289,7 @@
           "items": { "enum": ["once", "conversation"] }
         },
         "resolution": { "$ref": "#/$defs/toolApprovalResolution" },
+        "observed_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
         "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
