@@ -25,9 +25,9 @@ Choose and retain the non-secret `resource_id` as follows:
 
 All values must decode to exactly 32 bytes using canonical unpadded base64url.
 This verifies encoding, not entropy. Generate client secrets with a CSPRNG;
-never derive them from these non-secret identifiers. The future auth client
-must save secrets before network effects, delete attempt secrets after claim,
-expiry or cancellation, and delete session tokens on logout. It must await
+never derive them from these non-secret identifiers. The native auth client
+saves secrets before network effects, deletes attempt secrets after claim,
+expiry or cancellation, and deletes session tokens on logout. It awaits
 writes/deletes before dependent operations. Keep returned values only in
 transient memory, outside stores, persistence, diagnostics and notifications.
 No authentication route or lifecycle is implemented by this storage module.
@@ -43,3 +43,29 @@ Sources: [keyring API](https://docs.rs/keyring/4.2.0/keyring/) and the crate's
 `src/v1.rs` documentation. Unit tests inject an in-memory vault and never touch
 user credentials. macOS compilation is the local platform check; Windows and
 Linux vault integration require testing on those platforms before publication.
+
+
+## Desktop supervision
+
+`runtime.ts` starts after the application bootstrap and stops before shutdown.
+The native client owns Device Flow, explicit account confirmation, instance
+registration, access grants and OS credentials. The producer loop retries
+network failures and submits canonical A1 results through the native transport.
+Macro must remain open.
+
+`kernel.ts` persists revisions, the event cursor, observed run bindings and the
+idempotency journal in Macro's existing metadata database with compare-and-swap.
+It writes an executing entry before dispatch. An uncertain interrupted effect
+becomes indeterminate and blocks automatic replay. Settings exposes local
+reconciliation only after the user confirms that the effect did not occur.
+
+`desktopActions.ts` uses the existing task and chat actions, including their
+provider dispatch. Reservations coordinate local actions with remote preparation.
+The relay authorization is checked again at effect boundaries; a reservation
+alone does not authorize a provider or tool effect. Historical snapshots remain
+partial when Macro has no durable evidence for their actor, time or run.
+
+The implemented scope is the accepted A1 core. Per-project permissions,
+conversation reading, actual diff content and global account/session lifecycle
+remain contract complements. Reviews contain commit references and a verdict;
+they do not merge or publish changes.

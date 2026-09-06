@@ -73,6 +73,7 @@ import {
   syncManualFeatureMetadataFromTask,
 } from '../services/manualFeatureMetadataService';
 import { isManualDraftPendingInitialization } from '../services/manualDraftInitialization';
+import { assertPilotTaskActionAllowed } from '../services/macroPilot/actionReservations';
 export { getPlanActivationCandidateTask } from '../services/planActivationCandidate';
 import {
   buildInitialPlanFinalizationRuntimeState,
@@ -1231,6 +1232,7 @@ const ensureTargetWorktreePath = async (
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>,
   onGitEnsureResult?: (status: 'created' | 'reused' | 'repaired') => void,
+  beforeEffect?: () => Promise<void>,
 ): Promise<string> => {
   const directProject = useAppStore.getState().getProjectById(target.projectId);
   const targetMode = resolveExecutionTargetMode(target);
@@ -1243,6 +1245,7 @@ const ensureTargetWorktreePath = async (
         })
       );
     }
+    await beforeEffect?.();
     await tauriIpc.workspaceSetActiveRoot(projectPath);
     if (!target.checkpointId) {
       const preparedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
@@ -1257,6 +1260,7 @@ const ensureTargetWorktreePath = async (
       }
       return preparedPath;
     }
+    await beforeEffect?.();
     await tauriIpc.directCheckpointEnsure({
       taskId: task.id,
       projectPath,
@@ -1294,6 +1298,7 @@ const ensureTargetWorktreePath = async (
       target.planBranchName,
     ],
   });
+  await beforeEffect?.();
   const ensured = await useGitStore
     .getState()
     .createWorktree(
@@ -1739,13 +1744,19 @@ const ensureTaskExecutionTargetsReady = async (
   task: CatalogedImplementTask,
   branchWorktrees: Record<string, string>,
   commandRegistryOverride?: Awaited<ReturnType<typeof loadTaskProjectCommandRegistry>>,
-  options?: { onWorkspacesPrepared?: () => void },
+  options?: {
+    onWorkspacesPrepared?: () => void;
+    beforeEffect?: () => Promise<void>;
+    preserveTaskScope?: boolean;
+  },
 ): Promise<{
   createdWorktrees: Record<string, string>;
   preparedTargets: PreparedTaskExecutionTarget[];
 }> => {
   const appState = useAppStore.getState();
-  const executionTask = retargetTaskForCurrentAppScope(task);
+  const executionTask = options?.preserveTaskScope
+    ? task
+    : retargetTaskForCurrentAppScope(task);
   const executionTargets = getExecutionTargets(executionTask);
   if (executionTargets.length === 0) {
     throw toServiceError(
@@ -1773,6 +1784,7 @@ const ensureTaskExecutionTargetsReady = async (
         (status) => {
           createdByThisAttempt = status === 'created';
         },
+        options?.beforeEffect,
       );
 
       createdWorktrees[target.worktreeKey] = worktreePath;
@@ -1807,6 +1819,7 @@ const ensureTaskExecutionTargetsReady = async (
       if (!setupCommand) continue;
 
       try {
+        await options?.beforeEffect?.();
         const setupResult = await runWorktreeSetupCommand({
           taskId: executionTask.id,
           taskTitle: executionTask.title,
@@ -1947,7 +1960,11 @@ interface TaskStore {
   reopenTask: (taskId: string) => Promise<void>;
   startTask: (
     taskId: string,
-    options?: { onWorkspacesPrepared?: () => void },
+    options?: {
+      onWorkspacesPrepared?: () => void;
+      pilotActionToken?: symbol;
+      beforeEffect?: () => Promise<void>;
+    },
   ) => Promise<void>;
   promoteTaskContextProjects: (
     taskId: string,
@@ -3940,6 +3957,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   startTask: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     if (!canUseImplementExecutionRuntime()) {
       set({ lastError: getRemoteTaskActionUnavailableMessage() });
       return;
@@ -3962,6 +3980,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     if (task.status === 'AwaitingResponse') {
+      await options?.beforeEffect?.();
       await get().setTaskStatus(task.id, 'InProgress');
       return;
     }
@@ -4009,7 +4028,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     const appState = useAppStore.getState();
-    if (appState.selectedTaskId !== task.id) {
+    if (!options?.pilotActionToken && appState.selectedTaskId !== task.id) {
       appState.setSelectedTask(task.id);
     }
 
@@ -4067,13 +4086,18 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         task,
         get().branchWorktrees,
         undefined,
-        { onWorkspacesPrepared: options?.onWorkspacesPrepared },
+        {
+          onWorkspacesPrepared: options?.onWorkspacesPrepared,
+          beforeEffect: options?.beforeEffect,
+          preserveTaskScope: Boolean(options?.pilotActionToken),
+        },
       );
       const primaryTarget =
         preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
         preparedTargets[0];
       const primaryWorktree = primaryTarget?.worktreePath || null;
 
+      await options?.beforeEffect?.();
       set((state) => ({
         branchWorktrees: {
           ...state.branchWorktrees,
@@ -4086,7 +4110,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         lastError: null,
       }));
 
+      await options?.beforeEffect?.();
       await syncWorkspaceRoot(primaryWorktree);
+      await options?.beforeEffect?.();
       await get().setTaskStatus(task.id, 'InProgress');
     } catch (error) {
       if (error instanceof MissingTaskBaseBranchError) {

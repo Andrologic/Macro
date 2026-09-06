@@ -18,6 +18,7 @@ import { useAppVersion } from '../../hooks/useAppVersion';
 import { Dialog } from '../ui/Dialog';
 import { SettingsSearchProvider } from './search/SettingsSearch';
 import { DiagnosticsView } from './views/DiagnosticsView';
+import { PilotView } from './views/PilotView';
 
 export const SettingsModal: React.FC = () => {
   const { t } = useTranslation();
@@ -47,6 +48,7 @@ export const SettingsModal: React.FC = () => {
     { id: 'providers', icon: 'server', label: t('settings.providers') || 'AI Providers' },
     { id: 'models', icon: 'cpu', label: t('settings.models') || 'AI Models' },
     { id: 'speech', icon: 'mic', label: t('settings.speech', 'Dictation') },
+    { id: 'pilot', icon: 'cloud', label: t('settings.pilot.label', 'Pilot') },
     { id: 'tools', icon: 'tool', label: t('settings.tools') || 'Tools & MCP' },
     { id: 'skills', icon: 'sparkles', label: t('settings.skills', 'Skills') },
     { id: 'prompts', icon: 'message-square', label: t('settings.prompts') || 'System Prompts' },
@@ -134,6 +136,7 @@ export const SettingsModal: React.FC = () => {
                 {activeSettingsTab === 'providers' && <ProvidersSettings />}
                 {activeSettingsTab === 'models' && <ModelsSettings />}
                 {activeSettingsTab === 'speech' && <SpeechSettings />}
+                {activeSettingsTab === 'pilot' && <PilotView />}
                 {activeSettingsTab === 'tools' && <ToolsView />}
                 {activeSettingsTab === 'skills' && <SkillsView />}
                 {activeSettingsTab === 'prompts' && <PromptsView />}

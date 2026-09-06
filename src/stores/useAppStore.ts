@@ -111,6 +111,7 @@ export type SettingsTab =
   | "providers"
   | "models"
   | "speech"
+  | "pilot"
   | "tools"
   | "skills"
   | "shortcuts"
