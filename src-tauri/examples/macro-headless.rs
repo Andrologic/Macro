@@ -658,6 +658,10 @@ async fn collect_registered_projects(
 
     let mut registry = BTreeMap::new();
     for project in projects {
+        // A duplicate or newly unavailable project must not retain an entry
+        // built earlier in this refresh. The new snapshot either contains the
+        // project's current path and policy together, or excludes it entirely.
+        registry.remove(&project.id);
         if parse_wsl_unc_path(&project.path).is_some() {
             tracing::warn!(
                 project_id = %project.id,
@@ -665,47 +669,60 @@ async fn collect_registered_projects(
             );
             continue;
         }
-        let canonical_path = validate_headless_workspace_path(
-            Some(&project.path),
-            &state.workspace_path,
-            &state.allowed_roots,
-        )
-        .map_err(|error| BackendError::Validation(error.message))?
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            BackendError::Validation(format!(
-                "Project '{}' has no usable workspace path",
-                project.id
-            ))
-        })?;
-        let root_identity = fs::workspace_root_identity(&canonical_path)?;
-        let project_state = HeadlessState {
-            workspace_path: canonical_path.clone(),
-            ..state.clone()
-        };
-        let project_metadata_root = resolve_metadata_root_for_workspace(&project_state)?;
-        state
-            .config_manager
-            .register_project_root(&project.id, project_metadata_root)
-            .await
-            .map_err(|error| {
+        let project_id = project.id.clone();
+        let registered = async {
+            let canonical_path = validate_headless_workspace_path(
+                Some(&project.path),
+                &state.workspace_path,
+                &state.allowed_roots,
+            )
+            .map_err(|error| BackendError::Validation(error.message))?
+            .map(PathBuf::from)
+            .ok_or_else(|| {
                 BackendError::Validation(format!(
-                    "Unable to register the headless policy root for project '{}': {}: {}",
-                    project.id, error.code, error.message
+                    "Project '{}' has no usable workspace path",
+                    project.id
                 ))
             })?;
-        let tools = load_project_tools_policy(state, &project.id)
-            .await
-            .map_err(BackendError::Validation)?;
-        registry.insert(
-            project.id,
-            RegisteredProject {
+            let root_identity = fs::workspace_root_identity(&canonical_path)?;
+            let project_state = HeadlessState {
+                workspace_path: canonical_path.clone(),
+                ..state.clone()
+            };
+            let project_metadata_root = resolve_metadata_root_for_workspace(&project_state)?;
+            state
+                .config_manager
+                .register_project_root(&project.id, project_metadata_root)
+                .await
+                .map_err(|error| {
+                    BackendError::Validation(format!(
+                        "Unable to register the headless policy root for project '{}': {}: {}",
+                        project.id, error.code, error.message
+                    ))
+                })?;
+            let tools = load_project_tools_policy(state, &project.id)
+                .await
+                .map_err(BackendError::Validation)?;
+            Ok::<RegisteredProject, BackendError>(RegisteredProject {
                 canonical_path,
                 root_identity,
                 is_read_only: project.user_read_only || project.is_read_only,
                 tools,
-            },
-        );
+            })
+        }
+        .await;
+        match registered {
+            Ok(project) => {
+                registry.insert(project_id, project);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    project_id = %project_id,
+                    %error,
+                    "Excluding an unavailable project from the headless registry snapshot"
+                );
+            }
+        }
     }
     Ok(registry)
 }

@@ -135,6 +135,11 @@ async function main() {
       projectGroups: [],
     });
     const initialProject = project('project-smoke', 'smoke', projectRoot);
+    const unavailableProject = project(
+      'project-unavailable',
+      'unavailable',
+      path.join(workspaceRoot, 'missing-project'),
+    );
     const projectToolsConfig = (projectPath, projectId) =>
       path.join(projectPath, '.macro', 'projects', projectId, 'config');
     const initialToolsConfig = projectToolsConfig(projectRoot, 'project-smoke');
@@ -157,7 +162,7 @@ async function main() {
       ),
       writeFile(
         workspaceStatePath,
-        `${JSON.stringify(workspaceState([initialProject], 1), null, 2)}\n`,
+        `${JSON.stringify(workspaceState([initialProject, unavailableProject], 1), null, 2)}\n`,
       ),
     ]);
     await writeFile(path.join(configRoot, 'runtime.json'), `${JSON.stringify({
@@ -292,6 +297,22 @@ async function main() {
         projectReadBody.result,
         /focused project marker/,
         'An omitted workspace_path must resolve to the declared project, not the workspace root.',
+      );
+
+      const unavailableRead = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'Implement',
+          tool_id: 'read',
+          args: { path: 'marker.txt' },
+          focused_project_id: 'project-unavailable',
+        }),
+      });
+      assert.equal(
+        unavailableRead.status,
+        403,
+        'An inaccessible project must be refused without preventing valid projects from being served.',
       );
 
       const largeCheckpoint = await fetch(`${baseUrl}/api/v1/tools/checkpoint-snapshot`, {
