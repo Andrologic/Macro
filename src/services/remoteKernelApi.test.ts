@@ -115,10 +115,20 @@ describe('remoteKernelApi', () => {
       code: 'REMOTE_INVALID_RESPONSE',
     });
 
+    globalThis.fetch = mock(async () => jsonResponse({
+      allowed_tool_ids: ['read'],
+      enforce_macro_only_writes: false,
+      padding: 'x'.repeat(1_228_800),
+    })) as unknown as typeof fetch;
+
+    await expect(getRemoteToolModePolicy('Implement')).resolves.toMatchObject({
+      allowed_tool_ids: ['read'],
+    });
+
     globalThis.fetch = mock(async () => new Response('ignored', {
       headers: {
         'content-type': 'application/json',
-        'content-length': '1048577',
+        'content-length': '67108865',
       },
     })) as unknown as typeof fetch;
 
@@ -326,6 +336,64 @@ describe('remoteKernelApi', () => {
 
     expect(executeAttempts).toBe(1);
     expect(fetchCalls.filter((call) => call.url.includes('/tools/executions/'))).toHaveLength(1);
+  });
+
+  it('preserves an indeterminate durable result and reuses its execution identity', async () => {
+    setEnv('VITE_BACKEND_TRANSPORT', 'remote');
+    setEnv('VITE_REMOTE_API_BASE_URL', 'http://127.0.0.1:8787');
+    const executionIds: string[] = [];
+    let executeAttempts = 0;
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      if (String(url).includes('/mode-policy')) {
+        return jsonResponse({
+          allowed_tool_ids: ['write'],
+          enforce_macro_only_writes: false,
+          capabilities: ['content_revisions_v1', 'idempotent_tool_execution_v1'],
+        });
+      }
+      if (String(url).includes('/tools/executions/')) {
+        return jsonResponse({
+          state: 'completed',
+          status_code: 409,
+          body: {
+            code: 'REMOTE_MUTATION_OUTCOME_INDETERMINATE',
+            message: 'The pre-crash mutation outcome is indeterminate.',
+          },
+        });
+      }
+      if (String(url).includes('/tools/execute')) {
+        executeAttempts += 1;
+        executionIds.push(JSON.parse(String(init?.body)).execution_id as string);
+        if (executeAttempts === 1) {
+          throw new TypeError('response lost after execution');
+        }
+        return jsonResponse(
+          {
+            code: 'REMOTE_MUTATION_OUTCOME_INDETERMINATE',
+            message: 'The pre-crash mutation outcome is indeterminate.',
+          },
+          409,
+        );
+      }
+      throw new Error(`Unexpected URL: ${String(url)}`);
+    }) as unknown as typeof fetch;
+
+    const request = {
+      mode: 'Implement' as const,
+      toolId: 'write',
+      args: { path: 'src/indeterminate.ts', content: 'next' },
+      focusedProjectId: 'project-1',
+      invocationId: 'tool-call-indeterminate',
+    };
+    await expect(executeRemoteWorkspaceTool(request)).rejects.toMatchObject({
+      code: 'REMOTE_MUTATION_OUTCOME_INDETERMINATE',
+    });
+    await expect(executeRemoteWorkspaceTool(request)).rejects.toMatchObject({
+      code: 'REMOTE_MUTATION_OUTCOME_INDETERMINATE',
+    });
+    expect(executionIds).toHaveLength(2);
+    expect(new Set(executionIds).size).toBe(1);
   });
 
   it('rejects a malformed durable completed mutation result', async () => {
