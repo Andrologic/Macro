@@ -1,10 +1,10 @@
 pub mod ai;
-pub mod pilot_secrets;
 mod ast_search;
 mod external_apps;
 pub mod fs;
 pub mod git;
 pub mod mcp;
+pub mod pilot_secrets;
 pub mod repository_instructions;
 pub mod skills;
 pub mod speech;
