@@ -150,7 +150,8 @@ result without running the mutation again or deleting its evidence.
 At startup, a fully durable completed record supersedes and retires a matching
 pending record left behind by a crash between the two journal operations. Both
 the execution identifier and request fingerprint must match before the pending
-record is removed.
+record is removed. Indeterminate completion records are never evicted by the
+journal quota, so the same execution identifier remains permanently fail-closed.
 
 ## Internal frontend remote transport
 

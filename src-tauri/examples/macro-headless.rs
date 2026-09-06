@@ -1531,6 +1531,15 @@ fn reconcile_completed_tool_execution_pairs(root: &std::path::Path) -> Result<()
     Ok(())
 }
 
+fn completed_execution_is_indeterminate(record: &PersistedToolExecution) -> bool {
+    matches!(
+        &record.state,
+        PersistedToolExecutionState::Completed { response }
+            if response.body.get("code").and_then(Value::as_str)
+                == Some("REMOTE_MUTATION_OUTCOME_INDETERMINATE")
+    )
+}
+
 fn remove_completed_journal_entries_to_fit(
     root: &std::path::Path,
     entries: &mut Vec<ToolExecutionJournalEntry>,
@@ -1543,11 +1552,29 @@ fn remove_completed_journal_entries_to_fit(
             .ok_or_else(|| "The tool execution journal size overflowed".to_string())
     })?;
     let mut entry_count = entries.len();
-    let mut completed = entries
+    let mut completed = Vec::new();
+    for entry in entries
         .iter()
         .filter(|entry| entry.kind == ToolExecutionJournalKind::Completed)
-        .cloned()
-        .collect::<Vec<_>>();
+    {
+        let record =
+            read_tool_execution_record_file(&entry.path, ToolExecutionJournalKind::Completed)?;
+        if entry.path
+            != tool_execution_journal_path(
+                root,
+                &record.execution_id,
+                ToolExecutionJournalKind::Completed,
+            )
+        {
+            return Err(format!(
+                "The tool execution journal identity does not match {}",
+                entry.path.display()
+            ));
+        }
+        if !completed_execution_is_indeterminate(&record) {
+            completed.push(entry.clone());
+        }
+    }
     completed.sort_by_key(|entry| entry.modified);
 
     for stale in completed {
@@ -3169,6 +3196,75 @@ mod tests {
 
         assert!(!pending_path.exists());
         assert!(completed_path.exists());
+    }
+
+    #[tokio::test]
+    async fn tool_execution_journal_never_evicts_an_indeterminate_resolution() {
+        let root = TempDir::new().expect("journal root");
+        let indeterminate = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+            execution_id: "execution-indeterminate".to_string(),
+            fingerprint: "fingerprint-indeterminate".to_string(),
+            state: PersistedToolExecutionState::Completed {
+                response: StoredToolExecution {
+                    status_code: StatusCode::CONFLICT.as_u16(),
+                    body: json!({
+                        "code": "REMOTE_MUTATION_OUTCOME_INDETERMINATE",
+                        "message": "The mutation outcome is indeterminate"
+                    }),
+                },
+            },
+        };
+        let ordinary = PersistedToolExecution {
+            schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
+            execution_id: "execution-ordinary".to_string(),
+            fingerprint: "fingerprint-ordinary".to_string(),
+            state: PersistedToolExecutionState::Completed {
+                response: StoredToolExecution {
+                    status_code: StatusCode::OK.as_u16(),
+                    body: json!({ "result": "written" }),
+                },
+            },
+        };
+        let indeterminate_path = tool_execution_journal_path(
+            root.path(),
+            &indeterminate.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        let ordinary_path = tool_execution_journal_path(
+            root.path(),
+            &ordinary.execution_id,
+            ToolExecutionJournalKind::Completed,
+        );
+        write_tool_execution_record_atomically(
+            root.path(),
+            &indeterminate_path,
+            &serde_json::to_vec(&indeterminate).expect("encode indeterminate"),
+        )
+        .expect("write indeterminate");
+        write_tool_execution_record_atomically(
+            root.path(),
+            &ordinary_path,
+            &serde_json::to_vec(&ordinary).expect("encode ordinary"),
+        )
+        .expect("write ordinary");
+
+        let mut entries = read_tool_execution_journal_entries(root.path()).expect("read journal");
+        remove_completed_journal_entries_to_fit(
+            root.path(),
+            &mut entries,
+            0,
+            MAX_TRACKED_TOOL_EXECUTIONS - 1,
+        )
+        .expect("evict ordinary completion under entry pressure");
+
+        assert!(!ordinary_path.exists());
+        assert!(indeterminate_path.exists());
+        let reloaded = load_persisted_tool_execution(root.path(), &indeterminate.execution_id)
+            .await
+            .expect("load indeterminate execution")
+            .expect("indeterminate execution retained");
+        assert!(completed_execution_is_indeterminate(&reloaded));
     }
 
     #[tokio::test]
