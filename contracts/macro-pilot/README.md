@@ -20,6 +20,11 @@ TypeScript, and Dart consumer tests. Files under `v1/fixtures/invalid` describe
 messages that a consumer must reject. This lot runs the fixtures with Ajv under
 Bun. Consumer-specific validators belong to their implementation lots.
 
+Fixtures are synthetic, offline examples, not production exports. Numeric
+GitHub subjects and avatar URLs are illustrative values; validation does not
+contact GitHub. Negative fixtures deliberately contain dummy token signatures
+and fictional paths to prove rejection.
+
 Run the focused conformance check from the repository root:
 
 ```sh
@@ -41,8 +46,9 @@ sensitive text is absent. A relay can forward the same envelopes without
 becoming the canonical store.
 
 Read [`docs/macro-pilot/compatibility.md`](../../docs/macro-pilot/compatibility.md)
-before implementing a consumer. Product choices that are not part of version
-`1.0` are recorded in
+before implementing a consumer. The confirmed desktop execution architecture,
+native sign-in flow, public/private repository boundary and remaining product
+decisions are recorded in
 [`docs/macro-pilot/open-decisions.md`](../../docs/macro-pilot/open-decisions.md).
 The mapping to Macro's current task, project, and questionnaire types is in
 [`docs/macro-pilot/macro-type-mapping.md`](../../docs/macro-pilot/macro-type-mapping.md).
