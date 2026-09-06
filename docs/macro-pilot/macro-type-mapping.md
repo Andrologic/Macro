@@ -50,6 +50,11 @@ sans proposer de réponse distante. `reply_context` et ce marqueur s'excluent.
 Ils sont absents des autres états de tâche.
 
 Les tâches historiques restent exportables sans reconstruire leurs runs.
+Le type interne `Task` ne porte pas de date de modification. Lorsqu'aucune
+date de modification réelle n'est disponible, C omet `task.updated_at` et
+publie `task.observed_at`, date réelle d'observation du snapshot courant. Ce
+champ ne prétend pas dater une modification historique. C persiste la révision
+de projection et l'avance quand le contenu ou l'attente change.
 `projection.missing` contient `run_history` lorsque des identités ou dates de
 run manquent. C omet ces runs au lieu de fabriquer `run_id`, `created_at`,
 `started_at` ou `finished_at`. Un run réellement connu conserve les exigences

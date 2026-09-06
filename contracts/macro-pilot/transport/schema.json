@@ -4,6 +4,40 @@
   "title": "Native relay envelopes 1.0",
   "$defs": {
     "id": { "$ref": "../../v1/common.schema.json#/$defs/opaqueId" },
+    "supervisionType": { "enum": ["workspace", "project", "task", "run", "decision", "tool_approval", "review"] },
+    "pageRequest": {
+      "allOf": [
+        { "$ref": "../../v1/protocol.schema.json#/$defs/pageRequest" },
+        {
+          "type": "object", "required": ["scope"],
+          "properties": {
+            "item_type": { "$ref": "#/$defs/supervisionType" },
+            "scope": {
+              "type": "object", "required": ["instance_id"],
+              "properties": {
+                "instance_id": { "$ref": "#/$defs/id" },
+                "type": { "enum": ["instance", "workspace", "project", "task", "run", "decision", "tool_approval", "review"] }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "page": {
+      "allOf": [
+        { "$ref": "../../v1/protocol.schema.json#/$defs/page" },
+        {
+          "type": "object",
+          "properties": {
+            "item_type": { "$ref": "#/$defs/supervisionType" },
+            "items": {
+              "type": "array",
+              "items": { "type": "object", "properties": { "type": { "$ref": "#/$defs/supervisionType" } } }
+            }
+          }
+        }
+      ]
+    },
     "request": {
       "oneOf": [
         { "$ref": "../../v1/protocol.schema.json#/$defs/taskReplyCommand" },
@@ -12,7 +46,7 @@
         { "$ref": "../../v1/protocol.schema.json#/$defs/decisionResolveCommand" },
         { "$ref": "../../v1/protocol.schema.json#/$defs/toolApprovalResolveCommand" },
         { "$ref": "../../v1/protocol.schema.json#/$defs/reviewSubmitCommand" },
-        { "$ref": "../../v1/protocol.schema.json#/$defs/pageRequest" },
+        { "$ref": "#/$defs/pageRequest" },
         { "$ref": "../../v1/protocol.schema.json#/$defs/resumeRequest" }
       ]
     },
@@ -49,7 +83,7 @@
         "message": {
           "oneOf": [
             { "$ref": "../../v1/protocol.schema.json#/$defs/commandResult" },
-            { "$ref": "../../v1/protocol.schema.json#/$defs/page" },
+            { "$ref": "#/$defs/page" },
             { "$ref": "../../v1/protocol.schema.json#/$defs/eventBatch" },
             { "$ref": "../../v1/protocol.schema.json#/$defs/error" }
           ]

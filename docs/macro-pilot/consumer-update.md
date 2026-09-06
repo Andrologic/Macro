@@ -13,6 +13,8 @@ compatibilité avec un schéma `1.0` antérieur de développement n'est promise.
 - Conserver les tâches historiques ; omettre les runs non documentés et
   déclarer `projection.missing: ["run_history"]`. Une review non reconstructible
   utilise le marqueur `review`, sans inventer de SHA ni de run.
+  Pour une tâche sans date de modification, publier `observed_at` à la place
+  de `updated_at`, avec la date réelle d'observation du snapshot.
 - Autoriser une décision sans `run_id` avec sa conversation et son message
   sources, et une approbation avec tâche mais sans run. Persister les identités
   et révisions nouvellement observées. Utiliser `observed_at` lorsque la date
@@ -27,6 +29,8 @@ compatibilité avec un schéma `1.0` antérieur de développement n'est promise.
 
 - Recharger les schémas A1 et transport ensemble. Inclure `task.reply` dans
   l'enveloppe `exchange` et lui appliquer `respond`, sans nouvelle route.
+- Limiter les pages relayées aux ressources de supervision et exiger un scope
+  d'instance à la demande. Les pages d'identité restent dans les routes D.
 - Accepter les nouveaux états, projections, références et provenances dans les
   snapshots. Ne jamais accepter `origin: local` ou `unknown` comme `issued_by`.
 - Conserver les contrôles d'acteur, session, instance, révocation et rejeu du

@@ -32,7 +32,8 @@
     "task": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "type", "ref", "project_ids", "execution_targets", "title", "state", "revision", "updated_at"],
+      "required": ["contract_version", "type", "ref", "project_ids", "execution_targets", "title", "state", "revision"],
+      "anyOf": [{ "properties": { "updated_at": true }, "required": ["updated_at"] }, { "properties": { "observed_at": true }, "required": ["observed_at"] }],
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "task" },
@@ -72,7 +73,8 @@
           } }
         },
         "revision": { "$ref": "common.schema.json#/$defs/revision" },
-        "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+        "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "observed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       }
     },
     "run": {

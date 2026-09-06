@@ -17,6 +17,8 @@ const result = { transport_version: "1.0", type: "delivery_result", exchange_id:
   delivery_id: delivery.delivery_id, message: await read("../v1/fixtures/valid/command-result.json") };
 const resumePoint = { stream_id: "stream:synthetic", after_cursor: "cursor:synthetic", after_sequence: 0 };
 const taskPage = await read("../v1/fixtures/valid/page.json");
+const pageRequest = await read("../v1/fixtures/valid/page-request.json");
+const { scope: omittedScope, ...unscopedRequest } = pageRequest;
 
 for (const message of [exchange, delivery, result]) assert.equal(validate(message), true, ajv.errorsText(validate.errors));
 for (const fixture of ["page-request", "resume-request", "task-reply-command"]) {
@@ -34,9 +36,14 @@ for (const forbidden of [
   { ...exchange, message: await read("../v1/fixtures/valid/session-revoke-command.json") },
   { ...exchange, message: result.message },
   { ...exchange, message: await read("../v1/fixtures/invalid/task-reply-local-issued-by.json") },
+  { ...exchange, message: unscopedRequest },
+  { ...exchange, message: { ...pageRequest, item_type: "account" } },
+  { ...exchange, message: { ...pageRequest, scope: { type: "session", account_id: "account:test", session_id: "session:test" } } },
+  { ...result, message: { contract_version: "1.0", type: "page", item_type: "account", items: [], has_more: false } },
+  { ...result, message: { ...taskPage, items: [await read("../v1/fixtures/valid/account.json")] }, resume_point: resumePoint },
   { ...result, message: command },
   { ...result, resume_point: resumePoint },
   { ...result, message: taskPage },
   { ...result, resume_point: { stream_id: "stream:synthetic", after_sequence: -1, after_cursor: "c" } },
 ]) assert.equal(validate(forbidden), false, "Forbidden transport shape was accepted");
-console.log("Native transport envelopes passed: 9 valid and 11 invalid cases.");
+console.log("Native transport envelopes passed: 9 valid and 16 invalid cases.");
