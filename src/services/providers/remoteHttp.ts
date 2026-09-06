@@ -33,7 +33,7 @@ export const toAbsoluteApiUrl = (config: RemoteConfig, path: string): string => 
   return `${config.baseUrl}${config.apiPrefix}${normalizedPath}`;
 };
 
-const MAX_REMOTE_RESPONSE_BYTES = 1_048_576;
+const MAX_REMOTE_RESPONSE_BYTES = 64 * 1_048_576;
 
 const readRemoteResponseBody = async (response: Response): Promise<string> => {
   const declaredLength = Number(response.headers.get('content-length'));

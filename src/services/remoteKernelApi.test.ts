@@ -115,10 +115,20 @@ describe('remoteKernelApi', () => {
       code: 'REMOTE_INVALID_RESPONSE',
     });
 
+    globalThis.fetch = mock(async () => jsonResponse({
+      allowed_tool_ids: ['read'],
+      enforce_macro_only_writes: false,
+      padding: 'x'.repeat(1_228_800),
+    })) as unknown as typeof fetch;
+
+    await expect(getRemoteToolModePolicy('Implement')).resolves.toMatchObject({
+      allowed_tool_ids: ['read'],
+    });
+
     globalThis.fetch = mock(async () => new Response('ignored', {
       headers: {
         'content-type': 'application/json',
-        'content-length': '1048577',
+        'content-length': '67108865',
       },
     })) as unknown as typeof fetch;
 

@@ -40,7 +40,7 @@ use macro_lib::workspace::metadata::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::sync::{Mutex as AsyncMutex, Notify, RwLock as AsyncRwLock};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 #[derive(Clone)]
@@ -55,7 +55,8 @@ struct HeadlessState {
     bearer_token: Option<BearerTokenDigest>,
     approval_token: Option<BearerTokenDigest>,
     allowed_roots: Vec<PathBuf>,
-    registered_projects: BTreeMap<String, RegisteredProject>,
+    workspace_id: String,
+    registered_projects: Arc<AsyncRwLock<BTreeMap<String, RegisteredProject>>>,
     workspace_path: PathBuf,
     git_state: GitState,
     config_manager: ConfigManager,
@@ -68,6 +69,7 @@ const MAX_TRACKED_TOOL_EXECUTIONS: usize = 1_024;
 const MAX_PENDING_TOOL_EXECUTIONS: usize = 4;
 const MAX_TOOL_EXECUTION_RECORD_BYTES: u64 = 80 * 1024 * 1024;
 const MAX_TOOL_EXECUTION_JOURNAL_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_HEADLESS_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION: u8 = 1;
 
 struct ExecutionSlot {
@@ -108,6 +110,7 @@ enum PersistedToolExecutionState {
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
+    workspace_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,6 +169,12 @@ struct CheckpointSnapshotRequest {
 struct ToolCancelRequest {
     #[serde(default, alias = "executionId")]
     execution_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveIndeterminateExecutionRequest {
+    resolution: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -735,6 +744,64 @@ async fn collect_registered_projects(
     Ok(registry)
 }
 
+async fn refresh_registered_projects(
+    state: &HeadlessState,
+) -> Result<BTreeMap<String, RegisteredProject>, BackendError> {
+    let mut registered_projects = state.registered_projects.write().await;
+    register_headless_project_config_roots(state).await?;
+    let refreshed = collect_registered_projects(state).await?;
+    *registered_projects = refreshed.clone();
+    Ok(refreshed)
+}
+
+fn derived_workspace_id(workspace_path: &std::path::Path) -> String {
+    let digest = Sha256::digest(workspace_path.to_string_lossy().as_bytes());
+    format!("ws_{:x}", digest)[..27].to_string()
+}
+
+fn configured_workspace_id(workspace_path: &std::path::Path) -> Result<String, String> {
+    let configured = std::env::var("MACRO_HEADLESS_WORKSPACE_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let workspace_id = configured.unwrap_or_else(|| derived_workspace_id(workspace_path));
+    if workspace_id.len() > 128
+        || !workspace_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(
+            "MACRO_HEADLESS_WORKSPACE_ID must contain 1 to 128 ASCII letters, digits, '-' or '_'"
+                .to_string(),
+        );
+    }
+    Ok(workspace_id)
+}
+
+fn workspace_id_mismatch_response(requested: &str, expected: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "code": "REMOTE_WORKSPACE_NOT_FOUND",
+            "message": format!(
+                "Workspace '{requested}' is not served by this headless kernel. Its effective workspace_id is '{expected}'."
+            ),
+        })),
+    )
+        .into_response()
+}
+
+fn validate_scoped_workspace_id(state: &HeadlessState, requested: &str) -> Result<(), Response> {
+    if requested == state.workspace_id {
+        Ok(())
+    } else {
+        Err(workspace_id_mismatch_response(
+            requested,
+            &state.workspace_id,
+        ))
+    }
+}
+
 fn bearer_token_authorizes(headers: &HeaderMap, expected: Option<&BearerTokenDigest>) -> bool {
     let Some(expected) = expected else {
         return true;
@@ -1070,6 +1137,7 @@ async fn health(State(state): State<Arc<HeadlessState>>, headers: HeaderMap) -> 
     Json(HealthResponse {
         status: "ok",
         service: "macro-headless",
+        workspace_id: state.workspace_id.clone(),
     })
     .into_response()
 }
@@ -1081,6 +1149,17 @@ async fn tool_mode_policy(
 ) -> impl IntoResponse {
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
+    }
+
+    let registered_projects = match refresh_registered_projects(&state).await {
+        Ok(projects) => projects,
+        Err(error) => return backend_error_response(error),
+    };
+    if !registered_projects.contains_key(params.project_id.trim()) {
+        return policy_denied_response(format!(
+            "Project '{}' is not registered in the current workspace",
+            params.project_id.trim()
+        ));
     }
 
     let tools = match load_project_tools_policy(&state, &params.project_id).await {
@@ -1100,6 +1179,17 @@ async fn tool_validate(
 ) -> impl IntoResponse {
     if !authorized(&headers, &state) {
         return unauthorized_response().into_response();
+    }
+
+    let registered_projects = match refresh_registered_projects(&state).await {
+        Ok(projects) => projects,
+        Err(error) => return backend_error_response(error),
+    };
+    if !registered_projects.contains_key(payload.project_id.trim()) {
+        return policy_denied_response(format!(
+            "Project '{}' is not registered in the current workspace",
+            payload.project_id.trim()
+        ));
     }
 
     let tools = match load_project_tools_policy(&state, &payload.project_id).await {
@@ -1656,19 +1746,54 @@ fn stored_tool_execution_response(result: StoredToolExecution) -> Response {
     (status, Json(result.body)).into_response()
 }
 
+fn bound_stored_tool_execution(result: StoredToolExecution) -> StoredToolExecution {
+    bound_stored_tool_execution_with_limit(result, MAX_HEADLESS_RESPONSE_BYTES)
+}
+
+fn bound_stored_tool_execution_with_limit(
+    result: StoredToolExecution,
+    max_response_bytes: usize,
+) -> StoredToolExecution {
+    match serde_json::to_vec(&result.body) {
+        Ok(encoded) if encoded.len() <= max_response_bytes => result,
+        Ok(encoded) => StoredToolExecution {
+            status_code: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+            body: json!({
+                "code": "REMOTE_RESPONSE_TOO_LARGE",
+                "message": format!(
+                    "The headless response was {} bytes and exceeded the {}-byte limit",
+                    encoded.len(),
+                    max_response_bytes
+                ),
+            }),
+        },
+        Err(error) => StoredToolExecution {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            body: json!({ "message": format!("Failed to encode the tool response: {error}") }),
+        },
+    }
+}
+
+fn bounded_json_response(status: StatusCode, body: Value) -> Response {
+    stored_tool_execution_response(bound_stored_tool_execution(StoredToolExecution {
+        status_code: status.as_u16(),
+        body,
+    }))
+}
+
 async fn perform_tool_execution(
     state: Arc<HeadlessState>,
     payload: ToolExecuteRequest,
+    registered_projects: Arc<BTreeMap<String, RegisteredProject>>,
 ) -> StoredToolExecution {
     let checkpoint_required = payload.checkpoint_required;
     let expected_workspace_roots = Arc::new(
-        state
-            .registered_projects
+        registered_projects
             .values()
             .map(|project| (project.canonical_path.clone(), project.root_identity))
             .collect::<BTreeMap<_, _>>(),
     );
-    match execute_workspace_tool_controlled_with_options(
+    let response = match execute_workspace_tool_controlled_with_options(
         state.workspace_path.clone(),
         state.workspace_path.clone(),
         state.git_state.clone(),
@@ -1729,7 +1854,8 @@ async fn perform_tool_execution(
             body: serde_json::to_value(error)
                 .unwrap_or_else(|_| json!({ "message": "Tool execution failed" })),
         },
-    }
+    };
+    bound_stored_tool_execution(response)
 }
 
 async fn tool_execute(
@@ -1752,6 +1878,24 @@ async fn tool_execute(
         );
     };
 
+    let registered_projects = Arc::new(match refresh_registered_projects(&state).await {
+        Ok(projects) => projects,
+        Err(error) => return backend_error_response(error),
+    });
+    let Some(focused_project) = registered_projects.get(project_id) else {
+        return policy_denied_response(format!(
+            "focused_project_id '{project_id}' is not registered in the current workspace"
+        ));
+    };
+    if payload
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        payload.workspace_path = Some(focused_project.canonical_path.to_string_lossy().to_string());
+    }
+
     // Canonicalize and cross-check every client-declared path against the
     // server-derived project registry BEFORE any policy is loaded or
     // evaluated, so a mismatched A-policy/B-path request is rejected on its
@@ -1772,7 +1916,7 @@ async fn tool_execute(
         None => None,
     };
     if let Err(error) = validate_headless_workspace_consistency(
-        &state.registered_projects,
+        &registered_projects,
         project_id,
         payload.workspace_path.as_deref(),
         payload.project_mounts.as_deref().unwrap_or_default(),
@@ -1794,7 +1938,7 @@ async fn tool_execute(
         BTreeSet::from([project_id.to_string()])
     };
     if let Err(error) = validate_headless_mutation_projects(
-        &state.registered_projects,
+        &registered_projects,
         &affected_project_ids,
         &payload.tool_id,
     ) {
@@ -1843,7 +1987,9 @@ async fn tool_execute(
     }
 
     if !is_idempotent_remote_mutation(&payload.tool_id) {
-        return stored_tool_execution_response(perform_tool_execution(state, payload).await);
+        return stored_tool_execution_response(
+            perform_tool_execution(state, payload, registered_projects).await,
+        );
     }
 
     let execution_id = match payload
@@ -1874,7 +2020,8 @@ async fn tool_execute(
         let task_execution_id = execution_id.clone();
         let task_fingerprint = fingerprint.clone();
         tokio::spawn(async move {
-            let response = perform_tool_execution(task_state.clone(), payload).await;
+            let response =
+                perform_tool_execution(task_state.clone(), payload, registered_projects).await;
             let record = PersistedToolExecution {
                 schema_version: TOOL_EXECUTION_JOURNAL_SCHEMA_VERSION,
                 execution_id: task_execution_id,
@@ -1926,19 +2073,25 @@ async fn tool_execution_status(
         Ok(Some(PersistedToolExecution {
             state: PersistedToolExecutionState::Pending,
             ..
-        })) => (StatusCode::OK, Json(json!({ "state": "pending" }))).into_response(),
-        Ok(Some(PersistedToolExecution {
-            state: PersistedToolExecutionState::Completed { response },
-            ..
         })) => (
             StatusCode::OK,
             Json(json!({
-                "state": "completed",
-                "status_code": response.status_code,
-                "body": response.body,
+                "state": "pending",
+                "recovery": "record_indeterminate_with_approval",
             })),
         )
             .into_response(),
+        Ok(Some(PersistedToolExecution {
+            state: PersistedToolExecutionState::Completed { response },
+            ..
+        })) => bounded_json_response(
+            StatusCode::OK,
+            json!({
+                "state": "completed",
+                "status_code": response.status_code,
+                "body": response.body,
+            }),
+        ),
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -1956,6 +2109,122 @@ async fn tool_execution_status(
         )
             .into_response(),
     }
+}
+
+async fn resolve_indeterminate_tool_execution(
+    State(state): State<Arc<HeadlessState>>,
+    headers: HeaderMap,
+    Path(execution_id): Path<String>,
+    Json(payload): Json<ResolveIndeterminateExecutionRequest>,
+) -> impl IntoResponse {
+    if !approval_authorized(&headers, &state) {
+        return approval_unauthorized_response().into_response();
+    }
+    let execution_id = execution_id.trim();
+    if execution_id.is_empty() {
+        return policy_denied_response("A non-empty execution_id is required");
+    }
+    if payload.resolution != "record_indeterminate" {
+        return policy_denied_response(
+            "The only safe recovery resolution is 'record_indeterminate'",
+        );
+    }
+
+    let execution_registry = state.execution_registry.lock().await;
+    if execution_registry.get(execution_id).is_some_and(|slot| {
+        slot.result
+            .lock()
+            .map(|result| result.is_none())
+            .unwrap_or(true)
+    }) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "code": "REMOTE_MUTATION_STILL_RUNNING",
+                "message": "The mutation is still running in this kernel process and cannot be resolved as indeterminate",
+            })),
+        )
+            .into_response();
+    }
+
+    let _journal_guard = state.execution_journal_lock.lock().await;
+    let pending =
+        match load_persisted_tool_execution(&state.execution_journal_root, execution_id).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "code": "REMOTE_EXECUTION_NOT_FOUND",
+                        "message": "No durable tool execution exists for this execution_id",
+                    })),
+                )
+                    .into_response()
+            }
+            Err(error) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "code": "REMOTE_MUTATION_JOURNAL_UNAVAILABLE",
+                        "message": error,
+                    })),
+                )
+                    .into_response()
+            }
+        };
+    if let PersistedToolExecutionState::Completed { response } = &pending.state {
+        return bounded_json_response(
+            StatusCode::OK,
+            json!({
+                "state": "completed",
+                "status_code": response.status_code,
+                "body": response.body,
+            }),
+        );
+    }
+
+    let resolved_at = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let response = StoredToolExecution {
+        status_code: StatusCode::CONFLICT.as_u16(),
+        body: json!({
+            "code": "REMOTE_MUTATION_OUTCOME_INDETERMINATE",
+            "message": "The pre-crash mutation outcome is unknown. The pending intent was closed without replaying the mutation.",
+            "resolution": "record_indeterminate",
+            "resolved_at_unix_seconds": resolved_at,
+        }),
+    };
+    let completed = PersistedToolExecution {
+        state: PersistedToolExecutionState::Completed {
+            response: response.clone(),
+        },
+        ..pending
+    };
+    if let Err(error) =
+        persist_completed_tool_execution(&state.execution_journal_root, &completed).await
+    {
+        return (
+            StatusCode::INSUFFICIENT_STORAGE,
+            Json(json!({
+                "code": "REMOTE_MUTATION_JOURNAL_UNAVAILABLE",
+                "message": error,
+            })),
+        )
+            .into_response();
+    }
+    drop(execution_registry);
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "state": "completed",
+            "status_code": response.status_code,
+            "body": response.body,
+        })),
+    )
+        .into_response()
 }
 
 async fn tool_cancel(
@@ -1990,6 +2259,24 @@ async fn checkpoint_snapshot(
         return policy_denied_response("A path is required for checkpoint snapshots");
     }
 
+    let registered_projects = Arc::new(match refresh_registered_projects(&state).await {
+        Ok(projects) => projects,
+        Err(error) => return backend_error_response(error),
+    });
+    let Some(project) = registered_projects.get(&project_id) else {
+        return policy_denied_response(format!(
+            "Project '{project_id}' is not registered in the current workspace"
+        ));
+    };
+    if payload
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .is_none_or(str::is_empty)
+    {
+        payload.workspace_path = Some(project.canonical_path.to_string_lossy().to_string());
+    }
+
     payload.workspace_path = match validate_headless_workspace_path(
         payload.workspace_path.as_deref(),
         &state.workspace_path,
@@ -1999,7 +2286,7 @@ async fn checkpoint_snapshot(
         Err(error) => return (StatusCode::FORBIDDEN, Json(error)).into_response(),
     };
     if let Err(error) = validate_headless_workspace_consistency(
-        &state.registered_projects,
+        &registered_projects,
         &project_id,
         payload.workspace_path.as_deref(),
         &[],
@@ -2040,8 +2327,7 @@ async fn checkpoint_snapshot(
             capture_checkpoint_snapshots: false,
             raw_checkpoint_snapshot: true,
             expected_workspace_roots: Some(Arc::new(
-                state
-                    .registered_projects
+                registered_projects
                     .values()
                     .map(|project| (project.canonical_path.clone(), project.root_identity))
                     .collect::<BTreeMap<_, _>>(),
@@ -2051,7 +2337,7 @@ async fn checkpoint_snapshot(
     .await
     {
         Ok(snapshot) => match serde_json::from_str::<Value>(&snapshot) {
-            Ok(snapshot) => (StatusCode::OK, Json(json!({ "snapshot": snapshot }))).into_response(),
+            Ok(snapshot) => bounded_json_response(StatusCode::OK, json!({ "snapshot": snapshot })),
             Err(error) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ApiError {
@@ -2086,9 +2372,17 @@ async fn workspace_bootstrap(
 async fn workspace_bootstrap_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> impl IntoResponse {
-    workspace_bootstrap(State(state), headers).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    if let Err(response) = validate_scoped_workspace_id(&state, &workspace_id) {
+        return response;
+    }
+    workspace_bootstrap(State(state), headers)
+        .await
+        .into_response()
 }
 
 async fn workspace_tasks(
@@ -2113,9 +2407,15 @@ async fn workspace_tasks(
 async fn workspace_tasks_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> impl IntoResponse {
-    workspace_tasks(State(state), headers).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    if let Err(response) = validate_scoped_workspace_id(&state, &workspace_id) {
+        return response;
+    }
+    workspace_tasks(State(state), headers).await.into_response()
 }
 
 async fn workspace_architect_list_plans(
@@ -2141,10 +2441,18 @@ async fn workspace_architect_list_plans(
 async fn workspace_architect_list_plans_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
     Json(payload): Json<WorkspaceArchitectListPlansRequestDto>,
 ) -> impl IntoResponse {
-    workspace_architect_list_plans(State(state), headers, Json(payload)).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    if let Err(response) = validate_scoped_workspace_id(&state, &workspace_id) {
+        return response;
+    }
+    workspace_architect_list_plans(State(state), headers, Json(payload))
+        .await
+        .into_response()
 }
 
 async fn workspace_architect_activate_plan_head(
@@ -2172,10 +2480,18 @@ async fn workspace_architect_activate_plan_head(
 async fn workspace_architect_activate_plan_head_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
     Json(payload): Json<WorkspaceArchitectActivatePlanHeadRequestDto>,
 ) -> impl IntoResponse {
-    workspace_architect_activate_plan_head(State(state), headers, Json(payload)).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    if let Err(response) = validate_scoped_workspace_id(&state, &workspace_id) {
+        return response;
+    }
+    workspace_architect_activate_plan_head(State(state), headers, Json(payload))
+        .await
+        .into_response()
 }
 
 async fn workspace_architect_activate_plan_chat(
@@ -2203,10 +2519,18 @@ async fn workspace_architect_activate_plan_chat(
 async fn workspace_architect_activate_plan_chat_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
     Json(payload): Json<WorkspaceArchitectActivatePlanChatRequestDto>,
 ) -> impl IntoResponse {
-    workspace_architect_activate_plan_chat(State(state), headers, Json(payload)).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    if let Err(response) = validate_scoped_workspace_id(&state, &workspace_id) {
+        return response;
+    }
+    workspace_architect_activate_plan_chat(State(state), headers, Json(payload))
+        .await
+        .into_response()
 }
 
 async fn project_git_tree(
@@ -2348,6 +2672,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .workspace_path
         .canonicalize()
         .map_err(|error| format!("Headless workspace path is not accessible: {}", error))?;
+    let workspace_id = configured_workspace_id(&workspace_path)?;
     let runtime_roots = runtime
         .get("allowedRoots")
         .and_then(Value::as_array)
@@ -2362,7 +2687,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bearer_token: bearer_token.as_deref().map(BearerTokenDigest::new),
         approval_token: approval_token.as_deref().map(BearerTokenDigest::new),
         allowed_roots,
-        registered_projects: BTreeMap::new(),
+        workspace_id,
+        registered_projects: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         workspace_path,
         git_state: GitState::new(),
         config_manager,
@@ -2372,10 +2698,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     register_headless_project_config_roots(&state).await?;
     let registered_projects = collect_registered_projects(&state).await?;
-    let state = Arc::new(HeadlessState {
-        registered_projects,
-        ..state
-    });
+    *state.registered_projects.write().await = registered_projects;
+    let state = Arc::new(state);
 
     let app = Router::new()
         .route("/health", get(health))
@@ -2386,6 +2710,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/v1/tools/executions/{execution_id}",
             get(tool_execution_status),
         )
+        .route(
+            "/v1/tools/executions/{execution_id}/resolve-indeterminate",
+            post(resolve_indeterminate_tool_execution),
+        )
         .route("/v1/tools/checkpoint-snapshot", post(checkpoint_snapshot))
         .route("/v1/tools/cancel", post(tool_cancel))
         .route("/api/v1/tools/mode-policy", get(tool_mode_policy))
@@ -2394,6 +2722,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/tools/executions/{execution_id}",
             get(tool_execution_status),
+        )
+        .route(
+            "/api/v1/tools/executions/{execution_id}/resolve-indeterminate",
+            post(resolve_indeterminate_tool_execution),
         )
         .route(
             "/api/v1/tools/checkpoint-snapshot",
@@ -2977,5 +3309,40 @@ mod tests {
             Some(&digest)
         ));
         assert!(bearer_token_authorizes(&HeaderMap::new(), None));
+    }
+
+    #[test]
+    fn derived_workspace_identity_is_stable_and_path_scoped() {
+        let first = derived_workspace_id(std::path::Path::new("/srv/macro/workspace"));
+        let repeated = derived_workspace_id(std::path::Path::new("/srv/macro/workspace"));
+        let second = derived_workspace_id(std::path::Path::new("/srv/macro/other"));
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+        assert!(first.starts_with("ws_"));
+        assert_eq!(first.len(), 27);
+    }
+
+    #[test]
+    fn oversized_headless_tool_responses_fail_with_a_small_structured_error() {
+        let oversized = bound_stored_tool_execution_with_limit(
+            StoredToolExecution {
+                status_code: StatusCode::OK.as_u16(),
+                body: json!({ "result": "x".repeat(128) }),
+            },
+            32,
+        );
+
+        assert_eq!(
+            oversized.status_code,
+            StatusCode::PAYLOAD_TOO_LARGE.as_u16()
+        );
+        assert_eq!(oversized.body["code"], json!("REMOTE_RESPONSE_TOO_LARGE"));
+        assert!(
+            serde_json::to_vec(&oversized.body)
+                .expect("encoded error")
+                .len()
+                < 512
+        );
     }
 }

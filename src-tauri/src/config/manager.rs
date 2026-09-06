@@ -187,6 +187,28 @@ impl ConfigManager {
             )
         })?;
 
+        {
+            let mut state = self.state.write().await;
+            let root_changed = state
+                .project_roots
+                .get(project_id)
+                .is_some_and(|current| current != &config_root);
+            if root_changed {
+                state.documents.retain(|key, _| {
+                    key.scope
+                        != (ConfigScope::Project {
+                            project_id: project_id.to_string(),
+                        })
+                });
+                state.pending_changes.retain(|_, pending| {
+                    pending.pending.scope
+                        != (ConfigScope::Project {
+                            project_id: project_id.to_string(),
+                        })
+                });
+            }
+        }
+
         for kind in ConfigDocumentKind::ALL
             .into_iter()
             .filter(|kind| kind.supports_project_scope())
@@ -2364,6 +2386,52 @@ mod tests {
                         project_id: "project-123".to_string(),
                     }
         }));
+    }
+
+    #[tokio::test]
+    async fn re_registering_a_project_replaces_documents_from_the_previous_root() {
+        let (_temp, manager) = manager().await;
+        let first_metadata = tempfile::tempdir().expect("first metadata");
+        let second_metadata = tempfile::tempdir().expect("second metadata");
+        let first_config = first_metadata.path().join("projects/project-123/config");
+        let second_config = second_metadata.path().join("projects/project-123/config");
+        fs::create_dir_all(&first_config).expect("first config root");
+        fs::create_dir_all(&second_config).expect("second config root");
+        let mut first_tools = sparse_document(ConfigDocumentKind::Tools);
+        first_tools["builtIn"] = json!({ "read": false });
+        atomic_write_json(&first_config.join("tools.json"), &first_tools).expect("first tools");
+        let mut second_tools = sparse_document(ConfigDocumentKind::Tools);
+        second_tools["builtIn"] = json!({ "write": false });
+        atomic_write_json(&second_config.join("tools.json"), &second_tools).expect("second tools");
+
+        manager
+            .register_project_root("project-123", first_metadata.path().to_path_buf())
+            .await
+            .expect("register first root");
+        let first = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("first snapshot");
+        assert_eq!(
+            first.project_effective["project-123"]["tools"]["builtIn"]["read"],
+            json!(false)
+        );
+
+        manager
+            .register_project_root("project-123", second_metadata.path().to_path_buf())
+            .await
+            .expect("register second root");
+        let second = manager
+            .get_snapshot(&["project-123".to_string()])
+            .await
+            .expect("second snapshot");
+        assert!(second.project_effective["project-123"]["tools"]["builtIn"]
+            .get("read")
+            .is_none());
+        assert_eq!(
+            second.project_effective["project-123"]["tools"]["builtIn"]["write"],
+            json!(false)
+        );
     }
 
     #[tokio::test]
