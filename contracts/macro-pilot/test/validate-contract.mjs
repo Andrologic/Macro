@@ -23,6 +23,8 @@ const expectedSemanticRejections = new Set([
   "run-waiting-reference-mismatch.json",
   "task-project-overlap.json",
   "task-target-mismatch.json",
+  "tool-approval-related-run-mismatch.json",
+  "tool-approval-scope-mismatch.json",
 ]);
 
 async function readJson(path) {
@@ -99,6 +101,22 @@ function semanticErrors(message) {
 
   if (message.type === "review" && !sameRunScope(message.ref, message.related_run)) {
     errors.push("review.related_run differs from review.ref");
+  }
+
+  if (
+    message.type === "tool_approval" &&
+    message.related_run &&
+    message.ref?.instance_id !== message.related_run.instance_id
+  ) {
+    errors.push("tool_approval.related_run belongs to another instance");
+  }
+
+  if (
+    message.type === "tool_approval" &&
+    message.resolution?.grant_scope &&
+    !message.allowed_scopes?.includes(message.resolution.grant_scope)
+  ) {
+    errors.push("tool approval resolution uses a disallowed grant_scope");
   }
 
   if (

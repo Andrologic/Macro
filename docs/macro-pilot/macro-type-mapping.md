@@ -63,3 +63,30 @@ exacte avec l'une des trois chaînes de `choices` désigne un choix ; toute autr
 valeur est une réponse libre et exige `free_text_allowed: true`. Cette règle
 permet un aller-retour sans perte. Le service valide toutes les étapes avant
 d'accepter `decision.resolve` à la révision demandée.
+
+## Approbation d'outil
+
+Une ressource `tool_approval` correspond à un `PendingToolApproval`, sans la
+transformer en `QuestionnairePayload` :
+
+- `ref.conversation_id`, `assistant_message_id` et `tool_call_id` reprennent les
+  trois identifiants de la demande ; `instance_id` vient de l'adaptateur ;
+- `tool_id`, `action_group`, `risk_level`, `is_destructive` et `summary`
+  reprennent les champs d'affichage après expurgation ;
+- `allowed_scopes` vaut `["once"]` quand `canApproveForConversation` est
+  `false`, sinon `["once", "conversation"]` ;
+- `related_run` est ajouté seulement si la conversation appartient à un run
+  connu ;
+- `recoveryState: "interrupted"` devient l'état `interrupted` et ne peut pas
+  être résolu à distance.
+
+`args`, `detail` et `rememberKey` restent locaux : ils peuvent contenir des
+chemins, domaines, commandes ou détails de portée. Macro garde leur
+correspondance interne et revalide le contexte courant avant d'accepter la
+commande. Les résultats runtime `allow_once` et `allow_conversation` deviennent
+`verdict: "approve"` avec `grant_scope: "once"` ou `"conversation"`. Le résultat
+`deny` devient `verdict: "deny"` avec un motif optionnel. `expired` est un état,
+pas une troisième décision utilisateur.
+
+Une review Git n'utilise pas cette ressource. Elle reste liée à ses SHA et son
+verdict ne déclenche aucune opération Git implicite.

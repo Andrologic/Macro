@@ -7,6 +7,8 @@
     "task execution_targets MUST identify each actionable project exactly once",
     "decision steps MUST use distinct identifiers and choices MUST be distinct within each step",
     "decision resolution MUST answer every step exactly once using a listed choice string or allowed free text",
+    "tool approval resolution grant_scope MUST belong to allowed_scopes",
+    "tool approval related_run MUST belong to the same instance as its ref",
     "run.waiting_on MUST identify the same instance, workspace, task, and run as run.ref",
     "review.related_run MUST identify the same instance, workspace, task, and run as review.ref"
   ],
@@ -14,6 +16,7 @@
     { "$ref": "#/$defs/task" },
     { "$ref": "#/$defs/run" },
     { "$ref": "#/$defs/decision" },
+    { "$ref": "#/$defs/toolApproval" },
     { "$ref": "#/$defs/review" }
   ],
   "$defs": {
@@ -168,6 +171,81 @@
             "required": ["resolution"]
           },
           "else": { "properties": { "resolution": false } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "expired" } } },
+          "then": {
+            "properties": { "expires_at": true },
+            "required": ["expires_at"]
+          }
+        }
+      ]
+    },
+    "toolApprovalResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "resolved_by", "resolved_at"],
+      "properties": {
+        "verdict": { "enum": ["approve", "deny"] },
+        "grant_scope": { "enum": ["once", "conversation"] },
+        "reason": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 500 },
+        "resolved_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "resolved_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "verdict": { "const": "approve" } } },
+          "then": {
+            "properties": { "grant_scope": true, "reason": false },
+            "required": ["grant_scope"]
+          },
+          "else": { "properties": { "grant_scope": false } }
+        }
+      ]
+    },
+    "toolApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "ref", "state", "tool_id", "action_group", "risk_level", "is_destructive", "summary", "allowed_scopes", "revision", "created_at"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "tool_approval" },
+        "ref": { "$ref": "common.schema.json#/$defs/toolApprovalRef" },
+        "related_run": { "$ref": "common.schema.json#/$defs/runRef" },
+        "state": { "enum": ["pending", "resolved", "expired", "interrupted"] },
+        "tool_id": { "$ref": "common.schema.json#/$defs/sourceId" },
+        "action_group": { "enum": ["observe", "change", "escape"] },
+        "risk_level": { "enum": ["strict", "balanced", "yolo"] },
+        "is_destructive": { "type": "boolean" },
+        "summary": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 1000 },
+        "allowed_scopes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "contains": { "const": "once" },
+          "items": { "enum": ["once", "conversation"] }
+        },
+        "resolution": { "$ref": "#/$defs/toolApprovalResolution" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "resolved" } } },
+          "then": {
+            "properties": { "resolution": true },
+            "required": ["resolution"]
+          },
+          "else": { "properties": { "resolution": false } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "expired" } } },
+          "then": {
+            "properties": { "expires_at": true },
+            "required": ["expires_at"]
+          }
         }
       ]
     },

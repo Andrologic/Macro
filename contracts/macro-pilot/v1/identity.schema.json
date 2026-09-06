@@ -28,7 +28,18 @@
             "subject": { "type": "string", "minLength": 1, "maxLength": 255 },
             "login": { "type": "string", "minLength": 1, "maxLength": 39, "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$|^[A-Za-z0-9]$" },
             "display_name": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 255 },
-            "avatar_url": { "type": "string", "format": "uri", "pattern": "^https://" }
+            "avatar_url": {
+              "allOf": [
+                { "$ref": "common.schema.json#/$defs/safeText" },
+                {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "format": "uri",
+                  "pattern": "^https://",
+                  "not": { "pattern": "^https://[^/]*@" }
+                }
+              ]
+            }
           }
         },
         "revision": { "$ref": "common.schema.json#/$defs/revision" }
@@ -80,7 +91,7 @@
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "enum": ["supervise", "respond", "review"] }
+          "items": { "enum": ["supervise", "respond", "approve_tools", "review"] }
         },
         "granted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "revoked_at": { "$ref": "common.schema.json#/$defs/timestamp" },

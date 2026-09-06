@@ -15,11 +15,12 @@ format `date-time` et `uri`. Les fixtures sont du JSON ordinaire et peuvent
 donc alimenter les tests Serde en Rust, les tests TypeScript et les tests Dart
 sans conversion.
 
-Une nouvelle propriété, valeur d'énumération, commande ou forme de message
-demande une nouvelle version du contrat. Chaque consommateur annonce la liste
-exacte des versions qu'il comprend dans la ressource `instance`. Les deux côtés
-choisissent une version commune avant d'échanger des commandes. Cette version
-ne définit pas le mécanisme de découverte ou de négociation réseau.
+Après publication de cette base initiale, une nouvelle propriété, valeur
+d'énumération, commande ou forme de message demandera une nouvelle version du
+contrat. Chaque consommateur annonce la liste exacte des versions qu'il comprend
+dans la ressource `instance`. Les deux côtés choisissent une version commune
+avant d'échanger des commandes. Cette version ne définit pas le mécanisme de
+découverte ou de négociation réseau.
 
 ## Identités et portée
 
@@ -37,6 +38,10 @@ session concernée et porte son `account_id`. Cet identifiant doit correspondre
 appartient à cet acteur. Il renvoie `forbidden` pour une cible d'un autre compte
 et `unauthorized` si l'identité de l'acteur ne correspond pas à la session
 authentifiée.
+
+Les permissions distinguent la supervision, les réponses aux questionnaires,
+les approbations d'outils et les reviews Git. `approve_tools` est obligatoire
+pour résoudre une ressource `tool_approval` ; `respond` ne suffit pas.
 
 Les références forment une portée hiérarchique. Une tâche appartient à une
 instance et un workspace, puis liste ses projets d'action et ses projets de
@@ -75,6 +80,24 @@ choix utilisés par `QuestionStep` et indique si une réponse libre est permise.
 choix si elle est exactement égale à une chaîne de `choices`, sinon elle est du
 texte libre.
 
+Une approbation d'outil est une ressource `tool_approval` séparée, et non un
+questionnaire à trois choix. Sa cible reprend l'instance, la conversation, le
+message de l'assistant et l'appel d'outil exacts. La réponse est binaire :
+`approve` ou `deny`. Une approbation ajoute la portée `once` ou `conversation`,
+si cette portée figure dans `allowed_scopes`. Un refus n'a aucune portée et peut porter
+un motif expurgé. Une demande `interrupted` n'a plus de résolveur actif et ne
+peut pas recevoir de résolution distante ; une nouvelle exécution doit produire
+une nouvelle demande.
+
+`tool_approval.resolve` porte la même révision attendue, l'idempotence et
+l'acteur que les autres commandes. Le service revalide la politique, le
+contexte d'exécution et la portée au moment de l'acceptation. Une portée
+`conversation` ne s'applique qu'au même outil et à la même clé interne de
+permission ; cette clé n'est jamais envoyée au mobile.
+
+Une `review` Git reste une troisième ressource distincte. Son verdict enregistre
+l'état de la review et n'autorise ni merge, ni push, ni changement de branche.
+
 ## Pagination et reprise
 
 Les listes utilisent `page_request` et `page`. Le curseur est opaque. Quand
@@ -110,6 +133,10 @@ la validation et font partie du contrat :
 - seule une décision `resolved` porte une résolution, qui est alors obligatoire ;
 - les identifiants d'étape et les chaînes de choix sont uniques dans leur
   portée ;
+- une approbation d'outil expose seulement `approve` ou `deny` ; seule une
+  approbation porte une portée, qui appartient à `allowed_scopes` ;
+- seule une approbation d'outil `resolved` porte une résolution ;
+- le run lié à une approbation, lorsqu'il existe, appartient à la même instance ;
 - le type de chaque élément d'une page correspond à `item_type` ;
 - la révision d'un événement correspond à celle de son snapshot ;
 - une révocation de session cible le compte de l'acteur ;
@@ -130,21 +157,28 @@ effectue ces contrôles après la validation du message :
 - l'acteur d'une commande correspond à la session authentifiée ;
 - les réponses de `decision.resolve` couvrent les étapes de la décision à
   `expected_revision` et respectent leurs choix et leur règle de texte libre ;
+- `tool_approval.resolve` cible une demande `pending` inchangée, l'acteur possède
+  `approve_tools`, la portée demandée est autorisée et le contexte d'exécution
+  correspond encore à celui enregistré par Macro ;
+- une demande d'approbation `interrupted`, `expired` ou déjà `resolved` est
+  refusée ;
 - `review.ref.project_id` correspond à une cible `git` de la tâche liée au run ;
 - `base_sha` et `head_sha` existent dans ce dépôt au moment de créer la review.
 
-Un écart de portée produit `invalid_reference`. Une décision ou une review
-ayant changé de révision produit `stale_revision`.
+Un écart de portée produit `invalid_reference`. Une décision, une approbation
+d'outil ou une review ayant changé de révision produit `stale_revision`.
 
 ## Données autorisées sur le mobile
 
 Les références sont des identifiants opaques. Les libellés servent uniquement
 à l'affichage. Aucun champ stable ne représente un chemin local, une clé de
 provider, un jeton GitHub, un secret de session ou des justificatifs d'accès au
-dépôt. `avatar_url` accepte seulement HTTPS. Le producteur doit expurger les
-données sensibles de `message`, `title`, `prompt`, `note` et des réponses avant
-de créer l'enveloppe. Le relais et le mobile ne journalisent jamais l'entrée non
-expurgée. `safeText` bloque des signatures courantes de chemins machine, jetons
-et clés privées comme défense supplémentaire ; cette liste ne prétend pas
+dépôt. `avatar_url` accepte seulement HTTPS. Les champs internes `args`,
+`detail` et `rememberKey` d'une approbation d'outil ne sont jamais exportés. Le
+producteur construit à leur place un `summary` expurgé. Il doit aussi expurger
+les données sensibles de `message`, `title`, `prompt`, `note` et des réponses
+avant de créer l'enveloppe. Le relais et le mobile ne journalisent jamais
+l'entrée non expurgée. `safeText` bloque des signatures courantes de chemins
+machine, jetons et clés privées comme défense supplémentaire ; cette liste ne prétend pas
 reconnaître tous les secrets. Le mobile reçoit des SHA Git, jamais des
 identifiants d'accès au dépôt.

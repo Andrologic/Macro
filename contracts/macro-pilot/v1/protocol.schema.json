@@ -9,6 +9,7 @@
     "event_batch.next_cursor and next_sequence MUST equal its last event, or the after values when empty",
     "session.revoke issued_by.account_id MUST equal target.account_id",
     "decision.resolve answers MUST use distinct step_id values",
+    "tool_approval.resolve grant_scope MUST be allowed by the current target resource",
     "page.item_type MUST equal the type of every item",
     "command_result.resulting_revision MUST NOT be lower than previous_revision"
   ],
@@ -122,6 +123,43 @@
         }
       }
     },
+    "toolApprovalResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict"],
+      "properties": {
+        "verdict": { "enum": ["approve", "deny"] },
+        "grant_scope": { "enum": ["once", "conversation"] },
+        "reason": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 500 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "verdict": { "const": "approve" } } },
+          "then": {
+            "properties": { "grant_scope": true, "reason": false },
+            "required": ["grant_scope"]
+          },
+          "else": { "properties": { "grant_scope": false } }
+        }
+      ]
+    },
+    "toolApprovalResolveCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "command" },
+        "kind": { "const": "tool_approval.resolve" },
+        "command_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "idempotency_key": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+        "expected_revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "target": { "$ref": "common.schema.json#/$defs/toolApprovalRef" },
+        "issued_by": { "$ref": "common.schema.json#/$defs/actorRef" },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "payload": { "$ref": "#/$defs/toolApprovalResponse" }
+      }
+    },
     "reviewSubmitCommand": {
       "type": "object",
       "additionalProperties": false,
@@ -153,6 +191,7 @@
         { "$ref": "#/$defs/runStartCommand" },
         { "$ref": "#/$defs/runCancelCommand" },
         { "$ref": "#/$defs/decisionResolveCommand" },
+        { "$ref": "#/$defs/toolApprovalResolveCommand" },
         { "$ref": "#/$defs/reviewSubmitCommand" }
       ]
     },
@@ -267,6 +306,23 @@
         "snapshot": { "$ref": "supervision.schema.json#/$defs/decision" }
       }
     },
+    "toolApprovalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_version", "type", "event_type", "stream_id", "sequence", "resume_cursor", "emitted_at", "resource", "revision", "snapshot"],
+      "properties": {
+        "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
+        "type": { "const": "event" },
+        "event_type": { "enum": ["tool_approval.requested", "tool_approval.updated"] },
+        "stream_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "resume_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "emitted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "resource": { "$ref": "common.schema.json#/$defs/toolApprovalRef" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision" },
+        "snapshot": { "$ref": "supervision.schema.json#/$defs/toolApproval" }
+      }
+    },
     "reviewEvent": {
       "type": "object",
       "additionalProperties": false,
@@ -289,6 +345,7 @@
         { "$ref": "#/$defs/taskEvent" },
         { "$ref": "#/$defs/runEvent" },
         { "$ref": "#/$defs/decisionEvent" },
+        { "$ref": "#/$defs/toolApprovalEvent" },
         { "$ref": "#/$defs/reviewEvent" }
       ]
     },
@@ -318,7 +375,7 @@
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "page_request" },
-        "item_type": { "enum": ["account", "device_session", "instance_access", "instance", "workspace", "project", "task", "run", "decision", "review"] },
+        "item_type": { "enum": ["account", "device_session", "instance_access", "instance", "workspace", "project", "task", "run", "decision", "tool_approval", "review"] },
         "scope": { "$ref": "common.schema.json#/$defs/resourceRef" },
         "cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
         "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
@@ -331,7 +388,7 @@
       "properties": {
         "contract_version": { "$ref": "common.schema.json#/$defs/contractVersion" },
         "type": { "const": "page" },
-        "item_type": { "enum": ["account", "device_session", "instance_access", "instance", "workspace", "project", "task", "run", "decision", "review"] },
+        "item_type": { "enum": ["account", "device_session", "instance_access", "instance", "workspace", "project", "task", "run", "decision", "tool_approval", "review"] },
         "items": {
           "type": "array",
           "maxItems": 200,

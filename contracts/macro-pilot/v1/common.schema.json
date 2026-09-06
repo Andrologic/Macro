@@ -18,6 +18,12 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
     },
+    "sourceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
     "timestamp": {
       "type": "string",
       "format": "date-time"
@@ -123,6 +129,18 @@
         "decision_id": { "$ref": "#/$defs/opaqueId" }
       }
     },
+    "toolApprovalRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "instance_id", "conversation_id", "assistant_message_id", "tool_call_id"],
+      "properties": {
+        "type": { "const": "tool_approval" },
+        "instance_id": { "$ref": "#/$defs/opaqueId" },
+        "conversation_id": { "$ref": "#/$defs/sourceId" },
+        "assistant_message_id": { "$ref": "#/$defs/sourceId" },
+        "tool_call_id": { "$ref": "#/$defs/sourceId" }
+      }
+    },
     "reviewRef": {
       "type": "object",
       "additionalProperties": false,
@@ -147,6 +165,7 @@
         { "$ref": "#/$defs/taskRef" },
         { "$ref": "#/$defs/runRef" },
         { "$ref": "#/$defs/decisionRef" },
+        { "$ref": "#/$defs/toolApprovalRef" },
         { "$ref": "#/$defs/reviewRef" }
       ]
     },

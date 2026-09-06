@@ -1,0 +1,37 @@
+{
+  "contract_version": "1.0",
+  "type": "event",
+  "event_type": "tool_approval.requested",
+  "stream_id": "stream:instance:studio-mac",
+  "sequence": 43,
+  "resume_cursor": "cursor:43:01J8T",
+  "emitted_at": "2026-09-06T12:00:00Z",
+  "resource": {
+    "type": "tool_approval",
+    "instance_id": "instance:studio-mac",
+    "conversation_id": "conv-3",
+    "assistant_message_id": "msg-3",
+    "tool_call_id": "call-3"
+  },
+  "revision": 1,
+  "snapshot": {
+    "contract_version": "1.0",
+    "type": "tool_approval",
+    "ref": {
+      "type": "tool_approval",
+      "instance_id": "instance:studio-mac",
+      "conversation_id": "conv-3",
+      "assistant_message_id": "msg-3",
+      "tool_call_id": "call-3"
+    },
+    "state": "pending",
+    "tool_id": "write",
+    "action_group": "change",
+    "risk_level": "strict",
+    "is_destructive": false,
+    "summary": "Write the requested workspace file",
+    "allowed_scopes": ["once", "conversation"],
+    "revision": 1,
+    "created_at": "2026-09-06T12:00:00Z"
+  }
+}

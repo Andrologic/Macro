@@ -13,7 +13,7 @@
         "instance_id": "instance:studio-mac"
       },
       "state": "granted",
-      "permissions": ["supervise", "respond", "review"],
+      "permissions": ["supervise", "respond", "approve_tools", "review"],
       "granted_at": "2026-09-06T10:05:00Z",
       "revision": 1
     },

@@ -1,0 +1,27 @@
+{
+  "contract_version": "1.0",
+  "type": "tool_approval",
+  "ref": {
+    "type": "tool_approval",
+    "instance_id": "instance:studio-mac",
+    "conversation_id": "conv-1",
+    "assistant_message_id": "msg-1",
+    "tool_call_id": "call-1"
+  },
+  "related_run": {
+    "type": "run",
+    "instance_id": "instance:other-mac",
+    "workspace_id": "workspace:macro-suite",
+    "task_id": "task:pilot-contract",
+    "run_id": "run:pilot-contract:01"
+  },
+  "state": "pending",
+  "tool_id": "write",
+  "action_group": "change",
+  "risk_level": "balanced",
+  "is_destructive": false,
+  "summary": "Write the requested workspace file",
+  "allowed_scopes": ["once", "conversation"],
+  "revision": 1,
+  "created_at": "2026-09-06T12:00:00Z"
+}
