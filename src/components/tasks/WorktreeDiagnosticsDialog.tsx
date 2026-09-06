@@ -5,6 +5,7 @@ import { Button } from '../ui/Button';
 import { notify } from '../ui/toastService';
 import { ProjectCapabilitiesNotice } from '../project/ProjectCapabilitiesNotice';
 import { getProjectCapabilities } from '../../services/projectCapabilities';
+import { toServiceError } from '../../services/contracts/errors';
 import { inspectWorktree, repairWorktree, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import type { GitWorktreeInspectionDto } from '../../services/tauriIpc';
 
@@ -23,7 +24,7 @@ function Diagnostic({ entry, repairDisabled }: { entry: WorktreeDiagnosticTarget
     inspectWorktree(entry).then((value) => {
       if (!cancelled) setInspection(value);
     }).catch((reason: unknown) => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      if (!cancelled) setError(toServiceError(reason).message);
     }).finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
   }, [entry, revision, supported]);
@@ -35,7 +36,7 @@ function Diagnostic({ entry, repairDisabled }: { entry: WorktreeDiagnosticTarget
       setInspection(await repairWorktree(entry));
       notify.success(t('implement.worktreeDiagnostic.repaired'));
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
+      const message = toServiceError(reason).message;
       setError(message);
       notify.error(t('implement.worktreeDiagnostic.refused'), { description: message });
     } finally { setBusy(false); }
