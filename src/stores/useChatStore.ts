@@ -3281,6 +3281,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const assertImplementTaskReadyForSend = async (
     taskId: string,
+    pilotActionToken?: symbol,
+    beforeEffect?: () => Promise<void>,
   ): Promise<ImplementTask> => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(taskId);
@@ -3299,12 +3301,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (task.status === "Pending" && !activeMergeWorkflow) {
-      await taskStore.startTask(taskId);
+      if (pilotActionToken) {
+        await taskStore.startTask(taskId, {
+          pilotActionToken,
+          beforeEffect,
+        });
+      } else {
+        await taskStore.startTask(taskId);
+      }
     } else if (
       (task.status === "AwaitingResponse" || task.status === "Failed") &&
       !activeMergeWorkflow
     ) {
-      await taskStore.retryTask(taskId);
+      if (pilotActionToken) {
+        await taskStore.retryTask(taskId, {
+          pilotActionToken,
+          beforeEffect,
+        });
+      } else {
+        await taskStore.retryTask(taskId);
+      }
     }
 
     const refreshedTask = useTaskStore.getState().getTaskById(taskId);
@@ -10780,6 +10796,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     modeAtSend: AppMode;
     agentTypeAtSend?: AgentType | null;
     resolvedTaskId: string;
+    pilotActionToken?: symbol;
     selectedProviderId: string;
     selectedModelId: string;
     selectedReasoningEffort?: ReasoningEffort | null;
@@ -10941,7 +10958,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       try {
-        await useTaskStore.getState().markTaskFailed(params.resolvedTaskId);
+        if (params.pilotActionToken) {
+          await useTaskStore.getState().markTaskFailed(params.resolvedTaskId, {
+            pilotActionToken: params.pilotActionToken,
+          });
+        } else {
+          await useTaskStore.getState().markTaskFailed(params.resolvedTaskId);
+        }
       } catch (error) {
         console.warn("Failed to mark task as failed after stream error:", error);
       }
@@ -11681,8 +11704,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         getTaskStatus: (taskId) =>
           useTaskStore.getState().getTaskById(taskId)?.status ?? null,
-        markTaskAwaitingResponse: (taskId) =>
-          useTaskStore.getState().markTaskAwaitingResponse(taskId),
+        markTaskAwaitingResponse: (taskId) => params.pilotActionToken
+          ? useTaskStore.getState().markTaskAwaitingResponse(taskId, {
+              pilotActionToken: params.pilotActionToken,
+            })
+          : useTaskStore.getState().markTaskAwaitingResponse(taskId),
         assistantTurnRequiresUserReply,
         updateConversationAfterCompletion: (conversationId, visibleContent) => {
           completionPersistenceOwnersByConversationId.set(conversationId, {
@@ -15968,7 +15994,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
 
           taskForSend =
-            (await assertImplementTaskReadyForSend(resolvedTaskId)) ??
+            (await assertImplementTaskReadyForSend(
+              resolvedTaskId,
+              pilotTarget?.actionToken,
+              pilotTarget?.beforeEffect,
+            )) ??
             taskForSend;
           if (!isCurrentPreparation()) {
             return cancelledResult();
@@ -16148,6 +16178,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             modeAtSend,
             agentTypeAtSend,
             resolvedTaskId,
+            pilotActionToken: pilotTarget?.actionToken,
             selectedProviderId,
             selectedModelId,
             selectedReasoningEffort,

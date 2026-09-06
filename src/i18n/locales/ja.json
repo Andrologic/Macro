@@ -977,9 +977,10 @@
       "reconciliationConfirm": "I confirm it was not executed",
       "reconciliationDone": "The command was marked as not executed. A new explicit command is required.",
       "reconciliationFailed": "The local reconciliation could not be saved.",
+      "runtimeUnavailable": "デスクトップの監視を利用できません。ジャーナルを読み込めなかったか、リレーに接続できません。ローカルコマンドは再実行されません。",
       "permissions": {"supervise":"View activity","respond":"Respond","approve_tools":"Approve tools","review":"Submit reviews"},
       "status": {"unconfigured":"Not configured","signed_out":"Signed out","authorizing":"Waiting for GitHub","confirming_account":"Confirmation required","connected":"Connected","offline":"Offline","vault_unavailable":"Credential vault unavailable"},
-      "errors": {"invalid_configuration":"Check the relay address and the required fields.","invalid_response":"The relay returned an invalid response.","response_too_large":"The relay response exceeded the 1 MB limit.","redirect_refused":"The relay tried to redirect the request.","unauthorized":"The connection has expired. Sign in again.","session_revoked":"This device session was revoked.","forbidden":"This account cannot perform that action.","not_found":"The requested Pilot resource no longer exists.","conflict":"The request conflicts with the current Pilot state.","stale_revision":"The request changed before it could be applied.","unavailable":"Pilot is temporarily unavailable.","vault_unavailable":"The operating system credential vault is unavailable.","offline":"The relay cannot be reached. Local Macro features remain available."}
+      "errors": {"invalid_configuration":"リレーのアドレスと必須項目を確認してください。","invalid_response":"リレーから無効な応答が返されました。","response_too_large":"リレーの応答が 1 MB の上限を超えました。","redirect_refused":"リレーがリクエストをリダイレクトしようとしました。","unauthorized":"接続の有効期限が切れました。もう一度サインインしてください。","session_revoked":"このデバイスのセッションは取り消されました。","forbidden":"このアカウントではこの操作を実行できません。","not_found":"要求された Pilot リソースは存在しません。","conflict":"リクエストが現在の Pilot の状態と競合しています。","stale_revision":"適用前にリクエストの内容が変更されました。","unavailable":"Pilot は一時的に利用できません。","vault_unavailable":"OS の認証情報保管庫を利用できません。","offline":"リレーに接続できません。Macro のローカル機能は引き続き利用できます。"}
     },
     "configuration": {
       "title": "JSON configuration",

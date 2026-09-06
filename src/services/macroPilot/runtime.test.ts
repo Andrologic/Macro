@@ -61,4 +61,38 @@ describe('Pilot producer delivery loop', () => {
       expect(results[0]).toEqual(results[1]);
     } finally { await runtime.stop(); }
   });
+  it('exposes a corrupt journal and allows an explicit retry after local repair', async () => {
+    let stored: string | null = '{invalid';
+    let polls = 0;
+    const state = { status: 'connected', configurationId: 'config:test', instance: { ref: { instance_id: taskFixture.ref.instance_id } }, deviceSession: { state: 'active', ref: { session_id: 'session:test' } } } as PilotPublicState;
+    const client: Pick<MacroPilotNativeClient, 'getState' | 'subscribe' | 'initialize' | 'request'> = {
+      getState: () => state, subscribe: () => () => undefined, initialize: async () => state,
+      request: (async (_method: string, path: string, _body: unknown, options: { signal?: AbortSignal }) => {
+        if (path.endsWith('/disconnect')) return { status: 204, data: null, requestId: 'request:test' };
+        polls++;
+        await new Promise<void>(resolve => {
+          if (options.signal?.aborted) resolve();
+          else options.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        throw Error('Aborted');
+      }) as MacroPilotNativeClient['request'],
+    };
+    const runtime = new PilotRuntime(client, dependencies => new PilotKernel({
+      ...dependencies,
+      storage: { load: async () => stored, compareAndSwap: async (previous, next) => {
+        if (previous !== stored) return false;
+        stored = next; return true;
+      } },
+      project: () => ({ snapshots: [taskFixture as Resource], state: null }),
+    }));
+    try {
+      await runtime.start();
+      expect(runtime.getStatus()).toBe('unavailable');
+      expect(polls).toBe(0);
+      stored = null;
+      await runtime.retry();
+      expect(runtime.getStatus()).toBe('running');
+    } finally { await runtime.stop(); }
+  });
+
 });

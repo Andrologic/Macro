@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 const initializeMock = mock(async () => undefined);
 const reconcileNotExecutedMock = mock(async (_key: string) => undefined);
 const notifySuccessMock = mock(() => undefined);
+let runtimeStatus = 'running';
 let indeterminate = [{
   key: '["session:phone","reply:01"]',
   commandId: 'command:reply:01',
@@ -68,6 +69,9 @@ mock.module('../../../stores/usePilotStore', () => ({ usePilotStore: usePilotSto
 mock.module('../../../services/externalUrlOpener', () => ({ openExternalUrl: async () => undefined }));
 mock.module('../../../services/macroPilot/runtime', () => ({
   macroPilotRuntime: {
+    getStatus: () => runtimeStatus,
+    subscribe: () => () => undefined,
+    retry: async () => undefined,
     getIndeterminate: () => indeterminate,
     reconcileNotExecuted: reconcileNotExecutedMock,
   },
@@ -83,6 +87,7 @@ describe('PilotView', () => {
   let root: Root;
 
   beforeEach(async () => {
+    runtimeStatus = 'running';
     indeterminate = [{
       key: '["session:phone","reply:01"]',
       commandId: 'command:reply:01',
@@ -126,4 +131,13 @@ describe('PilotView', () => {
     expect(reconcileNotExecutedMock).toHaveBeenCalledWith('["session:phone","reply:01"]');
     expect(notifySuccessMock).toHaveBeenCalledTimes(1);
   });
+  it('shows unavailable supervision instead of an empty reconciliation result', async () => {
+    runtimeStatus = 'unavailable';
+    indeterminate = [];
+    const refresh = [...container.querySelectorAll('button')].filter(button => button.textContent === 'Refresh').at(-1);
+    await act(async () => { refresh!.click(); await Promise.resolve(); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Desktop supervision is unavailable');
+    expect(container.textContent).not.toContain('No command requires local reconciliation.');
+  });
+
 });

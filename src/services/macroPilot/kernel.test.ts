@@ -92,7 +92,7 @@ describe('Pilot durable desktop dispatch', () => {
   });
   it('marks an uncertain start interrupted instead of retaining a pending run', async () => {
     const env = setup();
-    const task = { ...env.task, state: 'queued' }; delete task.reply_context;
+    const task: Resource = { ...env.task, state: 'queued' }; delete task.reply_context;
     env.setTask(task);
     env.deps.execute = async () => { throw new Error('Preparation interrupted'); };
     const kernel = new PilotKernel(env.deps); await kernel.initialize();

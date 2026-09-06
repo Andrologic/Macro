@@ -276,4 +276,67 @@ describe('MacroPilotNativeClient', () => {
     expect(harness.requests.filter(({ url }) => url.endsWith('/auth/attempts'))).toHaveLength(1);
     expect([...harness.secrets.keys()].some((key) => key.startsWith('session_token:'))).toBe(true);
   });
+
+  it('refuse toute URI Device Flow différente de la page GitHub exacte', async () => {
+    const invalidUris = [
+      'http://github.com/login/device',
+      'https://github.com/login/device?continue=phishing',
+      'https://github.com/login/device#phishing',
+      'https://github.com.evil.example/login/device',
+      'https://www.github.com/login/device',
+    ];
+
+    for (const verificationUri of invalidUris) {
+      const harness = createHarness([
+        jsonResponse({
+          transport_version: '1.0',
+          attempt_id: 'attempt:server:01J8T',
+          poll_secret: validSecret(7),
+          user_code: 'ABCD-EFGH',
+          verification_uri: verificationUri,
+          expires_at: '2026-09-06T10:10:00Z',
+          interval: 5,
+        }, 201),
+      ]);
+      await harness.client.initialize();
+
+      await expect(
+        harness.client.connect('https://pilot.example.com', 'Studio Mac'),
+      ).rejects.toMatchObject({ code: 'invalid_response' });
+
+      expect(harness.client.getState().attempt).toBeNull();
+      expect([...harness.secrets.keys()].some((key) => key.startsWith('claim_secret:'))).toBe(false);
+      expect([...harness.secrets.keys()].some((key) => key.startsWith('poll_secret:'))).toBe(false);
+    }
+  });
+
+  it('vide immédiatement la session quand une requête authentifiée apprend sa révocation', async () => {
+    const sessionSecret = validSecret(8);
+    const harness = createHarness([
+      jsonResponse({ transport_version: '1.0', attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }, 201),
+      jsonResponse({ transport_version: '1.0', status: 'identified', account }),
+      jsonResponse({ transport_version: '1.0', account, device_session: session, session_token: sessionSecret }),
+      jsonResponse({
+        contract_version: '1.0', type: 'error', request_id: 'request:server:0001',
+        code: 'session_revoked', message: 'session_revoked', retryable: false,
+      }, 401),
+    ]);
+    await harness.client.initialize();
+    await harness.client.connect('https://pilot.example.com', 'Studio Mac');
+    await harness.client.pollAuth();
+    await harness.client.confirmAccount(account.account_id);
+
+    await expect(
+      harness.client.request('POST', '/instances/instance%3Astudio/deliveries/poll',
+        { transport_version: '1.0' }, { authenticated: true }),
+    ).rejects.toMatchObject({ code: 'session_revoked', status: 401 });
+
+    expect(harness.client.getState()).toMatchObject({
+      status: 'signed_out', account: null, deviceSession: null, instanceAccess: null,
+    });
+    expect([...harness.secrets.keys()].some((key) => key.startsWith('session_token:'))).toBe(false);
+    expect(JSON.stringify(harness.values)).not.toContain(session.ref.session_id);
+    const revokedRequestHeaders = new Headers(harness.requests.at(-1)!.init.headers);
+    expect(revokedRequestHeaders.get('authorization')).toBe(`Bearer ${sessionSecret}`);
+  });
 });

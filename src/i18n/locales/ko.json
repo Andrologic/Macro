@@ -977,9 +977,10 @@
       "reconciliationConfirm": "I confirm it was not executed",
       "reconciliationDone": "The command was marked as not executed. A new explicit command is required.",
       "reconciliationFailed": "The local reconciliation could not be saved.",
+      "runtimeUnavailable": "데스크톱 감독을 사용할 수 없습니다. 저널을 불러오지 못했거나 릴레이에 연결할 수 없습니다. 로컬 명령은 다시 실행되지 않습니다.",
       "permissions": {"supervise":"View activity","respond":"Respond","approve_tools":"Approve tools","review":"Submit reviews"},
       "status": {"unconfigured":"Not configured","signed_out":"Signed out","authorizing":"Waiting for GitHub","confirming_account":"Confirmation required","connected":"Connected","offline":"Offline","vault_unavailable":"Credential vault unavailable"},
-      "errors": {"invalid_configuration":"Check the relay address and the required fields.","invalid_response":"The relay returned an invalid response.","response_too_large":"The relay response exceeded the 1 MB limit.","redirect_refused":"The relay tried to redirect the request.","unauthorized":"The connection has expired. Sign in again.","session_revoked":"This device session was revoked.","forbidden":"This account cannot perform that action.","not_found":"The requested Pilot resource no longer exists.","conflict":"The request conflicts with the current Pilot state.","stale_revision":"The request changed before it could be applied.","unavailable":"Pilot is temporarily unavailable.","vault_unavailable":"The operating system credential vault is unavailable.","offline":"The relay cannot be reached. Local Macro features remain available."}
+      "errors": {"invalid_configuration":"릴레이 주소와 필수 필드를 확인하세요.","invalid_response":"릴레이가 올바르지 않은 응답을 반환했습니다.","response_too_large":"릴레이 응답이 1MB 제한을 초과했습니다.","redirect_refused":"릴레이가 요청을 리디렉션하려고 했습니다.","unauthorized":"연결이 만료되었습니다. 다시 로그인하세요.","session_revoked":"이 기기의 세션이 취소되었습니다.","forbidden":"이 계정은 해당 작업을 수행할 수 없습니다.","not_found":"요청한 Pilot 리소스가 더 이상 존재하지 않습니다.","conflict":"요청이 현재 Pilot 상태와 충돌합니다.","stale_revision":"적용되기 전에 요청이 변경되었습니다.","unavailable":"Pilot을 일시적으로 사용할 수 없습니다.","vault_unavailable":"운영 체제의 자격 증명 보관소를 사용할 수 없습니다.","offline":"릴레이에 연결할 수 없습니다. Macro의 로컬 기능은 계속 사용할 수 있습니다."}
     },
     "configuration": {
       "title": "JSON configuration",

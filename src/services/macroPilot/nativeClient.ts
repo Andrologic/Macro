@@ -13,6 +13,7 @@ const TRANSPORT_VERSION = '1.0' as const;
 const CONTRACT_VERSION = '1.0' as const;
 const STATE_KEY = 'macro_pilot_native_v1';
 const MAX_BODY_BYTES = 1_048_576;
+const GITHUB_DEVICE_VERIFICATION_URI = 'https://github.com/login/device';
 const PILOT_PERMISSIONS = new Set<PilotPermission>([
   'supervise',
   'respond',
@@ -471,6 +472,12 @@ export class MacroPilotNativeClient {
     }
     if (!response.ok) {
       const code = errorCodeForStatus(response.status, data);
+      if (
+        options.authenticated &&
+        (code === 'unauthorized' || code === 'session_revoked')
+      ) {
+        await this.clearSession();
+      }
       throw new PilotClientError(code, response.status, response.status === 429 || response.status === 503, responseRequestId);
     }
     if (options.authenticated && this.publicState.status === 'offline') {
@@ -505,6 +512,9 @@ export class MacroPilotNativeClient {
         claim_challenge: challenge,
       });
       const data = response.data!;
+      if (data.verification_uri !== GITHUB_DEVICE_VERIFICATION_URI) {
+        throw new PilotClientError('invalid_response', response.status);
+      }
       await this.dependencies.secretWrite(this.secretScope('poll_secret', attemptKey), data.poll_secret);
       const attempt: PilotAuthAttempt = {
         attemptKey,

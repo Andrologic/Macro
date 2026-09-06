@@ -23,7 +23,14 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => 
   const timer=setTimeout(done,ms); signal.addEventListener('abort',done,{once:true});
 });
 
+export type PilotRuntimeStatus = 'inactive' | 'running' | 'unavailable';
 export class PilotRuntime {
+  private status: PilotRuntimeStatus = 'inactive';
+  private readonly listeners = new Set<() => void>();
+  getStatus() { return this.status; }
+  subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  private publish(status: PilotRuntimeStatus) { this.status = status; this.listeners.forEach(listener => listener()); }
+  async retry() { this.identity = null; if (!this.started) await this.start(); else await this.synchronize(); }
   private kernel: PilotKernel | null = null;
   private controller: AbortController | null = null;
   private identity: string | null = null;
@@ -42,7 +49,8 @@ export class PilotRuntime {
   async start(): Promise<void> {
     if (this.started) return; this.started=true;
     this.unsubscribers.push(this.client.subscribe(()=>{void this.synchronize();}));
-    await this.client.initialize(); await this.synchronize();
+    try { await this.client.initialize(); await this.synchronize(); }
+    catch { this.publish('unavailable'); }
   }
   private async synchronize() {
     const state=this.client.getState();
@@ -53,7 +61,7 @@ export class PilotRuntime {
     this.generation++; const generation=this.generation;
     this.controller?.abort(); this.kernel?.close(); this.kernel=null;
     this.identity=next;
-    if (!next || !instanceId || !state.configurationId) return;
+    if (!next || !instanceId || !state.configurationId) { this.publish('inactive'); return; }
     // A previous loop must stop before this instance starts another producer poll.
     await this.activeLoop?.catch(()=>undefined);
     if (generation!==this.generation) return;
@@ -98,9 +106,9 @@ export class PilotRuntime {
     });
     try {
       await kernel.initialize(); if(generation!==this.generation) {kernel.close(); return;}
-      this.kernel=kernel;
+      this.kernel=kernel; this.publish('running');
       this.activeLoop=this.poll(kernel,instanceId,controller.signal).catch(()=>undefined);
-    } catch { controller.abort(); this.identity=null; }
+    } catch { controller.abort(); this.identity=null; this.publish('unavailable'); }
   }
   private decisionRef(command:Command) {
     if(!command.target.conversation_id || !command.target.assistant_message_id) throw new PilotError('invalid_reference');
@@ -163,15 +171,15 @@ export class PilotRuntime {
         await this.captureReviews(kernel);
         const response=await this.client.request('POST',`/instances/${encodeURIComponent(instanceId)}/deliveries/poll`,{transport_version:'1.0'},{authenticated:true,producer:true,signal});
         if(signal.aborted) break;
-        if(response.status===204) {failures=0;continue;}
+        if(response.status===204) {failures=0;this.publish('running');continue;}
         const result=await kernel.handle(response.data);
         // A lost result is retried verbatim. Redelivery also consults the durable journal.
         for(let attempt=0;attempt<3 && !signal.aborted;attempt++) {
           try {await this.client.request('POST',`/instances/${encodeURIComponent(instanceId)}/deliveries/${encodeURIComponent(String(result.delivery_id))}/result`,result,{authenticated:true,producer:true,signal});break;}
           catch {if(attempt===2) throw new PilotError('unavailable');await pause(500*(attempt+1),signal);}
         }
-        failures=0;
-      } catch { if(signal.aborted) break; await pause(Math.min(1000*2**Math.min(failures++,5),30_000),signal); }
+        failures=0; this.publish('running');
+      } catch { if(signal.aborted) break; this.publish('unavailable'); await pause(Math.min(1000*2**Math.min(failures++,5),30_000),signal); }
     }
   }
   private async captureReviews(kernel:PilotKernel) {
@@ -223,7 +231,7 @@ export class PilotRuntime {
       const timeout=AbortSignal.timeout(3000);
       try {await this.client.request('POST',`/instances/${encodeURIComponent(instance.ref.instance_id)}/disconnect`,{transport_version:'1.0'},{authenticated:true,producer:true,signal:timeout});} catch { /* Presence expires after the last producer poll. */ }
     }
-    this.identity=null;this.kernel=null;
+    this.identity=null;this.kernel=null;this.publish('inactive');
   }
 }
 export const macroPilotRuntime=new PilotRuntime();

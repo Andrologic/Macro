@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '../../../services/externalUrlOpener';
+import type { PilotRuntimeStatus } from '../../../services/macroPilot/runtime';
 import type { PilotPermission } from '../../../services/macroPilot/nativeClient';
 import { usePilotStore } from '../../../stores/usePilotStore';
 import { Button } from '../../ui/Button';
@@ -45,12 +46,14 @@ export const PilotView: React.FC = () => {
   const [deviceLabel, setDeviceLabel] = useState('Macro desktop');
   const [instanceLabel, setInstanceLabel] = useState('Macro desktop');
   const [selectedPermissions, setSelectedPermissions] = useState<Record<string, PilotPermission[]>>({});
+  const [runtimeStatus, setRuntimeStatus] = useState<PilotRuntimeStatus>('inactive');
   const [indeterminateCommands, setIndeterminateCommands] = useState<IndeterminateCommand[]>([]);
   const [reconciliationTarget, setReconciliationTarget] = useState<IndeterminateCommand | null>(null);
   const [reconciliationBusy, setReconciliationBusy] = useState(false);
 
   const refreshIndeterminate = useCallback(async () => {
     const { macroPilotRuntime } = await import('../../../services/macroPilot/runtime');
+    setRuntimeStatus(macroPilotRuntime.getStatus());
     setIndeterminateCommands(macroPilotRuntime.getIndeterminate());
   }, []);
 
@@ -59,7 +62,14 @@ export const PilotView: React.FC = () => {
   }, [initialize]);
 
   useEffect(() => {
-    void refreshIndeterminate().catch(() => undefined);
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+    void import('../../../services/macroPilot/runtime').then(({ macroPilotRuntime }) => {
+      if (cancelled) return;
+      unsubscribe = macroPilotRuntime.subscribe(() => { void refreshIndeterminate(); });
+      void refreshIndeterminate();
+    });
+    return () => { cancelled = true; unsubscribe?.(); };
   }, [refreshIndeterminate, store.instance?.ref.instance_id]);
 
   useEffect(() => {
@@ -301,6 +311,15 @@ export const PilotView: React.FC = () => {
         </section>
       )}
 
+      {store.instance && runtimeStatus === 'unavailable' && (
+        <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs space-y-2">
+          <p>{t('settings.pilot.runtimeUnavailable', 'Desktop supervision is unavailable. Its journal could not be loaded or the relay could not be reached. Local commands are not replayed.')}</p>
+          <Button size="sm" variant="secondary" onClick={() => void import('../../../services/macroPilot/runtime').then(({ macroPilotRuntime }) => macroPilotRuntime.retry())}>
+            {t('common.retry', 'Retry')}
+          </Button>
+        </div>
+      )}
+
       {store.instance && (
         <section className="rounded-lg border border-border bg-card/40 p-4 space-y-3">
           <SettingsSectionHeader
@@ -315,7 +334,7 @@ export const PilotView: React.FC = () => {
               </Button>
             }
           />
-          {indeterminateCommands.length === 0 ? (
+          {runtimeStatus === 'unavailable' ? null : indeterminateCommands.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               {t('settings.pilot.noIndeterminate', 'No command requires local reconciliation.')}
             </p>

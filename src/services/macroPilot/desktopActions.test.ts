@@ -26,14 +26,35 @@ const conversation = {
   reasoning_effort: null,
 };
 
-const startTask = mock(async (_taskId: string, options?: { beforeEffect?: () => Promise<void> }) => {
+const startTask = mock(async (_taskId: string, options?: {
+  pilotActionToken?: symbol;
+  beforeEffect?: () => Promise<void>;
+}) => {
   await options?.beforeEffect?.();
   task.status = 'InProgress';
 });
 let providerStarts = 0;
-const sendMessage = mock(async (payload: {
-  pilotTarget?: { beforeEffect?: () => Promise<void> };
+let taskStatusPersistences = 0;
+const retryTask = mock(async (_taskId: string, options?: {
+  pilotActionToken?: symbol;
+  beforeEffect?: () => Promise<void>;
 }) => {
+  await options?.beforeEffect?.();
+  taskStatusPersistences += 1;
+  task.status = 'InProgress';
+});
+const sendMessage = mock(async (payload: {
+  pilotTarget?: {
+    actionToken?: symbol;
+    beforeEffect?: () => Promise<void>;
+  };
+}) => {
+  if (task.status === 'AwaitingResponse') {
+    await retryTask(task.id, {
+      pilotActionToken: payload.pilotTarget?.actionToken,
+      beforeEffect: payload.pilotTarget?.beforeEffect,
+    });
+  }
   await payload.pilotTarget?.beforeEffect?.();
   providerStarts += 1;
   return {
@@ -72,6 +93,7 @@ const taskState = {
   tasks: [task],
   getTaskById: (taskId: string) => taskId === task.id ? task : undefined,
   startTask,
+  retryTask,
 };
 const chatState = {
   conversations: [conversation],
@@ -120,7 +142,9 @@ describe('Macro Pilot desktop actions', () => {
   beforeEach(() => {
     task.status = 'Pending';
     providerStarts = 0;
+    taskStatusPersistences = 0;
     startTask.mockClear();
+    retryTask.mockClear();
     sendMessage.mockClear();
     approveOnce.mockClear();
     approveConversation.mockClear();
@@ -144,6 +168,9 @@ describe('Macro Pilot desktop actions', () => {
     });
 
     expect(startTask).toHaveBeenCalledTimes(1);
+    expect(startTask).toHaveBeenCalledWith(task.id, expect.objectContaining({
+      pilotActionToken: expect.anything(),
+    }));
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       conversationId: conversation.id,
       taskId: task.id,
@@ -198,6 +225,35 @@ describe('Macro Pilot desktop actions', () => {
     ]);
     expect(providerStarts).toBe(0);
     expect(() => assertPilotConversationActionAllowed(conversation.id)).not.toThrow();
+  });
+
+  it('rechecks authorization before a retry transition and persists nothing when revoked', async () => {
+    task.status = 'AwaitingResponse';
+    let authorizationChecks = 0;
+    const guard = {
+      assertCurrent: mock(() => undefined),
+      authorizeBeforeEffect: mock(async () => {
+        authorizationChecks += 1;
+        if (authorizationChecks === 2) {
+          throw new Error('The Pilot session was revoked.');
+        }
+      }),
+    };
+
+    await expect(desktopActions.reply(
+      task.id,
+      conversation.id,
+      'Continue.',
+      guard,
+    )).rejects.toThrow('revoked');
+
+    expect(retryTask).toHaveBeenCalledWith(task.id, expect.objectContaining({
+      pilotActionToken: expect.anything(),
+      beforeEffect: expect.anything(),
+    }));
+    expect(taskStatusPersistences).toBe(0);
+    expect(task.status).toBe('AwaitingResponse');
+    expect(providerStarts).toBe(0);
   });
 
   it('records every questionnaire answer before using the normal submit path', async () => {
