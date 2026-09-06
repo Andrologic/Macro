@@ -48,6 +48,7 @@ struct RegisteredProject {
     canonical_path: PathBuf,
     root_identity: fs::WorkspaceRootIdentity,
     is_read_only: bool,
+    tools: Value,
 }
 
 #[derive(Clone)]
@@ -636,65 +637,9 @@ async fn resolve_project_repo_path(
     Ok(project.path)
 }
 
-async fn register_headless_project_config_roots(state: &HeadlessState) -> Result<(), BackendError> {
-    let workspace_metadata_root = resolve_metadata_root_for_workspace(state)?;
-    let bootstrap =
-        workspace::get_bootstrap(&state.workspace_path, &workspace_metadata_root).await?;
-    let projects = bootstrap
-        .standalone_projects
-        .into_iter()
-        .chain(
-            bootstrap
-                .project_groups
-                .into_iter()
-                .flat_map(|group| group.projects),
-        )
-        .collect::<Vec<_>>();
-
-    for project in projects {
-        if parse_wsl_unc_path(&project.path).is_some() {
-            tracing::warn!(
-                project_id = %project.id,
-                "Skipping headless project policy registration for an unsupported WSL project"
-            );
-            continue;
-        }
-        let project_state = HeadlessState {
-            workspace_path: PathBuf::from(&project.path),
-            ..state.clone()
-        };
-        let metadata_root = match resolve_metadata_root_for_workspace(&project_state) {
-            Ok(root) => root,
-            Err(error) => {
-                tracing::warn!(
-                    project_id = %project.id,
-                    %error,
-                    "Unable to resolve the headless project policy root"
-                );
-                continue;
-            }
-        };
-        if let Err(error) = state
-            .config_manager
-            .register_project_root(&project.id, metadata_root)
-            .await
-        {
-            tracing::warn!(
-                project_id = %project.id,
-                code = %error.code,
-                message = %error.message,
-                "Unable to register the headless project policy root"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Derive the server-side project_id → canonical project path registry from
-/// the workspace project registry. Headless clients never get to declare
-/// where a project lives: this map is the source of truth used to reject
-/// inconsistent workspace_path/project_mount payloads before any policy or
-/// tool execution happens.
+/// Build one server-authoritative project snapshot from one workspace
+/// bootstrap. Each entry binds its canonical path, access state, root identity,
+/// and effective tools policy before the snapshot can replace the live one.
 async fn collect_registered_projects(
     state: &HeadlessState,
 ) -> Result<BTreeMap<String, RegisteredProject>, BackendError> {
@@ -720,26 +665,47 @@ async fn collect_registered_projects(
             );
             continue;
         }
-        match PathBuf::from(&project.path).canonicalize() {
-            Ok(canonical_path) => {
-                let root_identity = fs::workspace_root_identity(&canonical_path)?;
-                registry.insert(
-                    project.id,
-                    RegisteredProject {
-                        canonical_path,
-                        root_identity,
-                        is_read_only: project.user_read_only || project.is_read_only,
-                    },
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    project_id = %project.id,
-                    %error,
-                    "Skipping an unresolvable project path in the headless registry"
-                );
-            }
-        }
+        let canonical_path = validate_headless_workspace_path(
+            Some(&project.path),
+            &state.workspace_path,
+            &state.allowed_roots,
+        )
+        .map_err(|error| BackendError::Validation(error.message))?
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            BackendError::Validation(format!(
+                "Project '{}' has no usable workspace path",
+                project.id
+            ))
+        })?;
+        let root_identity = fs::workspace_root_identity(&canonical_path)?;
+        let project_state = HeadlessState {
+            workspace_path: canonical_path.clone(),
+            ..state.clone()
+        };
+        let project_metadata_root = resolve_metadata_root_for_workspace(&project_state)?;
+        state
+            .config_manager
+            .register_project_root(&project.id, project_metadata_root)
+            .await
+            .map_err(|error| {
+                BackendError::Validation(format!(
+                    "Unable to register the headless policy root for project '{}': {}: {}",
+                    project.id, error.code, error.message
+                ))
+            })?;
+        let tools = load_project_tools_policy(state, &project.id)
+            .await
+            .map_err(BackendError::Validation)?;
+        registry.insert(
+            project.id,
+            RegisteredProject {
+                canonical_path,
+                root_identity,
+                is_read_only: project.user_read_only || project.is_read_only,
+                tools,
+            },
+        );
     }
     Ok(registry)
 }
@@ -748,7 +714,6 @@ async fn refresh_registered_projects(
     state: &HeadlessState,
 ) -> Result<BTreeMap<String, RegisteredProject>, BackendError> {
     let mut registered_projects = state.registered_projects.write().await;
-    register_headless_project_config_roots(state).await?;
     let refreshed = collect_registered_projects(state).await?;
     *registered_projects = refreshed.clone();
     Ok(refreshed)
@@ -1025,25 +990,22 @@ async fn load_project_tools_policy(
     project_tools_from_snapshot(&snapshot, project_id).cloned()
 }
 
-async fn load_project_tools_policies(
-    state: &HeadlessState,
+fn registered_project_tools_policies(
+    registry: &BTreeMap<String, RegisteredProject>,
     project_ids: &BTreeSet<String>,
 ) -> Result<Vec<(String, Value)>, String> {
     if project_ids.is_empty() {
         return Err("At least one project is required for tool policy decisions".to_string());
     }
-    let requested_ids = project_ids.iter().cloned().collect::<Vec<_>>();
-    let snapshot = state
-        .config_manager
-        .get_snapshot(&requested_ids)
-        .await
-        .map_err(|error| format!("{}: {}", error.code, error.message))?;
-    requested_ids
-        .into_iter()
+    project_ids
+        .iter()
         .map(|project_id| {
-            project_tools_from_snapshot(&snapshot, &project_id)
-                .cloned()
-                .map(|tools| (project_id, tools))
+            registry
+                .get(project_id)
+                .map(|project| (project_id.clone(), project.tools.clone()))
+                .ok_or_else(|| {
+                    format!("Project '{project_id}' is not registered in the current workspace")
+                })
         })
         .collect()
 }
@@ -1155,18 +1117,13 @@ async fn tool_mode_policy(
         Ok(projects) => projects,
         Err(error) => return backend_error_response(error),
     };
-    if !registered_projects.contains_key(params.project_id.trim()) {
+    let Some(project) = registered_projects.get(params.project_id.trim()) else {
         return policy_denied_response(format!(
             "Project '{}' is not registered in the current workspace",
             params.project_id.trim()
         ));
-    }
-
-    let tools = match load_project_tools_policy(&state, &params.project_id).await {
-        Ok(tools) => tools,
-        Err(error) => return policy_denied_response(error),
     };
-    match configured_mode_policy(&params.mode, &tools) {
+    match configured_mode_policy(&params.mode, &project.tools) {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => policy_denied_response(error),
     }
@@ -1185,16 +1142,11 @@ async fn tool_validate(
         Ok(projects) => projects,
         Err(error) => return backend_error_response(error),
     };
-    if !registered_projects.contains_key(payload.project_id.trim()) {
+    let Some(project) = registered_projects.get(payload.project_id.trim()) else {
         return policy_denied_response(format!(
             "Project '{}' is not registered in the current workspace",
             payload.project_id.trim()
         ));
-    }
-
-    let tools = match load_project_tools_policy(&state, &payload.project_id).await {
-        Ok(tools) => tools,
-        Err(error) => return policy_denied_response(error),
     };
     let validation_args = if payload.args.is_null() {
         payload
@@ -1209,7 +1161,7 @@ async fn tool_validate(
         &payload.mode,
         &payload.tool_id,
         &validation_args,
-        &tools,
+        &project.tools,
     ) {
         Ok(result) => (StatusCode::OK, Json(result)).into_response(),
         Err(error) => policy_denied_response(error),
@@ -1944,10 +1896,11 @@ async fn tool_execute(
     ) {
         return policy_denied_response(error);
     }
-    let policies = match load_project_tools_policies(&state, &affected_project_ids).await {
-        Ok(policies) => policies,
-        Err(error) => return policy_denied_response(error),
-    };
+    let policies =
+        match registered_project_tools_policies(&registered_projects, &affected_project_ids) {
+            Ok(policies) => policies,
+            Err(error) => return policy_denied_response(error),
+        };
     for (policy_project_id, tools) in policies {
         match configured_tool_execution_validation(
             &payload.mode,
@@ -2294,11 +2247,7 @@ async fn checkpoint_snapshot(
         return policy_denied_response(error);
     }
 
-    let tools = match load_project_tools_policy(&state, &project_id).await {
-        Ok(tools) => tools,
-        Err(error) => return policy_denied_response(error),
-    };
-    match configured_tool_validation(&payload.mode, "read", Some(&payload.path), &tools) {
+    match configured_tool_validation(&payload.mode, "read", Some(&payload.path), &project.tools) {
         Ok(validation) if validation.allowed => {}
         Ok(validation) => {
             return policy_denied_response(
@@ -2696,7 +2645,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         execution_journal_lock: Arc::new(AsyncMutex::new(())),
         execution_registry: Arc::new(AsyncMutex::new(BTreeMap::new())),
     };
-    register_headless_project_config_roots(&state).await?;
     let registered_projects = collect_registered_projects(&state).await?;
     *state.registered_projects.write().await = registered_projects;
     let state = Arc::new(state);
@@ -2822,6 +2770,11 @@ mod tests {
                     root_identity: macro_lib::commands::fs::workspace_root_identity(&project_dir)
                         .expect("project root identity"),
                     is_read_only: false,
+                    tools: json!({
+                        "riskLevel": "balanced",
+                        "builtIn": {},
+                        "modes": {},
+                    }),
                 },
             );
         }

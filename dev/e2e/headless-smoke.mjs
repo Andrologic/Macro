@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -168,11 +168,31 @@ async function main() {
     }, null, 2)}\n`);
     const journalRoot = path.join(configRoot, 'headless-tool-executions');
     await mkdir(journalRoot, { recursive: true });
+    const canonicalAddedProjectRoot = await realpath(addedProjectRoot);
+    const crashedMutation = {
+      mode: 'Implement',
+      tool_id: 'write',
+      args: {
+        content: 'must never be written',
+        expected_revision: 'absent',
+        path: 'crash-probe.txt',
+      },
+      execution_id: crashedExecutionId,
+      workspace_path: canonicalAddedProjectRoot,
+      workspace_scope: null,
+      project_mounts: null,
+      virtual_root_enabled: null,
+      focused_project_id: 'project-added',
+      checkpoint_required: false,
+    };
+    const crashedMutationFingerprint = createHash('sha256')
+      .update(JSON.stringify(crashedMutation))
+      .digest('hex');
     const crashedRecordName = `${createHash('sha256').update(crashedExecutionId).digest('hex')}.pending.json`;
     await writeFile(path.join(journalRoot, crashedRecordName), JSON.stringify({
       schema_version: 1,
       execution_id: crashedExecutionId,
-      fingerprint: 'crashed-smoke-fingerprint',
+      fingerprint: crashedMutationFingerprint,
       state: { status: 'pending' },
     }));
 
@@ -311,6 +331,23 @@ async function main() {
       assert.equal(refreshedRead.status, 200, 'A project added after startup must become available.');
       assert.match((await refreshedRead.json()).result, /fresh registry marker/);
 
+      const pendingRetry = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(crashedMutation),
+      });
+      assert.equal(
+        pendingRetry.status,
+        409,
+        'The exact mutation from an interrupted pending record must not be replayed.',
+      );
+      assert.equal((await pendingRetry.json()).code, 'REMOTE_MUTATION_PENDING');
+      assert.equal(
+        await Bun.file(path.join(addedProjectRoot, 'crash-probe.txt')).exists(),
+        false,
+        'A pending retry must not produce the mutation side effect.',
+      );
+
       const readOnlyProject = project('project-smoke', 'smoke', projectRoot, true);
       await writeFile(
         workspaceStatePath,
@@ -371,6 +408,26 @@ async function main() {
       const resolved = await resolvedStatus.json();
       assert.equal(resolved.state, 'completed');
       assert.equal(resolved.body.resolution, 'record_indeterminate');
+
+      const resolvedRetry = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(crashedMutation),
+      });
+      assert.equal(
+        resolvedRetry.status,
+        409,
+        'The same mutation must return its durable indeterminate result after resolution.',
+      );
+      assert.equal(
+        (await resolvedRetry.json()).code,
+        'REMOTE_MUTATION_OUTCOME_INDETERMINATE',
+      );
+      assert.equal(
+        await Bun.file(path.join(addedProjectRoot, 'crash-probe.txt')).exists(),
+        false,
+        'Resolving an interrupted mutation must never replay its side effect.',
+      );
 
       console.log(`Headless smoke passed on ${baseUrl}.`);
     } catch (error) {
