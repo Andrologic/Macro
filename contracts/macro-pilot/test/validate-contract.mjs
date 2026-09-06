@@ -8,7 +8,6 @@ import addFormats from "ajv-formats";
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const versionDirectory = join(testDirectory, "..", "v1");
 const fixtureDirectory = join(versionDirectory, "fixtures");
-const rootSchemaId = "https://schemas.macro.andrologic.ai/macro-pilot/v1/schema.json";
 const expectedSemanticRejections = new Set([
   "cross-account-session-revoke.json",
   "decision-choice-mismatch.json",
@@ -16,7 +15,6 @@ const expectedSemanticRejections = new Set([
   "decision-free-text-disallowed.json",
   "decision-missing-step-answer.json",
   "decreasing-revision.json",
-  "duplicate-decision-choice.json",
   "event-batch-duplicate-sequence.json",
   "event-resource-mismatch.json",
   "event-revision-mismatch.json",
@@ -32,10 +30,20 @@ async function readJson(path) {
 }
 
 async function loadSchemas() {
-  const names = (await readdir(versionDirectory))
-    .filter((name) => name.endsWith(".schema.json") || name === "schema.json")
-    .sort();
-  return Promise.all(names.map((name) => readJson(join(versionDirectory, name))));
+  const manifest = await readJson(join(versionDirectory, "schema-set.json"));
+  const schemas = [];
+  const seenIds = new Set();
+  for (const resource of manifest.resources) {
+    const schema = await readJson(join(versionDirectory, resource.path));
+    if (schema.$id !== resource.id) {
+      throw new Error(`Schema id mismatch for ${resource.path}: ${schema.$id} !== ${resource.id}`);
+    }
+    if (seenIds.has(resource.id)) throw new Error(`Duplicate schema id: ${resource.id}`);
+    seenIds.add(resource.id);
+    schemas.push(schema);
+  }
+  if (!seenIds.has(manifest.root)) throw new Error(`Root schema absent from registry: ${manifest.root}`);
+  return { manifest, schemas };
 }
 
 function sameFields(left, right, keys) {
@@ -71,10 +79,7 @@ function decisionAnswerErrors(steps, answers) {
   for (const answer of answers) {
     const step = stepsById.get(answer.step_id);
     if (!step) continue;
-    if (answer.kind === "choice" && !step.choices.some((choice) => choice.choice_id === answer.choice_id)) {
-      errors.push(`decision answer for ${answer.step_id} uses an unknown choice_id`);
-    }
-    if (answer.kind === "free_text" && step.free_text_allowed !== true) {
+    if (!step.choices.includes(answer.answer) && step.free_text_allowed !== true) {
       errors.push(`decision answer for ${answer.step_id} uses disallowed free text`);
     }
   }
@@ -132,9 +137,8 @@ function semanticErrors(message) {
     }
     for (const step of message.steps) {
       if (!Array.isArray(step.choices)) continue;
-      const choiceIds = step.choices.map((choice) => choice.choice_id);
-      if (duplicateValues(choiceIds).length > 0) {
-        errors.push(`decision step ${step.step_id} contains duplicate choice_id values`);
+      if (duplicateValues(step.choices).length > 0) {
+        errors.push(`decision step ${step.step_id} contains duplicate choice values`);
       }
     }
     if (message.resolution) {
@@ -214,12 +218,13 @@ ajv.addKeyword({
   valid: true,
 });
 
-for (const schema of await loadSchemas()) {
+const { manifest, schemas } = await loadSchemas();
+for (const schema of schemas) {
   ajv.addSchema(schema);
 }
 
-const validate = ajv.getSchema(rootSchemaId);
-if (!validate) throw new Error(`Root schema not found: ${rootSchemaId}`);
+const validate = ajv.getSchema(manifest.root);
+if (!validate) throw new Error(`Root schema not found: ${manifest.root}`);
 
 let failures = 0;
 for (const name of await fixtureNames("valid")) {

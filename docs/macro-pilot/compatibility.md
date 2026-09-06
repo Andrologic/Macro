@@ -6,7 +6,10 @@ Le contrat stable courant est `1.0`. Chaque message porte
 `contract_version: "1.0"` et un champ `type` fermé. Un consommateur rejette une
 version ou un type qu'il ne connaît pas. Il ne tente pas de les interpréter.
 
-Le fichier `contracts/macro-pilot/v1/schema.json` est le point d'entrée. Les
+Le fichier `contracts/macro-pilot/v1/schema-set.json` est le registre portable.
+Un consommateur charge chaque ressource listée, vérifie que son `$id` correspond
+à l'identifiant déclaré, l'enregistre, puis compile l'identifiant `root` du
+registre. `schema.json` est ce schéma racine, mais pas un bundle autonome. Les
 schémas utilisent JSON Schema 2020-12. Le validateur active les assertions de
 format `date-time` et `uri`. Les fixtures sont du JSON ordinaire et peuvent
 donc alimenter les tests Serde en Rust, les tests TypeScript et les tests Dart
@@ -45,6 +48,11 @@ Une ressource `project` publie `repository_state`. La valeur `not_git` est
 valide. Le mode `git` ou `direct` est figé par projet dans les
 `execution_targets` de la tâche.
 
+Une session `revoked` porte `revoked_at`, alors qu'une autre session ne le porte
+pas. Une session `expired` porte `expires_at`. Un run `running`,
+`waiting_decision` ou `completed` porte `started_at`. Tout run terminal porte
+`finished_at` ; un run non terminal ne le porte pas.
+
 ## Révisions et commandes
 
 Chaque ressource mutable porte une révision entière. Une commande fournit
@@ -63,8 +71,9 @@ push.
 Une décision contient une ou plusieurs étapes. Chaque étape expose les trois
 choix utilisés par `QuestionStep` et indique si une réponse libre est permise.
 `decision.resolve` répond à toutes les étapes en une commande et conserve
-`expected_revision`. Une réponse indique explicitement `choice` ou
-`free_text`.
+`expected_revision`. Une réponse conserve la chaîne brute de Macro. Elle est un
+choix si elle est exactement égale à une chaîne de `choices`, sinon elle est du
+texte libre.
 
 ## Pagination et reprise
 
@@ -95,11 +104,12 @@ la validation et font partie du contrat :
 - chaque projet d'action possède exactement une cible d'exécution ;
 - seul un run `waiting_decision` porte `waiting_on`, qui est alors obligatoire ;
 - une décision répond une fois à chaque étape ;
-- une réponse par choix utilise un choix de son étape et une réponse libre
+- une réponse égale à un choix de son étape est un choix ; toute autre chaîne
   respecte `free_text_allowed` ;
 - une commande `decision.resolve` répond au plus une fois à chaque étape ;
 - seule une décision `resolved` porte une résolution, qui est alors obligatoire ;
-- les identifiants d'étape et de choix sont uniques dans leur portée ;
+- les identifiants d'étape et les chaînes de choix sont uniques dans leur
+  portée ;
 - le type de chaque élément d'une page correspond à `item_type` ;
 - la révision d'un événement correspond à celle de son snapshot ;
 - une révocation de session cible le compte de l'acteur ;
@@ -131,8 +141,10 @@ ayant changé de révision produit `stale_revision`.
 Les références sont des identifiants opaques. Les libellés servent uniquement
 à l'affichage. Aucun champ stable ne représente un chemin local, une clé de
 provider, un jeton GitHub, un secret de session ou des justificatifs d'accès au
-dépôt. `avatar_url` accepte seulement HTTPS. `safeText` rejette les signatures
-courantes de chemins machine, jetons et clés privées. Le producteur filtre aussi
-toute donnée sensible non reconnue dans `message`, `title`, `prompt` ou `note`
-avant la validation. Le mobile reçoit des SHA Git, jamais des identifiants
-d'accès au dépôt.
+dépôt. `avatar_url` accepte seulement HTTPS. Le producteur doit expurger les
+données sensibles de `message`, `title`, `prompt`, `note` et des réponses avant
+de créer l'enveloppe. Le relais et le mobile ne journalisent jamais l'entrée non
+expurgée. `safeText` bloque des signatures courantes de chemins machine, jetons
+et clés privées comme défense supplémentaire ; cette liste ne prétend pas
+reconnaître tous les secrets. Le mobile reçoit des SHA Git, jamais des
+identifiants d'accès au dépôt.

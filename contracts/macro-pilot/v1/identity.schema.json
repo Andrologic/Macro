@@ -55,6 +55,14 @@
           "then": {
             "properties": { "revoked_at": true },
             "required": ["revoked_at"]
+          },
+          "else": { "properties": { "revoked_at": false } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "expired" } } },
+          "then": {
+            "properties": { "expires_at": true },
+            "required": ["expires_at"]
           }
         }
       ]

@@ -22,14 +22,12 @@
   "payload": {
     "answers": [
       {
-        "step_id": "step:connection-mode",
-        "kind": "choice",
-        "choice_id": "choice:connection:auto"
+        "step_id": "scope",
+        "answer": "Automatic"
       },
       {
-        "step_id": "step:constraints",
-        "kind": "free_text",
-        "text": "Keep the connection on the trusted local network."
+        "step_id": "constraints",
+        "answer": "Keep the connection on the trusted local network."
       }
     ]
   }

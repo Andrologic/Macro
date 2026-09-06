@@ -5,8 +5,8 @@
   "x-semantic-rules": [
     "task project_ids and context_project_ids MUST be disjoint and unique",
     "task execution_targets MUST identify each actionable project exactly once",
-    "decision steps and their choices MUST use distinct identifiers",
-    "decision resolution MUST answer every step exactly once using a listed choice or allowed free text",
+    "decision steps MUST use distinct identifiers and choices MUST be distinct within each step",
+    "decision resolution MUST answer every step exactly once using a listed choice string or allowed free text",
     "run.waiting_on MUST identify the same instance, workspace, task, and run as run.ref",
     "review.related_run MUST identify the same instance, workspace, task, and run as review.ref"
   ],
@@ -80,59 +80,50 @@
             "required": ["waiting_on"]
           },
           "else": { "properties": { "waiting_on": false } }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["running", "waiting_decision", "completed"] } } },
+          "then": {
+            "properties": { "started_at": true },
+            "required": ["started_at"]
+          }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["completed", "failed", "cancelled", "interrupted"] } } },
+          "then": {
+            "properties": { "finished_at": true },
+            "required": ["finished_at"]
+          },
+          "else": { "properties": { "finished_at": false } }
         }
       ]
-    },
-    "decisionChoice": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["choice_id", "label"],
-      "properties": {
-        "choice_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
-        "label": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 160 },
-        "description": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 1000 }
-      }
     },
     "decisionStep": {
       "type": "object",
       "additionalProperties": false,
       "required": ["step_id", "prompt", "choices", "free_text_allowed"],
       "properties": {
-        "step_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
+        "step_id": { "$ref": "common.schema.json#/$defs/questionStepId" },
         "prompt": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 },
         "choices": {
           "type": "array",
           "minItems": 3,
           "maxItems": 3,
-          "items": { "$ref": "#/$defs/decisionChoice" }
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 160 }
         },
         "free_text_allowed": { "type": "boolean" },
         "free_text_placeholder": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 300 }
       }
     },
     "decisionAnswer": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["step_id", "kind", "choice_id"],
-          "properties": {
-            "step_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
-            "kind": { "const": "choice" },
-            "choice_id": { "$ref": "common.schema.json#/$defs/opaqueId" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["step_id", "kind", "text"],
-          "properties": {
-            "step_id": { "$ref": "common.schema.json#/$defs/opaqueId" },
-            "kind": { "const": "free_text" },
-            "text": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 }
-          }
-        }
-      ]
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step_id", "answer"],
+      "properties": {
+        "step_id": { "$ref": "common.schema.json#/$defs/questionStepId" },
+        "answer": { "$ref": "common.schema.json#/$defs/safeText", "type": "string", "minLength": 1, "maxLength": 4000 }
+      }
     },
     "decisionResolution": {
       "type": "object",

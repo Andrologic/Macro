@@ -19,6 +19,14 @@ Une ressource `task` correspond à un seul `Task` ou `CatalogedImplementTask` :
 - chaque entrée `execution_targets` reprend `TaskExecutionTarget.projectId` et
   son `executionMode` figé, `git` ou `direct`.
 
+La ressource filaire est une projection normalisée : `execution_targets` est
+toujours présent, même si le champ interne historique est optionnel. Lors de
+l'export, Macro reprend d'abord les cibles explicites. À défaut, il synthétise
+une cible pour chaque `project_ids` (ou pour `project_id`) en utilisant la même
+résolution de mode que l'exécution locale. Si un projet ne peut pas être résolu
+sans ambiguïté en `git` ou `direct`, l'export est refusé avec
+`validation_failed` ; le service n'invente pas de mode.
+
 Les états `Pending`, `InProgress`, `AwaitingResponse`, `InReview`, `Blocked`,
 `Completed` et `Failed` deviennent respectivement `queued`, `running`,
 `waiting_decision`, `review_ready`, `blocked`, `completed` et `failed`.
@@ -40,7 +48,8 @@ même session.
 Une ressource `decision` correspond à un `QuestionnairePayload`. Chaque entrée
 `steps` reprend un `QuestionStep` :
 
-- `step_id` reprend `QuestionStep.id` ;
+- `step_id` reprend directement `QuestionStep.id`, y compris un identifiant
+  court comme `scope` ;
 - `prompt` reprend le texte de la question ;
 - les trois entrées `choices` reprennent le tuple de trois chaînes ;
 - `free_text_placeholder` reprend le champ optionnel existant ;
@@ -48,6 +57,9 @@ Une ressource `decision` correspond à un `QuestionnairePayload`. Chaque entrée
   accepte toujours une réponse saisie.
 
 La résolution reprend `answersByStepId` et
-`QuestionnaireResponseSummary.items`. Chaque réponse indique si elle correspond
-à un choix connu ou à un texte libre. Le service valide toutes les étapes avant
+`QuestionnaireResponseSummary.items` sans inventer d'identifiant de choix.
+Chaque entrée contient la chaîne `answer` telle que Macro la stocke. Une égalité
+exacte avec l'une des trois chaînes de `choices` désigne un choix ; toute autre
+valeur est une réponse libre et exige `free_text_allowed: true`. Cette règle
+permet un aller-retour sans perte. Le service valide toutes les étapes avant
 d'accepter `decision.resolve` à la révision demandée.

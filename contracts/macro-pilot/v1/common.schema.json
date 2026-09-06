@@ -12,6 +12,12 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
     },
+    "questionStepId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
     "timestamp": {
       "type": "string",
       "format": "date-time"
@@ -27,7 +33,7 @@
     "safeText": {
       "type": "string",
       "not": {
-        "pattern": "(file://|/Users/|/home/|[A-Za-z]:\\\\|gh[pousr]_|github_pat_|sk-[A-Za-z0-9]{16,}|-----BEGIN [A-Z ]+ PRIVATE KEY-----)"
+        "pattern": "(file://|/(Users|home|private|var|tmp|opt|etc|root|Volumes)/|[A-Za-z]:\\\\|gh[pousr]_|github_pat_|sk-[A-Za-z0-9_-]{16,}|-----BEGIN [A-Z ]+ PRIVATE KEY-----)"
       }
     },
     "instanceRef": {

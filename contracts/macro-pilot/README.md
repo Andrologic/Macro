@@ -5,10 +5,14 @@ and the Flutter companion. It does not implement the service or the relay.
 
 ## Stable contract
 
-Version `1.0` uses JSON Schema 2020-12. Start validation with
-[`v1/schema.json`](v1/schema.json). The root schema rejects unknown message
-types and contract versions. Domain schemas keep identity, supervision, and
-transport rules separate while sharing the identifiers in
+Version `1.0` uses JSON Schema 2020-12. Load the registry in
+[`v1/schema-set.json`](v1/schema-set.json), register every listed resource by
+its `$id`, then compile the root identifier declared by the registry.
+[`v1/schema.json`](v1/schema.json) is the root inside that set; it is not a
+standalone bundle. This explicit loading sequence is the same for Rust,
+TypeScript and Dart validators. The root rejects unknown message types and
+contract versions. Domain schemas keep identity, supervision and transport
+rules separate while sharing the identifiers in
 [`v1/common.schema.json`](v1/common.schema.json).
 
 Fixtures under `v1/fixtures/valid` are language-neutral inputs for future Rust,
@@ -28,11 +32,13 @@ rules listed in `x-semantic-rules`, which standard JSON Schema cannot express.
 ## Contract boundaries
 
 The mobile payloads contain opaque identifiers, display labels, Git object
-IDs, and state. No stable field represents a provider token, session secret,
-repository credential, or machine path. The schemas reject common secret and
-machine-path signatures in free text. Producers still redact sensitive text
-before validation. A relay can forward the same envelopes without becoming the
-canonical store.
+IDs and state. No stable field represents a provider token, session secret,
+repository credential or machine path. Producers must redact sensitive text
+before constructing an envelope, and relay or mobile consumers must never log
+unredacted input. The `safeText` patterns reject common secret and machine-path
+signatures as defence in depth; passing the schema is not proof that arbitrary
+sensitive text is absent. A relay can forward the same envelopes without
+becoming the canonical store.
 
 Read [`docs/macro-pilot/compatibility.md`](../../docs/macro-pilot/compatibility.md)
 before implementing a consumer. Product choices that are not part of version

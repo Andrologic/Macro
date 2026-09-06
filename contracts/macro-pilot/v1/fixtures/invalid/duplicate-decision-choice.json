@@ -12,12 +12,12 @@
   "state": "pending",
   "steps": [
     {
-      "step_id": "step:connection-mode",
+      "step_id": "scope",
       "prompt": "How should the client connect?",
       "choices": [
-        { "choice_id": "choice:connection:auto", "label": "Automatic" },
-        { "choice_id": "choice:connection:auto", "label": "Local only" },
-        { "choice_id": "choice:connection:manual", "label": "Manual" }
+        "Automatic",
+        "Automatic",
+        "Manual"
       ],
       "free_text_allowed": false
     }

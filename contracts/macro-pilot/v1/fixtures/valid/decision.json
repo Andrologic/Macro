@@ -12,22 +12,22 @@
   "state": "resolved",
   "steps": [
     {
-      "step_id": "step:connection-mode",
+      "step_id": "scope",
       "prompt": "How should the client connect?",
       "choices": [
-        { "choice_id": "choice:connection:auto", "label": "Automatic" },
-        { "choice_id": "choice:connection:local", "label": "Local only" },
-        { "choice_id": "choice:connection:manual", "label": "Manual" }
+        "Automatic",
+        "Local only",
+        "Manual"
       ],
       "free_text_allowed": true
     },
     {
-      "step_id": "step:constraints",
+      "step_id": "constraints",
       "prompt": "Which connection constraint should Macro respect?",
       "choices": [
-        { "choice_id": "choice:constraints:none", "label": "No extra constraint" },
-        { "choice_id": "choice:constraints:lan", "label": "Local network only" },
-        { "choice_id": "choice:constraints:vpn", "label": "VPN required" }
+        "No extra constraint",
+        "Local network only",
+        "VPN required"
       ],
       "free_text_allowed": true,
       "free_text_placeholder": "Describe another constraint"
@@ -36,14 +36,12 @@
   "resolution": {
     "answers": [
       {
-        "step_id": "step:connection-mode",
-        "kind": "choice",
-        "choice_id": "choice:connection:auto"
+        "step_id": "scope",
+        "answer": "Automatic"
       },
       {
-        "step_id": "step:constraints",
-        "kind": "free_text",
-        "text": "Keep the connection on the trusted local network."
+        "step_id": "constraints",
+        "answer": "Keep the connection on the trusted local network."
       }
     ],
     "resolved_by": {

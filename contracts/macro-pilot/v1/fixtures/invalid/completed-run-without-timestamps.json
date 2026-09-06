@@ -8,9 +8,8 @@
     "task_id": "task:pilot-contract",
     "run_id": "run:pilot-contract:01"
   },
-  "state": "waiting_decision",
-  "revision": 6,
+  "state": "completed",
+  "revision": 7,
   "created_at": "2026-09-06T11:55:00Z",
-  "started_at": "2026-09-06T11:56:00Z",
-  "updated_at": "2026-09-06T12:00:00Z"
+  "updated_at": "2026-09-06T12:05:00Z"
 }

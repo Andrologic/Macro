@@ -27,6 +27,7 @@
     "state": "running",
     "revision": 5,
     "created_at": "2026-09-06T11:55:00Z",
+    "started_at": "2026-09-06T11:56:00Z",
     "updated_at": "2026-09-06T12:00:00Z"
   }
 }

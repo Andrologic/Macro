@@ -12,12 +12,12 @@
   "state": "resolved",
   "steps": [
     {
-      "step_id": "step:connection-mode",
+      "step_id": "scope",
       "prompt": "How should the client connect?",
       "choices": [
-        { "choice_id": "choice:connection:auto", "label": "Automatic" },
-        { "choice_id": "choice:connection:local", "label": "Local only" },
-        { "choice_id": "choice:connection:manual", "label": "Manual" }
+        "Automatic",
+        "Local only",
+        "Manual"
       ],
       "free_text_allowed": false
     }
@@ -25,9 +25,8 @@
   "resolution": {
     "answers": [
       {
-        "step_id": "step:connection-mode",
-        "kind": "free_text",
-        "text": "Use a private tunnel."
+        "step_id": "scope",
+        "answer": "Use a private tunnel."
       }
     ],
     "resolved_by": {

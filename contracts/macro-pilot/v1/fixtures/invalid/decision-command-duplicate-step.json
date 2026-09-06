@@ -22,14 +22,12 @@
   "payload": {
     "answers": [
       {
-        "step_id": "step:connection-mode",
-        "kind": "choice",
-        "choice_id": "choice:connection:auto"
+        "step_id": "scope",
+        "answer": "Automatic"
       },
       {
-        "step_id": "step:connection-mode",
-        "kind": "free_text",
-        "text": "Use the automatic connection."
+        "step_id": "scope",
+        "answer": "Use the automatic connection."
       }
     ]
   }

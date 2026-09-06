@@ -6,11 +6,12 @@
     "instance_id": "instance:studio-mac",
     "workspace_id": "workspace:macro-suite",
     "task_id": "task:pilot-contract",
-    "run_id": "run:pilot-contract:01"
+    "run_id": "run:pilot-contract:completed"
   },
-  "state": "waiting_decision",
-  "revision": 6,
+  "state": "completed",
+  "revision": 8,
   "created_at": "2026-09-06T11:55:00Z",
   "started_at": "2026-09-06T11:56:00Z",
-  "updated_at": "2026-09-06T12:00:00Z"
+  "finished_at": "2026-09-06T12:05:00Z",
+  "updated_at": "2026-09-06T12:05:00Z"
 }

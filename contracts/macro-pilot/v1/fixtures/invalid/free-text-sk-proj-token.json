@@ -1,0 +1,10 @@
+{
+  "contract_version": "1.0",
+  "type": "error",
+  "request_id": "request:tasks:page:04",
+  "error": {
+    "code": "unavailable",
+    "message": "Provider returned sk-proj-000000000000000000000000",
+    "retryable": false
+  }
+}

@@ -12,22 +12,22 @@
   "state": "resolved",
   "steps": [
     {
-      "step_id": "step:connection-mode",
+      "step_id": "scope",
       "prompt": "How should the client connect?",
       "choices": [
-        { "choice_id": "choice:connection:auto", "label": "Automatic" },
-        { "choice_id": "choice:connection:local", "label": "Local only" },
-        { "choice_id": "choice:connection:manual", "label": "Manual" }
+        "Automatic",
+        "Local only",
+        "Manual"
       ],
       "free_text_allowed": false
     },
     {
-      "step_id": "step:constraints",
+      "step_id": "constraints",
       "prompt": "Which constraint should Macro respect?",
       "choices": [
-        { "choice_id": "choice:constraints:none", "label": "None" },
-        { "choice_id": "choice:constraints:lan", "label": "Local network" },
-        { "choice_id": "choice:constraints:vpn", "label": "VPN" }
+        "None",
+        "Local network",
+        "VPN"
       ],
       "free_text_allowed": true
     }
@@ -35,9 +35,8 @@
   "resolution": {
     "answers": [
       {
-        "step_id": "step:connection-mode",
-        "kind": "choice",
-        "choice_id": "choice:connection:auto"
+        "step_id": "scope",
+        "answer": "Automatic"
       }
     ],
     "resolved_by": {
