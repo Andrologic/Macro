@@ -31,8 +31,52 @@ Les états `Pending`, `InProgress`, `AwaitingResponse`, `InReview`, `Blocked`,
 `Completed` et `Failed` deviennent respectivement `queued`, `running`,
 un état d'attente typé, `review_ready`, `blocked`, `completed` et `failed`.
 `AwaitingResponse` devient `waiting_decision` quand le questionnaire est la
-demande active, ou `waiting_tool_approval` quand Macro attend l'autorisation
-d'un appel d'outil.
+demande active, `waiting_tool_approval` quand Macro attend l'autorisation
+d'un appel d'outil, ou `waiting_reply` pour l'attention `kind: 'reply'` de
+`src/services/taskQueueAttention.ts`. Cette dernière n'est pas un questionnaire.
+
+## Réponse simple et projection partielle
+
+Une tâche `waiting_reply` expose `reply_context.conversation_id` quand la
+conversation active est connue. Son `prompt` est optionnel et expurgé.
+`task.reply` cible la tâche et transmet `payload.conversation_id` et `answer`,
+avec sa révision attendue. C revalide l'attente et la conversation, puis utilise
+le chemin desktop existant `useChatStore.sendMessage` avec `conversationId`,
+`taskId` et `content`. Il ne crée aucun questionnaire artificiel.
+
+Si l'attention ne connaît pas la conversation, la tâche reste `waiting_reply`
+avec `projection.missing` contenant `reply_context`. Le client affiche l'attente
+sans proposer de réponse distante. `reply_context` et ce marqueur s'excluent.
+Ils sont absents des autres états de tâche.
+
+Les tâches historiques restent exportables sans reconstruire leurs runs.
+Le type interne `Task` ne porte pas de date de modification. Lorsqu'aucune
+date de modification réelle n'est disponible, C omet `task.updated_at` et
+publie `task.observed_at`, date réelle d'observation du snapshot courant. Ce
+champ ne prétend pas dater une modification historique. C persiste la révision
+de projection et l'avance quand le contenu ou l'attente change.
+`projection.missing` contient `run_history` lorsque des identités ou dates de
+run manquent. C omet ces runs au lieu de fabriquer `run_id`, `created_at`,
+`started_at` ou `finished_at`. Un run réellement connu conserve les exigences
+du schéma. S'il attend une réponse simple, son état est `waiting_reply` et
+`waiting_on` référence sa tâche. Une review sans run ou SHA vérifiables n'est
+pas créée ; la tâche conserve `review_ready` et le marqueur `review`.
+
+Une décision active sans run connu utilise une `decisionRef` avec les vrais
+`conversation_id` et `assistant_message_id`. C attribue et persiste son
+`decision_id` et sa révision à sa première observation. Une date de création
+connue reste `created_at` ; sinon `observed_at` indique la première observation
+réelle, jamais une date de création supposée. Cette règle vaut aussi pour les
+approbations d'outils. Les identités observées restent stables aux redémarrages.
+
+`resolution.resolved_by` conserve l'acteur distant `account_id`, `session_id`,
+`device_id` quand il est établi. Une réponse locale observée utilise
+`{ "origin": "local" }`, sans exiger de compte relais. Une provenance historique
+inconnue utilise `{ "origin": "unknown" }` ; seule cette forme autorise
+l'absence de `resolved_at`. Une date connue reste la date réelle, même si
+l'acteur est inconnu. Les nouvelles résolutions locales ou distantes portent
+toujours leur date réelle. `issued_by` des commandes réseau reste exclusivement
+un acteur distant authentifié, jamais une provenance locale ou inconnue.
 
 Un run et ses décisions prolongent l'identité de cette tâche unique. Ils ne sont
 pas dupliqués pour chaque projet. Une review Git ajoute `project_id` parce que
@@ -78,9 +122,9 @@ transformer en `QuestionnairePayload` :
   reprennent les champs d'affichage après expurgation ;
 - `allowed_scopes` vaut `["once"]` quand `canApproveForConversation` est
   `false`, sinon `["once", "conversation"]` ;
-- `ref.workspace_id`, `task_id` et `run_id` sont ajoutés ensemble seulement si
-  la conversation appartient à un run connu ; une conversation autonome les
-  omet tous ;
+- `ref.workspace_id` et `task_id` sont ajoutés ensemble si la tâche est connue ;
+  `run_id` s'ajoute seulement si le run est connu ; une conversation autonome
+  omet les trois ;
 - `recoveryState: "interrupted"` devient l'état `interrupted` et ne peut pas
   être résolu à distance.
 

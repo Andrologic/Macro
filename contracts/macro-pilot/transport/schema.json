@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.macro.andrologic.ai/macro-pilot/transport/v1/schema.json",
+  "title": "Native relay envelopes 1.0",
+  "$defs": {
+    "id": { "$ref": "../../v1/common.schema.json#/$defs/opaqueId" },
+    "supervisionType": { "enum": ["workspace", "project", "task", "run", "decision", "tool_approval", "review"] },
+    "pageRequest": {
+      "allOf": [
+        { "$ref": "../../v1/protocol.schema.json#/$defs/pageRequest" },
+        {
+          "type": "object", "required": ["scope"],
+          "properties": {
+            "item_type": { "$ref": "#/$defs/supervisionType" },
+            "scope": {
+              "type": "object", "required": ["instance_id"],
+              "properties": {
+                "instance_id": { "$ref": "#/$defs/id" },
+                "type": { "enum": ["instance", "workspace", "project", "task", "run", "decision", "tool_approval", "review"] }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "page": {
+      "allOf": [
+        { "$ref": "../../v1/protocol.schema.json#/$defs/page" },
+        {
+          "type": "object",
+          "properties": {
+            "item_type": { "$ref": "#/$defs/supervisionType" },
+            "items": {
+              "type": "array",
+              "items": { "type": "object", "properties": { "type": { "$ref": "#/$defs/supervisionType" } } }
+            }
+          }
+        }
+      ]
+    },
+    "request": {
+      "oneOf": [
+        { "$ref": "../../v1/protocol.schema.json#/$defs/taskReplyCommand" },
+        { "$ref": "../../v1/protocol.schema.json#/$defs/runStartCommand" },
+        { "$ref": "../../v1/protocol.schema.json#/$defs/runCancelCommand" },
+        { "$ref": "../../v1/protocol.schema.json#/$defs/decisionResolveCommand" },
+        { "$ref": "../../v1/protocol.schema.json#/$defs/toolApprovalResolveCommand" },
+        { "$ref": "../../v1/protocol.schema.json#/$defs/reviewSubmitCommand" },
+        { "$ref": "#/$defs/pageRequest" },
+        { "$ref": "../../v1/protocol.schema.json#/$defs/resumeRequest" }
+      ]
+    },
+    "exchange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transport_version", "type", "exchange_id", "message"],
+      "properties": {
+        "transport_version": { "const": "1.0" },
+        "type": { "const": "exchange" },
+        "exchange_id": { "$ref": "#/$defs/id" },
+        "message": { "$ref": "#/$defs/request" }
+      }
+    },
+    "delivery": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transport_version", "type", "exchange_id", "delivery_id", "actor", "message"],
+      "properties": {
+        "transport_version": { "const": "1.0" },
+        "type": { "const": "delivery" },
+        "exchange_id": { "$ref": "#/$defs/id" },
+        "delivery_id": { "$ref": "#/$defs/id" },
+        "actor": { "$ref": "../../v1/common.schema.json#/$defs/actorRef" },
+        "message": { "$ref": "#/$defs/request" }
+      }
+    },
+    "deliveryResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transport_version", "type", "exchange_id", "delivery_id", "message"],
+      "properties": {
+        "transport_version": { "const": "1.0" },
+        "type": { "const": "delivery_result" },
+        "exchange_id": { "$ref": "#/$defs/id" },
+        "delivery_id": { "$ref": "#/$defs/id" },
+        "message": {
+          "oneOf": [
+            { "$ref": "../../v1/protocol.schema.json#/$defs/commandResult" },
+            { "$ref": "#/$defs/page" },
+            { "$ref": "../../v1/protocol.schema.json#/$defs/eventBatch" },
+            { "$ref": "../../v1/protocol.schema.json#/$defs/error" }
+          ]
+        },
+        "resume_point": {
+          "type": "object", "additionalProperties": false,
+          "required": ["stream_id", "after_cursor", "after_sequence"],
+          "properties": {
+            "stream_id": { "$ref": "#/$defs/id" },
+            "after_cursor": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "after_sequence": { "type": "integer", "minimum": 0 }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "message": {
+                "type": "object",
+                "required": ["type", "item_type"],
+                "properties": { "type": { "const": "page" }, "item_type": { "const": "task" } }
+              }
+            }
+          },
+          "then": { "properties": { "resume_point": true }, "required": ["resume_point"] },
+          "else": { "properties": { "resume_point": false } }
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/exchange" },
+    { "$ref": "#/$defs/delivery" },
+    { "$ref": "#/$defs/deliveryResult" }
+  ]
+}

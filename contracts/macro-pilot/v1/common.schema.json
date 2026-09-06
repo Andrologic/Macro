@@ -119,15 +119,21 @@
     "decisionRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "instance_id", "workspace_id", "task_id", "run_id", "decision_id"],
+      "required": ["type", "instance_id", "workspace_id", "task_id", "decision_id"],
       "properties": {
         "type": { "const": "decision" },
         "instance_id": { "$ref": "#/$defs/opaqueId" },
         "workspace_id": { "$ref": "#/$defs/opaqueId" },
         "task_id": { "$ref": "#/$defs/opaqueId" },
         "run_id": { "$ref": "#/$defs/opaqueId" },
-        "decision_id": { "$ref": "#/$defs/opaqueId" }
-      }
+        "decision_id": { "$ref": "#/$defs/opaqueId" },
+        "conversation_id": { "$ref": "#/$defs/sourceId" },
+        "assistant_message_id": { "$ref": "#/$defs/sourceId" }
+      },
+      "anyOf": [
+        { "properties": { "run_id": true }, "required": ["run_id"] },
+        { "properties": { "conversation_id": true, "assistant_message_id": true }, "required": ["conversation_id", "assistant_message_id"] }
+      ]
     },
     "toolApprovalRef": {
       "type": "object",
@@ -144,8 +150,8 @@
         "tool_call_id": { "$ref": "#/$defs/sourceId" }
       },
       "dependentRequired": {
-        "workspace_id": ["task_id", "run_id"],
-        "task_id": ["workspace_id", "run_id"],
+        "workspace_id": ["task_id"],
+        "task_id": ["workspace_id"],
         "run_id": ["workspace_id", "task_id"]
       }
     },
@@ -176,6 +182,32 @@
         { "$ref": "#/$defs/toolApprovalRef" },
         { "$ref": "#/$defs/reviewRef" }
       ]
+    },
+    "resolutionActor": {
+      "oneOf": [
+        { "$ref": "#/$defs/actorRef" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["origin"],
+          "properties": { "origin": { "enum": ["local", "unknown"] } }
+        }
+      ]
+    },
+    "resolutionProvenance": {
+      "type": "object",
+      "required": ["resolved_by"],
+      "properties": {
+        "resolved_by": { "$ref": "#/$defs/resolutionActor" },
+        "resolved_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "if": {
+        "properties": { "resolved_by": {
+          "type": "object", "required": ["origin"],
+          "properties": { "origin": { "const": "unknown" } }
+        } }
+      },
+      "then": true,
+      "else": { "properties": { "resolved_at": true }, "required": ["resolved_at"] }
     },
     "actorRef": {
       "type": "object",

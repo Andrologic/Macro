@@ -51,7 +51,7 @@ La permission minimale est fermée par opération :
 | --- | --- |
 | lire les ressources d'une instance, paginer ou reprendre ses événements | `supervise` |
 | `run.start`, `run.cancel` | `supervise` |
-| `decision.resolve` | `respond` |
+| `decision.resolve`, `task.reply` | `respond` |
 | `tool_approval.resolve` | `approve_tools` |
 | `review.submit` | `review` |
 | lire ou révoquer ses propres sessions et accès | session authentifiée du même compte |
@@ -73,7 +73,7 @@ valide. Le mode `git` ou `direct` est figé par projet dans les
 
 Une session `revoked` porte `revoked_at`, alors qu'une autre session ne le porte
 pas. Une session `expired` porte `expires_at`. Un run `running`,
-`waiting_decision`, `waiting_tool_approval` ou `completed` porte `started_at`.
+`waiting_reply`, `waiting_decision`, `waiting_tool_approval` ou `completed` porte `started_at`.
 Tout run terminal porte `finished_at` ; un run non terminal ne le porte pas.
 
 ## Révisions et commandes
@@ -113,10 +113,17 @@ contexte d'exécution et la portée au moment de l'acceptation. Une portée
 `conversation` ne s'applique qu'au même outil et à la même clé interne de
 permission ; cette clé n'est jamais envoyée au mobile.
 
-Une approbation liée à un run ajoute ensemble `workspace_id`, `task_id` et
-`run_id` dans sa référence. Une conversation autonome les omet tous. Le run
+Une approbation liée à une tâche ajoute ensemble `workspace_id` et `task_id`.
+`run_id` est ajouté seulement si le run est connu. Une conversation autonome
+les omet tous. Le run
 utilise alors `waiting_tool_approval` et la même référence comme `waiting_on` ;
 un run en `waiting_decision` attend exclusivement une `decisionRef`.
+
+`task.reply` répond à une attente simple, sans questionnaire. La tâche fournit
+`reply_context` ou signale explicitement son absence. Les règles de projection
+des anciennes tâches, les références sans run et les provenances locales ou
+inconnues sont définies dans [la correspondance des types](macro-type-mapping.md).
+Elles n'assouplissent pas l'authentification des commandes réseau.
 
 Une `review` Git reste une troisième ressource distincte. Son verdict enregistre
 l'état de la review et n'autorise ni merge, ni push, ni changement de branche.
@@ -151,11 +158,15 @@ la validation et font partie du contrat :
   `snapshot` ;
 - la référence `related_run` d'une review reprend les identifiants instance,
   workspace, tâche et run de la review ;
-- la référence `waiting_on` d'un run reprend la même portée jusqu'au run ;
+- la référence `waiting_on` d'un run reprend la même portée jusqu'à la tâche
+  pour `waiting_reply`, et jusqu'au run pour les deux autres attentes ;
 - les projets d'action et de contexte d'une tâche sont distincts ;
 - chaque projet d'action possède exactement une cible d'exécution ;
-- seuls les runs `waiting_decision` et `waiting_tool_approval` portent
+- seuls les runs `waiting_reply`, `waiting_decision` et `waiting_tool_approval` portent
   `waiting_on`, qui est alors obligatoire et du type correspondant ;
+- une tâche `waiting_reply` porte soit `reply_context`, soit le marqueur
+  `projection.missing: ["reply_context"]`, éventuellement avec d'autres
+  marqueurs ; les autres états ne portent ni l'un ni l'autre ;
 - une décision répond une fois à chaque étape ;
 - une réponse égale à un choix de son étape est un choix ; toute autre chaîne
   respecte `free_text_allowed` ;
@@ -166,7 +177,7 @@ la validation et font partie du contrat :
 - une approbation d'outil expose seulement `approve` ou `deny` ; seule une
   approbation porte une portée, qui appartient à `allowed_scopes` ;
 - seule une approbation d'outil `resolved` porte une résolution ;
-- la portée de run d'une approbation est absente ou complète ; lorsqu'un run
+- une approbation peut identifier sa tâche sans run ; lorsqu'un run
   l'attend, ses identifiants instance, workspace, tâche et run sont identiques ;
 - le type de chaque élément d'une page correspond à `item_type` ;
 - la révision d'un événement correspond à celle de son snapshot ;
@@ -188,6 +199,14 @@ effectue ces contrôles après la validation du message :
 
 - une `instance_access` référence une session active du même compte ;
 - l'acteur d'une commande correspond à la session authentifiée ;
+- `task.reply` cible une tâche `waiting_reply` à la révision attendue ; la
+  conversation correspond au `reply_context` courant et appartient à la tâche ;
+  sans contexte exploitable, la réponse est refusée avec `invalid_reference` ;
+- chaque changement d'attente ou de contexte avance la révision de tâche ; C
+  sérialise les réponses locales et distantes et enregistre l'idempotence avant
+  l'effet desktop ; une attente déjà consommée produit `stale_revision` ;
+- une décision sans run identifie une conversation et un message appartenant
+  à la tâche ; si un run est indiqué, cette appartenance est aussi vérifiée ;
 - les réponses de `decision.resolve` couvrent les étapes de la décision à
   `expected_revision` et respectent leurs choix et leur règle de texte libre ;
 - `tool_approval.resolve` cible une demande `pending` inchangée, l'acteur possède

@@ -20,6 +20,11 @@ TypeScript, and Dart consumer tests. Files under `v1/fixtures/invalid` describe
 messages that a consumer must reject. This lot runs the fixtures with Ajv under
 Bun. Consumer-specific validators belong to their implementation lots.
 
+Fixtures are synthetic, offline examples, not production exports. Numeric
+GitHub subjects and avatar URLs are illustrative values; validation does not
+contact GitHub. Negative fixtures deliberately contain dummy token signatures
+and fictional paths to prove rejection.
+
 Run the focused conformance check from the repository root:
 
 ```sh
@@ -28,6 +33,13 @@ bun contracts/macro-pilot/test/validate-contract.mjs
 
 The check validates every schema and fixture. It also enforces the relational
 rules listed in `x-semantic-rules`, which standard JSON Schema cannot express.
+
+The [native transport specification](../../docs/macro-pilot/native-transport.md)
+defines authentication, association and relay routes for the desktop, server
+and mobile implementations. Its separate `transport/schema.json` registers
+alongside the A1 registry and validates relay envelopes without changing A1.
+Run `bun contracts/macro-pilot/test/validate-transport.mjs` for its shape checks.
+Authentication, authorization and replay scenarios still require consumer tests.
 
 ## Contract boundaries
 
@@ -41,8 +53,11 @@ sensitive text is absent. A relay can forward the same envelopes without
 becoming the canonical store.
 
 Read [`docs/macro-pilot/compatibility.md`](../../docs/macro-pilot/compatibility.md)
-before implementing a consumer. Product choices that are not part of version
-`1.0` are recorded in
+before implementing a consumer. The confirmed desktop execution architecture,
+native sign-in flow, public/private repository boundary and remaining product
+decisions are recorded in
 [`docs/macro-pilot/open-decisions.md`](../../docs/macro-pilot/open-decisions.md).
 The mapping to Macro's current task, project, and questionnaire types is in
 [`docs/macro-pilot/macro-type-mapping.md`](../../docs/macro-pilot/macro-type-mapping.md).
+Before updating C, D or E, apply the unpublished A1 migration checklist in
+[`consumer-update.md`](../../docs/macro-pilot/consumer-update.md).
