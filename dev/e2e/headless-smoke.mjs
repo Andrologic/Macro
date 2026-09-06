@@ -177,6 +177,32 @@ async function main() {
     }, null, 2)}\n`);
     const journalRoot = path.join(configRoot, 'headless-tool-executions');
     await mkdir(journalRoot, { recursive: true });
+    const staleCrashPairs = Array.from({ length: 4 }, (_, index) => {
+      const executionId = `completed-before-pending-retirement-${index}`;
+      const recordName = createHash('sha256').update(executionId).digest('hex');
+      const record = {
+        schema_version: 1,
+        execution_id: executionId,
+        fingerprint: `completed-fingerprint-${index}`,
+      };
+      return {
+        executionId,
+        pendingPath: path.join(journalRoot, `${recordName}.pending.json`),
+        completedPath: path.join(journalRoot, `${recordName}.completed.json`),
+        pending: { ...record, state: { status: 'pending' } },
+        completed: {
+          ...record,
+          state: {
+            status: 'completed',
+            response: { status_code: 200, body: { result: 'durably completed' } },
+          },
+        },
+      };
+    });
+    await Promise.all(staleCrashPairs.flatMap((pair) => [
+      writeFile(pair.pendingPath, JSON.stringify(pair.pending)),
+      writeFile(pair.completedPath, JSON.stringify(pair.completed)),
+    ]));
     const canonicalAddedProjectRoot = await realpath(addedProjectRoot);
     const crashedMutation = {
       mode: 'Implement',
@@ -248,6 +274,18 @@ async function main() {
         service: 'macro-headless',
         workspace_id: workspaceId,
       });
+      for (const pair of staleCrashPairs) {
+        assert.equal(
+          await Bun.file(pair.pendingPath).exists(),
+          false,
+          'Startup reconciliation must retire a pending record backed by a matching completion.',
+        );
+        assert.equal(
+          await Bun.file(pair.completedPath).exists(),
+          true,
+          'Startup reconciliation must preserve the durable completed record.',
+        );
+      }
 
       const unknownWorkspace = await fetch(
         `${baseUrl}/api/v1/workspaces/not-${workspaceId}/bootstrap`,
@@ -355,6 +393,28 @@ async function main() {
       });
       assert.equal(refreshedRead.status, 200, 'A project added after startup must become available.');
       assert.match((await refreshedRead.json()).result, /fresh registry marker/);
+
+      const postReconciliationMutation = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'Implement',
+          tool_id: 'write',
+          args: {
+            path: 'quota-probe.txt',
+            content: 'journal capacity recovered',
+            expected_revision: 'absent',
+          },
+          execution_id: 'post-reconciliation-mutation',
+          focused_project_id: 'project-added',
+        }),
+      });
+      assert.equal(
+        postReconciliationMutation.status,
+        200,
+        'Retired crash-window pending records must not consume the unresolved mutation quota.',
+      );
+      assert.equal(await Bun.file(path.join(addedProjectRoot, 'quota-probe.txt')).exists(), true);
 
       const pendingRetry = await fetch(`${baseUrl}/api/v1/tools/execute`, {
         method: 'POST',

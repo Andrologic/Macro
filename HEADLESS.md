@@ -126,6 +126,18 @@ rejected without preventing valid projects from being served. Removing a
 scoped policy removes its cached overlay on the next refresh.
 Client-declared paths still have to match the current server registry.
 
+This explicit project-policy requirement belongs to the headless registry; it
+does not change the desktop `ConfigManager` inheritance rules. Each project to
+be served headlessly needs `projects/{project_id}/config/tools.json` below its
+resolved Macro metadata root. The minimal valid document is:
+
+```json
+{
+  "$schema": "./schemas/v1/tools.schema.json",
+  "schemaVersion": 1
+}
+```
+
 Tool and checkpoint response bodies are capped at 64 MiB by both the kernel and
 the frontend remote transport. A larger response fails with
 `REMOTE_RESPONSE_TOO_LARGE` instead of crossing that bounded allocation.
@@ -136,7 +148,9 @@ and refuses an execution still running in the current process. It converts the
 durable pending record into a durable `REMOTE_MUTATION_OUTCOME_INDETERMINATE`
 result without running the mutation again or deleting its evidence.
 At startup, a fully durable completed record supersedes and retires a matching
-pending record left behind by a crash between the two journal operations.
+pending record left behind by a crash between the two journal operations. Both
+the execution identifier and request fingerprint must match before the pending
+record is removed.
 
 ## Internal frontend remote transport
 
