@@ -22,7 +22,11 @@ tables énumère tous ses champs obligatoires ; `?` marque un champ optionnel.
 Les IDs suivent `opaqueId` d'A1. Les dates sont UTC RFC 3339, les durées des
 secondes entières. Les libellés suivent `safeText`, limités à 120 caractères.
 
-Chaque requête JSON porte `X-Request-Id`, identifiant aléatoire du client.
+Chaque requête API, y compris GET et DELETE sans corps, porte `X-Request-Id`,
+identifiant aléatoire du client conforme à `opaqueId` A1. S'il est absent ou
+invalide, D rejette la requête avec HTTP 400 `validation_failed` et génère un
+identifiant conforme pour cette erreur. D renvoie aussi `X-Request-Id` dans
+toutes ses réponses, avec la valeur retenue.
 Les routes authentifiées exigent `Authorization: Bearer <session_token>`.
 Les preuves ne passent jamais dans les URL, cookies de compte web ou messages
 A1. Réponses d'authentification et de relais : `Cache-Control: no-store`.
@@ -142,7 +146,11 @@ celle d'un autre client par son ID. En cas de perte de la clé, C crée une nouv
 instance ; le protocole ne fournit pas de récupération par connaissance de l'ID.
 
 D traite `creation_id` comme clé d'idempotence liée à la session et conserve
-le résultat non secret jusqu'à son expiration. Un retry de même corps retourne
+durablement le résultat non secret jusqu'au `expires_at` de la session
+créatrice, fixé à 30 jours lors du claim. Sa révocation interdit immédiatement
+tout retry, même si le résultat est encore conservé. Après expiration, l'ancien
+jeton est refusé ; une nouvelle session ne réutilise pas cette clé de création.
+Un retry de même corps pendant la session active retourne
 la même instance et le même accès ; un corps différent retourne 409. C garde
 la clé localement avant l'envoi et peut donc retrouver le résultat après perte
 de réponse sans créer une instance orpheline. D ne retourne jamais la clé.
