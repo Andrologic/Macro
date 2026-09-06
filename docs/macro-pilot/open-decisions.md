@@ -34,11 +34,12 @@ Le serveur vérifie l'identité, la session et les droits sur chaque instance,
 quel que soit le client. La ressemblance avec le client officiel ne constitue
 pas une autorisation.
 
-## Fonctionnement interface desktop fermée
+## Cycle de vie et providers confirmés
 
-Le maintien de l'exécution lorsque l'interface desktop est fermée reste à
-préciser. Le choix d'une exécution desktop ne définit pas à lui seul le cycle
-de vie du service ni sa reprise.
+Macro doit rester ouvert pour le pilotage. Sa fermeture rend l'instance
+indisponible. Le raccord réutilise le moteur desktop existant et tous les
+providers déjà disponibles dans Macro, avec leur configuration locale. Aucun
+moteur autonome ni service continuant après fermeture n'est requis.
 
 ## Conservation par la passerelle
 
@@ -48,14 +49,6 @@ les données conservées pour la reprise, reste à préciser.
 Le contrat définit curseurs et reprise sans fixer leur durée. Il ne contient
 aucun objet conversation, contenu de fichier ou chemin machine. La politique de
 rétention sera ajoutée seulement après décision.
-
-## Providers de la première version
-
-Décision attendue : quels providers le moteur autonome doit-il prendre en
-charge au lancement ?
-
-Le contrat de supervision ne nomme aucun provider et n'accepte aucun secret de
-provider. Leur configuration appartient au runtime, hors de ce lot.
 
 ## Effet d'une validation Git mobile
 

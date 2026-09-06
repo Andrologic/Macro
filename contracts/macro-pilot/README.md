@@ -34,6 +34,13 @@ bun contracts/macro-pilot/test/validate-contract.mjs
 The check validates every schema and fixture. It also enforces the relational
 rules listed in `x-semantic-rules`, which standard JSON Schema cannot express.
 
+The [native transport specification](../../docs/macro-pilot/native-transport.md)
+defines authentication, association and relay routes for the desktop, server
+and mobile implementations. Its separate `transport/schema.json` registers
+alongside the A1 registry and validates relay envelopes without changing A1.
+Run `bun contracts/macro-pilot/test/validate-transport.mjs` for its shape checks.
+Authentication, authorization and replay scenarios still require consumer tests.
+
 ## Contract boundaries
 
 The mobile payloads contain opaque identifiers, display labels, Git object
