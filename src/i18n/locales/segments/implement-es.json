@@ -1,4 +1,8 @@
 {
+  "startReview": "Iniciar revisión",
+  "startReviewBusy": "Finaliza el turno actual o resuelve la aprobación de la herramienta antes de iniciar la revisión.",
+  "startReviewUnavailable": "Esta tarea no puede pasar a revisión en su estado actual.",
+  "startReviewReady": "La tarea está en revisión. Envía tu próximo mensaje en su conversación para iniciar el agente de revisión.",
   "statusAttention": "Por atender",
   "taskNextActionOpenApproval": "Siguiente: abrir la solicitud de aprobación",
   "taskNextActionFinalizePlan": "Siguiente: finalizar el plan",

@@ -1,4 +1,8 @@
 {
+  "startReview": "검토 시작",
+  "startReviewBusy": "검토를 시작하기 전에 현재 턴을 완료하거나 도구 승인 요청을 처리하세요.",
+  "startReviewUnavailable": "현재 상태에서는 이 작업을 검토로 전환할 수 없습니다.",
+  "startReviewReady": "작업이 검토 상태입니다. 해당 대화에서 다음 메시지를 보내면 검토 에이전트가 시작됩니다.",
   "statusAttention": "처리 필요",
   "taskNextActionOpenApproval": "다음: 승인 요청 열기",
   "taskNextActionFinalizePlan": "다음: 계획 완료",

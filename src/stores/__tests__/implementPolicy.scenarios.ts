@@ -82,11 +82,11 @@ export const registerImplementPolicyScenarios = (
       useChatStore.getState().stopStreaming();
     });
 
-    it('launches InReview Implement conversations with the task reviewer profile', async () => {
+    it('uses the task reviewer on the next user send after an existing task enters InReview', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';
-      taskStoreState.tasks = [createImplementTask({ status: 'InReview' })];
+      taskStoreState.tasks = [createImplementTask({ status: 'InProgress' })];
       await savePreferenceForTest(
         'promptTaskReviewer',
         'Custom TASK_REVIEWER prompt for tests.',
@@ -114,9 +114,12 @@ export const registerImplementPolicyScenarios = (
         composerContextRefs: [],
       });
 
+      // The UI changes the task status without sending; the next send must read it afresh.
+      taskStoreState.tasks = [createImplementTask({ status: 'InReview' })];
+      expect(streamChatMock).not.toHaveBeenCalled();
       await useChatStore.getState().sendMessage({
         conversationId: 'implement-conv',
-        content: 'Passe une review critique puis corrige ce qui est minimal.',
+        content: 'Passe une revue critique puis corrige ce qui est minimal.',
         taskId: 'task-1',
       });
       await Promise.resolve();
