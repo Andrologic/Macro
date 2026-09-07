@@ -75,7 +75,7 @@ const createHarness = (responses: Array<Response | Error>) => {
     sha256: async () => new Uint8Array(32).fill(9),
     now: () => new Date('2026-09-06T10:00:00Z'),
   };
-  return { client: new MacroPilotNativeClient(dependencies), values, secrets, events, requests };
+  return { client: new MacroPilotNativeClient(dependencies), dependencies, values, secrets, events, requests };
 };
 
 describe('MacroPilotNativeClient', () => {
@@ -198,6 +198,50 @@ describe('MacroPilotNativeClient', () => {
     await harness.client.connect('https://pilot.example.com', 'Studio Mac').catch((error) => {
       expect(error).toMatchObject({ code: 'response_too_large' });
     });
+  });
+
+  it('nettoie les deux secrets si la persistance de la tentative échoue', async () => {
+    const harness = createHarness([
+      jsonResponse({ transport_version: '1.0', attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }, 201),
+    ]);
+    await harness.client.initialize();
+    const persist = harness.dependencies.setStateValue;
+    harness.dependencies.setStateValue = async (key, value) => {
+      if ((value as { attempt?: unknown }).attempt) throw new Error('metadata unavailable');
+      return persist(key, value);
+    };
+    await expect(harness.client.connect('https://pilot.example.com', 'Studio Mac')).rejects.toMatchObject({ code: 'vault_unavailable' });
+    expect(harness.secrets.size).toBe(0);
+    expect(harness.client.getState().attempt).toBeNull();
+    await expect(harness.client.pollAuth()).rejects.toMatchObject({ code: 'invalid_configuration' });
+    const restarted = new MacroPilotNativeClient(harness.dependencies);
+    await restarted.initialize();
+    expect(restarted.getState().attempt).toBeNull();
+  });
+
+  it('nettoie la clé de création si son identifiant ne peut pas être persisté', async () => {
+    const harness = createHarness([
+      jsonResponse({ transport_version: '1.0', attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }, 201),
+      jsonResponse({ transport_version: '1.0', status: 'identified', account }),
+      jsonResponse({ transport_version: '1.0', account, device_session: session, session_token: validSecret(8) }),
+    ]);
+    await harness.client.initialize();
+    await harness.client.connect('https://pilot.example.com', 'Studio Mac');
+    await harness.client.pollAuth();
+    await harness.client.confirmAccount(account.account_id);
+    const persist = harness.dependencies.setStateValue;
+    harness.dependencies.setStateValue = async (key, value) => {
+      if ((value as { instanceCreationId?: unknown }).instanceCreationId) throw new Error('metadata unavailable');
+      return persist(key, value);
+    };
+    await expect(harness.client.createOrAttachInstance({ label: 'Studio Mac' })).rejects.toThrow('metadata unavailable');
+    expect([...harness.secrets.keys()]).toEqual([`session_token:${session.ref.session_id}`]);
+    expect(harness.requests.some(({ url }) => url.endsWith('/instances'))).toBe(false);
+    expect(harness.client.getState().instance).toBeNull();
+    // A second attempt must prepare a new key, rather than read an unpersisted identifier.
+    await expect(harness.client.createOrAttachInstance({ label: 'Studio Mac' })).rejects.toThrow('metadata unavailable');
+    expect(harness.events.filter((event) => event === 'secret:instance_key')).toHaveLength(2);
+    expect([...harness.secrets.keys()]).toEqual([`session_token:${session.ref.session_id}`]);
   });
 
   it('réutilise la création et la clé préparées après une réponse perdue', async () => {

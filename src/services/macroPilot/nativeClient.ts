@@ -339,8 +339,9 @@ export class MacroPilotNativeClient {
 
   private async persist(patch: Partial<PersistedPilotState>): Promise<void> {
     if (!this.persisted) throw new PilotClientError('invalid_configuration');
-    this.persisted = { ...this.persisted, ...patch };
-    await this.dependencies.setStateValue(STATE_KEY, this.persisted);
+    const next = { ...this.persisted, ...patch };
+    await this.dependencies.setStateValue(STATE_KEY, next);
+    this.persisted = next;
   }
 
   private secretScope(kind: PilotSecretKind, resourceId: string): PilotSecretScope {
@@ -530,7 +531,9 @@ export class MacroPilotNativeClient {
       this.publish({ attempt, status: 'authorizing' });
       return attempt;
     } catch (error) {
-      await this.dependencies.secretDelete(this.secretScope('claim_secret', attemptKey)).catch(() => undefined);
+      await Promise.all((['claim_secret', 'poll_secret'] as const).map((kind) =>
+        this.dependencies.secretDelete(this.secretScope(kind, attemptKey)).catch(() => undefined),
+      ));
       if (!(error instanceof PilotClientError)) {
         this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
         throw new PilotClientError('vault_unavailable');
@@ -623,7 +626,12 @@ export class MacroPilotNativeClient {
     const instanceKeyHash = base64Url(await this.dependencies.sha256(new TextEncoder().encode(instanceKey)));
     if (!this.persisted.instanceCreationId) {
       await this.dependencies.secretWrite(this.secretScope('instance_key', creationId), instanceKey);
-      await this.persist({ instanceCreationId: creationId, pendingInstanceLabel: label });
+      try {
+        await this.persist({ instanceCreationId: creationId, pendingInstanceLabel: label });
+      } catch (error) {
+        await this.dependencies.secretDelete(this.secretScope('instance_key', creationId)).catch(() => undefined);
+        throw error;
+      }
     }
     const response = await this.request<{ instance: PilotInstance; instance_access: PilotInstanceAccess }>(
       'POST', '/instances', {
