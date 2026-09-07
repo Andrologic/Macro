@@ -139,6 +139,7 @@ export interface ArchitectPlanChatMessage {
 }
 
 export interface ArchitectPlanRecord {
+  agsdl?: import('../types/agsdl').AgsdlEditorDocument;
   id: string;
   slug: string;
   title: string;
@@ -5102,6 +5103,8 @@ export const createArchitectPlan = async (
   enqueueArchitectPlanCreation(input.branchName, () => createArchitectPlanUnlocked(input, deps));
 
 export const updateArchitectPlan = async (input: {
+  agsdl?: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>;
+  expectedAgsdlRevision?: number;
   branchName: string;
   planId: string;
   title?: string;
@@ -5133,6 +5136,13 @@ export const updateArchitectPlan = async (input: {
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const existing = replicaSet.canonical.plan;
+  if (input.agsdl !== undefined) {
+    if (existing.status !== 'draft') throw new Error('AgSDL editing requires a draft plan.');
+    if (input.expectedAgsdlRevision !== (existing.agsdl?.revision ?? 0)) throw new Error('The AgSDL document changed. Reload it before saving.');
+    const document = input.agsdl;
+    if (typeof document.source !== 'string' || !document.annexes || typeof document.annexes !== 'object' || Array.isArray(document.annexes) || Object.values(document.annexes).some(value => typeof value !== 'string')) throw new Error('Invalid AgSDL editor document.');
+    if (new TextEncoder().encode(document.source + Object.values(document.annexes).join('')).length > 1024 * 1024) throw new Error('AgSDL inputs exceed the 1 MiB editor limit.');
+  }
   const inputKeys = Object.keys(input).filter((key) => key !== 'branchName' && key !== 'planId');
   const isRestoringArchivedPlan =
     existing.status === 'archived' &&
@@ -5292,6 +5302,7 @@ export const updateArchitectPlan = async (input: {
 
   const candidateResult = sanitizeArchitectPlanRecord(normalizedBranch, safeId, {
     ...existing,
+    agsdl: input.agsdl !== undefined ? { ...input.agsdl, revision: (existing.agsdl?.revision ?? 0) + 1 } : existing.agsdl,
     slug: requestedSlug,
     title: isCanonicalPlan ? existing.title : input.title?.trim() || existing.title,
     label: isCanonicalPlan

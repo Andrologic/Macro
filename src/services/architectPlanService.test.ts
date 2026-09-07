@@ -340,6 +340,23 @@ describe('architectPlanService', () => {
     delete (globalThis as { localStorage?: unknown }).localStorage;
   });
 
+  it('roundtrips AgSDL source and annexes, preserves them across plan edits, and rejects stale writes', async () => {
+    const plan = await service.createArchitectPlan({ branchName, title: 'AgSDL test' });
+    const agsdl = { source: '{ "opaque":900719925474099312345, "title":"Édition" }', annexes: { library: '{ "external": true }' } };
+    await service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 0 });
+    await service.updateArchitectPlan({ branchName, planId: plan.id, description: 'Updated plan' });
+    expect((await service.getArchitectPlan(branchName, plan.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    await expect(service.updateArchitectPlan({ branchName, planId: plan.id, agsdl: { ...agsdl, source: '{}' }, expectedAgsdlRevision: 0 })).rejects.toThrow('changed');
+    const outcomes = await Promise.allSettled([
+      service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 1 }),
+      service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 1 }),
+    ]);
+    expect(outcomes.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect((await service.getArchitectPlan(branchName, plan.id))?.agsdl?.revision).toBe(2);
+    await service.updateArchitectPlan({ branchName, planId: plan.id, status: 'validated' });
+    await expect(service.updateArchitectPlan({ branchName, planId: plan.id, agsdl, expectedAgsdlRevision: 2 })).rejects.toThrow('draft');
+  });
+
   it('allows main as the target branch in mainline mode', async () => {
     const preferences = await import('./preferences');
     await preferences.savePreferences({
