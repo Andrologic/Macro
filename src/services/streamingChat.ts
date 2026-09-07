@@ -2013,6 +2013,8 @@ export const RESTORE_PLAN_TOOL = toFunctionToolShape(
 export const SET_ACTIVE_PLAN_TOOL = toFunctionToolShape(
   requireMacroToolRegistryEntry('plan_set_active')
 );
+const AGSDL_GET_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('agsdl_get'));
+const AGSDL_UPDATE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('agsdl_update'));
 const GET_STRATEGY_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('strategy_get'));
 const GET_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_get'));
 const UPDATE_TASK_TODOS_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('task_todo_update'));
@@ -2588,6 +2590,8 @@ const collectAllowedTools = (params: {
   if (allowedTools.has('plan_delete')) tools.push(DELETE_PLAN_TOOL);
   if (allowedTools.has('plan_restore')) tools.push(RESTORE_PLAN_TOOL);
   if (allowedTools.has('plan_set_active')) tools.push(SET_ACTIVE_PLAN_TOOL);
+  if (allowedTools.has('agsdl_get')) tools.push(AGSDL_GET_TOOL);
+  if (allowedTools.has('agsdl_update')) tools.push(AGSDL_UPDATE_TOOL);
   if (allowedTools.has('strategy_get')) tools.push(GET_STRATEGY_TOOL);
   if (allowedTools.has('task_todo_get')) tools.push(GET_TASK_TODOS_TOOL);
   if (allowedTools.has('task_todo_update')) tools.push(UPDATE_TASK_TODOS_TOOL);

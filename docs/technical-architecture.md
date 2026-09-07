@@ -193,13 +193,30 @@ L'application n'utilise pas un routage classique basé sur des pages.
 
 Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
-Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et stratégie à droite.
+Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et éditeur AgSDL/stratégie à droite.
 
 Le navigateur Architect charge un catalogue transverse des plans, mais délègue toute activation à `useAppStore.activateArchitectPlan`. La sélection canonique reste `selectedGroupId`/`selectedProjectId` pour le contexte et `activeArchitectPlanId`/`activePlanContext` pour le plan. Les épingles et les groupes visuellement développés sont de simples préférences d'interface ; ils ne créent pas un nouvel état métier. Le basculement entre plans actifs et archivés reste également un état de vue local : il filtre le catalogue déjà chargé et ne modifie ni la portée projet ni le plan actif. Les menus contextuels réutilisent les mêmes mutations et les mêmes restrictions de types de plans que les actions primaires ; ils ne contournent ni `getCreatableArchitectPlanKinds` ni les capacités CRUD du plan.
 
 Le shell persiste une largeur dédiée au panneau gauche Architect. Elle est bornée séparément de la largeur générique des panneaux gauche afin qu'une préférence héritée d'un autre mode ne dégrade pas la lisibilité de l'arborescence projets/plans.
 
 Le panneau de conversations Chat conserve son mode de sélection multiple dans un état local au composant. Hors de ce mode, seul un déclencheur compact et accessible est rendu dans l'en-tête à côté de la création de conversation. L'activation rend la barre d'actions groupées et initialise la sélection à vide ; l'annulation ou un changement de vue réinitialise simultanément le mode, la sélection et les modales associées.
+
+L’éditeur AgSDL est chargé dans `ArchitectStrategyPanel`. `useAgsdlStore` partage
+les brouillons entre l’interface et les outils `agsdl_get`/`agsdl_update`, par clé
+branche/plan. Les champs non appliqués et l’historique restent en mémoire. La
+source et les annexes sont persistées dans `ArchitectPlanRecord.agsdl` par le
+service de métadonnées existant, avec contrôle de révision dans la file de
+mutations du plan. Les modifications des autres métadonnées préservent ce champ.
+
+`src/services/agsdl` sépare la projection du graphe, les modifications atomiques
+par pointeurs JSON, les exemples et l’adaptateur des outils. Le lecteur de
+référence 0.1.0 est fourni sous sa licence dans `src/vendor/agsdl`, avec des
+adaptations Web Crypto/Uint8Array documentées. Le sérialiseur conserve les jetons
+numériques et les valeurs opaques ; les objets de projection JavaScript ne sont
+pas utilisés pour réécrire le document entier. Une mutation d’outil vérifie la
+conversation propriétaire, le statut brouillon et la révision lue. Ces outils
+sont exposés uniquement dans Architect, avec la politique partagée des outils.
+Aucun moteur d’exécution AgSDL n’est introduit à cette étape.
 
 ### 5.3 Découpage des panneaux
 

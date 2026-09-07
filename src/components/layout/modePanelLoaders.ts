@@ -77,7 +77,7 @@ const strategyGraphLoader = createModePanelLoader({
   label: 'Strategy graph',
   mode: 'Architect',
   panel: 'right',
-  importComponent: async () => (await import('../plan/StrategyGraph')).default,
+  importComponent: async () => (await import('../architect/ArchitectStrategyPanel')).default,
 });
 
 const architectProjectNavigatorLoader = createModePanelLoader({

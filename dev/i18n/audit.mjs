@@ -69,10 +69,9 @@ const readJson = (filePath) => JSON.parse(fs.readFileSync(filePath, "utf8"));
 const readLocale = (language) => {
   const basePath = path.join(localeDir, `${language}.json`);
   const locale = readJson(basePath);
-  const implementSegmentPath = path.join(localeDir, "segments", `implement-${language}.json`);
-
-  if (fs.existsSync(implementSegmentPath)) {
-    locale.implement = readJson(implementSegmentPath);
+  for (const segment of ["implement", "agsdl"]) {
+    const segmentPath = path.join(localeDir, "segments", `${segment}-${language}.json`);
+    if (fs.existsSync(segmentPath)) locale[segment] = readJson(segmentPath);
   }
 
   return locale;

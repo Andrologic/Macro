@@ -55,6 +55,8 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "plan_list",
         "plan_get",
         "plan_update",
+        "agsdl_get",
+        "agsdl_update",
         "strategy_get",
         "strategy_update",
         "strategy_delete",
@@ -372,6 +374,15 @@ mod tests {
         assert!(!policy
             .allowed_tool_ids
             .contains(&"strategy_generate".to_string()));
+    }
+
+    #[test]
+    fn agsdl_authoring_is_scoped_to_architect() {
+        for tool in ["agsdl_get", "agsdl_update"] {
+            assert!(get_mode_policy("Architect").allowed_tool_ids.contains(&tool.to_string()));
+            assert!(!get_mode_policy("Chat").allowed_tool_ids.contains(&tool.to_string()));
+            assert!(!get_mode_policy("Implement").allowed_tool_ids.contains(&tool.to_string()));
+        }
     }
 
     #[test]

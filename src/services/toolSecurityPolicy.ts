@@ -60,9 +60,12 @@ export const TOOL_LEVEL_REMEMBER_KEY_TOOL_IDS = new Set<string>([
   "task_todo_update",
   "task_artifact_put",
   "plan_update",
+  "agsdl_update",
 ]);
 
 const TOOL_SECURITY_DEFINITIONS: Record<string, ToolSecurityDefinition> = {
+  agsdl_get: { actionGroup: "observe", rememberStrategy: "tool", destructiveStrategy: "never", summary: "Read the plan AgSDL document" },
+  agsdl_update: { actionGroup: "change", rememberStrategy: "tool", destructiveStrategy: "never", summary: "Edit the plan AgSDL document" },
   config_list: {
     actionGroup: "observe",
     rememberStrategy: "tool",

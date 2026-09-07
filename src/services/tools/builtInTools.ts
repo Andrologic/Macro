@@ -722,6 +722,16 @@ export const BUILT_IN_TOOLS: Tool[] = [
     },
   },
   {
+    id: 'agsdl_get', name: 'Read AgSDL', category: 'productivity', status: 'enabled',
+    description: 'Read the plan AgSDL document and diagnostics', icon: 'git-merge',
+    config: { enabled: true, visible: true, chatMode: true, internal: true },
+  },
+  {
+    id: 'agsdl_update', name: 'Edit AgSDL', category: 'productivity', status: 'enabled',
+    description: 'Edit and save the plan AgSDL document', icon: 'edit',
+    config: { enabled: true, visible: true, chatMode: true, internal: true },
+  },
+  {
     id: 'strategy_get',
     name: 'Get Strategy',
     category: 'productivity',
@@ -818,6 +828,8 @@ export const defaultToolSettings: Record<string, boolean> = {
   plan_delete: true,
   plan_restore: true,
   plan_set_active: true,
+  agsdl_get: true,
+  agsdl_update: true,
   strategy_get: true,
   strategy_update: true,
   strategy_delete: true,

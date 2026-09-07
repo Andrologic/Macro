@@ -281,6 +281,20 @@ Le mode Architect doit supporter :
 Le mode Architect n'est pas un simple mode descriptif.
 Il doit préparer concrètement la suite de l'implémentation.
 
+#### Édition AgSDL
+
+Le panneau droit Architect propose un éditeur AgSDL 0.1.0 et un accès à la
+stratégie existante. La conversation conserve sa place centrale. L’éditeur permet
+d’inspecter et de modifier les processus, les déclarations et les configurations,
+manuellement ou par les outils de l’IA liés à la conversation du plan. Il propose
+des exemples Release, Feature, Hotfix et Bugfix, l’import/export JSON, les annexes
+locales, l’enregistrement dans le plan et des diagnostics distincts D/G/R.
+
+Cette étape concerne l’édition des plans en brouillon. Elle ne remplace pas encore
+le moteur de stratégie, les tâches GitFlow ou leur exécution. Les moteurs des
+exemples restent explicitement non configurés. Le parcours de test et les limites
+sont décrits dans [Éditeur AgSDL](agsdl-editor.md).
+
 ### 7.2 Mode Implement
 
 Le mode Implement est le mode d'exécution et de review.

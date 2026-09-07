@@ -530,6 +530,9 @@ export default defineConfig(({ command }) => {
         "react/jsx-dev-runtime",
         "sonner",
         "zustand",
+        // Pre-bundle React Flow for its CommonJS selector dependencies.
+        // The Architect panel still imports it lazily at runtime.
+        "@xyflow/react",
         "i18next",
         "react-i18next",
         "lucide-react",
@@ -543,7 +546,6 @@ export default defineConfig(({ command }) => {
         "@codemirror/view",
         "@codemirror/state",
         "codemirror",
-        "@xyflow/react",
       ],
 
       // Force re-optimization when these change

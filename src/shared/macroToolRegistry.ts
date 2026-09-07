@@ -76,6 +76,8 @@ const COPILOT_SUPPORTED_TOOL_ID_SET = new Set([
   "terminal_read",
   "terminal_kill",
   "strategy_generate",
+  "agsdl_get",
+  "agsdl_update",
   "strategy_get",
   "strategy_update",
   "task_todo_get",
@@ -1266,6 +1268,21 @@ export const MACRO_TOOL_REGISTRY = [
       },
       required: [],
     },
+  ),
+  objectTool(
+    "agsdl_get",
+    "Read the calling plan's AgSDL document, revision, scoped diagnostics and authoring guide. Use path for a JSON pointer subtree.",
+    { type: "object", properties: { plan_id: { type: "string" }, target_branch: { type: "string" }, path: { type: "string", allowEmpty: true } }, required: ["plan_id", "target_branch"] },
+  ),
+  objectTool(
+    "agsdl_update",
+    "Edit and save the calling draft plan's AgSDL document. Read agsdl_get first. Supply exactly one of changes, source, or example. Atomic pointer edits preserve untouched content. Returns a new revision and diagnostics; never runs agents.",
+    { type: "object", properties: {
+      plan_id: { type: "string" }, target_branch: { type: "string" }, expected_revision: { type: "string" },
+      changes: { type: "array", items: { type: "object", properties: { op: { type: "string", enum: ["set", "remove"] }, path: { type: "string", allowEmpty: true }, value_json: { type: "string", description: "Exact JSON value as text, required for set." } }, required: ["op", "path"] } },
+      source: { type: "string", description: "Complete replacement document; prefer changes for focused edits." },
+      example: { type: "string", enum: ["release", "feature", "hotfix", "bugfix"], description: "Initialize an empty document." },
+    }, required: ["plan_id", "target_branch", "expected_revision"] },
   ),
   objectTool(
     "plan_get",

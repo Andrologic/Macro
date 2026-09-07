@@ -5,6 +5,14 @@ import {
 } from "./toolSecurityPolicy";
 
 describe("toolSecurityPolicy", () => {
+  it("classifies AgSDL reads and document edits through the shared policy", () => {
+    expect(evaluateToolSecurity('agsdl_get', {}, { mode: 'Architect', riskLevel: 'balanced' }).normalizedCall.actionGroup).toBe('observe');
+    const edit = evaluateToolSecurity('agsdl_update', {}, { mode: 'Architect', riskLevel: 'balanced' });
+    expect(edit.normalizedCall.actionGroup).toBe('change');
+    expect(edit.decision).toBe('allow');
+    expect(evaluateToolSecurity('agsdl_update', {}, { mode: 'Architect', riskLevel: 'strict' }).decision).toBe('ask');
+  });
+
   it("allows non-destructive apply_patch calls in balanced mode", () => {
     const result = evaluateToolSecurity(
       "apply_patch",

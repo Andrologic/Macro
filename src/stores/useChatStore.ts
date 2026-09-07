@@ -442,6 +442,7 @@ const AGENT_TERMINAL_TOOL_IDS = new Set([
   "terminal_kill",
 ]);
 const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
+  "agsdl_update",
   "strategy_generate",
   "strategy_update",
   "strategy_delete",
@@ -5897,6 +5898,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return taskArtifactToolResult;
     }
 
+    if (normalizedToolName === "agsdl_get" || normalizedToolName === "agsdl_update") {
+      const { handleAgsdlToolCall } = await import("../services/agsdl/tools");
+      return handleAgsdlToolCall({ toolName: normalizedToolName, args, conversationId, isCurrent: isCurrentOperation });
+    }
+
     const architectToolResult = await handleArchitectToolCall({
       assistantMessageId,
       toolName: normalizedToolName,
@@ -7409,6 +7415,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     if (appMode === "Architect") {
       systemInstructions.push(buildArchitectPlanToolFollowUpInstruction());
+      const { AGSDL_AUTHORING_INSTRUCTION } = await import("../services/agsdl/tools");
+      systemInstructions.push(AGSDL_AUTHORING_INSTRUCTION);
       systemInstructions.push(
         "In Architect mode, discuss the plan directly with the user. Inspect the selected project code when it provides useful context, and use the `question` tool for focused clarifications when important information is missing. Generate or regenerate strategy only after an explicit user request, using the plan conversation, expressed intent, plan scope, selected projects, inspected code context, and clarification answers.",
       );
@@ -7455,7 +7463,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         );
       }
       systemInstructions.push(
-        "Express sequential work with `dependencies`. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself. Macro adds a synthetic finalization task after the terminal strategy nodes and finalizes each target according to its persisted execution mode.",
+        "For legacy strategy nodes, express sequential work with `dependencies`. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself. Macro adds a synthetic finalization task after the terminal strategy nodes and finalizes each target according to its persisted execution mode.",
       );
       const activePlanContext = useAppStore.getState().activePlanContext;
       if (activePlanContext) {

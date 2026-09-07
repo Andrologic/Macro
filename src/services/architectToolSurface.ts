@@ -24,6 +24,8 @@ export const ARCHITECT_CHAT_UI_ONLY_TOOL_IDS = [
 export const ARCHITECT_GUARDED_CHAT_ACTION_TOOL_IDS = [
   ...ARCHITECT_STRATEGY_GUARDED_TOOL_IDS,
   ...ARCHITECT_PLAN_CHAT_TOOL_IDS,
+  "agsdl_get",
+  "agsdl_update",
 ] as const;
 
 export const ARCHITECT_CHAT_ACTION_TOOL_IDS = [
