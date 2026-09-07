@@ -399,11 +399,12 @@ export class MacroPilotNativeClient {
       deviceSession: this.persisted.deviceSession,
       instance: this.persisted.instance,
       instanceAccess: this.persisted.instanceAccess,
-      attempt: this.persisted.attempt,
+      attempt: this.persisted.deviceSession ? null : this.persisted.attempt,
       status: this.persisted.deviceSession ? 'offline' : configured ? 'signed_out' : 'unconfigured',
       lastError: null,
     });
     if (!this.persisted.deviceSession) return this.publicState;
+    await this.finishClaimCleanup();
     try {
       const response = await this.request<{ account: PilotAccount; device_session: PilotDeviceSession }>(
         'GET', '/me', undefined, { authenticated: true },
@@ -573,6 +574,10 @@ export class MacroPilotNativeClient {
     if (!attempt?.identifiedAccount || attempt.identifiedAccount.account_id !== accountId) {
       throw new PilotClientError('invalid_configuration');
     }
+    if (this.dependencies.now().getTime() >= new Date(attempt.expiresAt).getTime()) {
+      await this.clearAttempt();
+      throw new PilotClientError('unauthorized');
+    }
     const [pollSecret, claimSecret] = await Promise.all([
       this.readSecret('poll_secret', attempt.attemptKey),
       this.readSecret('claim_secret', attempt.attemptKey),
@@ -583,18 +588,24 @@ export class MacroPilotNativeClient {
       transport_version: TRANSPORT_VERSION,
       account_id: accountId,
       claim_secret: claimSecret,
-    }, { authorizationToken: pollSecret });
+    }, { authorizationToken: pollSecret }).catch(async (error: unknown) => {
+      if (error instanceof PilotClientError && (error.code === 'unauthorized' || error.code === 'not_found')) {
+        await this.clearAttempt();
+      }
+      throw error;
+    });
     const data = response.data!;
     const sessionScope = this.secretScope('session_token', data.device_session.ref.session_id);
     await this.dependencies.secretWrite(sessionScope, data.session_token);
     try {
-      await this.clearAttemptSecrets(attempt);
-      await this.persist({ account: data.account, deviceSession: data.device_session, attempt: null });
+      // Keep the attempt identifier until its secrets have been cleaned up.
+      await this.persist({ account: data.account, deviceSession: data.device_session });
     } catch {
       await this.dependencies.secretDelete(sessionScope).catch(() => undefined);
       this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
       throw new PilotClientError('vault_unavailable');
     }
+    await this.finishClaimCleanup();
     this.publish({
       account: data.account,
       deviceSession: data.device_session,
@@ -712,6 +723,17 @@ export class MacroPilotNativeClient {
     return { revocationConfirmed };
   }
 
+  private async finishClaimCleanup(): Promise<void> {
+    const attempt = this.persisted?.attempt;
+    if (!this.persisted?.deviceSession || !attempt) return;
+    try {
+      await this.clearAttemptSecrets(attempt);
+      await this.persist({ attempt: null });
+    } catch {
+      // The session is durable. Retain the attempt identifier to retry cleanup on startup.
+    }
+  }
+
   private async clearAttemptSecrets(attempt: PilotAuthAttempt): Promise<void> {
     await Promise.all([
       this.dependencies.secretDelete(this.secretScope('claim_secret', attempt.attemptKey)),
@@ -736,6 +758,7 @@ export class MacroPilotNativeClient {
         throw new PilotClientError('vault_unavailable');
       }
     }
+    if (this.persisted?.attempt) await this.clearAttemptSecrets(this.persisted.attempt);
     await this.persist({ account: null, deviceSession: null, instanceAccess: null, attempt: null });
     this.publish({ account: null, deviceSession: null, instanceAccess: null, attempt: null, status: 'signed_out' });
   }

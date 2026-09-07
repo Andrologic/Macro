@@ -200,6 +200,68 @@ describe('MacroPilotNativeClient', () => {
     });
   });
 
+  it('conserve la tentative après une panne de persistance de session et permet son rejeu', async () => {
+    const claim = { transport_version: '1.0', account, device_session: session, session_token: validSecret(8) };
+    const harness = createHarness([
+      jsonResponse({ transport_version: '1.0', attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }, 201),
+      jsonResponse({ transport_version: '1.0', status: 'identified', account }),
+      jsonResponse(claim), jsonResponse(claim),
+    ]);
+    await harness.client.initialize();
+    await harness.client.connect('https://pilot.example.com', 'Studio Mac');
+    await harness.client.pollAuth();
+    const persist = harness.dependencies.setStateValue;
+    harness.dependencies.setStateValue = async (key, value) => {
+      if ((value as { deviceSession?: unknown }).deviceSession) throw new Error('metadata unavailable');
+      return persist(key, value);
+    };
+    await expect(harness.client.confirmAccount(account.account_id)).rejects.toMatchObject({ code: 'vault_unavailable' });
+    expect([...harness.secrets.keys()].map((key) => key.split(':')[0]).sort()).toEqual(['claim_secret', 'poll_secret']);
+    harness.dependencies.setStateValue = persist;
+    const restarted = new MacroPilotNativeClient(harness.dependencies);
+    await restarted.initialize();
+    expect(restarted.getState().attempt?.identifiedAccount).toEqual(account);
+    await restarted.confirmAccount(account.account_id);
+    expect(restarted.getState()).toMatchObject({ deviceSession: session, attempt: null, status: 'connected' });
+    expect([...harness.secrets.keys()]).toEqual([`session_token:${session.ref.session_id}`]);
+  });
+
+  it('libère le formulaire de connexion si le relais refuse une ancienne tentative', async () => {
+    const harness = createHarness([
+      jsonResponse({ transport_version: '1.0', attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }, 201),
+      jsonResponse({ transport_version: '1.0', status: 'identified', account }),
+      jsonResponse({ code: 'unauthorized' }, 401),
+    ]);
+    await harness.client.initialize();
+    await harness.client.connect('https://pilot.example.com', 'Studio Mac');
+    await harness.client.pollAuth();
+    await expect(harness.client.confirmAccount(account.account_id)).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(harness.client.getState()).toMatchObject({ attempt: null, deviceSession: null, status: 'signed_out' });
+    expect(harness.secrets.size).toBe(0);
+  });
+
+  it('conserve la session durable et reprend le nettoyage des secrets au redémarrage', async () => {
+    const harness = createHarness([
+      jsonResponse({ transport_version: '1.0', attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }, 201),
+      jsonResponse({ transport_version: '1.0', status: 'identified', account }),
+      jsonResponse({ transport_version: '1.0', account, device_session: session, session_token: validSecret(8) }),
+      jsonResponse({ transport_version: '1.0', account, device_session: session }),
+    ]);
+    await harness.client.initialize();
+    await harness.client.connect('https://pilot.example.com', 'Studio Mac');
+    await harness.client.pollAuth();
+    const remove = harness.dependencies.secretDelete;
+    harness.dependencies.secretDelete = async () => { throw new Error('vault unavailable'); };
+    await harness.client.confirmAccount(account.account_id);
+    expect(harness.client.getState()).toMatchObject({ status: 'connected', deviceSession: session, attempt: null });
+    expect(harness.secrets.size).toBe(3);
+    harness.dependencies.secretDelete = remove;
+    const restarted = new MacroPilotNativeClient(harness.dependencies);
+    await restarted.initialize();
+    expect(restarted.getState()).toMatchObject({ status: 'connected', deviceSession: session, attempt: null });
+    expect([...harness.secrets.keys()]).toEqual([`session_token:${session.ref.session_id}`]);
+  });
+
   it('nettoie les deux secrets si la persistance de la tentative échoue', async () => {
     const harness = createHarness([
       jsonResponse({ transport_version: '1.0', attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }, 201),
