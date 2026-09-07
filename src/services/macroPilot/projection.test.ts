@@ -6,7 +6,9 @@ import type {
   Project,
   Task,
 } from '../../types';
-import { assertA1, PilotError } from './protocol';
+import { assertA1, object, PilotError } from './protocol';
+import { PilotKernel } from './kernel';
+import commandFixture from '../../../contracts/macro-pilot/v1/fixtures/valid/task-reply-command.json';
 import {
   projectDesktopSnapshots,
   toolApprovalSourceKey,
@@ -94,6 +96,53 @@ const assertAllA1 = (input: ReturnType<typeof projectDesktopSnapshots>): void =>
 };
 
 describe('projectDesktopSnapshots', () => {
+  it('rejects forged run.start commands against the actual blocked projection before dispatch', async () => {
+    for (const exclusion of [{ draft: true }, { task_source: 'plan_finalization' as const }, { is_blocked: true }]) {
+      const input = baseInput({ tasks: [task(exclusion)] });
+      let persisted: string | null = null;
+      let executions = 0;
+      const kernel = new PilotKernel({
+        instanceId: input.instance.instanceId,
+        storage: { load: async () => persisted, compareAndSwap: async (previous, next) => {
+          if (previous !== persisted) return false;
+          persisted = next; return true;
+        } },
+        project: (previous, now) => {
+          const result = projectDesktopSnapshots(input, previous as Parameters<typeof projectDesktopSnapshots>[1], now);
+          return { snapshots: result.snapshots.tasks, state: result.state };
+        },
+        authorize: async () => new Date(Date.now() + 5000).toISOString(),
+        execute: async () => { executions++; },
+      });
+      await kernel.initialize();
+      const snapshot = projectDesktopSnapshots(input, undefined, new Date()).snapshots.tasks[0];
+      const command = { ...commandFixture, kind: 'run.start', target: snapshot.ref,
+        expected_revision: snapshot.revision, payload: { run_id: 'run:forged-start' } };
+      const result = await kernel.handle({ transport_version: '1.0', type: 'delivery', exchange_id: 'exchange:forged-start',
+        delivery_id: 'delivery:forged-start', actor: command.issued_by, message: command });
+      expect(object(object(result.message).error).code).toBe('conflict');
+      expect(executions).toBe(0);
+      expect(kernel.getKnownRuns()).toEqual([]);
+      expect(kernel.indeterminate()).toEqual([]);
+      expect(object(JSON.parse(persisted!)).journal).toEqual({});
+    }
+  });
+
+  it('publishes ineligible starts as blocked and revises them when eligibility changes', () => {
+    for (const status of ['Pending', 'Failed'] as const) {
+      for (const exclusion of [{ draft: true }, { task_source: 'plan_finalization' as const }, { is_blocked: true }]) {
+        const first = projectDesktopSnapshots(baseInput({ tasks: [task({ status })] }), undefined, '2026-02-01T12:00:00Z');
+        const blocked = projectDesktopSnapshots(baseInput({ tasks: [task({ status, ...exclusion })] }), first.state, '2026-02-01T12:01:00Z');
+        assertAllA1(blocked);
+        expect(blocked.snapshots.tasks[0].state).toBe('blocked');
+        expect(blocked.snapshots.tasks[0].revision).toBe(first.snapshots.tasks[0].revision + 1);
+        const restored = projectDesktopSnapshots(baseInput({ tasks: [task({ status })] }), blocked.state, '2026-02-01T12:02:00Z');
+        expect(restored.snapshots.tasks[0].state).toBe(status === 'Pending' ? 'queued' : 'failed');
+        expect(restored.snapshots.tasks[0].revision).toBe(blocked.snapshots.tasks[0].revision + 1);
+      }
+    }
+  });
+
   it('keeps identities, observations, and revisions stable when only observation time changes', () => {
     const first = projectDesktopSnapshots(baseInput(), undefined, '2026-02-01T12:00:00Z');
     const second = projectDesktopSnapshots(baseInput(), first.state, '2026-02-02T12:00:00Z');

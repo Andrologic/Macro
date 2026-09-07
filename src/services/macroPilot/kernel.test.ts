@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { PilotKernel, type KernelDependencies, type KernelStorage } from './kernel';
-import { object, type Command, type Delivery, type Resource } from './protocol';
+import { object, PilotError, type Command, type Delivery, type Resource } from './protocol';
+import { PilotStartPreflightRejection } from './startEligibility';
 import reviewFixture from '../../../contracts/macro-pilot/v1/fixtures/valid/review.json';
 import taskFixture from '../../../contracts/macro-pilot/v1/fixtures/valid/task.json';
 import decisionFixture from '../../../contracts/macro-pilot/v1/fixtures/valid/decision.json';
@@ -38,6 +39,59 @@ const resumeDelivery = (delivery: Delivery, point: Record<string, unknown>, limi
 });
 
 describe('Pilot durable desktop dispatch', () => {
+  it('removes a provisional run when eligibility changes during persistence before dispatch', async () => {
+    const env = setup();
+    const task: Resource = { ...env.task, state: 'queued' }; delete task.reply_context;
+    env.setTask(task);
+    const persist = env.storage.compareAndSwap;
+    env.storage.compareAndSwap = async (previous, next) => {
+      const saved = await persist(previous, next);
+      if (saved && JSON.parse(next).runs.length && env.task.state === 'queued') {
+        env.setTask({ ...env.task, state: 'blocked', revision: env.task.revision + 1 });
+      }
+      return saved;
+    };
+    let executions = 0;
+    env.deps.execute = async () => { executions++; return { conversationId: 'conversation:test' }; };
+    const delivery = { ...env.delivery, message: { ...env.delivery.message, kind: 'run.start', payload: { run_id: 'run:eligibility-race' } } };
+    const kernel = new PilotKernel(env.deps); await kernel.initialize();
+    const first = await kernel.handle(delivery);
+    expect(response(first).outcome).toBe('rejected');
+    expect(object(response(first).error).code).toBe('stale_revision');
+    expect(executions).toBe(0);
+    expect(kernel.getKnownRuns()).toEqual([]);
+    expect(kernel.indeterminate()).toEqual([]);
+    const restarted = new PilotKernel(env.deps); await restarted.initialize();
+    expect(restarted.getKnownRuns()).toEqual([]);
+    expect(await restarted.handle(delivery)).toEqual(first);
+    expect(executions).toBe(0);
+  });
+
+  it('does not treat ordinary errors or a preflight error after the effect gate as proof of no effect', async () => {
+    for (const enteredGate of [false, true]) {
+      const env = setup();
+      const task: Resource = { ...env.task, state: 'queued' }; delete task.reply_context;
+      env.setTask(task);
+      let executions = 0;
+      env.deps.execute = async (_command, guard) => {
+        executions++;
+        if (enteredGate) {
+          await guard.authorizeBeforeEffect();
+          throw new PilotStartPreflightRejection('unavailable');
+        }
+        throw new PilotError('unavailable');
+      };
+      const delivery = { ...env.delivery, message: { ...env.delivery.message, kind: 'run.start', payload: { run_id: 'run:uncertain' } } };
+      const kernel = new PilotKernel(env.deps); await kernel.initialize();
+      expect(object(response(await kernel.handle(delivery)).error).code).toBe('conflict');
+      const restarted = new PilotKernel(env.deps); await restarted.initialize();
+      expect(restarted.indeterminate()).toHaveLength(1);
+      expect(restarted.getKnownRuns()[0].interruptedAt).toBeString();
+      await restarted.handle(delivery);
+      expect(executions).toBe(1);
+    }
+  });
+
   it('applies one effect and replays the stored result after restart or lost response',async()=>{
     const env=setup(); const kernel=new PilotKernel(env.deps); await kernel.initialize();
     const first=await kernel.handle(env.delivery); expect(response(first).outcome).toBe('accepted'); expect(env.effects).toBe(1);
