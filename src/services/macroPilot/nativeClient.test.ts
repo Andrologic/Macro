@@ -339,4 +339,19 @@ describe('MacroPilotNativeClient', () => {
     const revokedRequestHeaders = new Headers(harness.requests.at(-1)!.init.headers);
     expect(revokedRequestHeaders.get('authorization')).toBe(`Bearer ${sessionSecret}`);
   });
+  it('uses literal A1 colons in route identifiers without decoding path separators', async () => {
+    const harness = createHarness([
+      jsonResponse({}),
+      jsonResponse({}),
+    ]);
+    await harness.client.initialize();
+    // Configure without making an auth request; an existing local profile is enough.
+    harness.values.macro_pilot_native_v1 = { configurationId: 'config:test', relayOrigin: 'https://pilot.example.com' };
+    await harness.client.initialize();
+    await harness.client.request('GET', '/instances/instance%3Astudio');
+    await harness.client.request('GET', '/instances/instance%3astudio%2Fextra');
+    expect(harness.requests[0].url).toBe('https://pilot.example.com/pilot/v1/instances/instance:studio');
+    expect(harness.requests[1].url).toBe('https://pilot.example.com/pilot/v1/instances/instance:studio%2Fextra');
+  });
+
 });

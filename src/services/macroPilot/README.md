@@ -69,3 +69,23 @@ The implemented scope is the accepted A1 core. Per-project permissions,
 conversation reading, actual diff content and global account/session lifecycle
 remain contract complements. Reviews contain commit references and a verdict;
 they do not merge or publish changes.
+
+For an opt-in cross-check, independently start a synthetic relay fixture and run
+`bun dev/pilot-relay-cross-check.ts http://127.0.0.1:PORT`. The script accepts only
+loopback, maps its test transport from a fixed HTTPS origin, and uses in-memory
+credentials and task effects. The production HTTPS rule stays unchanged. It
+exercises native authentication, association, scoped bootstrap/resume, commands,
+replay after reconnect and disconnect through the real HTTP relay. It imports
+no relay implementation and requires no external account.
+
+Resume streams are scoped before sequencing: instance and workspace bootstraps
+have different stream IDs, and unrelated events do not create sequence gaps.
+Removal or departure from a scope expires its old stream and frozen pages, so
+clients must bootstrap again instead of retaining deleted resources. Storage
+version 2 preserves the command journal while expiring version 1 mixed-scope
+cursors. The cache bounds are 128 streams, 2,000 events per stream and 128 pages.
+
+Vite generates standalone schema validators on the build machine for both dev
+and production. The WebView imports that module, never the Ajv compiler. The
+production CSP remains unchanged; tests execute generated validators with
+`Function` blocked and verify the Vite development import, including HMR URLs.

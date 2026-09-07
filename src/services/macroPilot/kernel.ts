@@ -16,16 +16,35 @@ interface JournalEntry {
   runId?: string; fingerprint: string; commandId: string; target: Record<string, string>;
   previousRevision: number; observedAt: string; status: 'executing' | 'indeterminate' | 'finished'; result?: Wire;
 }
-interface KernelState {
-  version: 1; projection: unknown; snapshots: Resource[]; streamId: string; sequence: number;
-  events: Wire[]; journal: Record<string, JournalEntry>; reviews: Resource[]; runs: KnownRun[];
+interface ScopedStream {
+  streamId: string; scope: Wire; sequence: number; events: Wire[]; lastUsedAt: number;
 }
-interface PageView { actor: string; scope: string; itemType: unknown; items: Resource[]; sequence: number; expiresAt: number }
+interface KernelState {
+  version: 2; projection: unknown; snapshots: Resource[]; streams: Record<string, ScopedStream>;
+  journal: Record<string, JournalEntry>; reviews: Resource[]; runs: KnownRun[];
+}
+interface LegacyKernelState {
+  version: 1; projection: unknown; snapshots: Resource[]; streamId: string; sequence: number; events: Wire[];
+  journal: Record<string, JournalEntry>; reviews: Resource[]; runs: KnownRun[];
+}
+interface PageView { actor: string; scope: string; itemType: unknown; items: Resource[]; streamId?: string; sequence?: number; expiresAt: number }
 const EVENT_LIMIT = 2000;
+const STREAM_LIMIT = 128;
+const PAGE_LIMIT = 128;
 const MAX_BYTES = 1_048_576;
 const immutable = <T>(value: T): T => structuredClone(value);
 const keyOf = (resource: { ref: Record<string, string> }) => stableJson(resource.ref);
-const inScope = (ref: Record<string, string>, scope: Wire): boolean => Object.entries(scope).every(([key, value]) => key === 'type' || ref[key] === value);
+const directRefMatch = (ref: Record<string, string>, scope: Wire): boolean =>
+  Object.entries(scope).every(([key, value]) => key === 'type' || ref[key] === value);
+const inScope = (resource: Resource, scope: Wire, snapshots: Resource[]): boolean => {
+  if (directRefMatch(resource.ref, scope)) return true;
+  if (scope.type !== 'project' || !resource.ref.task_id || resource.ref.workspace_id !== scope.workspace_id) return false;
+  const task = resource.type === 'task'
+    ? resource
+    : snapshots.find(candidate => candidate.type === 'task' && candidate.ref.instance_id === resource.ref.instance_id &&
+      candidate.ref.workspace_id === resource.ref.workspace_id && candidate.ref.task_id === resource.ref.task_id);
+  return Array.isArray(task?.project_ids) && task.project_ids.includes(scope.project_id);
+};
 export class PilotKernel {
   private state!: KernelState;
   private persisted: string | null = null;
@@ -44,17 +63,32 @@ export class PilotKernel {
       if (this.ready) return;
       this.persisted = await this.dependencies.storage.load();
       if (this.persisted) {
-        const parsed = JSON.parse(this.persisted) as KernelState;
-        if (parsed.version !== 1 || !Array.isArray(parsed.snapshots) || !Array.isArray(parsed.events) || !parsed.journal || !parsed.streamId) throw new PilotError('unavailable');
-        parsed.snapshots.forEach(assertA1); parsed.events.forEach(assertA1);
-        this.state = parsed;
+        const parsed = JSON.parse(this.persisted) as KernelState | LegacyKernelState;
+        if (![1, 2].includes(parsed.version) || !Array.isArray(parsed.snapshots) || !parsed.journal || !Array.isArray(parsed.reviews) || !Array.isArray(parsed.runs)) throw new PilotError('unavailable');
+        parsed.snapshots.forEach(assertA1);
+        if (parsed.version === 2) {
+          if (!parsed.streams || typeof parsed.streams !== 'object' || Object.keys(parsed.streams).length > STREAM_LIMIT) throw new PilotError('unavailable');
+          for (const [scopeKey, stream] of Object.entries(parsed.streams)) {
+            if (scopeKey !== stableJson(stream.scope) || !stream.streamId || !Number.isSafeInteger(stream.sequence) || stream.sequence < 0 ||
+              !Number.isFinite(stream.lastUsedAt) || !Array.isArray(stream.events) || stream.events.length > EVENT_LIMIT) throw new PilotError('unavailable');
+            stream.events.forEach(assertA1);
+            if (stream.events.some((event, index) => event.stream_id !== stream.streamId || event.sequence !== stream.sequence - stream.events.length + index + 1 || event.resume_cursor !== this.cursor(stream, Number(event.sequence)))) throw new PilotError('unavailable');
+          }
+          this.state = parsed;
+        } else {
+          // Version 1 mixed every scope in one stream. Preserve canonical state,
+          // but invalidate its cursors rather than assigning that history to a scope.
+          if (!parsed.streamId || !Number.isSafeInteger(parsed.sequence) || !Array.isArray(parsed.events)) throw new PilotError('unavailable');
+          parsed.events.forEach(assertA1);
+          this.state = { version: 2, projection: parsed.projection, snapshots: parsed.snapshots, streams: {}, journal: parsed.journal, reviews: parsed.reviews, runs: parsed.runs };
+        }
         for (const entry of Object.values(this.state.journal)) if (entry.status === 'executing') {
           entry.status = 'indeterminate';
           const run = this.state.runs.find(run => run.runId === entry.runId);
           if (run) run.interruptedAt = this.date();
         }
       } else {
-        this.state = { version: 1, projection: null, snapshots: [], streamId: `stream:${crypto.randomUUID()}`, sequence: 0, events: [], journal: {}, reviews: [], runs: [] };
+        this.state = { version: 2, projection: null, snapshots: [], streams: {}, journal: {}, reviews: [], runs: [] };
       }
       await this.refresh(); this.ready = true;
     });
@@ -75,6 +109,20 @@ export class PilotKernel {
   private async refresh() {
     const current = this.project();
     const old = new Map(this.state.snapshots.map(snapshot => [keyOf(snapshot), snapshot]));
+    const currentByKey = new Map(current.snapshots.map(snapshot => [keyOf(snapshot), snapshot]));
+    const invalidatedScopes = new Set<string>();
+    for (const previous of this.state.snapshots) {
+      const next = currentByKey.get(keyOf(previous));
+      if (next && same(previous, next)) continue;
+      for (const [pageId, page] of this.pages) {
+        const pageScope = object(JSON.parse(page.scope));
+        if (inScope(previous, pageScope, this.state.snapshots) && (!next || !inScope(next, pageScope, current.snapshots))) this.pages.delete(pageId);
+      }
+      for (const [scopeKey, stream] of Object.entries(this.state.streams)) {
+        if (inScope(previous, stream.scope, this.state.snapshots) && (!next || !inScope(next, stream.scope, current.snapshots))) invalidatedScopes.add(scopeKey);
+      }
+    }
+    for (const scopeKey of invalidatedScopes) this.invalidateStream(scopeKey);
     for (const snapshot of current.snapshots) {
       const previous = old.get(keyOf(snapshot));
       if (previous && snapshot.revision < previous.revision) throw new PilotError('conflict');
@@ -85,17 +133,37 @@ export class PilotKernel {
       if (snapshot.type === 'decision' && ['pending', 'resolved'].includes(String(snapshot.state))) eventType = snapshot.state === 'pending' ? 'decision.requested' : 'decision.resolved';
       if (snapshot.type === 'tool_approval') eventType = `tool_approval.${snapshot.state === 'pending' ? 'requested' : snapshot.state}`;
       if (eventType) {
-        const sequence = ++this.state.sequence;
-        const event = { contract_version: '1.0', type: 'event', event_type: eventType, stream_id: this.state.streamId, sequence,
-          resume_cursor: this.cursor(sequence), emitted_at: this.date(), resource: snapshot.ref, revision: snapshot.revision, snapshot };
-        assertA1(event); this.state.events.push(event);
+        for (const stream of Object.values(this.state.streams)) {
+          if (!inScope(snapshot, stream.scope, current.snapshots)) continue;
+          const sequence = ++stream.sequence;
+          const event = { contract_version: '1.0', type: 'event', event_type: eventType, stream_id: stream.streamId, sequence,
+            resume_cursor: this.cursor(stream, sequence), emitted_at: this.date(), resource: snapshot.ref, revision: snapshot.revision, snapshot };
+          assertA1(event); stream.events.push(event); stream.events = stream.events.slice(-EVENT_LIMIT);
+        }
       }
     }
-    this.state.events = this.state.events.slice(-EVENT_LIMIT);
     this.state.snapshots = immutable(current.snapshots); this.state.projection = current.state;
     await this.save();
   }
-  private cursor(sequence: number) { return `${this.state.streamId}:${sequence}`; }
+  private cursor(stream: ScopedStream, sequence: number) { return `${stream.streamId}:${sequence}`; }
+  private invalidateStream(scopeKey: string) {
+    const stream = this.state.streams[scopeKey];
+    if (!stream) return;
+    delete this.state.streams[scopeKey];
+    for (const [pageId, page] of this.pages) if (page.streamId === stream.streamId || page.scope === scopeKey) this.pages.delete(pageId);
+  }
+  private streamFor(scope: Wire): ScopedStream {
+    const scopeKey = stableJson(scope);
+    let stream = this.state.streams[scopeKey];
+    if (stream) { stream.lastUsedAt = this.now(); return stream; }
+    while (Object.keys(this.state.streams).length >= STREAM_LIMIT) {
+      const oldest = Object.entries(this.state.streams).sort(([, left], [, right]) => left.lastUsedAt - right.lastUsedAt)[0];
+      this.invalidateStream(oldest[0]);
+    }
+    stream = { streamId: `stream:${crypto.randomUUID()}`, scope: immutable(scope), sequence: 0, events: [], lastUsedAt: this.now() };
+    this.state.streams[scopeKey] = stream;
+    return stream;
+  }
   private currentTarget(command: Command): Resource {
     const resource = this.project().snapshots.find(snapshot => same(snapshot.ref, command.target));
     if (!resource) throw new PilotError('invalid_reference');
@@ -136,7 +204,7 @@ export class PilotKernel {
         }
         await this.dependencies.authorize(delivery); this.assertOpen();
         await this.refresh(); this.assertOpen();
-        if (request.type === 'page_request') return this.page(delivery);
+        if (request.type === 'page_request') return await this.page(delivery);
         if (request.type === 'resume_request') return this.envelope(delivery, this.resume(request));
         throw new PilotError('validation_failed');
       } catch (error) {
@@ -235,31 +303,44 @@ export class PilotKernel {
       entry.status = 'finished'; await this.save(); return immutable(entry.result);
     }
   }
-  private page(delivery: Delivery): Wire {
+  private async page(delivery: Delivery): Promise<Wire> {
     const request = delivery.message; const scope = object(request.scope);
     if (scope.instance_id !== this.dependencies.instanceId) throw new PilotError('invalid_reference');
-    const actor = stableJson(delivery.actor); let view: PageView; let offset = 0; let id: string;
+    const scopeKey = stableJson(scope); const actor = stableJson(delivery.actor); let view: PageView; let offset = 0; let id: string;
     for (const [key, value] of this.pages) if (value.expiresAt <= this.now()) this.pages.delete(key);
     if (request.cursor) {
       const parts = String(request.cursor).split('/'); id = parts[0]; offset = Number(parts[1]);
       const found = this.pages.get(id);
-      if (!found || !Number.isSafeInteger(offset) || offset < 0 || found.actor !== actor || found.scope !== stableJson(scope) || found.itemType !== request.item_type || found.sequence < this.state.sequence - this.state.events.length) throw new PilotError('cursor_expired');
+      const stream = found?.streamId ? this.state.streams[scopeKey] : undefined;
+      if (!found || !Number.isSafeInteger(offset) || offset < 0 || found.actor !== actor || found.scope !== scopeKey || found.itemType !== request.item_type ||
+        (found.streamId && (!stream || stream.streamId !== found.streamId || found.sequence === undefined || found.sequence < stream.sequence - stream.events.length))) throw new PilotError('cursor_expired');
       view = found;
     } else {
       id = `page:${crypto.randomUUID()}`;
-      view = { actor, scope: stableJson(scope), itemType: request.item_type, items: immutable(this.state.snapshots.filter(snapshot => snapshot.type === request.item_type && inScope(snapshot.ref, scope))), sequence: this.state.sequence, expiresAt: this.now() + 300_000 };
+      const stream = request.item_type === 'task' ? this.streamFor(scope) : undefined;
+      view = { actor, scope: scopeKey, itemType: request.item_type,
+        items: immutable(this.state.snapshots.filter(snapshot => snapshot.type === request.item_type && inScope(snapshot, scope, this.state.snapshots))),
+        ...(stream ? { streamId: stream.streamId, sequence: stream.sequence } : {}), expiresAt: this.now() + 300_000 };
+      while (this.pages.size >= PAGE_LIMIT) this.pages.delete(this.pages.keys().next().value!);
       this.pages.set(id, view);
+      // The stream and exact snapshot boundary must survive a restart before the
+      // bootstrap response can be observed by the relay client.
+      if (stream) await this.save();
     }
     const items = view.items.slice(offset, offset + Number(request.limit)); const next = offset + items.length;
     const message = { contract_version: '1.0', type: 'page', item_type: request.item_type, items, has_more: next < view.items.length,
       ...(next < view.items.length ? { next_cursor: `${id}/${next}` } : {}) };
-    return this.envelope(delivery, message, request.item_type === 'task' ? { stream_id: this.state.streamId, after_cursor: this.cursor(view.sequence), after_sequence: view.sequence } : undefined);
+    const stream = view.streamId ? this.state.streams[scopeKey] : undefined;
+    if (view.streamId && (!stream || stream.streamId !== view.streamId || view.sequence === undefined)) throw new PilotError('cursor_expired');
+    return this.envelope(delivery, message, stream ? { stream_id: stream.streamId, after_cursor: this.cursor(stream, view.sequence!), after_sequence: view.sequence } : undefined);
   }
   private resume(request: Wire): Wire {
     const sequence = Number(request.after_sequence);
-    if (request.stream_id !== this.state.streamId || request.after_cursor !== this.cursor(sequence) || sequence > this.state.sequence || sequence < this.state.sequence - this.state.events.length) throw new PilotError('cursor_expired');
-    const events = this.state.events.filter(event => Number(event.sequence) > sequence).slice(0, Number(request.limit));
-    return { contract_version: '1.0', type: 'event_batch', stream_id: this.state.streamId, after_cursor: request.after_cursor, after_sequence: sequence,
+    const stream = Object.values(this.state.streams).find(candidate => candidate.streamId === request.stream_id);
+    if (!stream || request.after_cursor !== this.cursor(stream, sequence) || sequence > stream.sequence || sequence < stream.sequence - stream.events.length) throw new PilotError('cursor_expired');
+    stream.lastUsedAt = this.now();
+    const events = stream.events.filter(event => Number(event.sequence) > sequence).slice(0, Number(request.limit));
+    return { contract_version: '1.0', type: 'event_batch', stream_id: stream.streamId, after_cursor: request.after_cursor, after_sequence: sequence,
       events, next_sequence: events.at(-1)?.sequence ?? sequence, next_cursor: events.at(-1)?.resume_cursor ?? request.after_cursor };
   }
   getKnownRuns(): KnownRun[] { return immutable(this.state.runs); }

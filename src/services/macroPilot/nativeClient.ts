@@ -234,7 +234,9 @@ const safePath = (path: string): string => {
   if (!path.startsWith('/') || path.includes('://') || path.includes('..') || path.includes('?') || path.includes('#')) {
     throw new PilotClientError('invalid_configuration');
   }
-  return path;
+  // A1 opaque identifiers use ':' as a literal path character in relay routes.
+  // Preserve it while leaving reserved separators such as encoded '/' escaped.
+  return path.replace(/%3a/gi, ':');
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

@@ -1,11 +1,4 @@
-import Ajv2020 from 'ajv/dist/2020';
-import addFormats from 'ajv-formats';
-import common from '../../../contracts/macro-pilot/v1/common.schema.json';
-import identity from '../../../contracts/macro-pilot/v1/identity.schema.json';
-import supervision from '../../../contracts/macro-pilot/v1/supervision.schema.json';
-import protocol from '../../../contracts/macro-pilot/v1/protocol.schema.json';
-import root from '../../../contracts/macro-pilot/v1/schema.json';
-import transport from '../../../contracts/macro-pilot/transport/schema.json';
+import { deliveryValidate, resultValidate, schemaValidate } from './schemaValidators';
 
 export type Wire = Record<string, unknown>;
 export type Resource = Wire & { type: string; ref: Record<string, string>; revision: number };
@@ -66,12 +59,6 @@ function semantic(value: unknown): boolean {
     default: return true;
   }
 }
-const ajv = new Ajv2020({ strict: false, allErrors: false });
-addFormats(ajv);
-for (const schema of [common, identity, supervision, protocol, root, transport]) ajv.addSchema(schema);
-const schemaValidate = ajv.getSchema(root.$id)!;
-const resultValidate = ajv.getSchema(`${transport.$id}#/$defs/deliveryResult`)!;
-const deliveryValidate = ajv.getSchema(`${transport.$id}#/$defs/delivery`)!;
 export const validateA1 = (value: unknown): boolean => Boolean(schemaValidate(value)) && semantic(value);
 export function assertA1(value: unknown): asserts value is Wire {
   if (!validateA1(value)) throw new PilotError('validation_failed');
