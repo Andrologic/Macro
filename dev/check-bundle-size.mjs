@@ -9,13 +9,17 @@ const BUDGETS = [
   // Macro 0.1.5 adds attachments, archives, search, diagnostics, and task review.
   // Linux measures about 1,349,500 B for entry, 57,300 B for TaskQueue,
   // 130,100 B for the largest shared locale, and 143,800 B for ja.
-  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_355_000 },
+  // Pilot adds desktop integration and translated connection/access settings.
+  // The measured production build is 1,355,675 B for entry, 134,029 B for fr,
+  // 133,937 B for ko, and 148,180 B for ja. Keep similar headroom to 0.1.5.
+  // Pilot's runtime remains a separate 536,156 B chunk under the unchanged cap.
+  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_361_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 115_000 },
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 58_000 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
-  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 132_000 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 146_000 },
+  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 136_500 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 150_500 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
