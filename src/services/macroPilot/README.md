@@ -89,3 +89,9 @@ Vite generates standalone schema validators on the build machine for both dev
 and production. The WebView imports that module, never the Ajv compiler. The
 production CSP remains unchanged; tests execute generated validators with
 `Function` blocked and verify the Vite development import, including HMR URLs.
+
+Add `--project-scope` to the cross-check to exercise the public task-by-project
+page fixture. Relay D at `81f7828b` rejects that valid result with HTTP 400
+`invalid_reference`; the opt-in check fails until D accepts task membership via
+`project_ids`. C preserves this contract behavior. Reviews with an explicit
+`ref.project_id` never inherit another project from their task.

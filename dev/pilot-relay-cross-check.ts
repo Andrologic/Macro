@@ -14,6 +14,7 @@ const loopback = new URL(process.argv[2] || '');
 assert.equal(loopback.protocol, 'http:');
 assert.equal(loopback.hostname, '127.0.0.1');
 assert.ok(loopback.port && loopback.pathname === '/' && !loopback.search && !loopback.hash && !loopback.username && !loopback.password);
+const producerFailures: string[] = [];
 const configuredOrigin = 'https://pilot-fixture.invalid';
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const id = (prefix: string) => `${prefix}:${crypto.randomUUID()}`;
@@ -30,6 +31,11 @@ function device() {
         redirect: 'error',
         signal: options?.signal ?? AbortSignal.timeout(30_000),
       });
+      if (!response.ok && requested.pathname.endsWith('/result')) {
+        const failure = await response.clone().json().catch(() => ({}));
+        const code = object(object(failure).error).code;
+        producerFailures.push(`${response.status}:${code === 'invalid_reference' ? code : 'rejected'}`);
+      }
       // Test-only origin mapping. Production still requires HTTPS and refuses redirects.
       return new Response(response.body, { status: response.status, headers: response.headers });
     },
@@ -112,6 +118,7 @@ try {
     for (let attempt = 0; attempt < 100; attempt++) {
       const result = await companion.client.request('GET', `${route}/exchanges/${encodeURIComponent(exchangeId)}`, undefined, { authenticated: true });
       if (result.status === 200) return object(result.data);
+      if (producerFailures.length) throw Error(`Relay rejected the canonical result: ${producerFailures.join(', ')}`);
       await delay(50);
     }
     throw Error('Timed out waiting for canonical delivery result');
@@ -120,6 +127,12 @@ try {
   const workspaceScope = { type: 'workspace', instance_id: instanceId, workspace_id: task.ref.workspace_id };
   const workspacePage = await exchange({ contract_version: '1.0', type: 'page_request', item_type: 'task', scope: workspaceScope, limit: 10 });
   assert.equal(object(workspacePage.message).type, 'page');
+  if (process.argv.includes('--project-scope')) {
+    const projectPage = await exchange({ contract_version: '1.0', type: 'page_request', item_type: 'task', scope: { ...workspaceScope, type: 'project', project_id: 'project:macro-desktop' }, limit: 10 });
+    assert.equal(object(projectPage.message).type, 'page');
+    assert.equal((object(projectPage.message).items as unknown[]).length, 1);
+    console.log('PASS contract project task page through the relay');
+  }
   assert.notEqual(object(workspacePage.resume_point).stream_id, object(page.resume_point).stream_id);
   assert.equal(object(page.message).type, 'page');
   assert.equal((object(page.message).items as unknown[]).length, 1);

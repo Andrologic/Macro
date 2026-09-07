@@ -107,16 +107,50 @@ describe('Pilot durable desktop dispatch', () => {
     expect(workspaceEvents.map(event => event.sequence)).toEqual([1]);
     expect(workspaceEvents[0].resource).toEqual(env.task.ref);
   });
-  it('matches multi-project task membership for project-scoped descendant events', async () => {
+  it('matches descendant events through their workspace references', async () => {
     const env = setup(); const decision = structuredClone(decisionFixture) as Resource;
     env.setExtraSnapshots([decision]);
     const kernel = new PilotKernel(env.deps); await kernel.initialize();
-    const projectScope = { type: 'project', instance_id: env.deps.instanceId, workspace_id: env.task.ref.workspace_id, project_id: 'project:macro-mobile' };
+    const projectScope = { type: 'workspace', instance_id: env.deps.instanceId, workspace_id: env.task.ref.workspace_id };
     const page = await kernel.handle(pageDelivery(env.delivery, projectScope));
     expect((response(page).items as Resource[]).map(item => item.ref.task_id)).toEqual([env.task.ref.task_id]);
     env.setExtraSnapshots([{ ...decision, revision: decision.revision + 1 }]); await kernel.observe();
     const batch = response(await kernel.handle(resumeDelivery(env.delivery, object(page.resume_point))));
     expect((batch.events as Array<Record<string, unknown>>).map(event => object(event.resource).decision_id)).toEqual([decision.ref.decision_id]);
+  });
+  it('keeps a review in its explicit project even when its task spans several projects', async () => {
+    const env = setup(); const kernel = new PilotKernel(env.deps); await kernel.initialize();
+    await kernel.recordReview(structuredClone(reviewFixture) as Resource);
+    const scope = { type: 'project', instance_id: env.deps.instanceId, workspace_id: env.task.ref.workspace_id, project_id: 'project:macro-mobile' };
+    const page = pageDelivery(env.delivery, scope); page.message.item_type = 'review';
+    expect(response(await kernel.handle(page)).items).toEqual([]);
+    page.message.scope = { ...scope, project_id: 'project:macro-desktop' };
+    expect((response(await kernel.handle(page)).items as Resource[]).map(review => review.ref.project_id)).toEqual(['project:macro-desktop']);
+  });
+  it('expires a project stream on task entry so existing descendants are bootstrapped', async () => {
+    const env = setup(); const decision = structuredClone(decisionFixture) as Resource;
+    env.setExtraSnapshots([decision]);
+    env.setTask({ ...env.task, project_ids: ['project:macro-desktop'], execution_targets: [{ project_id: 'project:macro-desktop', execution_mode: 'git' }] });
+    const kernel = new PilotKernel(env.deps); await kernel.initialize();
+    const scope = { type: 'project', instance_id: env.deps.instanceId, workspace_id: env.task.ref.workspace_id, project_id: 'project:macro-mobile' };
+    const first = await kernel.handle(pageDelivery(env.delivery, scope));
+    env.setTask({ ...env.task, project_ids: taskFixture.project_ids, execution_targets: taskFixture.execution_targets, revision: env.task.revision + 1 });
+    expect(object(response(await kernel.handle(resumeDelivery(env.delivery, object(first.resume_point)))).error).code).toBe('cursor_expired');
+    const decisions = pageDelivery(env.delivery, scope); decisions.message.item_type = 'decision';
+    expect((response(await kernel.handle(decisions)).items as Resource[]).map(item => item.ref.decision_id)).toEqual([decision.ref.decision_id]);
+  });
+  it('keeps a paginated snapshot frozen while its scoped stream records later changes', async () => {
+    const env = setup(); const second = structuredClone(taskFixture) as Resource;
+    second.ref = { ...second.ref, task_id: 'task:second' }; second.title = 'Second task';
+    env.setExtraSnapshots([second]);
+    const kernel = new PilotKernel(env.deps); await kernel.initialize();
+    const scope = { type: 'instance', instance_id: env.deps.instanceId };
+    const first = await kernel.handle(pageDelivery(env.delivery, scope, 1));
+    env.setExtraSnapshots([{ ...second, revision: second.revision + 1 }]); await kernel.observe();
+    const next = pageDelivery(env.delivery, scope, 1); next.message.cursor = response(first).next_cursor;
+    expect((response(await kernel.handle(next)).items as Resource[])[0].revision).toBe(second.revision);
+    const batch = response(await kernel.handle(resumeDelivery(env.delivery, object(first.resume_point))));
+    expect((batch.events as Array<Record<string, unknown>>).map(event => event.sequence)).toEqual([1]);
   });
   it('freezes pagination and expires the old page and stream when a task disappears', async () => {
     const env = setup(); const second = structuredClone(taskFixture) as Resource;

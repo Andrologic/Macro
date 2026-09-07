@@ -38,7 +38,8 @@ const directRefMatch = (ref: Record<string, string>, scope: Wire): boolean =>
   Object.entries(scope).every(([key, value]) => key === 'type' || ref[key] === value);
 const inScope = (resource: Resource, scope: Wire, snapshots: Resource[]): boolean => {
   if (directRefMatch(resource.ref, scope)) return true;
-  if (scope.type !== 'project' || !resource.ref.task_id || resource.ref.workspace_id !== scope.workspace_id) return false;
+  // Explicit project references (reviews) never inherit a different task project.
+  if (scope.type !== 'project' || resource.ref.project_id || !resource.ref.task_id || resource.ref.workspace_id !== scope.workspace_id) return false;
   const task = resource.type === 'task'
     ? resource
     : snapshots.find(candidate => candidate.type === 'task' && candidate.ref.instance_id === resource.ref.instance_id &&
@@ -116,10 +117,10 @@ export class PilotKernel {
       if (next && same(previous, next)) continue;
       for (const [pageId, page] of this.pages) {
         const pageScope = object(JSON.parse(page.scope));
-        if (inScope(previous, pageScope, this.state.snapshots) && (!next || !inScope(next, pageScope, current.snapshots))) this.pages.delete(pageId);
+        if (inScope(previous, pageScope, this.state.snapshots) !== Boolean(next && inScope(next, pageScope, current.snapshots))) this.pages.delete(pageId);
       }
       for (const [scopeKey, stream] of Object.entries(this.state.streams)) {
-        if (inScope(previous, stream.scope, this.state.snapshots) && (!next || !inScope(next, stream.scope, current.snapshots))) invalidatedScopes.add(scopeKey);
+        if (inScope(previous, stream.scope, this.state.snapshots) !== Boolean(next && inScope(next, stream.scope, current.snapshots))) invalidatedScopes.add(scopeKey);
       }
     }
     for (const scopeKey of invalidatedScopes) this.invalidateStream(scopeKey);
