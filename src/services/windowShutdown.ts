@@ -59,8 +59,9 @@ export const prepareForPotentialShutdown = async (
   workspacePaths?: string[],
   timeoutMs = 5_000,
 ): Promise<void> => {
+  const { macroPilotRuntime } = await import('./macroPilot/runtime');
   await Promise.all([
-    import('./macroPilot/runtime').then(({ macroPilotRuntime }) => macroPilotRuntime.stop()),
+    macroPilotRuntime.stop(),
     flushWindowStateBeforeShutdown(timeoutMs),
     withShutdownTimeout(
       flushMacroMetadataForShutdown(workspacePaths),
@@ -68,6 +69,39 @@ export const prepareForPotentialShutdown = async (
       'workspace data',
     ),
   ]);
+};
+
+let shutdownAttemptActive = false;
+
+/** Keep the producer stopped only when the native close/install succeeds. */
+export const runWithPotentialShutdown = async (
+  operation: () => Promise<boolean | void>,
+  releaseShutdownGate: () => void,
+  workspacePaths?: string[],
+): Promise<boolean> => {
+  if (shutdownAttemptActive) {
+    releaseShutdownGate();
+    throw new Error('A shutdown is already in progress.');
+  }
+  shutdownAttemptActive = true;
+  let succeeded = false;
+  let resume: (() => Promise<void>) | undefined;
+  try {
+    const { macroPilotRuntime } = await import('./macroPilot/runtime');
+    if (macroPilotRuntime.isStarted()) resume = () => macroPilotRuntime.start();
+    await prepareForPotentialShutdown(workspacePaths);
+    succeeded = (await operation()) !== false;
+    return succeeded;
+  } finally {
+    if (!succeeded) {
+      // start() waits for stop(), including when a flush rejects before it settles.
+      releaseShutdownGate();
+      try { await resume?.(); }
+      finally { shutdownAttemptActive = false; }
+    } else {
+      shutdownAttemptActive = false;
+    }
+  }
 };
 
 const flushMacroMetadataForShutdown = async (workspacePaths?: string[]): Promise<void> => {

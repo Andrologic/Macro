@@ -3,6 +3,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
+const startPilotMock = mock(async () => undefined);
 let loadPreferencesMock: ReturnType<typeof mock>;
 let loadPersistedPreferenceMock: ReturnType<typeof mock>;
 let savePreferenceMock: ReturnType<typeof mock>;
@@ -120,6 +121,10 @@ const registerWindowRestorationMocks = async () => {
     appInstallerCloseRespond: (...args: unknown[]) => appInstallerCloseRespondMock(...args),
     appUpdateExitAfterCleanShutdown: (...args: unknown[]) => appUpdateExitAfterCleanShutdownMock(...args),
   }));
+  mock.module('../services/macroPilot/runtime', () => ({
+    macroPilotRuntime: { isStarted: () => true, stop: async () => undefined, start: startPilotMock },
+  }));
+  startPilotMock.mockClear();
   mock.module('../services/appShutdownGate', () => ({
     beginAppShutdownGate: () => () => undefined,
     isAppShutdownGateActive: () => false,
@@ -683,4 +688,25 @@ describe('ensureWindowRestoredOnce', () => {
     await act(async () => { root.unmount(); });
     container.remove();
   });
+  for (const manualInstaller of [false, true]) {
+    it(`resumes Pilot when ${manualInstaller ? 'installer' : 'regular'} exit rejects`, async () => {
+      installerClosePending = manualInstaller;
+      const { __resetWindowRestorationForTests, useWindowRestoration } = await loadWindowRestoration();
+      const exit = manualInstaller ? appExitCleanlyMock : appUpdateExitAfterCleanShutdownMock;
+      exit.mockImplementationOnce(async () => { throw Error('Exit failed'); });
+      __resetWindowRestorationForTests();
+      const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+      await delay(80);
+      await closeRequestedListener?.(createCloseRequestedEvent());
+      expect(startPilotMock).toHaveBeenCalledTimes(1);
+      expect(pageShuttingDown).toBe(false);
+      await closeRequestedListener?.(createCloseRequestedEvent());
+      expect(exit).toHaveBeenCalledTimes(2);
+      expect(startPilotMock).toHaveBeenCalledTimes(1);
+      expect(pageShuttingDown).toBe(true);
+      await act(async () => { root.unmount(); });
+      container.remove();
+    });
+  }
+
 });
