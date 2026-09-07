@@ -9,6 +9,22 @@ import {
 } from './releaseNotes';
 
 describe('release notes', () => {
+  it('ships localized 0.1.5 notes consistent with the release document', () => {
+    const french = getReleaseNote('0.1.5', 'fr-FR');
+    const english = getReleaseNote('0.1.5', 'en-US');
+    const document = readFileSync(
+      new URL('../../dev/release/notes/0.1.5.md', import.meta.url), 'utf8',
+    );
+
+    expect(french?.version).toBe('0.1.5');
+    expect(french?.content).toBe(document.trim());
+    expect(english?.content).toContain('## Review and recovery');
+    expect(getReleaseNote('0.1.5', 'de-DE')).toEqual(english);
+    expect(resolveReleaseNote('0.1.5', 'fr-FR', {
+      version: '0.1.5', content: 'Untranslated updater notes',
+    })).toEqual(french);
+  });
+
   it('ships localized 0.1.4 notes consistent with the release document', () => {
     const french = getReleaseNote('0.1.4', 'fr-FR');
     const english = getReleaseNote('0.1.4', 'en-US');

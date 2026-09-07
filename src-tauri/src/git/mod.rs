@@ -2108,7 +2108,7 @@ mod tests {
                 .path();
             assert_eq!(fs::read(backup.join("index")).unwrap(), original_index);
             assert!(Repository::open(&path).is_ok());
-            let output = std::process::Command::new("git")
+            let output = background_command("git")
                 .arg("-C")
                 .arg(temp.path())
                 .args(["prune", "--expire=now"])
