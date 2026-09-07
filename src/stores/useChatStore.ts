@@ -15858,7 +15858,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? scopedModelSelection.reasoningEffort
           : providerSelectionAtSend.selectedReasoningEffort;
         const { providerConfigs } = providerSelectionAtSend;
-        persistSelectionForContext(modeAtSend, conversationId);
+        // Pilot uses the target conversation selection, not the active composer.
+        if (!pilotTarget) persistSelectionForContext(modeAtSend, conversationId);
 
         if (providerSelectionAtSend.isLoading) {
           throw buildSendError("Provider settings are still loading.");
