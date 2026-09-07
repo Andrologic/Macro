@@ -67,6 +67,7 @@ const createArchitectAutoPlanHarness = (options?: {
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
     nodeCount: plan.nodes.length,
+    hasAgsdl: Boolean(plan.agsdl),
     predictedBranchCount: plan.predictedBranches.length,
     chatMessageCount: chatMessagesByPlanId.get(plan.id)?.length ?? 0,
   });
@@ -97,6 +98,7 @@ const createArchitectAutoPlanHarness = (options?: {
     status?: ArchitectPlanRecord['status'];
     setActive?: boolean;
     chatMessageCount?: number;
+    agsdl?: ArchitectPlanRecord['agsdl'];
   }) => {
     const id = params.planId ?? `plan-${plans.size + 1}`;
     const now = params.updatedAt ?? params.createdAt ?? new Date().toISOString();
@@ -122,6 +124,7 @@ const createArchitectAutoPlanHarness = (options?: {
           : undefined,
       createdAt: params.createdAt ?? now,
       updatedAt: params.updatedAt ?? now,
+      agsdl: params.agsdl,
       nodes: [],
       predictedBranches: [],
     };
@@ -805,6 +808,18 @@ describe('architectAutoPlan', () => {
     const listed = await listArchitectPlans(branchName, true, true);
     expect(listed.plans).toHaveLength(2);
     expect(listed.plans.map((plan) => plan.projectIds?.join(','))).toEqual(['web', 'api']);
+  });
+
+  it('preserves AgSDL-only drafts when consolidating otherwise blank plans', async () => {
+    const { consolidateScopedBlankPlans, createArchitectPlan, listArchitectPlans } = createArchitectAutoPlanHarness();
+    for (const planId of ['agsdl-one', 'agsdl-two']) {
+      await createArchitectPlan({ branchName, planId, label: DEFAULT_NEW_PLAN_LABEL, projectIds: ['web'],
+        agsdl: { revision: 1, source: '{}', annexes: {} } });
+    }
+    const result = await consolidateScopedBlankPlans({ branchName, scopedProjectIds: ['web'] });
+    expect(result.deletedPlanIds).toEqual([]);
+    expect(result.archivedPlanIds).toEqual([]);
+    expect((await listArchitectPlans(branchName, true, true)).plans).toHaveLength(2);
   });
 
   it('keeps multiple oriented typed drafts that share the same exact scope', async () => {

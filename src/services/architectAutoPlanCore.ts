@@ -159,12 +159,13 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   const isReusableBlankDraft = (
     plan: Pick<
       ArchitectPlanRecord,
-      'id' | 'slug' | 'title' | 'label' | 'status' | 'description' | 'nodes' | 'predictedBranches'
+      'id' | 'slug' | 'title' | 'label' | 'status' | 'description' | 'nodes' | 'predictedBranches' | 'agsdl'
     >,
     chatMessages: Array<unknown>
   ): boolean =>
     !plan.description.trim() && getArchitectPlanLifecyclePhase({
       status: plan.status,
+      agsdl: plan.agsdl,
       nodes: plan.nodes,
       predictedBranches: plan.predictedBranches,
       chatMessageCount: chatMessages.length,
@@ -173,12 +174,13 @@ export const createArchitectAutoPlanService = (deps: ArchitectAutoPlanDependenci
   const isStructurallyBlankDraft = (
     plan: Pick<
       ArchitectPlanRecord,
-      'status' | 'description' | 'nodes' | 'predictedBranches'
+      'status' | 'description' | 'nodes' | 'predictedBranches' | 'agsdl'
     >,
     chatMessages: Array<unknown>
   ): boolean =>
     !plan.description.trim() && getArchitectPlanLifecyclePhase({
       status: plan.status,
+      agsdl: plan.agsdl,
       nodes: plan.nodes,
       predictedBranches: plan.predictedBranches,
       chatMessageCount: chatMessages.length,

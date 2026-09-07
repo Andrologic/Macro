@@ -172,6 +172,7 @@ export interface ArchitectPlanRecord {
 }
 
 export interface ArchitectPlanSummary {
+  hasAgsdl?: boolean;
   id: string;
   slug: string;
   title: string;
@@ -2372,6 +2373,7 @@ const buildReplicaComparableSummary = (summary: ArchitectPlanSummary): unknown =
   projectIds: summary.projectIds,
   contextProjectIds: summary.contextProjectIds,
   createdAt: summary.createdAt,
+  hasAgsdl: summary.hasAgsdl === true,
   nodeCount: summary.nodeCount,
   predictedBranchCount: summary.predictedBranchCount,
   expectedProjectIds: summary.expectedProjectIds,
@@ -3568,6 +3570,7 @@ const toSummary = (
     createdAt: plan.createdAt,
     updatedAt: plan.updatedAt,
     revision: typeof plan.revision === 'number' ? plan.revision : 1,
+    hasAgsdl: Boolean(plan.agsdl),
     nodeCount: plan.nodes.length,
     predictedBranchCount: plan.predictedBranches.length,
     chatMessageCount: options?.chatMessageCount,

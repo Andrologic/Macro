@@ -93,6 +93,8 @@ describe('architectPlanPresentation', () => {
         chatMessageCount: 1,
       })
     ).toBe('editing');
+    expect(getArchitectPlanLifecyclePhase({ status: 'draft', agsdl: { source: '{}' } })).toBe('editing');
+    expect(getArchitectPlanLifecyclePhase({ status: 'draft', hasAgsdl: true })).toBe('editing');
     expect(getArchitectPlanLifecyclePhase({ status: 'validated' })).toBe('validated');
     expect(getArchitectPlanLifecyclePhase({ status: 'in_progress' })).toBe('in_progress');
     expect(getArchitectPlanLifecyclePhase({ status: 'completed' })).toBe('completed');

@@ -266,7 +266,8 @@ fn is_canonical_architect_plan(title: &str, id: &str) -> bool {
 }
 
 fn is_blank_activatable_summary(summary: &WorkspaceArchitectPlanSummaryDto) -> bool {
-    summary.status == "draft"
+    !summary.has_agsdl
+        && summary.status == "draft"
         && is_canonical_architect_plan(&summary.title, &summary.id)
         && is_default_new_plan_family_label(summary.label.as_deref())
         && summary.description.trim().is_empty()
@@ -835,6 +836,7 @@ fn summary_from_plan_record(
     normalize_summary(
         branch_name,
         WorkspaceArchitectPlanSummaryDto {
+            has_agsdl: plan.agsdl.is_some(),
             id: plan.id,
             slug: plan.slug,
             title: plan.title,
@@ -1334,6 +1336,7 @@ fn summary_to_blank_head(
 ) -> WorkspaceArchitectPlanActivationHeadDto {
     WorkspaceArchitectPlanActivationHeadDto {
         plan: WorkspaceArchitectPlanRecordDto {
+            agsdl: None,
             id: summary.id.clone(),
             slug: summary.slug.clone(),
             title: summary.title.clone(),

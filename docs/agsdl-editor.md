@@ -34,6 +34,9 @@ L’enregistrement et les mutations de l’IA attendent qu’elles soient appliq
 ou abandonnées. Les modifications appliquées disposent d’un historique
 Annuler/Rétablir en mémoire. Une révision obsolète est refusée à l’enregistrement ;
 le brouillon local reste disponible pour export et récupération.
+Un plan contenant uniquement un document AgSDL est conservé comme brouillon
+édité, y compris lors de la consolidation des plans vides. Le chargement natif
+conserve sa source et ses annexes.
 
 ## Portée de cette version
 

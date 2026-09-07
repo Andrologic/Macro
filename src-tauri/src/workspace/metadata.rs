@@ -229,6 +229,7 @@ pub struct WorkspaceArchitectPlanReplicaDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WorkspaceArchitectPlanSummaryDto {
+    pub has_agsdl: bool,
     pub id: String,
     pub slug: String,
     pub title: String,
@@ -264,6 +265,8 @@ pub struct WorkspaceArchitectPlanSummaryDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WorkspaceArchitectPlanRecordDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agsdl: Option<Value>,
     pub id: String,
     pub slug: String,
     pub title: String,
@@ -950,4 +953,32 @@ pub struct ProjectRegistryDiagnosticsDto {
     pub sanitized_project_count: usize,
     #[serde(rename = "repairReport")]
     pub repair_report: ProjectRegistryRepairReportDto,
+}
+
+#[cfg(test)]
+mod agsdl_tests {
+    use super::{WorkspaceArchitectPlanRecordDto, WorkspaceArchitectPlanSummaryDto};
+
+    #[test]
+    fn native_plan_roundtrip_preserves_agsdl_source_and_annexes() {
+        let document = serde_json::json!({
+            "revision": 2,
+            "source": "{ \"opaque\":900719925474099312345 }",
+            "annexes": { "library": "{ \"text\":\"Édition\" }" }
+        });
+        let plan: WorkspaceArchitectPlanRecordDto =
+            serde_json::from_value(serde_json::json!({ "id": "test", "agsdl": document })).unwrap();
+        let serialized = serde_json::to_value(plan).unwrap();
+        assert_eq!(serialized["agsdl"], document);
+        let summary: WorkspaceArchitectPlanSummaryDto =
+            serde_json::from_value(serde_json::json!({ "id": "test", "hasAgsdl": true })).unwrap();
+        assert!(summary.has_agsdl);
+        assert_eq!(serde_json::to_value(summary).unwrap()["hasAgsdl"], true);
+        assert!(
+            serde_json::to_value(WorkspaceArchitectPlanRecordDto::default())
+                .unwrap()
+                .get("agsdl")
+                .is_none()
+        );
+    }
 }

@@ -1949,6 +1949,17 @@ describe('architectPlanService', () => {
     expect(payload?.chatMessages).toHaveLength(0);
   });
 
+  it('fully activates an AgSDL-only draft and marks its summary as authored', async () => {
+    const created = await service.createArchitectPlan({ branchName, planId: 'agsdl-only', label: DEFAULT_NEW_PLAN_LABEL });
+    const source = '{ "opaque":900719925474099312345 }';
+    await service.updateArchitectPlan({ branchName, planId: created.id, agsdl: { source, annexes: {} }, expectedAgsdlRevision: 0 });
+    const listed = await service.listArchitectPlans(branchName, true, true);
+    expect(listed.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
+    const payload = await service.getArchitectPlanActivationPayload(branchName, created.id);
+    expect(payload?.resolutionMode).toBe('full');
+    expect(payload?.plan.agsdl?.source).toBe(source);
+  });
+
   it('returns a blank fast-path activation payload for an untouched new plan', async () => {
     const created = await service.createArchitectPlan({
       branchName,

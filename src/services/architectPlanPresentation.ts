@@ -15,6 +15,8 @@ export type ArchitectPlanLifecyclePhase =
   | 'deleted';
 
 type ArchitectPlanLifecycleShape = {
+  agsdl?: unknown;
+  hasAgsdl?: boolean;
   status?: string | null;
   conversationId?: string | null;
   nodes?: unknown[] | null;
@@ -145,7 +147,7 @@ export const getArchitectPlanLifecyclePhase = (
     : normalizeCount(plan.predictedBranchCount);
   const chatMessageCount = normalizeCount(plan.chatMessageCount);
 
-  return nodeCount === 0 &&
+  return !plan.agsdl && plan.hasAgsdl !== true && nodeCount === 0 &&
     predictedBranchCount === 0 &&
     chatMessageCount === 0
     ? 'blank'

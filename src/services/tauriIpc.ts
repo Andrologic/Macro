@@ -1088,6 +1088,7 @@ export interface WorkspaceArchitectPlanReplicaDto {
 }
 
 export interface WorkspaceArchitectPlanSummaryDto {
+  hasAgsdl?: boolean;
   id: string;
   slug: string;
   title: string;
@@ -1121,6 +1122,7 @@ export interface WorkspaceArchitectPlanSummaryDto {
 }
 
 export interface WorkspaceArchitectPlanRecordDto {
+  agsdl?: import("../types/agsdl").AgsdlEditorDocument | null;
   id: string;
   slug: string;
   title: string;
