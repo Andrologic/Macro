@@ -3,6 +3,7 @@ import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { buildImplementKickoffPrompt } from '../implementKickoff';
 import { PilotError } from './protocol';
+import { pilotStartRejection, PilotStartPreflightRejection } from './startEligibility';
 import {
   assertPilotReservationCurrent,
   reservePilotAction,
@@ -129,12 +130,8 @@ export const desktopActions: DesktopActions = {
     try {
       gate.assertPreparing();
       const task = useTaskStore.getState().getTaskById(taskId);
-      if (!task || task.task_source === 'plan_finalization' || task.draft) {
-        return invalidReference();
-      }
-      if (task.status === 'Completed' || task.status === 'InReview' || task.is_blocked) {
-        return unavailable();
-      }
+      const rejection = pilotStartRejection(task);
+      if (rejection) throw new PilotStartPreflightRejection(rejection);
 
       await gate.beforeEffect();
       const conversation = await useChatStore

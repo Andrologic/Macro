@@ -1,4 +1,5 @@
 import { assertA1, assertDelivery, assertDeliveryResult, errorEnvelope, object, PilotError, same, stableJson, validAnswers, type Command, type Delivery, type Resource, type Wire } from './protocol';
+import { PilotStartPreflightRejection } from './startEligibility';
 
 export interface CommandGuard { assertCurrent(): void; authorizeBeforeEffect(options?: { revision: 'expected' | 'consumed' }): Promise<void> }
 export interface KernelStorage { load(): Promise<string | null>; compareAndSwap(previous: string | null, next: string): Promise<boolean> }
@@ -244,11 +245,13 @@ export class PilotKernel {
     this.state.journal[journalKey] = entry;
     await this.save();
     let invoked = false;
+    let effectGateEntered = false;
     try {
       let executeBefore = Infinity;
       const guard: CommandGuard = {
         assertCurrent: () => { this.assertOpen(); if (executeBefore <= this.now()) throw new PilotError('unavailable'); this.validateCommandState(command, this.currentTarget(command)); },
         authorizeBeforeEffect: async (options) => {
+          effectGateEntered = true;
           const until = await this.dependencies.authorize(delivery);
           executeBefore = Date.parse(until);
           this.assertOpen();
@@ -292,13 +295,19 @@ export class PilotKernel {
       entry.result = { ...resultBase, outcome: 'accepted', resulting_revision: resulting?.revision ?? target.revision };
       entry.status = 'finished'; await this.save(); return immutable(entry.result);
     } catch (error) {
-      // Once a desktop operation was invoked, a thrown error may follow a native
-      // mutation. Keep that uncertainty durable; never infer a safe retry.
+      // Only an explicit start preflight refusal before any effect gate proves
+      // no desktop mutation. Other failures remain uncertain after invocation.
+      const safeStartRejection = command.kind === 'run.start' && !effectGateEntered &&
+        error instanceof PilotStartPreflightRejection;
+      if (safeStartRejection) {
+        this.state.runs = this.state.runs.filter(run => run.runId !== command.payload.run_id);
+        delete entry.runId;
+      }
       if (command.kind === 'run.start') {
         const run = this.state.runs.find(run => run.runId === command.payload.run_id);
         if (run) run.interruptedAt = this.date();
       }
-      if (invoked) { entry.status = 'indeterminate'; await this.save(); throw new PilotError('conflict'); }
+      if (invoked && !safeStartRejection) { entry.status = 'indeterminate'; await this.save(); throw new PilotError('conflict'); }
       const code = error instanceof PilotError ? error.code : 'unavailable';
       entry.result = { ...resultBase, outcome: 'rejected', error: { code, message: code, retryable: code === 'unavailable' } };
       entry.status = 'finished'; await this.save(); return immutable(entry.result);

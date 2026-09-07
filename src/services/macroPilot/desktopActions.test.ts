@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { createDeferred } from '../../test-utils/deferred';
+import { PilotKernel, type KernelDependencies } from './kernel';
+import { object, PilotError, type Delivery, type Resource } from './protocol';
+import taskFixture from '../../../contracts/macro-pilot/v1/fixtures/valid/task.json';
+import commandFixture from '../../../contracts/macro-pilot/v1/fixtures/valid/task-reply-command.json';
 
 const task = {
-  id: 'task-1',
+  id: 'task-eligibility',
   task_source: 'architect',
   draft: false,
   status: 'Pending',
@@ -138,12 +142,40 @@ const createGuard = () => ({
   }) => undefined),
 });
 
+const setupStartKernel = () => {
+  let persisted: string | null = null;
+  let executions = 0;
+  // A stale/forged actionable projection exercises the desktop preflight too.
+  const snapshot = { ...structuredClone(taskFixture), state: 'queued' } as Resource;
+  delete snapshot.reply_context;
+  snapshot.ref.task_id = task.id;
+  const deps: KernelDependencies = {
+    instanceId: snapshot.ref.instance_id,
+    storage: { load: async () => persisted, compareAndSwap: async (previous, next) => {
+      if (previous !== persisted) return false;
+      persisted = next; return true;
+    } },
+    project: () => ({ snapshots: [snapshot], state: null }),
+    authorize: async () => new Date(Date.now() + 5000).toISOString(),
+    execute: async (_command, guard) => { executions++; return desktopActions.start(task.id, guard); },
+  };
+  const command = { ...commandFixture, kind: 'run.start', target: snapshot.ref,
+    expected_revision: snapshot.revision, payload: { run_id: 'run:eligibility' } };
+  const delivery: Delivery = { transport_version: '1.0', type: 'delivery', exchange_id: 'exchange:eligibility',
+    delivery_id: 'delivery:eligibility', actor: command.issued_by, message: command };
+  return { deps, delivery, get executions() { return executions; } };
+};
+
 describe('Macro Pilot desktop actions', () => {
   beforeEach(() => {
     task.status = 'Pending';
+    task.draft = false;
+    task.task_source = 'architect';
+    task.is_blocked = false;
     providerStarts = 0;
     taskStatusPersistences = 0;
     startTask.mockClear();
+    chatState.ensurePilotTaskConversation.mockClear();
     retryTask.mockClear();
     sendMessage.mockClear();
     approveOnce.mockClear();
@@ -157,6 +189,49 @@ describe('Macro Pilot desktop actions', () => {
     chatState.getActiveQuestionnaire.mockImplementation(() => null);
     chatState.getPendingToolApproval.mockImplementation(() => null);
     chatState.getConversationRuntime.mockImplementation(() => ({ phase: 'streaming' }));
+  });
+
+  it('durably rejects ineligible starts through the real kernel and action without a phantom run', async () => {
+    for (const exclusion of [{ draft: true }, { task_source: 'plan_finalization' }, { is_blocked: true }]) {
+      Object.assign(task, { draft: false, task_source: 'architect', is_blocked: false }, exclusion);
+      const env = setupStartKernel();
+      const { deps, delivery } = env;
+      const kernel = new PilotKernel(deps); await kernel.initialize();
+      const first = await kernel.handle(delivery);
+      expect(object(first.message).outcome).toBe('rejected');
+      expect(object(object(first.message).error).code).toBe('is_blocked' in exclusion ? 'unavailable' : 'invalid_reference');
+      expect(kernel.getKnownRuns()).toEqual([]);
+      expect(kernel.indeterminate()).toEqual([]);
+      const restarted = new PilotKernel(deps); await restarted.initialize();
+      expect(await restarted.handle(delivery)).toEqual(first);
+      expect(restarted.getKnownRuns()).toEqual([]);
+      expect(restarted.indeterminate()).toEqual([]);
+      const changed = structuredClone(delivery);
+      changed.message.expected_revision = 99;
+      expect(object(object((await restarted.handle(changed)).message).error).code).toBe('conflict');
+      expect(env.executions).toBe(1);
+      expect(startTask).not.toHaveBeenCalled();
+      expect(chatState.ensurePilotTaskConversation).not.toHaveBeenCalled();
+      expect(providerStarts).toBe(0);
+    }
+  });
+
+  it('keeps a start failure after conversation preparation indeterminate across restart', async () => {
+    const env = setupStartKernel();
+    let conversationWrites = 0;
+    chatState.ensurePilotTaskConversation.mockImplementationOnce(async () => {
+      conversationWrites++;
+      throw new PilotError('unavailable');
+    });
+    const kernel = new PilotKernel(env.deps); await kernel.initialize();
+    expect(object(object((await kernel.handle(env.delivery)).message).error).code).toBe('conflict');
+    expect(kernel.getKnownRuns()[0].interruptedAt).toBeString();
+    const restarted = new PilotKernel(env.deps); await restarted.initialize();
+    expect(restarted.indeterminate()).toHaveLength(1);
+    await restarted.handle(env.delivery);
+    expect(env.executions).toBe(1);
+    expect(conversationWrites).toBe(1);
+    expect(providerStarts).toBe(0);
   });
 
   it('prepares the task and starts the existing provider stream', async () => {

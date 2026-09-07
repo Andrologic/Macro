@@ -11,6 +11,7 @@ import type { CatalogedImplementTask } from '../implementTaskCatalog';
 import { resolveProjectExecutionMode } from '../projectExecutionMode';
 import { resolveTaskQueueSupervision } from '../taskQueueAttention';
 import { PilotError, stableJson, type Resource, type Wire } from './protocol';
+import { pilotStartRejection } from './startEligibility';
 
 const CONTRACT_VERSION = '1.0' as const;
 const SOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
@@ -243,6 +244,7 @@ const mapTaskState = (
   task: DesktopTask,
   attentionKind: 'approval' | 'questionnaire' | 'reply' | 'review' | undefined,
 ): string => {
+  if ((task.status === 'Pending' || task.status === 'Failed') && pilotStartRejection(task)) return 'blocked';
   if (attentionKind === 'approval') return 'waiting_tool_approval';
   if (attentionKind === 'questionnaire') return 'waiting_decision';
   if (attentionKind === 'reply') return 'waiting_reply';
