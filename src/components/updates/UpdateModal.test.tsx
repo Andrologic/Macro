@@ -7,7 +7,7 @@ const closeDetailsMock = mock(() => undefined);
 const installAndRestartMock = mock(async () => true);
 const resetMock = mock(async () => undefined);
 const checkForUpdatesMock = mock(async () => 'ready' as const);
-const prepareForPotentialShutdownMock = mock(async () => undefined);
+const flushMetadataMock = mock(async () => undefined);
 const savePreferenceMock = mock(async () => undefined);
 const notifyErrorMock = mock(() => undefined);
 
@@ -65,8 +65,13 @@ mock.module('../../services/restartSafety', () => ({
   },
 }));
 
-mock.module('../../services/windowShutdown', () => ({
-  prepareForPotentialShutdown: prepareForPotentialShutdownMock,
+const startPilotMock = mock(async () => { expect(shutdownGateActive).toBe(false); });
+mock.module('../../services/macroPilot/runtime', () => ({
+  macroPilotRuntime: { isStarted: () => true, stop: async () => undefined, start: startPilotMock },
+}));
+mock.module('../../services/macroMetadataCoordinator', () => ({
+  flushMacroMetadata: async () => undefined,
+  flushPendingMacroMetadata: flushMetadataMock,
 }));
 
 mock.module('../../services/appShutdownGate', () => ({
@@ -128,8 +133,10 @@ describe('UpdateModal', () => {
     installAndRestartMock.mockClear();
     resetMock.mockClear();
     checkForUpdatesMock.mockClear();
-    prepareForPotentialShutdownMock.mockClear();
-    prepareForPotentialShutdownMock.mockImplementation(async () => undefined);
+    startPilotMock.mockClear();
+    installAndRestartMock.mockImplementation(async () => true);
+    flushMetadataMock.mockClear();
+    flushMetadataMock.mockImplementation(async () => undefined);
     savePreferenceMock.mockClear();
     notifyErrorMock.mockClear();
     container = document.createElement('div');
@@ -155,23 +162,24 @@ describe('UpdateModal', () => {
 
     await act(async () => buttonByText('Install now')?.click());
 
-    expect(prepareForPotentialShutdownMock).toHaveBeenCalledTimes(1);
+    expect(flushMetadataMock).toHaveBeenCalledTimes(1);
     expect(savePreferenceMock).toHaveBeenCalledWith('releaseNotesPendingUpdate', {
       version: '0.1.1',
       content: '## Changes',
     });
     expect(installAndRestartMock).toHaveBeenCalledTimes(1);
+    expect(startPilotMock).not.toHaveBeenCalled();
   });
 
   it('blocks new work before preparing the restart', async () => {
-    prepareForPotentialShutdownMock.mockImplementationOnce(async () => {
+    flushMetadataMock.mockImplementationOnce(async () => {
       expect(shutdownGateActive).toBe(true);
     });
     await renderModal();
 
     await act(async () => buttonByText('Install now')?.click());
 
-    expect(prepareForPotentialShutdownMock).toHaveBeenCalledTimes(1);
+    expect(flushMetadataMock).toHaveBeenCalledTimes(1);
     expect(installAndRestartMock).toHaveBeenCalledTimes(1);
   });
 
@@ -217,7 +225,7 @@ describe('UpdateModal', () => {
     await act(async () => buttonByText('Install now')?.click());
     await act(async () => buttonByText('Install anyway')?.click());
 
-    expect(prepareForPotentialShutdownMock).toHaveBeenCalledTimes(1);
+    expect(flushMetadataMock).toHaveBeenCalledTimes(1);
     expect(installAndRestartMock).toHaveBeenCalledTimes(1);
   });
 
@@ -233,4 +241,20 @@ describe('UpdateModal', () => {
     expect(checkForUpdatesMock).toHaveBeenCalledWith({ explicit: true });
     expect(installAndRestartMock).toHaveBeenCalledTimes(0);
   });
+  for (const failure of ['false', 'throw', 'flush'] as const) {
+    it(`resumes Pilot and releases the gate after ${failure}`, async () => {
+      if (failure === 'flush') flushMetadataMock.mockImplementationOnce(async () => { throw Error('Flush failed'); });
+      else installAndRestartMock.mockImplementationOnce(async () => {
+        if (failure === 'throw') throw Error('Install failed');
+        return false;
+      });
+      await renderModal();
+      await act(async () => buttonByText('Install now')?.click());
+      expect(startPilotMock).toHaveBeenCalledTimes(1);
+      expect(shutdownGateActive).toBe(false);
+      expect(notifyErrorMock).toHaveBeenCalled();
+      if (failure === 'flush') expect(installAndRestartMock).not.toHaveBeenCalled();
+    });
+  }
+
 });

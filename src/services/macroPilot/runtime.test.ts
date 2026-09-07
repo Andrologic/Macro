@@ -15,6 +15,8 @@ describe('Pilot producer delivery loop', () => {
     const results: unknown[] = [];
     let finished!: () => void;
     const complete = new Promise<void>(resolve => { finished = resolve; });
+    let finishRedelivery!: () => void;
+    const redelivered = new Promise<void>(resolve => { finishRedelivery = resolve; });
     const task = { ...structuredClone(taskFixture), revision: 7, state: 'waiting_reply', reply_context: { conversation_id: 'conversation:test' } } as Resource;
     const command = { ...structuredClone(commandFixture), target: task.ref, payload: { conversation_id: 'conversation:test', answer: 'Continue.' } };
     const delivery = { transport_version: '1.0', type: 'delivery', delivery_id: 'delivery:test', exchange_id: 'exchange:test', actor: command.issued_by, message: command };
@@ -32,6 +34,7 @@ describe('Pilot producer delivery loop', () => {
           results.push(structuredClone(body));
           if (results.length === 1) throw new Error('Lost result response');
           finished();
+          if (results.length === 3) finishRedelivery();
           return { status: 204, data: null, requestId: 'request:test' };
         }
         if (path.endsWith('/disconnect')) return { status: 204, data: null, requestId: 'request:test' };
@@ -59,6 +62,14 @@ describe('Pilot producer delivery loop', () => {
       expect(effects).toBe(1);
       expect(results).toHaveLength(2);
       expect(results[0]).toEqual(results[1]);
+      const journal = JSON.parse(stored!).journal;
+      await runtime.stop();
+      polls = 0;
+      await runtime.start();
+      await redelivered;
+      expect(JSON.parse(stored!).journal).toEqual(journal);
+      expect(effects).toBe(1);
+      expect(results[2]).toEqual(results[0]);
     } finally { await runtime.stop(); }
   });
   it('exposes a corrupt journal and allows an explicit retry after local repair', async () => {
