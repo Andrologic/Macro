@@ -295,11 +295,11 @@ export class PilotKernel {
       entry.result = { ...resultBase, outcome: 'accepted', resulting_revision: resulting?.revision ?? target.revision };
       entry.status = 'finished'; await this.save(); return immutable(entry.result);
     } catch (error) {
-      // Only an explicit start preflight refusal before any effect gate proves
-      // no desktop mutation. Other failures remain uncertain after invocation.
+      // Before invocation no desktop effect is possible. After invocation only
+      // the explicit start preflight refusal can prove absence of effects.
       const safeStartRejection = command.kind === 'run.start' && !effectGateEntered &&
         error instanceof PilotStartPreflightRejection;
-      if (safeStartRejection) {
+      if (command.kind === 'run.start' && (!invoked || safeStartRejection)) {
         this.state.runs = this.state.runs.filter(run => run.runId !== command.payload.run_id);
         delete entry.runId;
       }

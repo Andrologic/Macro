@@ -39,6 +39,34 @@ const resumeDelivery = (delivery: Delivery, point: Record<string, unknown>, limi
 });
 
 describe('Pilot durable desktop dispatch', () => {
+  it('removes a provisional run when eligibility changes during persistence before dispatch', async () => {
+    const env = setup();
+    const task: Resource = { ...env.task, state: 'queued' }; delete task.reply_context;
+    env.setTask(task);
+    const persist = env.storage.compareAndSwap;
+    env.storage.compareAndSwap = async (previous, next) => {
+      const saved = await persist(previous, next);
+      if (saved && JSON.parse(next).runs.length && env.task.state === 'queued') {
+        env.setTask({ ...env.task, state: 'blocked', revision: env.task.revision + 1 });
+      }
+      return saved;
+    };
+    let executions = 0;
+    env.deps.execute = async () => { executions++; return { conversationId: 'conversation:test' }; };
+    const delivery = { ...env.delivery, message: { ...env.delivery.message, kind: 'run.start', payload: { run_id: 'run:eligibility-race' } } };
+    const kernel = new PilotKernel(env.deps); await kernel.initialize();
+    const first = await kernel.handle(delivery);
+    expect(response(first).outcome).toBe('rejected');
+    expect(object(response(first).error).code).toBe('stale_revision');
+    expect(executions).toBe(0);
+    expect(kernel.getKnownRuns()).toEqual([]);
+    expect(kernel.indeterminate()).toEqual([]);
+    const restarted = new PilotKernel(env.deps); await restarted.initialize();
+    expect(restarted.getKnownRuns()).toEqual([]);
+    expect(await restarted.handle(delivery)).toEqual(first);
+    expect(executions).toBe(0);
+  });
+
   it('does not treat ordinary errors or a preflight error after the effect gate as proof of no effect', async () => {
     for (const enteredGate of [false, true]) {
       const env = setup();
