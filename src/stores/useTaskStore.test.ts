@@ -17,6 +17,7 @@ import { getPlanActivationCandidateTask } from '../services/planActivationCandid
 import type { ImplementTask } from './useTaskStore';
 
 const { clearPlanRuntimeStateSnapshot } = await import('./planRuntimeState');
+const { reservePilotAction } = await import('../services/macroPilot/actionReservations');
 const actualTauriIpc = await import('../services/tauriIpc');
 const { services } = await import('../services');
 
@@ -3708,6 +3709,57 @@ describe('useTaskStore task command terminal lifecycle', () => {
 });
 
 describe('useTaskStore task preparation safety', () => {
+  it('blocks local status and target mutations during Pilot preparation while accepting its token', async () => {
+    workspaceUpdateStandaloneTaskStatusMock.mockClear();
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => {
+      useTaskStore.setState({
+        tasks: [buildStandaloneTask({ status: 'InProgress' })],
+      });
+    });
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'Pending' })],
+      refreshFromPlan: refreshFromPlanMock,
+      lastError: null,
+    });
+    const reservation = reservePilotAction({ taskId: 'task-1' });
+
+    try {
+      await expect(
+        useTaskStore.getState().setTaskStatus('task-1', 'InProgress'),
+      ).rejects.toThrow('Macro Pilot');
+      await expect(
+        useTaskStore.getState().promoteTaskContextProjects('task-1', ['project-2']),
+      ).rejects.toThrow('Macro Pilot');
+
+      expect(workspaceUpdateStandaloneTaskStatusMock).not.toHaveBeenCalled();
+      expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('Pending');
+
+      await expect(useTaskStore.getState().setTaskStatus('task-1', 'InProgress', {
+        pilotActionToken: reservation.token,
+        beforeEffect: async () => {
+          throw new Error('The Pilot session was revoked.');
+        },
+      })).rejects.toThrow('revoked');
+
+      expect(workspaceUpdateStandaloneTaskStatusMock).not.toHaveBeenCalled();
+      expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('Pending');
+
+      await useTaskStore.getState().setTaskStatus('task-1', 'InProgress', {
+        pilotActionToken: reservation.token,
+        beforeEffect: async () => undefined,
+      });
+
+      expect(workspaceUpdateStandaloneTaskStatusMock).toHaveBeenCalledWith({
+        taskId: 'task-1',
+        status: 'InProgress',
+      });
+      expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InProgress');
+    } finally {
+      reservation.release();
+    }
+  });
+
   it('rejects every target before preparing the Git part of a mixed blocked task', async () => {
     gitWorktreeInspectMock.mockClear();
     gitWorktreeCreateMock.mockClear();

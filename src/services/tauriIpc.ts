@@ -4478,3 +4478,36 @@ export const localBackupSchedule = (operation: 'export' | 'restore', path: strin
   invoke('local_backup_schedule', { operation, path, browser, confirmed });
 export const localBackupStatus = (): Promise<LocalBackupStatus> => invoke('local_backup_status');
 export const localBackupAcknowledge = (): Promise<void> => invoke('local_backup_acknowledge');
+
+// Pilot secrets are native-only and must never enter persistent frontend state.
+export type PilotSecretKind = 'session_token' | 'instance_key' | 'claim_secret' | 'poll_secret';
+export interface PilotSecretScope {
+  /** Stable, non-secret configuration ID, distinct for each desktop profile. */
+  configuration_id: string;
+  relay_origin: string;
+  kind: PilotSecretKind;
+  /** Session ID, retained instance creation ID, or client-generated attempt key. */
+  resource_id: string;
+}
+export type PilotSecretError = 'invalid_scope' | 'invalid_secret' | 'vault_unavailable';
+
+function requireNativePilotVault(): void {
+  if (typeof window === 'undefined' || isBrowserRuntimeBridgeEnabled() ||
+      typeof (window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } })
+        .__TAURI_INTERNALS__?.invoke !== 'function') {
+    throw new Error('Pilot credential storage requires the native desktop runtime.');
+  }
+}
+
+export async function pilotSecretRead(scope: PilotSecretScope): Promise<string | null> {
+  requireNativePilotVault();
+  return invoke<string | null>('pilot_secret_read', { scope });
+}
+export async function pilotSecretWrite(scope: PilotSecretScope, secret: string): Promise<void> {
+  requireNativePilotVault();
+  return invoke<void>('pilot_secret_write', { scope, secret });
+}
+export async function pilotSecretDelete(scope: PilotSecretScope): Promise<void> {
+  requireNativePilotVault();
+  return invoke<void>('pilot_secret_delete', { scope });
+}

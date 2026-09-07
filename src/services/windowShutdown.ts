@@ -60,6 +60,7 @@ export const prepareForPotentialShutdown = async (
   timeoutMs = 5_000,
 ): Promise<void> => {
   await Promise.all([
+    import('./macroPilot/runtime').then(({ macroPilotRuntime }) => macroPilotRuntime.stop()),
     flushWindowStateBeforeShutdown(timeoutMs),
     withShutdownTimeout(
       flushMacroMetadataForShutdown(workspacePaths),

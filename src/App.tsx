@@ -303,6 +303,15 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
+    if (!initStatus.ready) return;
+    let cancelled = false;
+    void import('./services/macroPilot/runtime').then(({ macroPilotRuntime }) => {
+      if (!cancelled) void macroPilotRuntime.start().catch(() => undefined);
+    });
+    return () => { cancelled = true; };
+  }, [initStatus.ready]);
+
+  useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | null = null;
 

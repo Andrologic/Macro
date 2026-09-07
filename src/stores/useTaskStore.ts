@@ -73,6 +73,7 @@ import {
   syncManualFeatureMetadataFromTask,
 } from '../services/manualFeatureMetadataService';
 import { isManualDraftPendingInitialization } from '../services/manualDraftInitialization';
+import { assertPilotTaskActionAllowed } from '../services/macroPilot/actionReservations';
 export { getPlanActivationCandidateTask } from '../services/planActivationCandidate';
 import {
   buildInitialPlanFinalizationRuntimeState,
@@ -1231,6 +1232,7 @@ const ensureTargetWorktreePath = async (
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>,
   onGitEnsureResult?: (status: 'created' | 'reused' | 'repaired') => void,
+  beforeEffect?: () => Promise<void>,
 ): Promise<string> => {
   const directProject = useAppStore.getState().getProjectById(target.projectId);
   const targetMode = resolveExecutionTargetMode(target);
@@ -1243,6 +1245,7 @@ const ensureTargetWorktreePath = async (
         })
       );
     }
+    await beforeEffect?.();
     await tauriIpc.workspaceSetActiveRoot(projectPath);
     if (!target.checkpointId) {
       const preparedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
@@ -1257,6 +1260,7 @@ const ensureTargetWorktreePath = async (
       }
       return preparedPath;
     }
+    await beforeEffect?.();
     await tauriIpc.directCheckpointEnsure({
       taskId: task.id,
       projectPath,
@@ -1294,6 +1298,7 @@ const ensureTargetWorktreePath = async (
       target.planBranchName,
     ],
   });
+  await beforeEffect?.();
   const ensured = await useGitStore
     .getState()
     .createWorktree(
@@ -1739,13 +1744,19 @@ const ensureTaskExecutionTargetsReady = async (
   task: CatalogedImplementTask,
   branchWorktrees: Record<string, string>,
   commandRegistryOverride?: Awaited<ReturnType<typeof loadTaskProjectCommandRegistry>>,
-  options?: { onWorkspacesPrepared?: () => void },
+  options?: {
+    onWorkspacesPrepared?: () => void;
+    beforeEffect?: () => Promise<void>;
+    preserveTaskScope?: boolean;
+  },
 ): Promise<{
   createdWorktrees: Record<string, string>;
   preparedTargets: PreparedTaskExecutionTarget[];
 }> => {
   const appState = useAppStore.getState();
-  const executionTask = retargetTaskForCurrentAppScope(task);
+  const executionTask = options?.preserveTaskScope
+    ? task
+    : retargetTaskForCurrentAppScope(task);
   const executionTargets = getExecutionTargets(executionTask);
   if (executionTargets.length === 0) {
     throw toServiceError(
@@ -1773,6 +1784,7 @@ const ensureTaskExecutionTargetsReady = async (
         (status) => {
           createdByThisAttempt = status === 'created';
         },
+        options?.beforeEffect,
       );
 
       createdWorktrees[target.worktreeKey] = worktreePath;
@@ -1807,6 +1819,7 @@ const ensureTaskExecutionTargetsReady = async (
       if (!setupCommand) continue;
 
       try {
+        await options?.beforeEffect?.();
         const setupResult = await runWorktreeSetupCommand({
           taskId: executionTask.id,
           taskTitle: executionTask.title,
@@ -1947,7 +1960,11 @@ interface TaskStore {
   reopenTask: (taskId: string) => Promise<void>;
   startTask: (
     taskId: string,
-    options?: { onWorkspacesPrepared?: () => void },
+    options?: {
+      onWorkspacesPrepared?: () => void;
+      pilotActionToken?: symbol;
+      beforeEffect?: () => Promise<void>;
+    },
   ) => Promise<void>;
   promoteTaskContextProjects: (
     taskId: string,
@@ -1994,10 +2011,35 @@ interface TaskStore {
       repositoryId?: string | null;
     }
   ) => Promise<MergeWorkflowAutomaticResolutionResult>;
-  markTaskAwaitingResponse: (taskId: string) => Promise<void>;
-  markTaskFailed: (taskId: string) => Promise<void>;
-  retryTask: (taskId: string) => Promise<void>;
-  setTaskStatus: (taskId: string, status: TaskStatus) => Promise<void>;
+  markTaskAwaitingResponse: (
+    taskId: string,
+    options?: {
+      pilotActionToken?: symbol;
+      beforeEffect?: () => Promise<void>;
+    },
+  ) => Promise<void>;
+  markTaskFailed: (
+    taskId: string,
+    options?: {
+      pilotActionToken?: symbol;
+      beforeEffect?: () => Promise<void>;
+    },
+  ) => Promise<void>;
+  retryTask: (
+    taskId: string,
+    options?: {
+      pilotActionToken?: symbol;
+      beforeEffect?: () => Promise<void>;
+    },
+  ) => Promise<void>;
+  setTaskStatus: (
+    taskId: string,
+    status: TaskStatus,
+    options?: {
+      pilotActionToken?: symbol;
+      beforeEffect?: () => Promise<void>;
+    },
+  ) => Promise<void>;
   clearPlanRuntimeState: (params: ClearPlanRuntimeStateParams) => void;
   getMergeWorkflowRuntime: (taskId: string) => MergeWorkflowRuntimeState | null;
   getPlanFinalizationRuntime: (planId: string) => PlanFinalizationRuntimeState | null;
@@ -3191,6 +3233,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   finalizeManualFeatureDraft: async (params) => {
+    assertPilotTaskActionAllowed(params.taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('finalizeManualFeatureDraft');
 
@@ -3227,6 +3270,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   revertManualFeatureToDraft: async (params) => {
+    assertPilotTaskActionAllowed(params.taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('revertManualFeatureToDraft');
 
@@ -3389,6 +3433,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   deleteManualFeatureDraft: async (taskId) => {
+    assertPilotTaskActionAllowed(taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('deleteManualFeatureDraft');
 
@@ -3440,6 +3485,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   renameTask: async (taskId, title) => {
+    assertPilotTaskActionAllowed(taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('renameTask');
 
@@ -3510,6 +3556,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   archiveTask: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('archiveTask');
 
@@ -3623,6 +3670,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   restoreTask: async (taskId) => {
+    assertPilotTaskActionAllowed(taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('restoreTask');
 
@@ -3657,6 +3705,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   deleteTask: async (taskId) => {
+    assertPilotTaskActionAllowed(taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('deleteTask');
 
@@ -3913,6 +3962,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   reopenTask: async (taskId) => {
+    assertPilotTaskActionAllowed(taskId);
     assertTaskMutationRuntime('reopenTask');
 
     const task = get().getTaskById(taskId);
@@ -3940,6 +3990,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   startTask: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     if (!canUseImplementExecutionRuntime()) {
       set({ lastError: getRemoteTaskActionUnavailableMessage() });
       return;
@@ -3962,7 +4013,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     if (task.status === 'AwaitingResponse') {
-      await get().setTaskStatus(task.id, 'InProgress');
+      await options?.beforeEffect?.();
+      await get().setTaskStatus(task.id, 'InProgress', {
+        pilotActionToken: options?.pilotActionToken,
+        beforeEffect: options?.beforeEffect,
+      });
       return;
     }
 
@@ -4009,7 +4064,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     const appState = useAppStore.getState();
-    if (appState.selectedTaskId !== task.id) {
+    if (!options?.pilotActionToken && appState.selectedTaskId !== task.id) {
       appState.setSelectedTask(task.id);
     }
 
@@ -4067,13 +4122,18 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         task,
         get().branchWorktrees,
         undefined,
-        { onWorkspacesPrepared: options?.onWorkspacesPrepared },
+        {
+          onWorkspacesPrepared: options?.onWorkspacesPrepared,
+          beforeEffect: options?.beforeEffect,
+          preserveTaskScope: Boolean(options?.pilotActionToken),
+        },
       );
       const primaryTarget =
         preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
         preparedTargets[0];
       const primaryWorktree = primaryTarget?.worktreePath || null;
 
+      await options?.beforeEffect?.();
       set((state) => ({
         branchWorktrees: {
           ...state.branchWorktrees,
@@ -4086,8 +4146,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         lastError: null,
       }));
 
+      await options?.beforeEffect?.();
       await syncWorkspaceRoot(primaryWorktree);
-      await get().setTaskStatus(task.id, 'InProgress');
+      await options?.beforeEffect?.();
+      await get().setTaskStatus(task.id, 'InProgress', {
+        pilotActionToken: options?.pilotActionToken,
+        beforeEffect: options?.beforeEffect,
+      });
     } catch (error) {
       if (error instanceof MissingTaskBaseBranchError) {
         set({
@@ -4102,6 +4167,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   promoteTaskContextProjects: async (taskId, projectIds, options) => {
+    assertPilotTaskActionAllowed(taskId);
     set({ lastError: null });
     assertTaskMutationRuntime('promoteTaskContextProjects');
 
@@ -4770,6 +4836,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   runMergeWorkflow: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId);
     const activeRun = activeMergeWorkflowRuns.get(taskId);
     if (activeRun) {
       await activeRun;
@@ -5402,6 +5469,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   finishTask: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId);
     const task = get().getTaskById(taskId);
     if (task && isDirectTask(task)) {
       await get().setTaskStatus(taskId, 'Completed');
@@ -5417,6 +5485,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   completeTask: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId);
     const task = get().getTaskById(taskId);
     if (task && isDirectTask(task)) {
       await get().setTaskStatus(taskId, 'Completed');
@@ -5691,15 +5760,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     );
   },
 
-  markTaskAwaitingResponse: async (taskId) => {
-    await get().setTaskStatus(taskId, 'AwaitingResponse');
+  markTaskAwaitingResponse: async (taskId, options) => {
+    await get().setTaskStatus(taskId, 'AwaitingResponse', options);
   },
 
-  markTaskFailed: async (taskId) => {
-    await get().setTaskStatus(taskId, 'Failed');
+  markTaskFailed: async (taskId, options) => {
+    await get().setTaskStatus(taskId, 'Failed', options);
   },
 
-  retryTask: async (taskId) => {
+  retryTask: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     const task = resolveTaskReference(get().tasks, taskId);
     if (!task) {
       set({ lastError: tTask('implement.errors.unknownTask', 'Unknown task: {{taskId}}', { taskId }) });
@@ -5708,13 +5778,20 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
     if (task.status === 'Failed') {
       set({ lastError: null });
-      await get().startTask(taskId);
+      if (options?.pilotActionToken) {
+        await get().startTask(taskId, {
+          pilotActionToken: options.pilotActionToken,
+          beforeEffect: options.beforeEffect,
+        });
+      } else {
+        await get().startTask(taskId);
+      }
       return;
     }
 
     if (task.status === 'AwaitingResponse') {
       set({ lastError: null });
-      await get().setTaskStatus(taskId, 'InProgress');
+      await get().setTaskStatus(taskId, 'InProgress', options);
       return;
     }
 
@@ -5726,7 +5803,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     });
   },
 
-  setTaskStatus: async (taskId, status) => {
+  setTaskStatus: async (taskId, status, options) => {
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     set({ lastError: null });
     assertTaskMutationRuntime('setTaskStatus');
 
@@ -5850,6 +5928,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
     };
 
+    if (options?.beforeEffect) {
+      await options.beforeEffect();
+    }
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     const optimisticTaskStatus = applyOptimisticTaskStatus();
 
     const mergeRuntime = get().mergeWorkflowRuntimeByTaskId[currentTask.id] ?? null;
@@ -5886,6 +5968,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           return;
         }
 
+        assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
         await tauriIpc.workspaceUpdateStandaloneTaskStatus({
           taskId,
           status,
@@ -5906,6 +5989,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     const persisted = await persistTaskStatusToArchitectPlan(currentTask, status, (message) => {
       set({ lastError: message });
     });

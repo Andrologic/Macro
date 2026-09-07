@@ -3,12 +3,47 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, transformWithEsbuild } from "vite";
 import react from "@vitejs/plugin-react";
+import {
+  generateMacroPilotValidators,
+  macroPilotSchemaPaths,
+} from "./dev/generate-macro-pilot-validators";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 const ALLOWED_PUBLIC_SECRET_FILES = new Set(["ai-keys.local.example.json"]);
 const MERMAID_PARSER_VIRTUAL_PREFIX = "\0macro-mermaid-parser-source:";
+const MACRO_PILOT_VALIDATORS_VIRTUAL_ID = "\0macro-pilot-schema-validators";
+
+export const isMacroPilotValidatorsImport = (
+  source: string,
+  importer: string | undefined,
+  rootDir: string = projectRoot
+): boolean => {
+  const importerPath = importer?.split(/[?#]/, 1)[0].replace(/\\/g, "/");
+  const protocolPath = resolve(rootDir, "src/services/macroPilot/protocol.ts").replace(/\\/g, "/");
+  return source === "./schemaValidators" && importerPath === protocolPath;
+};
+
+const createMacroPilotValidatorsPlugin = () => {
+  return {
+    name: "macro-pilot-schema-validators",
+    enforce: "pre" as const,
+    resolveId(source: string, importer?: string) {
+      if (isMacroPilotValidatorsImport(source, importer)) {
+        return MACRO_PILOT_VALIDATORS_VIRTUAL_ID;
+      }
+      return null;
+    },
+    async load(id: string) {
+      if (id !== MACRO_PILOT_VALIDATORS_VIRTUAL_ID) return null;
+      for (const schemaPath of macroPilotSchemaPaths(projectRoot)) {
+        this.addWatchFile(schemaPath);
+      }
+      return generateMacroPilotValidators(projectRoot);
+    },
+  };
+};
 
 export const isPathInside = (parentPath: string, candidatePath: string): boolean => {
   const relativePath = relative(parentPath, candidatePath);
@@ -428,6 +463,7 @@ export default defineConfig(({ command }) => {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
     },
     plugins: [
+      createMacroPilotValidatorsPlugin(),
       createMermaidParserSourcePlugin(),
       react({
         // Use automatic JSX runtime for smaller bundle

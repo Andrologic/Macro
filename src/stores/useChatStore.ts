@@ -41,6 +41,10 @@ import {
 } from "../types";
 import { toServiceError } from "../services/contracts/errors";
 import { isAppShutdownGateActive } from "../services/appShutdownGate";
+import {
+  assertPilotConversationActionAllowed,
+  assertPilotTaskActionAllowed,
+} from '../services/macroPilot/actionReservations';
 import i18n from "../i18n";
 import {
   extractContextLimitTokensFromErrorLike,
@@ -1135,6 +1139,7 @@ interface ChatStore {
     projectId: string | null,
     groupId?: string | null,
   ) => Promise<Conversation>;
+  ensurePilotTaskConversation: (taskId: string, pilotActionToken: symbol) => Promise<Conversation>;
   beginArchitectPlanSwitch: (params?: { requestId?: number }) => void;
   ensureArchitectConversationForPlan: (params: {
     plan: ArchitectPlanRecord;
@@ -1183,9 +1188,17 @@ interface ChatStore {
   discardComposerDraftForConversation: (conversationId: string) => void;
   migrateComposerDraftContext: (fromContextKey: string, toContextKey: string) => void;
   getPendingToolApproval: (conversationId: string) => PendingToolApproval | null;
-  approvePendingToolApprovalOnce: (conversationId: string) => void;
-  approvePendingToolApprovalForConversation: (conversationId: string) => void;
-  denyPendingToolApproval: (conversationId: string, reason?: string) => void;
+  approvePendingToolApprovalOnce: (conversationId: string, pilotActionToken?: symbol) => void;
+  approvePendingToolApprovalForConversation: (conversationId: string, pilotActionToken?: symbol) => void;
+  denyPendingToolApproval: (conversationId: string, reason?: string, pilotActionToken?: symbol) => void;
+  resolvePendingToolApprovalForPilot: (params: {
+    conversationId: string;
+    assistantMessageId: string;
+    toolCallId: string;
+    resolution: PendingToolApprovalResolution;
+    pilotActionToken: symbol;
+    beforeEffect?: () => Promise<void>;
+  }) => Promise<PendingToolApprovalResolution>;
   getActiveQuestionnaire: (
     conversationId: string,
   ) => ConversationQuestionnaireState | null;
@@ -1205,6 +1218,11 @@ interface ChatStore {
   ) => { completed: boolean; state: ConversationQuestionnaireState | null } | null;
   submitActiveQuestionnaire: (
     conversationId: string,
+    options?: {
+      taskId?: string | null;
+      pilotActionToken?: symbol;
+      beforeEffect?: () => Promise<void>;
+    },
   ) => Promise<ChatSendResult | ChatSendCancelledResult | null>;
   sendMessage: (payload: {
     conversationId: string;
@@ -1215,12 +1233,17 @@ interface ChatStore {
     hiddenContext?: string;
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
+    pilotTarget?: {
+      taskId: string;
+      actionToken: symbol;
+      beforeEffect?: () => Promise<void>;
+    };
   }) => Promise<ChatSendResult | ChatSendCancelledResult>;
   submitDuringActiveTurn: (
     payload: ComposerSubmissionPayload,
     behavior: ActiveTurnSubmissionBehavior,
   ) => Promise<"steered" | "queued">;
-  stopConversationStream: (conversationId: string) => void;
+  stopConversationStream: (conversationId: string, pilotActionToken?: symbol) => void;
   clearConversationRuntimeError: (conversationId: string) => void;
   stopStreaming: () => void;
   getAgentCodeReplayPreview: (
@@ -1507,6 +1530,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const pendingToolApprovalResolvers = new Map<
     string,
     (resolution: PendingToolApprovalResolution) => void
+  >();
+  const pendingToolApprovalSettlements = new Map<
+    string,
+    Promise<PendingToolApprovalResolution>
+  >();
+  const pendingToolApprovalBeforeEffects = new Map<
+    string,
+    () => Promise<void>
   >();
   const pendingToolApprovalQueues = new Map<string, Promise<void>>();
   let toolApprovalRuntimeEpoch = 0;
@@ -3250,6 +3281,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const assertImplementTaskReadyForSend = async (
     taskId: string,
+    pilotActionToken?: symbol,
+    beforeEffect?: () => Promise<void>,
   ): Promise<ImplementTask> => {
     const taskStore = useTaskStore.getState();
     const task = taskStore.getTaskById(taskId);
@@ -3268,12 +3301,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (task.status === "Pending" && !activeMergeWorkflow) {
-      await taskStore.startTask(taskId);
+      if (pilotActionToken) {
+        await taskStore.startTask(taskId, {
+          pilotActionToken,
+          beforeEffect,
+        });
+      } else {
+        await taskStore.startTask(taskId);
+      }
     } else if (
       (task.status === "AwaitingResponse" || task.status === "Failed") &&
       !activeMergeWorkflow
     ) {
-      await taskStore.retryTask(taskId);
+      if (pilotActionToken) {
+        await taskStore.retryTask(taskId, {
+          pilotActionToken,
+          beforeEffect,
+        });
+      } else {
+        await taskStore.retryTask(taskId);
+      }
     }
 
     const refreshedTask = useTaskStore.getState().getTaskById(taskId);
@@ -5589,9 +5636,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             return { kind: "deny" } as PendingToolApprovalResolution;
           }
           approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
-          return new Promise<PendingToolApprovalResolution>((resolve) => {
+          const resolverKey = getPendingToolApprovalResolverKey(
+            conversationId,
+            resolvedToolCallId,
+          );
+          const settlement = new Promise<PendingToolApprovalResolution>((resolve) => {
             pendingToolApprovalResolvers.set(
-              getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
+              resolverKey,
               resolve,
             );
             set((state) => ({
@@ -5637,6 +5688,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 };
                 result = await revalidate();
               }
+              await pendingToolApprovalBeforeEffects.get(resolverKey)?.();
               if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
               // Close the durable trace before dropping its only recovery action.
               updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "denied");
@@ -5659,7 +5711,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
               } }));
               throw error;
             } finally {
-              if (approvalEpoch === toolApprovalRuntimeEpoch) pendingToolApprovalResolvers.delete(getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId));
+              if (approvalEpoch === toolApprovalRuntimeEpoch) pendingToolApprovalResolvers.delete(resolverKey);
+              pendingToolApprovalBeforeEffects.delete(resolverKey);
+            }
+          });
+          pendingToolApprovalSettlements.set(resolverKey, settlement);
+          return settlement.finally(() => {
+            if (pendingToolApprovalSettlements.get(resolverKey) === settlement) {
+              pendingToolApprovalSettlements.delete(resolverKey);
             }
           });
         },
@@ -10737,6 +10796,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     modeAtSend: AppMode;
     agentTypeAtSend?: AgentType | null;
     resolvedTaskId: string;
+    pilotActionToken?: symbol;
     selectedProviderId: string;
     selectedModelId: string;
     selectedReasoningEffort?: ReasoningEffort | null;
@@ -10898,7 +10958,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       try {
-        await useTaskStore.getState().markTaskFailed(params.resolvedTaskId);
+        if (params.pilotActionToken) {
+          await useTaskStore.getState().markTaskFailed(params.resolvedTaskId, {
+            pilotActionToken: params.pilotActionToken,
+          });
+        } else {
+          await useTaskStore.getState().markTaskFailed(params.resolvedTaskId);
+        }
       } catch (error) {
         console.warn("Failed to mark task as failed after stream error:", error);
       }
@@ -11638,8 +11704,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         getTaskStatus: (taskId) =>
           useTaskStore.getState().getTaskById(taskId)?.status ?? null,
-        markTaskAwaitingResponse: (taskId) =>
-          useTaskStore.getState().markTaskAwaitingResponse(taskId),
+        markTaskAwaitingResponse: (taskId) => params.pilotActionToken
+          ? useTaskStore.getState().markTaskAwaitingResponse(taskId, {
+              pilotActionToken: params.pilotActionToken,
+            })
+          : useTaskStore.getState().markTaskAwaitingResponse(taskId),
         assistantTurnRequiresUserReply,
         updateConversationAfterCompletion: (conversationId, visibleContent) => {
           completionPersistenceOwnersByConversationId.set(conversationId, {
@@ -12207,6 +12276,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     projectId: string | null;
     groupId?: string | null;
     selectConversation?: boolean;
+    modeOverride?: AppMode;
+    pilotActionToken?: symbol;
   }): Promise<Conversation> => {
     const {
       title,
@@ -12216,9 +12287,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectConversation = true,
     } = params;
     const appState = useAppStore.getState();
-    const mode = appState.mode;
+    const mode = params.modeOverride ?? appState.mode;
     const effectiveTaskId =
-      mode === "Implement" ? (appState.selectedTaskId ?? taskId) : taskId;
+      mode === "Implement"
+        ? (params.modeOverride ? taskId : appState.selectedTaskId ?? taskId)
+        : taskId;
+    if (effectiveTaskId) {
+      assertPilotTaskActionAllowed(effectiveTaskId, params.pilotActionToken);
+    }
     const linkedTask = effectiveTaskId
       ? useTaskStore.getState().getTaskById(effectiveTaskId)
       : undefined;
@@ -14357,6 +14433,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
     },
 
+    ensurePilotTaskConversation: async (taskId, pilotActionToken) => {
+      assertPilotTaskActionAllowed(taskId, pilotActionToken);
+      const existing = getLatestConversationForTask(taskId);
+      if (existing) return existing;
+      const task = useTaskStore.getState().getTaskById(taskId);
+      if (!task) throw new Error(`Unknown task: ${taskId}`);
+      const appState = useAppStore.getState();
+      const groupId = appState.projectGroups.find((group) =>
+        group.projects.some((project) => project.id === task.project_id),
+      )?.id ?? null;
+      return createConversationRecord({
+        title: `Task - ${task.title}`,
+        taskId,
+        projectId: task.project_id,
+        groupId,
+        selectConversation: false,
+        modeOverride: 'Implement',
+        pilotActionToken,
+      });
+    },
+
     beginArchitectPlanSwitch: (params) => {
       beginArchitectPlanSwitchSelection(params);
     },
@@ -15078,7 +15175,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     getPendingToolApproval: (conversationId) =>
       get().pendingToolApprovalByConversationId[conversationId] ?? null,
 
-    approvePendingToolApprovalOnce: (conversationId) => {
+    approvePendingToolApprovalOnce: (conversationId, pilotActionToken) => {
+      assertPilotConversationActionAllowed(conversationId, pilotActionToken);
       const pendingApproval =
         get().pendingToolApprovalByConversationId[conversationId];
       if (!pendingApproval) {
@@ -15099,7 +15197,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ?.({ kind: "allow_once" });
     },
 
-    approvePendingToolApprovalForConversation: (conversationId) => {
+    approvePendingToolApprovalForConversation: (conversationId, pilotActionToken) => {
+      assertPilotConversationActionAllowed(conversationId, pilotActionToken);
       const pendingApproval =
         get().pendingToolApprovalByConversationId[conversationId];
       if (!pendingApproval) {
@@ -15125,7 +15224,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
     },
 
-    denyPendingToolApproval: (conversationId, reason) => {
+    denyPendingToolApproval: (conversationId, reason, pilotActionToken) => {
+      assertPilotConversationActionAllowed(conversationId, pilotActionToken);
       const pendingApproval =
         get().pendingToolApprovalByConversationId[conversationId];
       if (!pendingApproval) {
@@ -15144,6 +15244,40 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ),
         )
         ?.({ kind: "deny", reason });
+    },
+
+    resolvePendingToolApprovalForPilot: async (params) => {
+      assertPilotConversationActionAllowed(
+        params.conversationId,
+        params.pilotActionToken,
+      );
+      const approval = get().pendingToolApprovalByConversationId[params.conversationId];
+      if (
+        !approval ||
+        approval.recoveryState === 'interrupted' ||
+        approval.assistantMessageId !== params.assistantMessageId ||
+        approval.toolCallId !== params.toolCallId
+      ) {
+        throw new Error('The tool approval request is no longer active.');
+      }
+      const resolverKey = getPendingToolApprovalResolverKey(
+        params.conversationId,
+        params.toolCallId,
+      );
+      const resolve = pendingToolApprovalResolvers.get(resolverKey);
+      const settlement = pendingToolApprovalSettlements.get(resolverKey);
+      if (!resolve || !settlement) {
+        throw new Error('The tool approval request has no live resolver.');
+      }
+      approvalMutationVersions.set(
+        params.conversationId,
+        (approvalMutationVersions.get(params.conversationId) ?? 0) + 1,
+      );
+      if (params.beforeEffect) {
+        pendingToolApprovalBeforeEffects.set(resolverKey, params.beforeEffect);
+      }
+      resolve(params.resolution);
+      return settlement;
     },
 
     getActiveQuestionnaire: (conversationId) => {
@@ -15347,7 +15481,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return result;
     },
 
-    submitActiveQuestionnaire: async (conversationId) => {
+    submitActiveQuestionnaire: async (conversationId, options) => {
+      assertPilotConversationActionAllowed(conversationId, options?.pilotActionToken);
       const activeQuestionnaire = resolveConversationQuestionnaireFromState(
         get(),
         conversationId,
@@ -15421,6 +15556,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         taskId: activeQuestionnaire.taskId,
         hiddenContext: responseArtifacts.hiddenContext,
         providerInputItems,
+        pilotTarget: options?.pilotActionToken && options.taskId
+          ? {
+            taskId: options.taskId,
+            actionToken: options.pilotActionToken,
+            beforeEffect: options.beforeEffect,
+          }
+          : undefined,
       });
 
       if (result.status === "cancelled") {
@@ -15520,7 +15662,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         hiddenContext,
         providerInputItems,
         contextRefs: contextRefsOverride,
+        pilotTarget,
       } = payload;
+      assertPilotConversationActionAllowed(conversationId, pilotTarget?.actionToken);
       const contextRefsForMessage = contextRefsOverride ?? persistableContextRefs(get().composerContextRefs);
       const shouldClearComposerContextRefs = contextRefsOverride === undefined;
       const composerContextRefsRevisionAtSend = composerContextRefsRevision;
@@ -15533,9 +15677,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
       // controller instead of consulting the current UI selection.
       const appStateAtSend = useAppStore.getState();
       const providerState = useProviderStore.getState();
-      const modeAtSend = appStateAtSend.mode;
+      const conversationAtSend = get().conversations.find(
+        (conversation) => conversation.id === conversationId,
+      );
+      const reservedTaskId = pilotTarget?.taskId ?? conversationAtSend?.task_id;
+      if (reservedTaskId) {
+        assertPilotTaskActionAllowed(reservedTaskId, pilotTarget?.actionToken);
+      }
+      const modeAtSend = pilotTarget ? "Implement" : appStateAtSend.mode;
       const agentTypeAtSend =
-        modeAtSend === "Implement" ? appStateAtSend.agentType : null;
+        modeAtSend === "Implement" ? (pilotTarget ? "build" : appStateAtSend.agentType) : null;
       const activeArchitectPlanIdAtSend = appStateAtSend.activeArchitectPlanId;
       const architectPlanAtSend =
         modeAtSend === "Architect" && activeArchitectPlanIdAtSend
@@ -15547,9 +15698,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
           : undefined;
       const providerSelectionAtSend = {
-        selectedProviderId: providerState.selectedProviderId,
-        selectedModelId: providerState.selectedModelId,
-        selectedReasoningEffort: providerState.selectedReasoningEffort,
+        selectedProviderId: pilotTarget
+          ? conversationAtSend?.provider_id ?? null
+          : providerState.selectedProviderId,
+        selectedModelId: pilotTarget
+          ? conversationAtSend?.model_id ?? null
+          : providerState.selectedModelId,
+        selectedReasoningEffort: pilotTarget
+          ? conversationAtSend?.reasoning_effort ?? null
+          : providerState.selectedReasoningEffort,
         isLoading: providerState.isLoading,
         providerConfigs: providerState.providerConfigs.map((provider) => ({
           ...provider,
@@ -15560,12 +15717,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ? providerState.supportsNativeToolCalling(providerId, modelId)
             : providerState.selectedSupportsNativeToolCalling(),
       };
-      const conversationAtSend = get().conversations.find(
-        (conversation) => conversation.id === conversationId,
-      );
       const conversationTaskIdAtSend = conversationAtSend?.task_id ?? null;
       const selectedTaskIdAtSend =
-        modeAtSend === "Implement" ? (appStateAtSend.selectedTaskId ?? "") : "";
+        modeAtSend === "Implement"
+          ? (pilotTarget?.taskId ?? appStateAtSend.selectedTaskId ?? "")
+          : "";
       const resolvedTaskIdAtSend =
         modeAtSend === "Chat"
           ? ""
@@ -15782,6 +15938,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           userMessageCountBeforeSend === 0;
 
         if (isFirstManualFeatureMessage) {
+          await pilotTarget?.beforeEffect?.();
+          if (!isCurrentPreparation()) {
+            return cancelledResult();
+          }
           userMessage = await buildUserMessageForSend({
             conversationId,
             turnId: activeTurnId,
@@ -15834,7 +15994,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
 
           taskForSend =
-            (await assertImplementTaskReadyForSend(resolvedTaskId)) ??
+            (await assertImplementTaskReadyForSend(
+              resolvedTaskId,
+              pilotTarget?.actionToken,
+              pilotTarget?.beforeEffect,
+            )) ??
             taskForSend;
           if (!isCurrentPreparation()) {
             return cancelledResult();
@@ -15853,6 +16017,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           userMessageCountBeforeSend = getOrderedConversationMessages(
             conversationId,
           ).filter((message) => message.role === "user").length;
+          await pilotTarget?.beforeEffect?.();
+          if (!isCurrentPreparation()) {
+            return cancelledResult();
+          }
           userMessage = await buildUserMessageForSend({
             conversationId,
             turnId: activeTurnId,
@@ -15997,6 +16165,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             providerId: selectedProviderId,
             providerType: providerConfigForUse.providerType,
           });
+          await pilotTarget?.beforeEffect?.();
+          if (!isCurrentPreparation()) {
+            return sentWithoutAssistantResult();
+          }
           startAssistantStream({
             sessionId: activeSessionId,
             assistantMessage,
@@ -16006,6 +16178,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             modeAtSend,
             agentTypeAtSend,
             resolvedTaskId,
+            pilotActionToken: pilotTarget?.actionToken,
             selectedProviderId,
             selectedModelId,
             selectedReasoningEffort,
@@ -16100,7 +16273,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    stopConversationStream: (conversationId) => {
+    stopConversationStream: (conversationId, pilotActionToken) => {
+      assertPilotConversationActionAllowed(conversationId, pilotActionToken);
       stopConversationRuntimeLocally(conversationId);
     },
 
@@ -16121,6 +16295,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!selectedConversationId) {
         return;
       }
+      assertPilotConversationActionAllowed(selectedConversationId);
       stopConversationRuntimeLocally(selectedConversationId);
     },
 
@@ -16246,6 +16421,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         set({ lastError: message, sendState: "error" });
         throw buildSendError(message);
       }
+      assertPilotConversationActionAllowed(target.conversation_id);
       if (!options?.skipAgentCodeReplayCheck) {
         const replayPreview = await get().getAgentCodeReplayPreview(messageId);
         if (replayPreview && replayPreview.affectedFiles.length > 0) {

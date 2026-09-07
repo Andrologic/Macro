@@ -38,6 +38,7 @@ browser-runtime-debug = ["dep:tauri-remote-ui"]
 tauri-build = { version = "=2.5.5", features = [] }
 
 [dependencies]
+keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 tempfile = "3"
 tauri = { version = "=2.10.2", features = ["macos-private-api", "image-png"] }
 tauri-plugin-opener = "2"

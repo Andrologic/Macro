@@ -1286,3 +1286,53 @@ describe("tauriIpc persistent MCP runtime", () => {
     mock.restore();
   });
 });
+
+describe("Pilot native credential IPC", () => {
+  const scope = {
+    configuration_id: 'config:test-01', relay_origin: 'https://relay.example',
+    kind: 'session_token' as const, resource_id: 'session:test-01',
+  };
+
+  it('uses exact scoped payloads and does not turn errors into absence', async () => {
+    const ipc = await loadTauriIpc();
+    const runtime = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+    const previous = runtime.__TAURI_INTERNALS__;
+    runtime.__TAURI_INTERNALS__ = { invoke: () => undefined };
+    invokeCalls.length = 0;
+    try {
+      invokeMock.mockImplementationOnce(async (command: string, payload?: unknown) => {
+        invokeCalls.push({ command, payload });
+        return null as unknown as string;
+      });
+      expect(await ipc.pilotSecretRead(scope)).toBeNull();
+      await ipc.pilotSecretWrite(scope, 'A'.repeat(43));
+      await ipc.pilotSecretDelete(scope);
+      expect(invokeCalls).toEqual([
+        { command: 'pilot_secret_read', payload: { scope } },
+        { command: 'pilot_secret_write', payload: { scope, secret: 'A'.repeat(43) } },
+        { command: 'pilot_secret_delete', payload: { scope } },
+      ]);
+      invokeMock.mockRejectedValueOnce('vault_unavailable');
+      await expect(ipc.pilotSecretRead(scope)).rejects.toBe('vault_unavailable');
+    } finally {
+      if (previous === undefined) delete runtime.__TAURI_INTERNALS__;
+      else runtime.__TAURI_INTERNALS__ = previous;
+    }
+  });
+
+  it('refuses storage outside native Tauri before invoking any command', async () => {
+    const ipc = await loadTauriIpc();
+    const runtime = window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
+    const previous = runtime.__TAURI_INTERNALS__;
+    delete runtime.__TAURI_INTERNALS__;
+    invokeCalls.length = 0;
+    try {
+      await expect(ipc.pilotSecretRead(scope)).rejects.toThrow('native desktop runtime');
+      await expect(ipc.pilotSecretWrite(scope, 'A'.repeat(43))).rejects.toThrow('native desktop runtime');
+      await expect(ipc.pilotSecretDelete(scope)).rejects.toThrow('native desktop runtime');
+      expect(invokeCalls).toHaveLength(0);
+    } finally {
+      if (previous !== undefined) runtime.__TAURI_INTERNALS__ = previous;
+    }
+  });
+});
