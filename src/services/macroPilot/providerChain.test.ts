@@ -44,6 +44,12 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
       const params = args as { key: string; valueJson: string };
       settings.set(params.key, params.valueJson); return;
     }
+    case 'db_compare_and_swap_app_setting': {
+      const params = args as { key: string; expectedValueJson: string | null; valueJson: string };
+      const applied = (settings.get(params.key) ?? null) === params.expectedValueJson;
+      if (applied) settings.set(params.key, params.valueJson);
+      return { applied };
+    }
     case 'db_delete_app_setting': settings.delete(String(args!.key)); return;
     case 'terminal_read':
     case 'terminal_run': return { id: 'synthetic-terminal', project_id: null, cwd: '/synthetic/target', status: 'idle', output: 'Synthetic output', project_name: null, mount_name: null, workspace_path: null, last_command: null, exit_code: 0, timed_out: false, output_truncated: false, updated_at: '2026-01-01T00:00:00Z' };
@@ -66,10 +72,15 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
       requests.push(args!.request as Record<string, unknown>);
       return;
     }
+    case 'db_update_message': {
+      const params = args!.params as { id: string; content: string };
+      const message = messages.find(message => message.id === params.id);
+      if (message) message.content = params.content;
+      return;
+    }
     case 'frontend_log':
     case 'db_update_conversation_ai_selection':
     case 'db_delete_conversation_toolbox_state':
-    case 'db_update_message':
     case 'db_update_conversation':
     case 'db_upsert_conversation_context_diagnostics':
     case 'db_upsert_conversation_toolbox_state':
@@ -96,6 +107,7 @@ const httpFetch = mock(async (url: string | URL | Request, init?: RequestInit) =
 });
 mock.module('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 const { desktopActions } = await import('./desktopActions');
+const { assistantProvenance } = await import('./assistantProvenance');
 const { useAppStore } = await import('../../stores/useAppStore');
 const { useTaskStore } = await import('../../stores/useTaskStore');
 const { useChatStore } = await import('../../stores/useChatStore');
@@ -206,6 +218,9 @@ const complete = async (native: boolean) => {
   }
   await eventually(() => !useChatStore.getState().conversationRuntimeById[conversation.id]);
   expect(useChatStore.getState().messages.some((message) => message.content === 'Synthetic answer')).toBe(true);
+  const saved = messages.filter(message => message.role === 'assistant' && message.content === 'Synthetic answer').at(-1);
+  expect(saved).toBeDefined();
+  expect(await assistantProvenance().readFinal(String(saved!.id), String(saved!.content))).toBe('Synthetic answer');
 };
 describe('Pilot provider chain', () => {
   it.each(cases)('routes a targeted reply through $name while another conversation is selected', async (entry) => {
