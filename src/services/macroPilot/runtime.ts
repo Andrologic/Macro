@@ -133,6 +133,23 @@ export class PilotRuntime {
     }
   }
   private async runProducer(kernel: PilotKernel, instanceId: string, configurationId: string, accountId: string | undefined, signal: AbortSignal) {
+    if (accountId && this.client.requestContent && this.client.contentSecretValues) {
+      // Fence a previous producer incarnation before either new poll advertises
+      // availability, including restart after a crash without a graceful stop.
+      // This existing transport reset replaces synthetic baseline change events.
+      while (!signal.aborted && !isAppShutdownGateActive()) {
+        try {
+          const response = await this.client.request('POST', `/instances/${encodeURIComponent(instanceId)}/disconnect`, { transport_version: '1.0' },
+            { authenticated: true, producer: true, signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
+          if (response.status !== 204) throw new PilotError('unavailable');
+          break;
+        } catch {
+          if (signal.aborted) return;
+          this.publish('unavailable'); await pause(1000, signal);
+        }
+      }
+      if (signal.aborted || isAppShutdownGateActive()) return;
+    }
     const v1 = this.poll(kernel, instanceId, signal);
     const v2 = (async () => {
       if (!accountId || !this.client.requestContent || !this.client.contentSecretValues) return;

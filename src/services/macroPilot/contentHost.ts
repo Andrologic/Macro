@@ -105,9 +105,16 @@ export class ContentHost {
   }
   async prepare(): Promise<void> {
     await this.serial(() => this.policy());
-    await this.deps.conversations.refreshProjects();
-    await this.deps.conversations.refreshCatalog();
+    const projects = await this.deps.conversations.refreshProjects();
+    const conversations = await this.deps.conversations.refreshCatalog();
     this.check();
+    // Establish catalogs before advertising the producer. Their first observation
+    // describes the baseline; it does not invalidate content exposed afterwards.
+    await this.serial(async () => {
+      const next = structuredClone(this.state);
+      next.projects = projects; next.conversations = conversations.revision; next.refs = conversations.refs;
+      await this.save(next);
+    });
   }
   async observe(): Promise<void> {
     await this.serial(() => this.policy());
@@ -182,7 +189,9 @@ export class ContentHost {
     const next = structuredClone(this.state);
     const record: ReviewRecord = { ref, token, revision: (old?.revision ?? 0) + 1, state: 'pending' };
     next.reviews[key] = record;
-    this.event(next, { kind: 'review.changed', scope: ref, revision: record.revision });
+    // Discovery, whether background or review.get, has no earlier capture to
+    // invalidate. Only a change to an established fingerprint emits an event.
+    if (old) this.event(next, { kind: 'review.changed', scope: ref, revision: record.revision });
     await this.save(next); return record;
   }
   private binding(delivery: ContentDelivery, ref: ContentReviewRef): string {
