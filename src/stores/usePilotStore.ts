@@ -10,6 +10,7 @@ import {
 
 interface PilotStore extends PilotPublicState {
   busy: boolean;
+  reading: boolean;
   accountCatalog: PilotAccountCatalog | null;
   accessRequests: PilotAccessRequest[];
   accessRequestsLoaded: boolean;
@@ -38,6 +39,7 @@ const scopeOf = (state: PilotPublicState) => JSON.stringify([
 export const usePilotStore = create<PilotStore>((set, get) => {
   let scope = scopeOf(client.getState());
   let generation = 0;
+  let activeAction: { kind: 'read' | 'mutation'; controller: AbortController } | null = null;
   let instanceId = client.getState().instance?.ref.instance_id;
   const sync = () => {
     const state = client.getState();
@@ -45,6 +47,7 @@ export const usePilotStore = create<PilotStore>((set, get) => {
     const changed = nextScope !== scope;
     const instanceChanged = instanceId !== state.instance?.ref.instance_id;
     if (changed) generation++;
+    if ((changed || instanceChanged) && activeAction?.kind === 'read') activeAction.controller.abort();
     scope = nextScope;
     instanceId = state.instance?.ref.instance_id;
     set({ ...state, ...(changed ? { accountCatalog: null } : {}),
@@ -52,22 +55,35 @@ export const usePilotStore = create<PilotStore>((set, get) => {
   };
   client.subscribe(sync);
 
-  // Acquire before the first await so two clicks cannot send two mutations.
-  const action = async <T,>(work: () => Promise<T>): Promise<T> => {
-    if (get().busy) throw new PilotClientError('conflict');
+  // Logout may cancel a read, but cannot overlap any mutation.
+  const action = async <T,>(
+    work: (signal: AbortSignal) => Promise<T>,
+    kind: 'read' | 'mutation' = 'mutation',
+    preemptRead = false,
+  ): Promise<T> => {
+    const previous = activeAction;
+    if (previous && !(preemptRead && previous.kind === 'read')) throw new PilotClientError('conflict');
+    const current = { kind, controller: new AbortController() };
+    activeAction = current;
+    previous?.controller.abort();
     const started = generation;
-    set({ busy: true, lastError: null });
-    try { return await work(); }
+    set({ busy: true, reading: kind === 'read', lastError: null });
+    try { return await work(current.controller.signal); }
     catch (error) {
-      if (started === generation) set({ lastError: errorCode(error) });
+      if (activeAction === current && started === generation) set({ lastError: errorCode(error) });
       throw error;
-    } finally { set({ busy: false }); }
+    } finally {
+      if (activeAction === current) {
+        activeAction = null;
+        set({ busy: false, reading: false });
+      }
+    }
   };
-  const readAccount = async () => {
+  const readAccount = async (signal: AbortSignal) => {
     const started = generation;
     set({ accountCatalog: null });
-    const catalog = await client.getAccountCatalog();
-    if (started !== generation) throw new PilotClientError('context_changed');
+    const catalog = await client.getAccountCatalog(signal);
+    if (signal.aborted || started !== generation) throw new PilotClientError('context_changed');
     set({ accountCatalog: catalog });
   };
   const finishMutation = async (work: () => Promise<{ revocationConfirmed: boolean }>) => {
@@ -78,12 +94,12 @@ export const usePilotStore = create<PilotStore>((set, get) => {
   };
 
   return {
-    ...client.getState(), busy: false, accountCatalog: null,
+    ...client.getState(), busy: false, reading: false, accountCatalog: null,
     accessRequests: [], accessRequestsLoaded: false,
     initialize: async () => {
       // Mounts can overlap, including React StrictMode.
       if (get().busy) return;
-      await action(async () => { await client.initialize(); sync(); }).catch(() => undefined);
+      await action(async () => { await client.initialize(); sync(); }, 'read').catch(() => undefined);
     },
     connect: (origin, label) => action(async () => { await client.connect(origin, label); sync(); }),
     pollAuth: () => action(async () => { const identified = await client.pollAuth(); sync(); return Boolean(identified); }),
@@ -93,15 +109,15 @@ export const usePilotStore = create<PilotStore>((set, get) => {
       await client.confirmAccount(accountId); sync();
     }),
     createOrAttachInstance: (label) => action(async () => { await client.createOrAttachInstance({ label }); sync(); }),
-    refreshAccount: () => action(readAccount),
-    refreshAccessRequests: () => action(async () => {
+    refreshAccount: () => action(readAccount, 'read'),
+    refreshAccessRequests: () => action(async (signal) => {
       const started = generation;
       const target = instanceId;
       set({ accessRequests: [], accessRequestsLoaded: false });
-      const accessRequests = await client.listAccessRequests();
-      if (started !== generation || target !== instanceId) throw new PilotClientError('context_changed');
+      const accessRequests = await client.listAccessRequests(signal);
+      if (signal.aborted || started !== generation || target !== instanceId) throw new PilotClientError('context_changed');
       set({ accessRequests, accessRequestsLoaded: true });
-    }),
+    }, 'read'),
     resolveAccess: (id, verdict) => action(async () => {
       const started = generation;
       const target = instanceId;
@@ -123,7 +139,7 @@ export const usePilotStore = create<PilotStore>((set, get) => {
       }
       return finishMutation(() => client.deleteAccount(confirmation));
     }),
-    logout: () => action(() => finishMutation(() => client.logout())),
+    logout: () => action(() => finishMutation(() => client.logout()), 'mutation', true),
     clearError: () => set({ lastError: null }),
   };
 });

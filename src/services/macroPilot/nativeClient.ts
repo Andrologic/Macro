@@ -269,37 +269,49 @@ const errorCodeForStatus = (status: number, data: unknown): PilotClientErrorCode
   return 'invalid_response';
 };
 
-const readBoundedJson = async (response: Response, maxBytes = MAX_BODY_BYTES): Promise<unknown> => {
+// Abort even when a transport promise does not settle promptly after cancellation.
+const abortable = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+  const aborted = () => { reject(new PilotClientError('offline')); };
+  if (signal.aborted) aborted();
+  else signal.addEventListener('abort', aborted, { once: true });
+  void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+});
+
+const readBoundedJson = async (response: Response, maxBytes: number, signal: AbortSignal): Promise<unknown> => {
   if (response.status === 204 || response.status === 205) return null;
   const declaredLength = Number(response.headers.get('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    await response.body?.cancel().catch(() => undefined);
+    void response.body?.cancel().catch(() => undefined);
     throw new PilotClientError('response_too_large', response.status);
   }
   if (!response.body) return null;
   const reader = response.body.getReader();
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener('abort', cancel, { once: true });
+  if (signal.aborted) cancel();
   const chunks: Uint8Array[] = [];
   let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new PilotClientError('response_too_large', response.status);
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
   try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } catch {
-    throw new PilotClientError('invalid_response', response.status);
+    while (true) {
+      const { done, value } = await abortable(reader.read(), signal);
+      if (signal.aborted) throw new PilotClientError('offline');
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new PilotClientError('response_too_large', response.status);
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    catch { throw new PilotClientError('invalid_response', response.status); }
+  } catch (error) {
+    cancel();
+    if (error instanceof PilotClientError) throw error;
+    throw new PilotClientError('offline', response.status);
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    reader.releaseLock();
   }
 };
 
@@ -335,6 +347,8 @@ export class MacroPilotNativeClient {
   private initializationPromise: Promise<PilotPublicState> | null = null;
   private readonly listeners = new Set<() => void>();
   private epoch = 0;
+  private scopeController = new AbortController();
+  private readonly pendingReads = new Set<AbortController>();
   private readonly accountClient = new PilotAccountClient({
     context: () => {
       const state = this.persisted;
@@ -343,7 +357,7 @@ export class MacroPilotNativeClient {
     },
     id: () => createOpaqueId('request', this.dependencies),
     now: () => this.dependencies.now().getTime(),
-    send: async (path, body, requestId) => (await this.sendRequest('POST', path, body, { authenticated: true }, true, requestId)).data,
+    send: async (path, body, requestId, signal) => (await this.sendRequest('POST', path, body, { authenticated: true, signal }, true, requestId)).data,
     clear: () => this.clearSession(),
   });
 
@@ -356,7 +370,7 @@ export class MacroPilotNativeClient {
     if (this.contextKey() !== key) throw new PilotClientError('context_changed');
   }
 
-  getAccountCatalog = () => this.accountClient.getCatalog();
+  getAccountCatalog = (signal?: AbortSignal) => this.accountClient.getCatalog(signal);
   revokeSession = (sessionId: string) => this.accountClient.mutate('session.revoke', sessionId);
   revokeAllSessions = () => this.accountClient.mutate('sessions.revoke_all');
   deleteAccount = (confirmation: PilotAccountConfirmation) => this.accountClient.mutate('account.delete', confirmation);
@@ -451,6 +465,7 @@ export class MacroPilotNativeClient {
       await this.persist({ account: response.data!.account, deviceSession: response.data!.device_session });
       this.publish({ account: response.data!.account, deviceSession: response.data!.device_session, status: 'connected' });
     } catch (error) {
+      if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
       if (error instanceof PilotClientError && (error.code === 'unauthorized' || error.code === 'session_revoked')) {
         await this.clearSession();
       } else if (error instanceof PilotClientError && error.code === 'vault_unavailable') {
@@ -475,8 +490,30 @@ export class MacroPilotNativeClient {
     method: string, path: string, body: unknown, options: PilotRequestOptions,
     extension = false, requestId = createOpaqueId('request', this.dependencies),
   ): Promise<PilotResponse<T>> {
+    const readController = method === 'GET' ? new AbortController() : null;
+    if (readController) this.pendingReads.add(readController);
+    const signal = readController
+      ? AbortSignal.any([readController.signal, ...(options.signal ? [options.signal] : [])])
+      : options.signal;
+    try { return await this.sendRequestOnce<T>(method, path, body, { ...options, signal }, extension, requestId); }
+    finally { if (readController) this.pendingReads.delete(readController); }
+  }
+
+  private async sendRequestOnce<T = unknown>(
+    method: string, path: string, body: unknown, options: PilotRequestOptions,
+    extension: boolean, requestId: string,
+  ): Promise<PilotResponse<T>> {
     if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
     const context = this.contextKey();
+    const signals = [this.scopeController.signal];
+    if (options.signal) signals.push(options.signal);
+    if (extension) signals.push(AbortSignal.timeout(30_000));
+    const signal = AbortSignal.any(signals);
+    const check = () => {
+      this.checkContext(context);
+      if (options.signal?.aborted) throw new PilotClientError('context_changed');
+      if (signal.aborted) throw new PilotClientError('offline');
+    };
     const url = `${normalizeOrigin(this.persisted.relayOrigin)}${extension ? '' : '/pilot/v1'}${safePath(path)}`;
     const headers = new Headers({ Accept: 'application/json', 'X-Request-Id': requestId });
     if (body !== undefined) headers.set('Content-Type', 'application/json; charset=utf-8');
@@ -492,31 +529,42 @@ export class MacroPilotNativeClient {
       if (!this.persisted.instanceCreationId) throw new PilotClientError('unauthorized');
       headers.set('X-Instance-Key', await this.readSecret('instance_key', this.persisted.instanceCreationId));
     }
-    this.checkContext(context);
+    check();
     let response: Response;
     try {
-      response = await this.dependencies.fetch(url, {
+      const fetching = this.dependencies.fetch(url, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: options.signal,
+        signal,
         maxRedirections: 0,
       });
+      // A late response after an abort must not retain an unread native body.
+      void fetching.then(result => { if (signal.aborted) void result.body?.cancel().catch(() => undefined); }, () => undefined);
+      response = await abortable(fetching, signal);
     } catch (error) {
-      this.checkContext(context);
+      check();
       if (error instanceof PilotClientError) throw error;
       if (options.authenticated) {
         this.publish({ status: 'offline', lastError: 'offline' });
       }
       throw new PilotClientError('offline');
     }
-    this.checkContext(context);
+    check();
     if (response.url && response.url !== url) {
-      await response.body?.cancel().catch(() => undefined);
+      void response.body?.cancel().catch(() => undefined);
       throw new PilotClientError('redirect_refused', response.status);
     }
-    const data = await readBoundedJson(response, extension ? 256 * 1024 : MAX_BODY_BYTES);
-    this.checkContext(context);
+    let data: unknown;
+    try { data = await readBoundedJson(response, extension ? 256 * 1024 : MAX_BODY_BYTES, signal); }
+    catch (error) {
+      check();
+      if (options.authenticated && error instanceof PilotClientError && error.code === 'offline') {
+        this.publish({ status: 'offline', lastError: 'offline' });
+      }
+      throw error;
+    }
+    check();
     const responseRequestId = response.headers.get('x-request-id') || requestId;
     if (
       !extension && isRecord(data) &&
@@ -561,6 +609,8 @@ export class MacroPilotNativeClient {
       throw new PilotClientError('invalid_configuration');
     }
     this.epoch += 1;
+    this.scopeController.abort();
+    this.scopeController = new AbortController();
     this.accountClient.reset();
     await this.persist({ relayOrigin: origin });
     this.publish({ relayOrigin: origin, status: 'authorizing', lastError: null });
@@ -750,6 +800,7 @@ export class MacroPilotNativeClient {
   }
 
   async logout(): Promise<{ revocationConfirmed: boolean }> {
+    for (const controller of this.pendingReads) controller.abort();
     if (!this.persisted?.deviceSession) {
       await this.clearSession();
       return { revocationConfirmed: false };
@@ -798,6 +849,8 @@ export class MacroPilotNativeClient {
 
   private async clearSession(): Promise<void> {
     this.epoch += 1;
+    this.scopeController.abort();
+    this.scopeController = new AbortController();
     this.accountClient.reset();
     const pending = [...(this.persisted?.pendingSecretCleanup || [])];
     const sessionId = this.persisted?.deviceSession?.ref.session_id;

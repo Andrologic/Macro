@@ -262,7 +262,7 @@ export const PilotView: React.FC = () => {
               <p className="text-sm font-medium">{store.account.identity.display_name || store.account.identity.login}</p>
               <p className="text-xs text-muted-foreground">@{store.account.identity.login}</p>
             </div>
-            <Button variant="secondary" disabled={store.busy} onClick={logout}>
+            <Button variant="secondary" disabled={store.busy && !store.reading} onClick={logout}>
               {t('settings.pilot.signOut', 'Sign out')}
             </Button>
           </div>

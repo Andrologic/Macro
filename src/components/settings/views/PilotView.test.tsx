@@ -34,6 +34,7 @@ const pilotState = {
   lastError: null,
   logoutRevocationConfirmed: null,
   busy: false,
+  reading: false,
   accountCatalog: null as PilotAccountCatalog | null,
   accessRequests: [] as PilotAccessRequest[],
   accessRequestsLoaded: true,
@@ -95,6 +96,7 @@ describe('PilotView', () => {
   let root: Root;
 
   beforeEach(async () => {
+    pilotState.busy = false; pilotState.reading = false;
     pilotState.account = null; pilotState.deviceSession = null; pilotState.accountCatalog = null;
     pilotState.instanceAccess = null; pilotState.accessRequests = [];
     pilotState.deleteAccount.mockClear(); pilotState.resolveAccess.mockClear();
@@ -217,6 +219,17 @@ describe('PilotView', () => {
     await act(async () => button('Revoke all sessions').click());
     expect(pilotState.revokeAllSessions).toHaveBeenCalledTimes(1);
     expect(notifyWarningMock).toHaveBeenCalledWith('Signed out locally. Server revocation could not be confirmed. Sign in again to check your account.');
+  });
+
+  it('keeps sign out available during reads but disables it during mutations', async () => {
+    await showAccount();
+    pilotState.busy = true; pilotState.reading = true;
+    await act(async () => root.render(<PilotView />));
+    expect(button('Sign out').disabled).toBe(false);
+    expect(button('Revoke all sessions').disabled).toBe(true);
+    pilotState.reading = false;
+    await act(async () => root.render(<PilotView />));
+    expect(button('Sign out').disabled).toBe(true);
   });
 
 });

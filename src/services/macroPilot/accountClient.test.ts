@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { MacroPilotNativeClient, type PilotClientDependencies } from './nativeClient';
 
 const identity = { account_id: 'account-demo', revision: 4, provider: 'github' as const, subject: '123456', login: 'example', session_id: 'session-demo' };
@@ -148,12 +148,12 @@ describe('native account v2 over the HTTP boundary', () => {
       if (url.endsWith('/auth/attempts')) return json({ transport_version: '1.0', attempt_id: 'attempt-new', poll_secret: 'poll-secret',
         user_code: 'ABCD', verification_uri: 'https://github.com/login/device', expires_at: '2026-09-08T10:10:00Z', interval: 5 });
     });
-    const loading = h.client.getAccountCatalog();
+    const loading = h.client.getAccountCatalog().catch(error => error);
     const original = await started.promise;
     await expect(h.client.request('GET', '/revoked', undefined, { authenticated: true })).rejects.toMatchObject({ code: 'session_revoked' });
     await h.client.connect('https://new-relay.example', 'New desktop');
     pending.resolve(response(original, identity));
-    await expect(loading).rejects.toMatchObject({ code: 'context_changed' });
+    expect(await loading).toMatchObject({ code: 'context_changed' });
     expect(h.client.getState()).toMatchObject({ relayOrigin: 'https://new-relay.example', status: 'authorizing', account: null });
     expect(h.requests.filter(r => r.body.operation === 'sessions.list')).toHaveLength(0);
   });
@@ -203,6 +203,98 @@ describe('native account v2 over the HTTP boundary', () => {
     expect(h.secrets.size).toBe(0);
     await expect(h.client.request('GET', '/me', undefined, { authenticated: true })).rejects.toMatchObject({ code: 'unauthorized' });
     expect(h.values.localData).toEqual(h.localData);
+  });
+
+  for (const operation of ['session.revoke', 'sessions.revoke_all', 'account.delete', 'session.logout'] as const) {
+    it(`normalizes a failed response body after ${operation} and prevents bearer replay`, async () => {
+      const h = harness(); await h.client.initialize(); await h.client.getAccountCatalog();
+      h.intercept(request => request.operation === operation ? new Response(new ReadableStream({
+        start(controller) { controller.error(new TypeError('connection reset while reading body')); },
+      }), { status: 200 }) : undefined);
+      const result = operation === 'session.revoke' ? await h.client.revokeSession('session-demo') :
+        operation === 'sessions.revoke_all' ? await h.client.revokeAllSessions() :
+          operation === 'account.delete' ? await h.client.deleteAccount(identity) : await h.client.logout();
+      expect(result).toEqual({ revocationConfirmed: false });
+      expect(h.secrets.size).toBe(0);
+      expect(h.client.getState().deviceSession).toBeNull();
+      const sent = h.requests.length;
+      await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'unauthorized' });
+      expect(h.requests).toHaveLength(sent);
+      expect(h.values.localData).toEqual(h.localData);
+    });
+  }
+
+  for (const phase of ['headers', 'body'] as const) {
+    it(`lets logout cancel a stalled ${phase} read without allowing concurrent mutations`, async () => {
+      const h = harness(); await h.client.initialize();
+      const started = deferred<Request>();
+      const logoutStarted = deferred<Request>();
+      const pendingRead = deferred<Response>();
+      const pendingLogout = deferred<Response>();
+      let bodyCancelled = false;
+      const bodyReading = deferred<void>();
+      let readSignal: AbortSignal | null | undefined;
+      const originalFetch = h.deps.fetch;
+      h.deps.fetch = (url, init) => {
+        if (String(init?.body).includes('account.get')) readSignal = init?.signal;
+        return originalFetch(url, init);
+      };
+      h.intercept(request => {
+        if (request.operation === 'account.get') {
+          started.resolve(request);
+          return phase === 'headers' ? pendingRead.promise : new Response(new ReadableStream({ pull() { bodyReading.resolve(); }, cancel() { bodyCancelled = true; } }, { highWaterMark: 0 }));
+        }
+        if (request.operation === 'session.logout') { logoutStarted.resolve(request); return pendingLogout.promise; }
+      });
+      const read = h.client.getAccountCatalog().catch(error => error);
+      const original = await started.promise;
+      if (phase === 'body') await bodyReading.promise;
+      const logout = h.client.logout();
+      const logoutRequest = await logoutStarted.promise;
+      expect(readSignal?.aborted).toBe(true);
+      expect(await read).toMatchObject({ code: 'context_changed' });
+      await expect(h.client.logout()).rejects.toMatchObject({ code: 'conflict' });
+      await expect(h.client.revokeSession('session-other')).rejects.toMatchObject({ code: 'conflict' });
+      pendingLogout.resolve(response(logoutRequest, { outcome: 'applied', revision: 5 }));
+      await expect(logout).resolves.toEqual({ revocationConfirmed: true });
+      expect(h.secrets.size).toBe(0);
+      if (phase === 'body') expect(bodyCancelled).toBe(true);
+      pendingRead.resolve(response(original, identity));
+      expect(h.requests.filter(request => request.body.operation === 'sessions.list')).toHaveLength(0);
+    });
+  }
+
+  it('bounds an account request even if transport ignores its abort signal', async () => {
+    const h = harness(); await h.client.initialize();
+    const deadline = new AbortController();
+    const timeout = spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+      expect(milliseconds).toBe(30_000);
+      return deadline.signal;
+    });
+    try {
+      const started = deferred<Request>();
+      const pending = deferred<Response>();
+      h.intercept(request => { if (request.operation === 'account.get') { started.resolve(request); return pending.promise; } });
+      const read = h.client.getAccountCatalog().catch(error => error);
+      await started.promise;
+      deadline.abort();
+      expect(await read).toMatchObject({ code: 'offline' });
+      expect(h.client.getState().deviceSession).not.toBeNull();
+    } finally { timeout.mockRestore(); }
+  });
+
+  it('lets logout preempt the initial session read without restoring stale connection state', async () => {
+    const h = harness();
+    const started = deferred<void>();
+    const pending = deferred<Response>();
+    h.intercept((_request, url) => { if (url.endsWith('/me')) { started.resolve(); return pending.promise; } });
+    const initialize = h.client.initialize().catch(error => error);
+    await started.promise;
+    await expect(h.client.logout()).resolves.toEqual({ revocationConfirmed: true });
+    expect(await initialize).toMatchObject({ code: 'context_changed' });
+    pending.resolve(json({ account, device_session: session }));
+    expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null, account: null });
+    expect(h.secrets.size).toBe(0);
   });
 
 });

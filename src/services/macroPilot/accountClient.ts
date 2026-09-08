@@ -21,7 +21,7 @@ export interface AccountTransport {
   context: () => AccountContext;
   id: () => string;
   now: () => number;
-  send: (path: string, body: unknown, requestId: string) => Promise<unknown>;
+  send: (path: string, body: unknown, requestId: string, signal: AbortSignal) => Promise<unknown>;
   clear: () => Promise<void>;
 }
 
@@ -30,40 +30,51 @@ export class PilotAccountClient {
   private negotiatedKey: string | null = null;
   private catalog: PilotAccountCatalog | null = null;
   private catalogKey: string | null = null;
-  private busy = false;
+  private active: { kind: 'read' | 'mutation'; controller: AbortController } | null = null;
 
   constructor(private readonly transport: AccountTransport) {}
 
   reset(): void {
+    this.active?.controller.abort();
     this.negotiatedKey = null;
     this.catalog = null;
     this.catalogKey = null;
   }
 
-  private check(context: AccountContext): void {
+  private check(context: AccountContext, signal?: AbortSignal): void {
+    if (signal?.aborted) throw new PilotClientError('context_changed');
     if (this.transport.context().key !== context.key) throw new PilotClientError('context_changed');
   }
 
-  private async exclusive<T>(work: (context: AccountContext) => Promise<T>): Promise<T> {
-    if (this.busy) throw new PilotClientError('conflict');
-    this.busy = true;
+  private async exclusive<T>(
+    kind: 'read' | 'mutation',
+    work: (context: AccountContext, signal: AbortSignal) => Promise<T>,
+    options: { preemptRead?: boolean; signal?: AbortSignal } = {},
+  ): Promise<T> {
+    if (this.active) {
+      if (!options.preemptRead || this.active.kind !== 'read') throw new PilotClientError('conflict');
+      this.reset();
+    }
+    const active = { kind, controller: new AbortController() };
+    const signal = options.signal ? AbortSignal.any([options.signal, active.controller.signal]) : active.controller.signal;
+    this.active = active;
     let context: AccountContext | undefined;
-    try { context = this.transport.context(); return await work(context); }
+    try { context = this.transport.context(); return await work(context, signal); }
     catch (error) {
-      if (error instanceof PilotClientError && ['unauthorized', 'session_revoked'].includes(error.code)) {
+      if (this.active === active && !signal.aborted && error instanceof PilotClientError && ['unauthorized', 'session_revoked'].includes(error.code)) {
         if (context) {
-          this.check(context);
+          this.check(context, signal);
           this.reset();
           await this.transport.clear();
         }
       }
       throw error;
     }
-    finally { this.busy = false; }
+    finally { if (this.active === active) this.active = null; }
   }
 
-  private async negotiate(context: AccountContext): Promise<void> {
-    this.check(context);
+  private async negotiate(context: AccountContext, signal: AbortSignal): Promise<void> {
+    this.check(context, signal);
     if (this.negotiatedKey === context.key) return;
     const request = {
       negotiation_version: '1.0', type: 'negotiate',
@@ -71,12 +82,12 @@ export class PilotAccountClient {
     };
     let response: unknown;
     try {
-      response = await this.transport.send('/pilot/extensions/negotiate', request, request.request_id);
+      response = await this.transport.send('/pilot/extensions/negotiate', request, request.request_id, signal);
     } catch (error) {
       if (error instanceof PilotClientError && error.code === 'not_found') throw new PilotClientError('extension_unavailable');
       throw error;
     }
-    this.check(context);
+    this.check(context, signal);
     if (!validateContentMessage(response) || !validateContentResponse(request, response) || response.type !== 'negotiated') {
       throw new PilotClientError('invalid_response');
     }
@@ -84,26 +95,26 @@ export class PilotAccountClient {
     this.negotiatedKey = context.key;
   }
 
-  private async request<T>(context: AccountContext, operation: string, body: object): Promise<T> {
-    this.check(context);
+  private async request<T>(context: AccountContext, operation: string, body: object, signal: AbortSignal): Promise<T> {
+    this.check(context, signal);
     const request = { contract_version: '2.0', type: 'request', account_id: context.accountId,
       request_id: this.transport.id(), operation, body };
     if (!validateContentMessage(request)) throw new PilotClientError('invalid_configuration');
-    const response = await this.transport.send('/pilot/v2/account/requests', request, request.request_id);
-    this.check(context);
+    const response = await this.transport.send('/pilot/v2/account/requests', request, request.request_id, signal);
+    this.check(context, signal);
     if (!validateContentMessage(response) || !validateContentResponse(request, response) || response.type !== 'response') {
       throw new PilotClientError('invalid_response');
     }
     return response.result as T;
   }
 
-  getCatalog(): Promise<PilotAccountCatalog> {
-    return this.exclusive(async (context) => {
+  getCatalog(signal?: AbortSignal): Promise<PilotAccountCatalog> {
+    return this.exclusive('read', async (context, signal) => {
       // A failed refresh must not leave a catalog eligible for mutations.
       this.catalog = null;
       this.catalogKey = null;
-      await this.negotiate(context);
-      const identity = await this.request<PilotAccountIdentity>(context, 'account.get', {});
+      await this.negotiate(context, signal);
+      const identity = await this.request<PilotAccountIdentity>(context, 'account.get', {}, signal);
       if (identity.account_id !== context.accountId || identity.session_id !== context.sessionId) throw new PilotClientError('invalid_response');
       const sessions: PilotAccountSession[] = [];
       const ids = new Set<string>();
@@ -112,7 +123,7 @@ export class PilotAccountClient {
       let continuation: { snapshot_id: string; cursor: string } | undefined;
       let bytes = 0;
       do {
-        const result = await this.request<{ page: Page; items: PilotAccountSession[] }>(context, 'sessions.list', continuation ? { continuation } : {});
+        const result = await this.request<{ page: Page; items: PilotAccountSession[] }>(context, 'sessions.list', continuation ? { continuation } : {}, signal);
         const page = result.page;
         bytes += new TextEncoder().encode(JSON.stringify(result)).byteLength;
         if (bytes > 64 * 1024 * 1024) throw new PilotClientError('resource_limit');
@@ -133,17 +144,17 @@ export class PilotAccountClient {
           continuation = { snapshot_id: page.snapshot_id, cursor: page.next_cursor };
         } else continuation = undefined;
       } while (continuation);
-      this.check(context);
+      this.check(context, signal);
       if (!sessions.some((session) => session.session_id === context.sessionId && session.state === 'active')) throw new PilotClientError('invalid_response');
       const catalog = { identity, sessions, revision: identity.revision };
       this.catalog = structuredClone(catalog);
       this.catalogKey = context.key;
       return catalog;
-    });
+    }, { signal });
   }
 
   mutate(operation: 'session.revoke' | 'sessions.revoke_all' | 'account.delete' | 'session.logout', target?: string | PilotAccountConfirmation): Promise<{ revocationConfirmed: boolean }> {
-    return this.exclusive(async (context) => {
+    return this.exclusive('mutation', async (context, signal) => {
       const catalog = this.catalogKey === context.key ? this.catalog : null;
       if (operation !== 'session.logout' && !catalog) throw new PilotClientError('stale_revision');
       if (operation === 'session.revoke' && (typeof target !== 'string' || !catalog!.sessions.some((session) => session.session_id === target && session.state === 'active'))) {
@@ -156,13 +167,13 @@ export class PilotAccountClient {
       const self = operation !== 'session.revoke' || target === context.sessionId;
       let submitted = false;
       try {
-        await this.negotiate(context);
+        await this.negotiate(context, signal);
         const body = { idempotency_key: this.transport.id(),
           ...(operation !== 'session.logout' ? { expected_revision: catalog!.revision } : {}),
           ...(operation === 'session.revoke' ? { session_id: target } : {}),
           ...(operation === 'account.delete' ? { confirmation: 'delete_cloud_account' } : {}) };
         submitted = true;
-        await this.request(context, operation, body);
+        await this.request(context, operation, body, signal);
         this.reset();
         if (self) await this.transport.clear();
         return { revocationConfirmed: true };
@@ -181,6 +192,6 @@ export class PilotAccountClient {
         this.catalogKey = null;
         throw error;
       }
-    });
+    }, { preemptRead: operation === 'session.logout' });
   }
 }

@@ -15,17 +15,19 @@ const catalog: PilotAccountCatalog = { identity: { account_id: 'account:one', se
   provider: 'github', subject: '1234', login: 'example', revision: 1 }, sessions: [], revision: 1 };
 let state = initial();
 let subscriber: () => void;
-const getAccountCatalog = mock(async () => catalog);
-const listAccessRequests = mock(async () => []);
+const getAccountCatalog = mock(async (_signal?: AbortSignal) => catalog);
+const listAccessRequests = mock(async (_signal?: AbortSignal) => []);
 const revokeSession = mock(async (_id: string) => ({ revocationConfirmed: true }));
 const deleteAccount = mock(async () => ({ revocationConfirmed: true }));
 const resolveAccess = mock(async () => undefined);
 const connect = mock(async () => undefined);
+const signOut = async () => { state = { ...state, account: null, deviceSession: null, status: 'signed_out' as const }; subscriber(); return { revocationConfirmed: false }; };
+const logout = mock(signOut);
 mock.module('../services/macroPilot/nativeClient', () => ({ ...native, macroPilotNativeClient: {
   getState: () => state, subscribe: (listener: () => void) => { subscriber = listener; return () => undefined; },
   initialize: async () => undefined, getAccountCatalog, listAccessRequests, revokeSession, deleteAccount,
   resolveAccess, connect,
-  logout: async () => { state = { ...state, account: null, deviceSession: null, status: 'signed_out' }; subscriber(); return { revocationConfirmed: false }; },
+  logout,
 } }));
 const { usePilotStore } = await import('./usePilotStore');
 const deferred = <T,>() => {
@@ -36,10 +38,11 @@ const deferred = <T,>() => {
 
 beforeEach(() => {
   state = initial(); subscriber();
-  usePilotStore.setState({ busy: false, accountCatalog: null, accessRequests: [], accessRequestsLoaded: false, lastError: null });
+  usePilotStore.setState({ busy: false, reading: false, accountCatalog: null, accessRequests: [], accessRequestsLoaded: false, lastError: null });
   getAccountCatalog.mockReset(); getAccountCatalog.mockImplementation(async () => catalog);
   listAccessRequests.mockReset(); listAccessRequests.mockImplementation(async () => []);
   revokeSession.mockReset(); revokeSession.mockImplementation(async () => ({ revocationConfirmed: true }));
+  logout.mockReset(); logout.mockImplementation(signOut);
   deleteAccount.mockClear(); resolveAccess.mockClear(); connect.mockClear();
 });
 
@@ -104,4 +107,49 @@ describe('Pilot account store', () => {
     expect(usePilotStore.getState().accountCatalog).toBeNull();
     expect(usePilotStore.getState().accessRequests).toEqual([]);
   });
+  it.each(['account', 'access'] as const)('lets logout cancel an %s read without releasing the logout lock on late completion', async (kind) => {
+    const pendingRead = deferred<PilotAccountCatalog>();
+    const pendingAccess = deferred<never[]>();
+    const pendingLogout = deferred<{ revocationConfirmed: boolean }>();
+    getAccountCatalog.mockImplementation(() => pendingRead.promise);
+    listAccessRequests.mockImplementation(() => pendingAccess.promise);
+    logout.mockImplementation(() => pendingLogout.promise);
+    const reading = kind === 'account' ? usePilotStore.getState().refreshAccount() : usePilotStore.getState().refreshAccessRequests();
+    expect(usePilotStore.getState().reading).toBe(true);
+    const signal = kind === 'account' ? getAccountCatalog.mock.calls[0][0] : listAccessRequests.mock.calls[0][0];
+    const signingOut = usePilotStore.getState().logout();
+    expect(signal?.aborted).toBe(true);
+    expect(usePilotStore.getState().reading).toBe(false);
+    pendingRead.resolve(catalog); pendingAccess.resolve([]);
+    await expect(reading).rejects.toThrow('context_changed');
+    expect(usePilotStore.getState().busy).toBe(true);
+    expect(usePilotStore.getState().accountCatalog).toBeNull();
+    expect(usePilotStore.getState().accessRequestsLoaded).toBe(false);
+    expect(usePilotStore.getState().lastError).toBeNull();
+    await expect(usePilotStore.getState().logout()).rejects.toThrow('conflict');
+    await expect(usePilotStore.getState().revokeSession('session:other')).rejects.toThrow('conflict');
+    expect(logout).toHaveBeenCalledTimes(1);
+    expect(revokeSession).not.toHaveBeenCalled();
+    pendingLogout.resolve({ revocationConfirmed: true });
+    await signingOut;
+    expect(usePilotStore.getState().busy).toBe(false);
+  });
+
+  it('does not let a cancelled read unlock a mutation started after logout completes', async () => {
+    const pendingRead = deferred<PilotAccountCatalog>();
+    const pendingMutation = deferred<{ revocationConfirmed: boolean }>();
+    getAccountCatalog.mockImplementation(() => pendingRead.promise);
+    revokeSession.mockImplementation(() => pendingMutation.promise);
+    const reading = usePilotStore.getState().refreshAccount();
+    await usePilotStore.getState().logout();
+    const mutation = usePilotStore.getState().revokeSession('session:other');
+    pendingRead.resolve(catalog);
+    await expect(reading).rejects.toThrow('context_changed');
+    expect(usePilotStore.getState().busy).toBe(true);
+    expect(usePilotStore.getState().lastError).toBeNull();
+    await expect(usePilotStore.getState().logout()).rejects.toThrow('conflict');
+    pendingMutation.resolve({ revocationConfirmed: true }); await mutation;
+    expect(usePilotStore.getState().busy).toBe(false);
+  });
+
 });
