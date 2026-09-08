@@ -1,3 +1,4 @@
+import { assistantProvenance, type AssistantProvenance } from './macroPilot/assistantProvenance';
 import type {
   ChatMessage,
   Conversation,
@@ -67,6 +68,7 @@ export interface ChatPersistenceAdapters {
   ipc: ChatPersistenceIpc;
   now?: () => Date;
   randomIdSuffix?: () => string;
+  assistantProvenance?: AssistantProvenance;
 }
 
 export interface ChatBootstrapLoadResult {
@@ -403,6 +405,18 @@ export const persistAssistantCompletionResult = async (
         : {}),
     },
   );
+  // Every provider converges here with display and structured replay output from onComplete.
+  // A receipt is independent of completion_reason and bound to these exact bytes.
+  try {
+    await (adapters.assistantProvenance ?? assistantProvenance()).recordFinal(
+      params.assistantMessageId,
+      params.result.visibleContent,
+      params.result.providerInputItems ?? params.result.providerTurnState?.output_items,
+    );
+  } catch {
+    // Optional export evidence must not turn an already saved local reply into an
+    // error. Without a matching receipt the content producer withholds the text.
+  }
 };
 
 export const renameConversation = async (
