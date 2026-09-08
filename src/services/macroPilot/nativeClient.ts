@@ -1,3 +1,6 @@
+import { PilotAccountClient, type PilotAccountConfirmation } from './accountClient';
+import { validateContentMessage, validateContentResponse } from './contentProtocol';
+export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
 import { tauriFetch } from '../tauriHttp';
 import {
   pilotSecretDelete,
@@ -123,10 +126,15 @@ interface PersistedPilotState {
   instanceAccess: PilotInstanceAccess | null;
   instanceCreationId: string | null;
   pendingInstanceLabel: string | null;
+  pendingSecretCleanup: PilotSecretScope[];
   attempt: PilotAuthAttempt | null;
 }
 
 export type PilotClientErrorCode =
+  | 'extension_unavailable'
+  | 'snapshot_expired'
+  | 'resource_limit'
+  | 'context_changed'
   | 'invalid_configuration'
   | 'invalid_response'
   | 'response_too_large'
@@ -250,6 +258,9 @@ const errorCodeForStatus = (status: number, data: unknown): PilotClientErrorCode
       : null;
   if (remoteCode === 'session_revoked') return 'session_revoked';
   if (remoteCode === 'stale_revision') return 'stale_revision';
+  if (remoteCode === 'snapshot_expired') return 'snapshot_expired';
+  if (remoteCode === 'resource_limit') return 'resource_limit';
+  if (remoteCode === 'unsupported_version') return 'extension_unavailable';
   if (status === 401) return 'unauthorized';
   if (status === 403) return 'forbidden';
   if (status === 404) return 'not_found';
@@ -258,37 +269,49 @@ const errorCodeForStatus = (status: number, data: unknown): PilotClientErrorCode
   return 'invalid_response';
 };
 
-const readBoundedJson = async (response: Response): Promise<unknown> => {
+// Abort even when a transport promise does not settle promptly after cancellation.
+const abortable = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+  const aborted = () => { reject(new PilotClientError('offline')); };
+  if (signal.aborted) aborted();
+  else signal.addEventListener('abort', aborted, { once: true });
+  void work.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+});
+
+const readBoundedJson = async (response: Response, maxBytes: number, signal: AbortSignal): Promise<unknown> => {
   if (response.status === 204 || response.status === 205) return null;
   const declaredLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
-    await response.body?.cancel().catch(() => undefined);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    void response.body?.cancel().catch(() => undefined);
     throw new PilotClientError('response_too_large', response.status);
   }
   if (!response.body) return null;
   const reader = response.body.getReader();
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener('abort', cancel, { once: true });
+  if (signal.aborted) cancel();
   const chunks: Uint8Array[] = [];
   let size = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
-      await reader.cancel().catch(() => undefined);
-      throw new PilotClientError('response_too_large', response.status);
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
   try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } catch {
-    throw new PilotClientError('invalid_response', response.status);
+    while (true) {
+      const { done, value } = await abortable(reader.read(), signal);
+      if (signal.aborted) throw new PilotClientError('offline');
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new PilotClientError('response_too_large', response.status);
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
+    catch { throw new PilotClientError('invalid_response', response.status); }
+  } catch (error) {
+    cancel();
+    if (error instanceof PilotClientError) throw error;
+    throw new PilotClientError('offline', response.status);
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    reader.releaseLock();
   }
 };
 
@@ -314,6 +337,7 @@ const emptyPersistedState = (configurationId: string): PersistedPilotState => ({
   instanceAccess: null,
   instanceCreationId: null,
   pendingInstanceLabel: null,
+  pendingSecretCleanup: [],
   attempt: null,
 });
 
@@ -321,7 +345,36 @@ export class MacroPilotNativeClient {
   private publicState = emptyPublicState();
   private persisted: PersistedPilotState | null = null;
   private initializationPromise: Promise<PilotPublicState> | null = null;
+  private persistenceTail: Promise<void> = Promise.resolve();
   private readonly listeners = new Set<() => void>();
+  private epoch = 0;
+  private scopeController = new AbortController();
+  private readonly pendingReads = new Set<AbortController>();
+  private readonly accountClient = new PilotAccountClient({
+    context: () => {
+      const state = this.persisted;
+      if (!this.publicState.deviceSession || !state?.deviceSession || !state.account) throw new PilotClientError('unauthorized');
+      return { key: this.contextKey(), accountId: state.account.account_id, sessionId: state.deviceSession.ref.session_id };
+    },
+    id: () => createOpaqueId('request', this.dependencies),
+    now: () => this.dependencies.now().getTime(),
+    send: async (path, body, requestId, signal) => (await this.sendRequest('POST', path, body, { authenticated: true, signal }, true, requestId)).data,
+    clear: () => this.clearSession(),
+  });
+
+  private contextKey(): string {
+    return JSON.stringify([this.epoch, this.persisted?.configurationId, this.persisted?.relayOrigin,
+      this.persisted?.account?.account_id, this.persisted?.deviceSession?.ref.session_id, this.persisted?.attempt?.attemptKey]);
+  }
+
+  private checkContext(key: string): void {
+    if (this.contextKey() !== key) throw new PilotClientError('context_changed');
+  }
+
+  getAccountCatalog = (signal?: AbortSignal) => this.accountClient.getCatalog(signal);
+  revokeSession = (sessionId: string) => this.accountClient.mutate('session.revoke', sessionId);
+  revokeAllSessions = () => this.accountClient.mutate('sessions.revoke_all');
+  deleteAccount = (confirmation: PilotAccountConfirmation) => this.accountClient.mutate('account.delete', confirmation);
 
   constructor(private readonly dependencies: PilotClientDependencies = defaultDependencies) {}
 
@@ -337,11 +390,21 @@ export class MacroPilotNativeClient {
     for (const listener of this.listeners) listener();
   }
 
-  private async persist(patch: Partial<PersistedPilotState>): Promise<void> {
-    if (!this.persisted) throw new PilotClientError('invalid_configuration');
-    const next = { ...this.persisted, ...patch };
-    await this.dependencies.setStateValue(STATE_KEY, next);
-    this.persisted = next;
+  private persist(patch: Partial<PersistedPilotState>): Promise<void> {
+    const context = this.contextKey();
+    const write = this.persistenceTail.then(async () => {
+      this.checkContext(context);
+      if (!this.persisted) throw new PilotClientError('invalid_configuration');
+      const next = { ...this.persisted, ...patch };
+      try { await this.dependencies.setStateValue(STATE_KEY, next); }
+      catch (error) { this.checkContext(context); throw error; }
+      // A logout may have invalidated this write while native storage was busy.
+      // Its queued tombstone must finish before logout reports completion.
+      this.checkContext(context);
+      this.persisted = next;
+    });
+    this.persistenceTail = write.catch(() => undefined);
+    return write;
   }
 
   private secretScope(kind: PilotSecretKind, resourceId: string): PilotSecretScope {
@@ -382,7 +445,11 @@ export class MacroPilotNativeClient {
   }
 
   private async initializeOnce(): Promise<PilotPublicState> {
+    const epoch = this.epoch;
+    await this.persistenceTail;
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     const snapshot = await this.dependencies.getStateSnapshot();
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     const raw = snapshot.values[STATE_KEY];
     const configurationId = isRecord(raw) && typeof raw.configurationId === 'string'
       ? raw.configurationId
@@ -391,6 +458,7 @@ export class MacroPilotNativeClient {
       ? { ...emptyPersistedState(configurationId), ...raw, configurationId } as PersistedPilotState
       : emptyPersistedState(configurationId);
     if (!isRecord(raw)) await this.persist({});
+    await this.cleanupPendingSecrets();
     const configured = Boolean(this.persisted.relayOrigin);
     this.publish({
       configurationId,
@@ -405,13 +473,19 @@ export class MacroPilotNativeClient {
     });
     if (!this.persisted.deviceSession) return this.publicState;
     await this.finishClaimCleanup();
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     try {
+      const context = this.contextKey();
       const response = await this.request<{ account: PilotAccount; device_session: PilotDeviceSession }>(
         'GET', '/me', undefined, { authenticated: true },
       );
+      this.checkContext(context);
       await this.persist({ account: response.data!.account, deviceSession: response.data!.device_session });
+      this.checkContext(context);
       this.publish({ account: response.data!.account, deviceSession: response.data!.device_session, status: 'connected' });
     } catch (error) {
+      if (epoch !== this.epoch) throw new PilotClientError('context_changed');
+      if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
       if (error instanceof PilotClientError && (error.code === 'unauthorized' || error.code === 'session_revoked')) {
         await this.clearSession();
       } else if (error instanceof PilotClientError && error.code === 'vault_unavailable') {
@@ -429,12 +503,42 @@ export class MacroPilotNativeClient {
     body?: unknown,
     options: PilotRequestOptions = {},
   ): Promise<PilotResponse<T>> {
+    return this.sendRequest<T>(method, path, body, options);
+  }
+
+  private async sendRequest<T = unknown>(
+    method: string, path: string, body: unknown, options: PilotRequestOptions,
+    extension = false, requestId = createOpaqueId('request', this.dependencies),
+  ): Promise<PilotResponse<T>> {
+    const readController = method === 'GET' ? new AbortController() : null;
+    if (readController) this.pendingReads.add(readController);
+    const signal = readController
+      ? AbortSignal.any([readController.signal, ...(options.signal ? [options.signal] : [])])
+      : options.signal;
+    try { return await this.sendRequestOnce<T>(method, path, body, { ...options, signal }, extension, requestId); }
+    finally { if (readController) this.pendingReads.delete(readController); }
+  }
+
+  private async sendRequestOnce<T = unknown>(
+    method: string, path: string, body: unknown, options: PilotRequestOptions,
+    extension: boolean, requestId: string,
+  ): Promise<PilotResponse<T>> {
     if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
-    const url = `${normalizeOrigin(this.persisted.relayOrigin)}/pilot/v1${safePath(path)}`;
-    const requestId = createOpaqueId('request', this.dependencies);
+    const context = this.contextKey();
+    const signals = [this.scopeController.signal];
+    if (options.signal) signals.push(options.signal);
+    if (extension) signals.push(AbortSignal.timeout(30_000));
+    const signal = AbortSignal.any(signals);
+    const check = () => {
+      this.checkContext(context);
+      if (options.signal?.aborted) throw new PilotClientError('context_changed');
+      if (signal.aborted) throw new PilotClientError('offline');
+    };
+    const url = `${normalizeOrigin(this.persisted.relayOrigin)}${extension ? '' : '/pilot/v1'}${safePath(path)}`;
     const headers = new Headers({ Accept: 'application/json', 'X-Request-Id': requestId });
     if (body !== undefined) headers.set('Content-Type', 'application/json; charset=utf-8');
     let token = options.authorizationToken;
+    if (options.authenticated && !this.publicState.deviceSession) throw new PilotClientError('unauthorized');
     if (options.authenticated && !token) {
       const sessionId = this.persisted.deviceSession?.ref.session_id;
       if (!sessionId) throw new PilotClientError('unauthorized');
@@ -445,42 +549,66 @@ export class MacroPilotNativeClient {
       if (!this.persisted.instanceCreationId) throw new PilotClientError('unauthorized');
       headers.set('X-Instance-Key', await this.readSecret('instance_key', this.persisted.instanceCreationId));
     }
+    check();
     let response: Response;
     try {
-      response = await this.dependencies.fetch(url, {
+      const fetching = this.dependencies.fetch(url, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: options.signal,
+        signal,
         maxRedirections: 0,
       });
+      // A late response after an abort must not retain an unread native body.
+      void fetching.then(result => { if (signal.aborted) void result.body?.cancel().catch(() => undefined); }, () => undefined);
+      response = await abortable(fetching, signal);
     } catch (error) {
+      check();
       if (error instanceof PilotClientError) throw error;
       if (options.authenticated) {
         this.publish({ status: 'offline', lastError: 'offline' });
       }
       throw new PilotClientError('offline');
     }
+    check();
     if (response.url && response.url !== url) {
-      await response.body?.cancel().catch(() => undefined);
+      void response.body?.cancel().catch(() => undefined);
       throw new PilotClientError('redirect_refused', response.status);
     }
-    const data = await readBoundedJson(response);
+    let data: unknown;
+    try { data = await readBoundedJson(response, extension ? 256 * 1024 : MAX_BODY_BYTES, signal); }
+    catch (error) {
+      check();
+      if (options.authenticated && error instanceof PilotClientError && error.code === 'offline') {
+        this.publish({ status: 'offline', lastError: 'offline' });
+      }
+      throw error;
+    }
+    check();
     const responseRequestId = response.headers.get('x-request-id') || requestId;
     if (
-      isRecord(data) &&
+      !extension && isRecord(data) &&
       (('transport_version' in data && data.transport_version !== TRANSPORT_VERSION) ||
         ('contract_version' in data && data.contract_version !== CONTRACT_VERSION))
     ) {
       throw new PilotClientError('invalid_response', response.status, false, responseRequestId);
     }
-    if (!response.ok) {
+    if (extension) {
+      const responseHeader = response.headers.get('x-request-id');
+      if (responseHeader && responseHeader !== requestId) throw new PilotClientError('invalid_response');
+      // Before authentication the relay may return a transport error, with no account envelope.
+      if (response.ok || (isRecord(data) && data.contract_version === '2.0')) {
+        if (!validateContentMessage(data) || !validateContentResponse(body, data)) throw new PilotClientError('invalid_response');
+      }
+    }
+    if (!response.ok || (extension && isRecord(data) && data.type === 'error')) {
       const code = errorCodeForStatus(response.status, data);
       if (
         options.authenticated &&
         (code === 'unauthorized' || code === 'session_revoked')
       ) {
-        await this.clearSession();
+        // The account mutation caller handles self-revocation acknowledgement loss.
+        if (!extension) await this.clearSession();
       }
       throw new PilotClientError(code, response.status, response.status === 429 || response.status === 503, responseRequestId);
     }
@@ -492,13 +620,18 @@ export class MacroPilotNativeClient {
 
   async connect(relayOrigin: string, deviceLabel: string): Promise<PilotAuthAttempt> {
     if (!this.persisted) await this.initialize();
+    await this.cleanupPendingSecrets();
     const origin = normalizeOrigin(relayOrigin.trim());
     if (!deviceLabel.trim() || deviceLabel.trim().length > 120) {
       throw new PilotClientError('invalid_configuration');
     }
-    if (this.persisted!.relayOrigin && this.persisted!.relayOrigin !== origin && this.persisted!.deviceSession) {
+    if (this.persisted!.deviceSession) {
       throw new PilotClientError('invalid_configuration');
     }
+    this.epoch += 1;
+    this.scopeController.abort();
+    this.scopeController = new AbortController();
+    this.accountClient.reset();
     await this.persist({ relayOrigin: origin });
     this.publish({ relayOrigin: origin, status: 'authorizing', lastError: null });
     const attemptKey = createOpaqueId('attempt', this.dependencies);
@@ -674,17 +807,11 @@ export class MacroPilotNativeClient {
   async resolveAccess(
     accessRequestId: string,
     verdict: 'grant' | 'deny',
-    permissions?: PilotPermission[],
   ): Promise<'granted' | 'denied'> {
     const instanceId = this.persisted?.instance?.ref.instance_id;
-    if (!instanceId || (verdict === 'grant' && (!permissions?.length ||
-      new Set(permissions).size !== permissions.length ||
-      !permissions.every((permission) => PILOT_PERMISSIONS.has(permission)))) ||
-      (verdict === 'deny' && permissions !== undefined)) {
-      throw new PilotClientError('invalid_configuration');
-    }
+    if (!instanceId) throw new PilotClientError('invalid_configuration');
     const body: Record<string, unknown> = { transport_version: TRANSPORT_VERSION, verdict };
-    if (verdict === 'grant') body.permissions = permissions;
+    if (verdict === 'grant') body.permissions = [...PILOT_PERMISSIONS];
     const response = await this.request<{ status: 'granted' | 'denied' }>(
       'POST', `/instances/${encodeURIComponent(instanceId)}/access-requests/${encodeURIComponent(accessRequestId)}/resolve`,
       body, { authenticated: true, producer: true },
@@ -693,34 +820,14 @@ export class MacroPilotNativeClient {
   }
 
   async logout(): Promise<{ revocationConfirmed: boolean }> {
-    const session = this.persisted?.deviceSession;
-    let revocationConfirmed = false;
-    if (session) {
-      try {
-        await this.request('POST', '/commands', {
-          contract_version: CONTRACT_VERSION,
-          type: 'command',
-          kind: 'session.revoke',
-          command_id: createOpaqueId('command', this.dependencies),
-          idempotency_key: createOpaqueId('revoke', this.dependencies),
-          expected_revision: session.revision,
-          target: session.ref,
-          issued_by: {
-            account_id: session.ref.account_id,
-            session_id: session.ref.session_id,
-            device_id: session.device_id,
-          },
-          issued_at: this.dependencies.now().toISOString(),
-          payload: { reason: 'Signed out from Macro' },
-        }, { authenticated: true });
-        revocationConfirmed = true;
-      } catch {
-        revocationConfirmed = false;
-      }
+    for (const controller of this.pendingReads) controller.abort();
+    if (!this.persisted?.deviceSession) {
+      await this.clearSession();
+      return { revocationConfirmed: false };
     }
-    await this.clearSession();
-    this.publish({ logoutRevocationConfirmed: revocationConfirmed });
-    return { revocationConfirmed };
+    const result = await this.accountClient.mutate('session.logout');
+    this.publish({ logoutRevocationConfirmed: result.revocationConfirmed });
+    return result;
   }
 
   private async finishClaimCleanup(): Promise<void> {
@@ -748,19 +855,51 @@ export class MacroPilotNativeClient {
     this.publish({ attempt: null, status: 'signed_out' });
   }
 
-  private async clearSession(): Promise<void> {
-    const sessionId = this.persisted?.deviceSession?.ref.session_id;
-    if (sessionId) {
-      try {
-        await this.dependencies.secretDelete(this.secretScope('session_token', sessionId));
-      } catch {
-        this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
-        throw new PilotClientError('vault_unavailable');
-      }
+  private async cleanupPendingSecrets(): Promise<void> {
+    const pending = this.persisted?.pendingSecretCleanup || [];
+    if (!pending.length) return;
+    const results = await Promise.allSettled(pending.map((scope) => this.dependencies.secretDelete(scope)));
+    const remaining = pending.filter((_, index) => results[index].status === 'rejected');
+    await this.persist({ pendingSecretCleanup: remaining });
+    if (remaining.length) {
+      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
+      throw new PilotClientError('vault_unavailable');
     }
-    if (this.persisted?.attempt) await this.clearAttemptSecrets(this.persisted.attempt);
-    await this.persist({ account: null, deviceSession: null, instanceAccess: null, attempt: null });
-    this.publish({ account: null, deviceSession: null, instanceAccess: null, attempt: null, status: 'signed_out' });
+  }
+
+  private async clearSession(): Promise<void> {
+    this.epoch += 1;
+    this.scopeController.abort();
+    this.scopeController = new AbortController();
+    this.accountClient.reset();
+    const pending = [...(this.persisted?.pendingSecretCleanup || [])];
+    const sessionId = this.persisted?.deviceSession?.ref.session_id;
+    if (sessionId) pending.push(this.secretScope('session_token', sessionId));
+    if (this.persisted?.instanceCreationId) pending.push(this.secretScope('instance_key', this.persisted.instanceCreationId));
+    if (this.persisted?.attempt) {
+      pending.push(this.secretScope('claim_secret', this.persisted.attempt.attemptKey));
+      pending.push(this.secretScope('poll_secret', this.persisted.attempt.attemptKey));
+    }
+    this.publish({ account: null, deviceSession: null, instanceAccess: null, attempt: null, instance: null, status: 'signed_out' });
+    // Remove secrets immediately, even when an earlier metadata write is still pending.
+    const deletions = Promise.allSettled(pending.map((scope) => this.dependencies.secretDelete(scope)));
+    // Only relay metadata is touched. Keep failed vault deletions for the next startup.
+    try {
+      await this.persist({ account: null, deviceSession: null, instanceAccess: null, attempt: null,
+        instance: null, instanceCreationId: null, pendingInstanceLabel: null, pendingSecretCleanup: pending });
+    } catch {
+      // Even if metadata storage fails, never keep the bearer available for replay.
+      await deletions;
+      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
+      throw new PilotClientError('vault_unavailable');
+    }
+    const results = await deletions;
+    const remaining = pending.filter((_, index) => results[index].status === 'rejected');
+    await this.persist({ pendingSecretCleanup: remaining });
+    if (remaining.length) {
+      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
+      throw new PilotClientError('vault_unavailable');
+    }
   }
 }
 
