@@ -4528,3 +4528,15 @@ export async function pilotReviewFresh(snapshotId: string, request: import('./ma
 export async function pilotReviewRelease(snapshotId: string) {
   return invoke<void>('pilot_review_release', { snapshotId });
 }
+
+/** Native capability and detection-only policy; never persist the returned values. */
+export async function pilotContentPolicy(): Promise<string[]> {
+  return invoke<string[]>('pilot_content_policy');
+}
+
+export async function pilotReviewCommit(input: {
+  snapshotId: string; request: import('./macroPilot/reviewCapture').ReviewCaptureRequest;
+  key: string; expectedValueJson: string | null; valueJson: string; executeBefore: string; branches?: { base: string; head: string };
+}): Promise<boolean> {
+  return invoke<boolean>('pilot_review_commit', { input });
+}

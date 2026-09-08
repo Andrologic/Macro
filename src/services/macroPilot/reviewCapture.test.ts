@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { createReviewCaptureService, type ReviewCaptureBackend, type ReviewCaptureInfo, type ReviewCaptureRequest } from './reviewCapture';
 const request: ReviewCaptureRequest = { source: { kind: 'unstaged' }, secret_values: [], policy_revision: 'visible-1' };
-const info: ReviewCaptureInfo = { snapshot_id: 'snapshot', source: request.source, head_sha: null, observed_at: '2026-01-01T00:00:00Z', expires_at: '2026-01-01T00:05:00Z', export_policy_revision: 'visible-1', availability: 'complete', file_count: 0 };
+const info: ReviewCaptureInfo = { revision_token: 'revision', snapshot_id: 'snapshot', source: request.source, head_sha: null, observed_at: '2026-01-01T00:00:00Z', expires_at: '2026-01-01T00:05:00Z', export_policy_revision: 'visible-1', availability: 'complete', file_count: 0 };
 function backend(): ReviewCaptureBackend {
   return {
     capture: mock(async () => info),

@@ -26,7 +26,8 @@ fn background_command(program: &str) -> std::process::Command {
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-const STORAGE: usize = 64 * 1024 * 1024;
+// Shared instance budget: 32 MiB native, 24 MiB conversations, 7 MiB host.
+const STORAGE: usize = 32 * 1024 * 1024;
 const INSPECTION: usize = 256 * 1024 * 1024;
 const FILE_LIMIT: usize = 1024 * 1024;
 const PAGE_FILES: usize = 10;
@@ -60,6 +61,8 @@ pub struct PilotCaptureRequest {
 #[derive(Clone, Serialize)]
 pub struct PilotCaptureInfo {
     pub snapshot_id: String,
+    /// Private local revision evidence. The content host never serializes this on A2.
+    pub revision_token: String,
     pub source: PilotCaptureSource,
     pub head_sha: Option<String>,
     pub observed_at: String,
@@ -1089,8 +1092,20 @@ pub(super) fn create(
         if budget.start.elapsed() > DEADLINE {
             return Err("content_unavailable".into());
         }
+        let mut revision = Sha256::new();
+        field(&mut revision, &first.fingerprint);
+        field(&mut revision, &policy_hash(&request));
+        field(
+            &mut revision,
+            &serde_json::to_vec(&request.source).map_err(unavailable)?,
+        );
         let info = PilotCaptureInfo {
             snapshot_id: id(),
+            revision_token: revision
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
             source: request.source.clone(),
             head_sha: first.head,
             observed_at: observed_at.to_rfc3339(),

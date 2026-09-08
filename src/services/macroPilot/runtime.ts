@@ -1,3 +1,6 @@
+import { createDesktopContentHost } from './desktopContentHost';
+import type { ContentHost } from './contentHost';
+import type { ContentDelivery } from './contentProtocol';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
@@ -32,6 +35,7 @@ export class PilotRuntime {
   private publish(status: PilotRuntimeStatus) { this.status = status; this.listeners.forEach(listener => listener()); }
   async retry() { this.identity = null; if (!this.started) await this.start(); else await this.synchronize(); }
   private kernel: PilotKernel | null = null;
+  private content: ContentHost | null = null;
   private controller: AbortController | null = null;
   private identity: string | null = null;
   private generation = 0;
@@ -45,7 +49,7 @@ export class PilotRuntime {
   private approvalObservedAt: Record<string, string> = {};
   private activeLoop: Promise<void> | null = null;
   constructor(
-    private readonly client: Pick<MacroPilotNativeClient, 'getState' | 'subscribe' | 'initialize' | 'request'> = macroPilotNativeClient,
+    private readonly client: Pick<MacroPilotNativeClient, 'getState' | 'subscribe' | 'initialize' | 'request'> & Partial<Pick<MacroPilotNativeClient, 'requestContent' | 'contentSecretValues'>> = macroPilotNativeClient,
     private readonly createKernel: (dependencies: KernelDependencies) => PilotKernel = dependencies => new PilotKernel(dependencies),
   ) {}
   async start(): Promise<void> {
@@ -68,14 +72,17 @@ export class PilotRuntime {
     const state=this.client.getState();
     const instanceId=state.instance?.ref.instance_id;
     const next=['connected','offline'].includes(state.status) && state.configurationId && instanceId && state.deviceSession?.state==='active'
-      ? stableJson([state.configurationId,instanceId,state.deviceSession.ref.session_id]) : null;
+      ? stableJson([state.configurationId,state.relayOrigin,state.account?.account_id,instanceId,state.deviceSession.ref.session_id]) : null;
     if (next===this.identity || !this.started) return;
     this.generation++; const generation=this.generation;
     this.controller?.abort(); this.kernel?.close(); this.kernel=null;
+    const disposing = this.content?.dispose(); this.content=null;
+    void disposing?.catch(() => undefined);
     this.identity=next;
     if (!next || !instanceId || !state.configurationId) { this.publish('inactive'); return; }
     // A previous loop must stop before this instance starts another producer poll.
     await this.activeLoop?.catch(()=>undefined);
+    await disposing?.catch(()=>undefined);
     if (generation!==this.generation) return;
     const controller=new AbortController(); this.controller=controller;
     const authorize=async (delivery: {delivery_id:string}) => {
@@ -119,10 +126,73 @@ export class PilotRuntime {
     try {
       await kernel.initialize(); if(generation!==this.generation) {kernel.close(); return;}
       this.kernel=kernel; this.publish('running');
-      this.activeLoop=this.poll(kernel,instanceId,controller.signal).catch(()=>undefined);
+      this.activeLoop = this.runProducer(kernel, instanceId, state.configurationId, state.account?.account_id, controller.signal).catch(() => undefined);
     } catch {
       controller.abort();
       if (generation === this.generation) { this.identity=null; this.publish('unavailable'); }
+    }
+  }
+  private async runProducer(kernel: PilotKernel, instanceId: string, configurationId: string, accountId: string | undefined, signal: AbortSignal) {
+    const v1 = this.poll(kernel, instanceId, signal);
+    const v2 = (async () => {
+      if (!accountId || !this.client.requestContent || !this.client.contentSecretValues) return;
+      const host = createDesktopContentHost({ configurationId, instanceId, accountId, signal, kernel,
+        transportSecrets: () => this.client.contentSecretValues!() });
+      this.content = host;
+      try {
+        // Failed capability/policy/storage initialization leaves ACCOUNT and v1 alive.
+        await host.initialize();
+        // Establish the export policy before the first capability-announcing poll.
+        await host.prepare();
+        if (signal.aborted) return;
+        await Promise.all([this.pollContent(host, instanceId, signal), this.observeContent(host, instanceId, signal)]);
+      } catch { /* No v2 poll advertises a host that failed initialization. */ }
+      finally { await host.dispose().catch(() => undefined); if (this.content === host) this.content = null; }
+    })();
+    await Promise.allSettled([v1, v2]);
+  }
+  private async observeContent(host: ContentHost, instanceId: string, signal: AbortSignal) {
+    while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
+      try {
+        await host.observe();
+      } catch { if (!signal.aborted) this.publish('unavailable'); }
+      try {
+        await host.flush(async event => {
+          if (signal.aborted) throw new PilotError('unavailable');
+          await this.client.requestContent!(`/pilot/v2/instances/${encodeURIComponent(instanceId)}/deliveries/events`, event, signal);
+        });
+      } catch { if (!signal.aborted) this.publish('unavailable'); }
+      await pause(1000, signal);
+    }
+  }
+  private async pollContent(host: ContentHost, instanceId: string, signal: AbortSignal) {
+    const base = `/pilot/v2/instances/${encodeURIComponent(instanceId)}/deliveries`;
+    let failures = 0;
+    while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
+      try {
+        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll' }, signal);
+        if (signal.aborted) break;
+        if (response.status === 204) { failures = 0; await pause(25, signal); continue; }
+        let executeBefore = 0;
+        const result = await host.handle(response.data, async (delivery: ContentDelivery) => {
+          if (signal.aborted) throw new PilotError('unavailable');
+          const authorization = await this.client.requestContent!(`${base}/${encodeURIComponent(delivery.request_id)}/authorize`,
+            { transport_version: '2.0', type: 'authorize', request_id: delivery.request_id }, signal);
+          const data = object(authorization.data);
+          if (signal.aborted || data.type !== 'authorized' || data.request_id !== delivery.request_id || typeof data.execute_before !== 'string') throw new PilotError('unavailable');
+          executeBefore = Date.parse(data.execute_before);
+          return data.execute_before;
+        });
+        for (let attempt = 0; attempt < 3 && !signal.aborted; attempt++) {
+          try {
+            // The native transport checks account/session/instance again at emission;
+            // D validates the delivery authorization before accepting this result.
+            if (signal.aborted || Date.now() >= executeBefore) throw new PilotError('unavailable');
+            await this.client.requestContent!(`${base}/${encodeURIComponent(result.request_id)}/result`, result, signal); break;
+          } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
+        }
+        failures = 0;
+      } catch { if (signal.aborted) break; this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal); }
     }
   }
   private decisionRef(command:Command) {
@@ -255,12 +325,16 @@ export class PilotRuntime {
   stop(): Promise<void> {
     if (this.stopping) return this.stopping;
     this.started=false;this.generation++;this.controller?.abort();this.kernel?.close();
+    const disposing = this.content?.dispose(); this.content=null;
+    void disposing?.catch(() => undefined);
     this.unsubscribers.splice(0).forEach(unsubscribe=>unsubscribe());
     const instance=this.client.getState().instance;
     const identity=this.identity;
     this.identity=null;this.kernel=null;this.publish('inactive');
     this.stopping = (async () => {
-      // Keep the old loop fenced; start waits for it without making close unbounded.
+      await disposing?.catch(() => undefined);
+      await this.activeLoop?.catch(() => undefined);
+      // All old producers have stopped before presence is disconnected.
       if(instance && identity) {
         const timeout=AbortSignal.timeout(3000);
         try {await this.client.request('POST',`/instances/${encodeURIComponent(instance.ref.instance_id)}/disconnect`,{transport_version:'1.0'},{authenticated:true,producer:true,signal:timeout});} catch { /* Presence expires after the last producer poll. */ }

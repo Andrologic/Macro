@@ -353,6 +353,7 @@ export class PilotKernel {
     return { contract_version: '1.0', type: 'event_batch', stream_id: stream.streamId, after_cursor: request.after_cursor, after_sequence: sequence,
       events, next_sequence: events.at(-1)?.sequence ?? sequence, next_cursor: events.at(-1)?.resume_cursor ?? request.after_cursor };
   }
+  getReviews(): Resource[] { return immutable(this.state.reviews); }
   getKnownRuns(): KnownRun[] { return immutable(this.state.runs); }
   async recordReview(review: Resource): Promise<void> {
     return this.exclusive(async () => {

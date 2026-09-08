@@ -844,6 +844,8 @@ pub fn run() {
             commands::git::git_diff,
             commands::git::git_read_file_pair,
             commands::git::git_review_snapshot,
+            commands::git::pilot_review_commit,
+            commands::git::pilot_content_policy,
             commands::git::pilot_review_capture,
             commands::git::pilot_review_files,
             commands::git::pilot_review_read,

@@ -227,3 +227,13 @@ it('withholds historical display mixtures even when they begin with a recognized
   }
   expect(messageText({ ...message(), role: 'assistant', content: '<think>reason</think>Answer', tool_traces_json: '[{"id":"tool"}]' }, false, policy).content_state).toBe('withheld');
 });
+
+
+it('bounds a slow catalog observation before it can occupy a delivery lease indefinitely', async () => {
+  const env = setup(); let now = Date.parse(date); let reads = 0;
+  env.deps.now = () => now;
+  env.conversations.push(...Array.from({ length: 50 }, (_, i) => conversation(`slow:${i}`)));
+  env.deps.source.listMessages = async () => { now += 2500; reads++; return []; };
+  await expect(env.captures.refreshCatalog()).rejects.toMatchObject({ code: 'content_unavailable' });
+  expect(reads).toBe(4); expect(env.stored).toBeNull();
+});

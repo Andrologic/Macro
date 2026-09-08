@@ -14,6 +14,8 @@ export interface ReviewCaptureRequest {
   policy_revision: 'visible-1';
 }
 export interface ReviewCaptureInfo {
+  /** Private native evidence; never part of an A2 envelope. */
+  revision_token: string;
   snapshot_id: string;
   source: ReviewCaptureSource;
   head_sha: string | null;

@@ -88,6 +88,13 @@ export class ConversationCaptures {
   /** Observe after source/policy changes to persist invalidation even without a read.
    * Returns the durable revision for the future content invalidation stream. */
   refresh(): Promise<number> { return this.serial(async () => (await this.observe()).revision); }
+  refreshCatalog(): Promise<{ revision: number; refs: ConversationRef[] }> {
+    return this.serial(async () => {
+      const { observation, revision } = await this.observe();
+      const refs = observation.conversations.map(conversation => this.reference(conversation, observation)).filter((ref): ref is ConversationRef => ref !== null);
+      return { revision, refs };
+    });
+  }
   refreshProjects(): Promise<number> { return this.serial(async () => (await this.observe(true)).revision); }
   private serial<T>(work: () => Promise<T>): Promise<T> {
     const epoch = this.epoch;
@@ -104,7 +111,8 @@ export class ConversationCaptures {
     });
     this.tail = result.catch(() => undefined); return result;
   }
-  private async load(projectsOnly = false): Promise<Observation> {
+  private async load(projectsOnly = false, deadline = Infinity): Promise<Observation> {
+    const checkDeadline = () => { if ((this.deps.now ?? Date.now)() >= deadline) throw new ConversationCaptureError('content_unavailable'); };
     const source = this.deps.source;
     const policy = structuredClone(this.deps.policy());
     if (policy.revision !== 'visible-1') throw new ConversationCaptureError('unavailable');
@@ -112,6 +120,7 @@ export class ConversationCaptures {
       if (controlledText(value, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
     }
     const projects = (await source.projects()).map(p => ({ id: id(p.id), name: p.name })).sort(compareId);
+    checkDeadline();
     if (new Set(projects.map(p => p.id)).size !== projects.length || projects.some(p => controlledText(p.id, policy).content_state !== 'complete')) throw new ConversationCaptureError('content_unavailable');
     if (projectsOnly) return { projects, tasks: [], conversations: [], transcripts: [], policy };
     const tasks = (await source.tasks()).map(t => ({ id: id(t.id), project_id: t.project_id, conversation_id: t.conversation_id })).sort(compareId);
@@ -120,6 +129,7 @@ export class ConversationCaptures {
     for (const value of [...projects.map(p => p.id), ...tasks.map(t => t.id), ...conversations.map(c => c.id)]) {
       if (controlledText(value, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
     }
+    checkDeadline();
     const transcripts: Observation['transcripts'] = [];
     const seen = new Set<string>(); let bytes = utf8Bytes(JSON.stringify([projects, tasks, conversations, policy]));
     for (const conversation of conversations) {
@@ -127,6 +137,7 @@ export class ConversationCaptures {
       if (seen.has(conversation.id)) throw new ConversationCaptureError('content_unavailable');
       seen.add(conversation.id);
       const messages = (await source.listMessages(conversation.id)).slice().sort((a, b) => a.created_at.localeCompare(b.created_at) || compareId(a, b));
+      checkDeadline();
       const messageIds = new Set<string>(); const provenMessages: Array<{ id: string; text: string }> = [];
       for (const message of messages) {
         id(message.id);
@@ -135,6 +146,7 @@ export class ConversationCaptures {
         messageIds.add(message.id);
         if (message.role === 'assistant') {
           const text = await source.finalProvenance?.(message);
+          checkDeadline();
           if (typeof text === 'string') provenMessages.push({ id: message.id, text });
         }
       }
@@ -146,11 +158,13 @@ export class ConversationCaptures {
     return structuredClone({ projects, tasks, conversations, transcripts, policy });
   }
   private async observe(projectsOnly = false): Promise<{ observation: Observation; revision: number }> {
+    // Bound complete catalog inspection, including both observations and retry.
+    const deadline = (this.deps.now ?? Date.now)() + 10_000;
     // Independent reads detect edits during assembly; retry once, never mix pages.
     for (let attempt = 0; attempt < 2; attempt++) {
       const previous = await this.deps.storage.load();
-      const observation = await this.load(projectsOnly); const fingerprint = await digest(observation);
-      if (fingerprint !== await digest(await this.load(projectsOnly))) continue;
+      const observation = await this.load(projectsOnly, deadline); const fingerprint = await digest(observation);
+      if (fingerprint !== await digest(await this.load(projectsOnly, deadline))) continue;
       type Revision = { revision: number; fingerprint: string };
       type Journal = { version: 2; projects?: Revision; conversations?: Revision };
       const journal: Journal = previous === null ? { version: 2 } : JSON.parse(previous);

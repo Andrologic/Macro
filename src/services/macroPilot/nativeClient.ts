@@ -506,9 +506,29 @@ export class MacroPilotNativeClient {
     return this.sendRequest<T>(method, path, body, options);
   }
 
+  /** Producer A2 uses the same native credentials, origin and lifecycle fence as v1. */
+  async requestContent(path: string, body: unknown, signal: AbortSignal): Promise<PilotResponse> {
+    const instance = this.publicState.instance?.ref.instance_id;
+    const prefix = `/pilot/v2/instances/${encodeURIComponent(instance ?? '')}/deliveries/`;
+    if (!instance || !path.startsWith(prefix) || !validateContentMessage(body)) throw new PilotClientError('invalid_configuration');
+    const requestId = 'request_id' in body ? String(body.request_id) : createOpaqueId('request', this.dependencies);
+    return this.sendRequest('POST', path, body, { authenticated: true, producer: true, signal }, 'producer', requestId);
+  }
+
+  /** Detection-only values. The caller must keep these out of journals and logs. */
+  async contentSecretValues(): Promise<string[]> {
+    const context = this.contextKey();
+    const session = this.persisted?.deviceSession?.ref.session_id;
+    const creation = this.persisted?.instanceCreationId;
+    if (!session || !creation) throw new PilotClientError('unauthorized');
+    const values = await Promise.all([this.readSecret('session_token', session), this.readSecret('instance_key', creation)]);
+    this.checkContext(context);
+    return values;
+  }
+
   private async sendRequest<T = unknown>(
     method: string, path: string, body: unknown, options: PilotRequestOptions,
-    extension = false, requestId = createOpaqueId('request', this.dependencies),
+    extension: boolean | 'producer' = false, requestId = createOpaqueId('request', this.dependencies),
   ): Promise<PilotResponse<T>> {
     const readController = method === 'GET' ? new AbortController() : null;
     if (readController) this.pendingReads.add(readController);
@@ -521,7 +541,7 @@ export class MacroPilotNativeClient {
 
   private async sendRequestOnce<T = unknown>(
     method: string, path: string, body: unknown, options: PilotRequestOptions,
-    extension: boolean, requestId: string,
+    extension: boolean | 'producer', requestId: string,
   ): Promise<PilotResponse<T>> {
     if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
     const context = this.contextKey();
@@ -595,10 +615,19 @@ export class MacroPilotNativeClient {
     }
     if (extension) {
       const responseHeader = response.headers.get('x-request-id');
-      if (responseHeader && responseHeader !== requestId) throw new PilotClientError('invalid_response');
+      const expectedHeader = extension === 'producer' && isRecord(body) && body.type === 'poll' && isRecord(data) && data.type === 'delivery' ? data.request_id : requestId;
+      if (responseHeader && responseHeader !== expectedHeader) throw new PilotClientError('invalid_response');
       // Before authentication the relay may return a transport error, with no account envelope.
       if (response.ok || (isRecord(data) && data.contract_version === '2.0')) {
-        if (!validateContentMessage(data) || !validateContentResponse(body, data)) throw new PilotClientError('invalid_response');
+        if (extension === 'producer') {
+          const input = body as { type?: string; request_id?: string };
+          const empty = response.status === 204 && data === null && ['poll', 'delivery.result', 'event'].includes(input.type ?? '');
+          const valid = validateContentMessage(data) && isRecord(data) && (
+            (input.type === 'poll' && data.type === 'delivery') ||
+            (input.type === 'authorize' && data.type === 'authorized' && data.request_id === input.request_id)
+          );
+          if (!empty && !valid && !(isRecord(data) && data.type === 'error')) throw new PilotClientError('invalid_response');
+        } else if (!validateContentMessage(data) || !validateContentResponse(body, data)) throw new PilotClientError('invalid_response');
       }
     }
     if (!response.ok || (extension && isRecord(data) && data.type === 'error')) {
@@ -608,7 +637,7 @@ export class MacroPilotNativeClient {
         (code === 'unauthorized' || code === 'session_revoked')
       ) {
         // The account mutation caller handles self-revocation acknowledgement loss.
-        if (!extension) await this.clearSession();
+        if (!extension || extension === 'producer') await this.clearSession();
       }
       throw new PilotClientError(code, response.status, response.status === 429 || response.status === 503, responseRequestId);
     }
