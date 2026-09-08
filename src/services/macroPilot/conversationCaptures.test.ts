@@ -212,10 +212,18 @@ it('keeps project catalogs usable when conversation history cannot be loaded or 
 
 it('projects newly persisted provider-neutral receipt evidence and invalidates after it changes', async () => {
   const env = setup(); env.messages[0] = { ...message(), role: 'assistant', content: 'New final output' };
-  let proven = false; env.deps.source.finalProvenance = async () => proven;
+  let proven = false; env.deps.source.finalProvenance = async () => proven ? 'New final output' : null;
   expect((await env.captures.conversationRead(scope, ref)).items[0].content_state).toBe('withheld');
   proven = true;
   const page = await env.captures.conversationRead(scope, ref);
   expect(page.items[0]).toHaveProperty('text', 'New final output');
   expect(page.page.revision).toBe(2);
+});
+
+it('withholds historical display mixtures even when they begin with a recognized reasoning block', () => {
+  for (const suffix of ['[TOOL] terminal', '[System: The agent loop stopped due to an API error: private detail]', '🔍 **Recherche web:** private query', '<tool_context>private result</tool_context>']) {
+    const row = { ...message(), role: 'assistant', content: `<think>reason</think>Answer\n${suffix}` };
+    expect(messageText(row, false, policy)).toEqual({ content_state: 'withheld', reason: 'unknown_provenance' });
+  }
+  expect(messageText({ ...message(), role: 'assistant', content: '<think>reason</think>Answer', tool_traces_json: '[{"id":"tool"}]' }, false, policy).content_state).toBe('withheld');
 });

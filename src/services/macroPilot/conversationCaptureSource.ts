@@ -21,7 +21,7 @@ export function desktopConversationCaptureSource(): ConversationCaptureSource {
     listConversations,
     getConversation,
     listMessages,
-    finalProvenance: message => assistantProvenance().verifies(message.id, message.content),
+    finalProvenance: message => assistantProvenance().readFinal(message.id, message.content),
     activity: conversationId => {
       const runtime = useChatStore.getState().conversationRuntimeById[conversationId];
       if (!runtime) return { activity: 'unknown', generatingMessageId: null };

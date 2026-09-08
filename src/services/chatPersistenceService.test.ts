@@ -112,7 +112,7 @@ const adapters = (params?: {
 }): ChatPersistenceAdapters => ({
   isTauriAvailable: () => params?.available ?? true,
   ipc: baseIpc(params?.ipc),
-  assistantProvenance: { recordFinal: async () => undefined, verifies: async () => false },
+  assistantProvenance: { recordFinal: async () => undefined, readFinal: async () => null },
   now: () => new Date("2026-05-16T10:00:00.000Z"),
   randomIdSuffix: () => "abc123",
 });

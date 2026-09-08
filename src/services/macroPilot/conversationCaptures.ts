@@ -20,7 +20,7 @@ export interface ConversationCaptureSource {
   getConversation(id: string): Promise<DbConversation | null>;
   listMessages(id: string): Promise<DbMessage[]>;
   activity(id: string): ConversationActivity;
-  finalProvenance?(message: DbMessage): Promise<boolean>;
+  finalProvenance?(message: DbMessage): Promise<string | null>;
 }
 export interface CaptureDependencies {
   instanceId: string;
@@ -47,7 +47,7 @@ type Item = ProjectItem | ConversationItem | MessageItem;
 type Operation = 'projects.list' | 'conversations.list' | 'conversation.read';
 interface Observation {
   projects: CaptureProject[]; tasks: CaptureTask[]; conversations: DbConversation[];
-  transcripts: Array<{ id: string; messages: DbMessage[]; provenMessageIds: string[]; activity: ConversationActivity }>;
+  transcripts: Array<{ id: string; messages: DbMessage[]; provenMessages: Array<{ id: string; text: string }>; activity: ConversationActivity }>;
   policy: TextPolicy;
 }
 interface Capture {
@@ -127,18 +127,21 @@ export class ConversationCaptures {
       if (seen.has(conversation.id)) throw new ConversationCaptureError('content_unavailable');
       seen.add(conversation.id);
       const messages = (await source.listMessages(conversation.id)).slice().sort((a, b) => a.created_at.localeCompare(b.created_at) || compareId(a, b));
-      const messageIds = new Set<string>(); const provenMessageIds: string[] = [];
+      const messageIds = new Set<string>(); const provenMessages: Array<{ id: string; text: string }> = [];
       for (const message of messages) {
         id(message.id);
         if (controlledText(message.id, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
         if (message.conversation_id !== conversation.id || messageIds.has(message.id) || !Number.isFinite(Date.parse(message.created_at))) throw new ConversationCaptureError('content_unavailable');
         messageIds.add(message.id);
-        if (message.role === 'assistant' && await source.finalProvenance?.(message)) provenMessageIds.push(message.id);
+        if (message.role === 'assistant') {
+          const text = await source.finalProvenance?.(message);
+          if (typeof text === 'string') provenMessages.push({ id: message.id, text });
+        }
       }
       const activity = source.activity(conversation.id);
       bytes += utf8Bytes(JSON.stringify([messages, activity]));
       if (bytes > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
-      transcripts.push({ id: conversation.id, messages, provenMessageIds, activity });
+      transcripts.push({ id: conversation.id, messages, provenMessages, activity });
     }
     return structuredClone({ projects, tasks, conversations, transcripts, policy });
   }
@@ -213,7 +216,7 @@ export class ConversationCaptures {
           items = transcript.messages.filter(m => m.role === 'user' || m.role === 'assistant').map((message, position) => {
             const generating = message.role === 'assistant' && transcript.activity.activity === 'busy' &&
               (transcript.activity.generatingMessageId === null || transcript.activity.generatingMessageId === message.id);
-            const text = messageText(message, generating, observation.policy, transcript.provenMessageIds.includes(message.id));
+            const text = messageText(message, generating, observation.policy, transcript.provenMessages.find(proof => proof.id === message.id)?.text);
             const base = { message_id: message.id, position, role: message.role as 'user' | 'assistant', created_at: new Date(message.created_at).toISOString(),
               completion: generating ? 'unknown' as const : message.role === 'user' ? 'complete' as const : completion(message.completion_reason) };
             if ('text' in text) return { message_id: base.message_id, position, role: base.role, created_at: base.created_at, completion: base.completion, content_state: text.content_state, text: text.text };

@@ -21,7 +21,7 @@ export function controlledText(text: string, policy: TextPolicy): ExportText {
  * Unknown, nested, repeated, open, or malformed markers fail closed. */
 export function legacyFinalText(content: string): string | null {
   const value = content.trim();
-  if (!value.startsWith('<think>')) return null;
+  if (!value.startsWith('<think>') || /\[TOOL\]|\[System:|🔍\s*\*\*Recherche web:|<\/?tool_context\b/i.test(value)) return null;
   const end = value.indexOf('</think>', 7);
   if (end < 0) return null;
   const reasoning = value.slice(7, end); const final = value.slice(end + 8).trim();
@@ -41,7 +41,7 @@ function hasReasoningMarker(text: string): boolean {
 
 // undefined means no recorded provenance; null means recorded evidence was rejected.
 // Only absence permits the historical grammar, never contradictory provider data.
-function providerFinalText(message: DbMessage, recordedFinal: boolean): string | null | undefined {
+function providerFinalText(message: DbMessage, recordedFinal: boolean, displayContent: string): string | null | undefined {
   if (message.provider_turn_state_json == null) return undefined;
   try {
     const state: unknown = JSON.parse(message.provider_turn_state_json);
@@ -57,7 +57,7 @@ function providerFinalText(message: DbMessage, recordedFinal: boolean): string |
     }
     const final = texts.join('');
     // State is evidence only when it agrees with persisted display content.
-    return texts.length && (message.content.trim() === final.trim() || legacyFinalText(message.content) === final.trim() || (recordedFinal && final.trim().length > 0 && recordedFinalText(message.content)?.endsWith(final.trim()))) ? final : null;
+    return texts.length && (displayContent.trim() === final.trim() || legacyFinalText(displayContent) === final.trim() || (recordedFinal && recordedFinalText(displayContent) === final.trim())) ? final : null;
   } catch { return null; }
 }
 /** For new receipts, the stream boundary identifies display content. Parse every
@@ -76,7 +76,7 @@ function recordedFinalText(content: string): string | null {
   if (hasReasoningMarker(rest)) return null;
   return (output + rest).trim();
 }
-export function messageText(message: DbMessage, generating: boolean, policy: TextPolicy, recordedFinal = false): ExportText {
+export function messageText(message: DbMessage, generating: boolean, policy: TextPolicy, attestedText?: string | null): ExportText {
   if (message.role === 'assistant' && generating) return { content_state: 'pending', reason: 'generating' };
   if (message.role === 'user') {
     const whole = controlledText(message.content, policy);
@@ -84,11 +84,17 @@ export function messageText(message: DbMessage, generating: boolean, policy: Tex
     return controlledText(buildUserMessagePresentation(message.content).content, policy);
   }
   // Inspect before parsing and excerpting, including a secret crossing a page boundary.
-  const whole = controlledText(message.content, policy);
+  const recordedFinal = typeof attestedText === 'string';
+  const candidate = recordedFinal ? attestedText : message.content;
+  const whole = controlledText(candidate, policy);
   if (whole.content_state === 'withheld') return whole;
-  const proven = providerFinalText(message, recordedFinal);
+  const proven = providerFinalText(message, recordedFinal, candidate);
   if (proven === null) return { content_state: 'withheld', reason: 'unknown_provenance' };
-  const final = proven === undefined ? recordedFinal ? recordedFinalText(message.content) : legacyFinalText(message.content) :
+  let historicalToolFree = true;
+  if (!recordedFinal && message.tool_traces_json != null) {
+    try { const traces: unknown = JSON.parse(message.tool_traces_json); historicalToolFree = Array.isArray(traces) && traces.length === 0; } catch { historicalToolFree = false; }
+  }
+  const final = proven === undefined ? recordedFinal ? recordedFinalText(candidate) : historicalToolFree ? legacyFinalText(candidate) : null :
     proven.trim().startsWith('<think>') ? legacyFinalText(proven) :
     hasReasoningMarker(proven) ? null : proven;
   if (final === null) return { content_state: 'withheld', reason: 'unknown_provenance' };
