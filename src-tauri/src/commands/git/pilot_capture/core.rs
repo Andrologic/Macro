@@ -355,6 +355,96 @@ fn read_entry(_: &Path, _: &Path, _: &mut Budget) -> CaptureResult<Option<Side>>
     Err("content_unavailable".into())
 }
 
+#[cfg(unix)]
+fn scan_catalogue(
+    root: &Path,
+    repo: &Repository,
+    tracked_parents: &HashSet<String>,
+    submodules: &HashSet<String>,
+    paths: &mut std::collections::BTreeSet<String>,
+    budget: &mut Budget,
+) -> CaptureResult<()> {
+    scan_directory(
+        retain_root(root)?,
+        "",
+        repo,
+        tracked_parents,
+        submodules,
+        paths,
+        budget,
+    )
+}
+#[cfg(not(unix))]
+fn scan_catalogue(
+    _: &Path,
+    _: &Repository,
+    _: &HashSet<String>,
+    _: &HashSet<String>,
+    _: &mut std::collections::BTreeSet<String>,
+    _: &mut Budget,
+) -> CaptureResult<()> {
+    Err("content_unavailable".into())
+}
+
+#[cfg(unix)]
+fn scan_directory(
+    retained: fs::File,
+    prefix: &str,
+    repo: &Repository,
+    tracked_parents: &HashSet<String>,
+    submodules: &HashSet<String>,
+    paths: &mut std::collections::BTreeSet<String>,
+    budget: &mut Budget,
+) -> CaptureResult<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let dir = cap_std::fs::Dir::from_std_file(retained);
+    for entry in dir.entries().map_err(unavailable)? {
+        let entry = entry.map_err(unavailable)?;
+        let name = entry.file_name().into_string().map_err(unavailable)?;
+        budget.check(name.len())?;
+        if name == ".git" {
+            continue;
+        }
+        let path = format!("{prefix}{name}");
+        if path.len() > 1024 {
+            return Err("content_unavailable".into());
+        }
+        if submodules.contains(&path) {
+            continue;
+        }
+        let ignored = repo.is_path_ignored(&path).map_err(unavailable)?;
+        if entry.file_type().map_err(unavailable)?.is_dir() {
+            if ignored && !tracked_parents.contains(&path) {
+                continue;
+            }
+            let name = std::ffi::CString::new(name).map_err(unavailable)?;
+            let fd = unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err("content_unavailable".into());
+            }
+            let child = unsafe { fs::File::from_raw_fd(fd) };
+            scan_directory(
+                child,
+                &format!("{path}/"),
+                repo,
+                tracked_parents,
+                submodules,
+                paths,
+                budget,
+            )?;
+        } else if !ignored {
+            paths.insert(path);
+        }
+    }
+    Ok(())
+}
+
 fn observe(
     repo: &Repository,
     source: &PilotCaptureSource,
@@ -476,55 +566,14 @@ fn observe_inner(
                 .filter_map(|p| p.to_str().map(str::to_string))
         })
         .collect();
-    let ignored_error = std::cell::Cell::new(false);
-    let walker = walkdir::WalkDir::new(root)
-        .follow_root_links(false)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            if e.depth() > 0 && e.file_type().is_dir() {
-                let relative = e.path().strip_prefix(root).unwrap_or(e.path());
-                match repo.is_path_ignored(relative) {
-                    Ok(true) if !tracked_parents.contains(relative.to_str().unwrap_or("")) => {
-                        return false
-                    }
-                    Err(_) => {
-                        ignored_error.set(true);
-                        return false;
-                    }
-                    _ => (),
-                }
-            }
-            e.depth() == 0
-                || (e.file_name() != ".git"
-                    && !submodules.contains(
-                        &e.path()
-                            .strip_prefix(root)
-                            .unwrap_or(e.path())
-                            .to_string_lossy()
-                            .to_string(),
-                    ))
-        });
-    for e in walker {
-        let e = e.map_err(unavailable)?;
-        budget.check(0)?;
-        if e.depth() == 0 || e.file_type().is_dir() {
-            continue;
-        }
-        let path = e
-            .path()
-            .strip_prefix(root)
-            .map_err(unavailable)?
-            .to_str()
-            .ok_or("content_unavailable")?
-            .to_string();
-        if !repo.is_path_ignored(&path).map_err(unavailable)? {
-            paths.insert(path);
-        }
-    }
-    if ignored_error.get() {
-        return Err("content_unavailable".into());
-    }
+    scan_catalogue(
+        root,
+        repo,
+        &tracked_parents,
+        &submodules,
+        &mut paths,
+        budget,
+    )?;
     let mut work = Files::new();
     for p in paths {
         budget.check(p.len())?;
@@ -1449,6 +1498,44 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(link.mode, 0o120000);
+    }
+    #[test]
+    fn catalogue_uses_retained_directory_after_parent_replacement() {
+        use std::os::unix::fs::symlink;
+        let _test_lock = TEST_LOCK.lock().unwrap();
+        let (dir, repo) = repo();
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir(root.join("parent")).unwrap();
+        fs::create_dir(root.join("parent/child")).unwrap();
+        fs::write(root.join("parent/child/original"), "x\n").unwrap();
+        fs::create_dir(root.join("outside")).unwrap();
+        fs::create_dir(root.join("outside/child")).unwrap();
+        fs::write(root.join("outside/child/private"), "x\n").unwrap();
+        let retained = retain_root(&root.join("parent/child")).unwrap();
+        fs::rename(root.join("parent"), root.join("retired")).unwrap();
+        symlink(root.join("outside"), root.join("parent")).unwrap();
+        let mut paths = std::collections::BTreeSet::new();
+        scan_directory(
+            retained,
+            "",
+            &repo,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut paths,
+            &mut Budget::new(),
+        )
+        .unwrap();
+        assert!(paths.contains("original"));
+        assert!(!paths.contains("private"));
+        assert!(scan_catalogue(
+            &root.join("parent/child"),
+            &repo,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut paths,
+            &mut Budget::new()
+        )
+        .is_err());
     }
     #[test]
     fn cancelled_new_file_keeps_a_path_and_ignored_files_are_absent() {

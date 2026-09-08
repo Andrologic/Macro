@@ -16,6 +16,6 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 tempfile = "3"
-walkdir = "2"
+cap-std = "=4.0.3"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
