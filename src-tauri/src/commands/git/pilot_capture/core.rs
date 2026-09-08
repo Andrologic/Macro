@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 const STORAGE: usize = 64 * 1024 * 1024;
 const INSPECTION: usize = 256 * 1024 * 1024;
-const FILE_LIMIT: usize = 8 * 1024 * 1024;
+const FILE_LIMIT: usize = 1024 * 1024;
 const PAGE_FILES: usize = 10;
 const FRAGMENT: usize = 16 * 1024;
 const TTL: Duration = Duration::from_secs(300);
@@ -425,16 +425,42 @@ fn observe_inner(
             head: head.map(|x| x.to_string()),
         });
     }
-    let mut paths: HashSet<String> = indexed.keys().chain(base.keys()).cloned().collect();
+    let mut paths: std::collections::BTreeSet<String> = indexed.keys().cloned().collect();
+    if matches!(source, PilotCaptureSource::LocalTotal) {
+        paths.extend(base.keys().cloned());
+    }
     let submodules: HashSet<_> = indexed
         .iter()
         .filter(|(_, s)| s.mode == 0o160000)
         .map(|(p, _)| p.clone())
         .collect();
+    let tracked_parents: HashSet<_> = paths
+        .iter()
+        .flat_map(|p| {
+            Path::new(p)
+                .ancestors()
+                .skip(1)
+                .filter_map(|p| p.to_str().map(str::to_string))
+        })
+        .collect();
+    let ignored_error = std::cell::Cell::new(false);
     let walker = walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
+            if e.depth() > 0 && e.file_type().is_dir() {
+                let relative = e.path().strip_prefix(root).unwrap_or(e.path());
+                match repo.is_path_ignored(relative) {
+                    Ok(true) if !tracked_parents.contains(relative.to_str().unwrap_or("")) => {
+                        return false
+                    }
+                    Err(_) => {
+                        ignored_error.set(true);
+                        return false;
+                    }
+                    _ => (),
+                }
+            }
             e.depth() == 0
                 || (e.file_name() != ".git"
                     && !submodules.contains(
@@ -461,6 +487,9 @@ fn observe_inner(
         if !repo.is_path_ignored(&path).map_err(unavailable)? {
             paths.insert(path);
         }
+    }
+    if ignored_error.get() {
+        return Err("content_unavailable".into());
     }
     let mut work = Files::new();
     for p in paths {
@@ -607,12 +636,20 @@ fn file_info(path: &str, a: Option<&Side>, b: Option<&Side>, state: &str) -> Pil
         old_path: if hidden {
             None
         } else {
-            a.map(|_| path.to_owned())
+            if a.is_some() || b.is_none() {
+                Some(path.to_owned())
+            } else {
+                None
+            }
         },
         new_path: if hidden {
             None
         } else {
-            b.map(|_| path.to_owned())
+            if b.is_some() || a.is_none() {
+                Some(path.to_owned())
+            } else {
+                None
+            }
         },
         change: if a == b {
             "unchanged"
@@ -754,6 +791,13 @@ fn project(
     let mut files = Vec::new();
     let mut names = BTreeMap::new();
     for (number, path) in paths.into_iter().enumerate() {
+        if path.len() > 1024
+            || path.contains('\\')
+            || path.starts_with('/')
+            || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic())
+        {
+            return Err("content_unavailable".into());
+        }
         let a = observation.old.get(path);
         let b = observation.new.get(path);
         if a == b
@@ -933,20 +977,31 @@ pub(super) fn create(
     let mut budget = Budget::new();
     for attempt in 0..2 {
         let observed_at = Utc::now();
-        let first = observe(repo, &request.source, &mut budget)?;
-        #[cfg(test)]
-        CAPTURE_HOOK.with(|hook| {
-            if let Some(hook) = hook.borrow_mut().as_mut() {
-                hook();
+        let observed = (|| {
+            let first = observe(repo, &request.source, &mut budget)?;
+            #[cfg(test)]
+            CAPTURE_HOOK.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook();
+                }
+            });
+            let second = observe(repo, &request.source, &mut budget)?;
+            if first.fingerprint != second.fingerprint {
+                return Err("content_unavailable".to_string());
             }
-        });
-        let second = observe(repo, &request.source, &mut budget)?;
-        if first.fingerprint != second.fingerprint {
-            if attempt == 0 {
-                continue;
+            Ok(first)
+        })();
+        let first = match observed {
+            Ok(first) => first,
+            Err(error)
+                if error == "content_unavailable"
+                    && attempt == 0
+                    && budget.start.elapsed() < DEADLINE =>
+            {
+                continue
             }
-            return Err("content_unavailable".into());
-        }
+            Err(error) => return Err(error),
+        };
         let files = project(&first, &request, budget.start)?;
         if budget.start.elapsed() > DEADLINE {
             return Err("content_unavailable".into());
@@ -1339,6 +1394,84 @@ mod tests {
         );
         let sub = capture(&repo, PilotCaptureSource::Staged);
         assert!(list(&sub).iter().any(|f| f.content_state == "submodule"));
+    }
+    #[test]
+    fn cancelled_new_file_keeps_a_path_and_ignored_files_are_absent() {
+        let (dir, repo) = repo();
+        let p = dir.path();
+        fs::write(p.join(".gitignore"), "ignored\n").unwrap();
+        commit(p);
+        fs::write(p.join("added"), "x\n").unwrap();
+        git(p, &["add", "added"]);
+        fs::remove_file(p.join("added")).unwrap();
+        fs::write(p.join("ignored"), "not exported\n").unwrap();
+        let info = capture(&repo, PilotCaptureSource::LocalTotal);
+        let files = list(&info);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].change, "unchanged");
+        assert_eq!(files[0].new_path.as_deref(), Some("added"));
+        for path in ["C:invalid", "back\\slash"] {
+            fs::write(p.join(path), "x\n").unwrap();
+            assert_eq!(
+                create(&repo, p.into(), request(PilotCaptureSource::Unstaged))
+                    .err()
+                    .as_deref(),
+                Some("content_unavailable")
+            );
+            fs::remove_file(p.join(path)).unwrap();
+        }
+    }
+    #[test]
+    fn unstaged_omits_removed_index_files_that_are_now_ignored() {
+        let (dir, repo) = repo();
+        let p = dir.path();
+        fs::write(p.join("retired"), "original\n").unwrap();
+        commit(p);
+        git(p, &["rm", "--cached", "retired"]);
+        fs::write(p.join(".gitignore"), "retired\nignored-dir/\n").unwrap();
+        git(p, &["add", ".gitignore"]);
+        fs::create_dir(p.join("ignored-dir")).unwrap();
+        fs::write(p.join("ignored-dir/private"), "hidden\n").unwrap();
+        let info = capture(&repo, PilotCaptureSource::Unstaged);
+        assert_eq!(info.file_count, 0);
+    }
+    #[test]
+    fn clean_submodules_are_absent_and_nested_changes_invalidate() {
+        let (dir, repo) = repo();
+        let p = dir.path();
+        let (nested, _) = self::repo();
+        fs::write(nested.path().join("file"), "one\n").unwrap();
+        commit(nested.path());
+        for name in ["sub1", "sub2"] {
+            git(
+                p,
+                &[
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    nested.path().to_str().unwrap(),
+                    name,
+                ],
+            );
+        }
+        commit(p);
+        let info = capture(&repo, PilotCaptureSource::LocalTotal);
+        assert_eq!(info.file_count, 0);
+        for _ in 0..3 {
+            assert!(fresh(&repo, &info.snapshot_id, &request(info.source.clone())).unwrap());
+        }
+        fs::write(p.join("sub2/file"), "two\n").unwrap();
+        assert_eq!(
+            fresh(&repo, &info.snapshot_id, &request(info.source.clone()))
+                .err()
+                .as_deref(),
+            Some("stale_revision")
+        );
+        let changed = capture(&repo, PilotCaptureSource::Unstaged);
+        let files = list(&changed);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].content_state, "submodule");
     }
     #[test]
     fn credential_rename_never_exports_the_other_path_or_bytes() {
