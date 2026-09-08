@@ -69,8 +69,8 @@ fn managed_models() -> Vec<ProviderModelInput> {
     let updated_at = chrono::Utc::now().to_rfc3339();
 
     [
-        (DEFAULT_MODEL_ID, FAST_MODEL_NAME, "Qwen3.6-35B-A3B"),
-        (DEEP_MODEL_ID, DEEP_MODEL_NAME, "Qwen3.8-27B"),
+        (DEFAULT_MODEL_ID, FAST_MODEL_NAME, "Qwen3.8-Flash-Next"),
+        (DEEP_MODEL_ID, DEEP_MODEL_NAME, "Qwen3.8-Flash-Next"),
     ]
     .into_iter()
     .map(|(model_id, name, description)| ProviderModelInput {
@@ -81,8 +81,13 @@ fn managed_models() -> Vec<ProviderModelInput> {
         pricing_prompt: Some("0".to_string()),
         pricing_completion: Some("0".to_string()),
         pricing_request: Some("0".to_string()),
-        reasoning_efforts: None,
-        default_reasoning_effort: None,
+        reasoning_efforts: Some(vec![
+            "none".into(),
+            "low".into(),
+            "medium".into(),
+            "xhigh".into(),
+        ]),
+        default_reasoning_effort: Some("medium".into()),
         context_window_tokens: Some(CONTEXT_WINDOW_TOKENS),
         input_limit_tokens: Some(INPUT_LIMIT_TOKENS),
         output_limit_tokens: Some(OUTPUT_LIMIT_TOKENS),
@@ -250,13 +255,16 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].model_id, DEFAULT_MODEL_ID);
         assert_eq!(models[0].name, FAST_MODEL_NAME);
-        assert_eq!(models[0].description.as_deref(), Some("Qwen3.6-35B-A3B"));
+        assert_eq!(models[0].description.as_deref(), Some("Qwen3.8-Flash-Next"));
         assert_eq!(models[1].model_id, DEEP_MODEL_ID);
         assert_eq!(models[1].name, DEEP_MODEL_NAME);
-        assert_eq!(models[1].description.as_deref(), Some("Qwen3.8-27B"));
+        assert_eq!(models[1].description.as_deref(), Some("Qwen3.8-Flash-Next"));
         assert_eq!(INPUT_LIMIT_TOKENS, CONTEXT_WINDOW_TOKENS);
         assert!(models.iter().all(|model| {
-            model.context_window_tokens == Some(CONTEXT_WINDOW_TOKENS)
+            model.reasoning_efforts.as_deref()
+                == Some(&["none".into(), "low".into(), "medium".into(), "xhigh".into()][..])
+                && model.default_reasoning_effort.as_deref() == Some("medium")
+                && model.context_window_tokens == Some(CONTEXT_WINDOW_TOKENS)
                 && model.input_limit_tokens == Some(INPUT_LIMIT_TOKENS)
                 && model.output_limit_tokens == Some(OUTPUT_LIMIT_TOKENS)
         }));
