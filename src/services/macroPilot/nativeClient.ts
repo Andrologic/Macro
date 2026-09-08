@@ -396,7 +396,8 @@ export class MacroPilotNativeClient {
       this.checkContext(context);
       if (!this.persisted) throw new PilotClientError('invalid_configuration');
       const next = { ...this.persisted, ...patch };
-      await this.dependencies.setStateValue(STATE_KEY, next);
+      try { await this.dependencies.setStateValue(STATE_KEY, next); }
+      catch (error) { this.checkContext(context); throw error; }
       // A logout may have invalidated this write while native storage was busy.
       // Its queued tombstone must finish before logout reports completion.
       this.checkContext(context);
@@ -483,6 +484,7 @@ export class MacroPilotNativeClient {
       this.checkContext(context);
       this.publish({ account: response.data!.account, deviceSession: response.data!.device_session, status: 'connected' });
     } catch (error) {
+      if (epoch !== this.epoch) throw new PilotClientError('context_changed');
       if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
       if (error instanceof PilotClientError && (error.code === 'unauthorized' || error.code === 'session_revoked')) {
         await this.clearSession();

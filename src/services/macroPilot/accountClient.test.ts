@@ -297,7 +297,7 @@ describe('native account v2 over the HTTP boundary', () => {
     expect(h.secrets.size).toBe(0);
   });
 
-  it('orders logout after an in-flight metadata write and never republishes its revoked session', async () => {
+  it.each([false, true])('keeps logout final when an older metadata write settles, rejected=%s', async (rejectWrite) => {
     const h = harness();
     const writing = deferred<void>();
     const resume = deferred<void>();
@@ -308,6 +308,7 @@ describe('native account v2 over the HTTP boundary', () => {
     h.deps.setStateValue = async (key, value) => {
       if (!held && (value as { deviceSession?: unknown }).deviceSession) {
         held = true; writing.resolve(); await resume.promise;
+        if (rejectWrite) throw new Error('native persistence failed');
       }
       return setState(key, value);
     };
