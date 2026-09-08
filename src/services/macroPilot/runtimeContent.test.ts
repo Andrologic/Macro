@@ -22,6 +22,7 @@ let messageWait: Promise<void> | undefined;
 let messagesUnavailable = false;
 let taskRecords: Array<Record<string, unknown>> = [];
 let branchRecords: Array<{ name: string; commit: string }> = [];
+let extraProjects: Array<{ id: string; name: string; path: string }> = [];
 const conversation: DbConversation = { id: 'chat:one', title: 'Global chat', description: null, scope_mode: 'Chat', task_id: null, project_id: null, group_id: null, provider_id: null, model_id: null, reasoning_effort: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', last_message: null, message_count: 1, is_pinned: false };
 let conversations: DbConversation[] = [];
 let messages: DbMessage[] = [];
@@ -37,7 +38,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
     return { applied };
   }
   if (command === 'pilot_content_policy') { if (!supported) throw 'content_unavailable'; return secretValues; }
-  if (command === 'workspace_get_bootstrap') return { standaloneProjects: [{ id: 'project:one', name: 'Project', path: repoPath }], projectGroups: [{ id: 'closed', isOpen: false, projects: [{ id: 'project:closed', name: 'Closed', path: '/private/closed' }] }] };
+  if (command === 'workspace_get_bootstrap') return { standaloneProjects: [{ id: 'project:one', name: 'Project', path: repoPath }, ...extraProjects], projectGroups: [{ id: 'closed', isOpen: false, projects: [{ id: 'project:closed', name: 'Closed', path: '/private/closed' }] }] };
   if (command === 'workspace_list_tasks') return { tasks: taskRecords };
   if (command === 'git_branch_list') return { local: branchRecords, remote: [] };
   if (command === 'db_list_conversations') return structuredClone(conversations);
@@ -85,7 +86,7 @@ const { useChatStore } = await import('../../stores/useChatStore');
 const { CONTENT_BUDGET } = await import('./contentHost');
 const { secretForms } = await import('./desktopContentHost');
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check: () => boolean) { const end = Date.now() + 8000; while (!check()) { if (Date.now() > end) throw new Error('condition timed out'); await sleep(10); } }
+async function until(check: () => boolean, timeout = 8000) { const end = Date.now() + timeout; while (!check()) { if (Date.now() > end) throw new Error('condition timed out'); await sleep(10); } }
 const instanceId = 'instance:test';
 const accountId = 'account:github:1';
 const ref = { instance_id: instanceId, workspace_id: 'workspace:config:test', task_id: 'task:one', project_id: 'project:one', review_id: 'review:unstaged' };
@@ -107,6 +108,8 @@ function harness() {
   let loseEvent = false;
   let revoked = false;
   let eventWait: Promise<void> | undefined;
+  let disconnectWait: Promise<void> | undefined;
+  let disconnectFailures = 0;
   let onAuthorize: (() => void) | undefined;
   const client = new MacroPilotNativeClient({
     randomBytes: size => crypto.getRandomValues(new Uint8Array(size)),
@@ -122,7 +125,11 @@ function harness() {
       requests.push({ path, body, headers });
       const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'x-request-id': (data as { request_id?: string }).request_id ?? headers.get('x-request-id')! } });
       if (path.endsWith('/me')) return json({ account, device_session: session });
-      if (path.endsWith('/disconnect') || path.endsWith('/logout')) return new Response(null, { status: 204 });
+      if (path.endsWith('/disconnect')) {
+        if (disconnectFailures-- > 0) return json({ code: 'unavailable' }, 503);
+        await disconnectWait; return new Response(null, { status: 204 });
+      }
+      if (path.endsWith('/logout')) return new Response(null, { status: 204 });
       const signal = init?.signal;
       if (path.endsWith('/poll')) {
         if (path.includes('/v1/')) { await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }); throw Error('aborted'); }
@@ -159,13 +166,14 @@ function harness() {
     expect(validateContentMessage(result)).toBe(true); return result.response;
   }
   return { client, runtime, deliver, results, events, requests, values,
+    waitDisconnect: (wait: Promise<void>, failures = 0) => { disconnectWait = wait; disconnectFailures = failures; },
     waitEvents: (wait: Promise<void>) => { eventWait = wait; },
     loseResult: () => { loseResult = true; }, loseEvent: () => { loseEvent = true; }, revoke: () => { revoked = true; },
     authorize: (callback: () => void) => { onAuthorize = callback; } };
 }
 beforeEach(() => {
   settings.clear(); nativeCalls.length = 0; nativeSnapshots.clear(); supported = true; fresh = true; bridge = undefined; beforeFresh = undefined;
-  nativeFailure = undefined; captureWait = undefined; messageWait = undefined; messagesUnavailable = false; branchRecords = [];
+  nativeFailure = undefined; captureWait = undefined; messageWait = undefined; messagesUnavailable = false; branchRecords = []; extraProjects = [];
   taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'Todo', execution_targets: [] }];
   nativeRevision = 'a'.repeat(64); secretValues = ['configured-password']; repoPath = '/private/test-repository';
   conversations = [structuredClone(conversation)];
@@ -222,7 +230,10 @@ it('runs all content operations through the real runtime/client/IPC, retries ver
 it('observes changes without remote reads, retries durable events and resets the stream on restart', async () => {
   const h = harness(); h.loseEvent();
   try {
-    await h.runtime.start(); await until(() => h.events.length >= 2);
+    await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    expect(h.events).toHaveLength(0);
+    messages[0].content = 'First actual edit';
+    await until(() => h.events.length >= 2);
     expect(h.events[0]).toEqual(h.events[1]);
     const oldStream = h.events[0].stream_id;
     const oldRevision = h.events.find(e => e.change.kind === 'conversation.changed')?.change.revision ?? 0;
@@ -230,7 +241,12 @@ it('observes changes without remote reads, retries durable events and resets the
     await until(() => h.events.some(e => e.change.kind === 'conversation.changed' && e.change.revision > oldRevision));
     conversations = []; messages = [];
     await until(() => h.events.some(e => e.change.kind === 'conversation.removed'));
-    await h.runtime.stop(); await h.runtime.start();
+    await h.runtime.stop();
+    const polls = h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length;
+    await h.runtime.start();
+    await until(() => h.requests.filter(r => r.path.includes('/v2/') && r.path.endsWith('/poll')).length > polls);
+    expect(h.events.every(e => e.stream_id === oldStream)).toBe(true);
+    conversations.push(structuredClone(conversation));
     await until(() => h.events.some(e => e.stream_id !== oldStream));
     expect(h.requests.filter(r => r.path.endsWith('/result'))).toHaveLength(0);
   } finally { await h.runtime.stop(); }
@@ -387,8 +403,68 @@ it('keeps deliveries moving while an event acknowledgement is blocked on HTTP', 
   const h = harness(); let release!: () => void;
   h.waitEvents(new Promise<void>(resolve => { release = resolve; }));
   try {
-    await h.runtime.start(); await until(() => h.events.length > 0);
+    await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    messages[0].content = 'Actual edit before the blocked event';
+    await until(() => h.events.length > 0);
     expect(await h.deliver(request('projects.list', { instance_id: instanceId }))).toMatchObject({ type: 'response' });
+  } finally { release(); await h.runtime.stop(); }
+});
+it('keeps first reads and pages valid while twelve unchanged review references are discovered', async () => {
+  taskRecords = Array.from({ length: 4 }, (_, i) => ({ id: i === 0 ? 'task:one' : `task:discovery:${i}`, project_id: 'project:one', status: 'Todo', execution_targets: [] }));
+  extraProjects = Array.from({ length: 103 }, (_, i) => ({ id: `project:extra:${i}`, name: `Project ${i}`, path: repoPath }));
+  messages = Array.from({ length: 105 }, (_, i) => ({ ...messages[0], id: `message:discovery:${i}` }));
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const projects = await h.deliver(request('projects.list', { instance_id: instanceId }));
+    const review = await h.deliver(request('review.get', { ref }));
+    const transcriptRef = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+    const transcript = await h.deliver(request('conversation.read', { ref: transcriptRef }));
+    if (projects.type !== 'response' || projects.operation !== 'projects.list' || review.type !== 'response' || review.operation !== 'review.get' || transcript.type !== 'response' || transcript.operation !== 'conversation.read') throw Error('first reads failed');
+    expect(projects.result.page.total).toBe(105); expect(projects.result.items).toHaveLength(100);
+    expect(transcript.result.page.total).toBe(105);
+    await until(() => {
+      const journal = [...settings.entries()].find(([key]) => key.startsWith('macroPilot:content-host:v2:'))?.[1];
+      return journal !== undefined && Object.keys(JSON.parse(journal).reviews).length === 12;
+    }, 20_000);
+    expect(h.events).toHaveLength(0);
+    expect(await h.deliver(request('projects.list', { instance_id: instanceId, continuation: { snapshot_id: projects.result.page.snapshot_id, cursor: projects.result.page.next_cursor } }))).toMatchObject({ type: 'response', result: { page: { offset: 100, revision: projects.result.page.revision }, items: expect.any(Array) } });
+    expect(await h.deliver(request('conversation.read', { ref: transcriptRef, continuation: { snapshot_id: transcript.result.page.snapshot_id, cursor: transcript.result.page.next_cursor } }))).toMatchObject({ type: 'response', result: { page: { offset: 100, revision: transcript.result.page.revision } } });
+    expect(await h.deliver(request('diff.files', { ref, snapshot_id: review.result.snapshot_id }))).toMatchObject({ type: 'response' });
+    expect(h.events).toHaveLength(0);
+    nativeRevision = 'c'.repeat(64);
+    const changed = await h.deliver(request('review.get', { ref }));
+    expect(changed).toMatchObject({ type: 'response', result: { revision: review.result.revision + 1 } });
+    await until(() => h.events.some(event => event.change.kind === 'review.changed' && event.change.scope.task_id === ref.task_id && event.change.scope.review_id === ref.review_id));
+    expect(await h.deliver(request('diff.files', { ref, snapshot_id: review.result.snapshot_id }))).toMatchObject({ type: 'error', code: 'stale_revision' });
+  } finally { await h.runtime.stop(); }
+});
+it('retains an unchanged review revision across restart and invalidates a removed task', async () => {
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const first = await h.deliver(request('review.get', { ref }));
+    if (first.type !== 'response' || first.operation !== 'review.get') throw Error('review');
+    await h.runtime.stop(); await h.runtime.start();
+    expect(await h.deliver(request('review.get', { ref }))).toMatchObject({ type: 'response', result: { revision: first.result.revision } });
+    expect(h.events).toHaveLength(0);
+    taskRecords = [];
+    await until(() => h.events.some(event => event.change.kind === 'review.changed' && event.change.scope.review_id === ref.review_id && event.change.revision === first.result.revision + 1));
+    expect(await h.deliver(request('review.get', { ref }))).toMatchObject({ type: 'error', code: 'not_found' });
+  } finally { await h.runtime.stop(); }
+});
+it('confirms the producer reset before either poll and retries a failed reset without advertising', async () => {
+  const h = harness(); let release!: () => void;
+  h.waitDisconnect(new Promise<void>(resolve => { release = resolve; }), 1);
+  try {
+    await h.runtime.start();
+    await until(() => h.requests.filter(r => r.path.endsWith('/disconnect')).length === 2);
+    expect(h.requests.some(r => r.path.endsWith('/poll'))).toBe(false);
+    release();
+    await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    const firstPoll = h.requests.findIndex(r => r.path.endsWith('/poll'));
+    expect(h.requests.slice(0, firstPoll).filter(r => r.path.endsWith('/disconnect'))).toHaveLength(2);
+    expect(h.events).toHaveLength(0);
   } finally { release(); await h.runtime.stop(); }
 });
 it.skipIf(!process.env.PILOT_CAPTURE_BRIDGE)('uses real native Git captures through all runtime review handlers and detects a real edit before verdict', async () => {
