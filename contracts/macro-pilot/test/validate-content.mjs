@@ -85,3 +85,26 @@ assert.equal(legacy(oldReview), true);
 assert.equal(validateMessage(oldReview).valid, false);
 assert.equal(legacy({...oldReview, snapshot_id: 'snapshot-demo'}), false);
 console.log('A2: cross-version rejection and frozen v1 review shape passed.');
+
+// Independently valid wrong-operation responses must reject without throwing.
+const operationRequests = [];
+const operationResponses = [];
+for (const name of await readdir(new URL('valid/', root))) {
+  if (name.startsWith('request-') && name !== 'request-implement.json') operationRequests.push(await fixture(name.slice(0, -5)));
+  if (name.startsWith('response-') && name !== 'response-implement.json') operationResponses.push(await fixture(name.slice(0, -5)));
+}
+let mismatches = 0;
+for (const request of operationRequests) {
+  for (const response of operationResponses) {
+    if (request.operation === response.operation) continue;
+    assert.equal(validateExchange(request, response).valid, false);
+    mismatches++;
+  }
+}
+const accountNegotiation = await fixture('account-negotiate');
+assert.equal(validateExchange(accountNegotiation, await fixture('account-negotiated')).valid, true);
+assert.equal(validateExchange(accountNegotiation, await fixture('negotiated')).valid, false);
+assert.equal(validateExchange(negotiate, await fixture('account-negotiated')).valid, false);
+assert.equal(validateExchange(events, await fixture('error-events')).valid, true);
+assert.equal(validateExchange(events, await fixture('error-unavailable')).valid, false);
+console.log(`A2: ${mismatches} independently valid wrong-operation pairs rejected without exceptions; account negotiation and event errors passed.`);

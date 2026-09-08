@@ -2323,7 +2323,8 @@
             "session.revoke",
             "sessions.revoke_all",
             "session.logout",
-            "account.delete"
+            "account.delete",
+            "events.read"
           ]
         },
         "code": {
@@ -2355,7 +2356,6 @@
         "negotiation_version",
         "type",
         "request_id",
-        "instance_id",
         "supported_versions"
       ],
       "properties": {
@@ -2397,7 +2397,6 @@
         "negotiation_version",
         "type",
         "request_id",
-        "instance_id",
         "selected_version"
       ],
       "properties": {

@@ -106,6 +106,7 @@ export function validateExchange(request, response) {
   } else if (request.type === 'request') {
     reject(!['response', 'error'].includes(response.type), 'expected response or error');
     reject(request.operation !== response.operation || request.account_id !== response.account_id, 'operation or account mismatch');
+    if (errors.length) return { valid: false, errors };
     if (response.type === 'response') {
       const body = request.body;
       const result = response.result;
@@ -123,6 +124,10 @@ export function validateExchange(request, response) {
       if (request.operation === 'account.get') reject(result.account_id !== request.account_id, 'account result mismatch');
     }
   } else if (request.type === 'events.request') {
+    if (response.type === 'error') {
+      reject(response.operation !== 'events.read' || response.account_id !== request.account_id, 'event error mismatch');
+      return { valid: errors.length === 0, errors };
+    }
     reject(response.type !== 'events.page' || response.account_id !== request.account_id, 'event response mismatch');
     if (response.type === 'events.page' && !response.reset) {
       reject(request.stream_id !== response.stream_id || request.after_sequence !== response.after_sequence, 'event resume mismatch');

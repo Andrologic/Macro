@@ -10,9 +10,10 @@ entry point. No existing runtime is claimed to support it yet.
    integrating consumers. A2's public helper is a conformance implementation,
    not a replacement for authorization or a browser runtime dependency.
 2. C3 and D6 implement native account/session management and revocation races
-   first. Use producer proof for management, real desktop confirmation for
-   deletion, preserved local identities and a fresh cloud incarnation on
-   recreation. Test loss of the deletion/logout response and revoked replay.
+   first. Use authenticated account ownership for management and desktop confirmation
+   for deletion, preserved local identities and a fresh cloud incarnation on
+   recreation. Test loss of the deletion/logout response, revoked replay, late GitHub
+   identification/claim after invalidation and reauthorization at HTTP emission.
 3. C4 exports the two instance catalogs from persisted conversations. Map
    scope_mode Chat to kind conversation with only a conversation ID; load
    content without changing UI selection. Test empty-but-unloaded caches,

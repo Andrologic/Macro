@@ -18,30 +18,40 @@ message as 2.0 or inject v2 fields into v1. Version 2.0 is a separate extension
 for content and account operations. The existing generated v1 runtime validator
 is intentionally unchanged. Supporting v1 says nothing about v2 support.
 
-After authentication and association, the client sends `negotiate` to
+After authentication, the client sends `negotiate` to
 `POST /pilot/extensions/negotiate`, with `X-Request-Id` equal to `request_id`.
-D checks the active session, account ownership and granted instance access.
-It returns `negotiated`, echoing request and instance IDs. It selects `2.0`
-only if the client offered it and D and the current C producer both support it. D records C capability only after a successful authenticated
-v2 producer poll on that instance; the first such poll declares implemented
-2.0 support. Capability expires when producer presence is lost. Otherwise `selected_version` is null. A missing endpoint
-also means unavailable extension, never permission to guess a version.
-Negotiation grants no authority. Re-negotiate after producer reconnect, session
-replacement or loss of capability. D binds selection to the authenticated
-session and instance; every v2 request rechecks it. Account operations also
-require this selected extension and the management instance described below.
-No negotiation field is added to any v1 instance or transport envelope.
+Without instance_id this negotiates account operations between the client and
+D only. With instance_id it negotiates content for that instance and D also
+checks granted association and the current C producer's support. It returns
+`negotiated`, echoing the request ID and the exact presence/value of instance_id.
+D selects 2.0 only when offered and implemented by every required participant.
+It records C capability after the first authenticated v2 producer poll on that
+instance; capability expires when producer presence is lost. Otherwise the
+selection is null. A missing endpoint means unavailable extension.
 
-The new route `POST /pilot/v2/instances/{instance_id}/requests` carries a v2
-`request`. Account/session operations terminate at D; content operations go to
-C using the delivery flow below. The client receives 202 `{exchange_id,
-expires_at}` in an A2 `accepted` envelope or a terminal v2 response/error.
-Polling `GET /pilot/v2/instances/{instance_id}/requests/{exchange_id}` returns
-202 while pending or the exact terminal message. `request_id` is the exchange
-identity, scoped to account incarnation, session and route instance. A retry
-of that ID and identical body returns the same pending/terminal exchange;
-a different body returns conflict. Clients retain the original request to
-check response correlation, then allocate a fresh ID for a new read.
+Negotiation grants no authority. Re-negotiate after session replacement, loss
+of capability or producer reconnect for instance content. Selection is bound
+to the authenticated session and optional instance. Every v2 request rechecks
+its matching selection. Account management works without an associated or
+online instance. No field is added to a v1 instance or transport envelope.
+
+`POST /pilot/v2/account/requests` accepts only account.get, sessions.list,
+session.revoke, sessions.revoke_all, session.logout and account.delete.
+D handles these directly and returns a terminal v2 response/error. Account
+reads use request IDs for correlation; mutations also use their durable
+idempotency keys. Replaying a completed mutation uses a new request ID and
+the same body/key, after current authentication. No producer delivery or key
+is involved. A request must use its documented route; wrong-route operations
+return validation_failed before effects.
+
+`POST /pilot/v2/instances/{instance_id}/requests` accepts only content requests
+and review.verdict, delivered to C. The client receives an A2 `accepted`
+envelope or terminal v2 error. Polling
+`GET /pilot/v2/instances/{instance_id}/requests/{exchange_id}` returns 202 while
+pending or the exact terminal message. request_id is the exchange identity,
+scoped to account incarnation, session and route instance. Same ID/body
+returns the same pending/terminal exchange; changed body conflicts. Clients
+retain the original request for correlation, then use a fresh ID for a new read.
 
 C uses `POST /pilot/v2/instances/{instance_id}/deliveries/poll`,
 `POST .../deliveries/{request_id}/authorize` and
@@ -235,16 +245,14 @@ are unique per incarnation, including recreation for the same GitHub subject.
 `account.get` returns the verified GitHub identity and current session. List
 sessions uses an account-scoped immutable catalog and account revision.
 
-Management routes require active owner authentication plus X-Instance-Key
-for the route instance, exactly the producer proof of the native transport.
-The key must match the stored hash and immutable owner. Self-reported
-client_kind/device_id never grants management authority. This is possession
-proof, not hardware attestation of an application. Native account management
-uses this existing proof; no server secret is added to Macro. account.get and
-session.logout are available to the current mobile session after association;
-sessions.list, session.revoke, sessions.revoke_all and account.delete require
-producer proof. No web account UI is introduced. Logout before association can
-still use the existing authenticated v1 self-revocation route.
+Account operations require the authenticated native session of the owning
+account. D derives this identity from the validated bearer and checks it at
+effect time; client_kind, labels and submitted device IDs are display data,
+never authority. The desktop is the chosen management UI, not a cryptographic
+administrator class. No new desktop/mobile role or management instance key is
+introduced. The mobile provides at least connection status and self-logout.
+No web account UI is introduced. Existing X-Instance-Key producer proof remains
+mandatory only for instance producer routes, independently of account operations.
 
 `session.revoke` targets exactly one session in the same account. Global
 revocation includes the caller and every session, and revokes every associated
@@ -253,6 +261,31 @@ authorized-but-unexecuted and cached content delivery, cancel pending reads and
 clear account-scoped client caches. Already completed effects cannot be undone.
 A new session requires explicit GitHub reconnection and association; silent
 renewal is outside this extension.
+
+D makes lifecycle invalidation and native auth claim atomic against each
+other. Global revocation and deletion invalidate all already-started account
+auth attempts, including in-flight GitHub polling and claim computations.
+A result identifying its GitHub subject only after invalidation is compared
+against the subject's lifecycle cutoff and attempt creation time before any
+account/session write. It cannot recreate a deleted account, issue a session,
+or use a previously cached claim result. Individual revoke/logout also make
+any claim receipt that produced the targeted session unusable; they leave
+unrelated sessions and independent new sign-ins intact. Concurrent claim versus
+revoke/delete has a defined transaction order: either claim wins and its new
+session is revoked by the later global operation, or invalidation wins and
+claim fails. A fresh auth attempt started after the cutoff can recreate the
+account with a new incarnation and new associations. Store only the bounded
+lifecycle metadata needed to reject these stale attempts, not their secrets.
+
+Recheck active session, account incarnation and current access immediately
+before emitting every HTTP result, including already computed reads, cached
+receipts, native poll/claim results and producer deliveries. Use a lifecycle
+version check at the emission boundary so an intervening revoke/delete drops
+the body and returns an authentication error. The terminal acknowledgement
+of a caller's own logout/revoke-all/delete may consequently be lost. Do not
+exempt it from authentication replay rules. Bytes emitted before invalidation
+cannot be recalled; this does not authorize any new post-invalidation delivery.
+
 
 `account.delete` requires an explicit desktop confirmation showing the verified
 identity. The fixed confirmation field encodes that intent, not proof that a
@@ -279,7 +312,12 @@ Deletion does not retain a receipt accessible to the recreated account.
 
 ## Events and non-schema invariants
 
-`events.request` goes to `POST /pilot/v2/instances/{instance_id}/events`.
+`events.request` goes to `POST /pilot/v2/instances/{instance_id}/events` for
+instance content, or `POST /pilot/v2/account/events` for account-only changes.
+Each route requires its corresponding negotiation and authentication; only the
+instance route requires association. The account route needs no desktop
+presence and includes only sessions/account invalidations. Event failures use
+v2 error with operation events.read and the original request/account IDs.
 D exposes an account/session/instance-scoped stream combining its account
 invalidations and C's content invalidations. It emits `events.page`; null stream
 requires reset with a fresh stream ID and sequence zero. Lost journal, gaps or
