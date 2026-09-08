@@ -1,5 +1,10 @@
 # Décisions de périmètre de Macro Pilot
 
+> Extension A2 : les nouvelles décisions et formes publiques sont définies dans
+> [content-contract-v2.md](content-contract-v2.md). Ce document décrit la base
+> 1.0 ; ses anciennes questions ne limitent pas le périmètre 2.0. Aucun support
+> runtime 2.0 n’est annoncé avant intégration et négociation des consommateurs.
+
 Ce document distingue les décisions acquises des arbitrages encore ouverts.
 Le contrat `1.0` ne promet pas les comportements qui restent à préciser.
 

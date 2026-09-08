@@ -1,0 +1,8 @@
+{
+  "contract_version": "3.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "request",
+  "operation": "account.get",
+  "body": {}
+}

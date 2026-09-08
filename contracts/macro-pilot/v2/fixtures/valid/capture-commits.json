@@ -1,0 +1,22 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "response",
+  "operation": "review.get",
+  "result": {
+    "snapshot_id": "snapshot-demo",
+    "revision": 1,
+    "source": {
+      "kind": "commits",
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "observed_at": "2026-01-01T00:00:00Z",
+    "expires_at": "2026-01-01T00:05:00Z",
+    "export_policy_revision": "visible-1",
+    "availability": "complete",
+    "state": "pending",
+    "file_count": 1
+  }
+}

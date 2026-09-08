@@ -1,5 +1,10 @@
 # Mise à jour A1 pour C, D et E
 
+> Extension A2 : les nouvelles décisions et formes publiques sont définies dans
+> [content-contract-v2.md](content-contract-v2.md). Ce document décrit la base
+> 1.0 ; ses anciennes questions ne limitent pas le périmètre 2.0. Aucun support
+> runtime 2.0 n’est annoncé avant intégration et négociation des consommateurs.
+
 Cette correction appartient à la base `1.0` encore non publiée. Tous les
 consommateurs mettent à jour le registre complet avant de communiquer ; aucune
 compatibilité avec un schéma `1.0` antérieur de développement n'est promise.

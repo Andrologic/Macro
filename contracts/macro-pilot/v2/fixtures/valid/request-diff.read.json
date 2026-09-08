@@ -1,0 +1,19 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "request",
+  "operation": "diff.read",
+  "body": {
+    "ref": {
+      "instance_id": "instance-demo",
+      "workspace_id": "workspace-demo",
+      "task_id": "task-demo",
+      "project_id": "project-demo",
+      "review_id": "review-demo"
+    },
+    "snapshot_id": "snapshot-demo",
+    "file_id": "file-demo",
+    "offset_bytes": 0
+  }
+}

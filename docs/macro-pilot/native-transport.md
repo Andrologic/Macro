@@ -1,5 +1,10 @@
 # Transport natif et relais, version 1.0
 
+> Extension A2 : les nouvelles décisions et formes publiques sont définies dans
+> [content-contract-v2.md](content-contract-v2.md). Ce document décrit la base
+> 1.0 ; ses anciennes questions ne limitent pas le périmètre 2.0. Aucun support
+> runtime 2.0 n’est annoncé avant intégration et négociation des consommateurs.
+
 Cette spécification publique complète les ressources A1 de
 `contracts/macro-pilot/v1`. C implémente le client desktop, D les routes serveur
 dans le dépôt privé du site, E le client Flutter dans le dépôt privé mobile.

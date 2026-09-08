@@ -1,0 +1,13 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "request",
+  "operation": "account.delete",
+  "body": {
+    "expected_revision": 1,
+    "idempotency_key": "intent-demo-0005",
+    "confirmation": "delete_cloud_account",
+    "client_kind": "desktop"
+  }
+}

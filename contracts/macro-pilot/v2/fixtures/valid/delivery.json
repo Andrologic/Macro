@@ -1,0 +1,23 @@
+{
+  "transport_version": "2.0",
+  "type": "delivery",
+  "request_id": "request-demo",
+  "instance_id": "instance-demo",
+  "source_session_id": "session-demo",
+  "account_id": "account-demo",
+  "expires_at": "2026-01-01T00:01:00Z",
+  "request": {
+    "contract_version": "2.0",
+    "request_id": "request-demo",
+    "account_id": "account-demo",
+    "type": "request",
+    "operation": "conversation.read",
+    "body": {
+      "ref": {
+        "instance_id": "instance-demo",
+        "kind": "conversation",
+        "conversation_id": "conversation-demo"
+      }
+    }
+  }
+}

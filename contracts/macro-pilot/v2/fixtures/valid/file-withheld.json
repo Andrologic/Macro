@@ -1,0 +1,30 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "response",
+  "operation": "diff.files",
+  "result": {
+    "page": {
+      "snapshot_id": "snapshot-demo",
+      "revision": 1,
+      "observed_at": "2026-01-01T00:00:00Z",
+      "expires_at": "2026-01-01T00:05:00Z",
+      "export_policy_revision": "visible-1",
+      "offset": 0,
+      "total": 1,
+      "next_cursor": null
+    },
+    "items": [
+      {
+        "file_id": "file-demo",
+        "position": 0,
+        "old_path": "example.txt",
+        "new_path": "example.txt",
+        "change": "modified",
+        "content_state": "withheld",
+        "patch_bytes": 0
+      }
+    ]
+  }
+}

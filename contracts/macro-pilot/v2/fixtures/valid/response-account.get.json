@@ -1,0 +1,15 @@
+{
+  "contract_version": "2.0",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "type": "response",
+  "operation": "account.get",
+  "result": {
+    "account_id": "account-demo",
+    "revision": 1,
+    "provider": "github",
+    "subject": "123456",
+    "login": "example",
+    "session_id": "session-demo"
+  }
+}

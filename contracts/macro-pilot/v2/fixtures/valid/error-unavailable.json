@@ -1,0 +1,9 @@
+{
+  "contract_version": "2.0",
+  "type": "error",
+  "request_id": "request-demo",
+  "account_id": "account-demo",
+  "operation": "conversation.read",
+  "code": "unavailable",
+  "retryable": true
+}
