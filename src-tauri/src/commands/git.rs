@@ -2,6 +2,9 @@
 
 #[path = "git/review.rs"]
 mod review;
+#[path = "git/pilot_capture.rs"]
+mod pilot_capture;
+pub use pilot_capture::*;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};

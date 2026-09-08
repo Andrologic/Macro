@@ -4511,3 +4511,20 @@ export async function pilotSecretDelete(scope: PilotSecretScope): Promise<void> 
   requireNativePilotVault();
   return invoke<void>('pilot_secret_delete', { scope });
 }
+
+// Native immutable Pilot review primitives. These do not negotiate v2 transport.
+export async function pilotReviewCapture(repoPath: string, request: import('./macroPilot/reviewCapture').ReviewCaptureRequest) {
+  return invoke<import('./macroPilot/reviewCapture').ReviewCaptureInfo>('pilot_review_capture', { repoPath, request });
+}
+export async function pilotReviewFiles(snapshotId: string, cursor?: string) {
+  return invoke<import('./macroPilot/reviewCapture').ReviewCapturePage>('pilot_review_files', { snapshotId, cursor: cursor ?? null });
+}
+export async function pilotReviewRead(snapshotId: string, fileId: string, offsetBytes: number) {
+  return invoke<import('./macroPilot/reviewCapture').ReviewCaptureFragment>('pilot_review_read', { snapshotId, fileId, offsetBytes });
+}
+export async function pilotReviewFresh(snapshotId: string, request: import('./macroPilot/reviewCapture').ReviewCaptureRequest) {
+  return invoke<boolean>('pilot_review_fresh', { snapshotId, request });
+}
+export async function pilotReviewRelease(snapshotId: string) {
+  return invoke<void>('pilot_review_release', { snapshotId });
+}
