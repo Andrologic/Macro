@@ -20,6 +20,7 @@ export interface ConversationCaptureSource {
   getConversation(id: string): Promise<DbConversation | null>;
   listMessages(id: string): Promise<DbMessage[]>;
   activity(id: string): ConversationActivity;
+  finalProvenance?(message: DbMessage): Promise<boolean>;
 }
 export interface CaptureDependencies {
   instanceId: string;
@@ -46,7 +47,7 @@ type Item = ProjectItem | ConversationItem | MessageItem;
 type Operation = 'projects.list' | 'conversations.list' | 'conversation.read';
 interface Observation {
   projects: CaptureProject[]; tasks: CaptureTask[]; conversations: DbConversation[];
-  transcripts: Array<{ id: string; messages: DbMessage[]; activity: ConversationActivity }>;
+  transcripts: Array<{ id: string; messages: DbMessage[]; provenMessageIds: string[]; activity: ConversationActivity }>;
   policy: TextPolicy;
 }
 interface Capture {
@@ -87,6 +88,7 @@ export class ConversationCaptures {
   /** Observe after source/policy changes to persist invalidation even without a read.
    * Returns the durable revision for the future content invalidation stream. */
   refresh(): Promise<number> { return this.serial(async () => (await this.observe()).revision); }
+  refreshProjects(): Promise<number> { return this.serial(async () => (await this.observe(true)).revision); }
   private serial<T>(work: () => Promise<T>): Promise<T> {
     const epoch = this.epoch;
     const result = this.tail.then(async () => {
@@ -102,7 +104,7 @@ export class ConversationCaptures {
     });
     this.tail = result.catch(() => undefined); return result;
   }
-  private async load(): Promise<Observation> {
+  private async load(projectsOnly = false): Promise<Observation> {
     const source = this.deps.source;
     const policy = structuredClone(this.deps.policy());
     if (policy.revision !== 'visible-1') throw new ConversationCaptureError('unavailable');
@@ -110,6 +112,8 @@ export class ConversationCaptures {
       if (controlledText(value, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
     }
     const projects = (await source.projects()).map(p => ({ id: id(p.id), name: p.name })).sort(compareId);
+    if (new Set(projects.map(p => p.id)).size !== projects.length || projects.some(p => controlledText(p.id, policy).content_state !== 'complete')) throw new ConversationCaptureError('content_unavailable');
+    if (projectsOnly) return { projects, tasks: [], conversations: [], transcripts: [], policy };
     const tasks = (await source.tasks()).map(t => ({ id: id(t.id), project_id: t.project_id, conversation_id: t.conversation_id })).sort(compareId);
     const conversations = (await source.listConversations()).filter(c => c.scope_mode === 'Chat' || c.scope_mode === 'Implement')
       .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned) || b.updated_at.localeCompare(a.updated_at) || compareId(a, b));
@@ -122,35 +126,39 @@ export class ConversationCaptures {
       id(conversation.id);
       if (seen.has(conversation.id)) throw new ConversationCaptureError('content_unavailable');
       seen.add(conversation.id);
-      const messages = (await source.listMessages(conversation.id)).sort((a, b) => a.created_at.localeCompare(b.created_at) || compareId(a, b));
-      const messageIds = new Set<string>();
+      const messages = (await source.listMessages(conversation.id)).slice().sort((a, b) => a.created_at.localeCompare(b.created_at) || compareId(a, b));
+      const messageIds = new Set<string>(); const provenMessageIds: string[] = [];
       for (const message of messages) {
         id(message.id);
         if (controlledText(message.id, policy).content_state !== 'complete') throw new ConversationCaptureError('content_unavailable');
         if (message.conversation_id !== conversation.id || messageIds.has(message.id) || !Number.isFinite(Date.parse(message.created_at))) throw new ConversationCaptureError('content_unavailable');
         messageIds.add(message.id);
+        if (message.role === 'assistant' && await source.finalProvenance?.(message)) provenMessageIds.push(message.id);
       }
       const activity = source.activity(conversation.id);
       bytes += utf8Bytes(JSON.stringify([messages, activity]));
       if (bytes > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
-      transcripts.push({ id: conversation.id, messages, activity });
+      transcripts.push({ id: conversation.id, messages, provenMessageIds, activity });
     }
     return structuredClone({ projects, tasks, conversations, transcripts, policy });
   }
-  private async observe(): Promise<{ observation: Observation; revision: number }> {
+  private async observe(projectsOnly = false): Promise<{ observation: Observation; revision: number }> {
     // Independent reads detect edits during assembly; retry once, never mix pages.
     for (let attempt = 0; attempt < 2; attempt++) {
       const previous = await this.deps.storage.load();
-      const observation = await this.load(); const fingerprint = await digest(observation);
-      if (fingerprint !== await digest(await this.load())) continue;
-      let old: { version: number; revision: number; fingerprint: string } | null = null;
-      if (previous !== null) {
-        old = JSON.parse(previous);
-        if (!old || old.version !== 1 || !Number.isSafeInteger(old.revision) || old.revision < 1 || typeof old.fingerprint !== 'string') throw new ConversationCaptureError('unavailable');
-      }
+      const observation = await this.load(projectsOnly); const fingerprint = await digest(observation);
+      if (fingerprint !== await digest(await this.load(projectsOnly))) continue;
+      type Revision = { revision: number; fingerprint: string };
+      type Journal = { version: 2; projects?: Revision; conversations?: Revision };
+      const journal: Journal = previous === null ? { version: 2 } : JSON.parse(previous);
+      if (!journal || journal.version !== 2) throw new ConversationCaptureError('unavailable');
+      const section = projectsOnly ? 'projects' : 'conversations';
+      const old = journal[section];
+      if (old && (!Number.isSafeInteger(old.revision) || old.revision < 1 || typeof old.fingerprint !== 'string')) throw new ConversationCaptureError('unavailable');
       const revision = (old?.revision ?? 0) + (old?.fingerprint === fingerprint ? 0 : 1);
       if (!Number.isSafeInteger(revision)) throw new ConversationCaptureError('resource_limit');
-      const next = JSON.stringify({ version: 1, revision, fingerprint });
+      journal[section] = { revision, fingerprint };
+      const next = JSON.stringify(journal);
       if (!await this.deps.storage.compareAndSwap(previous, next)) continue;
       return { observation, revision };
     }
@@ -178,7 +186,7 @@ export class ConversationCaptures {
         if (capture.binding !== binding || !capture.cursors.has(continuation.cursor)) throw new ConversationCaptureError('validation_failed');
         offset = capture.cursors.get(continuation.cursor)!;
       }
-      const { observation, revision } = await this.observe();
+      const { observation, revision } = await this.observe(operation === 'projects.list');
       if (capture && capture.revision !== revision) throw new ConversationCaptureError('stale_revision');
       if (!capture) {
         let items: Item[] = [];
@@ -205,7 +213,7 @@ export class ConversationCaptures {
           items = transcript.messages.filter(m => m.role === 'user' || m.role === 'assistant').map((message, position) => {
             const generating = message.role === 'assistant' && transcript.activity.activity === 'busy' &&
               (transcript.activity.generatingMessageId === null || transcript.activity.generatingMessageId === message.id);
-            const text = messageText(message, generating, observation.policy);
+            const text = messageText(message, generating, observation.policy, transcript.provenMessageIds.includes(message.id));
             const base = { message_id: message.id, position, role: message.role as 'user' | 'assistant', created_at: new Date(message.created_at).toISOString(),
               completion: generating ? 'unknown' as const : message.role === 'user' ? 'complete' as const : completion(message.completion_reason) };
             if ('text' in text) return { message_id: base.message_id, position, role: base.role, created_at: base.created_at, completion: base.completion, content_state: text.content_state, text: text.text };

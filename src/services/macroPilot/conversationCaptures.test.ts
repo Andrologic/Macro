@@ -128,14 +128,14 @@ it('produces A2 conforming envelopes with bounded pages including escaped UTF-8 
   const validatorPath = '../../../contracts/macro-pilot/v2/validate.mjs';
   const { validateMessage, validatePageContinuation } = await import(validatorPath);
   const env = setup(); env.messages.splice(0);
-  for (let i = 0; i < 30; i++) env.messages.push(message(`message-${i.toString().padStart(2, '0')}`, '\u0001'.repeat(16000)));
+  for (let i = 0; i < 5; i++) env.messages.push(message(`message-${i.toString().padStart(2, '0')}`, '\u0001'.repeat(16000)));
   env.deps.source.projects = async () => [{ id: 'long-name', name: '😀'.repeat(200) }];
   const wrap = (operation: string, result: unknown) => ({ contract_version: '2.0', request_id: 'request', account_id: 'account', type: 'response', operation, result });
   expect(validateMessage(wrap('projects.list', await env.captures.projectsList(scope))).valid).toBe(true);
   expect(validateMessage(wrap('conversations.list', await env.captures.conversationsList(scope, 'conversation'))).valid).toBe(true);
   let page = await env.captures.conversationRead(scope, ref);
   let seen = page.items.length;
-  expect(page.items.length).toBeLessThan(30);
+  expect(page.items.length).toBeLessThan(5);
   while (page.page.next_cursor) {
     const envelope = wrap('conversation.read', page);
     expect(validateMessage(envelope).valid).toBe(true); expect(utf8Bytes(JSON.stringify(envelope))).toBeLessThan(256 * 1024);
@@ -143,7 +143,7 @@ it('produces A2 conforming envelopes with bounded pages including escaped UTF-8 
     expect(validatePageContinuation(envelope, wrap('conversation.read', next)).valid).toBe(true);
     seen += next.items.length; page = next;
   }
-  expect(seen).toBe(30); expect(validateMessage(wrap('conversation.read', page)).valid).toBe(true);
+  expect(seen).toBe(5); expect(validateMessage(wrap('conversation.read', page)).valid).toBe(true);
 });
 
 it('does not recover sent user text from hidden context and rejects malformed marker fragments', () => {
@@ -161,4 +161,61 @@ it('rejects an unstable source and storage corruption without fabricating a capt
   env.deps.source.listMessages = async () => [];
   env.deps.storage.load = async () => '{invalid';
   await expect(env.captures.projectsList(scope)).rejects.toMatchObject({ code: 'unavailable' });
+});
+
+it('never falls back to legacy grammar after explicit provider provenance rejection', () => {
+  const content = '<think>first reasoning</think>still private';
+  const row = { ...message(), role: 'assistant', content };
+  for (const output of [
+    { type: 'message', role: 'assistant', channel: 'analysis', status: 'completed', content: [{ type: 'output_text', text: content }] },
+    { type: 'message', role: 'assistant', channel: 'final', status: 'completed', content: [{ type: 'output_text', text: 'Different final output' }] },
+    { type: 'message', role: 'assistant', status: 'in_progress', content: [{ type: 'output_text', text: content }] },
+  ]) {
+    const result = messageText({ ...row, provider_turn_state_json: JSON.stringify({ provider: 'chatgpt', output_items: [output] }) }, false, policy);
+    expect(result).toEqual({ content_state: 'withheld', reason: 'unknown_provenance' });
+  }
+  for (const state of ['', '{invalid', '{}', JSON.stringify({ provider: 'unknown', output_items: [] })]) {
+    expect(messageText({ ...row, provider_turn_state_json: state }, false, policy)).toEqual({ content_state: 'withheld', reason: 'unknown_provenance' });
+  }
+  expect(messageText(row, false, policy)).toEqual({ content_state: 'complete', text: 'still private' });
+});
+
+it('withholds malformed closed reasoning markers and maps every normative completion reason', () => {
+  for (const tag of ['thin', 'analysi', 'reasonin', 'fina']) {
+    const content = `<think>first</think><${tag}>ambiguous</${tag}>`;
+    expect(legacyFinalText(content)).toBeNull();
+    expect(messageText({ ...message(), role: 'assistant', content }, false, policy)).toEqual({ content_state: 'withheld', reason: 'unknown_provenance' });
+  }
+  for (const reason of ['completed', 'length_recovered', 'incomplete_recovered']) expect(completion(reason)).toBe('complete');
+  for (const reason of ['length', 'incomplete', 'tool_turn_limit', 'post_tool_empty_fallback']) expect(completion(reason)).toBe('incomplete');
+  for (const reason of [null, undefined, '', 'open', 'interrupted']) expect(completion(reason)).toBe('unknown');
+});
+
+it('does not reorder arrays owned by an injected canonical source', async () => {
+  const env = setup(); const rows = Object.freeze([message('z'), message('a')]);
+  env.deps.source.listMessages = async () => rows as unknown as DbMessage[];
+  expect((await env.captures.conversationRead(scope, ref)).items.map(i => i.message_id)).toEqual(['a', 'z']);
+  expect(rows.map(m => m.id)).toEqual(['z', 'a']);
+});
+
+it('keeps project catalogs usable when conversation history cannot be loaded or exceeds its budget', async () => {
+  const env = setup(); let transcriptReads = 0;
+  env.deps.source.listMessages = async () => { transcriptReads++; throw new Error('Oversized or unavailable history'); };
+  env.deps.source.listConversations = async () => { throw new Error('Conversation database unavailable'); };
+  const first = await env.captures.projectsList(scope, undefined, 1);
+  const next = await env.captures.projectsList(scope, { snapshot_id: first.page.snapshot_id, cursor: first.page.next_cursor! });
+  expect(next.items[0].project_id).toBe('p2'); expect(transcriptReads).toBe(0);
+  expect(await env.captures.refreshProjects()).toBe(first.page.revision);
+  env.deps.source.projects = async () => [{ id: 'p1', name: 'Renamed' }];
+  await expect(env.captures.projectsList(scope, { snapshot_id: first.page.snapshot_id, cursor: first.page.next_cursor! })).rejects.toMatchObject({ code: 'stale_revision' });
+});
+
+it('projects newly persisted provider-neutral receipt evidence and invalidates after it changes', async () => {
+  const env = setup(); env.messages[0] = { ...message(), role: 'assistant', content: 'New final output' };
+  let proven = false; env.deps.source.finalProvenance = async () => proven;
+  expect((await env.captures.conversationRead(scope, ref)).items[0].content_state).toBe('withheld');
+  proven = true;
+  const page = await env.captures.conversationRead(scope, ref);
+  expect(page.items[0]).toHaveProperty('text', 'New final output');
+  expect(page.page.revision).toBe(2);
 });

@@ -5,6 +5,7 @@ import {
 } from '../tauriIpc';
 import type { ConversationCaptureSource } from './conversationCaptures';
 import type { KernelStorage } from './kernel';
+import { assistantProvenance } from './assistantProvenance';
 
 /** Persisted reads deliberately bypass the optional transcript cache. Store reads
  * supply only current activity; no selection, lazy loading, or source writes. */
@@ -20,6 +21,7 @@ export function desktopConversationCaptureSource(): ConversationCaptureSource {
     listConversations,
     getConversation,
     listMessages,
+    finalProvenance: message => assistantProvenance().verifies(message.id, message.content),
     activity: conversationId => {
       const runtime = useChatStore.getState().conversationRuntimeById[conversationId];
       if (!runtime) return { activity: 'unknown', generatingMessageId: null };
