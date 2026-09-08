@@ -1090,6 +1090,18 @@ La première politique est volontairement restrictive : enfants en lecture seule
 
 Le transport fournisseur et l'adaptateur IPC de `agent_runs` restent des ports explicites. Tant qu'ils ne sont pas raccordés, le coordinateur `goal_auditor` est exécutable avec un transport injecté et un journal mémoire, mais sa durabilité n'est pas complète de bout en bout.
 
+### 15.5 Supervision relayée Macro Pilot
+
+`src/services/macroPilot/runtime.ts` coordonne la supervision et le contenu d'une seule instance desktop active. Le client natif isole l'authentification, le coffre et le transport vers un relais compatible. L'exécution réutilise les tâches, stores et adaptateurs de providers existants ; elle nécessite que Macro reste ouvert. Le serveur de relais n'exécute ni les providers ni les outils locaux. Le kernel headless de la section suivante conserve son cycle de vie distinct.
+
+Le [contrat public v2](macro-pilot/content-contract-v2.md) sépare la négociation ACCOUNT, sans instance, de la négociation du contenu d'une instance associée. Le runtime annonce le contenu seulement après préparation de ses sources et de sa politique. Les enveloppes et comportements v1 restent indépendants. La perte de session ou le remplacement du producteur annule puis attend les anciennes boucles avant de démarrer les suivantes.
+
+`contentHost.ts` coordonne les catalogues persistés de conversations, les captures Git et leurs événements. Les captures sont transitoires et liées au compte, à la session, à l'instance et à la révision. Les métadonnées durables conservent les révisions, décisions, empreintes, reçus idempotents et événements en attente, sans texte de conversation ni patch. Un nouveau cycle de vie renouvelle le flux lorsque la continuité ne peut pas être garantie. L'observation des conversations et les attentes HTTP d'événements ne retiennent pas la file des décisions ; les captures Git sont observées une par une.
+
+Les commandes natives `pilot_content_policy` et `pilot_review_commit` passent par les wrappers typés de `tauriIpc.ts`. La première fournit des valeurs du coffre uniquement pour détecter les contenus à ne pas exporter. La seconde conserve le verrou du dépôt, acquiert le verrou d'écriture SQLite, recontrôle la capture, les branches suivies, la politique et l'échéance, puis enregistre ensemble décision, reçu et événement. Elle ne modifie pas Git. Les écritures d'un éditeur externe après le dernier contrôle ne sont pas rendues atomiques avec SQLite.
+
+Les budgets conservateurs sont de 24 Mio pour les captures de conversations, 32 Mio pour les captures natives et 7 Mio pour les métadonnées et réponses du host. Les limites de pagination, d'expiration et d'enveloppe restent celles du contrat. La préparation native refuse actuellement Windows et WSL pour le contenu v2 ; ACCOUNT et la supervision v1 gardent leurs capacités propres. Le [guide d'intégration](macro-pilot/content-consumer-guide.md) décrit les vérifications nécessaires avec un relais et un compagnon compatibles.
+
 ---
 
 ## 16. Fondation expérimentale : backend distant et kernel headless

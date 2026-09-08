@@ -2,7 +2,11 @@
 
 Read [the v2 contract](content-contract-v2.md) before implementing this extension.
 The [registry](../../contracts/macro-pilot/v2/schema-set.json) is the portable
-entry point. No existing runtime is claimed to support it yet.
+entry point. The desktop implementation is under `src/services/macroPilot/`:
+`nativeClient.ts` owns transport, `accountClient.ts` owns account operations,
+and `runtime.ts` coordinates `contentHost.ts` and the native capture commands.
+This implementation does not certify a particular relay deployment or mobile
+client. Negotiate capabilities with the actual peers before using them.
 
 1. Load and test both registries independently. Run the v1 conformance and
    native transport checks, then `bun contracts/macro-pilot/test/validate-content.mjs`.
@@ -29,7 +33,11 @@ entry point. No existing runtime is claimed to support it yet.
    show separate Implement/Conversation catalogs. Distinguish partial, pending,
    unavailable and stale content. Show all diff pages as available navigation;
    approve/request changes without read tracking. Clear caches on access loss.
-6. Advertise 2.0 only after those consumers pass end-to-end scenarios. A v1-only
+6. Validate the participating implementations with end-to-end scenarios before
+   enabling their integration. Advertise instance content only after desktop
+   source and policy preparation succeeds. The current native implementation
+   leaves content unavailable on Windows and WSL; ACCOUNT remains independent.
+   A v1-only
    peer keeps v1 behavior and shows this extension unavailable. No downgrade
    converts new identities, local captures or account actions into v1 shapes.
 
