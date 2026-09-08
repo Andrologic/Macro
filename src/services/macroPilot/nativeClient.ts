@@ -345,6 +345,7 @@ export class MacroPilotNativeClient {
   private publicState = emptyPublicState();
   private persisted: PersistedPilotState | null = null;
   private initializationPromise: Promise<PilotPublicState> | null = null;
+  private persistenceTail: Promise<void> = Promise.resolve();
   private readonly listeners = new Set<() => void>();
   private epoch = 0;
   private scopeController = new AbortController();
@@ -389,11 +390,20 @@ export class MacroPilotNativeClient {
     for (const listener of this.listeners) listener();
   }
 
-  private async persist(patch: Partial<PersistedPilotState>): Promise<void> {
-    if (!this.persisted) throw new PilotClientError('invalid_configuration');
-    const next = { ...this.persisted, ...patch };
-    await this.dependencies.setStateValue(STATE_KEY, next);
-    this.persisted = next;
+  private persist(patch: Partial<PersistedPilotState>): Promise<void> {
+    const context = this.contextKey();
+    const write = this.persistenceTail.then(async () => {
+      this.checkContext(context);
+      if (!this.persisted) throw new PilotClientError('invalid_configuration');
+      const next = { ...this.persisted, ...patch };
+      await this.dependencies.setStateValue(STATE_KEY, next);
+      // A logout may have invalidated this write while native storage was busy.
+      // Its queued tombstone must finish before logout reports completion.
+      this.checkContext(context);
+      this.persisted = next;
+    });
+    this.persistenceTail = write.catch(() => undefined);
+    return write;
   }
 
   private secretScope(kind: PilotSecretKind, resourceId: string): PilotSecretScope {
@@ -434,7 +444,11 @@ export class MacroPilotNativeClient {
   }
 
   private async initializeOnce(): Promise<PilotPublicState> {
+    const epoch = this.epoch;
+    await this.persistenceTail;
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     const snapshot = await this.dependencies.getStateSnapshot();
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     const raw = snapshot.values[STATE_KEY];
     const configurationId = isRecord(raw) && typeof raw.configurationId === 'string'
       ? raw.configurationId
@@ -458,11 +472,15 @@ export class MacroPilotNativeClient {
     });
     if (!this.persisted.deviceSession) return this.publicState;
     await this.finishClaimCleanup();
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     try {
+      const context = this.contextKey();
       const response = await this.request<{ account: PilotAccount; device_session: PilotDeviceSession }>(
         'GET', '/me', undefined, { authenticated: true },
       );
+      this.checkContext(context);
       await this.persist({ account: response.data!.account, deviceSession: response.data!.device_session });
+      this.checkContext(context);
       this.publish({ account: response.data!.account, deviceSession: response.data!.device_session, status: 'connected' });
     } catch (error) {
       if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
@@ -861,17 +879,25 @@ export class MacroPilotNativeClient {
       pending.push(this.secretScope('poll_secret', this.persisted.attempt.attemptKey));
     }
     this.publish({ account: null, deviceSession: null, instanceAccess: null, attempt: null, instance: null, status: 'signed_out' });
+    // Remove secrets immediately, even when an earlier metadata write is still pending.
+    const deletions = Promise.allSettled(pending.map((scope) => this.dependencies.secretDelete(scope)));
     // Only relay metadata is touched. Keep failed vault deletions for the next startup.
     try {
       await this.persist({ account: null, deviceSession: null, instanceAccess: null, attempt: null,
         instance: null, instanceCreationId: null, pendingInstanceLabel: null, pendingSecretCleanup: pending });
     } catch {
       // Even if metadata storage fails, never keep the bearer available for replay.
-      await Promise.allSettled(pending.map((scope) => this.dependencies.secretDelete(scope)));
+      await deletions;
       this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
       throw new PilotClientError('vault_unavailable');
     }
-    await this.cleanupPendingSecrets();
+    const results = await deletions;
+    const remaining = pending.filter((_, index) => results[index].status === 'rejected');
+    await this.persist({ pendingSecretCleanup: remaining });
+    if (remaining.length) {
+      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
+      throw new PilotClientError('vault_unavailable');
+    }
   }
 }
 

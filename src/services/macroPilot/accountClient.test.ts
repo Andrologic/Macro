@@ -297,4 +297,34 @@ describe('native account v2 over the HTTP boundary', () => {
     expect(h.secrets.size).toBe(0);
   });
 
+  it('orders logout after an in-flight metadata write and never republishes its revoked session', async () => {
+    const h = harness();
+    const writing = deferred<void>();
+    const resume = deferred<void>();
+    const removed = deferred<void>();
+    const setState = h.deps.setStateValue;
+    const deleteSecret = h.deps.secretDelete;
+    let held = false;
+    h.deps.setStateValue = async (key, value) => {
+      if (!held && (value as { deviceSession?: unknown }).deviceSession) {
+        held = true; writing.resolve(); await resume.promise;
+      }
+      return setState(key, value);
+    };
+    h.deps.secretDelete = async scope => { await deleteSecret(scope); if (!h.secrets.size) removed.resolve(); };
+    const initializing = h.client.initialize().catch(error => error);
+    await writing.promise;
+    const logout = h.client.logout();
+    await removed.promise;
+    expect(h.secrets.size).toBe(0);
+    expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null });
+    resume.resolve();
+    await expect(logout).resolves.toEqual({ revocationConfirmed: true });
+    expect(await initializing).toMatchObject({ code: 'context_changed' });
+    expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null, account: null });
+    expect(h.values.macro_pilot_native_v1).toMatchObject({ deviceSession: null, account: null, instance: null });
+    expect(h.values.localData).toEqual(h.localData);
+    expect((await new MacroPilotNativeClient(h.deps).initialize()).deviceSession).toBeNull();
+  });
+
 });
