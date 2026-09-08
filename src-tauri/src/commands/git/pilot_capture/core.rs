@@ -232,10 +232,41 @@ fn explicit_oid(value: &str) -> CaptureResult<Oid> {
 // Descriptor-relative traversal prevents following a swapped parent symlink.
 // Platforms without this implementation fail closed before reading worktree data.
 #[cfg(unix)]
+fn retain_root(root: &Path) -> CaptureResult<fs::File> {
+    use std::os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStrExt,
+    };
+    if !root.is_absolute() {
+        return Err("content_unavailable".into());
+    }
+    let mut dir = fs::File::open("/").map_err(unavailable)?;
+    for component in root.components() {
+        let name = match component {
+            std::path::Component::RootDir => continue,
+            std::path::Component::Normal(name) => name,
+            _ => return Err("content_unavailable".into()),
+        };
+        let name = std::ffi::CString::new(name.as_bytes()).map_err(unavailable)?;
+        let fd = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err("content_unavailable".into());
+        }
+        dir = unsafe { fs::File::from_raw_fd(fd) };
+    }
+    Ok(dir)
+}
+#[cfg(unix)]
 fn read_entry(root: &Path, relative: &Path, budget: &mut Budget) -> CaptureResult<Option<Side>> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
-    let mut dir = fs::File::open(root).map_err(unavailable)?;
+    let mut dir = retain_root(root)?;
     let parts: Vec<_> = relative.components().collect();
     for (i, component) in parts.iter().enumerate() {
         let std::path::Component::Normal(name) = component else {
@@ -356,6 +387,8 @@ fn observe_inner(
         });
     }
     let root = repo.workdir().ok_or("content_unavailable")?;
+    #[cfg(unix)]
+    let _retained_root = retain_root(root)?;
     let head = match repo.head() {
         Ok(r) => Some(r.peel_to_commit().map_err(unavailable)?.id()),
         Err(e)
@@ -445,6 +478,7 @@ fn observe_inner(
         .collect();
     let ignored_error = std::cell::Cell::new(false);
     let walker = walkdir::WalkDir::new(root)
+        .follow_root_links(false)
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
@@ -1171,6 +1205,7 @@ thread_local! { static CAPTURE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
     fn git(path: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .current_dir(path)
@@ -1244,6 +1279,7 @@ mod tests {
     }
     #[test]
     fn sources_unborn_and_cancellation_are_distinct_without_git_mutations() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         let (dir, repo) = repo();
         let p = dir.path();
         fs::write(p.join("a.txt"), "base\n").unwrap();
@@ -1288,6 +1324,7 @@ mod tests {
     }
     #[test]
     fn rename_modes_no_newline_and_special_paths_are_preserved() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         use std::os::unix::fs::PermissionsExt;
         let (dir, repo) = repo();
         let p = dir.path();
@@ -1314,6 +1351,7 @@ mod tests {
     }
     #[test]
     fn immutable_utf8_pages_and_same_length_mutation_freshness() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         let (dir, repo) = repo();
         let p = dir.path();
         fs::write(p.join("a"), "initial\n").unwrap();
@@ -1346,6 +1384,7 @@ mod tests {
     }
     #[test]
     fn secrets_binary_symlink_large_and_submodule_remain_visible_as_limits() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         use std::os::unix::fs::symlink;
         let (dir, repo) = repo();
         let p = dir.path();
@@ -1396,7 +1435,24 @@ mod tests {
         assert!(list(&sub).iter().any(|f| f.content_state == "submodule"));
     }
     #[test]
+    fn symlink_roots_and_parents_are_refused_before_reading_bytes() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir(root.join("real")).unwrap();
+        fs::write(root.join("real/value"), "private\n").unwrap();
+        symlink(root.join("real"), root.join("alias")).unwrap();
+        assert!(read_entry(&root.join("alias"), Path::new("value"), &mut Budget::new()).is_err());
+        assert!(read_entry(&root, Path::new("alias/value"), &mut Budget::new()).is_err());
+        let link = read_entry(&root, Path::new("alias"), &mut Budget::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(link.mode, 0o120000);
+    }
+    #[test]
     fn cancelled_new_file_keeps_a_path_and_ignored_files_are_absent() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         let (dir, repo) = repo();
         let p = dir.path();
         fs::write(p.join(".gitignore"), "ignored\n").unwrap();
@@ -1423,6 +1479,7 @@ mod tests {
     }
     #[test]
     fn unstaged_omits_removed_index_files_that_are_now_ignored() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         let (dir, repo) = repo();
         let p = dir.path();
         fs::write(p.join("retired"), "original\n").unwrap();
@@ -1437,6 +1494,7 @@ mod tests {
     }
     #[test]
     fn clean_submodules_are_absent_and_nested_changes_invalidate() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         let (dir, repo) = repo();
         let p = dir.path();
         let (nested, _) = self::repo();
@@ -1475,6 +1533,7 @@ mod tests {
     }
     #[test]
     fn credential_rename_never_exports_the_other_path_or_bytes() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         let (dir, repo) = repo();
         fs::write(dir.path().join(".env"), "innocent-looking-value\n").unwrap();
         commit(dir.path());
@@ -1490,6 +1549,7 @@ mod tests {
     }
     #[test]
     fn mutation_during_capture_retries_once_then_fails() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         let (dir, repo) = repo();
         let path = dir.path().join("a");
         fs::write(&path, "before\n").unwrap();
@@ -1523,6 +1583,7 @@ mod tests {
     }
     #[test]
     fn complete_catalog_cursor_binding_release_expiry_and_budget() {
+        let _test_lock = TEST_LOCK.lock().unwrap();
         let (dir, repo) = repo();
         for n in 0..25 {
             fs::write(dir.path().join(format!("f{n}")), "x\n").unwrap();
