@@ -2,7 +2,7 @@
   "editor": "AgSDL 뷰어",
   "legacyStrategy": "기존 전략",
   "loading": "AgSDL 로드 중...",
-  "choosePlan": "플랜을 선택하여 AgSDL 편집기를 엽니다.",
+  "choosePlan": "플랜을 선택하여 AgSDL 워크플로를 확인하세요.",
   "tooLarge": "이 AgSDL 파일은 너무 큽니다.",
   "chooseDependency": "종속성 선택",
   "reload": "새로고침",
@@ -22,7 +22,7 @@
   "add": "추가",
   "readOnly": "이 문서는 읽기 전용입니다.",
   "emptyTitle": "AgSDL 문서 없음",
-  "emptyDescription": "AgSDL 문서가 없습니다. 에이전트에게 워크플로 작성을 요청하세요.",
+  "emptyDescription": "채팅에서 에이전트에게 워크플로를 작성해 달라고 요청하세요.",
   "exampleNote": "예제의 엔진은 구성되지 않은 상태입니다. 편집과 검사에만 사용하세요.",
   "documentSource": "문서 소스",
   "dependencies": "종속성",
@@ -139,6 +139,7 @@
       "duplicate-node-id": "노드 식별자가 중복되었습니다."
     },
     "graphInputs": "제공할 항목",
-    "graphOutputs": "결과"
+    "graphOutputs": "결과",
+    "unreadable": "이 문서를 표시할 수 없습니다. 에이전트에게 AgSDL 소스를 수정해 달라고 요청하세요."
   }
 }

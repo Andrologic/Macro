@@ -2,7 +2,7 @@
   "editor": "AgSDL ビューアー",
   "legacyStrategy": "従来の戦略",
   "loading": "AgSDLを読み込み中...",
-  "choosePlan": "プランを選択してAgSDLエディターを開いてください。",
+  "choosePlan": "プランを選択して AgSDL ワークフローを表示します。",
   "tooLarge": "このAgSDLファイルは大きすぎます。",
   "chooseDependency": "依存関係を選択",
   "reload": "再読み込み",
@@ -22,7 +22,7 @@
   "add": "追加",
   "readOnly": "このドキュメントは読み取り専用です。",
   "emptyTitle": "AgSDLドキュメントがありません",
-  "emptyDescription": "AgSDL 文書がありません。エージェントにワークフローの記述を依頼してください。",
+  "emptyDescription": "チャットでエージェントにワークフローの記述を依頼してください。",
   "exampleNote": "例ではエンジンを未設定のままにしています。編集と確認専用です。",
   "documentSource": "ドキュメントソース",
   "dependencies": "依存関係",
@@ -139,6 +139,7 @@
       "duplicate-node-id": "ノード識別子が重複しています。"
     },
     "graphInputs": "提供する入力",
-    "graphOutputs": "結果"
+    "graphOutputs": "結果",
+    "unreadable": "このドキュメントを表示できません。エージェントに AgSDL ソースの修正を依頼してください。"
   }
 }

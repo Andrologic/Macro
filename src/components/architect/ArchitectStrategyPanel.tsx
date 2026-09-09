@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { useAppStore } from "../../stores/useAppStore";
 import {
@@ -14,16 +14,24 @@ export default function ArchitectStrategyPanel() {
     (state) => state.activePlanContext?.targetBranch,
   );
   const [previousLayout, setPreviousLayout] = useState<{ width: number; leftOpen: boolean } | null>(null);
+  const restoreLayout = useRef(previousLayout);
+  useEffect(() => () => {
+    const previous = restoreLayout.current;
+    if (!previous) return;
+    const app = useAppStore.getState();
+    app.setTemporaryPanelLayout(previous);
+  }, []);
   const toggleExpanded = () => {
     const app = useAppStore.getState();
     if (previousLayout) {
-      app.setRightPanelWidth(previousLayout.width);
-      app.setLeftPanelOpen(previousLayout.leftOpen);
+      app.setTemporaryPanelLayout(previousLayout);
+      restoreLayout.current = null;
       setPreviousLayout(null);
     } else {
-      setPreviousLayout({ width: app.rightPanelWidth, leftOpen: app.isLeftPanelOpen });
-      app.setLeftPanelOpen(false);
-      app.setRightPanelWidth(Math.min(600, Math.max(320, window.innerWidth - 320)));
+      const previous = { width: app.rightPanelWidth, leftOpen: app.isLeftPanelOpen };
+      restoreLayout.current = previous;
+      setPreviousLayout(previous);
+      app.setTemporaryPanelLayout({ width: Math.min(600, Math.max(320, window.innerWidth - 320)), leftOpen: false });
     }
   };
   const planStatus = useAppStore((state) => state.activePlanContext?.status);

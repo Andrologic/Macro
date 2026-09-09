@@ -2,7 +2,7 @@
   "editor": "AgSDL viewer",
   "legacyStrategy": "Legacy strategy",
   "loading": "Loading AgSDL...",
-  "choosePlan": "Choose a plan to open the AgSDL editor.",
+  "choosePlan": "Choose a plan to view its AgSDL workflow.",
   "tooLarge": "This AgSDL file is too large.",
   "chooseDependency": "Choose a dependency",
   "reload": "Reload",
@@ -22,7 +22,7 @@
   "add": "Add",
   "readOnly": "This document is read-only.",
   "emptyTitle": "No AgSDL document",
-  "emptyDescription": "No AgSDL document yet. Ask the agent to describe the workflow.",
+  "emptyDescription": "Ask the agent in chat to describe the workflow.",
   "exampleNote": "Examples leave engines unconfigured. They are for editing and inspection only.",
   "documentSource": "Document source",
   "dependencies": "Dependencies",
@@ -139,6 +139,7 @@
       "duplicate-node-id": "Node identifiers are duplicated."
     },
     "graphInputs": "To provide",
-    "graphOutputs": "Result"
+    "graphOutputs": "Result",
+    "unreadable": "This document cannot be displayed. Ask the agent to correct the AgSDL source."
   }
 }

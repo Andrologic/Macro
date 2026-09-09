@@ -2,7 +2,7 @@
   "editor": "Visor AgSDL",
   "legacyStrategy": "Estrategia heredada",
   "loading": "Cargando AgSDL...",
-  "choosePlan": "Elige un plan para abrir el editor de AgSDL.",
+  "choosePlan": "Elige un plan para visualizar su flujo de trabajo AgSDL.",
   "tooLarge": "Este archivo AgSDL es demasiado grande.",
   "chooseDependency": "Elegir una dependencia",
   "reload": "Recargar",
@@ -22,7 +22,7 @@
   "add": "Añadir",
   "readOnly": "Este documento es de solo lectura.",
   "emptyTitle": "No hay documento AgSDL",
-  "emptyDescription": "No hay documento AgSDL. Pide al agente que describa el flujo.",
+  "emptyDescription": "Pide al agente en el chat que describa el flujo de trabajo.",
   "exampleNote": "Los ejemplos dejan los motores sin configurar. Solo sirven para editar e inspeccionar.",
   "documentSource": "Origen del documento",
   "dependencies": "Dependencias",
@@ -139,6 +139,7 @@
       "duplicate-node-id": "Hay identificadores de nodos duplicados."
     },
     "graphInputs": "A proporcionar",
-    "graphOutputs": "Resultado"
+    "graphOutputs": "Resultado",
+    "unreadable": "No se puede mostrar este documento. Pide al agente que corrija el código AgSDL."
   }
 }

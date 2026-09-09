@@ -1571,6 +1571,7 @@ interface AppStore {
   setLeftPanelWidth: (width: number) => void;
   setArchitectLeftPanelWidth: (width: number) => void;
   setRightPanelWidth: (width: number) => void;
+  setTemporaryPanelLayout: (layout: { width: number; leftOpen: boolean }) => void;
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
   initialize: () => Promise<void>;
@@ -4760,6 +4761,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const clampedWidth = Math.max(200, Math.min(600, width));
     set({ rightPanelWidth: clampedWidth });
     savePreferenceDebounced(PREF_KEYS.RIGHT_PANEL_WIDTH, clampedWidth);
+  },
+
+  setTemporaryPanelLayout: ({ width, leftOpen }) => {
+    // Expanded viewers must not overwrite the user's saved panel preferences.
+    set({ rightPanelWidth: Math.max(200, Math.min(600, width)), isLeftPanelOpen: leftOpen });
   },
 
   setLeftPanelOpen: (open) => {

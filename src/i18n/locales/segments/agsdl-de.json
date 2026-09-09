@@ -2,7 +2,7 @@
   "editor": "AgSDL-Ansicht",
   "legacyStrategy": "Bisherige Strategie",
   "loading": "AgSDL wird geladen...",
-  "choosePlan": "Wählen Sie einen Plan, um den AgSDL-Editor zu öffnen.",
+  "choosePlan": "Wähle einen Plan, um seinen AgSDL-Workflow anzuzeigen.",
   "tooLarge": "Diese AgSDL-Datei ist zu groß.",
   "chooseDependency": "Abhängigkeit auswählen",
   "reload": "Neu laden",
@@ -22,7 +22,7 @@
   "add": "Hinzufügen",
   "readOnly": "Dieses Dokument ist schreibgeschützt.",
   "emptyTitle": "Kein AgSDL-Dokument",
-  "emptyDescription": "Noch kein AgSDL-Dokument. Bitte den Agenten, den Ablauf zu beschreiben.",
+  "emptyDescription": "Bitte den Agenten im Chat, den Workflow zu beschreiben.",
   "exampleNote": "In den Beispielen sind die Engines nicht konfiguriert. Sie dienen nur zum Bearbeiten und Prüfen.",
   "documentSource": "Dokumentquelle",
   "dependencies": "Abhängigkeiten",
@@ -139,6 +139,7 @@
       "duplicate-node-id": "Knotenkennungen sind doppelt vorhanden."
     },
     "graphInputs": "Bereitzustellen",
-    "graphOutputs": "Ergebnis"
+    "graphOutputs": "Ergebnis",
+    "unreadable": "Dieses Dokument kann nicht angezeigt werden. Bitte den Agenten, den AgSDL-Code zu korrigieren."
   }
 }

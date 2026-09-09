@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { ChevronRight } from "lucide-react";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import {
   useAgsdlStore,
@@ -56,10 +57,8 @@ export const AgsdlEditor: React.FC<{
     }
   }, [source]);
   const document = parsed.document;
-  const graph =
-    document?.graphs[
-      Math.min(graphIndex, Math.max(0, document.graphs.length - 1))
-    ];
+  const visibleGraphIndex = Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1));
+  const graph = document?.graphs[visibleGraphIndex];
   const selected = selection?.key === key ? selection.path : "";
   const select = (path: string) => {
     setSelection({ key, path });
@@ -139,12 +138,13 @@ export const AgsdlEditor: React.FC<{
           {t(`agsdl.kind.${item.kind}`, { defaultValue: item.kind })}
         </span>
         <h3>
-          {item.kind === "end"
+          {item.kind === "end" && !(item.details.annotations as { title?: string } | undefined)?.title
             ? t(`agsdl.edge.${item.outcome}`, { defaultValue: item.title })
             : item.title || t("agsdl.viewer.unnamed")}
         </h3>
+        <ChevronRight size={14} aria-hidden="true" className="agsdl-card-disclosure" />
       </button>
-      {item.outcome && (
+      {item.outcome && (item.details.annotations as { title?: string } | undefined)?.title && (
         <p>{t(`agsdl.edge.${item.outcome}`, { defaultValue: item.outcome })}</p>
       )}
       {item.dependencies && (
@@ -226,7 +226,7 @@ export const AgsdlEditor: React.FC<{
   return (
     <div className="agsdl-viewer" aria-label={t("agsdl.editor")}>
       <header className="agsdl-viewer-header">
-        <strong>{document?.title || t("agsdl.editor")}</strong>
+        <strong title={document?.title}>{document?.title || t("agsdl.editor")}</strong>
         <p>{t("agsdl.viewer.chatHint")}</p>
         {onExpand && (
           <button className="agsdl-link" onClick={onExpand}>
@@ -236,8 +236,11 @@ export const AgsdlEditor: React.FC<{
         {document && document.graphs.length > 1 && (
           <select
             aria-label={t("agsdl.graph")}
-            value={graphIndex}
-            onChange={(event) => setGraphIndex(Number(event.target.value))}
+            value={visibleGraphIndex}
+            onChange={(event) => {
+              setGraphIndex(Number(event.target.value));
+              setSelection(undefined);
+            }}
           >
             {document.graphs.map((graph, index) => (
               <option key={graph.path} value={index}>
@@ -248,15 +251,25 @@ export const AgsdlEditor: React.FC<{
         )}
       </header>
       {(error || session?.error || parsed.error) && (
-        <p role="alert" className="agsdl-error">
-          {error || session?.error || parsed.error}
+        <div role="alert" className="agsdl-error">
+          {error || session?.error || (
+            <>
+              <p>{t("agsdl.viewer.unreadable")}</p>
+              <details className="agsdl-details">
+                <summary>{t("agsdl.viewer.technicalDetails")}</summary>
+                <p>{parsed.error}</p>
+              </details>
+            </>
+          )}
           {(error || session?.error) && (
             <button
               className="agsdl-link"
+              disabled={session?.saving}
               onClick={() => {
-                void useAgsdlStore
-                  .getState()
-                  .load(target)
+                const store = useAgsdlStore.getState();
+                // Preserve the agent's unsaved work when retrying a failed save.
+                void (session?.dirty ? store.save(target) : store.load(target, true))
+                  .then(() => store.validate(target))
                   .then(() => setError(""))
                   .catch((error: unknown) => setError(String(error)));
               }}
@@ -264,7 +277,7 @@ export const AgsdlEditor: React.FC<{
               {t("agsdl.retry")}
             </button>
           )}
-        </p>
+        </div>
       )}
       <div className="agsdl-reading">
         {!session ? (

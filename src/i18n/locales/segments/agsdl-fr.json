@@ -2,7 +2,7 @@
   "editor": "Visualiseur AgSDL",
   "legacyStrategy": "Stratégie existante",
   "loading": "Chargement d’AgSDL...",
-  "choosePlan": "Choisissez un plan pour ouvrir l’éditeur AgSDL.",
+  "choosePlan": "Choisissez un plan pour visualiser son workflow AgSDL.",
   "tooLarge": "Ce fichier AgSDL est trop volumineux.",
   "chooseDependency": "Choisir une dépendance",
   "reload": "Recharger",
@@ -22,7 +22,7 @@
   "add": "Ajouter",
   "readOnly": "Ce document est en lecture seule.",
   "emptyTitle": "Aucun document AgSDL",
-  "emptyDescription": "Aucun document AgSDL. Demandez à l’agent de décrire le workflow.",
+  "emptyDescription": "Demandez à l’agent dans le chat de décrire le workflow.",
   "exampleNote": "Les exemples laissent leurs moteurs non configurés. Ils servent uniquement à l’édition et à l’inspection.",
   "documentSource": "Source du document",
   "dependencies": "Dépendances",
@@ -139,6 +139,7 @@
       "duplicate-node-id": "Des identifiants de nœuds sont dupliqués."
     },
     "graphInputs": "À fournir",
-    "graphOutputs": "Résultat"
+    "graphOutputs": "Résultat",
+    "unreadable": "Impossible d’afficher ce document. Demandez à l’agent de corriger le code AgSDL."
   }
 }
