@@ -140,6 +140,11 @@
     },
     "graphInputs": "제공할 항목",
     "graphOutputs": "결과",
-    "unreadable": "이 문서를 표시할 수 없습니다. 에이전트에게 AgSDL 소스를 수정해 달라고 요청하세요."
+    "unreadable": "이 문서를 표시할 수 없습니다. 에이전트에게 AgSDL 소스를 수정해 달라고 요청하세요.",
+    "zoomIn": "확대",
+    "zoomOut": "축소",
+    "fit": "그래프 맞추기",
+    "overview": "프로세스 정보",
+    "transitions": "전환"
   }
 }

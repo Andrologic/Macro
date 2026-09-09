@@ -32,16 +32,11 @@ describe("AgSDL viewer", () => {
     const ends = document.graphs[0].steps.filter((step: { kind: string }) => step.kind === "end");
     ends[0].annotations = { title: "Ready for delivery" };
     await mount(JSON.stringify(document));
-    const cards = [...container!.querySelector(".agsdl-reading")!.children]
-      .filter(element => element.classList.contains("agsdl-card"));
-    const namedEnd = cards.find(card => card.querySelector("h3")?.textContent === "Ready for delivery");
-    expect(namedEnd).toBeDefined();
-    expect(namedEnd!.querySelector("p")).not.toBeNull();
-    const lastEnd = cards.at(-1)!;
-    expect(lastEnd.querySelector("h3")).not.toBeNull();
-    expect([...lastEnd.children].filter(element =>
-      element.tagName === "P" && element.textContent === lastEnd.querySelector("h3")!.textContent,
-    )).toHaveLength(0);
+    const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
+    expect(nodes.some(node => node.textContent === "Ready for delivery")).toBe(true);
+    expect(nodes).toHaveLength(5);
+    expect(container!.querySelector(".agsdl-inspector")).toBeNull();
+
   });
 
   it("keeps an unreadable document recoverable through chat with technical details collapsed", async () => {
@@ -59,10 +54,10 @@ describe("AgSDL viewer", () => {
     document.graphs.push(...["second", "third"].map(id => ({ ...structuredClone(document.graphs[0]), id })));
     await mount(JSON.stringify(document));
     const selector = container!.querySelector("select")!;
-    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-card-heading")!.click());
-    expect(container!.querySelector(".agsdl-card-selected")).not.toBeNull();
+    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!.click());
+    expect(container!.querySelector(".agsdl-inspector")).not.toBeNull();
     act(() => { selector.value = "2"; selector.dispatchEvent(new Event("change", { bubbles: true })); });
-    expect(container!.querySelector(".agsdl-card-selected")).toBeNull();
+    expect(container!.querySelector(".agsdl-inspector")).toBeNull();
     document.graphs.pop();
     act(() => useAgsdlStore.getState().replace(target, JSON.stringify(document)));
     expect(selector.value).toBe("1");
@@ -131,21 +126,23 @@ describe("AgSDL viewer", () => {
     expect(
       container.querySelector("textarea, input, select, [role=dialog]"),
     ).toBeNull();
-    expect(container.textContent).toContain(
-      "Clarify the request and produce acceptance criteria.",
-    );
-    expect(container.textContent).toContain("Specification · report");
-    expect(container.querySelectorAll(".agsdl-branches").length).toBe(3);
+    expect(container.textContent).not.toContain("Clarify the request and produce acceptance criteria.");
+    expect(container.textContent).not.toContain("Specification · report");
+    expect(container.querySelectorAll(".agsdl-graph-node")).toHaveLength(5);
+    expect(container.querySelector(".agsdl-inspector")).toBeNull();
     const expand = container.querySelector<HTMLButtonElement>(
       ".agsdl-viewer-header button",
     )!;
     act(() => expand.click());
     expect(expanded).toBe(true);
     const firstCard = container.querySelector<HTMLButtonElement>(
-      ".agsdl-card-heading",
+      ".agsdl-graph-node",
     )!;
     act(() => firstCard.click());
-    expect(container.querySelector(".agsdl-properties")).not.toBeNull();
+    expect(container.querySelector(".agsdl-inspector")?.textContent).toContain("Clarify the request and produce acceptance criteria.");
+    const nextNode = container.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")[1];
+    act(() => nextNode.click());
+    expect(container.querySelector(".agsdl-inspector")?.textContent).toContain("Specification · report");
     expect(
       container.querySelector("textarea, input, [role=dialog]"),
     ).toBeNull();

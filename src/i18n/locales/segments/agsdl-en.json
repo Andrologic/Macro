@@ -140,6 +140,11 @@
     },
     "graphInputs": "To provide",
     "graphOutputs": "Result",
-    "unreadable": "This document cannot be displayed. Ask the agent to correct the AgSDL source."
+    "unreadable": "This document cannot be displayed. Ask the agent to correct the AgSDL source.",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fit": "Fit graph",
+    "overview": "About this process",
+    "transitions": "Transitions"
   }
 }

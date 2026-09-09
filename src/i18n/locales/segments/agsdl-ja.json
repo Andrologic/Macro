@@ -140,6 +140,11 @@
     },
     "graphInputs": "提供する入力",
     "graphOutputs": "結果",
-    "unreadable": "このドキュメントを表示できません。エージェントに AgSDL ソースの修正を依頼してください。"
+    "unreadable": "このドキュメントを表示できません。エージェントに AgSDL ソースの修正を依頼してください。",
+    "zoomIn": "拡大",
+    "zoomOut": "縮小",
+    "fit": "グラフ全体を表示",
+    "overview": "プロセスについて",
+    "transitions": "遷移"
   }
 }

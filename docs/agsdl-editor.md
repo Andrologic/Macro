@@ -10,13 +10,18 @@ un document vide.
 
 1. Ouvrir un plan dans Architect. Les anciennes stratégies sont converties lors
    du premier chargement du panneau, sans changer le statut du plan.
-2. Lire les entrées du processus et son point de départ. Chaque carte distingue
-   les données reçues, leur provenance, les sorties et les conditions de passage.
-3. Sélectionner une carte pour consulter sa mission et ses détails. Les liens
-   internes permettent de rejoindre l’étape concernée. Une référence absente ou
-   ambiguë est signalée sans créer de faux lien.
+2. Lire le graphe. Chaque nœud montre uniquement son nom et une icône de type.
+   Les flèches représentent les transitions déclarées ; les chemins d’échec sont
+   en pointillés. Les embranchements portent leurs conditions.
+3. Sélectionner un nœud pour consulter sa mission, ses outils, les entrées et
+   leur provenance, les sorties et les routes dans l’inspecteur sous le graphe.
+   Le fond du graphe et la touche Échap referment la sélection. Les liens internes
+   permettent de consulter l’étape concernée. Une référence absente ou ambiguë
+   est signalée sans créer de faux lien. Le bouton d’information ouvre les
+   informations du processus, les déclarations et les diagnostics.
 4. Utiliser le bouton d’élargissement pour replier le panneau gauche et donner
-   plus de place au visualisateur tout en conservant le chat.
+   plus de place au visualisateur tout en conservant le chat. Le graphe peut être
+   déplacé, zoomé et recadré. Ces gestes ne modifient pas la source AgSDL.
 5. Dans un plan en brouillon, demander à l’agent de créer un exemple Release ou
    de modifier la mission d’un agent. Le document enregistré apparaît dans le
    visualisateur. Les erreurs de sauvegarde restent visibles.

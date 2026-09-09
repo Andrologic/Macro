@@ -140,6 +140,11 @@
     },
     "graphInputs": "A proporcionar",
     "graphOutputs": "Resultado",
-    "unreadable": "No se puede mostrar este documento. Pide al agente que corrija el código AgSDL."
+    "unreadable": "No se puede mostrar este documento. Pide al agente que corrija el código AgSDL.",
+    "zoomIn": "Acercar",
+    "zoomOut": "Alejar",
+    "fit": "Ajustar el grafo",
+    "overview": "Acerca del proceso",
+    "transitions": "Transiciones"
   }
 }
