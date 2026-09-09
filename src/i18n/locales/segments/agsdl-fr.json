@@ -1,5 +1,5 @@
 {
-  "editor": "Éditeur AgSDL",
+  "editor": "Visualiseur AgSDL",
   "legacyStrategy": "Stratégie existante",
   "loading": "Chargement d’AgSDL...",
   "choosePlan": "Choisissez un plan pour ouvrir l’éditeur AgSDL.",
@@ -22,7 +22,7 @@
   "add": "Ajouter",
   "readOnly": "Ce document est en lecture seule.",
   "emptyTitle": "Aucun document AgSDL",
-  "emptyDescription": "Commencez par un exemple ou importez un document AgSDL.",
+  "emptyDescription": "Aucun document AgSDL. Demandez à l’agent de décrire le workflow.",
   "exampleNote": "Les exemples laissent leurs moteurs non configurés. Ils servent uniquement à l’édition et à l’inspection.",
   "documentSource": "Source du document",
   "dependencies": "Dépendances",
@@ -110,5 +110,35 @@
     "bugfix": "Correction de bug"
   },
   "inspectAgent": "Inspecter un agent",
-  "allDeclarations": "Toutes les déclarations"
+  "allDeclarations": "Toutes les déclarations",
+  "viewer": {
+    "chatHint": "Demandez dans le chat de créer ou modifier ce workflow.",
+    "graphInput": "Entrée du workflow",
+    "literal": "Valeur fixe",
+    "unspecified": "Non précisé",
+    "unresolved": "Référence non résolue",
+    "inputs": "Reçoit",
+    "outputs": "Produit",
+    "noBinding": "Aucune liaison déclarée",
+    "control": "Ensuite",
+    "unnamed": "Élément sans nom",
+    "unresolvedAgent": "La référence de l’agent ne peut pas être résolue.",
+    "noMission": "Aucune mission déclarée.",
+    "entry": "Départ",
+    "declarative": "Ce document déclare des composants sans graphe de workflow.",
+    "authoring": "Aperçu du document · Aucun état d’exécution",
+    "dependencies": "Dépendances déclarées",
+    "unknownTransfers": "Les données d’entrée et leurs transferts ne sont pas précisés.",
+    "migrationNote": "Les dépendances du plan sont conservées. Les échanges de données et les conditions de passage restent à préciser avec l’agent.",
+    "technicalDetails": "Détails techniques",
+    "resources": "Ressources",
+    "issues": {
+      "nonlinear-dependencies": "Les dépendances doivent être vérifiées.",
+      "missing-dependency": "Une dépendance est manquante.",
+      "cyclic-dependencies": "Les dépendances contiennent un cycle.",
+      "duplicate-node-id": "Des identifiants de nœuds sont dupliqués."
+    },
+    "graphInputs": "À fournir",
+    "graphOutputs": "Résultat"
+  }
 }

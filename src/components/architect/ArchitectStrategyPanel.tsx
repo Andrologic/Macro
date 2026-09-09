@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { useAppStore } from "../../stores/useAppStore";
 import {
@@ -6,7 +6,6 @@ import {
   resolveTargetBranch,
 } from "../../services/architectPlanService";
 import { AgsdlEditor } from "../agsdl/AgsdlEditor";
-const StrategyGraph = lazy(() => import("../plan/StrategyGraph"));
 
 export default function ArchitectStrategyPanel() {
   const { t } = useAgsdlTranslation();
@@ -14,8 +13,20 @@ export default function ArchitectStrategyPanel() {
   const targetBranch = useAppStore(
     (state) => state.activePlanContext?.targetBranch,
   );
+  const [previousLayout, setPreviousLayout] = useState<{ width: number; leftOpen: boolean } | null>(null);
+  const toggleExpanded = () => {
+    const app = useAppStore.getState();
+    if (previousLayout) {
+      app.setRightPanelWidth(previousLayout.width);
+      app.setLeftPanelOpen(previousLayout.leftOpen);
+      setPreviousLayout(null);
+    } else {
+      setPreviousLayout({ width: app.rightPanelWidth, leftOpen: app.isLeftPanelOpen });
+      app.setLeftPanelOpen(false);
+      app.setRightPanelWidth(Math.min(600, Math.max(320, window.innerWidth - 320)));
+    }
+  };
   const planStatus = useAppStore((state) => state.activePlanContext?.status);
-  const [legacy, setLegacy] = useState(false);
   const target = useMemo(
     () => ({
       branchName: resolveTargetBranch(targetBranch || getGitFlowBaseBranch()),
@@ -28,34 +39,14 @@ export default function ArchitectStrategyPanel() {
       className="h-full min-h-0 min-w-0 flex flex-col bg-card border-l border-border"
       data-tour-id="architect-strategy-panel"
     >
-      <div className="flex gap-1 border-b border-border px-2 py-1.5">
-        <button
-          className="agsdl-button"
-          aria-pressed={!legacy}
-          onClick={() => setLegacy(false)}
-        >
-          {t("agsdl.editor")}
-        </button>
-        <button
-          className="agsdl-button"
-          aria-pressed={legacy}
-          onClick={() => setLegacy(true)}
-        >
-          {t("agsdl.legacyStrategy")}
-        </button>
-      </div>
       <div className="flex-1 min-h-0">
-        {legacy ? (
-          <Suspense
-            fallback={<div className="p-4 text-xs">{t("agsdl.loading")}</div>}
-          >
-            <StrategyGraph />
-          </Suspense>
-        ) : planId ? (
+        {planId ? (
           <AgsdlEditor
             key={JSON.stringify(target)}
             target={target}
             planStatus={planStatus}
+            expanded={previousLayout !== null}
+            onExpand={toggleExpanded}
           />
         ) : (
           <div className="agsdl-empty">{t("agsdl.choosePlan")}</div>

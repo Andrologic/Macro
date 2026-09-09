@@ -1,5 +1,5 @@
 {
-  "editor": "AgSDLエディター",
+  "editor": "AgSDL ビューアー",
   "legacyStrategy": "従来の戦略",
   "loading": "AgSDLを読み込み中...",
   "choosePlan": "プランを選択してAgSDLエディターを開いてください。",
@@ -22,7 +22,7 @@
   "add": "追加",
   "readOnly": "このドキュメントは読み取り専用です。",
   "emptyTitle": "AgSDLドキュメントがありません",
-  "emptyDescription": "例から始めるか、AgSDLドキュメントをインポートしてください。",
+  "emptyDescription": "AgSDL 文書がありません。エージェントにワークフローの記述を依頼してください。",
   "exampleNote": "例ではエンジンを未設定のままにしています。編集と確認専用です。",
   "documentSource": "ドキュメントソース",
   "dependencies": "依存関係",
@@ -110,5 +110,35 @@
     "bugfix": "バグ修正"
   },
   "inspectAgent": "エージェントを確認",
-  "allDeclarations": "すべての宣言"
+  "allDeclarations": "すべての宣言",
+  "viewer": {
+    "chatHint": "チャットでワークフローの作成や変更を依頼してください。",
+    "graphInput": "ワークフロー入力",
+    "literal": "固定値",
+    "unspecified": "未指定",
+    "unresolved": "未解決の参照",
+    "inputs": "受け取る",
+    "outputs": "生成する",
+    "noBinding": "バインディング未定義",
+    "control": "次へ",
+    "unnamed": "名前のない要素",
+    "unresolvedAgent": "エージェントの参照を解決できません。",
+    "noMission": "ミッション未定義。",
+    "entry": "開始",
+    "declarative": "この文書はワークフローグラフを持たないコンポーネント宣言です。",
+    "authoring": "文書プレビュー · 実行状態なし",
+    "dependencies": "宣言された依存関係",
+    "unknownTransfers": "入力データと転送は未定義です。",
+    "migrationNote": "プランの依存関係は保持されています。データの受け渡しと遷移条件をエージェントに指定してもらってください。",
+    "technicalDetails": "技術的な詳細",
+    "resources": "リソース",
+    "issues": {
+      "nonlinear-dependencies": "依存関係の確認が必要です。",
+      "missing-dependency": "依存関係が不足しています。",
+      "cyclic-dependencies": "依存関係に循環があります。",
+      "duplicate-node-id": "ノード識別子が重複しています。"
+    },
+    "graphInputs": "提供する入力",
+    "graphOutputs": "結果"
+  }
 }

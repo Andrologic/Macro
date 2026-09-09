@@ -1,5 +1,5 @@
 {
-  "editor": "Editor de AgSDL",
+  "editor": "Visor AgSDL",
   "legacyStrategy": "Estrategia heredada",
   "loading": "Cargando AgSDL...",
   "choosePlan": "Elige un plan para abrir el editor de AgSDL.",
@@ -22,7 +22,7 @@
   "add": "Añadir",
   "readOnly": "Este documento es de solo lectura.",
   "emptyTitle": "No hay documento AgSDL",
-  "emptyDescription": "Empieza con un ejemplo o importa un documento AgSDL.",
+  "emptyDescription": "No hay documento AgSDL. Pide al agente que describa el flujo.",
   "exampleNote": "Los ejemplos dejan los motores sin configurar. Solo sirven para editar e inspeccionar.",
   "documentSource": "Origen del documento",
   "dependencies": "Dependencias",
@@ -110,5 +110,35 @@
     "bugfix": "Corrección de error"
   },
   "inspectAgent": "Inspeccionar un agente",
-  "allDeclarations": "Todas las declaraciones"
+  "allDeclarations": "Todas las declaraciones",
+  "viewer": {
+    "chatHint": "Pide en el chat crear o modificar este flujo.",
+    "graphInput": "Entrada del flujo",
+    "literal": "Valor fijo",
+    "unspecified": "Sin especificar",
+    "unresolved": "Referencia sin resolver",
+    "inputs": "Recibe",
+    "outputs": "Produce",
+    "noBinding": "Sin enlace declarado",
+    "control": "Después",
+    "unnamed": "Elemento sin nombre",
+    "unresolvedAgent": "No se pudo resolver la referencia del agente.",
+    "noMission": "Sin misión declarada.",
+    "entry": "Inicio",
+    "declarative": "Este documento declara componentes sin un grafo de flujo.",
+    "authoring": "Vista del documento · Sin estado de ejecución",
+    "dependencies": "Dependencias declaradas",
+    "unknownTransfers": "Los datos de entrada y las transferencias no están especificados.",
+    "migrationNote": "Se conservan las dependencias del plan. Pide al agente que concrete las transferencias de datos y las condiciones de transición.",
+    "technicalDetails": "Detalles técnicos",
+    "resources": "Recursos",
+    "issues": {
+      "nonlinear-dependencies": "Hay que revisar las dependencias.",
+      "missing-dependency": "Falta una dependencia.",
+      "cyclic-dependencies": "Las dependencias contienen un ciclo.",
+      "duplicate-node-id": "Hay identificadores de nodos duplicados."
+    },
+    "graphInputs": "A proporcionar",
+    "graphOutputs": "Resultado"
+  }
 }

@@ -1,80 +1,60 @@
-# Éditeur AgSDL dans Architect
+# Visualisateur AgSDL dans Architect
 
-Cette première version permet de créer, modifier et exporter un processus
-AgSDL 0.1.0 depuis un plan en brouillon. Le chat reste au centre ; l’éditeur
-occupe le panneau droit, avec une vue étendue et les panneaux repliables du shell.
-L’onglet **Stratégie existante** conserve le fonctionnement actuel des plans.
+Le panneau droit présente le système AgSDL en lecture seule. La conversation
+reste au centre et l’agent modifie le document avec `agsdl_get` et `agsdl_update`.
+Les formulaires JSON, les poignées de connexion et l’ancienne vue de stratégie
+ont été retirés. Les exemples restent accessibles à l’agent pour initialiser
+un document vide.
 
 ## Essayer le parcours
 
-1. Lancer Macro depuis le worktree avec `bun install`, puis `bun run tauri:dev`.
-2. En mode Architect, créer ou ouvrir un plan en brouillon. Dans le panneau droit,
-   choisir **AgSDL**, puis l’exemple Release, Feature, Hotfix ou Bugfix.
-3. Dans **Processus**, sélectionner un appel d’agent : inspecter ses propriétés,
-   ouvrir son agent et modifier ses instructions. Les sorties se relient par
-   glisser-déposer ou par les listes de destinations de l’inspecteur.
-4. Dans **Système**, inspecter un agent et ses connexions, ou choisir toutes les
-   déclarations dans la liste. Ajouter un
-   agent, un outil ou un contenu réutilisable. Les propriétés complètes restent
-   accessibles en JSON. Les ajouts incomplets apparaissent dans les diagnostics.
-5. Dans **Configuration**, inspecter les liaisons des agents. Les moteurs des
-   exemples valent explicitement `null`. Choisir une configuration dans la liste
-   ne la sélectionne pas dans le document : le bouton dédié le fait explicitement.
-6. Appliquer les champs modifiés, enregistrer, puis recharger. Exporter le JSON
-   et le réimporter dans un autre plan. Les dépendances déclarées peuvent recevoir
-   des annexes locales depuis **Source** ; chaque annexe s’exporte séparément.
-7. Dans le chat du plan, demander par exemple : « Dans le document AgSDL,
-   précise les preuves attendues de l’agent qui vérifie les installateurs. »
-   L’IA lit la révision avec `agsdl_get`, puis modifie le document avec
-   `agsdl_update`. La modification apparaît dans le panneau et est enregistrée.
+1. Ouvrir un plan dans Architect. Les anciennes stratégies sont converties lors
+   du premier chargement du panneau, sans changer le statut du plan.
+2. Lire les entrées du processus et son point de départ. Chaque carte distingue
+   les données reçues, leur provenance, les sorties et les conditions de passage.
+3. Sélectionner une carte pour consulter sa mission et ses détails. Les liens
+   internes permettent de rejoindre l’étape concernée. Une référence absente ou
+   ambiguë est signalée sans créer de faux lien.
+4. Utiliser le bouton d’élargissement pour replier le panneau gauche et donner
+   plus de place au visualisateur tout en conservant le chat.
+5. Dans un plan en brouillon, demander à l’agent de créer un exemple Release ou
+   de modifier la mission d’un agent. Le document enregistré apparaît dans le
+   visualisateur. Les erreurs de sauvegarde restent visibles.
 
-Les champs JSON et les instructions ont un bouton **Appliquer**. Leurs saisies
-restent en mémoire pendant un changement d’onglet, de plan ou de taille du panneau.
-L’enregistrement et les mutations de l’IA attendent qu’elles soient appliquées
-ou abandonnées. Les modifications appliquées disposent d’un historique
-Annuler/Rétablir en mémoire. Une révision obsolète est refusée à l’enregistrement ;
-le brouillon local reste disponible pour export et récupération.
-Un plan contenant uniquement un document AgSDL est conservé comme brouillon
-édité, y compris lors de la consolidation des plans vides. Le chargement natif
-conserve sa source et ses annexes.
+## Conversion des plans existants
 
-## Portée de cette version
+La conversion ajoute un document AgSDL 0.1.0 descriptif, avec des agents et leurs
+instructions. Une ressource réservée conserve intégralement les nœuds, les todos,
+les contrats d’artefacts et les branches prédictives. Les dépendances héritées
+sont affichées comme telles : elles ne prouvent pas un transfert de données.
+Aucun graphe séquentiel n’est inventé pour remplacer des dépendances arbitraires.
+L’agent peut ensuite préciser les interfaces et construire le processus AgSDL.
 
-Les exemples illustrent des processus modifiables. Ils ne remplacent pas encore
-les formulaires GitFlow ni la stratégie exécutée dans Implement. Cette version
-ne lance aucun système AgSDL et ne fournit pas encore de catalogue de blueprints
-personnels. La disposition automatique et les déplacements des cartes sont des
-états de vue ; les positions ne sont pas exportées dans AgSDL.
+La migration est idempotente et utilise la file de mutations et le journal de
+réplication des métadonnées. Elle conserve les statuts, dates de modification,
+transcripts et documents AgSDL déjà présents. Les plans archivés peuvent aussi
+être convertis. Une réplication incomplète ou une conversion dépassant 1 Mio
+bloque l’écriture sans supprimer le plan original.
 
-Les diagnostics distinguent les déclarations D, les graphes G et les
-configurations R. Leur réussite porte sur ces vérifications, pas sur la capacité
-à exécuter le système. G 0.1.0 décrit des graphes séquentiels fermés ; les boucles,
-le parallélisme et les sous-graphes ne sont pas ajoutés par l’éditeur. Les annexes
-ne sont pas téléchargées et leur ajout ne réécrit pas les statuts ou empreintes
-déclarés dans le document. Les éditions inconnues restent accessibles en source
-et exportables, avec l’édition structurée désactivée.
+L’interface et les outils de rédaction de stratégie legacy sont retirés du
+parcours Architect. Les données d’exécution historiques restent présentes pour
+les tâches Implement déjà créées. Leur suppression complète dépend d’un
+adaptateur d’exécution AgSDL ; cette version ne l’introduit pas. Le document
+converti est un instantané descriptif, pas un moteur d’exécution ni un suivi en
+direct des tâches historiques.
 
-Le document et ses annexes sont limités ensemble à 1 Mio. La source originale est
-conservée, y compris les champs opaques, les nombres JSON et les espaces. Une
-modification ciblée remplace sa valeur ; l’ajout ou la suppression d’un membre
-réécrit son parent avec le sérialiseur sans perte des nombres. Les clés JSON
-dupliquées sont refusées par l’édition structurée. Une source incomplète peut
-rester enregistrée comme brouillon et être réparée dans la vue Source.
+## Contrat et conservation
 
-## Vérifications du lecteur
+La source et les annexes restent dans les métadonnées du plan. Les modifications
+par l’agent contrôlent la conversation propriétaire, le statut brouillon et la
+révision. Les valeurs opaques et les jetons numériques sont conservés par le
+sérialiseur sans perte. Les diagnostics structurels ne certifient pas la capacité
+à exécuter le système.
 
-Le lecteur intégré provient du tag AgSDL `v0.1.0`. Sa provenance, sa licence et
-ses adaptations navigateur sont documentées dans
+Le lecteur de référence provient du tag AgSDL `v0.1.0`. Sa provenance, sa licence
+et ses adaptations sont décrites dans
 [`src/vendor/agsdl/NOTICE.md`](../src/vendor/agsdl/NOTICE.md).
-Les tests ciblés se trouvent dans `src/services/agsdl/`, dans le test du service
-de plans et dans `src/components/agsdl/AgsdlFieldEditor.test.tsx`.
-
-Pour comparer les rapports complets et les octets échangés avec un checkout du
-tag de référence :
 
 ```sh
 bun dev/agsdl/check-reader-parity.mjs <checkout-AgSDL-v0.1.0>
 ```
-
-Cette comparaison couvre les 107 cas applicables du corpus officiel. Seule
-l’identité du processeur est différente : Macro déclare son adaptation navigateur.

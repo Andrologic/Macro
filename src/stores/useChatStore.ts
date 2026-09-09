@@ -5399,6 +5399,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return TOOL_EXECUTION_ABORTED_RESULT;
     }
     const normalizedToolName = normalizeArchitectToolId(toolName);
+    if (["strategy_generate", "strategy_get", "strategy_update", "strategy_delete"].includes(normalizedToolName)) {
+      return toolFailure("Strategy tools have been retired. Use agsdl_get and agsdl_update in the plan conversation.", "permission");
+    }
     const assistantTurnId = operation.turnId;
 
     if (!operation.allowedToolIds.includes(normalizedToolName)) {
@@ -7421,16 +7424,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         "In Architect mode, discuss the plan directly with the user. Inspect the selected project code when it provides useful context, and use the `question` tool for focused clarifications when important information is missing. Generate or regenerate strategy only after an explicit user request, using the plan conversation, expressed intent, plan scope, selected projects, inspected code context, and clarification answers.",
       );
       systemInstructions.push(
-        "In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).",
+        "In Architect mode, author the process through agsdl_get and agsdl_update after the user asks to create or change it. The right panel visualizes the saved document; all editing happens through this conversation.",
       );
       systemInstructions.push(
         "In Architect mode, the plan lifecycle remains UI-only for this iteration. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active`; ask the user to use the plan selector instead.",
       );
       systemInstructions.push(
         "In Architect mode, `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope metadata. Never use it to change plan status or activate a plan.",
-      );
-      systemInstructions.push(
-        "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
       );
       const persistedArchitectExecutionModes = Object.values(
         getPlanExecutionModesByProjectId(
@@ -7482,7 +7482,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 ? "This is a Bugfix plan. Ask the user to describe the bug if they have not already done so. Then inspect from the development-branch mindset, infer affected repositories, and propose a concise bugfix slug. Use the question tool only when important scope or slug information remains missing; do not impose a confirmation step before strategy generation."
                 : "This is a Feature plan. Keep the existing lightweight planning flow; do not force an initial questionnaire unless a clarification is blocking.";
         systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", kind="${planKind}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", storageTargetBranch="${activePlanContext.targetBranch}", effectiveTargetBranch="${targetDisplay.effectiveTargetBranch || targetDisplay.targetBranch}", targetBranchesByProjectId=${JSON.stringify(targetDisplay.targetBranchesByProjectId)}. ${typedPlanInstruction} Use plan_update.label (or title as legacy alias) for the optional display label. For Release/Hotfix/Bugfix, plan_update may also update project_ids, context_project_ids, and git_flow metadata while the plan is still a draft. Only update plan slug through \`plan_update.slug\` or \`strategy_generate.plan_slug\` while the plan is still a mutable draft.`,
+          `[Active Plan] id="${activePlanContext.id}", kind="${planKind}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", storageTargetBranch="${activePlanContext.targetBranch}", effectiveTargetBranch="${targetDisplay.effectiveTargetBranch || targetDisplay.targetBranch}", targetBranchesByProjectId=${JSON.stringify(targetDisplay.targetBranchesByProjectId)}. ${typedPlanInstruction} Use plan_update.label (or title as legacy alias) for the optional display label. For Release/Hotfix/Bugfix, plan_update may also update project_ids, context_project_ids, and git_flow metadata while the plan is still a draft. Only update plan slug through \`plan_update.slug\` while the plan is still a mutable draft.`,
         );
       }
     }

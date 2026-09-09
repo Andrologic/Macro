@@ -5,12 +5,12 @@ import { AGSDL_EXAMPLES, createExample, type AgsdlExample } from "./examples";
 import type { AgsdlChange } from "../../types/agsdl";
 
 export const AGSDL_AUTHORING_INSTRUCTION =
-  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. These tools author documents; execution and the existing strategy are separate.";
+  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel is a read-only visualization of this document. You own all graph edits. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
 
 const guide = {
   contract: "agsdl-0.1.0",
   workflow:
-    "Read the document and revision. Prefer atomic changes at JSON pointers to preserve opaque content and number tokens. After update, inspect diagnostics and correct the affected paths. Use the source view for unsupported contracts.",
+    "Read the document and revision. Prefer atomic changes at JSON pointers to preserve opaque content and number tokens. After update, inspect diagnostics and correct the affected paths. Read source with these tools to diagnose unsupported contracts.",
   definition:
     "D declares root, definitions, relations, and dependencies. Keys have scope, id, version. Keep reference identity intact when renaming. Instructions, Skills, and Tools are definitions linked by relations; their opaque bodies are data.",
   graph:
@@ -18,7 +18,7 @@ const guide = {
   runtime:
     "R defines explicit configurations and agent bindings. Engine identifiers are open values. Set runtime.selected only when requested. Preserve explicit null and absence. Structural validation does not certify execution readiness.",
   scope:
-    "Plan metadata only; no system execution, dependency network retrieval, or legacy strategy mutation. Examples are editable starting documents with unconfigured engines. Attached annex bytes are preserved separately. User field edits must be applied or discarded before agent mutations.",
+    "Plan metadata only; no system execution or dependency network retrieval. Examples initialize empty documents with unconfigured engines. Attached annex bytes are preserved separately. Give agents descriptive titles and describe input/output contracts; bindings must identify actual provenance, never infer data transfer from execution order. Preserve migration metadata and report any unmapped legacy behavior.",
 };
 
 export async function handleAgsdlToolCall(params: {
@@ -59,14 +59,6 @@ export async function handleAgsdlToolCall(params: {
       args.expected_revision !== current().version
     )
       throw new Error("The document changed. Read agsdl_get before editing.");
-    if (
-      Object.values(current().fieldDrafts).some(
-        (draft) => draft.value !== draft.base,
-      )
-    )
-      throw new Error(
-        "The user has unapplied field edits. Ask them to apply or discard those edits before continuing.",
-      );
     const alternatives = ["changes", "source", "example"].filter((key) =>
       Object.hasOwn(args, key),
     );
@@ -140,9 +132,6 @@ export async function handleAgsdlToolCall(params: {
     revision: session.version,
     persisted_revision: session.persistedRevision,
     dirty: session.dirty,
-    has_unapplied_field_edits: Object.values(session.fieldDrafts).some(
-      (draft) => draft.value !== draft.base,
-    ),
     path: pointer,
     source: source.length <= limit ? source : undefined,
     source_omitted:

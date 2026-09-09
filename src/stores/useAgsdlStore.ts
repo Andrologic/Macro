@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import {
-  getArchitectPlan,
+  migrateArchitectPlanToAgsdl,
   updateArchitectPlan,
 } from "../services/architectPlanService";
 import type { ArchitectPlanStatus } from "../services/architectPlanService";
@@ -21,13 +21,7 @@ interface Snapshot {
   source: string;
   annexes: Record<string, string>;
 }
-export interface AgsdlFieldDraft {
-  value: string;
-  base: string;
-  version: string;
-}
 export interface AgsdlSession extends Snapshot {
-  fieldDrafts: Record<string, AgsdlFieldDraft>;
   version: string;
   persistedRevision: number;
   dirty: boolean;
@@ -40,11 +34,6 @@ export interface AgsdlSession extends Snapshot {
 }
 interface AgsdlState {
   sessions: Record<string, AgsdlSession>;
-  setFieldDraft: (
-    target: AgsdlTarget,
-    key: string,
-    draft: AgsdlFieldDraft,
-  ) => void;
   load: (target: AgsdlTarget, reload?: boolean) => Promise<AgsdlSession>;
   replace: (
     target: AgsdlTarget,
@@ -92,13 +81,6 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     }));
   return {
     sessions: {},
-    setFieldDraft(target, key, draft) {
-      const current = session(target);
-      update(target, {
-        ...current,
-        fieldDrafts: { ...current.fieldDrafts, [key]: draft },
-      });
-    },
     async load(target, reload = false) {
       const key = agsdlSessionKey(target);
       const existing = get().sessions[key];
@@ -108,7 +90,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       if (pendingLoads.has(key)) return pendingLoads.get(key)!;
       const originalVersion = existing?.version;
       const pending = (async () => {
-        const plan = await getArchitectPlan(target.branchName, target.planId);
+        const plan = await migrateArchitectPlanToAgsdl(target.branchName, target.planId);
         if (!plan || plan.status === "deleted")
           throw new Error("The Architect plan is unavailable.");
         const current = get().sessions[key];
@@ -125,7 +107,6 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
           future: [],
           reports: [],
           error: null,
-          fieldDrafts: {},
         };
         update(target, next);
         return next;
@@ -199,12 +180,6 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     async save(target) {
       const current = session(target);
       if (current.saving) throw new Error("A save is already in progress.");
-      if (
-        Object.values(current.fieldDrafts).some(
-          (draft) => draft.value !== draft.base,
-        )
-      )
-        throw new Error("Apply or discard pending field edits before saving.");
       if (!current.dirty) return;
       update(target, { ...current, saving: true, error: null });
       try {
@@ -235,7 +210,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       try {
         const reports = await validateDocument(current.source, current.annexes);
         if (session(target).version === current.version)
-          update(target, { ...session(target), reports, error: null });
+          update(target, { ...session(target), reports });
       } catch (error) {
         if (session(target).version === current.version)
           update(target, {

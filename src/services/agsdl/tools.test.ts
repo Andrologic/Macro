@@ -8,6 +8,8 @@ let releaseSave: (() => void) | undefined;
 let saveDelay: Promise<void> | undefined;
 let failSave = false;
 mock.module("../architectPlanService", () => ({
+  migrateArchitectPlanToAgsdl: async (_branch: string, id: string) =>
+    id === plan.id ? structuredClone(plan) : null,
   getArchitectPlan: async (_branch: string, id: string) =>
     id === plan.id ? structuredClone(plan) : null,
   updateArchitectPlan: async (input: {
@@ -138,7 +140,7 @@ describe("shared AgSDL authoring session", () => {
     ).rejects.toThrow("changed");
   });
 
-  it("rejects another conversation, expired turns, locked plans and unapplied user fields", async () => {
+  it("rejects another conversation, expired turns, locked plans", async () => {
     await expect(call("agsdl_get", {}, "other-conversation")).rejects.toThrow(
       "calling plan",
     );
@@ -146,17 +148,6 @@ describe("shared AgSDL authoring session", () => {
       "ended",
     );
     const read = JSON.parse(await call("agsdl_get"));
-    useAgsdlStore
-      .getState()
-      .setFieldDraft(target, "source", {
-        value: "typing",
-        base: current().source,
-        version: current().version,
-      });
-    await expect(
-      call("agsdl_update", { expected_revision: read.revision, source: "{}" }),
-    ).rejects.toThrow("unapplied");
-    expect(plan.agsdl?.revision).toBe(1);
     plan.status = "validated";
     await expect(
       call("agsdl_update", { expected_revision: read.revision, source: "{}" }),

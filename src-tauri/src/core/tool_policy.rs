@@ -51,15 +51,11 @@ fn architect_allowed_tool_ids() -> &'static [&'static str] {
         "git_diff",
         "git_get_tree",
         "plan_create",
-        "strategy_generate",
         "plan_list",
         "plan_get",
         "plan_update",
         "agsdl_get",
         "agsdl_update",
-        "strategy_get",
-        "strategy_update",
-        "strategy_delete",
     ]
 }
 

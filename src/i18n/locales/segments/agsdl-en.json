@@ -1,5 +1,5 @@
 {
-  "editor": "AgSDL editor",
+  "editor": "AgSDL viewer",
   "legacyStrategy": "Legacy strategy",
   "loading": "Loading AgSDL...",
   "choosePlan": "Choose a plan to open the AgSDL editor.",
@@ -22,7 +22,7 @@
   "add": "Add",
   "readOnly": "This document is read-only.",
   "emptyTitle": "No AgSDL document",
-  "emptyDescription": "Start with an example or import an AgSDL document.",
+  "emptyDescription": "No AgSDL document yet. Ask the agent to describe the workflow.",
   "exampleNote": "Examples leave engines unconfigured. They are for editing and inspection only.",
   "documentSource": "Document source",
   "dependencies": "Dependencies",
@@ -110,5 +110,35 @@
     "bugfix": "Bug fix"
   },
   "inspectAgent": "Inspect an agent",
-  "allDeclarations": "All declarations"
+  "allDeclarations": "All declarations",
+  "viewer": {
+    "chatHint": "Ask in chat to create or update this workflow.",
+    "graphInput": "Workflow input",
+    "literal": "Fixed value",
+    "unspecified": "Not specified",
+    "unresolved": "Unresolved reference",
+    "inputs": "Receives",
+    "outputs": "Produces",
+    "noBinding": "No binding declared",
+    "control": "Then",
+    "unnamed": "Unnamed element",
+    "unresolvedAgent": "Agent reference could not be resolved.",
+    "noMission": "No mission declared.",
+    "entry": "Entry",
+    "declarative": "This document declares components without a workflow graph.",
+    "authoring": "Document preview · No execution status",
+    "dependencies": "Declared dependencies",
+    "unknownTransfers": "Input data and transfers are not specified.",
+    "migrationNote": "The plan dependencies are preserved. Ask the agent to specify data transfers and transition conditions.",
+    "technicalDetails": "Technical details",
+    "resources": "Resources",
+    "issues": {
+      "nonlinear-dependencies": "Dependencies need review.",
+      "missing-dependency": "A dependency is missing.",
+      "cyclic-dependencies": "Dependencies contain a cycle.",
+      "duplicate-node-id": "Node identifiers are duplicated."
+    },
+    "graphInputs": "To provide",
+    "graphOutputs": "Result"
+  }
 }

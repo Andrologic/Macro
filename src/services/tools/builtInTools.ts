@@ -539,20 +539,7 @@ export const BUILT_IN_TOOLS: Tool[] = [
       internal: true,
     },
   },
-  {
-    id: 'strategy_generate',
-    name: 'Generate Strategy',
-    category: 'productivity',
-    status: 'enabled',
-    description: 'Generate strategy from the active plan conversation and project context',
-    icon: 'git-merge',
-    config: {
-      enabled: true,
-      visible: true,
-      chatMode: true,
-      internal: true,
-    },
-  },
+
   {
     id: 'task_todo_get',
     name: 'Read Task Todos',
@@ -731,48 +718,6 @@ export const BUILT_IN_TOOLS: Tool[] = [
     description: 'Edit and save the plan AgSDL document', icon: 'edit',
     config: { enabled: true, visible: true, chatMode: true, internal: true },
   },
-  {
-    id: 'strategy_get',
-    name: 'Get Strategy',
-    category: 'productivity',
-    status: 'enabled',
-    description: 'Read strategy nodes and branches for the active Architect plan',
-    icon: 'git-merge',
-    config: {
-      enabled: true,
-      visible: true,
-      chatMode: true,
-      internal: true,
-    },
-  },
-  {
-    id: 'strategy_update',
-    name: 'Update Strategy',
-    category: 'productivity',
-    status: 'enabled',
-    description: 'Modify or replace strategy nodes for the active Architect plan',
-    icon: 'edit',
-    config: {
-      enabled: true,
-      visible: true,
-      chatMode: true,
-      internal: true,
-    },
-  },
-  {
-    id: 'strategy_delete',
-    name: 'Delete Strategy',
-    category: 'productivity',
-    status: 'enabled',
-    description: 'Delete strategy for the active Architect plan with confirmation',
-    icon: 'trash',
-    config: {
-      enabled: true,
-      visible: true,
-      chatMode: true,
-      internal: true,
-    },
-  },
 ];
 
 // MCP Servers - Empty by default (users can configure their own)
@@ -815,7 +760,6 @@ export const defaultToolSettings: Record<string, boolean> = {
   mark_source_passage: true,
   read_sources: true,
   edit_source_passage: true,
-  strategy_generate: true,
   task_todo_get: true,
   task_todo_update: true,
   task_artifact_list: true,
@@ -830,8 +774,5 @@ export const defaultToolSettings: Record<string, boolean> = {
   plan_set_active: true,
   agsdl_get: true,
   agsdl_update: true,
-  strategy_get: true,
-  strategy_update: true,
-  strategy_delete: true,
 };
 export const defaultMCPServerSettings: Record<string, boolean> = {};

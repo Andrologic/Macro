@@ -57,7 +57,6 @@ describe("internalAgentProfile", () => {
       "ast_grep",
       "git_status",
       "plan_get",
-      "strategy_update",
     ]);
   });
 
@@ -68,8 +67,6 @@ describe("internalAgentProfile", () => {
     );
 
     expect(filtered).toEqual([
-      "strategy_update",
-      "strategy_delete",
       "plan_create",
       "plan_get",
     ]);

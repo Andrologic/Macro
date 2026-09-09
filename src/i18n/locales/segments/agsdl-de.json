@@ -1,5 +1,5 @@
 {
-  "editor": "AgSDL-Editor",
+  "editor": "AgSDL-Ansicht",
   "legacyStrategy": "Bisherige Strategie",
   "loading": "AgSDL wird geladen...",
   "choosePlan": "Wählen Sie einen Plan, um den AgSDL-Editor zu öffnen.",
@@ -22,7 +22,7 @@
   "add": "Hinzufügen",
   "readOnly": "Dieses Dokument ist schreibgeschützt.",
   "emptyTitle": "Kein AgSDL-Dokument",
-  "emptyDescription": "Beginnen Sie mit einem Beispiel oder importieren Sie ein AgSDL-Dokument.",
+  "emptyDescription": "Noch kein AgSDL-Dokument. Bitte den Agenten, den Ablauf zu beschreiben.",
   "exampleNote": "In den Beispielen sind die Engines nicht konfiguriert. Sie dienen nur zum Bearbeiten und Prüfen.",
   "documentSource": "Dokumentquelle",
   "dependencies": "Abhängigkeiten",
@@ -110,5 +110,35 @@
     "bugfix": "Fehlerbehebung"
   },
   "inspectAgent": "Agent untersuchen",
-  "allDeclarations": "Alle Deklarationen"
+  "allDeclarations": "Alle Deklarationen",
+  "viewer": {
+    "chatHint": "Bitte im Chat darum, diesen Ablauf zu erstellen oder zu ändern.",
+    "graphInput": "Ablaufeingabe",
+    "literal": "Fester Wert",
+    "unspecified": "Nicht angegeben",
+    "unresolved": "Unaufgelöste Referenz",
+    "inputs": "Erhält",
+    "outputs": "Erzeugt",
+    "noBinding": "Keine Bindung deklariert",
+    "control": "Danach",
+    "unnamed": "Unbenanntes Element",
+    "unresolvedAgent": "Die Agentenreferenz konnte nicht aufgelöst werden.",
+    "noMission": "Keine Aufgabe deklariert.",
+    "entry": "Start",
+    "declarative": "Dieses Dokument deklariert Komponenten ohne Ablaufgraph.",
+    "authoring": "Dokumentvorschau · Kein Ausführungsstatus",
+    "dependencies": "Deklarierte Abhängigkeiten",
+    "unknownTransfers": "Eingabedaten und Übertragungen sind nicht angegeben.",
+    "migrationNote": "Die Abhängigkeiten des Plans bleiben erhalten. Lassen Sie den Agenten Datenübergaben und Übergangsbedingungen festlegen.",
+    "technicalDetails": "Technische Details",
+    "resources": "Ressourcen",
+    "issues": {
+      "nonlinear-dependencies": "Abhängigkeiten müssen geprüft werden.",
+      "missing-dependency": "Eine Abhängigkeit fehlt.",
+      "cyclic-dependencies": "Die Abhängigkeiten enthalten einen Zyklus.",
+      "duplicate-node-id": "Knotenkennungen sind doppelt vorhanden."
+    },
+    "graphInputs": "Bereitzustellen",
+    "graphOutputs": "Ergebnis"
+  }
 }

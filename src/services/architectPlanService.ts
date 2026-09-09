@@ -4924,6 +4924,45 @@ export const getArchitectPlan = async (
   return replicaSet?.canonical.plan || null;
 };
 
+/** Technical conversion preserves lifecycle and execution records, including archived plans. */
+export const migrateArchitectPlanToAgsdl = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies(),
+): Promise<ArchitectPlanRecord | null> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const safeId = sanitizeId(planId);
+  return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+    const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+    const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, { registrySnapshot }, deps);
+    if (!replicaSet) return null;
+    const existing = replicaSet.canonical.plan;
+    if (existing.agsdl || existing.status === 'deleted') return existing;
+    const { convertLegacyPlan } = await import('./agsdl/legacy');
+    const agsdl = convertLegacyPlan(existing);
+    if (!agsdl) return existing;
+    if (existing.missingProjectIds?.length) {
+      throw new Error('Restore the missing project replicas before converting this plan.');
+    }
+    if (new TextEncoder().encode(agsdl.source).length > 1024 * 1024) {
+      throw new Error('The converted plan exceeds the 1 MiB AgSDL limit. The original plan was preserved.');
+    }
+    const next = { ...existing, agsdl, revision: (existing.revision || 1) + 1 };
+    const scopes = dedupeScopes([...replicaSet.expectedScopes, ...replicaSet.snapshots.map(snapshot => snapshot.scope)]);
+    const targets = await Promise.all(scopes.map(scope => buildUpsertReplicaMutationTarget({
+      scope, branchName: normalizedBranch, plan: next, registrySnapshot,
+      chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
+    })));
+    await runArchitectPlanReplicaMutation({
+      branchName: normalizedBranch, planId: safeId, operation: 'update', targets,
+      registrySnapshot, deps, commitMessage: `chore(metadata): convert architect plan to AgSDL ${safeId}`,
+    });
+    invalidateArchitectPlanRuntimeCaches({ branchName: normalizedBranch, planId: safeId });
+    return (await getArchitectPlan(normalizedBranch, safeId, deps)) || next;
+  });
+};
+
 type CreateArchitectPlanInput = {
   branchName: string;
   title?: string;

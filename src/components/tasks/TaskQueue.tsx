@@ -1,4 +1,3 @@
-import { WorktreeDiagnosticsDialog } from './WorktreeDiagnosticsDialog';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -94,6 +93,9 @@ import { toServiceError } from '../../services/contracts/errors';
 import { SearchBar } from '../ui/SearchBar';
 import { filterTasksByQuery } from './taskQueueSearch';
 import { resolveTaskQueueSupervision, selectTaskQueueRequestSignature, type TaskQueueAttention } from '../../services/taskQueueAttention';
+
+// Keep diagnostics out of the task-list startup chunk now that the legacy graph is removed.
+const WorktreeDiagnosticsDialog = React.lazy(() => import('./WorktreeDiagnosticsDialog').then(module => ({ default: module.WorktreeDiagnosticsDialog })));
 
 const ConfirmPromptModal = React.lazy(() =>
   import('../ui/ConfirmPromptModal').then((module) => ({
@@ -2467,7 +2469,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         )}
       </div>
 
-      {diagnostic && <WorktreeDiagnosticsDialog entries={diagnostic.entries} repairDisabled={taskMutationDisabled || runningTaskIds.has(diagnostic.task.id) || tasks.some((task) => task.id === diagnostic.task.id && (task.status === 'InProgress' || task.status === 'AwaitingResponse')) || Boolean(diagnostic.task.archived_at)} onClose={() => setDiagnostic(null)} />}
+      {diagnostic && <React.Suspense fallback={null}><WorktreeDiagnosticsDialog entries={diagnostic.entries} repairDisabled={taskMutationDisabled || runningTaskIds.has(diagnostic.task.id) || tasks.some((task) => task.id === diagnostic.task.id && (task.status === 'InProgress' || task.status === 'AwaitingResponse')) || Boolean(diagnostic.task.archived_at)} onClose={() => setDiagnostic(null)} /></React.Suspense>}
       {taskCommandModal && (
         <React.Suspense fallback={null}>
           <TaskProjectCommandsModal

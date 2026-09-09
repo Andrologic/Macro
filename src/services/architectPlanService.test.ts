@@ -1949,6 +1949,30 @@ describe('architectPlanService', () => {
     expect(payload?.chatMessages).toHaveLength(0);
   });
 
+  it('converts persisted legacy plans once without changing lifecycle, tasks or transcript', async () => {
+    for (const status of ['draft', 'validated', 'in_progress', 'completed', 'archived'] as const) {
+      const created = await service.createArchitectPlan({ branchName, planId: `migration-${status}`, label: 'Migration',
+        nodes: [{ id: 'one', title: 'Check', type: 'task', status: 'pending', dependencies: [], todos: [{ id: 'check', title: 'Verify', status: 'pending' }] }] });
+      await service.saveArchitectPlanChatMessages(branchName, created.id, [{ id: 'message', role: 'user', content: 'Keep the transcript', createdAt: created.createdAt }]);
+      if (status === 'archived') await service.archiveArchitectPlan(branchName, created.id);
+      else if (status !== 'draft') await service.updateArchitectPlan({ branchName, planId: created.id, status });
+      const before = (await service.getArchitectPlan(branchName, created.id))!;
+      const [first, concurrent] = await Promise.all([
+        service.migrateArchitectPlanToAgsdl(branchName, created.id),
+        service.migrateArchitectPlanToAgsdl(branchName, created.id),
+      ]);
+      expect(first?.agsdl?.revision).toBe(1);
+      expect(concurrent?.revision).toBe(first?.revision);
+      expect(first?.status).toBe(status);
+      expect(first?.nodes).toEqual(before.nodes);
+      expect(first?.predictedBranches).toEqual(before.predictedBranches);
+      expect(first?.updatedAt).toBe(before.updatedAt);
+      const again = await service.migrateArchitectPlanToAgsdl(branchName, created.id);
+      expect(again?.agsdl).toEqual(first?.agsdl);
+      expect((await service.getArchitectPlanActivationPayload(branchName, created.id))?.chatMessages[0]?.content).toBe('Keep the transcript');
+    }
+  });
+
   it('fully activates an AgSDL-only draft and marks its summary as authored', async () => {
     const created = await service.createArchitectPlan({ branchName, planId: 'agsdl-only', label: DEFAULT_NEW_PLAN_LABEL });
     const source = '{ "opaque":900719925474099312345 }';

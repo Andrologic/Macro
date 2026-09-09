@@ -5,12 +5,6 @@ export const ARCHITECT_PLAN_CHAT_TOOL_IDS = [
   "plan_update",
 ] as const;
 
-export const ARCHITECT_STRATEGY_GUARDED_TOOL_IDS = [
-  "strategy_generate",
-  "strategy_get",
-  "strategy_update",
-] as const;
-
 export const ARCHITECT_STRATEGY_DESTRUCTIVE_TOOL_IDS = [
   "strategy_delete",
 ] as const;
@@ -22,7 +16,6 @@ export const ARCHITECT_CHAT_UI_ONLY_TOOL_IDS = [
 ] as const;
 
 export const ARCHITECT_GUARDED_CHAT_ACTION_TOOL_IDS = [
-  ...ARCHITECT_STRATEGY_GUARDED_TOOL_IDS,
   ...ARCHITECT_PLAN_CHAT_TOOL_IDS,
   "agsdl_get",
   "agsdl_update",
@@ -30,7 +23,6 @@ export const ARCHITECT_GUARDED_CHAT_ACTION_TOOL_IDS = [
 
 export const ARCHITECT_CHAT_ACTION_TOOL_IDS = [
   ...ARCHITECT_GUARDED_CHAT_ACTION_TOOL_IDS,
-  ...ARCHITECT_STRATEGY_DESTRUCTIVE_TOOL_IDS,
 ] as const;
 
 const UI_ONLY_TOOL_ID_SET = new Set<string>(ARCHITECT_CHAT_UI_ONLY_TOOL_IDS);
@@ -45,7 +37,7 @@ export const getArchitectProfileAdjustedToolIds = (
   const nextToolIds = new Set<string>();
 
   toolIds.forEach((toolId) => {
-    if (UI_ONLY_TOOL_ID_SET.has(toolId)) {
+    if (UI_ONLY_TOOL_ID_SET.has(toolId) || toolId.startsWith("strategy_") || ["generate_plan", "get_strategy", "update_strategy", "delete_strategy"].includes(toolId)) {
       return;
     }
     nextToolIds.add(toolId);
