@@ -145,6 +145,14 @@
     "zoomOut": "축소",
     "fit": "그래프 맞추기",
     "overview": "프로세스 정보",
-    "transitions": "전환"
+    "transitions": "전환",
+    "systemInput": "입력",
+    "systemOutput": "결과",
+    "systemEnd": "프로세스 종료",
+    "approvalRequired": "승인 필요",
+    "approvers": "승인자",
+    "approverMissing": "승인자 미지정",
+    "exchangeHint": "에이전트를 선택하여 데이터 교환을 확인하세요.",
+    "actionToApprove": "승인할 작업"
   }
 }

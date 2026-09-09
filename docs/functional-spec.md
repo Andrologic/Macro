@@ -285,9 +285,10 @@ Il doit préparer concrètement la suite de l'implémentation.
 
 Le panneau droit Architect présente AgSDL en lecture seule. La conversation
 conserve sa place centrale et l’agent effectue les modifications du document.
-La vue principale est un graphe de nœuds compacts reliés par des flèches. Les
-missions, outils, entrées, sorties et conditions ne sont présentés qu’à la
-sélection d’un nœud, dans un inspecteur repliable sous le graphe.
+La vue principale montre l’entrée du système, les agents, les échanges déclarés
+et les étapes d’approbation. Le résultat indique les sorties attendues. Les
+terminaux techniques de succès et d’échec restent dans les détails. Les missions,
+outils et provenances complètes sont accessibles à la sélection d’un nœud.
 Les anciennes stratégies sont converties en déclarations AgSDL descriptives,
 avec conservation de leurs données et affichage explicite de leurs dépendances.
 L’ancienne interface de stratégie et ses outils de rédaction ne sont plus exposés.

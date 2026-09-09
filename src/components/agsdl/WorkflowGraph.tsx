@@ -1,8 +1,8 @@
 import { useEffect, useMemo } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { Bot, Check, CircleHelp, GitBranch, Maximize2, Minus, Plus, ShieldCheck, X } from "lucide-react";
+import { Bot, CircleHelp, GitBranch, Hand, LogIn, LogOut, Maximize2, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
-import { layoutViewer } from "../../services/agsdl/graphLayout";
+import { layoutViewer, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import "@xyflow/react/dist/style.css";
@@ -12,28 +12,29 @@ type GraphNode = Node<{
   title: string;
   kindLabel: string;
   active: boolean;
-  entry: boolean;
+  subtitle: string;
   select: (path: string) => void;
 }, "workflow">;
 
 function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const { card } = data;
-  const Icon = card.kind === "end" ? (card.outcome === "failure" ? X : Check)
-    : card.kind === "condition" ? GitBranch : card.kind === "approval" ? ShieldCheck : Bot;
+  const { t } = useAgsdlTranslation();
+  const Icon = card.kind === "input" ? LogIn : card.kind === "output" ? LogOut
+    : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : Bot;
   const warning = card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
   return (
     <>
       <Handle type="target" position={Position.Top} id="in" />
       <Handle type="target" position={Position.Left} id="side-in" />
       <button
-        className={`agsdl-graph-node nodrag${data.active ? " is-selected" : ""}${card.kind === "end" ? " is-terminal" : ""}${card.outcome === "failure" ? " is-failure" : ""}`}
+        className={`agsdl-graph-node nodrag${data.active ? " is-selected" : ""}${["input", "output"].includes(card.kind) ? " is-boundary" : ""}${card.kind === "approval" ? " is-interaction" : ""}`}
         onClick={() => data.select(data.active ? "" : card.path)}
         aria-pressed={data.active}
-        title={`${data.kindLabel} · ${data.title}`}
+        title={`${data.kindLabel} · ${data.title}${data.subtitle ? ` · ${data.subtitle}` : ""}${warning ? ` · ${t("agsdl.viewer.unresolved")}` : ""}`}
       >
-        <span className={`agsdl-node-icon${data.entry ? " is-entry" : ""}`}><Icon size={15} /></span>
-        <span className="agsdl-node-title">{data.title}</span>
-        {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-label="!" />}
+        <span className="agsdl-node-icon"><Icon size={15} /></span>
+        <span className="agsdl-node-text"><span className="agsdl-node-title">{data.title}</span>{data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}</span>
+        {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-hidden="true" />}
       </button>
       <Handle type="source" position={Position.Bottom} id="out" />
       <Handle type="source" position={Position.Right} id="side-out" />
@@ -43,9 +44,9 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
 const nodeTypes = { workflow: WorkflowNode };
 const fitOptions = { padding: 0.16, minZoom: 0.5, maxZoom: 1 };
 
-function Canvas({ cards, entry, selected, select, title }: {
+function Canvas({ cards, edges: connections, selected, select, title }: {
   cards: ViewerCard[];
-  entry?: string;
+  edges: ViewerEdge[];
   selected: string;
   select: (path: string) => void;
   title: (card: ViewerCard) => string;
@@ -53,7 +54,7 @@ function Canvas({ cards, entry, selected, select, title }: {
   const { t } = useAgsdlTranslation();
   const { ref, width, height } = useElementSize<HTMLDivElement>();
   const flow = useReactFlow<GraphNode>();
-  const layout = useMemo(() => layoutViewer(cards), [cards]);
+  const layout = useMemo(() => layoutViewer(cards, connections), [cards, connections]);
   const topology = JSON.stringify(layout.nodes.map(node => [node.card.path, node.position]));
   useEffect(() => {
     if (!width || !height) return;
@@ -62,23 +63,28 @@ function Canvas({ cards, entry, selected, select, title }: {
   }, [width, height, topology, flow]);
   const nodes: GraphNode[] = layout.nodes.map(({ card, position }) => ({
     id: card.path, type: "workflow", position,
-    style: { width: card.kind === "end" ? 110 : 180, height: 52 },
-    data: { card, title: title(card), kindLabel: t(`agsdl.kind.${card.kind}`, { defaultValue: card.kind }), active: selected === card.path, entry: entry === card.path, select },
+    style: { width: 210, height: ["input", "output", "approval"].includes(card.kind) ? 68 : 52 },
+    data: { card, title: title(card), kindLabel: ["input", "output"].includes(card.kind) ? title(card) : t(`agsdl.kind.${card.kind}`, { defaultValue: card.kind }), active: selected === card.path,
+      subtitle: card.kind === "input" ? card.inputs.map(port => port.name).join(" · ")
+        : card.kind === "output" ? card.outputs.map(port => port.name).join(" · ")
+        : card.kind === "approval" ? card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
+      select },
   }));
-  const edges = layout.edges.map(edge => {
-    const failure = edge.label === "failure";
-    const failureTerminal = cards.some(card => card.path === edge.target && card.kind === "end" && card.outcome === "failure");
+  const edges = layout.edges.filter(edge => !edge.exchangeOnly || edge.source === selected || edge.target === selected).map(edge => {
     const related = edge.source === selected || edge.target === selected;
-    const color = failure ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
+    const color = edge.dependency || edge.exchangeOnly ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
+    const transfer = edge.transfers?.join(", ");
+    const condition = edge.label === "true" ? t("agsdl.edge.true") : edge.label === "false" ? t("agsdl.edge.false") : undefined;
     return {
       ...edge, type: "smoothstep",
-      sourceHandle: failureTerminal ? "side-out" : "out",
-      targetHandle: failureTerminal ? "side-in" : "in",
-      label: ["true", "false", "approved", "denied"].includes(edge.label) ? t(`agsdl.edge.${edge.label}`) : undefined,
-      ariaLabel: `${title(cards.find(card => card.path === edge.source)!)} → ${title(cards.find(card => card.path === edge.target)!)} · ${t(edge.dependency ? "agsdl.viewer.dependencies" : `agsdl.edge.${edge.label}`)}`,
+      sourceHandle: edge.exchangeOnly ? "side-out" : "out",
+      targetHandle: edge.exchangeOnly ? "side-in" : "in",
+      label: edge.label === "entry" || cards.find(card => card.path === edge.target)?.kind === "output" ? undefined
+        : transfer ? (transfer.length > 32 ? `${transfer.slice(0, 29)}…` : transfer) : condition,
+      ariaLabel: `${title(cards.find(card => card.path === edge.source)!)} → ${title(cards.find(card => card.path === edge.target)!)}${transfer ? ` · ${transfer}` : ""}`,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
-      style: { stroke: color, strokeWidth: related ? 2 : 1.3, strokeDasharray: failure || edge.dependency ? "4 4" : undefined, opacity: selected && !related ? 0.25 : 0.8 },
-      labelStyle: { fill: "rgb(var(--foreground))", fontSize: 10 },
+      style: { stroke: color, strokeWidth: related ? 2 : 1.3, strokeDasharray: edge.exchangeOnly || edge.dependency ? "4 4" : undefined, opacity: selected && !related ? 0.25 : 0.8 },
+      labelStyle: { fill: "rgb(var(--muted-foreground))", fontSize: 10 },
       labelBgStyle: { fill: "rgb(var(--background))" },
     };
   });

@@ -145,6 +145,14 @@
     "zoomOut": "Verkleinern",
     "fit": "Graph einpassen",
     "overview": "Über den Prozess",
-    "transitions": "Übergänge"
+    "transitions": "Übergänge",
+    "systemInput": "Eingabe",
+    "systemOutput": "Ergebnis",
+    "systemEnd": "Prozessende",
+    "approvalRequired": "Freigabe erforderlich",
+    "approvers": "Freigebende",
+    "approverMissing": "Freigebende nicht angegeben",
+    "exchangeHint": "Wähle einen Agenten, um seinen Datenaustausch zu sehen.",
+    "actionToApprove": "Freizugebende Aktion"
   }
 }

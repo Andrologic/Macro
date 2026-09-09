@@ -13,6 +13,7 @@ import {
   type ViewerPort,
   type ViewerReference,
 } from "../../services/agsdl/viewer";
+import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
 
 // Keep the integration contract while the document is edited exclusively through chat.
@@ -62,17 +63,22 @@ export const AgsdlEditor: React.FC<{
   const visibleGraphIndex = Math.min(graphIndex, Math.max(0, (document?.graphs.length ?? 0) - 1));
   const graph = document?.graphs[visibleGraphIndex];
   const selected = selection?.key === key ? selection.path : "";
-  const cards = graph?.cards ?? (document?.legacyCards.length
-    ? document.legacyCards : document?.declarations.filter(item => item.kind === "Agent") ?? []);
-  const selectedCard = cards.find(item => item.path === selected);
+  const system = useMemo(() => projectSystemOverview(graph, document?.legacyCards.length
+    ? document.legacyCards : document?.declarations.filter(item => item.kind === "Agent") ?? []), [graph, document]);
+  const cards = system.cards;
+  const selectedCard = cards.find(item => item.path === selected) ?? graph?.cards.find(item => item.path === selected);
   const select = (path: string) => {
     setSelection({ key, path });
     setOverview(false);
   };
-  const nodeTitle = (item: ViewerCard) => item.kind === "end" &&
-    !(item.details.annotations as { title?: string } | undefined)?.title
-    ? t(`agsdl.edge.${item.outcome}`, { defaultValue: item.title })
-    : item.title || t("agsdl.viewer.unnamed");
+  const nodeTitle = (item: ViewerCard) => {
+    if (item.kind === "input") return t("agsdl.viewer.systemInput");
+    const hasTitle = !!(item.details.annotations as { title?: string } | undefined)?.title;
+    if (item.kind === "output" && !hasTitle) return t(item.outputs.length ? "agsdl.viewer.systemOutput" : "agsdl.viewer.systemEnd");
+    if (item.kind === "approval" && !hasTitle) return t("agsdl.viewer.approvalRequired");
+    if (item.kind === "end" && !hasTitle) return t(`agsdl.edge.${item.outcome}`, { defaultValue: item.title });
+    return item.title || t("agsdl.viewer.unnamed");
+  };
   const referenceLabel = (ref: ViewerReference) => {
     const destination = graph?.cards.find((card) => card.path === ref.target);
     return destination?.kind === "end" &&
@@ -103,6 +109,7 @@ export const AgsdlEditor: React.FC<{
     items: ViewerPort[],
     direction: "inputs" | "outputs",
     expanded = false,
+    showBindings = true,
   ) =>
     items.length > 0 && (
       <section className="agsdl-ports">
@@ -113,7 +120,7 @@ export const AgsdlEditor: React.FC<{
             {expanded && port.type && (
               <span className="agsdl-muted">{port.type}</span>
             )}
-            {(direction === "inputs" || port.binding) && (
+            {showBindings && (direction === "inputs" || port.binding) && (
               <div className="agsdl-provenance">
                 {" "}
                 ←
@@ -135,7 +142,7 @@ export const AgsdlEditor: React.FC<{
         {item.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
         <p className="agsdl-muted">{t("agsdl.viewer.unknownTransfers")}</p>
       </section>}
-      {portList(item.inputs, "inputs", true)}
+      {portList(item.inputs, "inputs", true, item.kind !== "input")}
       {portList(item.outputs, "outputs", true)}
       {item.tools?.length ? <section className="agsdl-ports">
         <h4>{t("agsdl.agentTools")}</h4>
@@ -145,14 +152,19 @@ export const AgsdlEditor: React.FC<{
         <h4>{t("agsdl.viewer.resources")}</h4>
         {item.resources.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
       </section> : null}
+      {item.kind === "approval" && <section className="agsdl-ports">
+        {item.approvalCall && <p>{t("agsdl.viewer.actionToApprove")} · {reference(item.approvalCall)}</p>}
+        <h4>{t("agsdl.viewer.approvers")}</h4>
+        {item.approvers?.length ? item.approvers.map((ref, index) => <div key={index}>{reference(ref)}</div>) : <p className="agsdl-muted">{t("agsdl.viewer.approverMissing")}</p>}
+      </section>}
+      <details className="agsdl-details">
+        <summary>{t("agsdl.viewer.technicalDetails")}</summary>
       {item.branches.length > 0 && <section className="agsdl-ports">
         <h4>{t("agsdl.viewer.control")}</h4>
         {item.branches.map(branch => <div key={branch.label}>
           {t(`agsdl.edge.${branch.label}`)} → {reference(branch.reference)}
         </div>)}
       </section>}
-      <details className="agsdl-details">
-        <summary>{t("agsdl.viewer.technicalDetails")}</summary>
         <ReadOnlyValue value={item.details} />
       </details>
     </>
@@ -227,14 +239,11 @@ export const AgsdlEditor: React.FC<{
         : document && <>
           {cards.length > 0 ? <WorkflowGraph
             key={`${key}:${graph?.path ?? "declarations"}`}
-            cards={cards} entry={graph?.entry.target} selected={selected}
+            cards={cards} edges={system.edges} selected={selected}
             select={select} title={nodeTitle}
           /> : <div className="agsdl-empty">{t("agsdl.noGraph")}</div>}
           <div className="agsdl-graph-caption">
-            {document.migrated ? t("agsdl.viewer.dependencies") : graph ? <>
-              <span className="agsdl-legend-line" />{t("agsdl.viewer.transitions")}
-              {cards.some(item => item.branches.some(branch => branch.label === "failure")) && <><span className="agsdl-legend-line is-dashed" />{t("agsdl.edge.failure")}</>}
-            </> : t("agsdl.viewer.declarative")}
+            {document.migrated ? t("agsdl.viewer.dependencies") : graph ? t("agsdl.viewer.exchangeHint") : t("agsdl.viewer.declarative")}
             {findings.length > 0 && <button className="agsdl-link" onClick={() => { setOverview(true); setSelection(undefined); }}>{t("agsdl.diagnostics")} · {findings.length}</button>}
           </div>
           {(selectedCard || overview) && <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>

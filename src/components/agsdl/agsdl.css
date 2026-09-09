@@ -27,10 +27,12 @@
 .agsdl-graph-node { pointer-events: auto; width: 100%; height: 100%; display: flex; align-items: center; gap: 9px; padding: 6px; text-align: left; border: 1px solid rgb(var(--border)); border-radius: 9px; background: rgb(var(--card)); color: rgb(var(--foreground)); }
 .agsdl-graph-node:hover, .agsdl-graph-node.is-selected { border-color: rgb(var(--primary)); background: rgb(var(--background)); }
 .agsdl-node-icon { display: grid; place-items: center; width: 25px; height: 25px; flex-shrink: 0; border-radius: 50%; background: rgb(var(--muted)); color: rgb(var(--muted-foreground)); }
-.agsdl-node-icon.is-entry { color: rgb(var(--primary)); box-shadow: 0 0 0 1px rgb(var(--primary) / 0.5); }
+.agsdl-node-text { flex: 1; min-width: 0; }
+.agsdl-node-subtitle { display: block; color: rgb(var(--muted-foreground)); font-size: 10px; line-height: 1.4; margin-top: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .agsdl-node-title { font-size: 12px; font-weight: 500; line-height: 1.4; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-.agsdl-graph-node.is-terminal { border-radius: 26px; }
-.agsdl-graph-node.is-failure { border-style: dashed; color: rgb(var(--muted-foreground)); }
+.agsdl-graph-node.is-boundary { border-style: dashed; background: rgb(var(--background)); }
+.agsdl-graph-node.is-interaction { border-color: rgb(var(--primary) / 0.65); }
+.agsdl-graph-node.is-interaction .agsdl-node-icon { color: rgb(var(--primary)); }
 .agsdl-node-warning { color: rgb(var(--destructive)); flex-shrink: 0; }
 .agsdl-canvas .react-flow__handle { opacity: 0; pointer-events: none; width: 1px; height: 1px; min-width: 1px; min-height: 1px; }
 .agsdl-graph-controls { display: flex; gap: 1px; border: 1px solid rgb(var(--border)); border-radius: 5px; background: rgb(var(--background)); }

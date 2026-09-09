@@ -10,6 +10,7 @@ describe("AgSDL read-only projection", () => {
     expect(graph.cards[0].mission).toContain("acceptance criteria");
     expect(graph.cards[1].inputs[0].binding).toEqual({
       label: "Specification · report",
+      port: "report",
       source: "step",
       target: "/graphs/0/steps/0",
       unresolved: false,

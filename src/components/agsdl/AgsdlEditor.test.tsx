@@ -27,13 +27,13 @@ describe("AgSDL viewer", () => {
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
 
-  it("keeps custom end titles and shows the outcome only once for unnamed ends", async () => {
+  it("shows the input and named result without exposing success or failure terminals", async () => {
     const document = JSON.parse(createExample("feature"));
     const ends = document.graphs[0].steps.filter((step: { kind: string }) => step.kind === "end");
     ends[0].annotations = { title: "Ready for delivery" };
     await mount(JSON.stringify(document));
     const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
-    expect(nodes.some(node => node.textContent === "Ready for delivery")).toBe(true);
+    expect(nodes.some(node => node.querySelector(".agsdl-node-title")?.textContent === "Ready for delivery")).toBe(true);
     expect(nodes).toHaveLength(5);
     expect(container!.querySelector(".agsdl-inspector")).toBeNull();
 
@@ -136,11 +136,11 @@ describe("AgSDL viewer", () => {
     act(() => expand.click());
     expect(expanded).toBe(true);
     const firstCard = container.querySelector<HTMLButtonElement>(
-      ".agsdl-graph-node",
+      ".agsdl-graph-node:not(.is-boundary)",
     )!;
     act(() => firstCard.click());
     expect(container.querySelector(".agsdl-inspector")?.textContent).toContain("Clarify the request and produce acceptance criteria.");
-    const nextNode = container.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")[1];
+    const nextNode = container.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node:not(.is-boundary)")[1];
     act(() => nextNode.click());
     expect(container.querySelector(".agsdl-inspector")?.textContent).toContain("Specification · report");
     expect(

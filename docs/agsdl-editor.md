@@ -10,15 +10,19 @@ un document vide.
 
 1. Ouvrir un plan dans Architect. Les anciennes stratégies sont converties lors
    du premier chargement du panneau, sans changer le statut du plan.
-2. Lire le graphe. Chaque nœud montre uniquement son nom et une icône de type.
-   Les flèches représentent les transitions déclarées ; les chemins d’échec sont
-   en pointillés. Les embranchements portent leurs conditions.
-3. Sélectionner un nœud pour consulter sa mission, ses outils, les entrées et
-   leur provenance, les sorties et les routes dans l’inspecteur sous le graphe.
-   Le fond du graphe et la touche Échap referment la sélection. Les liens internes
-   permettent de consulter l’étape concernée. Une référence absente ou ambiguë
-   est signalée sans créer de faux lien. Le bouton d’information ouvre les
-   informations du processus, les déclarations et les diagnostics.
+2. Lire le système depuis son entrée : le nœud d’entrée indique les éléments à
+   fournir. Les agents sont reliés par leurs passages déclarés ; le nom des
+   données transmises apparaît lorsqu’un binding prouve cet échange. Les étapes
+   d’approbation sont visibles, avec les approbateurs explicitement définis. Le
+   résultat présente les sorties déclarées, ou une simple fin si elles sont vides.
+3. Sélectionner un nœud pour consulter sa mission, ses outils et ses échanges.
+   Les données partagées et les échanges non adjacents apparaissent à la sélection,
+   en pointillés, pour ne pas suggérer qu’une approbation peut être contournée.
+   Une approbation indique l’action à valider et l’approbateur prévu. Aucun bouton
+   de validation n’exécute cette étape : il s’agit du visualisateur du processus.
+   Le fond du graphe et la touche Échap referment la sélection. Les chemins
+   techniques de succès, d’échec et de refus restent consultables dans les détails.
+   Les références absentes ou ambiguës ne créent pas de faux échanges.
 4. Utiliser le bouton d’élargissement pour replier le panneau gauche et donner
    plus de place au visualisateur tout en conservant le chat. Le graphe peut être
    déplacé, zoomé et recadré. Ces gestes ne modifient pas la source AgSDL.

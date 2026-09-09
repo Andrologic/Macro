@@ -145,6 +145,14 @@
     "zoomOut": "Zoom arrière",
     "fit": "Cadrer le graphe",
     "overview": "À propos du processus",
-    "transitions": "Transitions"
+    "transitions": "Transitions",
+    "systemInput": "Entrée",
+    "systemOutput": "Résultat",
+    "systemEnd": "Fin du processus",
+    "approvalRequired": "Validation requise",
+    "approvers": "Approbateurs",
+    "approverMissing": "Approbateur à préciser",
+    "exchangeHint": "Sélectionnez un agent pour voir ses échanges.",
+    "actionToApprove": "Action à valider"
   }
 }

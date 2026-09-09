@@ -145,6 +145,14 @@
     "zoomOut": "Zoom out",
     "fit": "Fit graph",
     "overview": "About this process",
-    "transitions": "Transitions"
+    "transitions": "Transitions",
+    "systemInput": "Input",
+    "systemOutput": "Result",
+    "systemEnd": "End of process",
+    "approvalRequired": "Approval required",
+    "approvers": "Approvers",
+    "approverMissing": "Approver not specified",
+    "exchangeHint": "Select an agent to inspect its exchanges.",
+    "actionToApprove": "Action to approve"
   }
 }

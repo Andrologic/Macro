@@ -5,6 +5,7 @@ type Value = Record<string, unknown>;
 export interface ViewerReference {
   label: string;
   target?: string;
+  port?: string;
   unresolved?: boolean;
   source: "input" | "step" | "literal" | "unknown";
 }
@@ -24,6 +25,8 @@ export interface ViewerCard {
   outcome?: string;
   tools?: ViewerReference[];
   resources?: ViewerReference[];
+  approvers?: ViewerReference[];
+  approvalCall?: ViewerReference;
   inputs: ViewerPort[];
   outputs: ViewerPort[];
   branches: Array<{ label: string; reference: ViewerReference }>;
@@ -148,6 +151,7 @@ export function projectViewer(source: string) {
         return {
           ...result,
           label: `${result.label} · ${display(ref.port)}`,
+          port: typeof ref.port === "string" ? ref.port : undefined,
           unresolved: result.unresolved || !validPort,
           target: validPort ? result.target : undefined,
         };
@@ -188,6 +192,10 @@ export function projectViewer(source: string) {
         outcome: text(step.outcome),
         tools: toolsFor(agent),
         resources: list(step.resources).map(definitionReference),
+        ...(step.kind === "approval" ? {
+          approvers: list(object(resolve(step.requirement)?.payload).approvers).map(definitionReference),
+          approvalCall: reference(step.call),
+        } : {}),
         branches: successors(step).map((label) => ({
           label,
           reference: reference(step[label]),

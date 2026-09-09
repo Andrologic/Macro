@@ -145,6 +145,14 @@
     "zoomOut": "縮小",
     "fit": "グラフ全体を表示",
     "overview": "プロセスについて",
-    "transitions": "遷移"
+    "transitions": "遷移",
+    "systemInput": "入力",
+    "systemOutput": "結果",
+    "systemEnd": "プロセス終了",
+    "approvalRequired": "承認が必要",
+    "approvers": "承認者",
+    "approverMissing": "承認者が未指定",
+    "exchangeHint": "エージェントを選択するとデータの受け渡しを確認できます。",
+    "actionToApprove": "承認する操作"
   }
 }

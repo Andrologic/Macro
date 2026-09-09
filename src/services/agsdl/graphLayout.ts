@@ -6,30 +6,17 @@ export interface ViewerEdge {
   target: string;
   label: string;
   dependency: boolean;
+  transfers?: string[];
+  exchangeOnly?: boolean;
 }
 
-/** Lay out only declared, resolved connections. Invalid cycles remain inspectable. */
-export function layoutViewer(cards: ViewerCard[]) {
-  const paths = new Set(cards.map(card => card.path));
-  const edges: ViewerEdge[] = cards.flatMap(card => [
-    ...card.branches.flatMap(({ label, reference }) =>
-      reference.target && !reference.unresolved && paths.has(reference.target)
-        ? [{ id: `${card.path}/${label}`, source: card.path, target: reference.target, label, dependency: false }]
-        : [],
-    ),
-    ...(card.dependencies ?? []).flatMap((reference, index) =>
-      reference.target && !reference.unresolved && paths.has(reference.target)
-        ? [{ id: `${card.path}/dependency/${index}`, source: reference.target, target: card.path, label: "dependency", dependency: true }]
-        : [],
-    ),
-  ]);
-  // Shared failure terminals sit beside the main path, without stretching its ranks.
-  const failures = new Set(cards.filter(card => card.kind === "end" && card.outcome === "failure").map(card => card.path));
-  const main = cards.filter(card => !failures.has(card.path));
+/** Layout is independent of the source document and tolerates cyclic drafts. */
+export function layoutViewer(cards: ViewerCard[], edges: ViewerEdge[]) {
+  const main = cards;
   const outgoing = new Map(cards.map(card => [card.path, [] as string[]]));
   const incoming = new Map(main.map(card => [card.path, 0]));
   for (const edge of edges) {
-    if (failures.has(edge.source) || failures.has(edge.target)) continue;
+    if (edge.exchangeOnly || !outgoing.has(edge.source) || !incoming.has(edge.target)) continue;
     outgoing.get(edge.source)!.push(edge.target);
     incoming.set(edge.target, incoming.get(edge.target)! + 1);
   }
@@ -47,17 +34,14 @@ export function layoutViewer(cards: ViewerCard[]) {
   }
   let lastRank = Math.max(0, ...ranks.values());
   // Cyclic drafts must terminate and must not place nodes on top of each other.
-  for (const card of main) if (!queue.includes(card.path)) ranks.set(card.path, ++lastRank);
+  const visited = new Set(queue);
+  for (const card of main) if (!visited.has(card.path)) ranks.set(card.path, ++lastRank);
   const columns = new Map<number, number>();
   const nodes = main.map(card => {
     const rank = ranks.get(card.path) ?? 0;
     const column = columns.get(rank) ?? 0;
     columns.set(rank, column + 1);
-    return { card, position: { x: column * 210 + (card.kind === "end" ? 35 : 0), y: rank * 100 } };
-  });
-  const failureX = Math.max(1, ...columns.values()) * 210;
-  cards.filter(card => failures.has(card.path)).forEach((card, index) => {
-    nodes.push({ card, position: { x: failureX + index * 130, y: lastRank * 100 } });
+    return { card, position: { x: column * 240, y: rank * 100 } };
   });
   return { nodes, edges };
 }
