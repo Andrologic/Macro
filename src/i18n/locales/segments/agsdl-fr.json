@@ -112,6 +112,12 @@
   "inspectAgent": "Inspecter un agent",
   "allDeclarations": "Toutes les déclarations",
   "viewer": {
+    "editComponent": "Modifier le composant",
+    "componentName": "Nom",
+    "editScope": "Les instructions sont partagées avec les autres appels à cet agent.",
+    "editConflict": "Le document a changé pendant votre édition. Annulez et rouvrez l’éditeur pour utiliser la version actuelle.",
+    "editSaveFailed": "Les modifications sont conservées dans le document en attente de sauvegarde. Réessayez ou fermez pour revenir au graphe.",
+    "discardEdit": "Abandonner les modifications",
     "chatHint": "Demandez dans le chat de créer ou modifier ce workflow.",
     "graphInput": "Entrée du workflow",
     "literal": "Valeur fixe",

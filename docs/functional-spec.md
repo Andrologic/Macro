@@ -283,14 +283,17 @@ Il doit préparer concrètement la suite de l'implémentation.
 
 #### Visualisation AgSDL
 
-Le panneau droit Architect présente AgSDL en lecture seule. La conversation
-conserve sa place centrale et l’agent effectue les modifications du document.
+Le panneau droit Architect présente un canvas AgSDL non éditable. La conversation
+conserve sa place centrale. L’agent peut modifier le document ; une modale permet
+aussi de modifier le nom et les instructions d’un composant dans un plan en brouillon.
 Le canvas montre les participants, les relations déclarées, les conditions et
 les étapes d’approbation. Les interfaces du système et les terminaux de fin ne
 créent pas de nœuds. Le bouton de détails dans l’en-tête donne accès au point de
 départ, aux interfaces, aux ressources et à la configuration du système.
 Les cartes affichent l’identité du composant. Sa mission, ses interfaces, ses
-outils et les provenances se consultent au clic.
+outils et les provenances se consultent au clic dans une modale. Le graphe conserve
+son espace et son zoom. Les changements manuels sont enregistrés avec un contrôle
+de version ; une modification concurrente bloque l’écriture sans effacer la saisie.
 Les connexions sont sélectionnables pour consulter leur nature et les transferts
 explicitement déclarés, sans libellés permanents sur le canvas.
 Le bouton d’agrandissement ouvre le visualisateur dans une modale sans modifier

@@ -112,6 +112,12 @@
   "inspectAgent": "エージェントを確認",
   "allDeclarations": "すべての宣言",
   "viewer": {
+    "editComponent": "コンポーネントを編集",
+    "componentName": "名前",
+    "editScope": "指示はこのエージェントの他の呼び出しでも共有されます。",
+    "editConflict": "編集中にドキュメントが変更されました。キャンセルして編集画面を開き直してください。",
+    "editSaveFailed": "変更は未保存の状態で保持されています。保存を再試行するか、閉じてグラフに戻ってください。",
+    "discardEdit": "変更を破棄",
     "chatHint": "チャットでワークフローの作成や変更を依頼してください。",
     "graphInput": "ワークフロー入力",
     "literal": "固定値",

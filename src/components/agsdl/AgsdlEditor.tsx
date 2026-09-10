@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { CircleAlert, Info, Maximize2, X } from "lucide-react";
+import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
 import { WorkflowGraph } from "./WorkflowGraph";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import {
@@ -16,7 +17,7 @@ import {
 import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
 
-// Keep the integration contract while the document is edited exclusively through chat.
+// Chat and focused component edits share the same versioned document store.
 export const AgsdlEditor: React.FC<{
   target: AgsdlTarget;
   planStatus?: string;
@@ -29,7 +30,7 @@ export const AgsdlEditor: React.FC<{
   const [error, setError] = useState("");
   const [overview, setOverview] = useState(false);
   const [graphIndex, setGraphIndex] = useState(0);
-  const [selection, setSelection] = useState<{ key: string; path: string }>();
+  const [selection, setSelection] = useState<{ key: string; path: string; card?: ViewerCard }>();
   useEffect(() => {
     let active = true;
     useAgsdlStore
@@ -67,9 +68,13 @@ export const AgsdlEditor: React.FC<{
     ? document.legacyCards : document?.declarations.filter(item => ["Agent", "System"].includes(item.kind)) ?? []), [graph, document]);
   const cards = system.cards;
   const selectedEdge = system.edges.find(edge => !edge.exchangeOnly && edge.id === selected);
-  const selectedCard = cards.find(item => item.path === selected) ?? graph?.cards.find(item => item.path === selected) ?? document?.declarations.find(item => item.path === selected);
+  const currentCard = cards.find(item => item.path === selected) ?? graph?.cards.find(item => item.path === selected) ?? document?.declarations.find(item => item.path === selected);
+  // Keep an open form alive if an agent removes its component. Its captured
+  // version will reject saving; the user's text remains available to copy.
+  const snapshotCard = selection?.key === key ? selection.card : undefined;
+  const selectedCard = snapshotCard && (!currentCard || currentCard.id !== snapshotCard.id) ? snapshotCard : currentCard;
   const select = (path: string) => {
-    setSelection({ key, path });
+    setSelection({ key, path, card: cards.find(item => item.path === path) ?? graph?.cards.find(item => item.path === path) ?? document?.declarations.find(item => item.path === path) });
     setOverview(false);
   };
   const nodeTitle = (item: ViewerCard) => {
@@ -265,12 +270,12 @@ export const AgsdlEditor: React.FC<{
           {(document.migrated || !graph) && <div className="agsdl-graph-caption">
             {t(document.migrated ? "agsdl.viewer.dependencies" : "agsdl.viewer.declarative")}
           </div>}
-          {(selectedCard || selectedEdge || overview) && <section key={selectedCard?.path ?? selectedEdge?.id ?? "overview"} className={`agsdl-inspector${selectedCard || selectedEdge ? " is-node-inspector" : ""}`} aria-label={t("agsdl.properties")}>
-            <header>
-              <strong>{selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}</strong>
-              <button className="agsdl-icon-button" onClick={() => { setOverview(false); setSelection(undefined); }} aria-label={t("agsdl.close")}><X size={14} /></button>
-            </header>
-            <div className="agsdl-inspector-body">
+          {(selectedCard || selectedEdge || overview) && <ComponentDetailsDialog
+            key={selectedCard?.path ?? selectedEdge?.id ?? "overview"}
+            title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
+            card={selectedCard} canEdit={selectedCard === currentCard} target={target}
+            onClose={() => { setOverview(false); setSelection(undefined); }}>
+            <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
               {selectedCard ? inspect(selectedCard) : selectedEdge ? <>
                 <p>{reference({ source: "step", label: nodeTitle(cards.find(card => card.path === selectedEdge.source)!), target: selectedEdge.source })}
                   {" → "}{reference({ source: "step", label: nodeTitle(cards.find(card => card.path === selectedEdge.target)!), target: selectedEdge.target })}</p>
@@ -301,8 +306,8 @@ export const AgsdlEditor: React.FC<{
                   {findings.map((finding, index) => <p key={index}><strong>{finding.rule}</strong> {finding.details}</p>)}
                 </details>}
               </>}
-            </div>
-          </section>}
+            </section>
+          </ComponentDetailsDialog>}
         </>}
       {(session?.saving || session?.dirty) && <footer className="agsdl-status" role="status">
         {t(session.saving ? "agsdl.saving" : "agsdl.unsaved")}

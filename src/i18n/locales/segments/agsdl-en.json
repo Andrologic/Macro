@@ -112,6 +112,12 @@
   "inspectAgent": "Inspect an agent",
   "allDeclarations": "All declarations",
   "viewer": {
+    "editComponent": "Edit component",
+    "componentName": "Name",
+    "editScope": "Instructions are shared with other calls to this agent.",
+    "editConflict": "The document changed while you were editing. Cancel and reopen the editor to use the current version.",
+    "editSaveFailed": "Changes are kept in the document as an unsaved draft. Retry saving or close to return to the graph.",
+    "discardEdit": "Discard changes",
     "chatHint": "Ask in chat to create or update this workflow.",
     "graphInput": "Workflow input",
     "literal": "Fixed value",

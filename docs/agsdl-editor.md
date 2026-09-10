@@ -1,6 +1,6 @@
 # Visualisateur AgSDL dans Architect
 
-Le panneau droit présente le système AgSDL en lecture seule. La conversation
+Le panneau droit présente le système AgSDL sur un canvas non éditable. La conversation
 reste au centre et l’agent modifie le document avec `agsdl_get` et `agsdl_update`.
 Les formulaires JSON, les poignées de connexion et l’ancienne vue de stratégie
 ont été retirés. Les exemples restent accessibles à l’agent pour initialiser
@@ -19,13 +19,17 @@ attente restent visibles ; les détails du système se consultent à la demande.
    Les interfaces, outils et ressources se consultent dans les détails du
    composant. Sélectionner une flèche pour consulter la relation et les données
    explicitement transmises. Aucun transfert n’est déduit du seul ordre des étapes.
-3. Sélectionner un nœud pour consulter sa mission, ses outils et ses échanges.
-   La sélection conserve le zoom et les flèches du graphe. La fiche résume la
-   mission et les échanges ; les données partagées et les échanges non adjacents
+3. Sélectionner un nœud pour ouvrir sa mission, ses outils et ses échanges dans
+   une modale, sans réduire le canvas. La modale affiche la mission complète ; les données partagées et les échanges non adjacents
    y indiquent leur provenance. Les types, outils et ressources restent repliés.
    Une approbation indique l’action à valider et l’approbateur prévu. Aucun bouton
    de validation n’exécute cette étape : il s’agit du visualisateur du processus.
-   Le fond du graphe et la touche Échap referment la sélection. Les chemins
+   La croix, le fond de la modale et la touche Échap referment les détails. Dans
+   un plan en brouillon, le bouton de modification ouvre le nom et les instructions
+   avec Enregistrer et Annuler. Les instructions conservent leur propriétaire AgSDL,
+   y compris lorsqu’elles sont partagées. Une saisie non enregistrée est confirmée
+   avant fermeture. Un conflit de version conserve la saisie ; un échec de sauvegarde
+   conserve le document modifié et propose de réessayer. Les chemins
    techniques de succès, d’échec et de refus restent consultables dans les détails.
    Les références absentes ou ambiguës ne créent pas de faux échanges.
 4. Utiliser le bouton d’élargissement pour ouvrir le graphe dans une grande

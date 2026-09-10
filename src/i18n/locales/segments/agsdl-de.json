@@ -112,6 +112,12 @@
   "inspectAgent": "Agent untersuchen",
   "allDeclarations": "Alle Deklarationen",
   "viewer": {
+    "editComponent": "Komponente bearbeiten",
+    "componentName": "Name",
+    "editScope": "Die Anweisungen gelten auch für andere Aufrufe dieses Agenten.",
+    "editConflict": "Das Dokument wurde während der Bearbeitung geändert. Brechen Sie ab und öffnen Sie den Editor erneut.",
+    "editSaveFailed": "Die Änderungen bleiben ungespeichert erhalten. Speichern Sie erneut oder schließen Sie die Ansicht.",
+    "discardEdit": "Änderungen verwerfen",
     "chatHint": "Bitte im Chat darum, diesen Ablauf zu erstellen oder zu ändern.",
     "graphInput": "Ablaufeingabe",
     "literal": "Fester Wert",

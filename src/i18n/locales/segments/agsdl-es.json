@@ -112,6 +112,12 @@
   "inspectAgent": "Inspeccionar un agente",
   "allDeclarations": "Todas las declaraciones",
   "viewer": {
+    "editComponent": "Editar componente",
+    "componentName": "Nombre",
+    "editScope": "Las instrucciones se comparten con otras llamadas a este agente.",
+    "editConflict": "El documento cambió durante la edición. Cancela y vuelve a abrir el editor.",
+    "editSaveFailed": "Los cambios se conservan sin guardar. Reintenta guardar o cierra para volver al grafo.",
+    "discardEdit": "Descartar cambios",
     "chatHint": "Pide en el chat crear o modificar este flujo.",
     "graphInput": "Entrada del flujo",
     "literal": "Valor fijo",
