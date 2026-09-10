@@ -30,7 +30,10 @@
 .agsdl-node-text { flex: 1; min-width: 0; }
 .agsdl-node-subtitle { display: block; color: rgb(var(--muted-foreground)); font-size: 10px; line-height: 1.4; margin-top: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .agsdl-node-title { font-size: 12px; font-weight: 500; line-height: 1.4; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-.agsdl-graph-node.is-boundary { border-style: dashed; background: rgb(var(--background)); }
+.agsdl-graph-node.is-boundary { justify-content: center; text-align: center; padding: 0 6px; border-color: transparent; background: transparent; color: rgb(var(--muted-foreground)); }
+.agsdl-graph-node.is-boundary .agsdl-node-title { font-size: 11px; font-weight: 400; }
+.agsdl-graph-node.is-boundary:hover, .agsdl-graph-node.is-boundary.is-selected { color: rgb(var(--foreground)); background: rgb(var(--muted) / 0.5); }
+.agsdl-graph-node:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 3px; }
 .agsdl-graph-node.is-interaction { border-color: rgb(var(--primary) / 0.65); }
 .agsdl-graph-node.is-interaction .agsdl-node-icon { color: rgb(var(--primary)); }
 .agsdl-node-warning { color: rgb(var(--destructive)); flex-shrink: 0; }

@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { Bot, CircleHelp, GitBranch, Hand, LogIn, LogOut, LocateFixed, Minus, Plus } from "lucide-react";
+import { Bot, CircleHelp, GitBranch, Hand, LocateFixed, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import type { ViewerCard } from "../../services/agsdl/viewer";
@@ -19,8 +19,9 @@ type GraphNode = Node<{
 function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const { card } = data;
   const { t } = useAgsdlTranslation();
-  const Icon = card.kind === "input" ? LogIn : card.kind === "output" ? LogOut
-    : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : Bot;
+  const boundary = card.kind === "input" || card.kind === "output";
+  const ports = card.kind === "input" ? card.inputs : card.outputs;
+  const Icon = card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : Bot;
   const warning = card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
   return (
     <>
@@ -31,8 +32,11 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         aria-pressed={data.active}
         title={`${data.kindLabel} · ${data.title}${data.subtitle ? ` · ${data.subtitle}` : ""}${warning ? ` · ${t("agsdl.viewer.unresolved")}` : ""}`}
       >
-        <span className="agsdl-node-icon"><Icon size={15} /></span>
-        <span className="agsdl-node-text"><span className="agsdl-node-title">{data.title}</span>{data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}</span>
+        {!boundary && <span className="agsdl-node-icon"><Icon size={15} /></span>}
+        <span className="agsdl-node-text">
+          <span className="agsdl-node-title">{boundary && ports.length ? ports.map(port => port.name).join(" · ") : data.title}</span>
+          {!boundary && data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
+        </span>
         {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-hidden="true" />}
       </button>
       <Handle type="source" position={Position.Bottom} id="out" />
@@ -83,7 +87,7 @@ function Canvas({ cards, edges: connections, selected, select, title }: {
   }, [width, height, topology, flow, selected]);
   const nodes: GraphNode[] = layout.nodes.map(({ card, position }) => ({
     id: card.path, type: "workflow", position,
-    style: { width: 210, height: ["input", "output", "approval"].includes(card.kind) ? 68 : 52 },
+    style: { width: 210, height: ["input", "output"].includes(card.kind) ? 36 : card.kind === "approval" ? 68 : 52 },
     data: { card, title: title(card), kindLabel: ["input", "output"].includes(card.kind) ? title(card) : t(`agsdl.kind.${card.kind}`, { defaultValue: card.kind }), active: selected === card.path,
       subtitle: card.kind === "input" ? card.inputs.map(port => port.name).join(" · ")
         : card.kind === "output" ? card.outputs.map(port => port.name).join(" · ")
