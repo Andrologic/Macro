@@ -14,6 +14,7 @@ import {
   type ViewerPort,
   type ViewerReference,
 } from "../../services/agsdl/viewer";
+import { localizeDiagnostics } from "../../services/agsdl/diagnostics";
 import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
 import { prepareAgsdlChatContext } from "../../services/agsdl/chatContext";
@@ -75,7 +76,8 @@ export const AgsdlEditor: React.FC<{
   const selected = selection?.key === key ? selection.path : "";
   const system = useMemo(() => projectSystemOverview(graph, document?.legacyCards.length
     ? document.legacyCards : document?.declarations.filter(item => ["Agent", "System"].includes(item.kind)) ?? []), [graph, document]);
-  const cards = system.cards;
+  const diagnostics = useMemo(() => source && document ? localizeDiagnostics(source, session?.reports ?? [], [...document.graphs.flatMap(graph => graph.cards), ...document.declarations, ...document.legacyCards]) : [], [source, document, session?.reports]);
+  const cards = useMemo(() => system.cards.map(card => ({ ...card, issueCount: diagnostics.filter(issue => issue.targets.includes(card.path)).length })), [system.cards, diagnostics]);
   const selectedEdge = system.edges.find(edge => !edge.exchangeOnly && edge.id === selected);
   const currentCard = cards.find(item => item.path === selected) ?? graph?.cards.find(item => item.path === selected) ?? document?.declarations.find(item => item.path === selected);
   // Keep an open form alive if an agent removes its component. Its captured
@@ -163,6 +165,8 @@ export const AgsdlEditor: React.FC<{
   );
   const inspect = (item: ViewerCard) => (
     <>
+      {diagnostics.filter(issue => issue.targets.includes(item.path)).map((issue, index) => <p className="agsdl-unresolved" key={index}><strong>{issue.rule}</strong> {issue.details}</p>)}
+      {item.interfaces?.length ? <section className="agsdl-ports"><h4>{t("agsdl.viewer.property.interfaces")}</h4>{item.interfaces.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</section> : null}
       {item.mission && <p className="agsdl-mission" title={item.mission}>{item.mission}</p>}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
       {item.dependencies && <section className="agsdl-ports">
@@ -199,10 +203,7 @@ export const AgsdlEditor: React.FC<{
       </details>
     </>
   );
-  const findings =
-    session?.reports.flatMap((report) =>
-      report.results.flatMap((result) => result.findings),
-    ) ?? [];
+  const findings = diagnostics;
   const hasIssues = findings.length > 0 || (document?.unresolved.length ?? 0) > 0;
   const showOverview = !!document;
   return (
@@ -317,12 +318,18 @@ export const AgsdlEditor: React.FC<{
                 </details>}
                 <details className="agsdl-details"><summary>{t("agsdl.viewer.technicalDetails")}</summary><ReadOnlyValue value={document.systemDetails} /></details>
                 <details className="agsdl-details"><summary>{t("agsdl.allDeclarations")} · {document.declarations.length}</summary>
-                  {document.declarations.map(item => <details key={item.path} className="agsdl-details"><summary>{nodeTitle(item)}</summary>{inspect(item)}</details>)}
+                  {document.declarations.map(item => <div key={item.path}><button className="agsdl-link" onClick={() => select(item.path)}>{nodeTitle(item)} · {t(`agsdl.kind.${item.kind}`, { defaultValue: item.kind })}</button></div>)}
                 </details>
                 {document.dependencies.length > 0 && <details className="agsdl-details"><summary>{t("agsdl.dependencies")}</summary><ReadOnlyValue value={document.dependencies} /></details>}
                 {document.unresolved.length > 0 && <details className="agsdl-details"><summary>{t("agsdl.viewer.unresolved")}</summary><ReadOnlyValue value={document.unresolved} /></details>}
                 {findings.length > 0 && <details className="agsdl-details"><summary>{t("agsdl.diagnostics")} · {findings.length}</summary>
-                  {findings.map((finding, index) => <p key={index}><strong>{finding.rule}</strong> {finding.details}</p>)}
+                  {findings.map((finding, index) => <div key={index}><p><strong>{finding.rule}</strong> {finding.details}</p>
+                    {finding.targets.map(path => <button className="agsdl-link" key={path} onClick={() => {
+                      const index = document.graphs.findIndex(graph => graph.cards.some(card => card.path === path));
+                      if (index >= 0) setGraphIndex(index);
+                      select(path);
+                    }}>{t("agsdl.viewer.locateIssue")} · {document.graphs.flatMap(graph => graph.cards).concat(document.declarations, document.legacyCards).find(card => card.path === path)?.title || path}</button>)}
+                  </div>)}
                 </details>}
               </>}
             </section>

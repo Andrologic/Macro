@@ -162,7 +162,27 @@
     "approvers": "Approvers",
     "approverMissing": "Approver not specified",
     "exchangeHint": "Select an agent to inspect its exchanges.",
-    "actionToApprove": "Action to approve"
+    "actionToApprove": "Action to approve",
+    "sharedProperties": "Changes to shared definitions also affect other components that reference them.",
+    "unsupportedProperties": "Linked contracts and unsupported properties are read-only. Prepare a targeted change in chat to update their consumers together.",
+    "property": {
+      "tools": "Tools",
+      "interfaces": "Interfaces",
+      "resources": "Resources",
+      "addTool": "Add tool",
+      "addResource": "Add resource",
+      "none": "No addition",
+      "operation": "Operation",
+      "inputs": "Inputs",
+      "outputs": "Outputs",
+      "remove": "Remove reference",
+      "exposedInterfaces": "Agent’s exposed interfaces",
+      "description": "Description"
+    },
+    "locateIssue": "Locate",
+    "correctIssue": "Prepare correction in chat",
+    "resourceRequired": "An invocation needs at least one resource.",
+    "duplicateReference": "Each reference must be unique in its list."
   },
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",
