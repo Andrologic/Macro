@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CircleAlert, Info, Maximize2, X } from "lucide-react";
+import { CircleAlert, Info, Maximize2, X, Undo2, Redo2 } from "lucide-react";
 import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
 import { WorkflowGraph } from "./WorkflowGraph";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
@@ -16,6 +16,7 @@ import {
 } from "../../services/agsdl/viewer";
 import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
+import { prepareAgsdlChatContext } from "../../services/agsdl/chatContext";
 
 // Chat and focused component edits share the same versioned document store.
 export const AgsdlEditor: React.FC<{
@@ -23,7 +24,7 @@ export const AgsdlEditor: React.FC<{
   planStatus?: string;
   expanded?: boolean;
   onExpand?: () => void;
-}> = ({ target, expanded, onExpand }) => {
+}> = ({ target, planStatus, expanded, onExpand }) => {
   const { t } = useAgsdlTranslation();
   const key = agsdlSessionKey(target);
   const session = useAgsdlStore((state) => state.sessions[key]);
@@ -46,6 +47,14 @@ export const AgsdlEditor: React.FC<{
       active = false;
     };
   }, [target]);
+  const changeHistory = async (redo = false) => {
+    try {
+      const store = useAgsdlStore.getState();
+      store.undo(target, redo);
+      await store.save(target);
+      setError("");
+    } catch (error) { setError(String(error)); }
+  };
   const source = session?.source;
   useEffect(() => {
     if (!source) return;
@@ -211,6 +220,10 @@ export const AgsdlEditor: React.FC<{
             onClick={() => { setOverview(!overview); setSelection(undefined); }}>
             {hasIssues ? <CircleAlert size={14} className="agsdl-unresolved" /> : <Info size={14} />}
           </button>}
+          {session?.status === "draft" && (!planStatus || planStatus === "draft") && <>
+            <button className="agsdl-icon-button" title={t("agsdl.undo")} aria-label={t("agsdl.undo")} disabled={session.saving || !session.history.length} onClick={() => void changeHistory()}><Undo2 size={14} /></button>
+            <button className="agsdl-icon-button" title={t("agsdl.redo")} aria-label={t("agsdl.redo")} disabled={session.saving || !session.future.length} onClick={() => void changeHistory(true)}><Redo2 size={14} /></button>
+          </>}
         </div>
         {document && document.graphs.length > 1 && (
           <select
@@ -273,7 +286,13 @@ export const AgsdlEditor: React.FC<{
           {(selectedCard || selectedEdge || overview) && <ComponentDetailsDialog
             key={selectedCard?.path ?? selectedEdge?.id ?? "overview"}
             title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
-            card={selectedCard} canEdit={selectedCard === currentCard} target={target}
+            card={selectedCard} canEdit={selectedCard === currentCard && (!planStatus || planStatus === "draft")} target={target}
+            onAttach={(selectedCard && selectedCard === currentCard) || selectedEdge ? async () => {
+              await prepareAgsdlChatContext(target, selectedCard
+              ? { path: selectedCard.path, title: nodeTitle(selectedCard) }
+              : { path: selectedEdge!.source, relatedPaths: [selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` });
+              if (expanded) onExpand?.();
+            } : undefined}
             onClose={() => { setOverview(false); setSelection(undefined); }}>
             <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
               {selectedCard ? inspect(selectedCard) : selectedEdge ? <>

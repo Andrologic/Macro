@@ -177,4 +177,30 @@ describe("shared AgSDL authoring session", () => {
       }),
     ).rejects.toThrow("empty");
   });
+  it("blocks undo while saving and saves undo/redo with current persisted revisions", async () => {
+    const store = useAgsdlStore.getState();
+    await store.load(target);
+    const initial = current().source;
+    store.replace(target, createExample("feature"));
+    saveDelay = new Promise(resolve => { releaseSave = resolve; });
+    const saving = store.save(target);
+    expect(() => store.undo(target)).toThrow("save");
+    releaseSave!(); await saving; saveDelay = undefined;
+    store.undo(target); await store.save(target);
+    expect(plan.agsdl?.source).toBe(initial);
+    expect(current().dirty).toBe(false);
+    store.undo(target, true); await store.save(target);
+    expect(plan.agsdl?.source).toBe(createExample("feature"));
+    expect(current().persistedRevision).toBe(4);
+  });
+
+  it("ignores a validation result after the session is removed", async () => {
+    const store = useAgsdlStore.getState();
+    await store.load(target);
+    const validating = store.validate(target);
+    useAgsdlStore.setState({ sessions: {} });
+    await expect(validating).resolves.toBeUndefined();
+    expect(useAgsdlStore.getState().sessions).toEqual({});
+  });
+
 });

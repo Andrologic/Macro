@@ -163,5 +163,16 @@
     "approverMissing": "承認者が未指定",
     "exchangeHint": "エージェントを選択するとデータの受け渡しを確認できます。",
     "actionToApprove": "承認する操作"
-  }
+  },
+  "attachToChat": "チャットに添付",
+  "chatSelection": "AgSDL の選択",
+  "removeChatSelection": "AgSDL の選択を削除",
+  "staleChatSelection": "ドキュメントが変更されました。送信する前に選択を再度添付してください。",
+  "queueSendFailed": "待機中のメッセージは送信されませんでした",
+  "queueRetained": "再試行のためにメッセージとコンテキストを保持しています: {{message}}",
+  "chatDocumentMissing": "最初に AgSDL ドキュメントを読み込んでください。",
+  "chatConversationMissing": "AgSDL コンテキストを添付する前に、このプランの会話を開いてください。",
+  "queueReplyFailed": "応答を開始できませんでした",
+  "queueRecorded": "メッセージとコンテキストは会話に保存されています。",
+  "openConversation": "会話を開く"
 }

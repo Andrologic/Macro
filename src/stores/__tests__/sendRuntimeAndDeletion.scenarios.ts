@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import type { ChatMessage, Conversation } from '../../types';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -45,6 +45,140 @@ export const registerSendRuntimeAndDeletionScenarios = (
   } = context;
 
   describe('useChatStore send runtime and deletion', () => {
+    it('preserves hidden context through steering persistence and a queued turn', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        const options = args[0] as { onComplete?: (result: unknown) => void };
+        options.onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-context')], selectedConversationId: 'chat-context',
+        selectedConversationIdsByMode: { Chat: 'chat-context' },
+      }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'chat-context', content: 'First', hiddenContext: '<agsdl_selection>\ninitial reference</agsdl_selection>' });
+      await flushAsyncWork();
+      const options = getLatestStreamOptions<{ consumePendingSteers: () => Array<{content: unknown}>; messages: unknown[] }>();
+      expect(JSON.stringify(options.messages)).toContain('initial reference');
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Steer visibly', hiddenContext: '<agsdl_selection>\nsteer reference</agsdl_selection>' }, 'steer');
+      const steers = options.consumePendingSteers();
+      expect(steers[0]?.content).toContain('steer reference');
+      const persisted = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Steer visibly');
+      expect(persisted?.hidden_context).toContain('steer reference');
+      expect(persisted?.content).toBe('Steer visibly');
+      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Steer visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>\nsteer reference</agsdl_selection>' }));
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Queued visibly', hiddenContext: '<agsdl_selection>\nqueued reference</agsdl_selection>' }, 'queue');
+      expect(useChatStore.getState().getConversationMessages('chat-context').some((message: ChatMessage) => message.content === 'Queued visibly')).toBe(false);
+      hold.resolve(); await sending; await flushAsyncWork(); await flushAsyncWork();
+      const queued = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Queued visibly');
+      expect(queued?.content).toBe('Queued visibly');
+      expect(queued?.hidden_context).toContain('queued reference');
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('queued reference');
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('initial reference');
+      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Queued visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>\nqueued reference</agsdl_selection>' }));
+    });
+
+    it('keeps a failed queued submission retryable with its hidden context', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { notify } = await import('../../components/ui/toastService');
+      let retry: (() => void | Promise<void>) | undefined;
+      const notice = spyOn(notify, 'actionRequired').mockImplementation((_title, options) => {
+        retry = options.actions[0].onClick;
+        return 'queued-failure-test';
+      });
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('queue-retry')], selectedConversationId: 'queue-retry', selectedConversationIdsByMode: { Chat: 'queue-retry' } }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'queue-retry', content: 'First' });
+      await flushAsyncWork();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'queue-retry', content: 'Keep this request', hiddenContext: '<agsdl_selection>\nkeep this reference</agsdl_selection>' }, 'queue');
+      const selectedProvider = providerState.selectedProviderId;
+      providerState.selectedProviderId = null;
+      hold.resolve(); await sending; await flushAsyncWork();
+      expect(notice).toHaveBeenCalledTimes(1);
+      expect(useChatStore.getState().getConversationMessages('queue-retry').some((message: ChatMessage) => message.content === 'Keep this request')).toBe(false);
+      providerState.selectedProviderId = selectedProvider;
+      const sendMessage = useChatStore.getState().sendMessage;
+      useChatStore.setState({ sendMessage: async () => {
+        // A different dispatch may publish the same visible text and context.
+        // It must not acknowledge the queued attempt being cancelled here.
+        useChatStore.getState().addMessage({ id: 'concurrent-request', conversation_id: 'queue-retry', task_id: '', role: 'user', content: 'Keep this request', hidden_context: '<agsdl_selection>\nkeep this reference</agsdl_selection>', timestamp: '2026-09-10T12:00:00Z' });
+        return { status: 'cancelled', conversationId: 'queue-retry', turnId: '', userMessageId: null, assistantMessageId: null };
+      } });
+      await expect(Promise.resolve(retry!())).rejects.toThrow();
+      expect(notice).toHaveBeenCalledTimes(2);
+      useChatStore.setState({ sendMessage });
+      await retry!(); await flushAsyncWork();
+      expect(useChatStore.getState().getConversationMessages('queue-retry').find((message: ChatMessage) => message.content === 'Keep this request')?.hidden_context).toContain('keep this reference');
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('keep this reference');
+      expect(useChatStore.getState().getConversationMessages('queue-retry').filter((message: ChatMessage) => message.content === 'Keep this request')).toHaveLength(2);
+      notice.mockRestore();
+    });
+
+    it('does not resend a queued message already published before a launch failure', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { notify } = await import('../../components/ui/toastService');
+      const notice = spyOn(notify, 'actionRequired').mockReturnValue('published-queue-failure');
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('queue-published')], selectedConversationId: 'queue-published', selectedConversationIdsByMode: { Chat: 'queue-published' } }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'queue-published', content: 'First' });
+      await flushAsyncWork();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'queue-published', content: 'Already saved request', hiddenContext: '<agsdl_selection>\nretained reference</agsdl_selection>' }, 'queue');
+      const internalTools = toolsStoreState.internalTools;
+      toolsStoreState.internalTools = {};
+      toolsStoreState.lastError = 'settings unavailable';
+      hold.resolve(); await sending; await flushAsyncWork();
+      const saved = () => useChatStore.getState().getConversationMessages('queue-published').filter((message: ChatMessage) => message.content === 'Already saved request');
+      expect(saved()).toHaveLength(1);
+      expect(saved()[0].hidden_context).toContain('retained reference');
+      expect(notice).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ actions: [expect.objectContaining({ label: 'Open conversation' })] }));
+      toolsStoreState.internalTools = internalTools;
+      toolsStoreState.lastError = null;
+      await useChatStore.getState().sendMessage({ conversationId: 'queue-published', content: 'A later request' });
+      await flushAsyncWork();
+      expect(saved()).toHaveLength(1);
+      notice.mockRestore();
+    });
+
+    it('does not restore queued content after the conversation is deleted during dispatch', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { notify } = await import('../../components/ui/toastService');
+      const notice = spyOn(notify, 'actionRequired').mockReturnValue('deleted-queue');
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{ ...createConversation('queue-deleted'), scope_mode: 'Chat' }], selectedConversationId: 'queue-deleted', selectedConversationIdsByMode: { Chat: 'queue-deleted' } }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'queue-deleted', content: 'First' });
+      await flushAsyncWork();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'queue-deleted', content: 'Cancelled by deletion', hiddenContext: '<agsdl_selection>\nselection</agsdl_selection>' }, 'queue');
+      useChatStore.setState({ sendMessage: async () => {
+        await useChatStore.getState().deleteConversation('queue-deleted');
+        throw new Error('Conversation deleted during dispatch');
+      } });
+      hold.resolve(); await sending; await flushAsyncWork();
+      expect(useChatStore.getState().conversations).toHaveLength(0);
+      expect(notice).not.toHaveBeenCalled();
+      notice.mockRestore();
+    });
+
     it('rejects sends without a selected provider or model before committing any message', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';

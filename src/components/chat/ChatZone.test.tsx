@@ -1092,6 +1092,36 @@ describe('ChatZone', () => {
     mock.restore();
   });
 
+  it('keeps AgSDL context removable, scoped to its plan, and includes it only on explicit send', async () => {
+    const { useAgsdlChatContext } = await import('../../services/agsdl/chatContext');
+    const { useAgsdlStore, agsdlSessionKey } = await import('../../stores/useAgsdlStore');
+    const context = { id: 'selection-1', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'version-1', persistedRevision: 1, path: '/definitions/0', title: 'Selected agent' };
+    useAgsdlStore.setState({ sessions: { [agsdlSessionKey(context)]: { source: '{}', annexes: {}, version: 'version-1', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });
+    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft' } };
+    chatState.conversations = [{ ...buildConversation(), scope_mode: 'Architect' }];
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Keep my draft');
+    await act(async () => useAgsdlChatContext.setState({ pending: { 'conv-1': context } }));
+    expect(getComposerEditor().value).toBe('Keep my draft');
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(requireContainer().textContent).toContain('Selected agent');
+    await act(async () => { useAppStore.setState({ activeArchitectPlanId: 'plan-2' }); });
+    expect(requireContainer().textContent).not.toContain('Selected agent');
+    await act(async () => { useAppStore.setState({ activeArchitectPlanId: 'plan-1' }); });
+    chatState.sendMessage.mockRejectedValueOnce(new Error('Provider unavailable'));
+    await clickSendButton();
+    expect(getComposerEditor().value).toBe('Keep my draft');
+    expect(useAgsdlChatContext.getState().pending['conv-1']).toEqual(context);
+    await clickSendButton();
+    expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-1', content: 'Keep my draft', hiddenContext: expect.stringContaining('"path":"/definitions/0"') }));
+    expect(useAgsdlChatContext.getState().pending['conv-1']).toBeUndefined();
+    await act(async () => useAgsdlChatContext.setState({ pending: { 'conv-1': context } }));
+    const remove = requireContainer().querySelector<HTMLButtonElement>('[aria-label="agsdl.removeChatSelection"]');
+    expect(remove).not.toBeNull();
+    await act(async () => remove!.click());
+    expect(useAgsdlChatContext.getState().pending['conv-1']).toBeUndefined();
+  });
+
   it('renders the first user message when the selected conversation has messages', async () => {
     chatState = {
       ...chatState,

@@ -163,5 +163,16 @@
     "approverMissing": "Approbateur à préciser",
     "exchangeHint": "Sélectionnez un agent pour voir ses échanges.",
     "actionToApprove": "Action à valider"
-  }
+  },
+  "attachToChat": "Joindre au chat",
+  "chatSelection": "Sélection AgSDL",
+  "removeChatSelection": "Retirer la sélection AgSDL",
+  "staleChatSelection": "Le document a changé. Joignez à nouveau la sélection avant l’envoi.",
+  "queueSendFailed": "Le message en attente n’a pas été envoyé",
+  "queueRetained": "Votre message et son contexte sont conservés pour réessayer : {{message}}",
+  "chatDocumentMissing": "Chargez d’abord le document AgSDL.",
+  "chatConversationMissing": "Ouvrez la conversation de ce plan avant de joindre le contexte AgSDL.",
+  "queueReplyFailed": "La réponse n’a pas pu démarrer",
+  "queueRecorded": "Votre message et son contexte sont enregistrés dans la conversation.",
+  "openConversation": "Ouvrir la conversation"
 }

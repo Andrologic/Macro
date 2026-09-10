@@ -159,6 +159,7 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
     undo(target, redo = false) {
       const current = session(target);
       if (current.status !== "draft") return;
+      if (current.saving) throw new Error("Wait for the current save to finish.");
       const from = redo ? current.future : current.history;
       const next = from.at(-1);
       if (!next) return;
@@ -209,12 +210,14 @@ export const useAgsdlStore = create<AgsdlState>((set, get) => {
       const current = session(target);
       try {
         const reports = await validateDocument(current.source, current.annexes);
-        if (session(target).version === current.version)
-          update(target, { ...session(target), reports });
+        const latest = get().sessions[agsdlSessionKey(target)];
+        if (latest?.version === current.version)
+          update(target, { ...latest, reports });
       } catch (error) {
-        if (session(target).version === current.version)
+        const latest = get().sessions[agsdlSessionKey(target)];
+        if (latest?.version === current.version)
           update(target, {
-            ...session(target),
+            ...latest,
             error: error instanceof Error ? error.message : String(error),
           });
       }

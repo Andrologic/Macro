@@ -163,5 +163,16 @@
     "approverMissing": "Approver not specified",
     "exchangeHint": "Select an agent to inspect its exchanges.",
     "actionToApprove": "Action to approve"
-  }
+  },
+  "attachToChat": "Attach to chat",
+  "chatSelection": "AgSDL selection",
+  "removeChatSelection": "Remove AgSDL selection",
+  "staleChatSelection": "The document changed. Attach the selection again before sending.",
+  "queueSendFailed": "Queued message was not sent",
+  "queueRetained": "Your message and its context are kept for retry: {{message}}",
+  "chatDocumentMissing": "Load the AgSDL document first.",
+  "chatConversationMissing": "Open this plan’s conversation before attaching AgSDL context.",
+  "queueReplyFailed": "The reply could not start",
+  "queueRecorded": "Your message and its context are saved in the conversation.",
+  "openConversation": "Open conversation"
 }
