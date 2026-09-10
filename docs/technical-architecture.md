@@ -203,14 +203,26 @@ Le panneau de conversations Chat conserve son mode de sélection multiple dans u
 
 Le visualisateur AgSDL est chargé dans `ArchitectStrategyPanel`. `useAgsdlStore`
 partage le document avec les outils `agsdl_get`/`agsdl_update`, par clé branche/plan.
-`projectSystemOverview` dérive une vue du système avec une entrée, les agents,
-les approbations et les résultats. Les frontières visuelles ne sont jamais
-écrites dans la source. Les bindings typés fournissent les libellés d’échange ;
+`projectSystemOverview` dérive une vue des participants, des conditions et des
+approbations. Les interfaces et les fins techniques restent dans les détails du
+système ; elles ne créent pas de nœuds artificiels. Les bindings typés fournissent
+les libellés d’échange ;
 les routes seules ne prouvent pas un transfert. Les échanges non adjacents sont
 consultables dans la fiche sans ajouter de flèches à la sélection. `WorkflowGraph` utilise React Flow en lecture seule et
 `layoutViewer` place les nœuds selon les routes ou les dépendances héritées.
 L’inspecteur conserve les routes techniques et les références originales.
-L’interface ne modifie pas le document. La source et les annexes sont persistées
+Les formulaires de propriétés utilisent `componentFields` et `componentProperties`
+pour produire des changements ciblés sur les propriétaires réels. Les contrats
+consommés et les configurations non prises en charge restent en lecture seule.
+`localizeDiagnostics` exploite les pointeurs, les positions en octets et les
+références non ambiguës pour associer les problèmes aux composants.
+`prepareAgsdlChatContext` joint une référence versionnée à la conversation du plan.
+Le compositeur la présente séparément du texte saisi et la transmet dans
+`hiddenContext`, y compris lors du steering ou d’une mise en file. La version est
+contrôlée avant l’envoi ; les outils relisent le document avant modification.
+L’annulation et le rétablissement utilisent l’historique de `useAgsdlStore`, puis
+la même sauvegarde versionnée que les formulaires.
+La source et les annexes sont persistées
 dans `ArchitectPlanRecord.agsdl`, avec contrôle de révision dans la file de
 mutations du plan. `migrateArchitectPlanToAgsdl` convertit les stratégies sans
 AgSDL au chargement, y compris les plans archivés, dans cette même file et via

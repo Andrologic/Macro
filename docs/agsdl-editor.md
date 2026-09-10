@@ -26,7 +26,11 @@ attente restent visibles ; les détails du système se consultent à la demande.
    de validation n’exécute cette étape : il s’agit du visualisateur du processus.
    La croix, le fond de la modale et la touche Échap referment les détails. Dans
    un plan en brouillon, le bouton de modification ouvre le nom et les instructions
-   avec Enregistrer et Annuler. Les instructions conservent leur propriétaire AgSDL,
+   avec Enregistrer et Annuler. Les sections repliées donnent accès aux outils,
+   ressources et contrats pris en charge. Les références se choisissent parmi les
+   déclarations existantes ; un contrat déjà consommé reste en lecture seule.
+   « Toutes les déclarations » donne aussi accès aux définitions inutilisées.
+   Les instructions conservent leur propriétaire AgSDL,
    y compris lorsqu’elles sont partagées. Une saisie non enregistrée est confirmée
    avant fermeture. Un conflit de version conserve la saisie ; un échec de sauvegarde
    conserve le document modifié et propose de réessayer. Les chemins
@@ -38,7 +42,19 @@ attente restent visibles ; les détails du système se consultent à la demande.
    et recadré. Ces gestes ne modifient pas la source AgSDL.
 5. Dans un plan en brouillon, demander à l’agent de créer un exemple Release ou
    de modifier la mission d’un agent. Le document enregistré apparaît dans le
-   visualisateur. Les erreurs de sauvegarde restent visibles.
+   visualisateur. Depuis les détails d’un composant, d’une relation ou d’un problème
+   localisé, joindre une référence au chat pour préciser la demande. Cette action
+   revient au chat, préserve le brouillon et n’envoie aucun message. La sélection
+   peut être retirée ; si la source change, il faut la joindre à nouveau. Les
+   métadonnées techniques accompagnent la requête sans apparaître dans le texte
+   du message. Les erreurs de sauvegarde restent visibles.
+6. Utiliser Annuler ou Rétablir dans l’en-tête pour parcourir les modifications
+   de la session. Le document restauré est enregistré dans le plan. Ces commandes
+   sont désactivées pendant une sauvegarde et hors du statut brouillon.
+7. Ouvrir les diagnostics depuis les détails du système. Lorsqu’un problème
+   désigne un composant identifiable, le retrouver ou le joindre au chat pour
+   correction. Un problème sans emplacement fiable reste global. Les contrôles
+   vérifient le document ; ils ne garantissent pas son exécution.
 
 ## Conversion des plans existants
 

@@ -285,7 +285,9 @@ Il doit préparer concrètement la suite de l'implémentation.
 
 Le panneau droit Architect présente un canvas AgSDL non éditable. La conversation
 conserve sa place centrale. L’agent peut modifier le document ; une modale permet
-aussi de modifier le nom et les instructions d’un composant dans un plan en brouillon.
+aussi de modifier le nom, les instructions et les propriétés prises en charge d’un
+composant dans un plan en brouillon. Les outils, ressources et contrats restent
+dans des sections repliées ; les références partagées conservent leur propriétaire.
 Le canvas montre les participants, les relations déclarées, les conditions et
 les étapes d’approbation. Les interfaces du système et les terminaux de fin ne
 créent pas de nœuds. Le bouton de détails dans l’en-tête donne accès au point de
@@ -296,6 +298,14 @@ son espace et son zoom. Les changements manuels sont enregistrés avec un contr�
 de version ; une modification concurrente bloque l’écriture sans effacer la saisie.
 Les connexions sont sélectionnables pour consulter leur nature et les transferts
 explicitement déclarés, sans libellés permanents sur le canvas.
+Depuis les détails d’un composant ou d’une relation, une action joint sa référence
+au prochain message du chat sans modifier le texte saisi ni envoyer de message.
+La sélection est visible et retirable. Si le document a changé, elle doit être
+actualisée avant l’envoi. Les problèmes de validation sont rattachés aux composants
+lorsqu’un emplacement fiable permet d’identifier un composant. Ils peuvent alors
+être joints au chat pour préparer une correction.
+Les boutons Annuler et Rétablir parcourent les modifications de la session et
+enregistrent le document dans le plan en brouillon.
 Le bouton d’agrandissement ouvre le visualisateur dans une modale sans modifier
 la disposition des panneaux.
 Les anciennes stratégies sont converties en déclarations AgSDL descriptives,
