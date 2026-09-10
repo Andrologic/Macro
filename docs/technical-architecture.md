@@ -206,8 +206,8 @@ partage le document avec les outils `agsdl_get`/`agsdl_update`, par clé branche
 `projectSystemOverview` dérive une vue du système avec une entrée, les agents,
 les approbations et les résultats. Les frontières visuelles ne sont jamais
 écrites dans la source. Les bindings typés fournissent les libellés d’échange ;
-les routes seules ne prouvent pas un transfert. Les échanges non adjacents se
-révèlent à la sélection. `WorkflowGraph` utilise React Flow en lecture seule et
+les routes seules ne prouvent pas un transfert. Les échanges non adjacents sont
+consultables dans la fiche sans ajouter de flèches à la sélection. `WorkflowGraph` utilise React Flow en lecture seule et
 `layoutViewer` place les nœuds selon les routes ou les dépendances héritées.
 L’inspecteur conserve les routes techniques et les références originales.
 L’interface ne modifie pas le document. La source et les annexes sont persistées

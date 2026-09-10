@@ -133,25 +133,31 @@ export const AgsdlEditor: React.FC<{
         ))}
       </section>
     );
+  const exchangeSummary = (item: ViewerCard) => (
+    <div className="agsdl-exchange-summary">
+      {(["inputs", "outputs"] as const).map(direction => item[direction].length > 0 && (
+        <section key={direction}>
+          <h4>{t(`agsdl.viewer.${direction}`)}</h4>
+          {item[direction].map(port => <div key={port.name} className="agsdl-exchange-row">
+            {direction === "inputs" && item.kind !== "input" && port.binding
+              ? reference(port.binding) : port.name}
+            {direction === "inputs" && item.kind !== "input" && !port.binding &&
+              <span className="agsdl-muted"> · {t("agsdl.viewer.noBinding")}</span>}
+          </div>)}
+        </section>
+      ))}
+    </div>
+  );
   const inspect = (item: ViewerCard) => (
     <>
-      {item.mission && <p className="agsdl-mission">{item.mission}</p>}
+      {item.mission && <p className="agsdl-mission" title={item.mission}>{item.mission}</p>}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
       {item.dependencies && <section className="agsdl-ports">
         <h4>{t("agsdl.viewer.dependencies")}</h4>
         {item.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
         <p className="agsdl-muted">{t("agsdl.viewer.unknownTransfers")}</p>
       </section>}
-      {portList(item.inputs, "inputs", true, item.kind !== "input")}
-      {portList(item.outputs, "outputs", true)}
-      {item.tools?.length ? <section className="agsdl-ports">
-        <h4>{t("agsdl.agentTools")}</h4>
-        {item.tools.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
-      </section> : null}
-      {item.resources?.length ? <section className="agsdl-ports">
-        <h4>{t("agsdl.viewer.resources")}</h4>
-        {item.resources.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
-      </section> : null}
+      {exchangeSummary(item)}
       {item.kind === "approval" && <section className="agsdl-ports">
         {item.approvalCall && <p>{t("agsdl.viewer.actionToApprove")} · {reference(item.approvalCall)}</p>}
         <h4>{t("agsdl.viewer.approvers")}</h4>
@@ -159,12 +165,23 @@ export const AgsdlEditor: React.FC<{
       </section>}
       <details className="agsdl-details">
         <summary>{t("agsdl.viewer.technicalDetails")}</summary>
-      {item.branches.length > 0 && <section className="agsdl-ports">
-        <h4>{t("agsdl.viewer.control")}</h4>
-        {item.branches.map(branch => <div key={branch.label}>
-          {t(`agsdl.edge.${branch.label}`)} → {reference(branch.reference)}
-        </div>)}
-      </section>}
+        {item.mission && <p>{item.mission}</p>}
+        {portList(item.inputs, "inputs", true, item.kind !== "input")}
+        {portList(item.outputs, "outputs", true)}
+        {item.tools?.length ? <section className="agsdl-ports">
+          <h4>{t("agsdl.agentTools")}</h4>
+          {item.tools.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
+        </section> : null}
+        {item.resources?.length ? <section className="agsdl-ports">
+          <h4>{t("agsdl.viewer.resources")}</h4>
+          {item.resources.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
+        </section> : null}
+        {item.branches.length > 0 && <section className="agsdl-ports">
+          <h4>{t("agsdl.viewer.control")}</h4>
+          {item.branches.map(branch => <div key={branch.label}>
+            {t(`agsdl.edge.${branch.label}`)} → {reference(branch.reference)}
+          </div>)}
+        </section>}
         <ReadOnlyValue value={item.details} />
       </details>
     </>
@@ -174,7 +191,7 @@ export const AgsdlEditor: React.FC<{
       report.results.flatMap((result) => result.findings),
     ) ?? [];
   return (
-    <div className="agsdl-viewer" aria-label={t("agsdl.editor")}>
+    <div className="agsdl-viewer" aria-label={t("agsdl.editor")} onKeyDown={event => { if (event.key === "Escape") { setOverview(false); setSelection(undefined); } }}>
       <header className="agsdl-viewer-header">
         <strong title={document?.title}>{document?.title || t("agsdl.editor")}</strong>
         <div className="agsdl-header-actions">
@@ -246,7 +263,7 @@ export const AgsdlEditor: React.FC<{
             {document.migrated ? t("agsdl.viewer.dependencies") : graph ? t("agsdl.viewer.exchangeHint") : t("agsdl.viewer.declarative")}
             {findings.length > 0 && <button className="agsdl-link" onClick={() => { setOverview(true); setSelection(undefined); }}>{t("agsdl.diagnostics")} · {findings.length}</button>}
           </div>
-          {(selectedCard || overview) && <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
+          {(selectedCard || overview) && <section key={selectedCard?.path ?? "overview"} className={`agsdl-inspector${selectedCard ? " is-node-inspector" : ""}`} aria-label={t("agsdl.properties")}>
             <header>
               <strong>{selectedCard ? nodeTitle(selectedCard) : graph?.title || document.title}</strong>
               <button className="agsdl-icon-button" onClick={() => { setOverview(false); setSelection(undefined); }} aria-label={t("agsdl.close")}><X size={14} /></button>

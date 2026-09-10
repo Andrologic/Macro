@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { Bot, CircleHelp, GitBranch, Hand, LogIn, LogOut, Maximize2, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
@@ -25,7 +25,6 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   return (
     <>
       <Handle type="target" position={Position.Top} id="in" />
-      <Handle type="target" position={Position.Left} id="side-in" />
       <button
         className={`agsdl-graph-node nodrag${data.active ? " is-selected" : ""}${["input", "output"].includes(card.kind) ? " is-boundary" : ""}${card.kind === "approval" ? " is-interaction" : ""}`}
         onClick={() => data.select(data.active ? "" : card.path)}
@@ -37,7 +36,6 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-hidden="true" />}
       </button>
       <Handle type="source" position={Position.Bottom} id="out" />
-      <Handle type="source" position={Position.Right} id="side-out" />
     </>
   );
 }
@@ -56,11 +54,32 @@ function Canvas({ cards, edges: connections, selected, select, title }: {
   const flow = useReactFlow<GraphNode>();
   const layout = useMemo(() => layoutViewer(cards, connections), [cards, connections]);
   const topology = JSON.stringify(layout.nodes.map(node => [node.card.path, node.position]));
+  const fitted = useRef("");
   useEffect(() => {
     if (!width || !height) return;
-    const timer = setTimeout(() => void flow.fitView(fitOptions), 80);
+    const timer = setTimeout(() => {
+      const fitKey = `${width}:${topology}`;
+      if (fitted.current !== fitKey) {
+        fitted.current = fitKey;
+        void flow.fitView(fitOptions);
+        return;
+      }
+      // Opening details must preserve the user's zoom. Pan only if the selected
+      // node would be obscured by the inspector or the canvas controls.
+      const node = flow.getNode(selected);
+      if (!node) return;
+      const viewport = flow.getViewport();
+      const allNodes = flow.getNodes();
+      const graphTop = Math.min(...allNodes.map(item => item.position.y));
+      const graphBottom = Math.max(...allNodes.map(item => item.position.y + (item.measured?.height ?? 68)));
+      const canShowAll = (graphBottom - graphTop) * viewport.zoom <= height - 70;
+      const top = (canShowAll ? graphTop : node.position.y) * viewport.zoom + viewport.y;
+      const bottom = (canShowAll ? graphBottom : node.position.y + (node.measured?.height ?? 68)) * viewport.zoom + viewport.y;
+      const offset = top < 20 ? 20 - top : bottom > height - 50 ? height - 50 - bottom : 0;
+      if (offset) void flow.setViewport({ ...viewport, y: viewport.y + offset });
+    }, 80);
     return () => clearTimeout(timer);
-  }, [width, height, topology, flow]);
+  }, [width, height, topology, flow, selected]);
   const nodes: GraphNode[] = layout.nodes.map(({ card, position }) => ({
     id: card.path, type: "workflow", position,
     style: { width: 210, height: ["input", "output", "approval"].includes(card.kind) ? 68 : 52 },
@@ -70,20 +89,19 @@ function Canvas({ cards, edges: connections, selected, select, title }: {
         : card.kind === "approval" ? card.approvers?.length ? card.approvers.map(ref => ref.label).join(" · ") : t("agsdl.viewer.approverMissing") : "",
       select },
   }));
-  const edges = layout.edges.filter(edge => !edge.exchangeOnly || edge.source === selected || edge.target === selected).map(edge => {
-    const related = edge.source === selected || edge.target === selected;
-    const color = edge.dependency || edge.exchangeOnly ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
+  const edges = layout.edges.filter(edge => !edge.exchangeOnly).map(edge => {
+    const color = edge.dependency ? "rgb(var(--muted-foreground))" : "rgb(var(--primary))";
     const transfer = edge.transfers?.join(", ");
     const condition = edge.label === "true" ? t("agsdl.edge.true") : edge.label === "false" ? t("agsdl.edge.false") : undefined;
     return {
       ...edge, type: "smoothstep",
-      sourceHandle: edge.exchangeOnly ? "side-out" : "out",
-      targetHandle: edge.exchangeOnly ? "side-in" : "in",
+      sourceHandle: "out",
+      targetHandle: "in",
       label: edge.label === "entry" || cards.find(card => card.path === edge.target)?.kind === "output" ? undefined
         : transfer ? (transfer.length > 32 ? `${transfer.slice(0, 29)}…` : transfer) : condition,
       ariaLabel: `${title(cards.find(card => card.path === edge.source)!)} → ${title(cards.find(card => card.path === edge.target)!)}${transfer ? ` · ${transfer}` : ""}`,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
-      style: { stroke: color, strokeWidth: related ? 2 : 1.3, strokeDasharray: edge.exchangeOnly || edge.dependency ? "4 4" : undefined, opacity: selected && !related ? 0.25 : 0.8 },
+      style: { stroke: color, strokeWidth: 1.3, strokeDasharray: edge.dependency ? "4 4" : undefined, opacity: 0.8 },
       labelStyle: { fill: "rgb(var(--muted-foreground))", fontSize: 10 },
       labelBgStyle: { fill: "rgb(var(--background))" },
     };

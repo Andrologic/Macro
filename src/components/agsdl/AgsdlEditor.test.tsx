@@ -63,6 +63,25 @@ describe("AgSDL viewer", () => {
     expect(selector.value).toBe("1");
   });
 
+  it("keeps technical fields collapsed and resets them when selecting another agent", async () => {
+    await mount();
+    const agents = container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node:not(.is-boundary)");
+    act(() => agents[1].click());
+    const inspector = container!.querySelector(".agsdl-inspector")!;
+    const summary = inspector.querySelector(".agsdl-exchange-summary")!;
+    expect(summary.textContent).toContain("Specification · report");
+    expect(summary.textContent).not.toContain("string");
+    const technical = inspector.querySelector("details")!;
+    expect(technical.open).toBe(false);
+    expect(technical.textContent).toContain("string");
+    technical.open = true;
+    act(() => agents[2].click());
+    expect(container!.querySelector(".agsdl-inspector details")!.hasAttribute("open")).toBe(false);
+    act(() => container!.querySelector(".agsdl-inspector button")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container!.querySelector(".agsdl-inspector")).toBeNull();
+    expect(useAgsdlStore.getState().sessions[key].dirty).toBe(false);
+  });
+
   it("retries saving the agent draft without reloading it", async () => {
     await mount();
     act(() => useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], dirty: true, error: "Save failed" } } })));

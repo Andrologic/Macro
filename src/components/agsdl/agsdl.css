@@ -47,7 +47,13 @@
 .agsdl-inspector > header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agsdl-inspector-body { padding: 0 12px 12px; overflow: auto; overflow-wrap: anywhere; }
 .agsdl-inspector-body p { line-height: 1.6; margin: 6px 0; }
-.agsdl-mission { white-space: pre-wrap; }
+.agsdl-mission { white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.agsdl-inspector.is-node-inspector { max-height: min(34%, 280px); }
+.agsdl-exchange-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 10px; }
+.agsdl-exchange-summary h4 { color: rgb(var(--muted-foreground)); font-size: 11px; margin-bottom: 4px; }
+.agsdl-exchange-row { line-height: 1.5; margin: 3px 0; overflow-wrap: anywhere; }
+.agsdl-exchange-summary .agsdl-link { text-decoration: none; }
+.agsdl-exchange-summary .agsdl-link:hover { text-decoration: underline; }
 .agsdl-muted, .agsdl-properties dt { color: rgb(var(--muted-foreground)); }
 .agsdl-ports { margin-top: 10px; }
 .agsdl-ports h4 { font-size: 11px; color: rgb(var(--muted-foreground)); margin-bottom: 4px; }

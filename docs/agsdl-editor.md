@@ -16,8 +16,9 @@ un document vide.
    d’approbation sont visibles, avec les approbateurs explicitement définis. Le
    résultat présente les sorties déclarées, ou une simple fin si elles sont vides.
 3. Sélectionner un nœud pour consulter sa mission, ses outils et ses échanges.
-   Les données partagées et les échanges non adjacents apparaissent à la sélection,
-   en pointillés, pour ne pas suggérer qu’une approbation peut être contournée.
+   La sélection conserve le zoom et les flèches du graphe. La fiche résume la
+   mission et les échanges ; les données partagées et les échanges non adjacents
+   y indiquent leur provenance. Les types, outils et ressources restent repliés.
    Une approbation indique l’action à valider et l’approbateur prévu. Aucun bouton
    de validation n’exécute cette étape : il s’agit du visualisateur du processus.
    Le fond du graphe et la touche Échap referment la sélection. Les chemins

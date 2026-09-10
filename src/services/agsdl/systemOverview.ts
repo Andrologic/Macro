@@ -53,7 +53,8 @@ export function projectSystemOverview(graph: ViewerGraph | undefined, declaratio
       const source = ref.source === "input" ? input.path : ref.source === "step" ? ref.target : undefined;
       if (!source || !byPath.has(source)) continue;
       // Shared context is shown at the boundary and in the receiving agent's details.
-      // Non-adjacent exchanges are revealed on selection rather than implying a shortcut.
+      // Keep non-adjacent exchanges separate from the process path; their bindings
+      // remain available in the inspector without drawing a shortcut on selection.
       let edge = edges.find(edge => edge.source === source && edge.target === card.path);
       if (!edge) {
         edge = { id: `${source}/exchange/${card.path}`, source, target: card.path, label: "exchange", dependency: false, exchangeOnly: true };
