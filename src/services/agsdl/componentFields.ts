@@ -8,7 +8,7 @@ export interface ComponentField {
   container: string;
   containerExists: boolean;
   value: string;
-  kind: "name" | "instructions";
+  kind: "name" | "instructions" | "description";
 }
 
 /** Resolve editable text to its actual owner; never overwrite a composed mission. */
@@ -48,7 +48,7 @@ export function componentFields(source: string, card: ViewerCard): ComponentFiel
     }
   }
   if (owner.kind === "Instructions") fields.push(field(path, owner, "payload", "body", text(object(owner.payload).body), "instructions"));
-  if (fields.length === 1) fields.push(field(path, owner, "annotations", "description", text(object(owner.annotations).description), "instructions"));
+  if (fields.length === 1) fields.push(field(path, owner, "annotations", "description", text(object(owner.annotations).description), ["Agent", "invoke"].includes(text(owner.kind)) ? "instructions" : "description"));
   return fields.filter((item, index) => fields.findIndex(other => other.path === item.path) === index);
 }
 

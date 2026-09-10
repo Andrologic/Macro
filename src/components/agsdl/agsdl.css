@@ -79,12 +79,14 @@
 .agsdl-detail-modal .agsdl-inspector { max-height: none; border: 0; overflow: visible; }
 .agsdl-detail-modal .agsdl-mission { display: block; overflow: visible; }
 .agsdl-edit-field { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
-.agsdl-edit-field input, .agsdl-edit-field textarea { width: 100%; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--background)); color: inherit; padding: 9px 10px; }
+.agsdl-edit-field input, .agsdl-edit-field textarea, .agsdl-edit-field select { width: 100%; border: 1px solid rgb(var(--border)); border-radius: 6px; background: rgb(var(--background)); color: inherit; padding: 9px 10px; }
 .agsdl-edit-field textarea { resize: vertical; min-height: 120px; }
-.agsdl-edit-field input:focus-visible, .agsdl-edit-field textarea:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }
+.agsdl-edit-field input:focus-visible, .agsdl-edit-field textarea:focus-visible, .agsdl-edit-field select:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 2px; }
 .agsdl-detail-modal > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid rgb(var(--border)); }
 .agsdl-detail-modal > footer button, .agsdl-discard button { padding: 7px 12px; border-radius: 6px; border: 1px solid rgb(var(--border)); }
 .agsdl-detail-modal > footer button[type="submit"] { background: rgb(var(--primary)); color: rgb(var(--primary-foreground)); border-color: transparent; }
 .agsdl-detail-modal button:disabled { opacity: 0.5; cursor: default; }
 .agsdl-discard { margin-top: 16px; }
 .agsdl-discard button + button { margin-left: 8px; }
+
+.agsdl-edit-field select:disabled { opacity: 0.65; }

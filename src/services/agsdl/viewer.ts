@@ -24,6 +24,8 @@ export interface ViewerCard {
   dependencies?: ViewerReference[];
   outcome?: string;
   tools?: ViewerReference[];
+  interfaces?: ViewerReference[];
+  issueCount?: number;
   resources?: ViewerReference[];
   approvers?: ViewerReference[];
   approvalCall?: ViewerReference;
@@ -76,6 +78,7 @@ export function projectViewer(source: string) {
           ? `${text(external.dependency)} · ${text(object(external.key).id)}`
           : text(external.id) || display(ref),
       source: "unknown",
+      target: definition ? `/definitions/${definitions.indexOf(definition)}` : undefined,
       unresolved: !definition,
     };
   };
@@ -191,6 +194,7 @@ export function projectViewer(source: string) {
         outputs: step.kind === "end" ? inputs : ports(step.outputs),
         outcome: text(step.outcome),
         tools: toolsFor(agent),
+        interfaces: Object.hasOwn(step, "interface") ? [definitionReference(step.interface)] : [],
         resources: list(step.resources).map(definitionReference),
         ...(step.kind === "approval" ? {
           approvers: list(object(resolve(step.requirement)?.payload).approvers).map(definitionReference),
@@ -226,6 +230,7 @@ export function projectViewer(source: string) {
       text(object(definition.annotations).description),
     unresolved: false,
     tools: toolsFor(definition),
+    interfaces: list(doc.relations).map(object).filter(relation => relation.relation === "exposes" && keyId(relation.source) === keyId(definition.key)).map(relation => definitionReference(relation.target)),
     inputs: [],
     outputs: [],
     branches: [],

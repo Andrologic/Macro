@@ -45,6 +45,27 @@ describe("AgSDL viewer", () => {
     expect(document.body.querySelector(".agsdl-detail-modal")).toBeNull();
   });
 
+  it("attaches a localized diagnostic through the same chat return path and preserves failures", async () => {
+    await mount();
+    const closeExpanded = mock(() => undefined);
+    const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockRejectedValueOnce(new Error("agsdl.chatConversationMissing"));
+    act(() => useAgsdlStore.setState(state => ({ sessions: { [key]: { ...state.sessions[key], reports: [{ operation: "inspect", results: [{ input: "primary", unit: "test", verdict: "fail", findings: [
+      { rule: "resource-rule", outcome: "fail", details: "Check this resource", location: { pointer: "/graphs/0/steps/0/resources/0" } },
+      { rule: "unknown-rule", outcome: "fail", details: "Unknown location", location: { pointer: "/missing" } },
+    ] }] }] } } })));
+    await act(async () => root!.render(<AgsdlEditor target={target} expanded onExpand={closeExpanded} />));
+    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!.click());
+    const button = [...document.body.querySelectorAll<HTMLButtonElement>(".agsdl-inspector button")].find(button => button.textContent === "Prepare correction in chat")!;
+    await act(async () => button.click());
+    expect(attach).toHaveBeenCalledWith(target, { path: "/graphs/0/steps/0/resources/0", title: "Specification", diagnostic: "resource-rule: Check this resource" });
+    expect(closeExpanded).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("Open this plan");
+    attach.mockResolvedValueOnce(undefined);
+    await act(async () => button.click());
+    expect(closeExpanded).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelector(".agsdl-detail-modal")).toBeNull();
+  });
+
   it("keeps system interfaces in the overview and component interfaces on their owner", async () => {
     await mount();
     const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
