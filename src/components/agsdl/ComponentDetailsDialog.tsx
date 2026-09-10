@@ -1,13 +1,13 @@
 import { useState, type ReactNode } from "react";
-import { Pencil, X } from "lucide-react";
+import { Pencil, X, MessageSquarePlus } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
 import { componentChanges, componentFields, type ComponentField } from "../../services/agsdl/componentFields";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 
-export function ComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose }: {
-  title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void;
+export function ComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose, onAttach }: {
+  title: string; target: AgsdlTarget; card?: ViewerCard; canEdit?: boolean; children: ReactNode; onClose: () => void; onAttach?: () => Promise<void>;
 }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
@@ -52,6 +52,10 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     backdropClassName="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
     panelClassName="agsdl-detail-modal">
     <header><strong>{title}</strong><div className="agsdl-header-actions">
+      {!draft && onAttach && <button className="agsdl-icon-button" disabled={busy} title={t("agsdl.attachToChat")} aria-label={t("agsdl.attachToChat")} onClick={() => {
+        setBusy(true); setError("");
+        void onAttach().then(onClose).catch((error: unknown) => setError(error instanceof Error ? error.message : String(error))).finally(() => setBusy(false));
+      }}><MessageSquarePlus size={15} /></button>}
       {!draft && canEdit && card && ["invoke", "Agent", "System", "Instructions", "condition", "approval"].includes(card.kind) && session?.status === "draft" && <button className="agsdl-icon-button" onClick={start} disabled={session.saving} aria-label={t("agsdl.viewer.editComponent")} title={t("agsdl.viewer.editComponent")}><Pencil size={15} /></button>}
       <button className="agsdl-icon-button" disabled={busy} onClick={close} aria-label={t("agsdl.close")}><X size={16} /></button>
     </div></header>

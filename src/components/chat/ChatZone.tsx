@@ -1,3 +1,6 @@
+import { useAgsdlChatContext, serializeAgsdlChatContext, isAgsdlChatContextCurrent } from "../../services/agsdl/chatContext";
+import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
+import { AgsdlChatSelection } from "../agsdl/AgsdlChatSelection";
 import React, {
   Suspense,
   useCallback,
@@ -2979,6 +2982,12 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     applySavedComposerDraft(session);
   }, [applySavedComposerDraft]);
 
+  const { t: agsdlT } = useAgsdlTranslation();
+  const agsdlContext = useAgsdlChatContext(state => {
+    const pending = selectedConversationId ? state.pending[selectedConversationId] : undefined;
+    return mode === 'Architect' && pending?.planId === activeArchitectPlanId ? pending : undefined;
+  });
+
   const sendComposerMessage = async (
     textOverride?: string,
     activeBehaviorOverride?: 'steer' | 'queue',
@@ -2987,6 +2996,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
+    if (agsdlContext && !isAgsdlChatContextCurrent(agsdlContext)) {
+      notify.warning(agsdlT("agsdl.staleChatSelection"));
+      return;
+    }
     if (isBusySending) {
       if (!selectedConversationId || !text) return;
       try {
@@ -2995,12 +3008,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           {
             conversationId: selectedConversationId,
             content: text,
+            hiddenContext: serializeAgsdlChatContext(agsdlContext),
             taskId: implementTaskIdForSend,
             images: [...composerImages],
             ...(internalAgentProfile ? { internalAgentProfile } : {}),
           },
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
+        if (agsdlContext) useAgsdlChatContext.getState().remove(selectedConversationId, agsdlContext.id);
         if (internalAgentProfile) {
           clearConflictAssistantInternalAgentProfile(selectedConversationId);
         }
@@ -3063,6 +3078,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     }
     const conversationId = await ensureConversation();
     if (!conversationId) return;
+    if (agsdlContext && !isAgsdlChatContextCurrent(agsdlContext)) {
+      notify.warning(agsdlT("agsdl.staleChatSelection"));
+      return;
+    }
     const conversationDraftKey = `conversation:${conversationId}`;
     migrateComposerDraftContext(composerDraftContextKey, conversationDraftKey);
     const content = goalCommand?.kind === 'activate' ? goalCommand.objective : text;
@@ -3167,6 +3186,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       const sendPromise = sendMessage({
         conversationId,
         content,
+        hiddenContext: serializeAgsdlChatContext(agsdlContext?.conversationId === conversationId ? agsdlContext : undefined),
         taskId: implementTaskIdForSend,
         images: imagesForMessage,
         ...(internalAgentProfile ? { internalAgentProfile } : {}),
@@ -3188,6 +3208,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       }
       const result = await sendPromise;
       if (result.status === 'sent') {
+        if (agsdlContext) useAgsdlChatContext.getState().remove(conversationId, agsdlContext.id);
         if (goalEditTransactionId) {
           if (settleConversationGoalEdit(goalEditTransactionId, 'commit')) {
             setConversationGoalStatus(conversationId, 'executor_running');
@@ -4077,6 +4098,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         <ScrollSeparator state={separatorState} />
         <footer className="bg-card/30 p-3" data-tour-id="chat-footer">
           <div className="w-full max-w-3xl mx-auto space-y-3">
+            {agsdlContext && <AgsdlChatSelection context={agsdlContext} />}
             {!activeQuestionnaire && !activePendingToolApproval && <input
               ref={composerFileInputRef}
               type="file"

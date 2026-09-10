@@ -163,5 +163,9 @@
     "approverMissing": "承認者が未指定",
     "exchangeHint": "エージェントを選択するとデータの受け渡しを確認できます。",
     "actionToApprove": "承認する操作"
-  }
+  },
+  "attachToChat": "チャットに添付",
+  "chatSelection": "AgSDL の選択",
+  "removeChatSelection": "AgSDL の選択を削除",
+  "staleChatSelection": "ドキュメントが変更されました。送信する前に選択を再度添付してください。"
 }

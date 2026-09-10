@@ -1038,6 +1038,7 @@ export type ActiveTurnSubmissionBehavior = "steer" | "queue";
 export interface ComposerSubmissionPayload {
   conversationId: string;
   content: string;
+  hiddenContext?: string;
   taskId?: string | null;
   images?: MessageImageAttachment[];
   internalAgentProfile?: InternalAgentProfile | null;
@@ -15475,17 +15476,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       const contextRefs = persistableContextRefs(get().composerContextRefs);
       const revision = composerContextRefsRevision;
+      const providerContent = [content, payload.hiddenContext].filter(Boolean).join("\n\n");
       const steerMessage: StreamMessage = {
         role: "user",
         content: payload.images?.length
           ? [
-              { type: "text", text: content },
+              { type: "text", text: providerContent },
               ...payload.images.map((image) => ({
                 type: "image_url" as const,
                 image_url: { url: image.dataUrl },
               })),
             ]
-          : content,
+          : providerContent,
         ...(payload.images?.length
           ? { image_metadata: getImageContextMetadata(payload.images) }
           : {}),
@@ -15500,6 +15502,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           turnId: runtime.turnId ?? createConversationTurnId(),
           taskId: payload.taskId ?? conversation?.task_id ?? "",
           content,
+          hiddenContext: payload.hiddenContext,
           contextRefs,
         });
       } catch (error) {

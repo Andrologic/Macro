@@ -45,6 +45,39 @@ export const registerSendRuntimeAndDeletionScenarios = (
   } = context;
 
   describe('useChatStore send runtime and deletion', () => {
+    it('preserves hidden context through steering persistence and a queued turn', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        const options = args[0] as { onComplete?: (result: unknown) => void };
+        options.onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('chat-context')], selectedConversationId: 'chat-context',
+        selectedConversationIdsByMode: { Chat: 'chat-context' },
+      }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'chat-context', content: 'First' });
+      await flushAsyncWork();
+      const options = getLatestStreamOptions<{ consumePendingSteers: () => Array<{content: unknown}> }>();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Steer visibly', hiddenContext: '<agsdl_selection>steer reference</agsdl_selection>' }, 'steer');
+      const steers = options.consumePendingSteers();
+      expect(steers[0]?.content).toContain('steer reference');
+      const persisted = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Steer visibly');
+      expect(persisted?.hidden_context).toContain('steer reference');
+      expect(persisted?.content).toBe('Steer visibly');
+      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Steer visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>steer reference</agsdl_selection>' }));
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Queued visibly', hiddenContext: '<agsdl_selection>queued reference</agsdl_selection>' }, 'queue');
+      expect(useChatStore.getState().getConversationMessages('chat-context').some((message: ChatMessage) => message.content === 'Queued visibly')).toBe(false);
+      hold.resolve(); await sending; await flushAsyncWork(); await flushAsyncWork();
+      const queued = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Queued visibly');
+      expect(queued?.content).toBe('Queued visibly');
+      expect(queued?.hidden_context).toContain('queued reference');
+      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Queued visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>queued reference</agsdl_selection>' }));
+    });
+
     it('rejects sends without a selected provider or model before committing any message', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';

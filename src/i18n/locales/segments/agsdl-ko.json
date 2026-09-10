@@ -163,5 +163,9 @@
     "approverMissing": "승인자 미지정",
     "exchangeHint": "에이전트를 선택하여 데이터 교환을 확인하세요.",
     "actionToApprove": "승인할 작업"
-  }
+  },
+  "attachToChat": "채팅에 첨부",
+  "chatSelection": "AgSDL 선택",
+  "removeChatSelection": "AgSDL 선택 제거",
+  "staleChatSelection": "문서가 변경되었습니다. 보내기 전에 선택 항목을 다시 첨부하세요."
 }

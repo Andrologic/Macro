@@ -163,5 +163,9 @@
     "approverMissing": "Approbateur à préciser",
     "exchangeHint": "Sélectionnez un agent pour voir ses échanges.",
     "actionToApprove": "Action à valider"
-  }
+  },
+  "attachToChat": "Joindre au chat",
+  "chatSelection": "Sélection AgSDL",
+  "removeChatSelection": "Retirer la sélection AgSDL",
+  "staleChatSelection": "Le document a changé. Joignez à nouveau la sélection avant l’envoi."
 }

@@ -163,5 +163,9 @@
     "approverMissing": "Approver not specified",
     "exchangeHint": "Select an agent to inspect its exchanges.",
     "actionToApprove": "Action to approve"
-  }
+  },
+  "attachToChat": "Attach to chat",
+  "chatSelection": "AgSDL selection",
+  "removeChatSelection": "Remove AgSDL selection",
+  "staleChatSelection": "The document changed. Attach the selection again before sending."
 }

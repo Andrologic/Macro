@@ -163,5 +163,9 @@
     "approverMissing": "Freigebende nicht angegeben",
     "exchangeHint": "Wähle einen Agenten, um seinen Datenaustausch zu sehen.",
     "actionToApprove": "Freizugebende Aktion"
-  }
+  },
+  "attachToChat": "Zum Chat hinzufügen",
+  "chatSelection": "AgSDL-Auswahl",
+  "removeChatSelection": "AgSDL-Auswahl entfernen",
+  "staleChatSelection": "Das Dokument wurde geändert. Füge die Auswahl vor dem Senden erneut hinzu."
 }
