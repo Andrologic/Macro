@@ -287,9 +287,12 @@ export const AgsdlEditor: React.FC<{
             key={selectedCard?.path ?? selectedEdge?.id ?? "overview"}
             title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
             card={selectedCard} canEdit={selectedCard === currentCard && (!planStatus || planStatus === "draft")} target={target}
-            onAttach={(selectedCard && selectedCard === currentCard) || selectedEdge ? () => prepareAgsdlChatContext(target, selectedCard
+            onAttach={(selectedCard && selectedCard === currentCard) || selectedEdge ? async () => {
+              await prepareAgsdlChatContext(target, selectedCard
               ? { path: selectedCard.path, title: nodeTitle(selectedCard) }
-              : { path: selectedEdge!.source, relatedPaths: [selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` }) : undefined}
+              : { path: selectedEdge!.source, relatedPaths: [selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` });
+              if (expanded) onExpand?.();
+            } : undefined}
             onClose={() => { setOverview(false); setSelection(undefined); }}>
             <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
               {selectedCard ? inspect(selectedCard) : selectedEdge ? <>

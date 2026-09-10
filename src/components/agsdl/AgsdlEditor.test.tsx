@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, mock } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AgsdlEditor } from "./AgsdlEditor";
 import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
+import * as chatContext from "../../services/agsdl/chatContext";
 import { createExample } from "../../services/agsdl/examples";
 
 const target = { branchName: "develop", planId: "viewer-test" };
@@ -11,6 +12,7 @@ let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 afterEach(() => {
   act(() => root?.unmount());
+  mock.restore();
   container?.remove();
   useAgsdlStore.setState({ sessions: {} });
 });
@@ -26,6 +28,22 @@ describe("AgSDL viewer", () => {
     root = createRoot(container);
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
+
+  it("returns from the expanded graph only after attaching context successfully", async () => {
+    await mount();
+    const closeExpanded = mock(() => undefined);
+    const attach = spyOn(chatContext, "prepareAgsdlChatContext").mockRejectedValueOnce(new Error("Storage unavailable"));
+    await act(async () => root!.render(<AgsdlEditor target={target} expanded onExpand={closeExpanded} />));
+    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-graph-node")!.click());
+    const button = document.body.querySelector<HTMLButtonElement>('[aria-label="Attach to chat"]')!;
+    await act(async () => button.click());
+    expect(closeExpanded).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("Storage unavailable");
+    attach.mockResolvedValueOnce(undefined);
+    await act(async () => button.click());
+    expect(closeExpanded).toHaveBeenCalledTimes(1);
+    expect(document.body.querySelector(".agsdl-detail-modal")).toBeNull();
+  });
 
   it("keeps system interfaces in the overview and component interfaces on their owner", async () => {
     await mount();
