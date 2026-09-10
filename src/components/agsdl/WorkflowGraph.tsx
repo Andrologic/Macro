@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useId, useMemo, useRef } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { Bot, CircleHelp, GitBranch, Hand, LogIn, LogOut, Maximize2, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
@@ -52,6 +52,7 @@ function Canvas({ cards, edges: connections, selected, select, title }: {
   const { t } = useAgsdlTranslation();
   const { ref, width, height } = useElementSize<HTMLDivElement>();
   const flow = useReactFlow<GraphNode>();
+  const backgroundId = useId();
   const layout = useMemo(() => layoutViewer(cards, connections), [cards, connections]);
   const topology = JSON.stringify(layout.nodes.map(node => [node.card.path, node.position]));
   const fitted = useRef("");
@@ -116,7 +117,7 @@ function Canvas({ cards, edges: connections, selected, select, title }: {
         onPaneClick={() => select("")} fitView fitViewOptions={fitOptions}
         minZoom={0.3} maxZoom={1.8} zoomOnDoubleClick={false}
       >
-        <Background color="rgb(var(--border))" gap={20} size={1} />
+        <Background id={backgroundId} color="rgb(var(--muted-foreground) / 0.3)" gap={20} size={1.5} />
         <Panel position="bottom-left" className="agsdl-graph-controls">
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>
           <button onClick={() => void flow.zoomIn()} aria-label={t("agsdl.viewer.zoomIn")} title={t("agsdl.viewer.zoomIn")}><Plus size={14} /></button>

@@ -41,6 +41,9 @@ it("opens the graph in a portal modal and closes without changing the panels or 
     expect(dialog).not.toBeNull();
     expect(container!.contains(dialog)).toBe(false);
     expect(dialog.querySelectorAll(".agsdl-graph-node")).toHaveLength(5);
+    const patterns = [...document.querySelectorAll(".react-flow__background pattern")];
+    expect(patterns).toHaveLength(2);
+    expect(new Set(patterns.map(pattern => pattern.id)).size).toBe(2);
     expect(useAppStore.getState().rightPanelWidth).toBe(320);
     expect(useAppStore.getState().isLeftPanelOpen).toBe(true);
     act(() => {
