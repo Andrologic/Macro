@@ -177,7 +177,8 @@
       "outputs": "出力",
       "remove": "参照を削除",
       "exposedInterfaces": "エージェントが公開するインターフェース",
-      "description": "説明"
+      "description": "説明",
+      "contracts": "インターフェースと契約"
     },
     "locateIssue": "場所を表示",
     "correctIssue": "チャットで修正を準備",

@@ -177,7 +177,8 @@
       "outputs": "Salidas",
       "remove": "Quitar referencia",
       "exposedInterfaces": "Interfaces expuestas por el agente",
-      "description": "Descripción"
+      "description": "Descripción",
+      "contracts": "Interfaces y contratos"
     },
     "locateIssue": "Localizar",
     "correctIssue": "Preparar corrección en el chat",

@@ -70,14 +70,24 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
           {field.kind === "name" ? <input required value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />
             : <textarea rows={7} value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />}
         </label>)}
-        {draft.properties.shared && <p className="agsdl-muted">{t("agsdl.viewer.sharedProperties")}</p>}
-        {draft.properties.fields.map((field, index) => <label className="agsdl-edit-field" key={field.path}>
-          <span>{t(`agsdl.viewer.property.${field.label.split(" · ")[0]}`, { defaultValue: field.label.split(" · ")[0] })}{field.label.includes(" · ") ? ` · ${field.label.split(" · ").slice(1).join(" · ")}` : ""}</span>
-          {field.options ? <select value={draft.propertyValues[index]} disabled={busy || applied || field.readonly} onChange={event => setDraft({ ...draft, propertyValues: draft.propertyValues.map((value, i) => i === index ? event.target.value : value) })}>
-            {field.options.map(option => <option value={option.value} key={option.value}>{["none", "remove"].includes(option.label) ? t(`agsdl.viewer.property.${option.label}`) : option.label}</option>)}
-          </select> : <input readOnly value={field.value} />}
-        </label>)}
-        {draft.properties.unsupported && <p className="agsdl-muted">{t("agsdl.viewer.unsupportedProperties")}</p>}
+        {(["tools", "resources", "contracts"] as const).map(group => {
+          const members = draft.properties.fields.map((field, index) => ({ field, index })).filter(({ field }) => {
+            const category = ["tools", "addTool"].includes(field.label) ? "tools" : ["resources", "addResource"].includes(field.label) ? "resources" : "contracts";
+            return category === group;
+          });
+          if (!members.length && !(group === "contracts" && draft.properties.unsupported)) return null;
+          return <details className="agsdl-details" key={group}>
+            <summary>{t(`agsdl.viewer.property.${group}`)}</summary>
+            {draft.properties.shared && group !== "resources" && <p className="agsdl-muted">{t("agsdl.viewer.sharedProperties")}</p>}
+            {members.map(({ field, index }) => <label className="agsdl-edit-field" key={field.path}>
+              <span>{t(`agsdl.viewer.property.${field.label.split(" · ")[0]}`, { defaultValue: field.label.split(" · ")[0] })}{field.label.includes(" · ") ? ` · ${field.label.split(" · ").slice(1).join(" · ")}` : ""}</span>
+              {field.options ? <select value={draft.propertyValues[index]} disabled={busy || applied || field.readonly} onChange={event => setDraft({ ...draft, propertyValues: draft.propertyValues.map((value, i) => i === index ? event.target.value : value) })}>
+                {field.options.map(option => <option value={option.value} key={option.value}>{["none", "remove"].includes(option.label) ? t(`agsdl.viewer.property.${option.label}`) : option.label}</option>)}
+              </select> : <input readOnly value={field.value} />}
+            </label>)}
+            {group === "contracts" && draft.properties.unsupported && <p className="agsdl-muted">{t("agsdl.viewer.unsupportedProperties")}</p>}
+          </details>;
+        })}
       </form> : children}
       {error && <p role="alert" className="agsdl-unresolved">{error}</p>}
       {applied && error && <p>{t("agsdl.viewer.editSaveFailed")}</p>}

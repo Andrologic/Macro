@@ -177,7 +177,8 @@
       "outputs": "Ausgaben",
       "remove": "Referenz entfernen",
       "exposedInterfaces": "Vom Agenten bereitgestellte Schnittstellen",
-      "description": "Beschreibung"
+      "description": "Beschreibung",
+      "contracts": "Schnittstellen und Verträge"
     },
     "locateIssue": "Lokalisieren",
     "correctIssue": "Korrektur im Chat vorbereiten",

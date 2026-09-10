@@ -177,7 +177,8 @@
       "outputs": "Outputs",
       "remove": "Remove reference",
       "exposedInterfaces": "Agent’s exposed interfaces",
-      "description": "Description"
+      "description": "Description",
+      "contracts": "Interfaces and contracts"
     },
     "locateIssue": "Locate",
     "correctIssue": "Prepare correction in chat",
