@@ -167,5 +167,9 @@
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",
   "removeChatSelection": "Remove AgSDL selection",
-  "staleChatSelection": "The document changed. Attach the selection again before sending."
+  "staleChatSelection": "The document changed. Attach the selection again before sending.",
+  "queueSendFailed": "Queued message was not sent",
+  "queueRetained": "Your message and its context are kept for retry: {{message}}",
+  "chatDocumentMissing": "Load the AgSDL document first.",
+  "chatConversationMissing": "Open this plan’s conversation before attaching AgSDL context."
 }

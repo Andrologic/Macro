@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
+mock.module("../../i18n", () => ({ default: { t: (_key: string, options: { defaultValue: string }) => options.defaultValue } }));
 let selected = "conversation-a";
 let release: (() => void) | undefined;
 let wait: Promise<void> | undefined;

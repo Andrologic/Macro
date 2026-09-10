@@ -167,5 +167,9 @@
   "attachToChat": "Zum Chat hinzufügen",
   "chatSelection": "AgSDL-Auswahl",
   "removeChatSelection": "AgSDL-Auswahl entfernen",
-  "staleChatSelection": "Das Dokument wurde geändert. Füge die Auswahl vor dem Senden erneut hinzu."
+  "staleChatSelection": "Das Dokument wurde geändert. Füge die Auswahl vor dem Senden erneut hinzu.",
+  "queueSendFailed": "Die Nachricht in der Warteschlange wurde nicht gesendet",
+  "queueRetained": "Nachricht und Kontext bleiben für einen erneuten Versuch erhalten: {{message}}",
+  "chatDocumentMissing": "Lade zuerst das AgSDL-Dokument.",
+  "chatConversationMissing": "Öffne die Unterhaltung dieses Plans, bevor du den AgSDL-Kontext hinzufügst."
 }

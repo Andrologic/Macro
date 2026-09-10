@@ -167,5 +167,9 @@
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",
   "removeChatSelection": "AgSDL 선택 제거",
-  "staleChatSelection": "문서가 변경되었습니다. 보내기 전에 선택 항목을 다시 첨부하세요."
+  "staleChatSelection": "문서가 변경되었습니다. 보내기 전에 선택 항목을 다시 첨부하세요.",
+  "queueSendFailed": "대기 중인 메시지를 보내지 못했습니다",
+  "queueRetained": "다시 시도할 수 있도록 메시지와 컨텍스트를 보관합니다: {{message}}",
+  "chatDocumentMissing": "먼저 AgSDL 문서를 불러오세요.",
+  "chatConversationMissing": "AgSDL 컨텍스트를 첨부하기 전에 이 계획의 대화를 여세요."
 }

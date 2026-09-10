@@ -167,5 +167,9 @@
   "attachToChat": "Joindre au chat",
   "chatSelection": "Sélection AgSDL",
   "removeChatSelection": "Retirer la sélection AgSDL",
-  "staleChatSelection": "Le document a changé. Joignez à nouveau la sélection avant l’envoi."
+  "staleChatSelection": "Le document a changé. Joignez à nouveau la sélection avant l’envoi.",
+  "queueSendFailed": "Le message en attente n’a pas été envoyé",
+  "queueRetained": "Votre message et son contexte sont conservés pour réessayer : {{message}}",
+  "chatDocumentMissing": "Chargez d’abord le document AgSDL.",
+  "chatConversationMissing": "Ouvrez la conversation de ce plan avant de joindre le contexte AgSDL."
 }

@@ -1,3 +1,4 @@
+import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
 import { create } from "zustand";
 import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers, sameApprovalExecutionScope } from "../services/toolApprovalRecovery";
 import {
@@ -7091,8 +7092,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
       }
 
-      const hasDynamicRepositoryInstructions =
-        index === lastUserIndex && Boolean(repositoryInstructionContext.contextBlock);
+      const agsdlContext = message.role === "user" ? agsdlContextForModel(message.hidden_context) : undefined;
+      if (agsdlContext) {
+        messageContent = `${messageContent}\n\n${agsdlContext}`;
+        persistableMessageContent = `${persistableMessageContent}\n\n${agsdlContext}`;
+      }
+      const needsProviderContentRefresh = Boolean(agsdlContext) || (
+        index === lastUserIndex && Boolean(repositoryInstructionContext.contextBlock));
 
       if (
         message.role === "user" &&
@@ -7117,7 +7123,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             })),
           ];
           providerInputItemsByMessageId[message.id] =
-            hasDynamicRepositoryInstructions
+            needsProviderContentRefresh
               ? replaceProviderMessageInputItem(
                   message.provider_input_items,
                   "user",
@@ -7126,7 +7132,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               : cloneProviderInputItems(message.provider_input_items) ??
                 buildProviderInputItemsFromContent("user", content);
           persistableProviderInputItemsByMessageId[message.id] =
-            hasDynamicRepositoryInstructions
+            needsProviderContentRefresh
               ? replaceProviderMessageInputItem(
                   message.provider_input_items,
                   "user",
@@ -7148,7 +7154,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
 
       providerInputItemsByMessageId[message.id] =
-        hasDynamicRepositoryInstructions && message.role === "user"
+        needsProviderContentRefresh && message.role === "user"
           ? replaceProviderMessageInputItem(
               message.provider_input_items,
               "user",
@@ -7159,7 +7165,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               ? buildProviderInputItemsFromContent(message.role, messageContent)
               : undefined);
       persistableProviderInputItemsByMessageId[message.id] =
-        hasDynamicRepositoryInstructions && message.role === "user"
+        needsProviderContentRefresh && message.role === "user"
           ? replaceProviderMessageInputItem(
               message.provider_input_items,
               "user",
@@ -9143,32 +9149,52 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
-    if (drainingQueuedConversationIds.has(conversationId)) return;
+  const drainQueuedSubmissions = async (conversationId: string): Promise<boolean> => {
+    if (drainingQueuedConversationIds.has(conversationId)) return false;
     const runtime = getConversationRuntimeSnapshot(
       get().conversationRuntimeById,
       conversationId,
     );
-    if (isConversationRuntimeActive(runtime)) return;
+    if (isConversationRuntimeActive(runtime)) return false;
     const queue = queuedSubmissionsByConversationId.get(conversationId);
     const next = queue?.shift();
     if (!next) {
       queuedSubmissionsByConversationId.delete(conversationId);
-      return;
+      return true;
     }
     if (queue?.length === 0) queuedSubmissionsByConversationId.delete(conversationId);
     drainingQueuedConversationIds.add(conversationId);
     let shouldContinue = true;
     try {
-      await get().sendMessage(next);
+      const result = await get().sendMessage(next);
+      if (result.status !== "sent") throw new Error("Queued submission was cancelled.");
     } catch {
       shouldContinue = false;
+      // Keep the complete accepted submission, including hidden context and images,
+      // ahead of later items. A failed dispatch must remain explicitly retryable.
+      queuedSubmissionsByConversationId.set(conversationId, [
+        next, ...(queuedSubmissionsByConversationId.get(conversationId) ?? []),
+      ]);
+      notify.actionRequired(i18n.t("agsdl.queueSendFailed", { ns: "agsdl", defaultValue: "Queued message was not sent" }), {
+        description: i18n.t("agsdl.queueRetained", { ns: "agsdl", defaultValue: "Your message and its context are kept for retry: {{message}}", message: next.content.slice(0, 160) }),
+        notificationKey: `queued-message-failed:${conversationId}`,
+        tone: "warning",
+        actions: [{
+          label: i18n.t("agsdl.retry", { ns: "agsdl", defaultValue: "Retry" }),
+          onClick: async () => {
+            if (!await drainQueuedSubmissions(conversationId)) {
+              throw new Error(i18n.t("agsdl.queueSendFailed", { ns: "agsdl", defaultValue: "Queued message was not sent" }));
+            }
+          },
+        }],
+      });
     } finally {
       drainingQueuedConversationIds.delete(conversationId);
       if (shouldContinue) {
         queueMicrotask(() => void drainQueuedSubmissions(conversationId));
       }
     }
+    return shouldContinue;
   };
 
   const buildUserMessageForSend = async (params: {

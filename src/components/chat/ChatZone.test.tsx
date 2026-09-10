@@ -1108,6 +1108,10 @@ describe('ChatZone', () => {
     await act(async () => { useAppStore.setState({ activeArchitectPlanId: 'plan-2' }); });
     expect(requireContainer().textContent).not.toContain('Selected agent');
     await act(async () => { useAppStore.setState({ activeArchitectPlanId: 'plan-1' }); });
+    chatState.sendMessage.mockRejectedValueOnce(new Error('Provider unavailable'));
+    await clickSendButton();
+    expect(getComposerEditor().value).toBe('Keep my draft');
+    expect(useAgsdlChatContext.getState().pending['conv-1']).toEqual(context);
     await clickSendButton();
     expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-1', content: 'Keep my draft', hiddenContext: expect.stringContaining('"path":"/definitions/0"') }));
     expect(useAgsdlChatContext.getState().pending['conv-1']).toBeUndefined();

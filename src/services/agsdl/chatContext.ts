@@ -1,3 +1,4 @@
+import i18n from "../../i18n";
 import { create } from "zustand";
 import { getArchitectPlan } from "../architectPlanService";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
@@ -50,13 +51,13 @@ export async function prepareAgsdlChatContext(
   selection: Pick<AgsdlChatContext, "path" | "title" | "relatedPaths" | "diagnostic">,
 ): Promise<void> {
   const session = useAgsdlStore.getState().sessions[agsdlSessionKey(target)];
-  if (!session) throw new Error("Load the AgSDL document first.");
+  if (!session) throw new Error(i18n.t("agsdl.chatDocumentMissing", { ns: "agsdl", defaultValue: "Load the AgSDL document first." }));
   const path = resolveAgsdlSelectionPath(session.source, selection.path);
   const relatedPaths = selection.relatedPaths?.map(path => resolveAgsdlSelectionPath(session.source, path));
   const plan = await getArchitectPlan(target.branchName, target.planId);
   if (!plan || plan.status === "deleted" || !plan.conversationId ||
       useChatStore.getState().selectedConversationId !== plan.conversationId) {
-    throw new Error("Open this plan's conversation before attaching AgSDL context.");
+    throw new Error(i18n.t("agsdl.chatConversationMissing", { ns: "agsdl", defaultValue: "Open this plan’s conversation before attaching AgSDL context." }));
   }
   const context: AgsdlChatContext = {
     ...target, ...selection, path, relatedPaths, document: "agsdl", id: crypto.randomUUID(),

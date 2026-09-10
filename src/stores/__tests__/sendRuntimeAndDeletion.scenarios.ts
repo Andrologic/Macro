@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import type { ChatMessage, Conversation } from '../../types';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -59,23 +59,62 @@ export const registerSendRuntimeAndDeletionScenarios = (
         conversations: [createConversation('chat-context')], selectedConversationId: 'chat-context',
         selectedConversationIdsByMode: { Chat: 'chat-context' },
       }));
-      const sending = useChatStore.getState().sendMessage({ conversationId: 'chat-context', content: 'First' });
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'chat-context', content: 'First', hiddenContext: '<agsdl_selection>\ninitial reference</agsdl_selection>' });
       await flushAsyncWork();
-      const options = getLatestStreamOptions<{ consumePendingSteers: () => Array<{content: unknown}> }>();
-      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Steer visibly', hiddenContext: '<agsdl_selection>steer reference</agsdl_selection>' }, 'steer');
+      const options = getLatestStreamOptions<{ consumePendingSteers: () => Array<{content: unknown}>; messages: unknown[] }>();
+      expect(JSON.stringify(options.messages)).toContain('initial reference');
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Steer visibly', hiddenContext: '<agsdl_selection>\nsteer reference</agsdl_selection>' }, 'steer');
       const steers = options.consumePendingSteers();
       expect(steers[0]?.content).toContain('steer reference');
       const persisted = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Steer visibly');
       expect(persisted?.hidden_context).toContain('steer reference');
       expect(persisted?.content).toBe('Steer visibly');
-      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Steer visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>steer reference</agsdl_selection>' }));
-      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Queued visibly', hiddenContext: '<agsdl_selection>queued reference</agsdl_selection>' }, 'queue');
+      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Steer visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>\nsteer reference</agsdl_selection>' }));
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Queued visibly', hiddenContext: '<agsdl_selection>\nqueued reference</agsdl_selection>' }, 'queue');
       expect(useChatStore.getState().getConversationMessages('chat-context').some((message: ChatMessage) => message.content === 'Queued visibly')).toBe(false);
       hold.resolve(); await sending; await flushAsyncWork(); await flushAsyncWork();
       const queued = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Queued visibly');
       expect(queued?.content).toBe('Queued visibly');
       expect(queued?.hidden_context).toContain('queued reference');
-      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Queued visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>queued reference</agsdl_selection>' }));
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('queued reference');
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('initial reference');
+      expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Queued visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>\nqueued reference</agsdl_selection>' }));
+    });
+
+    it('keeps a failed queued submission retryable with its hidden context', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const { notify } = await import('../../components/ui/toastService');
+      let retry: (() => void | Promise<void>) | undefined;
+      const notice = spyOn(notify, 'actionRequired').mockImplementation((_title, options) => {
+        retry = options.actions[0].onClick;
+        return 'queued-failure-test';
+      });
+      const hold = createDeferred<void>();
+      streamChatMock.mockImplementationOnce((async (...args: unknown[]) => {
+        await hold.promise;
+        (args[0] as { onComplete?: (result: unknown) => void }).onComplete?.({ visibleContent: 'Completed', toolTraces: [], completionReason: 'completed' });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('queue-retry')], selectedConversationId: 'queue-retry', selectedConversationIdsByMode: { Chat: 'queue-retry' } }));
+      const sending = useChatStore.getState().sendMessage({ conversationId: 'queue-retry', content: 'First' });
+      await flushAsyncWork();
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'queue-retry', content: 'Keep this request', hiddenContext: '<agsdl_selection>\nkeep this reference</agsdl_selection>' }, 'queue');
+      const selectedProvider = providerState.selectedProviderId;
+      providerState.selectedProviderId = null;
+      hold.resolve(); await sending; await flushAsyncWork();
+      expect(notice).toHaveBeenCalledTimes(1);
+      expect(useChatStore.getState().getConversationMessages('queue-retry').some((message: ChatMessage) => message.content === 'Keep this request')).toBe(false);
+      providerState.selectedProviderId = selectedProvider;
+      const sendMessage = useChatStore.getState().sendMessage;
+      useChatStore.setState({ sendMessage: async () => ({ status: 'cancelled', conversationId: 'queue-retry', turnId: '', userMessageId: null, assistantMessageId: null }) });
+      await expect(Promise.resolve(retry!())).rejects.toThrow();
+      expect(notice).toHaveBeenCalledTimes(2);
+      useChatStore.setState({ sendMessage });
+      await retry!(); await flushAsyncWork();
+      expect(useChatStore.getState().getConversationMessages('queue-retry').find((message: ChatMessage) => message.content === 'Keep this request')?.hidden_context).toContain('keep this reference');
+      expect(JSON.stringify(getLatestStreamOptions().messages)).toContain('keep this reference');
+      notice.mockRestore();
     });
 
     it('rejects sends without a selected provider or model before committing any message', async () => {
