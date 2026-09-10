@@ -164,7 +164,7 @@
     "exchangeHint": "Sélectionnez un agent pour voir ses échanges.",
     "actionToApprove": "Action à valider",
     "sharedProperties": "Les définitions partagées affectent aussi les autres composants qui les référencent.",
-    "unsupportedProperties": "Les contrats liés et les propriétés non prises en charge sont en lecture seule. Préparez une modification ciblée dans le chat pour adapter leurs consommateurs ensemble.",
+    "unsupportedProperties": "Les contrats liés et les propriétés non prises en charge sont en lecture seule. Revenez aux détails pour joindre ce composant au chat et adapter ses consommateurs ensemble.",
     "property": {
       "tools": "Outils",
       "interfaces": "Interfaces",

@@ -164,7 +164,7 @@
     "exchangeHint": "Wähle einen Agenten, um seinen Datenaustausch zu sehen.",
     "actionToApprove": "Freizugebende Aktion",
     "sharedProperties": "Gemeinsame Definitionen betreffen auch andere darauf verweisende Komponenten.",
-    "unsupportedProperties": "Verknüpfte Verträge und nicht unterstützte Eigenschaften sind schreibgeschützt. Bereiten Sie die Änderung und ihre Verbraucher gemeinsam im Chat vor.",
+    "unsupportedProperties": "Verknüpfte Verträge und nicht unterstützte Eigenschaften sind schreibgeschützt. Kehren Sie zu den Details zurück, um die Komponente an den Chat anzuhängen und ihre Verbraucher gemeinsam anzupassen.",
     "property": {
       "tools": "Werkzeuge",
       "interfaces": "Schnittstellen",

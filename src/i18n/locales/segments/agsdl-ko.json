@@ -164,7 +164,7 @@
     "exchangeHint": "에이전트를 선택하여 데이터 교환을 확인하세요.",
     "actionToApprove": "승인할 작업",
     "sharedProperties": "공유 정의를 변경하면 이를 참조하는 다른 구성 요소에도 영향을 줍니다.",
-    "unsupportedProperties": "연결된 계약과 지원되지 않는 속성은 읽기 전용입니다. 채팅에서 소비자를 포함한 변경을 준비하세요.",
+    "unsupportedProperties": "연결된 계약과 지원되지 않는 속성은 읽기 전용입니다. 상세 보기로 돌아가 구성 요소를 채팅에 첨부하고 소비자를 포함한 변경을 준비하세요.",
     "property": {
       "tools": "도구",
       "interfaces": "인터페이스",

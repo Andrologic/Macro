@@ -14,7 +14,7 @@ import {
   type ViewerPort,
   type ViewerReference,
 } from "../../services/agsdl/viewer";
-import { localizeDiagnostics } from "../../services/agsdl/diagnostics";
+import { localizeDiagnostics, type LocalizedDiagnostic } from "../../services/agsdl/diagnostics";
 import { projectSystemOverview } from "../../services/agsdl/systemOverview";
 import "./agsdl.css";
 import { prepareAgsdlChatContext } from "../../services/agsdl/chatContext";
@@ -31,6 +31,8 @@ export const AgsdlEditor: React.FC<{
   const session = useAgsdlStore((state) => state.sessions[key]);
   const [error, setError] = useState("");
   const [overview, setOverview] = useState(false);
+  const [attaching, setAttaching] = useState(false);
+  const [diagnosticError, setDiagnosticError] = useState("");
   const [graphIndex, setGraphIndex] = useState(0);
   const [selection, setSelection] = useState<{ key: string; path: string; card?: ViewerCard }>();
   useEffect(() => {
@@ -85,9 +87,25 @@ export const AgsdlEditor: React.FC<{
   const snapshotCard = selection?.key === key ? selection.card : undefined;
   const selectedCard = snapshotCard && (!currentCard || currentCard.id !== snapshotCard.id) ? snapshotCard : currentCard;
   const select = (path: string) => {
+    setDiagnosticError("");
     setSelection({ key, path, card: cards.find(item => item.path === path) ?? graph?.cards.find(item => item.path === path) ?? document?.declarations.find(item => item.path === path) });
     setOverview(false);
   };
+  const attachContext = async (selection: Parameters<typeof prepareAgsdlChatContext>[1]) => {
+    await prepareAgsdlChatContext(target, selection);
+    setOverview(false);
+    setSelection(undefined);
+    if (expanded) onExpand?.();
+  };
+  const diagnosticAction = (issue: LocalizedDiagnostic, title: string) => issue.path !== undefined && <button className="agsdl-link" disabled={attaching} onClick={() => {
+    setAttaching(true); setDiagnosticError("");
+    void attachContext({ path: issue.path!, title, diagnostic: `${issue.rule}: ${issue.details}` })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setDiagnosticError(t(message, { defaultValue: message }));
+      })
+      .finally(() => setAttaching(false));
+  }}>{t("agsdl.viewer.correctIssue")}</button>;
   const nodeTitle = (item: ViewerCard) => {
     const hasTitle = !!(item.details.annotations as { title?: string } | undefined)?.title;
     if (item.kind === "approval" && !hasTitle) return t("agsdl.viewer.approvalRequired");
@@ -165,7 +183,7 @@ export const AgsdlEditor: React.FC<{
   );
   const inspect = (item: ViewerCard) => (
     <>
-      {diagnostics.filter(issue => issue.targets.includes(item.path)).map((issue, index) => <p className="agsdl-unresolved" key={index}><strong>{issue.rule}</strong> {issue.details}</p>)}
+      {diagnostics.filter(issue => issue.targets.includes(item.path)).map((issue, index) => <div key={index}><p className="agsdl-unresolved"><strong>{issue.rule}</strong> {issue.details}</p>{diagnosticAction(issue, nodeTitle(item))}</div>)}
       {item.interfaces?.length ? <section className="agsdl-ports"><h4>{t("agsdl.viewer.property.interfaces")}</h4>{item.interfaces.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</section> : null}
       {item.mission && <p className="agsdl-mission" title={item.mission}>{item.mission}</p>}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
@@ -287,15 +305,13 @@ export const AgsdlEditor: React.FC<{
           {(selectedCard || selectedEdge || overview) && <ComponentDetailsDialog
             key={selectedCard?.path ?? selectedEdge?.id ?? "overview"}
             title={selectedCard ? nodeTitle(selectedCard) : selectedEdge ? t(selectedEdge.dependency ? "agsdl.viewer.dependencies" : "agsdl.viewer.connection") : document.title}
-            card={selectedCard} canEdit={selectedCard === currentCard && (!planStatus || planStatus === "draft")} target={target}
-            onAttach={(selectedCard && selectedCard === currentCard) || selectedEdge ? async () => {
-              await prepareAgsdlChatContext(target, selectedCard
+            card={selectedCard} canEdit={!attaching && selectedCard === currentCard && (!planStatus || planStatus === "draft")} target={target}
+            onAttach={!attaching && ((selectedCard && selectedCard === currentCard) || selectedEdge) ? () => attachContext(selectedCard
               ? { path: selectedCard.path, title: nodeTitle(selectedCard) }
-              : { path: selectedEdge!.source, relatedPaths: [selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` });
-              if (expanded) onExpand?.();
-            } : undefined}
-            onClose={() => { setOverview(false); setSelection(undefined); }}>
+              : { path: selectedEdge!.source, relatedPaths: [selectedEdge!.target], title: `${selectedEdge!.label}: ${nodeTitle(cards.find(card => card.path === selectedEdge!.source)!)} → ${nodeTitle(cards.find(card => card.path === selectedEdge!.target)!)}` }) : undefined}
+            onClose={() => { setOverview(false); setSelection(undefined); setDiagnosticError(""); }}>
             <section className="agsdl-inspector" aria-label={t("agsdl.properties")}>
+              {diagnosticError && <p role="alert" className="agsdl-unresolved">{diagnosticError}</p>}
               {selectedCard ? inspect(selectedCard) : selectedEdge ? <>
                 <p>{reference({ source: "step", label: nodeTitle(cards.find(card => card.path === selectedEdge.source)!), target: selectedEdge.source })}
                   {" → "}{reference({ source: "step", label: nodeTitle(cards.find(card => card.path === selectedEdge.target)!), target: selectedEdge.target })}</p>
@@ -324,6 +340,7 @@ export const AgsdlEditor: React.FC<{
                 {document.unresolved.length > 0 && <details className="agsdl-details"><summary>{t("agsdl.viewer.unresolved")}</summary><ReadOnlyValue value={document.unresolved} /></details>}
                 {findings.length > 0 && <details className="agsdl-details"><summary>{t("agsdl.diagnostics")} · {findings.length}</summary>
                   {findings.map((finding, index) => <div key={index}><p><strong>{finding.rule}</strong> {finding.details}</p>
+                    {diagnosticAction(finding, document.title)}
                     {finding.targets.map(path => <button className="agsdl-link" key={path} onClick={() => {
                       const index = document.graphs.findIndex(graph => graph.cards.some(card => card.path === path));
                       if (index >= 0) setGraphIndex(index);

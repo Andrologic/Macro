@@ -164,7 +164,7 @@
     "exchangeHint": "Select an agent to inspect its exchanges.",
     "actionToApprove": "Action to approve",
     "sharedProperties": "Changes to shared definitions also affect other components that reference them.",
-    "unsupportedProperties": "Linked contracts and unsupported properties are read-only. Prepare a targeted change in chat to update their consumers together.",
+    "unsupportedProperties": "Linked contracts and unsupported properties are read-only. Return to the details view to attach this component to chat and coordinate changes to its consumers.",
     "property": {
       "tools": "Tools",
       "interfaces": "Interfaces",

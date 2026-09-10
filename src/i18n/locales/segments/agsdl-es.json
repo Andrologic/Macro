@@ -164,7 +164,7 @@
     "exchangeHint": "Selecciona un agente para ver sus intercambios.",
     "actionToApprove": "Acción a aprobar",
     "sharedProperties": "Las definiciones compartidas también afectan a los componentes que las referencian.",
-    "unsupportedProperties": "Los contratos vinculados y las propiedades no admitidas son de solo lectura. Prepare el cambio y sus consumidores juntos en el chat.",
+    "unsupportedProperties": "Los contratos vinculados y las propiedades no admitidas son de solo lectura. Vuelva a los detalles para adjuntar el componente al chat y adaptar sus consumidores juntos.",
     "property": {
       "tools": "Herramientas",
       "interfaces": "Interfaces",
