@@ -289,6 +289,8 @@ La vue principale montre l’entrée du système, les agents, les échanges déc
 et les étapes d’approbation. Le résultat indique les sorties attendues. Les
 terminaux techniques de succès et d’échec restent dans les détails. Les missions,
 outils et provenances complètes sont accessibles à la sélection d’un nœud.
+Le bouton d’agrandissement ouvre le visualisateur dans une modale sans modifier
+la disposition des panneaux.
 Les anciennes stratégies sont converties en déclarations AgSDL descriptives,
 avec conservation de leurs données et affichage explicite de leurs dépendances.
 L’ancienne interface de stratégie et ses outils de rédaction ne sont plus exposés.

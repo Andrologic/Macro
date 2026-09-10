@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Info, Maximize2, Minimize2, X } from "lucide-react";
+import { Info, Maximize2, X } from "lucide-react";
 import { WorkflowGraph } from "./WorkflowGraph";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import {
@@ -198,7 +198,7 @@ export const AgsdlEditor: React.FC<{
           {onExpand && <button className="agsdl-icon-button" onClick={onExpand}
             aria-label={t(expanded ? "agsdl.shrink" : "agsdl.expand")}
             title={t(expanded ? "agsdl.shrink" : "agsdl.expand")}>
-            {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            {expanded ? <X size={14} /> : <Maximize2 size={14} />}
           </button>}
           {document && <button className="agsdl-icon-button" aria-label={t("agsdl.viewer.overview")}
             title={t("agsdl.viewer.overview")} aria-pressed={overview}

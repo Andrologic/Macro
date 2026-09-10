@@ -24,9 +24,10 @@ un document vide.
    Le fond du graphe et la touche Échap referment la sélection. Les chemins
    techniques de succès, d’échec et de refus restent consultables dans les détails.
    Les références absentes ou ambiguës ne créent pas de faux échanges.
-4. Utiliser le bouton d’élargissement pour replier le panneau gauche et donner
-   plus de place au visualisateur tout en conservant le chat. Le graphe peut être
-   déplacé, zoomé et recadré. Ces gestes ne modifient pas la source AgSDL.
+4. Utiliser le bouton d’élargissement pour ouvrir le graphe dans une grande
+   modale. La croix, la touche Échap ou un clic sur le fond ferment cette vue.
+   Les panneaux conservent leur disposition. Le graphe peut être déplacé, zoomé
+   et recadré. Ces gestes ne modifient pas la source AgSDL.
 5. Dans un plan en brouillon, demander à l’agent de créer un exemple Release ou
    de modifier la mission d’un agent. Le document enregistré apparaît dans le
    visualisateur. Les erreurs de sauvegarde restent visibles.
