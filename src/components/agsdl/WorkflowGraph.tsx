@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, type KeyboardEvent } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { Bot, Boxes, CircleHelp, GitBranch, Hand, LogIn, LogOut, LocateFixed, Minus, Plus, Wrench, Database } from "lucide-react";
+import { Bot, Boxes, CircleHelp, GitBranch, Hand, LocateFixed, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import type { ViewerCard } from "../../services/agsdl/viewer";
@@ -35,12 +35,6 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         <span className="agsdl-node-text">
           <span className="agsdl-node-title">{data.title}</span>
           {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
-        </span>
-        <span className="agsdl-node-capabilities">
-          {card.inputs.length > 0 && <LogIn size={12} aria-label={t("agsdl.viewer.inputs")} />}
-          {card.outputs.length > 0 && <LogOut size={12} aria-label={t("agsdl.viewer.outputs")} />}
-          {!!card.tools?.length && <Wrench size={12} aria-label={t("agsdl.agentTools")} />}
-          {!!card.resources?.length && <Database size={12} aria-label={t("agsdl.viewer.resources")} />}
         </span>
         {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-hidden="true" />}
       </button>

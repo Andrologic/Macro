@@ -41,7 +41,6 @@ describe("AgSDL viewer", () => {
     expect(overview.querySelector(".agsdl-provenance")).toBeNull();
     act(() => nodes[0].click());
     expect(container!.querySelector(".agsdl-exchange-summary")!.textContent).toContain("report");
-    expect(container!.querySelector(".agsdl-node-capabilities")).not.toBeNull();
   });
 
   it("keeps saved graphs quiet while preserving validation and unsaved-work notices", async () => {

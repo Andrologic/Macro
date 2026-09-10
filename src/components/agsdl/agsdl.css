@@ -71,5 +71,3 @@
 .agsdl-value { white-space: pre-wrap; }
 .agsdl-status { flex-shrink: 0; padding: 6px 12px; border-top: 1px solid rgb(var(--border)); font-size: 10px; color: rgb(var(--muted-foreground)); }
 .agsdl-empty { padding: 20px 12px; line-height: 1.7; }
-
-.agsdl-node-capabilities { display: flex; gap: 3px; flex-shrink: 0; color: rgb(var(--muted-foreground)); }

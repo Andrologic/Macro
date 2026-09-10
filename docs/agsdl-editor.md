@@ -16,8 +16,8 @@ attente restent visibles ; les détails du système se consultent à la demande.
    système et les fins techniques ne sont pas des étapes affichées. Le bouton
    « Détails du système » dans l’en-tête ouvre ses interfaces déclarées, son point
    de départ et ses ressources ; sa configuration reste dans les détails techniques.
-   Les icônes à l’intérieur des cartes signalent les interfaces, outils et ressources
-   du composant. Sélectionner une flèche pour consulter la relation et les données
+   Les interfaces, outils et ressources se consultent dans les détails du
+   composant. Sélectionner une flèche pour consulter la relation et les données
    explicitement transmises. Aucun transfert n’est déduit du seul ordre des étapes.
 3. Sélectionner un nœud pour consulter sa mission, ses outils et ses échanges.
    La sélection conserve le zoom et les flèches du graphe. La fiche résume la
