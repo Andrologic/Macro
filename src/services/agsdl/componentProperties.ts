@@ -51,7 +51,7 @@ export function componentProperties(source: string, card: ViewerCard): Component
     owner = matches[0].value; path = `/definitions/${matches[0].index}`;
   }
   const fields: ComponentProperty[] = [];
-  let unsupported = false;
+  let unsupported = ["Resource", "Tool"].includes(text(owner.kind));
   const options = (kind: string): PropertyOption[] => definitions.flatMap((definition, index) =>
     definition.kind === kind && unique(definition.key) ? [{ value: raw(`/definitions/${index}/key`), label: [text(object(definition.annotations).title), `${text(object(definition.key).scope)}/${text(object(definition.key).id)}@${text(object(definition.key).version)}`].filter(Boolean).join(" · ") }] : []);
   const reference = (at: string, value: unknown, label: string, kind: string, allowed = options(kind), readonly = false) => {
