@@ -171,5 +171,8 @@
   "queueSendFailed": "대기 중인 메시지를 보내지 못했습니다",
   "queueRetained": "다시 시도할 수 있도록 메시지와 컨텍스트를 보관합니다: {{message}}",
   "chatDocumentMissing": "먼저 AgSDL 문서를 불러오세요.",
-  "chatConversationMissing": "AgSDL 컨텍스트를 첨부하기 전에 이 계획의 대화를 여세요."
+  "chatConversationMissing": "AgSDL 컨텍스트를 첨부하기 전에 이 계획의 대화를 여세요.",
+  "queueReplyFailed": "응답을 시작하지 못했습니다",
+  "queueRecorded": "메시지와 컨텍스트가 대화에 저장되었습니다.",
+  "openConversation": "대화 열기"
 }

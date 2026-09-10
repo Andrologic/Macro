@@ -1218,6 +1218,8 @@ interface ChatStore {
     hiddenContext?: string;
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
+    /** Internal dispatch acknowledgement; never sent to a provider or persisted. */
+    onUserMessagePublished?: (messageId: string) => void;
   }) => Promise<ChatSendResult | ChatSendCancelledResult>;
   submitDuringActiveTurn: (
     payload: ComposerSubmissionPayload,
@@ -9150,6 +9152,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const drainQueuedSubmissions = async (conversationId: string): Promise<boolean> => {
+    if (deletedConversationIds.has(conversationId) || !get().conversations.some(conversation => conversation.id === conversationId)) {
+      queuedSubmissionsByConversationId.delete(conversationId);
+      return true;
+    }
     if (drainingQueuedConversationIds.has(conversationId)) return false;
     const runtime = getConversationRuntimeSnapshot(
       get().conversationRuntimeById,
@@ -9164,12 +9170,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     if (queue?.length === 0) queuedSubmissionsByConversationId.delete(conversationId);
     drainingQueuedConversationIds.add(conversationId);
+    let publishedMessageId: string | undefined;
     let shouldContinue = true;
     try {
-      const result = await get().sendMessage(next);
+      const result = await get().sendMessage({ ...next, onUserMessagePublished: (messageId) => { publishedMessageId = messageId; } });
       if (result.status !== "sent") throw new Error("Queued submission was cancelled.");
     } catch {
       shouldContinue = false;
+      if (deletedConversationIds.has(conversationId) || !get().conversations.some(conversation => conversation.id === conversationId)) {
+        queuedSubmissionsByConversationId.delete(conversationId);
+        return true;
+      }
+      const publishedMessage = publishedMessageId && getOrderedConversationMessages(conversationId).find(message => message.id === publishedMessageId);
+      if (publishedMessage) {
+        // The request is already durable and visible. Retry from the transcript;
+        // dispatching the original payload again would create a duplicate message.
+        notify.actionRequired(i18n.t("agsdl.queueReplyFailed", { ns: "agsdl", defaultValue: "The reply could not start" }), {
+          description: i18n.t("agsdl.queueRecorded", { ns: "agsdl", defaultValue: "Your message and its context are saved in the conversation." }),
+          notificationKey: `queued-message-failed:${conversationId}`,
+          tone: "warning",
+          actions: [{
+            label: i18n.t("agsdl.openConversation", { ns: "agsdl", defaultValue: "Open conversation" }),
+            onClick: async () => { await get().selectConversation(conversationId); },
+          }],
+        });
+        return false;
+      }
       // Keep the complete accepted submission, including hidden context and images,
       // ahead of later items. A failed dispatch must remain explicitly retryable.
       queuedSubmissionsByConversationId.set(conversationId, [
@@ -15787,6 +15813,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ).filter((message) => message.role === "user").length;
         const publishUserMessage = (message: ChatMessage) => {
           get().addMessage(message);
+          payload.onUserMessagePublished?.(message.id);
           if (images && images.length > 0) {
             get().setMessageImages(message.id, images);
           }

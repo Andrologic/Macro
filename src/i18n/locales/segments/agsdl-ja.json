@@ -171,5 +171,8 @@
   "queueSendFailed": "待機中のメッセージは送信されませんでした",
   "queueRetained": "再試行のためにメッセージとコンテキストを保持しています: {{message}}",
   "chatDocumentMissing": "最初に AgSDL ドキュメントを読み込んでください。",
-  "chatConversationMissing": "AgSDL コンテキストを添付する前に、このプランの会話を開いてください。"
+  "chatConversationMissing": "AgSDL コンテキストを添付する前に、このプランの会話を開いてください。",
+  "queueReplyFailed": "応答を開始できませんでした",
+  "queueRecorded": "メッセージとコンテキストは会話に保存されています。",
+  "openConversation": "会話を開く"
 }

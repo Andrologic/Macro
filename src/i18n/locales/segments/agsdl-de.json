@@ -171,5 +171,8 @@
   "queueSendFailed": "Die Nachricht in der Warteschlange wurde nicht gesendet",
   "queueRetained": "Nachricht und Kontext bleiben für einen erneuten Versuch erhalten: {{message}}",
   "chatDocumentMissing": "Lade zuerst das AgSDL-Dokument.",
-  "chatConversationMissing": "Öffne die Unterhaltung dieses Plans, bevor du den AgSDL-Kontext hinzufügst."
+  "chatConversationMissing": "Öffne die Unterhaltung dieses Plans, bevor du den AgSDL-Kontext hinzufügst.",
+  "queueReplyFailed": "Die Antwort konnte nicht gestartet werden",
+  "queueRecorded": "Nachricht und Kontext sind in der Unterhaltung gespeichert.",
+  "openConversation": "Unterhaltung öffnen"
 }
