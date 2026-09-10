@@ -30,10 +30,6 @@
 .agsdl-node-text { flex: 1; min-width: 0; }
 .agsdl-node-subtitle { display: block; color: rgb(var(--muted-foreground)); font-size: 10px; line-height: 1.4; margin-top: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .agsdl-node-title { font-size: 12px; font-weight: 500; line-height: 1.4; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-.agsdl-graph-node.is-boundary { width: 36px; margin: 0 auto; justify-content: center; padding: 0; position: relative; border-color: transparent; background: transparent; color: rgb(var(--muted-foreground)); }
-.agsdl-graph-node.is-boundary .agsdl-node-icon { background: transparent; color: inherit; }
-.agsdl-graph-node.is-boundary .agsdl-node-warning { position: absolute; right: -8px; top: 0; }
-.agsdl-graph-node.is-boundary:hover, .agsdl-graph-node.is-boundary.is-selected { color: rgb(var(--foreground)); background: rgb(var(--muted) / 0.5); }
 .agsdl-graph-node:focus-visible { outline: 2px solid rgb(var(--primary)); outline-offset: 3px; }
 .agsdl-graph-node.is-interaction { border-color: rgb(var(--primary) / 0.65); }
 .agsdl-graph-node.is-interaction .agsdl-node-icon { color: rgb(var(--primary)); }
@@ -75,3 +71,5 @@
 .agsdl-value { white-space: pre-wrap; }
 .agsdl-status { flex-shrink: 0; padding: 6px 12px; border-top: 1px solid rgb(var(--border)); font-size: 10px; color: rgb(var(--muted-foreground)); }
 .agsdl-empty { padding: 20px 12px; line-height: 1.7; }
+
+.agsdl-node-capabilities { display: flex; gap: 3px; flex-shrink: 0; color: rgb(var(--muted-foreground)); }

@@ -285,10 +285,14 @@ Il doit préparer concrètement la suite de l'implémentation.
 
 Le panneau droit Architect présente AgSDL en lecture seule. La conversation
 conserve sa place centrale et l’agent effectue les modifications du document.
-La vue principale montre l’entrée du système, les agents, les échanges déclarés
-et les étapes d’approbation. Le résultat indique les sorties attendues. Les
-terminaux techniques de succès et d’échec restent dans les détails. Les missions,
-outils et provenances complètes sont accessibles à la sélection d’un nœud.
+Le canvas montre les participants, les relations déclarées, les conditions et
+les étapes d’approbation. Les interfaces du système et les terminaux de fin ne
+créent pas de nœuds. Le bouton de détails dans l’en-tête donne accès au point de
+départ, aux interfaces, aux ressources et à la configuration du système.
+Les capacités et interfaces d’un composant sont signalées par des icônes dans
+sa carte ; sa mission, ses outils et les provenances se consultent au clic.
+Les connexions sont sélectionnables pour consulter leur nature et les transferts
+explicitement déclarés, sans libellés permanents sur le canvas.
 Le bouton d’agrandissement ouvre le visualisateur dans une modale sans modifier
 la disposition des panneaux.
 Les anciennes stratégies sont converties en déclarations AgSDL descriptives,

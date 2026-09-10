@@ -27,28 +27,26 @@ describe("AgSDL viewer", () => {
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
 
-  it("shows boundary icons with accessible data and keeps the named result in details", async () => {
-    const document = JSON.parse(createExample("feature"));
-    const ends = document.graphs[0].steps.filter((step: { kind: string }) => step.kind === "end");
-    ends[0].annotations = { title: "Ready for delivery" };
-    await mount(JSON.stringify(document));
+  it("keeps system interfaces in the overview and component interfaces on their owner", async () => {
+    await mount();
     const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
-    const boundaries = nodes.filter(node => node.classList.contains("is-boundary"));
-    expect(boundaries.map(node => node.textContent)).toEqual(["", ""]);
-    expect(boundaries[0].getAttribute("aria-label")).toContain("brief · context");
-    expect(boundaries[1].getAttribute("aria-label")).toContain("report");
-    expect(boundaries.every(node => node.querySelector(".agsdl-node-icon"))).toBe(true);
-    expect(container!.querySelector(".react-flow__edge-text")).toBeNull();
-    expect(boundaries[1].title).toContain("Ready for delivery");
-    expect(nodes).toHaveLength(5);
+    expect(nodes).toHaveLength(3);
+    expect(container!.querySelector(".is-boundary, .react-flow__edge-text")).toBeNull();
     expect(container!.querySelector(".agsdl-inspector")).toBeNull();
-    act(() => boundaries[1].click());
-    expect(container!.querySelector(".agsdl-inspector")!.textContent).toContain("Ready for delivery");
+    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-header-actions button")!.click());
+    const overview = container!.querySelector(".agsdl-inspector")!;
+    expect(overview.textContent).toContain("brief");
+    expect(overview.textContent).toContain("context");
+    expect(overview.textContent).toContain("report");
+    expect(overview.querySelector(".agsdl-provenance")).toBeNull();
+    act(() => nodes[0].click());
+    expect(container!.querySelector(".agsdl-exchange-summary")!.textContent).toContain("report");
+    expect(container!.querySelector(".agsdl-node-capabilities")).not.toBeNull();
   });
 
   it("keeps saved graphs quiet while preserving validation and unsaved-work notices", async () => {
     await mount();
-    expect(container!.querySelector(".agsdl-status, .agsdl-graph-caption, .agsdl-header-actions button")).toBeNull();
+    expect(container!.querySelector(".agsdl-status, .agsdl-graph-caption")).toBeNull();
     act(() => useAgsdlStore.setState(state => ({ sessions: { [key]: {
       ...state.sessions[key], dirty: true,
       reports: [{ operation: "validate", results: [{ input: "graph", unit: "test", verdict: "fail", findings: [
@@ -168,7 +166,7 @@ describe("AgSDL viewer", () => {
     ).toBeNull();
     expect(container.textContent).not.toContain("Clarify the request and produce acceptance criteria.");
     expect(container.textContent).not.toContain("Specification · report");
-    expect(container.querySelectorAll(".agsdl-graph-node")).toHaveLength(5);
+    expect(container.querySelectorAll(".agsdl-graph-node")).toHaveLength(3);
     expect(container.querySelector(".agsdl-inspector")).toBeNull();
     const expand = container.querySelector<HTMLButtonElement>(
       ".agsdl-viewer-header button",

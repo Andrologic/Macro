@@ -12,11 +12,13 @@ attente restent visibles ; les détails du système se consultent à la demande.
 
 1. Ouvrir un plan dans Architect. Les anciennes stratégies sont converties lors
    du premier chargement du panneau, sans changer le statut du plan.
-2. Lire le système depuis son entrée : le nœud d’entrée indique les éléments à
-   fournir. Les agents sont reliés par leurs passages déclarés ; le nom des
-   données transmises apparaît lorsqu’un binding prouve cet échange. Les étapes
-   d’approbation sont visibles, avec les approbateurs explicitement définis. Le
-   résultat présente les sorties déclarées, ou une simple fin si elles sont vides.
+2. Lire les participants et leurs relations sur le canvas. Les interfaces du
+   système et les fins techniques ne sont pas des étapes affichées. Le bouton
+   « Détails du système » dans l’en-tête ouvre ses interfaces déclarées, son point
+   de départ et ses ressources ; sa configuration reste dans les détails techniques.
+   Les icônes à l’intérieur des cartes signalent les interfaces, outils et ressources
+   du composant. Sélectionner une flèche pour consulter la relation et les données
+   explicitement transmises. Aucun transfert n’est déduit du seul ordre des étapes.
 3. Sélectionner un nœud pour consulter sa mission, ses outils et ses échanges.
    La sélection conserve le zoom et les flèches du graphe. La fiche résume la
    mission et les échanges ; les données partagées et les échanges non adjacents

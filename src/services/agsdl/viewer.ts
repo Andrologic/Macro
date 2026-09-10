@@ -281,6 +281,7 @@ export function projectViewer(source: string) {
   });
   return {
     title: title(object(doc.root)),
+    systemDetails: { root: doc.root, runtime: doc.runtime },
     graphs,
     legacyCards,
     migrated: migration.version === 1,

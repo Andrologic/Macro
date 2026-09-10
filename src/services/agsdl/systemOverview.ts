@@ -14,28 +14,15 @@ export function projectSystemOverview(graph: ViewerGraph | undefined, declaratio
       )),
     };
   }
-  const input: ViewerCard = {
-    path: `${graph.path}/input`, id: "input", kind: "input", title: "",
-    mission: "", unresolved: !!graph.entry.unresolved,
-    inputs: graph.inputs, outputs: [], branches: [],
-    details: { entry: graph.entry, inputs: graph.inputs },
-  };
-  const cards = [input, ...graph.cards.flatMap((card): ViewerCard[] => {
-    if (card.kind !== "end") return [card];
-    if (card.outcome !== "success") return [];
-    return [{
-      ...card, kind: "output",
-      // Only declared system outputs belong to the system boundary.
-      outputs: graph.outputs.map(port => ({ ...port, binding: card.outputs.find(value => value.name === port.name)?.binding })),
-    }];
-  })];
+  // Interfaces and terminal outcomes belong to their owner's inspector, not
+  // to the participant canvas. Never synthesize boundary nodes from them.
+  const cards = graph.cards.filter(card => card.kind !== "end");
   const byPath = new Map(cards.map(card => [card.path, card]));
   const edges: ViewerEdge[] = [];
   const add = (source: string, target: string | undefined, label: string) => {
     if (!target || !byPath.has(target)) return;
     edges.push({ id: `${source}/${label}`, source, target, label, dependency: false });
   };
-  if (!graph.entry.unresolved) add(input.path, graph.entry.target, "entry");
   for (const card of graph.cards) {
     if (!byPath.has(card.path)) continue;
     for (const branch of card.branches) {
@@ -45,14 +32,13 @@ export function projectSystemOverview(graph: ViewerGraph | undefined, declaratio
     }
   }
   for (const card of cards) {
-    if (card.kind === "input") continue;
-    const ports = card.kind === "output" ? card.outputs : card.inputs;
+    const ports = card.inputs;
     for (const port of ports) {
       const ref = port.binding;
       if (!ref || ref.unresolved) continue;
-      const source = ref.source === "input" ? input.path : ref.source === "step" ? ref.target : undefined;
+      const source = ref.source === "step" ? ref.target : undefined;
       if (!source || !byPath.has(source)) continue;
-      // Shared context is shown at the boundary and in the receiving agent's details.
+      // Shared context stays with the system and in the receiving agent's details.
       // Keep non-adjacent exchanges separate from the process path; their bindings
       // remain available in the inspector without drawing a shortcut on selection.
       let edge = edges.find(edge => edge.source === source && edge.target === card.path);
