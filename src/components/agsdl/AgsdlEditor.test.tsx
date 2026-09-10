@@ -27,15 +27,18 @@ describe("AgSDL viewer", () => {
     await act(async () => root!.render(<AgsdlEditor target={target} />));
   };
 
-  it("shows declared boundary data and keeps the named result accessible in details", async () => {
+  it("shows boundary icons with accessible data and keeps the named result in details", async () => {
     const document = JSON.parse(createExample("feature"));
     const ends = document.graphs[0].steps.filter((step: { kind: string }) => step.kind === "end");
     ends[0].annotations = { title: "Ready for delivery" };
     await mount(JSON.stringify(document));
     const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
     const boundaries = nodes.filter(node => node.classList.contains("is-boundary"));
-    expect(boundaries.map(node => node.textContent)).toEqual(["brief · context", "report"]);
-    expect(boundaries.every(node => !node.querySelector(".agsdl-node-icon"))).toBe(true);
+    expect(boundaries.map(node => node.textContent)).toEqual(["", ""]);
+    expect(boundaries[0].getAttribute("aria-label")).toContain("brief · context");
+    expect(boundaries[1].getAttribute("aria-label")).toContain("report");
+    expect(boundaries.every(node => node.querySelector(".agsdl-node-icon"))).toBe(true);
+    expect(container!.querySelector(".react-flow__edge-text")).toBeNull();
     expect(boundaries[1].title).toContain("Ready for delivery");
     expect(nodes).toHaveLength(5);
     expect(container!.querySelector(".agsdl-inspector")).toBeNull();

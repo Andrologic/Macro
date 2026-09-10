@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { Bot, CircleHelp, GitBranch, Hand, LocateFixed, Minus, Plus } from "lucide-react";
+import { Bot, CircleHelp, GitBranch, Hand, LogIn, LogOut, LocateFixed, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import type { ViewerCard } from "../../services/agsdl/viewer";
@@ -21,8 +21,9 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
   const { t } = useAgsdlTranslation();
   const boundary = card.kind === "input" || card.kind === "output";
   const ports = card.kind === "input" ? card.inputs : card.outputs;
-  const Icon = card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : Bot;
+  const Icon = card.kind === "input" ? LogIn : card.kind === "output" ? LogOut : card.kind === "condition" ? GitBranch : card.kind === "approval" ? Hand : Bot;
   const warning = card.unresolved || card.branches.some(branch => branch.reference.unresolved) || card.dependencies?.some(ref => ref.unresolved);
+  const label = [data.kindLabel, data.title !== data.kindLabel ? data.title : "", boundary ? ports.map(port => port.name).join(" · ") : data.subtitle, warning ? t("agsdl.viewer.unresolved") : ""].filter(Boolean).join(" · ");
   return (
     <>
       <Handle type="target" position={Position.Top} id="in" />
@@ -30,13 +31,14 @@ function WorkflowNode({ data }: NodeProps<GraphNode>) {
         className={`agsdl-graph-node nodrag${data.active ? " is-selected" : ""}${["input", "output"].includes(card.kind) ? " is-boundary" : ""}${card.kind === "approval" ? " is-interaction" : ""}`}
         onClick={() => data.select(data.active ? "" : card.path)}
         aria-pressed={data.active}
-        title={`${data.kindLabel} · ${data.title}${data.subtitle ? ` · ${data.subtitle}` : ""}${warning ? ` · ${t("agsdl.viewer.unresolved")}` : ""}`}
+        aria-label={boundary ? label : undefined}
+        title={label}
       >
-        {!boundary && <span className="agsdl-node-icon"><Icon size={15} /></span>}
-        <span className="agsdl-node-text">
-          <span className="agsdl-node-title">{boundary && ports.length ? ports.map(port => port.name).join(" · ") : data.title}</span>
-          {!boundary && data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
-        </span>
+        <span className="agsdl-node-icon"><Icon size={boundary ? 17 : 15} aria-hidden="true" /></span>
+        {!boundary && <span className="agsdl-node-text">
+          <span className="agsdl-node-title">{data.title}</span>
+          {data.subtitle && <span className="agsdl-node-subtitle">{data.subtitle}</span>}
+        </span>}
         {warning && <CircleHelp size={12} className="agsdl-node-warning" aria-hidden="true" />}
       </button>
       <Handle type="source" position={Position.Bottom} id="out" />
@@ -102,13 +104,10 @@ function Canvas({ cards, edges: connections, selected, select, title }: {
       ...edge, type: "smoothstep",
       sourceHandle: "out",
       targetHandle: "in",
-      label: edge.label === "entry" || cards.find(card => card.path === edge.target)?.kind === "output" ? undefined
-        : transfer ? (transfer.length > 32 ? `${transfer.slice(0, 29)}…` : transfer) : condition,
-      ariaLabel: `${title(cards.find(card => card.path === edge.source)!)} → ${title(cards.find(card => card.path === edge.target)!)}${transfer ? ` · ${transfer}` : ""}`,
+      label: undefined,
+      ariaLabel: `${title(cards.find(card => card.path === edge.source)!)} → ${title(cards.find(card => card.path === edge.target)!)}${transfer ? ` · ${transfer}` : ""}${condition ? ` · ${condition}` : ""}`,
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
       style: { stroke: color, strokeWidth: 1.3, strokeDasharray: edge.dependency ? "4 4" : undefined, opacity: 0.8 },
-      labelStyle: { fill: "rgb(var(--muted-foreground))", fontSize: 10 },
-      labelBgStyle: { fill: "rgb(var(--background))" },
     };
   });
   return (
