@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useConversationArchiveStore } from './stores/useConversationArchiveStore';
@@ -39,6 +39,9 @@ type AppBootstrapSnapshot = {
 let appState: AppStoreState;
 let appBootstrapSnapshot: AppBootstrapSnapshot;
 let importCounter = 0;
+let browserRuntimeEnabled = false;
+const restartBootstrapMock = mock(async () => undefined);
+const actualRuntimeBridge = await import("./services/tauriRuntimeBridge");
 const actualDesktopPlatform = await import('./utils/desktopPlatform');
 const actualAppBootstrap = await import('./services/appBootstrap');
 
@@ -65,6 +68,11 @@ const hydrateArchivedConversationIds =
 
 const registerAppMocks = () => {
   mock.restore();
+
+  mock.module('./services/tauriRuntimeBridge', () => ({
+    ...actualRuntimeBridge,
+    isBrowserRuntimeBridgeEnabled: () => browserRuntimeEnabled,
+  }));
 
   mock.module('./hooks/useWindowRestoration', () => ({
     useWindowRestoration: () => undefined,
@@ -123,7 +131,7 @@ const registerAppMocks = () => {
       getSnapshot: () => appBootstrapSnapshot,
       subscribe: () => () => undefined,
       ensureStarted: () => Promise.resolve(),
-      restart: () => Promise.resolve(),
+      restart: restartBootstrapMock,
     },
   }));
 
@@ -177,6 +185,8 @@ describe('App layout containment', () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    browserRuntimeEnabled = false;
+    restartBootstrapMock.mockClear();
     hydrateArchivedConversationIdsMock.mockClear();
     useConversationArchiveStore.setState({
       hydrateArchivedConversationIds: hydrateArchivedConversationIdsMock,
@@ -343,6 +353,27 @@ describe('App layout containment', () => {
     expect(container.querySelector('[data-testid="mock-release-notes"]')).toBeNull();
     expect(container.querySelectorAll('[data-testid="mock-skeleton"]').length).toBeGreaterThan(0);
   });
+
+  for (const browserRuntime of [true, false]) {
+    it(`retries startup by ${browserRuntime ? 'reloading the browser session' : 'restarting native bootstrap'}`, async () => {
+      browserRuntimeEnabled = browserRuntime;
+      appBootstrapSnapshot = {
+        ...appBootstrapSnapshot, phase: 'error', critical: false, ready: false,
+        startupError: { message: 'Session replaced', failedSteps: ['Bootstrap import'] },
+      };
+      const { default: App } = await loadApp();
+      const reload = spyOn(window.location, 'reload').mockImplementation(() => undefined);
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      root = createRoot(container);
+      await act(async () => root?.render(<App />));
+      // A lost session must never reclaim ownership automatically.
+      expect(reload).not.toHaveBeenCalled();
+      await act(async () => container!.querySelector<HTMLButtonElement>('button')!.click());
+      expect(reload).toHaveBeenCalledTimes(browserRuntime ? 1 : 0);
+      expect(restartBootstrapMock).toHaveBeenCalledTimes(browserRuntime ? 0 : 1);
+    });
+  }
 
   it('renders a startup error instead of an infinite loader', async () => {
     appBootstrapSnapshot = {

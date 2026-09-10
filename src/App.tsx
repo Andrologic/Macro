@@ -26,6 +26,8 @@ import {
   retryDatabaseInitialization,
 } from "./services/tauriIpc";
 
+import { isBrowserRuntimeBridgeEnabled } from "./services/tauriRuntimeBridge";
+
 // =============================================================================
 // LAZY LOADED MODALS - Code Splitting for Non-Critical UI
 // =============================================================================
@@ -348,6 +350,12 @@ const App: React.FC = () => {
   }, [bootstrapRetryKey]);
 
   const handleStartupRetry = () => {
+    if (isBrowserRuntimeBridgeEnabled()) {
+      // A replaced browser session and rejected module imports remain terminal
+      // until reload. Reclaim the session only on this explicit user action.
+      window.location.reload();
+      return;
+    }
     setBootstrapImportError(null);
     setInitStatus(INITIAL_BOOTSTRAP_SNAPSHOT);
     const controller = appBootstrapRef.current;

@@ -84,6 +84,14 @@ while Tauri runs as a hidden host and executes IPC commands for the browser.
 Backend events used by configuration, terminals, authentication, downloads, and
 streaming chat are relayed to the browser as well.
 
+The bridge has a single browser owner. Connecting another tab or a Playwright
+browser replaces the previous connection with WebSocket close code `4009`.
+Do not open an automation browser on a runtime currently being tested by a person.
+Finish and close automation before handing over the demo. A replaced tab does
+not reconnect automatically, which prevents competing tabs from repeatedly
+stealing the session. Reload that tab explicitly to reclaim it; the startup
+error screen's Retry button also reloads the page in browser runtime mode.
+
 This bridge is intentionally unavailable in production builds: enabling its
 Cargo feature in a release build is a compile-time error. The dedicated launcher
 creates a new 256-bit token for every run and gives it to the Tauri host and Vite,
