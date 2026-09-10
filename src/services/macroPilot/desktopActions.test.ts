@@ -24,7 +24,8 @@ const task = {
 
 const conversation = {
   id: 'conversation-1',
-  task_id: task.id,
+  scope_mode: 'Implement',
+  task_id: task.id as string | null,
   provider_id: 'provider-1',
   model_id: 'model-1',
   reasoning_effort: null,
@@ -168,6 +169,8 @@ const setupStartKernel = () => {
 
 describe('Macro Pilot desktop actions', () => {
   beforeEach(() => {
+    conversation.scope_mode = 'Implement';
+    conversation.task_id = task.id;
     task.status = 'Pending';
     task.draft = false;
     task.task_source = 'architect';
@@ -424,5 +427,52 @@ describe('Macro Pilot desktop actions', () => {
       conversation.id,
       expect.anything(),
     );
+  });
+});
+
+
+describe('explicit Chat conversation sending', () => {
+  beforeEach(() => {
+    conversation.scope_mode = 'Chat'; conversation.task_id = null;
+    conversation.model_id = 'model-1';
+    chatState.getConversationRuntime.mockImplementation(() => ({ phase: 'idle' }));
+    chatState.getActiveQuestionnaire.mockImplementation(() => null);
+    chatState.getPendingToolApproval.mockImplementation(() => null);
+    sendMessage.mockClear(); providerStarts = 0;
+  });
+  it('rejects pending decisions and target configuration changes during authorization', async () => {
+    const guard = { assertCurrent: () => undefined, authorizeBeforeEffect: async () => undefined };
+    chatState.getActiveQuestionnaire.mockImplementation(() => ({ assistantMessageId: 'pending' }));
+    await expect(desktopActions.sendConversation(conversation.id, 'Next', guard)).rejects.toThrow('conflict');
+    chatState.getActiveQuestionnaire.mockImplementation(() => null);
+    guard.authorizeBeforeEffect = async () => { conversation.model_id = 'changed-model'; };
+    await expect(desktopActions.sendConversation(conversation.id, 'Next', guard)).rejects.toThrow('stale_revision');
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+  it('reauthorizes after preparation and refuses revoked sessions before provider effects', async () => {
+    let checks = 0;
+    const guard = { assertCurrent: () => undefined, authorizeBeforeEffect: async () => {
+      if (++checks === 2) throw new PilotError('forbidden');
+    } };
+    await expect(desktopActions.sendConversation(conversation.id, 'Next', guard)).rejects.toThrow('forbidden');
+    expect(checks).toBe(2); expect(providerStarts).toBe(0);
+  });
+  it('sends to the reserved Chat with an explicit mode and no active composer context', async () => {
+    conversation.scope_mode = 'Chat'; conversation.task_id = null;
+    chatState.getConversationRuntime.mockImplementation(() => ({ phase: 'idle' }));
+    chatState.getActiveQuestionnaire.mockImplementation(() => null);
+    chatState.getPendingToolApproval.mockImplementation(() => null);
+    sendMessage.mockClear();
+    const guard = { assertCurrent: () => undefined, authorizeBeforeEffect: async () => undefined };
+    await desktopActions.sendConversation(conversation.id, ' Next message ', guard);
+    expect(sendMessage.mock.calls[0]?.[0]).toMatchObject({ conversationId: conversation.id, content: 'Next message', contextRefs: [], pilotTarget: { mode: 'Chat' } });
+  });
+  it('rejects a busy conversation before invoking send', async () => {
+    conversation.scope_mode = 'Chat'; conversation.task_id = null;
+    chatState.getConversationRuntime.mockImplementation(() => ({ phase: 'streaming' }));
+    sendMessage.mockClear();
+    const guard = { assertCurrent: () => undefined, authorizeBeforeEffect: async () => undefined };
+    await expect(desktopActions.sendConversation(conversation.id, 'Next', guard)).rejects.toThrow();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,4 @@
+import { pilotTaskId } from './taskIdentity';
 import { describe, expect, it } from 'bun:test';
 import type { DbConversation, DbMessage } from '../tauriIpc';
 import { ConversationCaptures, type CaptureDependencies, type ConversationActivity, type ConversationRef } from './conversationCaptures';
@@ -71,7 +72,7 @@ describe('immutable conversation captures', () => {
     const chats = await env.captures.conversationsList(scope, 'conversation');
     expect(chats.items.map(i => i.ref)).toEqual([ref]);
     const tasks = await env.captures.conversationsList(scope, 'implement');
-    expect(tasks.items[0].ref).toEqual({ instance_id: 'instance', kind: 'implement', workspace_id: 'workspace', task_id: 'task', conversation_id: 'implement' });
+    expect(tasks.items[0].ref).toEqual({ instance_id: 'instance', kind: 'implement', workspace_id: 'workspace', task_id: pilotTaskId('task'), conversation_id: 'implement' });
     expect(tasks.items).toHaveLength(1);
   });
   it('orders persisted catalogs and messages deterministically, with immutable contiguous pages', async () => {
@@ -236,4 +237,85 @@ it('bounds a slow catalog observation before it can occupy a delivery lease inde
   env.deps.source.listMessages = async () => { now += 2500; reads++; return []; };
   await expect(env.captures.refreshCatalog()).rejects.toMatchObject({ code: 'content_unavailable' });
   expect(reads).toBe(4); expect(env.stored).toBeNull();
+});
+
+
+it('keeps encoded task links readable through their Pilot reference', async () => {
+  const env = setup();
+  const localId = 'task:v1:feature%2Fmobile:plan-alpha:node-alpha';
+  env.deps.source.tasks = async () => [{ id: localId, project_id: 'p1', conversation_id: 'implement' }];
+  env.conversations.push({ ...conversation('implement'), scope_mode: 'Implement', task_id: localId, project_id: 'p1' });
+  const page = await env.captures.conversationsList(scope, 'implement');
+  expect(page.items).toHaveLength(1);
+  expect(page.items[0].ref).toMatchObject({ task_id: pilotTaskId(localId), conversation_id: 'implement' });
+  expect(env.conversations[1].task_id).toBe(localId);
+});
+
+it('lists catalogs without histories and reads only the selected immutable transcript', async () => {
+  const env = setup(); env.conversations.push(conversation('unrelated'));
+  env.messages.push(message('m2'));
+  const readMessages = env.deps.source.listMessages; const reads: string[] = [];
+  env.deps.source.listMessages = async id => {
+    reads.push(id);
+    if (id !== 'chat') throw new Error('Unrelated history unavailable');
+    return readMessages(id);
+  };
+  const catalog = await env.captures.conversationsList(scope, 'conversation', undefined, 1);
+  await env.captures.conversationsList(scope, 'conversation', { snapshot_id: catalog.page.snapshot_id, cursor: catalog.page.next_cursor! });
+  expect(reads).toEqual([]);
+  const first = await env.captures.conversationRead(scope, ref, undefined, 1);
+  const next = await env.captures.conversationRead(scope, ref, { snapshot_id: first.page.snapshot_id, cursor: first.page.next_cursor! });
+  expect(reads).toEqual(['chat', 'chat', 'chat', 'chat']);
+  expect(next.page.snapshot_id).toBe(first.page.snapshot_id);
+  expect(next.items.map(item => item.message_id)).toEqual(['m2']);
+});
+
+it('shares monotonic revisions between background, catalog and targeted observations', async () => {
+  const env = setup(); env.messages.push(message('m2'));
+  await env.captures.refreshCatalog();
+  const catalog = await env.captures.conversationsList(scope, 'conversation');
+  const first = await env.captures.conversationRead(scope, ref, undefined, 1);
+  expect(first.page.revision).toBe(catalog.items[0].revision);
+  expect((await env.captures.refreshCatalog()).revision).toBe(first.page.revision);
+  env.messages[0].content = 'Edited without metadata changes';
+  const observed = await env.captures.refreshCatalog();
+  expect(observed.revision).toBe(first.page.revision + 1);
+  await expect(env.captures.conversationRead(scope, ref, { snapshot_id: first.page.snapshot_id, cursor: first.page.next_cursor! })).rejects.toMatchObject({ code: 'stale_revision' });
+  const updated = await env.captures.conversationsList(scope, 'conversation');
+  expect(updated.items[0].revision).toBe(observed.revision);
+  expect((await env.captures.refreshCatalog()).revision).toBe(observed.revision);
+});
+
+it('binds a business task id through a unique project-consistent conversation link', async () => {
+  const env = setup();
+  const qualified = 'task:v1:feature%2Fmobile:plan:node';
+  env.deps.source.tasks = async () => [{ id: qualified, project_id: 'p1', conversation_id: 'implement' }];
+  env.conversations.push({ ...conversation('implement'), scope_mode: 'Implement', task_id: 'node', project_id: 'p1' });
+  expect((await env.captures.conversationsList(scope, 'implement')).items[0].ref).toMatchObject({ task_id: pilotTaskId(qualified) });
+  env.deps.source.tasks = async () => [
+    { id: qualified, project_id: 'p1', conversation_id: 'implement' },
+    { id: 'other', project_id: 'p1', conversation_id: 'implement' },
+  ];
+  expect((await env.captures.conversationsList(scope, 'implement')).items).toEqual([]);
+  env.deps.source.tasks = async () => [{ id: qualified, project_id: 'p2', conversation_id: 'implement' }];
+  expect((await env.captures.conversationsList(scope, 'implement')).items).toEqual([]);
+});
+
+it('rejects a catalog that changes between metadata observations without reading transcripts', async () => {
+  const env = setup(); let reads = 0;
+  env.deps.source.listConversations = async () => [{ ...conversation(), title: `Edit ${reads++}` }];
+  env.deps.source.listMessages = async () => { throw new Error('Catalog must not read messages'); };
+  await expect(env.captures.conversationsList(scope, 'conversation')).rejects.toMatchObject({ code: 'content_unavailable' });
+  expect(env.stored).toBeNull();
+});
+
+it('validates current catalog identities without loading histories or changing an unchanged revision', async () => {
+  const env = setup();
+  const initial = await env.captures.refreshCatalog();
+  env.deps.source.listMessages = async () => { throw new Error('Metadata validation must not load histories'); };
+  expect(await env.captures.refreshCatalogMetadata()).toEqual(initial);
+  env.conversations.splice(0);
+  const removed = await env.captures.refreshCatalogMetadata();
+  expect(removed.refs).toEqual([]);
+  expect(removed.revision).toBe(initial.revision + 1);
 });

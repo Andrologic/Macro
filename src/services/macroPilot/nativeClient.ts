@@ -3,6 +3,7 @@ import { validateContentMessage, validateContentResponse } from './contentProtoc
 export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
 import { tauriFetch } from '../tauriHttp';
 import {
+  frontendLog,
   pilotSecretDelete,
   pilotSecretRead,
   pilotSecretWrite,
@@ -424,6 +425,9 @@ export class MacroPilotNativeClient {
       return value;
     } catch (error) {
       if (error instanceof PilotClientError) throw error;
+      const failure = typeof error === 'string' && ['invalid_scope', 'invalid_secret', 'vault_unavailable'].includes(error)
+        ? error.replaceAll('_', '') : error instanceof Error && error.message.includes('requires the native desktop runtime') ? 'nativeruntime' : 'ipc';
+      void frontendLog({ level: 'error', scope: 'frontend', message: `[Frontend:PilotVault${kind.replaceAll('_', '')}${failure}]` }).catch(() => undefined);
       this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
       throw new PilotClientError('vault_unavailable');
     }

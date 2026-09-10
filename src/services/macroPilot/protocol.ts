@@ -12,6 +12,8 @@ export type ErrorCode = 'validation_failed' | 'invalid_reference' | 'stale_revis
 export class PilotError extends Error {
   constructor(public readonly code: ErrorCode) { super(code); }
 }
+/** Trusted desktop refusal before conversation send invokes any durable effect. */
+export class PilotConversationSendPreflightRejection extends PilotError {}
 export const object = (value: unknown): Wire => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Wire : {};
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const unique = (values: unknown[]) => new Set(values).size === values.length;

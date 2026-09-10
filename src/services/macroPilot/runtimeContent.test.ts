@@ -79,6 +79,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   throw new Error(`Unexpected test IPC: ${command}`);
 } }));
 afterAll(() => mock.restore());
+mock.module('./desktopTaskCatalog', () => ({ desktopPilotTasks: () => taskRecords }));
 const { PilotRuntime } = await import('./runtime');
 const { MacroPilotNativeClient } = await import('./nativeClient');
 const { validateContentMessage } = await import('./contentProtocol');

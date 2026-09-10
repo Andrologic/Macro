@@ -1233,8 +1233,7 @@ interface ChatStore {
     hiddenContext?: string;
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
-    pilotTarget?: {
-      taskId: string;
+    pilotTarget?: ({ mode: "Chat"; taskId?: never } | { mode?: never; taskId: string }) & {
       actionToken: symbol;
       beforeEffect?: () => Promise<void>;
     };
@@ -1775,11 +1774,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return value || DEFAULT_TOOL_RISK_LEVEL;
   };
 
-  const resolveConversationExecutionContext = (conversationId: string) => {
+  const resolveConversationExecutionContext = (conversationId: string, modeOverride?: "Chat") => {
     const appState = useAppStore.getState();
     const taskState = useTaskStore.getState();
     return resolveProjectExecutionContext({
-      mode: appState.mode,
+      mode: modeOverride ?? appState.mode,
       projects: [
         ...(appState.standaloneProjects ?? []),
         ...appState.projectGroups.flatMap((group) => group.projects),
@@ -1791,8 +1790,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       selectedGroupId: appState.selectedGroupId,
       selectedProjectId: appState.selectedProjectId,
       selectedTaskId: appState.selectedTaskId,
-      activeRepositoryPath: taskState.activeRepositoryPath,
-      workspacePathOverridesByProjectId: taskState.activeWorkspacePathOverridesByProjectId,
+      activeRepositoryPath: modeOverride ? null : taskState.activeRepositoryPath,
+      workspacePathOverridesByProjectId: modeOverride ? undefined : taskState.activeWorkspacePathOverridesByProjectId,
       branchWorktrees: taskState.branchWorktrees,
       architectExecutionModesByProjectId: appState.activeArchitectPlanId
         ? getPlanExecutionModesByProjectId(
@@ -15684,7 +15683,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (reservedTaskId) {
         assertPilotTaskActionAllowed(reservedTaskId, pilotTarget?.actionToken);
       }
-      const modeAtSend = pilotTarget ? "Implement" : appStateAtSend.mode;
+      const modeAtSend = pilotTarget ? pilotTarget.mode ?? "Implement" : appStateAtSend.mode;
       const agentTypeAtSend =
         modeAtSend === "Implement" ? (pilotTarget ? "build" : appStateAtSend.agentType) : null;
       const activeArchitectPlanIdAtSend = appStateAtSend.activeArchitectPlanId;
@@ -15726,7 +15725,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         modeAtSend === "Chat"
           ? ""
           : (taskId ?? conversationTaskIdAtSend ?? selectedTaskIdAtSend);
-      const executionContextAtSend = resolveConversationExecutionContext(conversationId);
+      const executionContextAtSend = resolveConversationExecutionContext(conversationId, pilotTarget?.mode);
       const preparationAbortController = new AbortController();
       const cancelledResult = (): ChatSendCancelledResult => ({
         status: "cancelled",
@@ -15846,7 +15845,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         if (!isCurrentPreparation()) {
           return cancelledResult();
         }
-        const scopedModelSelection = resolveScopedModelSelection(
+        const scopedModelSelection = pilotTarget ? null : resolveScopedModelSelection(
           scopedTurnConfigurationAtSend,
           scopedModelPreferenceKeys(modeAtSend, agentTypeAtSend, internalAgentProfile),
         );

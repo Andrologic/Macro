@@ -293,3 +293,43 @@ describe('Pilot durable desktop dispatch', () => {
   });
 
 });
+
+
+describe('Pilot Chat conversation commands', () => {
+  const chatDelivery = (env: ReturnType<typeof setup>): Delivery => ({ ...env.delivery, message: {
+    ...env.delivery.message, kind: 'conversation.send',
+    target: { instance_id: env.deps.instanceId, kind: 'conversation', conversation_id: 'chat:existing' },
+    payload: { content: 'Continue this conversation.' },
+  } });
+  it('replays a durable send receipt after a lost response and desktop restart', async () => {
+    const env = setup(); let effects = 0; let revision = 7;
+    env.deps.validateConversationSend = async command => {
+      if (command.expected_revision !== revision) throw new PilotError('stale_revision');
+    };
+    env.deps.execute = async (_command, guard) => { await guard.authorizeBeforeEffect(); effects++; revision++; };
+    const kernel = new PilotKernel(env.deps); await kernel.initialize();
+    const delivery = chatDelivery(env);
+    const first = await kernel.handle(delivery);
+    expect(response(first).outcome).toBe('accepted');
+    const restarted = new PilotKernel(env.deps); await restarted.initialize();
+    expect(await restarted.handle(delivery)).toEqual(first);
+    expect(effects).toBe(1);
+  });
+  it('rejects stale, absent and revoked targets before sending', async () => {
+    for (const code of ['stale_revision', 'invalid_reference', 'forbidden'] as const) {
+      const env = setup();
+      env.deps.validateConversationSend = async () => { if (code !== 'forbidden') throw new PilotError(code); };
+      if (code === 'forbidden') env.deps.authorize = async () => { throw new PilotError(code); };
+      const kernel = new PilotKernel(env.deps); await kernel.initialize();
+      expect(object(response(await kernel.handle(chatDelivery(env))).error).code).toBe(code);
+      expect(env.effects).toBe(0);
+    }
+  });
+  it('checks the catalog again after journal persistence before the effect', async () => {
+    const env = setup(); let checks = 0;
+    env.deps.validateConversationSend = async () => { if (++checks > 1) throw new PilotError('stale_revision'); };
+    const kernel = new PilotKernel(env.deps); await kernel.initialize();
+    await kernel.handle(chatDelivery(env));
+    expect(checks).toBe(2); expect(env.effects).toBe(0);
+  });
+});

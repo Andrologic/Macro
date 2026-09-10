@@ -26,6 +26,69 @@
     { "$ref": "#/$defs/error" }
   ],
   "$defs": {
+    "conversationSendCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "type",
+        "kind",
+        "command_id",
+        "idempotency_key",
+        "expected_revision",
+        "target",
+        "issued_by",
+        "issued_at",
+        "payload"
+      ],
+      "properties": {
+        "contract_version": {
+          "$ref": "common.schema.json#/$defs/contractVersion"
+        },
+        "type": {
+          "const": "command"
+        },
+        "kind": {
+          "const": "conversation.send"
+        },
+        "command_id": {
+          "$ref": "common.schema.json#/$defs/opaqueId"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "expected_revision": {
+          "$ref": "common.schema.json#/$defs/revision"
+        },
+        "target": {
+          "$ref": "common.schema.json#/$defs/chatConversationRef"
+        },
+        "issued_by": {
+          "$ref": "common.schema.json#/$defs/actorRef"
+        },
+        "issued_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "content"
+          ],
+          "properties": {
+            "content": {
+              "$ref": "common.schema.json#/$defs/safeText",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            }
+          }
+        }
+      }
+    },
     "taskReplyCommand": {
       "type": "object", "additionalProperties": false,
       "required": ["contract_version", "type", "kind", "command_id", "idempotency_key", "expected_revision", "target", "issued_by", "issued_at", "payload"],
@@ -212,6 +275,7 @@
     },
     "command": {
       "oneOf": [
+        { "$ref": "#/$defs/conversationSendCommand" },
         { "$ref": "#/$defs/taskReplyCommand" },
         { "$ref": "#/$defs/sessionRevokeCommand" },
         { "$ref": "#/$defs/runStartCommand" },

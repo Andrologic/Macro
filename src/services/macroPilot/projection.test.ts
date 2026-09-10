@@ -1,3 +1,6 @@
+import { PilotStartPreflightRejection } from './startEligibility';
+import { toTaskRuntimeId } from '../durableIdentity';
+import { pilotTaskId, resolvePilotTask, resolvePilotStartTask } from './taskIdentity';
 import { describe, expect, it } from 'bun:test';
 import type {
   ChatMessage,
@@ -372,5 +375,33 @@ describe('projectDesktopSnapshots', () => {
 
     expect(() => projectDesktopSnapshots(input, undefined, '2026-02-01T12:00:00Z'))
       .toThrow(PilotError);
+  });
+});
+
+
+describe('branch-qualified Pilot task identities', () => {
+  it('projects distinct branches and resolves a wire action to the exact local task', () => {
+    const ids = ['feature/one', 'feature/two'].map(branchName => toTaskRuntimeId({ branchName, planId: 'plan-alpha', nodeId: 'node-alpha' }));
+    const tasks = ids.map(id => task({ id, status: 'AwaitingResponse', conversation_id: `conversation-${ids.indexOf(id)}` }));
+    const input = baseInput({ tasks, conversations: ids.map((id, index) => conversation({ id: `conversation-${index}`, task_id: id })) });
+    const result = projectDesktopSnapshots(input, null, '2026-02-01T12:00:00Z');
+    assertAllA1(result);
+    const refs = result.snapshots.tasks.map(snapshot => snapshot.ref.task_id);
+    expect(new Set(refs).size).toBe(2);
+    refs.forEach((ref, index) => expect(resolvePilotTask(tasks, ref)).toBe(tasks[index]));
+    expect(input.tasks.map(task => task.id)).toEqual(ids);
+    expect(pilotTaskId('task-alpha')).toBe('task-alpha');
+    expect(pilotTaskId('task:v1:' + 'encoded%2F'.repeat(100))).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/);
+    expect(projectDesktopSnapshots(input, result.state, '2026-02-01T12:01:00Z').snapshots.tasks.map(t => t.ref)).toEqual(result.snapshots.tasks.map(t => t.ref));
+  });
+
+  it('refuses a literal ID that collides with an encoded ID', () => {
+    const local = 'task:v1:feature%2Fone:plan:node';
+    const tasks = [task({ id: local }), task({ id: pilotTaskId(local) })];
+    expect(() => resolvePilotTask(tasks, pilotTaskId(local))).toThrow('invalid_reference');
+    expect(() => resolvePilotTask(tasks, 'unknown-task')).toThrow('invalid_reference');
+    expect(() => resolvePilotStartTask(tasks, pilotTaskId(local))).toThrow(PilotStartPreflightRejection);
+    expect(() => resolvePilotStartTask([], 'missing-task')).toThrow(PilotStartPreflightRejection);
+    expect(() => projectDesktopSnapshots(baseInput({ tasks }), null, new Date())).toThrow('validation_failed');
   });
 });

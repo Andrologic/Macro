@@ -45,6 +45,33 @@ export const registerSendRuntimeAndDeletionScenarios = (
   } = context;
 
   describe('useChatStore send runtime and deletion', () => {
+    it('keeps a remote Chat send on its stored scope and model while Implement is active', async () => {
+      appState.mode = 'Implement'; appState.agentType = 'build';
+      appState.selectedTaskId = 'task-1'; appState.selectedProjectId = 'project-2';
+      providerState.selectedProviderId = 'unrelated-provider'; providerState.selectedModelId = 'unrelated-model';
+      context.tauriAvailable = true;
+      await savePreferenceForTest('toolRiskLevel', 'yolo');
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{
+        ...createConversation('remote-chat'), scope_mode: 'Chat', project_id: 'project-1', group_id: null,
+        provider_id: 'provider-1', model_id: 'model-1', reasoning_effort: 'high',
+      }], selectedConversationId: 'other-conversation' }));
+      const result = await useChatStore.getState().sendMessage({ conversationId: 'remote-chat', content: 'Continue here.',
+        contextRefs: [], pilotTarget: { mode: 'Chat', actionToken: Symbol('remote-test'), beforeEffect: async () => undefined },
+      });
+      expect(result.status).toBe('sent');
+      const options = getLatestStreamOptions<{
+        conversationId: string; providerId: string; modelId: string;
+        onToolCall?: (name: string, args: Record<string, unknown>, id: string) => Promise<unknown>;
+      }>();
+      expect(options.conversationId).toBe('remote-chat');
+      expect(options.providerId).toBe('provider-1'); expect(options.modelId).toBe('model-1');
+      expect(useChatStore.getState().conversations[0]?.reasoning_effort).toBe('high');
+      expect(options).toMatchObject({ mode: 'Chat', reasoningEffort: 'high' });
+      const { resolveProjectExecutionContext } = await import('../../services/projectExecutionContext');
+      expect(resolveProjectExecutionContext).toHaveBeenCalledWith(expect.objectContaining({ mode: 'Chat', conversationId: 'remote-chat', activeRepositoryPath: null, workspacePathOverridesByProjectId: undefined }));
+    });
+
     it('rejects sends without a selected provider or model before committing any message', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';

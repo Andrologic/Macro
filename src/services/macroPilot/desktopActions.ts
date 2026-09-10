@@ -2,7 +2,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { useTaskStore } from '../../stores/useTaskStore';
 import { buildImplementKickoffPrompt } from '../implementKickoff';
-import { PilotError } from './protocol';
+import { PilotConversationSendPreflightRejection, PilotError, stableJson } from './protocol';
 import { pilotStartRejection, PilotStartPreflightRejection } from './startEligibility';
 import {
   assertPilotReservationCurrent,
@@ -39,6 +39,7 @@ export type DesktopToolApprovalPayload =
   | { verdict: 'deny'; reason?: string };
 
 export interface DesktopActions {
+  sendConversation(conversationId: string, content: string, guard: DesktopActionGuard): Promise<void>;
   start(taskId: string, guard: DesktopActionGuard): Promise<{
     conversationId: string;
     startedAt: string;
@@ -124,6 +125,50 @@ const projectScopeForTask = (task: ReturnType<typeof useTaskStore.getState>['tas
 };
 
 export const desktopActions: DesktopActions = {
+  sendConversation: async (conversationId, content, guard) => {
+    if (!content.trim()) invalidReference();
+    const reservation = reservePilotAction({ conversationId });
+    const gate = createEffectGate(guard, reservation);
+    let sendInvoked = false;
+    try {
+      gate.assertPreparing();
+      const chat = useChatStore.getState();
+      const conversation = chat.conversations.find(candidate => candidate.id === conversationId);
+      if (!conversation || conversation.scope_mode !== 'Chat' || conversation.task_id) return invalidReference();
+      requireConversationProvider(conversation);
+      const configuration = (value: typeof conversation) => stableJson({
+        scope: value.scope_mode, task: value.task_id, project: value.project_id, group: value.group_id,
+        provider: value.provider_id, model: value.model_id, reasoning: value.reasoning_effort,
+      });
+      const expectedConfiguration = configuration(conversation);
+      const assertTarget = () => {
+        const current = useChatStore.getState();
+        const target = current.conversations.find(candidate => candidate.id === conversationId);
+        if (!target || configuration(target) !== expectedConfiguration) throw new PilotError('stale_revision');
+        if (current.getActiveQuestionnaire(conversationId) || current.getPendingToolApproval(conversationId)) throw new PilotError('conflict');
+      };
+      assertTarget();
+      const phase = chat.getConversationRuntime(conversationId).phase;
+      if (phase !== 'idle' && phase !== 'error') throw new PilotError('conflict');
+      await gate.beforeEffect();
+      assertTarget();
+      const phaseAfterAuthorization = useChatStore.getState().getConversationRuntime(conversationId).phase;
+      if (phaseAfterAuthorization !== 'idle' && phaseAfterAuthorization !== 'error') throw new PilotError('conflict');
+      sendInvoked = true;
+      const result = await useChatStore.getState().sendMessage({
+        conversationId, content: content.trim(), contextRefs: [],
+        pilotTarget: { mode: 'Chat', actionToken: reservation.token, beforeEffect: async () => {
+          assertTarget();
+          await gate.beforeEffect();
+          assertTarget();
+        } },
+      });
+      if (result.status !== 'sent') unavailable();
+    } catch (error) {
+      if (!sendInvoked && error instanceof PilotError) throw new PilotConversationSendPreflightRejection(error.code);
+      throw error;
+    } finally { reservation.release(); }
+  },
   start: async (taskId, guard) => {
     const reservation = reservePilotAction({ taskId });
     const gate = createEffectGate(guard, reservation);

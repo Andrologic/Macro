@@ -1,4 +1,4 @@
-import { assertA1, assertDelivery, assertDeliveryResult, errorEnvelope, object, PilotError, same, stableJson, validAnswers, type Command, type Delivery, type Resource, type Wire } from './protocol';
+import { assertA1, assertDelivery, assertDeliveryResult, errorEnvelope, object, PilotConversationSendPreflightRejection, PilotError, same, stableJson, validAnswers, type Command, type Delivery, type Resource, type Wire } from './protocol';
 import { PilotStartPreflightRejection } from './startEligibility';
 
 export interface CommandGuard { assertCurrent(): void; authorizeBeforeEffect(options?: { revision: 'expected' | 'consumed' }): Promise<void> }
@@ -11,6 +11,7 @@ export interface KernelDependencies {
   execute(command: Command, guard: CommandGuard): Promise<{ conversationId?: string; startedAt?: string } | void>;
   authorize(delivery: Delivery): Promise<string>;
   validateReview?(review: Resource): Promise<void>;
+  validateConversationSend?(command: Command): Promise<void>;
   now?: () => number;
 }
 interface JournalEntry {
@@ -167,6 +168,8 @@ export class PilotKernel {
     return stream;
   }
   private currentTarget(command: Command): Resource {
+    // Chat revisions belong to the content catalog, checked asynchronously before effects.
+    if (command.kind === 'conversation.send') return { type: 'conversation', ref: command.target, revision: command.expected_revision };
     const resource = this.project().snapshots.find(snapshot => same(snapshot.ref, command.target));
     if (!resource) throw new PilotError('invalid_reference');
     if (resource.revision !== command.expected_revision) throw new PilotError('stale_revision');
@@ -174,7 +177,9 @@ export class PilotKernel {
   }
   private validateCommandState(command: Command, resource: Resource) {
     const payload = command.payload;
-    if (command.kind === 'task.reply') {
+    if (command.kind === 'conversation.send') {
+      if (!this.dependencies.validateConversationSend || !String(payload.content).trim()) throw new PilotError('validation_failed');
+    } else if (command.kind === 'task.reply') {
       if (resource.state !== 'waiting_reply') throw new PilotError('stale_revision');
       if (object(resource.reply_context).conversation_id !== payload.conversation_id) throw new PilotError('invalid_reference');
     } else if (command.kind === 'decision.resolve') {
@@ -235,6 +240,10 @@ export class PilotKernel {
       return immutable(previous.result);
     }
     await this.refresh(); this.assertOpen();
+    if (command.kind === 'conversation.send') {
+      if (!this.dependencies.validateConversationSend) throw new PilotError('unavailable');
+      await this.dependencies.validateConversationSend(command); this.assertOpen();
+    }
     const target = this.currentTarget(command); this.validateCommandState(command, target);
     if (command.kind === 'run.start' && this.state.runs.some(run => run.runId === command.payload.run_id)) throw new PilotError('conflict');
     const resultBase = { contract_version: '1.0', type: 'command_result', command_id: command.command_id,
@@ -255,7 +264,10 @@ export class PilotKernel {
           const until = await this.dependencies.authorize(delivery);
           executeBefore = Date.parse(until);
           this.assertOpen();
-          if (options?.revision !== 'consumed') guard.assertCurrent();
+          if (options?.revision !== 'consumed') {
+            if (command.kind === 'conversation.send') await this.dependencies.validateConversationSend!(command);
+            guard.assertCurrent();
+          }
           if (!Number.isFinite(Date.parse(until)) || Date.parse(until) <= this.now()) throw new PilotError('unavailable');
         },
       };
@@ -296,7 +308,7 @@ export class PilotKernel {
       entry.status = 'finished'; await this.save(); return immutable(entry.result);
     } catch (error) {
       // Before invocation no desktop effect is possible. After invocation only
-      // the explicit start preflight refusal can prove absence of effects.
+      // explicit desktop preflight refusals can prove absence of effects.
       const safeStartRejection = command.kind === 'run.start' && !effectGateEntered &&
         error instanceof PilotStartPreflightRejection;
       if (command.kind === 'run.start' && (!invoked || safeStartRejection)) {
@@ -307,7 +319,8 @@ export class PilotKernel {
         const run = this.state.runs.find(run => run.runId === command.payload.run_id);
         if (run) run.interruptedAt = this.date();
       }
-      if (invoked && !safeStartRejection) { entry.status = 'indeterminate'; await this.save(); throw new PilotError('conflict'); }
+      const safeConversationRejection = command.kind === 'conversation.send' && error instanceof PilotConversationSendPreflightRejection;
+      if (invoked && !safeStartRejection && !safeConversationRejection) { entry.status = 'indeterminate'; await this.save(); throw new PilotError('conflict'); }
       const code = error instanceof PilotError ? error.code : 'unavailable';
       entry.result = { ...resultBase, outcome: 'rejected', error: { code, message: code, retryable: code === 'unavailable' } };
       entry.status = 'finished'; await this.save(); return immutable(entry.result);

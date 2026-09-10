@@ -1,3 +1,4 @@
+import { pilotTaskId } from './taskIdentity';
 import type { DbConversation, DbMessage } from '../tauriIpc';
 import type { KernelStorage } from './kernel';
 import { stableJson } from './protocol';
@@ -95,6 +96,15 @@ export class ConversationCaptures {
       return { revision, refs };
     });
   }
+  /** Fresh identity/activity validation without hydrating unrelated histories.
+   * Background refreshCatalog retains complete transcript change detection. */
+  refreshCatalogMetadata(): Promise<{ revision: number; refs: ConversationRef[] }> {
+    return this.serial(async () => {
+      const { observation, revision } = await this.observe(false, null);
+      const refs = observation.conversations.map(conversation => this.reference(conversation, observation)).filter((ref): ref is ConversationRef => ref !== null);
+      return { revision, refs };
+    });
+  }
   refreshProjects(): Promise<number> { return this.serial(async () => (await this.observe(true)).revision); }
   private serial<T>(work: () => Promise<T>): Promise<T> {
     const epoch = this.epoch;
@@ -111,7 +121,7 @@ export class ConversationCaptures {
     });
     this.tail = result.catch(() => undefined); return result;
   }
-  private async load(projectsOnly = false, deadline = Infinity): Promise<Observation> {
+  private async load(projectsOnly = false, deadline = Infinity, transcriptId?: string | null): Promise<Observation> {
     const checkDeadline = () => { if ((this.deps.now ?? Date.now)() >= deadline) throw new ConversationCaptureError('content_unavailable'); };
     const source = this.deps.source;
     const policy = structuredClone(this.deps.policy());
@@ -123,7 +133,9 @@ export class ConversationCaptures {
     checkDeadline();
     if (new Set(projects.map(p => p.id)).size !== projects.length || projects.some(p => controlledText(p.id, policy).content_state !== 'complete')) throw new ConversationCaptureError('content_unavailable');
     if (projectsOnly) return { projects, tasks: [], conversations: [], transcripts: [], policy };
-    const tasks = (await source.tasks()).map(t => ({ id: id(t.id), project_id: t.project_id, conversation_id: t.conversation_id })).sort(compareId);
+    const tasks = (await source.tasks()).map(t => ({ id: t.id, project_id: t.project_id, conversation_id: t.conversation_id })).sort(compareId);
+    const wireTaskIds = tasks.map(task => id(pilotTaskId(task.id)));
+    if (new Set(wireTaskIds).size !== tasks.length) throw new ConversationCaptureError('content_unavailable');
     const conversations = (await source.listConversations()).filter(c => c.scope_mode === 'Chat' || c.scope_mode === 'Implement')
       .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned) || b.updated_at.localeCompare(a.updated_at) || compareId(a, b));
     for (const value of [...projects.map(p => p.id), ...tasks.map(t => t.id), ...conversations.map(c => c.id)]) {
@@ -132,10 +144,17 @@ export class ConversationCaptures {
     checkDeadline();
     const transcripts: Observation['transcripts'] = [];
     const seen = new Set<string>(); let bytes = utf8Bytes(JSON.stringify([projects, tasks, conversations, policy]));
+    if (bytes > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
     for (const conversation of conversations) {
+      checkDeadline();
       id(conversation.id);
       if (seen.has(conversation.id)) throw new ConversationCaptureError('content_unavailable');
       seen.add(conversation.id);
+      const activity = source.activity(conversation.id);
+      if (transcriptId === null || (transcriptId !== undefined && conversation.id !== transcriptId)) {
+        transcripts.push({ id: conversation.id, messages: [], provenMessages: [], activity });
+        continue;
+      }
       const messages = (await source.listMessages(conversation.id)).slice().sort((a, b) => a.created_at.localeCompare(b.created_at) || compareId(a, b));
       checkDeadline();
       const messageIds = new Set<string>(); const provenMessages: Array<{ id: string; text: string }> = [];
@@ -150,32 +169,53 @@ export class ConversationCaptures {
           if (typeof text === 'string') provenMessages.push({ id: message.id, text });
         }
       }
-      const activity = source.activity(conversation.id);
       bytes += utf8Bytes(JSON.stringify([messages, activity]));
       if (bytes > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
       transcripts.push({ id: conversation.id, messages, provenMessages, activity });
     }
     return structuredClone({ projects, tasks, conversations, transcripts, policy });
   }
-  private async observe(projectsOnly = false): Promise<{ observation: Observation; revision: number }> {
+  private async observe(projectsOnly = false, transcriptId?: string | null): Promise<{ observation: Observation; revision: number }> {
     // Bound complete catalog inspection, including both observations and retry.
     const deadline = (this.deps.now ?? Date.now)() + 10_000;
     // Independent reads detect edits during assembly; retry once, never mix pages.
     for (let attempt = 0; attempt < 2; attempt++) {
       const previous = await this.deps.storage.load();
-      const observation = await this.load(projectsOnly, deadline); const fingerprint = await digest(observation);
-      if (fingerprint !== await digest(await this.load(projectsOnly, deadline))) continue;
+      const observation = await this.load(projectsOnly, deadline, transcriptId); const fingerprint = await digest(observation);
+      if (fingerprint !== await digest(await this.load(projectsOnly, deadline, transcriptId))) continue;
       type Revision = { revision: number; fingerprint: string };
-      type Journal = { version: 2; projects?: Revision; conversations?: Revision };
+      type Journal = { version: 2; projects?: Revision; conversations?: Revision;
+        catalog?: string; transcripts?: Record<string, string> };
       const journal: Journal = previous === null ? { version: 2 } : JSON.parse(previous);
       if (!journal || journal.version !== 2) throw new ConversationCaptureError('unavailable');
       const section = projectsOnly ? 'projects' : 'conversations';
       const old = journal[section];
       if (old && (!Number.isSafeInteger(old.revision) || old.revision < 1 || typeof old.fingerprint !== 'string')) throw new ConversationCaptureError('unavailable');
-      const revision = (old?.revision ?? 0) + (old?.fingerprint === fingerprint ? 0 : 1);
+      let changed = old?.fingerprint !== fingerprint;
+      if (!projectsOnly) {
+        // Catalog and transcript observations share one monotonic revision. A
+        // targeted read never substitutes empty histories for unobserved rows.
+        const catalog = await digest({ ...observation, transcripts: observation.transcripts.map(t => ({ id: t.id, activity: t.activity })) });
+        if (journal.catalog !== undefined && typeof journal.catalog !== 'string') throw new ConversationCaptureError('unavailable');
+        if (journal.transcripts !== undefined && (!journal.transcripts || typeof journal.transcripts !== 'object' || Array.isArray(journal.transcripts) || Object.values(journal.transcripts).some(value => typeof value !== 'string'))) throw new ConversationCaptureError('unavailable');
+        changed = journal.catalog === undefined ? old !== undefined : journal.catalog !== catalog;
+        const fingerprints = { ...journal.transcripts };
+        for (const transcript of observation.transcripts) {
+          if (transcriptId === null || (transcriptId !== undefined && transcript.id !== transcriptId)) continue;
+          const value = await digest(transcript);
+          if (Object.hasOwn(fingerprints, transcript.id) && fingerprints[transcript.id] !== value) changed = true;
+          Object.defineProperty(fingerprints, transcript.id, { value, enumerable: true, writable: true, configurable: true });
+        }
+        const present = new Set(observation.conversations.map(c => c.id));
+        for (const key of Object.keys(fingerprints)) if (!present.has(key)) delete fingerprints[key];
+        journal.catalog = catalog;
+        journal.transcripts = fingerprints;
+      }
+      const revision = old ? old.revision + (changed ? 1 : 0) : 1;
       if (!Number.isSafeInteger(revision)) throw new ConversationCaptureError('resource_limit');
       journal[section] = { revision, fingerprint };
       const next = JSON.stringify(journal);
+      if (utf8Bytes(next) > MAX_QUOTA) throw new ConversationCaptureError('resource_limit');
       if (!await this.deps.storage.compareAndSwap(previous, next)) continue;
       return { observation, revision };
     }
@@ -183,10 +223,14 @@ export class ConversationCaptures {
   }
   private reference(conversation: DbConversation, observation: Observation): ConversationRef | null {
     if (conversation.scope_mode === 'Chat') return { instance_id: this.deps.instanceId, kind: 'conversation', conversation_id: conversation.id };
-    const task = observation.tasks.find(t => t.id === conversation.task_id);
+    const candidates = observation.tasks.filter(t =>
+      (t.id === conversation.task_id || t.conversation_id === conversation.id) &&
+      (!conversation.project_id || conversation.project_id === t.project_id) &&
+      (!t.conversation_id || t.conversation_id === conversation.id));
+    const task = candidates.length === 1 ? candidates[0] : undefined;
     if (!task || !observation.projects.some(p => p.id === task.project_id) ||
       (conversation.project_id && conversation.project_id !== task.project_id) || (task.conversation_id && task.conversation_id !== conversation.id)) return null;
-    return { instance_id: this.deps.instanceId, kind: 'implement', workspace_id: this.deps.workspaceId, task_id: task.id, conversation_id: conversation.id };
+    return { instance_id: this.deps.instanceId, kind: 'implement', workspace_id: this.deps.workspaceId, task_id: pilotTaskId(task.id), conversation_id: conversation.id };
   }
   private read(scope: CaptureScope, operation: Operation, filter: ConversationRef | string | null, continuation: Continuation | undefined, limit: number): Promise<CapturePage<Item>> {
     return this.serial(async () => {
@@ -203,7 +247,7 @@ export class ConversationCaptures {
         if (capture.binding !== binding || !capture.cursors.has(continuation.cursor)) throw new ConversationCaptureError('validation_failed');
         offset = capture.cursors.get(continuation.cursor)!;
       }
-      const { observation, revision } = await this.observe(operation === 'projects.list');
+      const { observation, revision } = await this.observe(operation === 'projects.list', operation === 'conversation.read' ? (filter as ConversationRef).conversation_id : null);
       if (capture && capture.revision !== revision) throw new ConversationCaptureError('stale_revision');
       if (!capture) {
         let items: Item[] = [];

@@ -169,8 +169,29 @@
         "review_id": { "$ref": "#/$defs/opaqueId" }
       }
     },
+    "chatConversationRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "kind",
+        "conversation_id"
+      ],
+      "properties": {
+        "instance_id": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "kind": {
+          "const": "conversation"
+        },
+        "conversation_id": {
+          "$ref": "#/$defs/sourceId"
+        }
+      }
+    },
     "resourceRef": {
       "oneOf": [
+        { "$ref": "#/$defs/chatConversationRef" },
         { "$ref": "#/$defs/instanceRef" },
         { "$ref": "#/$defs/sessionRef" },
         { "$ref": "#/$defs/instanceAccessRef" },

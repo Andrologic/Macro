@@ -95,3 +95,22 @@ page fixture. Relay D at `81f7828b` rejects that valid result with HTTP 400
 `invalid_reference`; the opt-in check fails until D accepts task membership via
 `project_ids`. C preserves this contract behavior. Reviews with an explicit
 `ref.project_id` never inherit another project from their task.
+
+
+## Sending to an existing Chat
+
+The additive `conversation.send` command uses the v1 exchange and durable
+command journal. Its target is the v2 Chat reference
+`{instance_id, kind: "conversation", conversation_id}`, its payload is
+`{content}` with 1 to 4000 characters, and `expected_revision` is the latest
+`conversations.list` item revision. The content host checks that reference and
+catalog revision before authorization can admit an effect.
+
+Clients opt into `commands: ["conversation.send"]` during v2 negotiation and
+show the composer only if the live producer returns that capability. The desktop
+requires an existing idle Chat without a pending question or tool approval.
+Activity `unknown` may be submitted because the desktop checks its actual runtime
+and hydrated transcript. It preserves the conversation's project scope, provider,
+model and reasoning effort. Active desktop selections do not retarget the send.
+Retries retain the complete original command and idempotency key; an uncertain
+execution remains blocked until local reconciliation.

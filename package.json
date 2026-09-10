@@ -99,6 +99,7 @@
     "@lexical/react": "0.48.0",
     "@lexical/selection": "0.48.0",
     "@lexical/utils": "0.48.0",
+    "@noble/hashes": "2.4.0",
     "@radix-ui/react-accordion": "1.2.12",
     "@tanstack/react-virtual": "3.13.25",
     "@tauri-apps/api": "2.10.1",

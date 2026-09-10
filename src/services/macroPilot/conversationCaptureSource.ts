@@ -1,14 +1,15 @@
+import { desktopPilotTasks } from './desktopTaskCatalog';
 import { useChatStore } from '../../stores/useChatStore';
 import {
   dbCompareAndSwapAppSetting, dbGetAppSetting, getConversation, listConversations,
-  listMessages, workspaceGetBootstrap, workspaceListTasks,
+  listMessages, workspaceGetBootstrap,
 } from '../tauriIpc';
 import type { ConversationCaptureSource } from './conversationCaptures';
 import type { KernelStorage } from './kernel';
 import { assistantProvenance } from './assistantProvenance';
 
 /** Persisted reads deliberately bypass the optional transcript cache. Store reads
- * supply only current activity; no selection, lazy loading, or source writes. */
+ * supply the same branch-qualified task catalog as supervision and current activity; no selection, lazy loading, or source writes. */
 export function desktopConversationCaptureSource(): ConversationCaptureSource {
   return {
     projects: async () => {
@@ -17,7 +18,7 @@ export function desktopConversationCaptureSource(): ConversationCaptureSource {
       for (const group of workspace.projectGroups) for (const project of group.projects) projects.set(project.id, project);
       return [...projects.values()].map(project => ({ id: project.id, name: project.name }));
     },
-    tasks: async () => (await workspaceListTasks()).tasks.map(task => ({ id: task.id, project_id: task.project_id, conversation_id: task.conversation_id })),
+    tasks: async () => desktopPilotTasks().map(task => ({ id: task.id, project_id: task.project_id, conversation_id: task.conversation_id })),
     listConversations,
     getConversation,
     listMessages,

@@ -1,3 +1,4 @@
+import { pilotTaskId } from './taskIdentity';
 import type {
   ChatMessage,
   Conversation,
@@ -101,8 +102,11 @@ export const toolApprovalSourceKey = (
   approval.toolCallId,
 ]);
 
-const failProjection = (): never => {
-  throw new PilotError('validation_failed');
+export class ProjectionError extends PilotError {
+  constructor(readonly reason: string) { super('validation_failed'); }
+}
+const failProjection = (reason = 'invalidProjection'): never => {
+  throw new ProjectionError(reason);
 };
 
 const normalizeTimestamp = (value: string | Date): string => {
@@ -111,9 +115,9 @@ const normalizeTimestamp = (value: string | Date): string => {
   return date.toISOString();
 };
 
-const assertSourceId = (value: string, opaque = false): string => {
+const assertSourceId = (value: string, opaque = false, field = 'other'): string => {
   if (!SOURCE_ID.test(value) || value.length > (opaque ? 128 : 255) || (opaque && value.length < 8)) {
-    failProjection();
+    failProjection(`sourceId${field}${value.includes('%') ? 'encoded' : value.length > 128 ? 'long' : value.length < 8 ? 'short' : 'characters'}`);
   }
   return value;
 };
@@ -230,11 +234,11 @@ const resolveExecutionTargets = (
   if (task.execution_targets?.some((target) => !projectIds.includes(target.projectId))) failProjection();
 
   return projectIds.map((projectId) => {
-    assertSourceId(projectId, true);
+    assertSourceId(projectId, true, 'executionProject');
     const target = explicitByProjectId.get(projectId);
     if (task.execution_targets?.length && !target) failProjection();
     const resolution = resolveProjectExecutionMode({ project: projectsById.get(projectId), target });
-    if (resolution.mode !== 'git' && resolution.mode !== 'direct') failProjection();
+    if (resolution.mode !== 'git' && resolution.mode !== 'direct') failProjection(`execution${resolution.reason.replaceAll('_', '')}`);
     const executionMode: 'git' | 'direct' = resolution.mode === 'git' ? 'git' : 'direct';
     return { project_id: projectId, execution_mode: executionMode };
   });
@@ -443,9 +447,24 @@ export const projectDesktopSnapshots = (
   persistedProjectionState: ProjectionState | null | undefined,
   now: string | Date,
 ): DesktopProjectionResult => {
+  // Local runtime IDs can contain encoded Git branch names. Normalize every
+  // task link together, while leaving the desktop stores untouched.
+  const mapMessage = (message: ChatMessage): ChatMessage => message.task_id
+    ? { ...message, task_id: pilotTaskId(message.task_id) } : message;
+  input = {
+    ...input,
+    tasks: input.tasks.map(task => ({ ...task, id: pilotTaskId(task.id) })),
+    conversations: input.conversations.map(conversation => conversation.task_id
+      ? { ...conversation, task_id: pilotTaskId(conversation.task_id) } : conversation),
+    messages: input.messages?.map(mapMessage),
+    messagesByConversationId: input.messagesByConversationId && Object.fromEntries(
+      Object.entries(input.messagesByConversationId).map(([id, messages]) => [id, messages.map(mapMessage)])),
+    runningTaskIds: input.runningTaskIds && new Set([...input.runningTaskIds].map(pilotTaskId)),
+    knownRuns: input.knownRuns?.map(run => ({ ...run, taskId: pilotTaskId(run.taskId) })),
+  };
   const observedAt = normalizeTimestamp(now);
-  assertSourceId(input.instance.instanceId, true);
-  assertSourceId(input.workspace.workspaceId, true);
+  assertSourceId(input.instance.instanceId, true, 'instance');
+  assertSourceId(input.workspace.workspaceId, true, 'workspace');
   const previous = persistedProjectionState?.version === 1
     ? persistedProjectionState
     : { version: 1 as const, resources: {} };
@@ -492,7 +511,7 @@ export const projectDesktopSnapshots = (
     label: cleanText(input.workspace.label, 120),
   });
   const projects = input.projects.map((project) => {
-    assertSourceId(project.id, true);
+    assertSourceId(project.id, true, 'project');
     return materializeResource(context, `project:${project.id}`, {
       contract_version: CONTRACT_VERSION,
       type: 'project',
@@ -508,7 +527,7 @@ export const projectDesktopSnapshots = (
     });
   });
   const tasks = input.tasks.map((task) => {
-    assertSourceId(task.id, true);
+    assertSourceId(task.id, true, 'task');
     const projectIds = unique(task.project_ids?.length ? task.project_ids : [task.project_id]);
     const contextProjectIds = unique(task.context_project_ids ?? []);
     if (contextProjectIds.some((id) => projectIds.includes(id))) failProjection();

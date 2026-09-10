@@ -105,7 +105,17 @@ impl Vault for SystemVault {
         match Self::entry(key)?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(PilotSecretError::VaultUnavailable),
+            Err(error) => {
+                // Platform access errors contain OS diagnostics, never the stored
+                // credential. Do not log encoding/data errors, which carry bytes.
+                match &error {
+                    keyring::Error::NoStorageAccess(cause) | keyring::Error::PlatformFailure(cause) => {
+                        tracing::warn!(%cause, "Pilot credential store access failed");
+                    }
+                    _ => tracing::warn!("Pilot credential store read failed"),
+                }
+                Err(PilotSecretError::VaultUnavailable)
+            },
         }
     }
     fn write(&self, key: &str, secret: &str) -> Result<(), PilotSecretError> {

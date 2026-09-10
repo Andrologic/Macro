@@ -2387,6 +2387,14 @@
             "pattern": "^[0-9]+\\.[0-9]+$",
             "maxLength": 16
           }
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "const": "conversation.send"
+          }
         }
       }
     },
@@ -2427,6 +2435,14 @@
               "type": "null"
             }
           ]
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "const": "conversation.send"
+          }
         }
       }
     },
@@ -2866,6 +2882,14 @@
         },
         "type": {
           "const": "poll"
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "const": "conversation.send"
+          }
         }
       }
     },

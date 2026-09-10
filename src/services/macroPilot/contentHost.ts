@@ -3,7 +3,7 @@ import { type TextPolicy, utf8Bytes } from './conversationText';
 import { createReviewCaptureService, type ReviewCaptureInfo, type ReviewCaptureRequest, type ReviewCaptureSource } from './reviewCapture';
 import { validateContentMessage, validateContentResponse, type ContentCapture, type ContentDelivery, type ContentDeliveryResult, type ContentError, type ContentEvent, type ContentRequest, type ContentReviewRef } from './contentProtocol';
 import type { KernelStorage } from './kernel';
-import { stableJson } from './protocol';
+import { PilotError, stableJson } from './protocol';
 
 export const CONTENT_BUDGET = { conversations: 24 * 1024 * 1024, native: 32 * 1024 * 1024, host: 7 * 1024 * 1024 } as const;
 export interface ReviewTarget { repoPath: string; source: ReviewCaptureSource; branches?: { base: string; head: string } }
@@ -45,6 +45,15 @@ export class ContentHost {
   private reviewOffset = 0;
   private readonly now: () => number;
   constructor(private readonly deps: ContentHostDependencies) { this.now = deps.now ?? Date.now; }
+  async validateConversationSendTarget(ref: ConversationRef, expectedRevision: number): Promise<void> {
+    return this.serial(async () => {
+      await this.policy();
+      const catalog = await this.deps.conversations.refreshCatalogMetadata();
+      this.check();
+      if (ref.kind !== 'conversation' || !catalog.refs.some(candidate => stableJson(candidate) === stableJson(ref))) throw new PilotError('invalid_reference');
+      if (catalog.revision !== expectedRevision) failure('stale_revision');
+    });
+  }
   isAvailable(): boolean { return !this.disposed && !this.deps.signal.aborted; }
   private check() { if (this.disposed || this.deps.signal.aborted) failure('unavailable'); }
   private serial<T>(work: () => Promise<T>): Promise<T> {

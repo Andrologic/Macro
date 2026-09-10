@@ -40,6 +40,7 @@
     },
     "request": {
       "oneOf": [
+        { "$ref": "../../v1/protocol.schema.json#/$defs/conversationSendCommand" },
         { "$ref": "../../v1/protocol.schema.json#/$defs/taskReplyCommand" },
         { "$ref": "../../v1/protocol.schema.json#/$defs/runStartCommand" },
         { "$ref": "../../v1/protocol.schema.json#/$defs/runCancelCommand" },

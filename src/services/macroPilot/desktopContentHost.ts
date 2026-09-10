@@ -1,4 +1,6 @@
-import { gitBranchList, pilotContentPolicy, pilotReviewCommit, dbGetAppSetting, dbCompareAndSwapAppSetting, workspaceGetBootstrap, workspaceListTasks } from '../tauriIpc';
+import { desktopPilotTasks } from './desktopTaskCatalog';
+import { pilotTaskId, findPilotTask } from './taskIdentity';
+import { gitBranchList, pilotContentPolicy, pilotReviewCommit, dbGetAppSetting, dbCompareAndSwapAppSetting, workspaceGetBootstrap } from '../tauriIpc';
 import { ContentHost, CONTENT_BUDGET, type ReviewTarget } from './contentHost';
 import { ConversationCaptures } from './conversationCaptures';
 import { conversationCaptureStorage, desktopConversationCaptureSource } from './conversationCaptureSource';
@@ -51,7 +53,7 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
     const workspace = await workspaceGetBootstrap();
     const projects = [...workspace.standaloneProjects, ...workspace.projectGroups.flatMap(group => group.projects)];
     const project = projects.find(project => project.id === ref.project_id);
-    const task = (await workspaceListTasks()).tasks.find(task => task.id === ref.task_id);
+    const task = findPilotTask(desktopPilotTasks(), ref.task_id);
     const target = task?.execution_targets?.find(target => target.projectId === ref.project_id);
     if (!project || !task || (task.project_id !== ref.project_id && !target)) throw new Error('not_found');
     const repoPath = target?.repoPath ?? project.path;
@@ -75,12 +77,12 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
       storage: conversationCaptureStorage(configurationId, instanceId), policy: () => policy, quotaBytes: CONTENT_BUDGET.conversations }),
     reviews: createReviewCaptureService(), resolveReview,
     reviewRefs: async () => {
-      const tasks = (await workspaceListTasks()).tasks;
+      const tasks = desktopPilotTasks();
       const refs: ContentReviewRef[] = [];
       for (const task of tasks) {
         for (const projectId of new Set([task.project_id, ...(task.execution_targets ?? []).map(target => target.projectId)])) {
           if (!projectId) continue;
-          for (const reviewId of Object.values(LOCAL_REVIEW_IDS)) refs.push({ instance_id: instanceId, workspace_id: workspaceId, task_id: task.id, project_id: projectId, review_id: reviewId });
+          for (const reviewId of Object.values(LOCAL_REVIEW_IDS)) refs.push({ instance_id: instanceId, workspace_id: workspaceId, task_id: pilotTaskId(task.id), project_id: projectId, review_id: reviewId });
         }
       }
       for (const review of options.kernel.getReviews()) {
