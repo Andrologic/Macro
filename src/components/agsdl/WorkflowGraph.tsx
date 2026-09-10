@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef } from "react";
 import { Background, Handle, MarkerType, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { Bot, CircleHelp, GitBranch, Hand, LogIn, LogOut, Maximize2, Minus, Plus } from "lucide-react";
+import { Bot, CircleHelp, GitBranch, Hand, LogIn, LogOut, LocateFixed, Minus, Plus } from "lucide-react";
 import { useElementSize } from "../../hooks/useElementSize";
 import { layoutViewer, type ViewerEdge } from "../../services/agsdl/graphLayout";
 import type { ViewerCard } from "../../services/agsdl/viewer";
@@ -121,7 +121,7 @@ function Canvas({ cards, edges: connections, selected, select, title }: {
         <Panel position="bottom-left" className="agsdl-graph-controls">
           <button onClick={() => void flow.zoomOut()} aria-label={t("agsdl.viewer.zoomOut")} title={t("agsdl.viewer.zoomOut")}><Minus size={14} /></button>
           <button onClick={() => void flow.zoomIn()} aria-label={t("agsdl.viewer.zoomIn")} title={t("agsdl.viewer.zoomIn")}><Plus size={14} /></button>
-          <button onClick={() => void flow.fitView(fitOptions)} aria-label={t("agsdl.viewer.fit")} title={t("agsdl.viewer.fit")}><Maximize2 size={14} /></button>
+          <button onClick={() => void flow.fitView(fitOptions)} aria-label={t("agsdl.viewer.fit")} title={t("agsdl.viewer.fit")}><LocateFixed size={14} /></button>
         </Panel>
       </ReactFlow>
     </div>
