@@ -4,7 +4,9 @@ Le panneau droit présente le système AgSDL en lecture seule. La conversation
 reste au centre et l’agent modifie le document avec `agsdl_get` et `agsdl_update`.
 Les formulaires JSON, les poignées de connexion et l’ancienne vue de stratégie
 ont été retirés. Les exemples restent accessibles à l’agent pour initialiser
-un document vide.
+un document vide. Le panneau n’affiche pas d’aide permanente ni de statut lorsque
+le document est enregistré. Les alertes de validation et les modifications en
+attente restent visibles ; les détails du système se consultent à la demande.
 
 ## Essayer le parcours
 

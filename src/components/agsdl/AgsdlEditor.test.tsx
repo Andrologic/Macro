@@ -39,6 +39,20 @@ describe("AgSDL viewer", () => {
 
   });
 
+  it("keeps saved graphs quiet while preserving validation and unsaved-work notices", async () => {
+    await mount();
+    expect(container!.querySelector(".agsdl-status, .agsdl-graph-caption, .agsdl-header-actions button")).toBeNull();
+    act(() => useAgsdlStore.setState(state => ({ sessions: { [key]: {
+      ...state.sessions[key], dirty: true,
+      reports: [{ operation: "validate", results: [{ input: "graph", unit: "test", verdict: "fail", findings: [
+        { rule: "missing-agent", outcome: "fail", details: "Unknown agent reference", location: {} },
+      ] }] }],
+    } } })));
+    expect(container!.querySelector('[role="status"]')).not.toBeNull();
+    act(() => container!.querySelector<HTMLButtonElement>(".agsdl-header-actions button")!.click());
+    expect(container!.querySelector(".agsdl-inspector")!.textContent).toContain("Unknown agent reference");
+  });
+
   it("keeps an unreadable document recoverable through chat with technical details collapsed", async () => {
     await mount("{broken");
     const alert = container!.querySelector("[role=alert]")!;

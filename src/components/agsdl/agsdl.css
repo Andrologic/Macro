@@ -40,8 +40,6 @@
 .agsdl-graph-controls button:hover { color: rgb(var(--foreground)); background: rgb(var(--muted)); }
 .agsdl-canvas .react-flow__attribution { background: rgb(var(--background)); color: rgb(var(--muted-foreground)); font-size: 8px; }
 .agsdl-graph-caption { display: flex; align-items: center; gap: 6px; padding: 6px 12px; color: rgb(var(--muted-foreground)); font-size: 10px; flex-wrap: wrap; }
-.agsdl-legend-line { width: 16px; border-top: 1px solid rgb(var(--primary)); }
-.agsdl-legend-line.is-dashed { margin-left: 8px; border-color: rgb(var(--muted-foreground)); border-top-style: dashed; }
 .agsdl-inspector { display: flex; flex-direction: column; flex-shrink: 0; max-height: 42%; border-top: 1px solid rgb(var(--border)); min-height: 0; background: rgb(var(--card)); }
 .agsdl-inspector > header { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 8px 12px; }
 .agsdl-inspector > header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

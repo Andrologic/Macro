@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Info, Maximize2, X } from "lucide-react";
+import { CircleAlert, Info, Maximize2, X } from "lucide-react";
 import { WorkflowGraph } from "./WorkflowGraph";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import {
@@ -190,6 +190,8 @@ export const AgsdlEditor: React.FC<{
     session?.reports.flatMap((report) =>
       report.results.flatMap((result) => result.findings),
     ) ?? [];
+  const hasIssues = findings.length > 0 || (document?.unresolved.length ?? 0) > 0;
+  const showOverview = document && (hasIssues || document.migrated || !graph);
   return (
     <div className="agsdl-viewer" aria-label={t("agsdl.editor")} onKeyDown={event => { if (event.key === "Escape") { setOverview(false); setSelection(undefined); } }}>
       <header className="agsdl-viewer-header">
@@ -200,9 +202,11 @@ export const AgsdlEditor: React.FC<{
             title={t(expanded ? "agsdl.shrink" : "agsdl.expand")}>
             {expanded ? <X size={14} /> : <Maximize2 size={14} />}
           </button>}
-          {document && <button className="agsdl-icon-button" aria-label={t("agsdl.viewer.overview")}
-            title={t("agsdl.viewer.overview")} aria-pressed={overview}
-            onClick={() => { setOverview(!overview); setSelection(undefined); }}><Info size={14} /></button>}
+          {showOverview && <button className="agsdl-icon-button" aria-label={t(hasIssues ? "agsdl.diagnostics" : "agsdl.viewer.overview")}
+            title={t(hasIssues ? "agsdl.diagnostics" : "agsdl.viewer.overview")} aria-pressed={overview}
+            onClick={() => { setOverview(!overview); setSelection(undefined); }}>
+            {hasIssues ? <CircleAlert size={14} className="agsdl-unresolved" /> : <Info size={14} />}
+          </button>}
         </div>
         {document && document.graphs.length > 1 && (
           <select
@@ -259,10 +263,9 @@ export const AgsdlEditor: React.FC<{
             cards={cards} edges={system.edges} selected={selected}
             select={select} title={nodeTitle}
           /> : <div className="agsdl-empty">{t("agsdl.noGraph")}</div>}
-          <div className="agsdl-graph-caption">
-            {document.migrated ? t("agsdl.viewer.dependencies") : graph ? t("agsdl.viewer.exchangeHint") : t("agsdl.viewer.declarative")}
-            {findings.length > 0 && <button className="agsdl-link" onClick={() => { setOverview(true); setSelection(undefined); }}>{t("agsdl.diagnostics")} · {findings.length}</button>}
-          </div>
+          {(document.migrated || !graph) && <div className="agsdl-graph-caption">
+            {t(document.migrated ? "agsdl.viewer.dependencies" : "agsdl.viewer.declarative")}
+          </div>}
           {(selectedCard || overview) && <section key={selectedCard?.path ?? "overview"} className={`agsdl-inspector${selectedCard ? " is-node-inspector" : ""}`} aria-label={t("agsdl.properties")}>
             <header>
               <strong>{selectedCard ? nodeTitle(selectedCard) : graph?.title || document.title}</strong>
@@ -290,9 +293,9 @@ export const AgsdlEditor: React.FC<{
             </div>
           </section>}
         </>}
-      <footer className="agsdl-status" aria-live="polite">
-        {session?.saving ? t("agsdl.saving") : session?.dirty ? t("agsdl.unsaved") : t("agsdl.viewer.authoring")}
-      </footer>
+      {(session?.saving || session?.dirty) && <footer className="agsdl-status" role="status">
+        {t(session.saving ? "agsdl.saving" : "agsdl.unsaved")}
+      </footer>}
     </div>
   );
 };
