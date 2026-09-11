@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { CircleAlert, Info, Maximize2, X, Undo2, Redo2 } from "lucide-react";
+import { AgentDetails } from "./AgentDetails";
 import { ComponentDetailsDialog } from "./ComponentDetailsDialog";
 import { WorkflowGraph } from "./WorkflowGraph";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
@@ -183,12 +184,11 @@ export const AgsdlEditor: React.FC<{
   );
   const inspect = (item: ViewerCard) => (
     <>
-      {item.mission ? <p className="agsdl-mission">{item.mission}</p>
-        : ["Agent", "invoke"].includes(item.kind) && <p className="agsdl-muted">{t("agsdl.viewer.noMission")}</p>}
+      {["Agent", "invoke"].includes(item.kind)
+        ? <AgentDetails card={item} cards={[...(document?.graphs.flatMap(graph => graph.cards) ?? []), ...(document?.declarations ?? []), ...(document?.legacyCards ?? [])]} source={source!} onSelect={select} />
+        : item.mission && <p className="agsdl-mission">{item.mission}</p>}
       {diagnostics.filter(issue => issue.targets.includes(item.path)).map((issue, index) => <div key={index}><p className="agsdl-unresolved">{issue.details}</p>{diagnosticAction(issue, nodeTitle(item))}</div>)}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
-      {/* Agent cards explain their mission. Connections and the property editor
-          already provide the exchanges and configuration on demand. */}
       {!["Agent", "invoke"].includes(item.kind) && <>
         {item.interfaces?.length ? <section className="agsdl-ports"><h4>{t("agsdl.viewer.property.interfaces")}</h4>{item.interfaces.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</section> : null}
         {item.dependencies && <section className="agsdl-ports">

@@ -183,7 +183,24 @@
     "locateIssue": "場所を表示",
     "correctIssue": "チャットで修正を準備",
     "resourceRequired": "呼び出しには少なくとも1つのリソースが必要です。",
-    "duplicateReference": "リスト内の参照は重複できません。"
+    "duplicateReference": "リスト内の参照は重複できません。",
+    "detail": {
+      "prompt": "プロンプト",
+      "inputs": "入力",
+      "outputs": "予定される出力",
+      "systemInput": "システム入力",
+      "systemResult": "システム結果",
+      "fromPort": "出力 · {{port}}",
+      "toPort": "入力 · {{port}}",
+      "unspecifiedSource": "取得元が未指定",
+      "noInputs": "入力の宣言なし",
+      "noOutputs": "出力の宣言なし",
+      "noRecipient": "受信先の宣言なし",
+      "tools": "ツールと接続",
+      "noTools": "ツールの宣言なし",
+      "engineUnset": "エンジンが未設定",
+      "selected": "選択済み"
+    }
   },
   "attachToChat": "チャットに添付",
   "chatSelection": "AgSDL の選択",

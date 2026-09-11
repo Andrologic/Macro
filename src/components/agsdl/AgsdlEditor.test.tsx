@@ -66,7 +66,7 @@ describe("AgSDL viewer", () => {
     expect(document.body.querySelector(".agsdl-detail-modal")).toBeNull();
   });
 
-  it("keeps system contracts in the overview and agent cards focused on their mission", async () => {
+  it("separates agent prompts, input provenance and output recipients from system contracts", async () => {
     await mount();
     const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
     expect(nodes).toHaveLength(3);
@@ -80,8 +80,30 @@ describe("AgSDL viewer", () => {
     expect(overview.querySelector(".agsdl-provenance")).toBeNull();
     act(() => nodes[0].click());
     const agentDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
-    expect(agentDetails.textContent).toBe("Clarify the request and produce acceptance criteria.");
-    expect(agentDetails.querySelector("details, .agsdl-exchange-summary, .agsdl-ports")).toBeNull();
+    expect(agentDetails.querySelector(".agsdl-prompt")?.textContent).toBe("Clarify the request and produce acceptance criteria.");
+    expect(agentDetails.querySelector(".agsdl-agent-io")?.textContent).toContain("System input");
+    expect(agentDetails.querySelector(".agsdl-agent-io")?.textContent).toContain("Implementation");
+    expect(agentDetails.querySelector(".agsdl-properties")).toBeNull();
+  });
+
+  it("previews a linked agent on focus and opens its modal on click without changing source", async () => {
+    await mount();
+    const agents = container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node");
+    act(() => agents[1].click());
+    const input = document.body.querySelector<HTMLButtonElement>(".agsdl-agent-io .agsdl-reference-chip")!;
+    act(() => input.focus());
+    expect(document.body.querySelector('[role="tooltip"]')?.textContent).toContain("acceptance criteria");
+    expect(input.getAttribute("aria-describedby")).toBe(document.body.querySelector('[role="tooltip"]')?.id ?? null);
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+    expect(document.body.querySelector(".agsdl-detail-modal")).not.toBeNull();
+    act(() => input.click());
+    expect(document.body.querySelector(".agsdl-detail-modal > header strong")?.textContent).toBe("Specification");
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+    const output = document.body.querySelector<HTMLButtonElement>(".agsdl-agent-io .agsdl-reference-chip")!;
+    act(() => output.click());
+    expect(document.body.querySelector(".agsdl-detail-modal > header strong")?.textContent).toBe("Implementation");
+    expect(useAgsdlStore.getState().sessions[key].source).toBe(createExample("feature"));
   });
 
   it("keeps saved graphs quiet while preserving validation and unsaved-work notices", async () => {
@@ -202,7 +224,7 @@ describe("AgSDL viewer", () => {
     const nextNode = container.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node:not(.is-boundary)")[1];
     act(() => nextNode.click());
     const nextDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
-    expect(nextDetails.querySelector(".agsdl-mission")?.textContent).toBeTruthy();
+    expect(nextDetails.querySelector(".agsdl-prompt")?.textContent).toBeTruthy();
     expect(nextDetails.textContent).not.toContain("Specification · report");
     expect(useAgsdlStore.getState().sessions[key].source).toBe(createExample("feature"));
     expect(

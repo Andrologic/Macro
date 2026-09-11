@@ -183,7 +183,24 @@
     "locateIssue": "Lokalisieren",
     "correctIssue": "Korrektur im Chat vorbereiten",
     "resourceRequired": "Ein Aufruf benötigt mindestens eine Ressource.",
-    "duplicateReference": "Jede Referenz muss in ihrer Liste eindeutig sein."
+    "duplicateReference": "Jede Referenz muss in ihrer Liste eindeutig sein.",
+    "detail": {
+      "prompt": "Prompt",
+      "inputs": "Eingaben",
+      "outputs": "Erwartete Ausgaben",
+      "systemInput": "Systemeingabe",
+      "systemResult": "Systemergebnis",
+      "fromPort": "Ausgabe · {{port}}",
+      "toPort": "Eingabe · {{port}}",
+      "unspecifiedSource": "Quelle nicht angegeben",
+      "noInputs": "Keine Eingaben deklariert",
+      "noOutputs": "Keine Ausgaben deklariert",
+      "noRecipient": "Kein Empfänger deklariert",
+      "tools": "Werkzeuge und Verbindungen",
+      "noTools": "Keine Werkzeuge deklariert",
+      "engineUnset": "Engine nicht konfiguriert",
+      "selected": "Ausgewählt"
+    }
   },
   "attachToChat": "Zum Chat hinzufügen",
   "chatSelection": "AgSDL-Auswahl",

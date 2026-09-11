@@ -89,6 +89,7 @@ export function projectViewer(source: string) {
         (relation) =>
           agent &&
           relation.relation === "uses" &&
+          (relation.expectedKind === "Tool" || resolve(relation.target)?.kind === "Tool") &&
           keyId(relation.source) === keyId(agent.key),
       )
       .map((relation) => definitionReference(relation.target));

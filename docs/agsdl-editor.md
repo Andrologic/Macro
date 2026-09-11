@@ -18,10 +18,15 @@ attente restent visibles ; les détails du système se consultent à la demande.
    de départ et ses ressources ; sa configuration reste dans les détails techniques.
    Sélectionner une flèche pour consulter la relation et les données
    explicitement transmises. Aucun transfert n’est déduit du seul ordre des étapes.
-3. Sélectionner un agent pour lire sa mission complète dans une modale, sans
-   réduire le canvas. La fiche conserve les problèmes à corriger, mais n’affiche
-   ni interfaces, ni contrats d’entrée/sortie, ni bloc de données techniques.
-   Les échanges se consultent sur les flèches et la configuration en modification.
+3. Sélectionner un agent pour ouvrir une fiche compartimentée, sans réduire le
+   canvas : prompt complet, entrées avec provenance, sorties prévues avec leurs
+   destinataires, puis outils et connexions. Survoler ou focaliser un agent lié
+   pour prévisualiser sa mission ; cliquer ouvre sa fiche. Échap ferme d’abord
+   l’aperçu, puis la fiche. Les données d’entrée du système et son résultat final
+   ne sont pas présentés comme des tâches. Les paramètres du moteur et des
+   implémentations d’outils se consultent dans leur configuration repliée, y
+   compris les paramètres MCP lorsqu’ils sont déclarés. Aucun accès n’est déduit
+   des fournisseurs ou serveurs globaux de Macro.
    Une approbation indique l’action à valider et l’approbateur prévu. Aucun bouton
    de validation n’exécute cette étape : il s’agit du visualisateur du processus.
    La croix, le fond de la modale et la touche Échap referment les détails. Dans

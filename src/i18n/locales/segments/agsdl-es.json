@@ -183,7 +183,24 @@
     "locateIssue": "Localizar",
     "correctIssue": "Preparar corrección en el chat",
     "resourceRequired": "Una invocación necesita al menos un recurso.",
-    "duplicateReference": "Cada referencia debe ser única en su lista."
+    "duplicateReference": "Cada referencia debe ser única en su lista.",
+    "detail": {
+      "prompt": "Prompt",
+      "inputs": "Entradas",
+      "outputs": "Salidas previstas",
+      "systemInput": "Entrada del sistema",
+      "systemResult": "Resultado del sistema",
+      "fromPort": "Salida · {{port}}",
+      "toPort": "Entrada · {{port}}",
+      "unspecifiedSource": "Origen no especificado",
+      "noInputs": "No hay entradas declaradas",
+      "noOutputs": "No hay salidas declaradas",
+      "noRecipient": "No hay destinatarios declarados",
+      "tools": "Herramientas y conexiones",
+      "noTools": "No hay herramientas declaradas",
+      "engineUnset": "Motor sin configurar",
+      "selected": "Seleccionada"
+    }
   },
   "attachToChat": "Adjuntar al chat",
   "chatSelection": "Selección AgSDL",

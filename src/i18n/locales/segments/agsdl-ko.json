@@ -183,7 +183,24 @@
     "locateIssue": "위치 보기",
     "correctIssue": "채팅에서 수정 준비",
     "resourceRequired": "호출에는 하나 이상의 리소스가 필요합니다.",
-    "duplicateReference": "목록의 참조는 중복될 수 없습니다."
+    "duplicateReference": "목록의 참조는 중복될 수 없습니다.",
+    "detail": {
+      "prompt": "프롬프트",
+      "inputs": "입력",
+      "outputs": "예정된 출력",
+      "systemInput": "시스템 입력",
+      "systemResult": "시스템 결과",
+      "fromPort": "출력 · {{port}}",
+      "toPort": "입력 · {{port}}",
+      "unspecifiedSource": "출처 미지정",
+      "noInputs": "선언된 입력 없음",
+      "noOutputs": "선언된 출력 없음",
+      "noRecipient": "선언된 수신 대상 없음",
+      "tools": "도구 및 연결",
+      "noTools": "선언된 도구 없음",
+      "engineUnset": "엔진 미설정",
+      "selected": "선택됨"
+    }
   },
   "attachToChat": "채팅에 첨부",
   "chatSelection": "AgSDL 선택",

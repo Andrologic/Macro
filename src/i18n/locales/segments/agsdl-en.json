@@ -183,7 +183,24 @@
     "locateIssue": "Locate",
     "correctIssue": "Prepare correction in chat",
     "resourceRequired": "An invocation needs at least one resource.",
-    "duplicateReference": "Each reference must be unique in its list."
+    "duplicateReference": "Each reference must be unique in its list.",
+    "detail": {
+      "prompt": "Prompt",
+      "inputs": "Inputs",
+      "outputs": "Expected outputs",
+      "systemInput": "System input",
+      "systemResult": "System result",
+      "fromPort": "Output · {{port}}",
+      "toPort": "Input · {{port}}",
+      "unspecifiedSource": "Source not specified",
+      "noInputs": "No inputs declared",
+      "noOutputs": "No outputs declared",
+      "noRecipient": "No recipient declared",
+      "tools": "Tools and connections",
+      "noTools": "No tools declared",
+      "engineUnset": "Engine not configured",
+      "selected": "Selected"
+    }
   },
   "attachToChat": "Attach to chat",
   "chatSelection": "AgSDL selection",
