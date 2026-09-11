@@ -16,12 +16,12 @@ attente restent visibles ; les détails du système se consultent à la demande.
    système et les fins techniques ne sont pas des étapes affichées. Le bouton
    « Détails du système » dans l’en-tête ouvre ses interfaces déclarées, son point
    de départ et ses ressources ; sa configuration reste dans les détails techniques.
-   Les interfaces, outils et ressources se consultent dans les détails du
-   composant. Sélectionner une flèche pour consulter la relation et les données
+   Sélectionner une flèche pour consulter la relation et les données
    explicitement transmises. Aucun transfert n’est déduit du seul ordre des étapes.
-3. Sélectionner un nœud pour ouvrir sa mission, ses outils et ses échanges dans
-   une modale, sans réduire le canvas. La modale affiche la mission complète ; les données partagées et les échanges non adjacents
-   y indiquent leur provenance. Les types, outils et ressources restent repliés.
+3. Sélectionner un agent pour lire sa mission complète dans une modale, sans
+   réduire le canvas. La fiche conserve les problèmes à corriger, mais n’affiche
+   ni interfaces, ni contrats d’entrée/sortie, ni bloc de données techniques.
+   Les échanges se consultent sur les flèches et la configuration en modification.
    Une approbation indique l’action à valider et l’approbateur prévu. Aucun bouton
    de validation n’exécute cette étape : il s’agit du visualisateur du processus.
    La croix, le fond de la modale et la touche Échap referment les détails. Dans
@@ -33,8 +33,7 @@ attente restent visibles ; les détails du système se consultent à la demande.
    Les instructions conservent leur propriétaire AgSDL,
    y compris lorsqu’elles sont partagées. Une saisie non enregistrée est confirmée
    avant fermeture. Un conflit de version conserve la saisie ; un échec de sauvegarde
-   conserve le document modifié et propose de réessayer. Les chemins
-   techniques de succès, d’échec et de refus restent consultables dans les détails.
+   conserve le document modifié et propose de réessayer.
    Les références absentes ou ambiguës ne créent pas de faux échanges.
 4. Utiliser le bouton d’élargissement pour ouvrir le graphe dans une grande
    modale. La croix, la touche Échap ou un clic sur le fond ferment cette vue.

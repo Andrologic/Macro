@@ -183,42 +183,46 @@ export const AgsdlEditor: React.FC<{
   );
   const inspect = (item: ViewerCard) => (
     <>
-      {diagnostics.filter(issue => issue.targets.includes(item.path)).map((issue, index) => <div key={index}><p className="agsdl-unresolved"><strong>{issue.rule}</strong> {issue.details}</p>{diagnosticAction(issue, nodeTitle(item))}</div>)}
-      {item.interfaces?.length ? <section className="agsdl-ports"><h4>{t("agsdl.viewer.property.interfaces")}</h4>{item.interfaces.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</section> : null}
-      {item.mission && <p className="agsdl-mission" title={item.mission}>{item.mission}</p>}
+      {item.mission ? <p className="agsdl-mission">{item.mission}</p>
+        : ["Agent", "invoke"].includes(item.kind) && <p className="agsdl-muted">{t("agsdl.viewer.noMission")}</p>}
+      {diagnostics.filter(issue => issue.targets.includes(item.path)).map((issue, index) => <div key={index}><p className="agsdl-unresolved">{issue.details}</p>{diagnosticAction(issue, nodeTitle(item))}</div>)}
       {item.unresolved && <p className="agsdl-unresolved">{t("agsdl.viewer.unresolvedAgent")}</p>}
-      {item.dependencies && <section className="agsdl-ports">
-        <h4>{t("agsdl.viewer.dependencies")}</h4>
-        {item.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
-        <p className="agsdl-muted">{t("agsdl.viewer.unknownTransfers")}</p>
-      </section>}
-      {exchangeSummary(item)}
-      {item.kind === "approval" && <section className="agsdl-ports">
-        {item.approvalCall && <p>{t("agsdl.viewer.actionToApprove")} · {reference(item.approvalCall)}</p>}
-        <h4>{t("agsdl.viewer.approvers")}</h4>
-        {item.approvers?.length ? item.approvers.map((ref, index) => <div key={index}>{reference(ref)}</div>) : <p className="agsdl-muted">{t("agsdl.viewer.approverMissing")}</p>}
-      </section>}
-      <details className="agsdl-details">
-        <summary>{t("agsdl.viewer.technicalDetails")}</summary>
-        {item.mission && <p>{item.mission}</p>}
-        {portList(item.inputs, "inputs", true, item.kind !== "input")}
-        {portList(item.outputs, "outputs", true)}
-        {item.tools?.length ? <section className="agsdl-ports">
-          <h4>{t("agsdl.agentTools")}</h4>
-          {item.tools.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
-        </section> : null}
-        {item.resources?.length ? <section className="agsdl-ports">
-          <h4>{t("agsdl.viewer.resources")}</h4>
-          {item.resources.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
-        </section> : null}
-        {item.branches.length > 0 && <section className="agsdl-ports">
-          <h4>{t("agsdl.viewer.control")}</h4>
-          {item.branches.map(branch => <div key={branch.label}>
-            {t(`agsdl.edge.${branch.label}`)} → {reference(branch.reference)}
-          </div>)}
+      {/* Agent cards explain their mission. Connections and the property editor
+          already provide the exchanges and configuration on demand. */}
+      {!["Agent", "invoke"].includes(item.kind) && <>
+        {item.interfaces?.length ? <section className="agsdl-ports"><h4>{t("agsdl.viewer.property.interfaces")}</h4>{item.interfaces.map((ref, index) => <div key={index}>{reference(ref)}</div>)}</section> : null}
+        {item.dependencies && <section className="agsdl-ports">
+          <h4>{t("agsdl.viewer.dependencies")}</h4>
+          {item.dependencies.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
+          <p className="agsdl-muted">{t("agsdl.viewer.unknownTransfers")}</p>
         </section>}
-        <ReadOnlyValue value={item.details} />
-      </details>
+        {exchangeSummary(item)}
+        {item.kind === "approval" && <section className="agsdl-ports">
+          {item.approvalCall && <p>{t("agsdl.viewer.actionToApprove")} · {reference(item.approvalCall)}</p>}
+          <h4>{t("agsdl.viewer.approvers")}</h4>
+          {item.approvers?.length ? item.approvers.map((ref, index) => <div key={index}>{reference(ref)}</div>) : <p className="agsdl-muted">{t("agsdl.viewer.approverMissing")}</p>}
+        </section>}
+        <details className="agsdl-details">
+          <summary>{t("agsdl.viewer.technicalDetails")}</summary>
+          {portList(item.inputs, "inputs", true, item.kind !== "input")}
+          {portList(item.outputs, "outputs", true)}
+          {item.tools?.length ? <section className="agsdl-ports">
+            <h4>{t("agsdl.agentTools")}</h4>
+            {item.tools.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
+          </section> : null}
+          {item.resources?.length ? <section className="agsdl-ports">
+            <h4>{t("agsdl.viewer.resources")}</h4>
+            {item.resources.map((ref, index) => <div key={index}>{reference(ref)}</div>)}
+          </section> : null}
+          {item.branches.length > 0 && <section className="agsdl-ports">
+            <h4>{t("agsdl.viewer.control")}</h4>
+            {item.branches.map(branch => <div key={branch.label}>
+              {t(`agsdl.edge.${branch.label}`)} → {reference(branch.reference)}
+            </div>)}
+          </section>}
+          <ReadOnlyValue value={item.details} />
+        </details>
+      </>}
     </>
   );
   const findings = diagnostics;

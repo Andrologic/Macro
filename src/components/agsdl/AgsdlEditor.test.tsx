@@ -66,7 +66,7 @@ describe("AgSDL viewer", () => {
     expect(document.body.querySelector(".agsdl-detail-modal")).toBeNull();
   });
 
-  it("keeps system interfaces in the overview and component interfaces on their owner", async () => {
+  it("keeps system contracts in the overview and agent cards focused on their mission", async () => {
     await mount();
     const nodes = [...container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node")];
     expect(nodes).toHaveLength(3);
@@ -79,7 +79,9 @@ describe("AgSDL viewer", () => {
     expect(overview.textContent).toContain("report");
     expect(overview.querySelector(".agsdl-provenance")).toBeNull();
     act(() => nodes[0].click());
-    expect(globalThis.document.body.querySelector(".agsdl-exchange-summary")!.textContent).toContain("report");
+    const agentDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
+    expect(agentDetails.textContent).toBe("Clarify the request and produce acceptance criteria.");
+    expect(agentDetails.querySelector("details, .agsdl-exchange-summary, .agsdl-ports")).toBeNull();
   });
 
   it("keeps saved graphs quiet while preserving validation and unsaved-work notices", async () => {
@@ -118,25 +120,6 @@ describe("AgSDL viewer", () => {
     document.graphs.pop();
     act(() => useAgsdlStore.getState().replace(target, JSON.stringify(document)));
     expect(selector.value).toBe("1");
-  });
-
-  it("keeps technical fields collapsed and resets them when selecting another agent", async () => {
-    await mount();
-    const agents = container!.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node:not(.is-boundary)");
-    act(() => agents[1].click());
-    const inspector = globalThis.document.body.querySelector(".agsdl-inspector")!;
-    const summary = inspector.querySelector(".agsdl-exchange-summary")!;
-    expect(summary.textContent).toContain("Specification · report");
-    expect(summary.textContent).not.toContain("string");
-    const technical = inspector.querySelector("details")!;
-    expect(technical.open).toBe(false);
-    expect(technical.textContent).toContain("string");
-    technical.open = true;
-    act(() => agents[2].click());
-    expect(globalThis.document.body.querySelector(".agsdl-inspector details")!.hasAttribute("open")).toBe(false);
-    act(() => globalThis.document.body.querySelector(".agsdl-inspector button")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-    expect(globalThis.document.body.querySelector(".agsdl-inspector")).toBeNull();
-    expect(useAgsdlStore.getState().sessions[key].dirty).toBe(false);
   });
 
   it("retries saving the agent draft without reloading it", async () => {
@@ -218,7 +201,10 @@ describe("AgSDL viewer", () => {
     expect(globalThis.document.body.querySelector(".agsdl-inspector")?.textContent).toContain("Clarify the request and produce acceptance criteria.");
     const nextNode = container.querySelectorAll<HTMLButtonElement>(".agsdl-graph-node:not(.is-boundary)")[1];
     act(() => nextNode.click());
-    expect(globalThis.document.body.querySelector(".agsdl-inspector")?.textContent).toContain("Specification · report");
+    const nextDetails = globalThis.document.body.querySelector(".agsdl-inspector")!;
+    expect(nextDetails.querySelector(".agsdl-mission")?.textContent).toBeTruthy();
+    expect(nextDetails.textContent).not.toContain("Specification · report");
+    expect(useAgsdlStore.getState().sessions[key].source).toBe(createExample("feature"));
     expect(
       container.querySelector("textarea, input, [role=dialog]"),
     ).toBeNull();

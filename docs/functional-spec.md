@@ -292,9 +292,10 @@ Le canvas montre les participants, les relations déclarées, les conditions et
 les étapes d’approbation. Les interfaces du système et les terminaux de fin ne
 créent pas de nœuds. Le bouton de détails dans l’en-tête donne accès au point de
 départ, aux interfaces, aux ressources et à la configuration du système.
-Les cartes affichent l’identité du composant. Sa mission, ses interfaces, ses
-outils et les provenances se consultent au clic dans une modale. Le graphe conserve
-son espace et son zoom. Les changements manuels sont enregistrés avec un contrôle
+Les cartes affichent l’identité du composant. La modale d’un agent présente sa
+mission et les problèmes éventuels, sans interfaces, contrats d’entrée/sortie ni
+bloc de données techniques. Sa configuration reste accessible en modification ;
+les échanges se consultent sur les connexions. Le graphe conserve son espace et son zoom. Les changements manuels sont enregistrés avec un contrôle
 de version ; une modification concurrente bloque l’écriture sans effacer la saisie.
 Les connexions sont sélectionnables pour consulter leur nature et les transferts
 explicitement déclarés, sans libellés permanents sur le canvas.
