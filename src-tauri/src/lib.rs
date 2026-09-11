@@ -103,12 +103,31 @@ fn install_browser_runtime_event_relays(app: &tauri::AppHandle) {
 
 fn shutdown_mcp_runtime(app_handle: &tauri::AppHandle) {
     let runtime = app_handle.state::<commands::mcp::McpRuntimeManager>();
-    let result = tauri::async_runtime::block_on(tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        runtime.shutdown_all(),
-    ));
+    let result = block_on_mcp_shutdown(runtime.shutdown_all());
     if result.is_err() {
         tracing::warn!("MCP runtime shutdown exceeded its 12-second budget");
+    }
+}
+
+// Construct the timer while polling inside Tauri's runtime, not on the native
+// event-loop thread that invokes the exit callback.
+fn block_on_mcp_shutdown(
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), tokio::time::error::Elapsed> {
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(12), shutdown).await
+    })
+}
+
+#[cfg(test)]
+mod mcp_shutdown_tests {
+    #[test]
+    fn shutdown_can_start_from_a_thread_without_a_tokio_runtime() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let result = super::block_on_mcp_shutdown(async {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        });
+        assert!(result.is_ok());
     }
 }
 
