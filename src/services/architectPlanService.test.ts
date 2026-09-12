@@ -1973,6 +1973,24 @@ describe('architectPlanService', () => {
     }
   });
 
+  it('creates an AgSDL blueprint snapshot atomically with its source and annexes', async () => {
+    const agsdl = { source: '{ "opaque":900719925474099312345 }', annexes: { guidance: 'Synthetic release guidance' } };
+    const created = await service.createArchitectPlan({ branchName, planId: 'blueprint-snapshot', label: 'Release blueprint', setActive: false, agsdl });
+    expect(created.agsdl).toEqual({ ...agsdl, revision: 1 });
+    expect(created.revision).toBe(1);
+    expect((await service.getArchitectPlan(branchName, created.id))?.agsdl).toEqual({ ...agsdl, revision: 1 });
+    const listing = await service.listArchitectPlans(branchName);
+    expect(listing.plans.find((plan: ArchitectPlanSummary) => plan.id === created.id)?.hasAgsdl).toBe(true);
+    expect(listing.activePlanId).not.toBe(created.id);
+  });
+
+  it('rejects oversized initial AgSDL before creating a plan or reserving its id', async () => {
+    await expect(service.createArchitectPlan({ branchName, planId: 'oversized-blueprint', label: 'Oversized', agsdl: { source: '{}', annexes: { large: 'a'.repeat(1024 * 1024) } } })).rejects.toThrow('1 MiB');
+    expect(await service.getArchitectPlan(branchName, 'oversized-blueprint')).toBeNull();
+    const created = await service.createArchitectPlan({ branchName, planId: 'oversized-blueprint', label: 'Retry', agsdl: { source: '{}', annexes: {} } });
+    expect(created.id).toBe('oversized-blueprint');
+  });
+
   it('fully activates an AgSDL-only draft and marks its summary as authored', async () => {
     const created = await service.createArchitectPlan({ branchName, planId: 'agsdl-only', label: DEFAULT_NEW_PLAN_LABEL });
     const source = '{ "opaque":900719925474099312345 }';

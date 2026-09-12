@@ -15,6 +15,8 @@ export interface AgentConfiguration {
   id: string;
   selected: boolean;
   engine: string;
+  engineIdentity: string;
+  engineVersion: string;
   parameters: Record<string, unknown>;
   tools: Array<{
     reference: ViewerReference;
@@ -44,7 +46,7 @@ export function agentConfigurations(source: string, card: ViewerCard): AgentConf
     const binding = bindings[0];
     return [{
       id: text(configuration.id), selected: runtime.selected === configuration.id,
-      engine: edition(binding.engine), parameters: object(binding.parameters),
+      engine: edition(binding.engine), engineIdentity: text(object(binding.engine).identity), engineVersion: text(object(binding.engine).version), parameters: object(binding.parameters),
       tools: list(binding.tools).map(object).map(tool => {
         const matches = definitions.map((value, index) => ({ value, index })).filter(({ value }) => value.kind === "Tool" && validKey(tool.tool) && keyId(value.key) === keyId(tool.tool));
         const match = matches.length === 1 ? matches[0] : undefined;

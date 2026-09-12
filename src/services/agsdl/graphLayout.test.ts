@@ -6,14 +6,15 @@ import { createExample } from "./examples";
 
 const overview = () => projectSystemOverview(projectViewer(createExample("release")).graphs[0], []);
 describe("AgSDL system layout", () => {
-  it("orders the input, agents and result without letting shared context flatten the chain", () => {
+  it("orders the three agents without inventing input or result participants", () => {
     const input = overview();
     const graph = layoutViewer(input.cards, input.edges);
-    expect(graph.nodes).toHaveLength(5);
-    expect(graph.nodes.map(node => node.position.y)).toEqual([0, 100, 200, 300, 400]);
+    expect(graph.nodes).toHaveLength(3);
+    expect(graph.nodes.map(node => node.position.y)).toEqual([0, 100, 200]);
   });
   it("lays out forks and cycles without overlap", () => {
-    const cards = overview().cards.slice(0, 4);
+    const agents = overview().cards;
+    const cards = [...agents, { ...agents[2], path: "/synthetic/fourth", id: "fourth", title: "Additional review" }];
     const edge = (from: number, to: number) => ({ id: `${from}/${to}`, source: cards[from].path, target: cards[to].path, label: "", dependency: false });
     const edges = [edge(0, 1), edge(0, 2), edge(1, 3), edge(2, 3)];
     const fork = layoutViewer(cards, edges);

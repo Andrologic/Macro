@@ -121,10 +121,12 @@ export function projectViewer(source: string) {
       const agent = resolve(step.agent);
       return agent?.kind === "Agent" ? agent : undefined;
     };
+    const displayAnnotations = (step: Value) => object(object(object(resolve(graph.definition)?.annotations).macroSteps)[text(step.id)]);
     const stepTitle = (step: Value) =>
-      title(step) && text(object(step.annotations).title)
+      text(displayAnnotations(step).title) ||
+      (title(step) && text(object(step.annotations).title)
         ? title(step)
-        : title(agentFor(step) ?? {}) || title(step);
+        : title(agentFor(step) ?? {}) || title(step));
     const reference = (id: unknown): ViewerReference => {
       const matches = steps
         .map((step, index) => ({ step, index }))
@@ -189,7 +191,7 @@ export function projectViewer(source: string) {
         mission:
           mission(agent) ||
           text(step.reason) ||
-          text(object(step.annotations).description),
+          text(displayAnnotations(step).description) || text(object(step.annotations).description),
         unresolved: step.kind === "invoke" && !agent,
         inputs: step.kind === "end" ? [] : inputs,
         outputs: step.kind === "end" ? inputs : ports(step.outputs),
@@ -205,7 +207,7 @@ export function projectViewer(source: string) {
           label,
           reference: reference(step[label]),
         })),
-        details: { ...step, ...(agent ? { agentDefinition: agent } : {}) },
+        details: { ...step, displayAnnotations: displayAnnotations(step), ...(agent ? { agentDefinition: agent } : {}) },
       };
     });
     return {

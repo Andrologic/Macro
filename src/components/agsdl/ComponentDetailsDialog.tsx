@@ -5,6 +5,8 @@ import { useAgsdlTranslation } from "./useAgsdlTranslation";
 import { agsdlSessionKey, useAgsdlStore, type AgsdlTarget } from "../../stores/useAgsdlStore";
 import { componentChanges, componentFields, type ComponentField } from "../../services/agsdl/componentFields";
 import { componentProperties, propertyChanges, type ComponentProperties } from "../../services/agsdl/componentProperties";
+import { macroAgentConfiguration, macroConfigurationChanges, type MacroConfiguration } from "../../services/agsdl/macroAgentConfiguration";
+import { MacroAgentConfiguration } from "./MacroAgentConfiguration";
 import type { ViewerCard } from "../../services/agsdl/viewer";
 
 export function ComponentDetailsDialog({ title, target, card, canEdit = true, children, onClose, onAttach }: {
@@ -12,12 +14,12 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
 }) {
   const { t } = useAgsdlTranslation();
   const session = useAgsdlStore(state => state.sessions[agsdlSessionKey(target)]);
-  const [draft, setDraft] = useState<{ fields: ComponentField[]; values: string[]; version: string; properties: ComponentProperties; propertyValues: string[] }>();
+  const [draft, setDraft] = useState<{ fields: ComponentField[]; values: string[]; version: string; properties: ComponentProperties; propertyValues: string[]; source: string; configuration: MacroConfiguration; providerId: string; modelId: string }>();
   const [applied, setApplied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [discard, setDiscard] = useState(false);
-  const dirty = draft && (draft.fields.some((field, index) => field.value !== draft.values[index]) || draft.properties.fields.some((field, index) => field.value !== draft.propertyValues[index]));
+  const dirty = draft && (draft.fields.some((field, index) => field.value !== draft.values[index]) || draft.properties.fields.some((field, index) => field.value !== draft.propertyValues[index]) || draft.providerId !== draft.configuration.providerId || draft.modelId !== draft.configuration.modelId);
   const close = () => {
     if (busy) return;
     if (dirty && !applied) setDiscard(true);
@@ -27,7 +29,8 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     if (!card || !session) return;
     const fields = componentFields(session.source, card);
     const properties = componentProperties(session.source, card);
-    setDraft({ fields, values: fields.map(field => field.value), version: session.version, properties, propertyValues: properties.fields.map(field => field.value) });
+    const configuration = macroAgentConfiguration(session.source, card);
+    setDraft({ source: session.source, configuration, providerId: configuration.providerId, modelId: configuration.modelId, fields, values: fields.map(field => field.value), version: session.version, properties, propertyValues: properties.fields.map(field => field.value) });
     setError("");
   };
   const save = async () => {
@@ -36,9 +39,9 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     try {
       const store = useAgsdlStore.getState();
       const current = store.sessions[agsdlSessionKey(target)];
-      if (current.version !== draft.version) throw new Error(t("agsdl.viewer.editConflict"));
+      if (!current || current.version !== draft.version) throw new Error(t("agsdl.viewer.editConflict"));
       if (!applied) {
-        const changes = [...componentChanges(draft.fields, draft.values), ...propertyChanges(draft.properties.fields, draft.propertyValues)];
+        const changes = [...componentChanges(draft.fields, draft.values), ...propertyChanges(draft.properties.fields, draft.propertyValues), ...(card ? macroConfigurationChanges(draft.source, card, draft.providerId, draft.modelId) : [])];
         if (!changes.length) { setDraft(undefined); return; }
         store.edit(target, changes, draft.version);
         const version = useAgsdlStore.getState().sessions[agsdlSessionKey(target)].version;
@@ -70,6 +73,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
           {field.kind === "name" ? <input required value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />
             : <textarea rows={7} value={draft.values[index]} disabled={busy || applied} onChange={event => setDraft({ ...draft, values: draft.values.map((value, i) => i === index ? event.target.value : value) })} />}
         </label>)}
+        {card && ["Agent", "invoke"].includes(card.kind) && <MacroAgentConfiguration configuration={draft.configuration} providerId={draft.providerId} modelId={draft.modelId} disabled={busy || applied} onChange={(providerId, modelId) => setDraft({ ...draft, providerId, modelId })} />}
         {(["tools", "resources", "contracts"] as const).map(group => {
           const members = draft.properties.fields.map((field, index) => ({ field, index })).filter(({ field }) => {
             const category = ["tools", "addTool"].includes(field.label) ? "tools" : ["resources", "addResource"].includes(field.label) ? "resources" : "contracts";
@@ -99,7 +103,7 @@ export function ComponentDetailsDialog({ title, target, card, canEdit = true, ch
     </div>
     {draft && <footer>
       <button disabled={busy} onClick={() => { if (applied) close(); else { setDraft(undefined); setError(""); setDiscard(false); } }}>{t(applied ? "agsdl.close" : "agsdl.cancel")}</button>
-      <button form="agsdl-component-form" type="submit" disabled={busy || session?.saving || !dirty}>{t(busy ? "agsdl.saving" : applied ? "agsdl.retry" : "agsdl.save")}</button>
+      <button form="agsdl-component-form" type="submit" disabled={busy || session?.saving || !dirty || ((draft.providerId !== draft.configuration.providerId || draft.modelId !== draft.configuration.modelId) && (!draft.providerId || !draft.modelId))}>{t(busy ? "agsdl.saving" : applied ? "agsdl.retry" : "agsdl.save")}</button>
     </footer>}
   </Dialog>;
 }

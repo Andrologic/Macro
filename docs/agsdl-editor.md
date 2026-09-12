@@ -60,6 +60,51 @@ attente restent visibles ; les détails du système se consultent à la demande.
    correction. Un problème sans emplacement fiable reste global. Les contrôles
    vérifient le document ; ils ne garantissent pas son exécution.
 
+## Concevoir et réutiliser un système
+
+Un plan conserve pour l’instant une conversation de conception et un document
+AgSDL. Depuis un plan vide, le panneau propose de commencer un système vide,
+d’utiliser un blueprint inclus ou enregistré, ou d’adapter un système existant.
+La bibliothèque lit les plans accessibles dans les métadonnées Macro. Une erreur
+de lecture reste visible ; les exemples inclus restent disponibles.
+
+La fiche de conception sépare l’objectif, le contexte partagé, les règles du
+processus et les informations à fournir pour adapter le système au projet.
+Un brouillon peut rester incomplet. Les champs sans valeur restent à compléter,
+et les agents sans instructions portent un indicateur discret. Ces informations
+sont des consignes de conception : l’agent doit les traduire explicitement dans
+les instructions, ressources, contrats ou étapes du graphe. Une règle décrite
+n’est pas une garantie d’exécution.
+
+Enregistrer un blueprint crée atomiquement un autre plan contenant une copie du
+document et de ses annexes, avec le nom choisi. Le plan courant reste actif.
+La copie conserve le contexte et la configuration déclarés ; l’utilisateur peut
+les adapter avant d’enregistrer le modèle. Partir de cette copie initialise un
+plan vide et conserve la provenance et la révision du modèle. Les modifications
+ultérieures restent indépendantes. Les blueprints ne sont pas synchronisés
+automatiquement avec leurs adaptations.
+
+Le canvas propose les vues Vue d’ensemble et Échanges. La seconde montre uniquement
+les transmissions effectivement déclarées entre les composants visibles. Les
+informations d’entrée communes et les résultats terminaux restent dans les
+fiches. Le survol et le focus soulignent les voisins concernés. Des groupes
+nommés explicitement par l’agent peuvent être repliés ; ces groupes ne sont pas
+des étapes d’exécution. Une édition d’instructions conserve le cadrage.
+
+Après une modification, une action permet d’examiner les derniers changements
+de la session : composants ajoutés, modifiés ou retirés, instructions avant et
+après, configuration et informations de conception. Les modifications locales
+et celles de l’IA suivent le même historique Annuler/Rétablir. Fermer cet aperçu
+ou masquer ses repères ne change pas le document. Cet historique ne constitue
+pas un historique durable de toutes les versions du système.
+
+La modale d’édition d’un agent permet de choisir un fournisseur et un modèle
+configurés dans Macro lorsqu’une configuration AgSDL unique peut être identifiée.
+Le moteur est Macro. Les configurations importées étrangères ou ambiguës restent
+préservées et doivent être préparées par l’agent avant cette édition. Les outils
+et MCP restent des autorisations déclarées, indépendantes du choix du modèle.
+Cette version ne lance pas les systèmes AgSDL et n’ajoute pas de mode orchestrateur.
+
 ## Conversion des plans existants
 
 La conversion ajoute un document AgSDL 0.1.0 descriptif, avec des agents et leurs

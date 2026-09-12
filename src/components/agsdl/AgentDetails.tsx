@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { ArrowDownToLine, ArrowUpFromLine, ArrowUpRight, Bot, Box, Settings2, Terminal, Wrench } from "lucide-react";
 import type { ViewerCard, ViewerReference } from "../../services/agsdl/viewer";
 import { agentConfigurations, outputRecipients } from "../../services/agsdl/agentDetails";
+import { useProviderStore } from "../../stores/useProviderStore";
 import { useAgsdlTranslation } from "./useAgsdlTranslation";
 
 function ReferencePreview({ reference, cards, onSelect }: {
@@ -74,6 +75,8 @@ export function AgentDetails({ card, cards, source, onSelect }: {
 }) {
   const { t } = useAgsdlTranslation();
   const configurations = agentConfigurations(source, card);
+  const providers = useProviderStore(state => state.providers);
+  const modelsByProvider = useProviderStore(state => state.modelsByProvider);
   const reference = (ref: ViewerReference) => <ReferencePreview reference={ref} cards={cards} onSelect={onSelect} />;
   const configTools = configurations.flatMap(config => config.tools.map(tool => tool.reference));
   const tools = [...(card.tools ?? []), ...configTools].filter((ref, index, all) =>
@@ -113,13 +116,31 @@ export function AgentDetails({ card, cards, source, onSelect }: {
       {tools.length ? <div className="agsdl-reference-list">{tools.map((ref, index) => <span key={index}>{reference(ref)}</span>)}</div>
         : <p className="agsdl-muted">{t("agsdl.viewer.detail.noTools")}</p>}
       {!!card.resources?.length && <div className="agsdl-resource-list"><span className="agsdl-muted">{t("agsdl.viewer.resources")}</span><div className="agsdl-reference-list">{card.resources.map((ref, index) => <span key={index}>{reference(ref)}</span>)}</div></div>}
-      {configurations.map((config, index) => <details className="agsdl-runtime-settings" key={`${config.id}-${index}`}>
-        <summary><Settings2 size={13} />{config.engine || t("agsdl.viewer.detail.engineUnset")}<span className="agsdl-muted">{config.id}{config.selected ? ` · ${t("agsdl.viewer.detail.selected")}` : ""}</span></summary>
-        <Parameters value={config.parameters} />
-        {config.tools.map((tool, i) => <div className="agsdl-tool-connection" key={i}>{reference(tool.reference)}
-          {tool.choices.map((choice, j) => <div key={j}><p>{choice.implementation || choice.id}{choice.selected && <small> · {t("agsdl.viewer.detail.selected")}</small>}</p><Parameters value={choice.parameters} /></div>)}
-        </div>)}
-      </details>)}
+      {configurations.map((config, index) => {
+        const macro = config.engineIdentity === "macro" && config.engineVersion === "1";
+        const providerId = typeof config.parameters.providerId === "string" ? config.parameters.providerId : "";
+        const modelId = typeof config.parameters.modelId === "string" ? config.parameters.modelId : "";
+        const provider = providers.find(value => value.id === providerId && value.isEnabled !== false);
+        const model = provider && (modelsByProvider[providerId] ?? []).find(value => value.id === modelId && value.isEnabled !== false);
+        const unavailable = (id: string) => id
+          ? `${id} · ${t("agsdl.macroConfig.unavailable", { defaultValue: "Unavailable locally" })}`
+          : t("agsdl.macroConfig.unset", { defaultValue: "Not configured" });
+        const parameters = macro ? Object.fromEntries(Object.entries(config.parameters).filter(([key]) => !["providerId", "modelId"].includes(key))) : config.parameters;
+        return <details className="agsdl-runtime-settings" key={`${config.id}-${index}`}>
+          <summary><Settings2 size={13} />{macro ? model?.name || unavailable(modelId) : config.engine || t("agsdl.viewer.detail.engineUnset")}<span className="agsdl-muted">{macro ? provider?.name || unavailable(providerId) : config.id}{config.selected ? ` · ${t("agsdl.viewer.detail.selected")}` : ""}</span></summary>
+          {macro && <dl className="agsdl-configuration-values">
+            {configurations.length > 1 && <div><dt>{t("agsdl.macroConfig.title", { defaultValue: "Agent configuration" })}</dt><dd>{config.id}</dd></div>}
+            <div><dt>{t("agsdl.macroConfig.provider", { defaultValue: "Provider" })}</dt><dd>{provider?.name || unavailable(providerId)}</dd></div>
+            <div><dt>{t("agsdl.macroConfig.model", { defaultValue: "Model" })}</dt><dd>{model?.name || unavailable(modelId)}</dd></div>
+          </dl>}
+          {!!Object.keys(parameters).length && (macro
+            ? <details className="agsdl-details"><summary>{t("agsdl.macroConfig.parameters", { defaultValue: "Additional settings" })}</summary><Parameters value={parameters} /></details>
+            : <Parameters value={parameters} />)}
+          {config.tools.map((tool, i) => <div className="agsdl-tool-connection" key={i}>{reference(tool.reference)}
+            {tool.choices.map((choice, j) => <div key={j}><p>{choice.implementation || choice.id}{choice.selected && <small> · {t("agsdl.viewer.detail.selected")}</small>}</p><Parameters value={choice.parameters} /></div>)}
+          </div>)}
+        </details>;
+      })}
     </section>
   </div>;
 }

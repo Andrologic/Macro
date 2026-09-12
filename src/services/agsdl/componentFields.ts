@@ -1,4 +1,4 @@
-import { keyId, list, object, readDocument, text } from "./document";
+import { keyId, list, object, readDocument, text, pointerPart } from "./document";
 import type { ViewerCard } from "./viewer";
 import type { AgsdlChange } from "../../types/agsdl";
 
@@ -7,6 +7,7 @@ export interface ComponentField {
   parent: string;
   container: string;
   containerExists: boolean;
+  initialize?: string[];
   value: string;
   kind: "name" | "instructions" | "description";
 }
@@ -30,7 +31,21 @@ export function componentFields(source: string, card: ViewerCard): ComponentFiel
     containerExists: value[container] !== null && typeof value[container] === "object" && !Array.isArray(value[container]),
     value: initial, kind,
   });
-  const fields = [field(path, owner, "annotations", "title", card.title, "name")];
+  const stepMatch = /^\/graphs\/(\d+)\/steps\/\d+$/.exec(path);
+  let displayField = (key: string, initial: string, kind: ComponentField["kind"]) => field(path, owner, "annotations", key, initial, kind);
+  if (stepMatch) {
+    const graph = object(list(doc.graphs)[Number(stepMatch[1])]);
+    const controls = definitions.map((value, index) => ({ value, index })).filter(({ value }) => value.kind === "ControlFlow" && keyId(value.key) === keyId(graph.definition));
+    if (controls.length !== 1 || !text(owner.id)) return [];
+    const control = controls[0], base = `/definitions/${control.index}`;
+    const annotations = object(control.value.annotations), steps = object(annotations.macroSteps);
+    if ((control.value.annotations !== undefined && !Object.keys(annotations).length && (control.value.annotations === null || typeof control.value.annotations !== "object" || Array.isArray(control.value.annotations))) || (annotations.macroSteps !== undefined && (typeof annotations.macroSteps !== "object" || annotations.macroSteps === null || Array.isArray(annotations.macroSteps)))) return [];
+    const row = steps[text(owner.id)];
+    if (row !== undefined && (typeof row !== "object" || row === null || Array.isArray(row))) return [];
+    const initialize = [control.value.annotations === undefined ? `${base}/annotations` : "", annotations.macroSteps === undefined ? `${base}/annotations/macroSteps` : "", row === undefined ? `${base}/annotations/macroSteps/${pointerPart(text(owner.id))}` : ""].filter(Boolean);
+    displayField = (key, initial, kind) => ({ path: `${base}/annotations/macroSteps/${pointerPart(text(owner.id))}/${key}`, parent: base, container: `annotations/macroSteps/${pointerPart(text(owner.id))}`, containerExists: row !== undefined, initialize, value: initial, kind });
+  }
+  const fields = [displayField("title", card.title, "name")];
   const agentKey = owner.kind === "invoke" ? owner.agent : owner.key;
   const agents = definitions.map((value, index) => ({ value, index })).filter(({ value }) => keyId(value.key) === keyId(agentKey));
   const agent = agents.length === 1 ? agents[0] : undefined;
@@ -48,7 +63,11 @@ export function componentFields(source: string, card: ViewerCard): ComponentFiel
     }
   }
   if (owner.kind === "Instructions") fields.push(field(path, owner, "payload", "body", text(object(owner.payload).body), "instructions"));
-  if (fields.length === 1) fields.push(field(path, owner, "annotations", "description", text(object(owner.annotations).description), ["Agent", "invoke"].includes(text(owner.kind)) ? "instructions" : "description"));
+  if (fields.length === 1) {
+    if (["Agent", "invoke"].includes(text(owner.kind))) {
+      if (agent?.value.kind === "Agent") fields.push(field(`/definitions/${agent.index}`, agent.value, "annotations", "description", text(object(agent.value.annotations).description), "instructions"));
+    } else fields.push(displayField("description", text(object(card.details.displayAnnotations ?? owner.annotations).description), "description"));
+  }
   return fields.filter((item, index) => fields.findIndex(other => other.path === item.path) === index);
 }
 
@@ -57,6 +76,7 @@ export function componentChanges(fields: ComponentField[], values: string[]): Ag
   const created = new Set<string>();
   fields.forEach((field, index) => {
     if (field.value === values[index]) return;
+    for (const path of field.initialize ?? []) if (!created.has(path)) { changes.push({ op: "set", path, valueJson: "{}" }); created.add(path); }
     const parent = `${field.parent}/${field.container}`;
     if (!field.containerExists && !created.has(parent)) {
       changes.push({ op: "set", path: parent, valueJson: "{}" });

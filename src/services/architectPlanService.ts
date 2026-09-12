@@ -4964,6 +4964,7 @@ export const migrateArchitectPlanToAgsdl = async (
 };
 
 type CreateArchitectPlanInput = {
+  agsdl?: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>;
   branchName: string;
   title?: string;
   label?: string;
@@ -4983,6 +4984,11 @@ type CreateArchitectPlanInput = {
   setActive?: boolean;
 };
 
+const assertAgsdlEditorDocument = (document: Omit<import('../types/agsdl').AgsdlEditorDocument, 'revision'>) => {
+  if (!document || typeof document.source !== 'string' || !document.annexes || typeof document.annexes !== 'object' || Array.isArray(document.annexes) || Object.values(document.annexes).some(value => typeof value !== 'string')) throw new Error('Invalid AgSDL editor document.');
+  if (new TextEncoder().encode(document.source + Object.values(document.annexes).join('')).length > 1024 * 1024) throw new Error('AgSDL inputs exceed the 1 MiB editor limit.');
+};
+
 const createArchitectPlanId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -5000,6 +5006,7 @@ const createArchitectPlanUnlocked = async (
   input: CreateArchitectPlanInput,
   deps: ResolvedArchitectPlanServiceDependencies
 ): Promise<ArchitectPlanRecord> => {
+  if (input.agsdl !== undefined) assertAgsdlEditorDocument(input.agsdl);
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const now = new Date().toISOString();
@@ -5069,6 +5076,7 @@ const createArchitectPlanUnlocked = async (
   });
 
   const initialPlanRecord = applyArchitectPlanLifecycleForStatus({
+    ...(input.agsdl !== undefined ? { agsdl: { ...input.agsdl, revision: 1 } } : {}),
     id: planId,
     slug: canonicalSlug,
     title: planId,
@@ -5181,9 +5189,7 @@ export const updateArchitectPlan = async (input: {
   if (input.agsdl !== undefined) {
     if (existing.status !== 'draft') throw new Error('AgSDL editing requires a draft plan.');
     if (input.expectedAgsdlRevision !== (existing.agsdl?.revision ?? 0)) throw new Error('The AgSDL document changed. Reload it before saving.');
-    const document = input.agsdl;
-    if (typeof document.source !== 'string' || !document.annexes || typeof document.annexes !== 'object' || Array.isArray(document.annexes) || Object.values(document.annexes).some(value => typeof value !== 'string')) throw new Error('Invalid AgSDL editor document.');
-    if (new TextEncoder().encode(document.source + Object.values(document.annexes).join('')).length > 1024 * 1024) throw new Error('AgSDL inputs exceed the 1 MiB editor limit.');
+    assertAgsdlEditorDocument(input.agsdl);
   }
   const inputKeys = Object.keys(input).filter((key) => key !== 'branchName' && key !== 'planId');
   const isRestoringArchivedPlan =

@@ -1296,3 +1296,29 @@ Ce document ne doit pas être mis à jour pour :
 - des ajustements purement visuels
 - des détails d'UX sans impact d'architecture
 - des idées produit non encore traduites en architecture cible
+
+### Conception AgSDL et blueprints
+
+Les informations de conception Macro sont stockées dans
+`root.annotations.macroDesign`, version 1 : nature du document, objectif, contexte,
+règles, informations à compléter et provenance. Les modifications utilisent les
+patches AgSDL par pointeur et les contrôles de version du store. Les annotations
+inconnues restent préservées. Les groupes de présentation utilisent
+`annotations.macroGroup` sur les déclarations d’agents, ou
+`ControlFlow.annotations.macroSteps[stepId].macroGroup`. Les titres et descriptions
+propres aux étapes utilisent également cette table `macroSteps`. Les étapes G
+restent des enregistrements fermés, sans annotations ajoutées.
+
+Les blueprints sont des snapshots AgSDL persistés dans de nouveaux plans via la
+mutation metadata de création existante. Le document initial et ses annexes sont
+inclus dans cette mutation atomique. L’instanciation copie ces données dans un
+plan vide et épingle la provenance ; elle ne crée ni lien mutable vers le modèle,
+ni stockage localStorage parallèle. L’historique d’édition reste limité à la
+session du store.
+
+La convention de configuration Macro utilise `engine.identity = "macro"`,
+`engine.version = "1"` et `parameters.providerId` / `parameters.modelId`. Ces
+identifiants locaux référencent le catalogue configuré dans Macro, sans copier
+les secrets. Une configuration d’agent doit être résolue sans ambiguïté avant
+édition ; les autres paramètres et implémentations d’outils sont conservés.
+Cette convention prépare le futur adaptateur d’exécution, elle ne l’implémente pas.

@@ -38,6 +38,7 @@ export function projectSystemOverview(graph: ViewerGraph | undefined, declaratio
       if (!ref || ref.unresolved) continue;
       const source = ref.source === "step" ? ref.target : undefined;
       if (!source || !byPath.has(source)) continue;
+      if (!ref.port || !byPath.get(source)!.outputs.some(output => output.name === ref.port)) continue;
       // Shared context stays with the system and in the receiving agent's details.
       // Keep non-adjacent exchanges separate from the process path; their bindings
       // remain available in the inspector without drawing a shortcut on selection.

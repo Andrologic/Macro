@@ -334,7 +334,11 @@ describe('ArchitectProjectNavigator search', () => {
 
     const menu = document.body.querySelector('[data-architect-scope-create-menu]');
     expect(menu).not.toBeNull();
-    expect(menu?.textContent).toContain('Feature');
+    expect(menu?.querySelector('button')?.textContent).toContain('Create a system');
+    expect(menu?.querySelector('button')?.textContent).toContain('Start from scratch or use a blueprint.');
+    const secondary = menu?.querySelector('details');
+    expect(secondary?.open).toBe(false);
+    expect(secondary?.querySelector('summary')?.textContent).toContain('Other plan types');
   });
 
   it('publishes an error when the catalog is only partially loaded', async () => {

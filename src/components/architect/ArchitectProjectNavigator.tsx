@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useAgsdlTranslation } from '../agsdl/useAgsdlTranslation';
 import { ensureScopedBlankPlan } from '../../services/architectAutoPlan';
 import {
   getArchitectPlan,
@@ -101,6 +102,7 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
   catalogLoader = loadMacroProjectMetadataForSelection,
 }) => {
   const { t } = useTranslation();
+  const { t: agsdlT } = useAgsdlTranslation();
   const standaloneProjects = useAppStore((state) => state.standaloneProjects);
   const projectGroups = useAppStore((state) => state.projectGroups);
   const selectedGroupId = useAppStore((state) => state.selectedGroupId);
@@ -828,53 +830,60 @@ export const ArchitectProjectNavigator: React.FC<ArchitectProjectNavigatorProps>
         scopeCreateMenu.anchorRect,
         {
           width: SCOPE_CREATE_MENU_WIDTH,
-          height: Math.max(56, createMenuPlanKinds.length * 44 + 12),
+          height: Math.max(112, createMenuPlanKinds.length * 44 + 56),
         },
         { width: window.innerWidth, height: window.innerHeight },
       )
     : null;
   const contextMenuScope = scopeContextMenu ? scopesById.get(scopeContextMenu.scopeId) ?? null : null;
 
+  const createActions = createMenuScope ? createMenuPlanKinds.map((planKind) => {
+    const isCreatingKind = creatingScopeId === createMenuScope.id && creatingPlanKind === planKind;
+    const canCreatePlan = !isLoading && !error && createMenuScope.projects.some(isProjectPlanActionable);
+    return (
+      <button
+        key={planKind}
+        type="button"
+        role="menuitem"
+        disabled={isBusy || Boolean(creatingScopeId) || !canCreatePlan}
+        onClick={() => void createPlan(createMenuScope, planKind)}
+        className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
+      >
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-muted/65 text-muted-foreground">
+          <Icon
+            name={isCreatingKind ? 'loader' : getPlanKindIconName(planKind)}
+            size={12}
+            className={cn(isCreatingKind && 'animate-spin text-primary')}
+          />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-foreground">
+            {planKind === 'feature' ? agsdlT('agsdl.design.createSystem', { defaultValue: 'Create a system' }) : planKindLabel(planKind)}
+          </span>
+          <span className="block text-[10px] text-muted-foreground">
+            {planKind === 'feature' ? agsdlT('agsdl.design.createSystemHelp', { defaultValue: 'Start from scratch or use a blueprint.' }) : planKindHelp(planKind)}
+          </span>
+        </span>
+      </button>
+    );
+  }) : [];
   const scopeCreateMenuPortal = scopeCreateMenu && createMenuScope && createMenuPosition && typeof document !== 'undefined'
     ? createPortal(
         <div
           role="menu"
           aria-label={t('architect.projectNavigator.newPlan', 'Nouveau plan')}
           className="fixed z-[90] w-60 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-2xl"
-          style={{ top: createMenuPosition.top, left: createMenuPosition.left }}
+          style={{ top: createMenuPosition.top, left: createMenuPosition.left, maxHeight: `calc(100vh - ${createMenuPosition.top + 12}px)`, overflowY: 'auto' }}
           data-architect-scope-menu
           data-architect-scope-create-menu
         >
-          {createMenuPlanKinds.map((planKind) => {
-            const isCreatingKind = creatingScopeId === createMenuScope.id && creatingPlanKind === planKind;
-            const canCreatePlan = !isLoading && !error && createMenuScope.projects.some(isProjectPlanActionable);
-            return (
-              <button
-                key={planKind}
-                type="button"
-                role="menuitem"
-                disabled={isBusy || Boolean(creatingScopeId) || !canCreatePlan}
-                onClick={() => void createPlan(createMenuScope, planKind)}
-                className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-muted/65 text-muted-foreground">
-                  <Icon
-                    name={isCreatingKind ? 'loader' : getPlanKindIconName(planKind)}
-                    size={12}
-                    className={cn(isCreatingKind && 'animate-spin text-primary')}
-                  />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium text-foreground">
-                    {planKindLabel(planKind)}
-                  </span>
-                  <span className="block truncate text-[10px] text-muted-foreground">
-                    {planKindHelp(planKind)}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
+          {createActions.filter((_, index) => createMenuPlanKinds[index] === 'feature')}
+          {createMenuPlanKinds.some(kind => kind !== 'feature') && <details className="mt-1 border-t border-border pt-1">
+            <summary className="cursor-pointer rounded-md px-2 py-2 text-[11px] text-muted-foreground hover:bg-accent">
+              {agsdlT('agsdl.design.otherPlanTypes', { defaultValue: 'Other plan types' })}
+            </summary>
+            {createActions.filter((_, index) => createMenuPlanKinds[index] !== 'feature')}
+          </details>}
         </div>,
         document.body,
       )

@@ -3,9 +3,11 @@ import { agsdlSessionKey, useAgsdlStore } from "../../stores/useAgsdlStore";
 import { list, object, readDocument, sourceAt, text } from "./document";
 import { AGSDL_EXAMPLES, createExample, type AgsdlExample } from "./examples";
 import type { AgsdlChange } from "../../types/agsdl";
+import { readDesign } from "./design";
+import { useProviderStore } from "../../stores/useProviderStore";
 
 export const AGSDL_AUTHORING_INSTRUCTION =
-  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel is a read-only visualization of this document. You own all graph edits. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
+  "For AgSDL process design or editing, read agsdl_get with the plan_id and target_branch (storageTargetBranch) from this conversation. Follow its authoring guide, edit through agsdl_update using the returned revision, and report scoped diagnostics. The right panel visualizes this document; focused manual edits share the same versioned session. Handle structural changes through the authoring tools. Explain changed missions, data transfers and routes in plain language. Document authoring does not execute agents.";
 
 const guide = {
   contract: "agsdl-0.1.0",
@@ -16,7 +18,11 @@ const guide = {
   graph:
     "G is a closed sequential graph with entry, typed inputs and outputs, invoke/condition/approval/end steps. Routes reference step ids. An invoke declares agent, interface, operation, context, bindings, success and failure. End success outputs must satisfy graph outputs. Loops, parallelism and nesting are outside G 0.1.0.",
   runtime:
-    "R defines explicit configurations and agent bindings. Engine identifiers are open values. Set runtime.selected only when requested. Preserve explicit null and absence. Structural validation does not certify execution readiness.",
+    "Macro is the execution engine for systems designed here. Use engine {identity:'macro',version:'1'} and parameters.providerId/modelId from macro_models for newly configured agent bindings. Preserve other parameters and explicit selections. Foreign imported bindings remain readable; ask before converting their semantics. Tools and MCP access require explicit declarations and bindings, never infer grants from local availability. Structural validation does not certify execution readiness.",
+  design:
+    "Architect designs reusable systems, with one plan conversation per system for now. root.annotations.macroDesign is optional Macro design metadata: {version:1,kind:'system'|'blueprint',purpose:string,context:string,rules:[{id,title,instructions}],requirements:[{id,label,description,value,targetPath?}],origin?:{planId,name,revision}}. Keep ids stable. Empty requirement values are information still needed. Read supplied values and shared context, then explicitly apply them to the appropriate instructions, bindings and resources. These annotations are design intent, not runtime enforcement. Translate process rules into supported graph checks/approval steps or report unsupported checks; never claim that a prompt alone enforces a gate. Preserve template provenance and unknown metadata. A draft can remain incomplete while the user refines it.",
+  presentation:
+    "Use concise responsibility titles. Keep full instructions in their owning declarations. Group related agents only when useful with annotations.macroGroup:string on Agent definitions, a shared human-readable group title. G steps are closed records; never add annotations directly to a graph step. For per-step display names, descriptions or groups, use the owning ControlFlow definition.annotations.macroSteps[step.id] with title, description or macroGroup. Keep executable agent instructions in Agent/Instructions declarations. This is a reversible presentation grouping, not a subgraph or execution node. Do not create nodes for generic entry/result or add fake data transfers. Change existing identities only when necessary so the user can review updates in place.",
   scope:
     "Plan metadata only; no system execution or dependency network retrieval. Examples initialize empty documents with unconfigured engines. Attached annex bytes are preserved separately. Give agents descriptive titles and describe input/output contracts; bindings must identify actual provenance, never infer data transfer from execution order. Preserve migration metadata and report any unmapped legacy behavior.",
 };
@@ -126,6 +132,10 @@ export async function handleAgsdlToolCall(params: {
       ? sourceAt(session.source, pointer)
       : session.source;
   const limit = 48_000;
+  let designContext: unknown;
+  try { if (session.source) designContext = readDesign(session.source); }
+  catch (error) { designContext = { error: String(error) }; }
+  const providerState = useProviderStore.getState();
   return JSON.stringify({
     plan_id: target.planId,
     target_branch: target.branchName,
@@ -165,6 +175,11 @@ export async function handleAgsdlToolCall(params: {
     })),
     error: session.error,
     authoring_guide: pointer ? undefined : guide,
+    design_context: pointer ? undefined : designContext,
+    macro_models: pointer ? undefined : providerState.providers.filter(provider => provider.isEnabled !== false).map(provider => ({
+      providerId: provider.id, name: provider.name,
+      models: (providerState.modelsByProvider[provider.id] ?? []).filter(model => model.isEnabled !== false).map(model => ({ modelId: model.id, name: model.name })),
+    })),
     examples: session.source ? undefined : AGSDL_EXAMPLES,
   });
 }

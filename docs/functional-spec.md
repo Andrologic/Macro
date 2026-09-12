@@ -170,27 +170,22 @@ Un projet appartient à un groupe de projets.
 
 ### 6.4 Plan
 
-Un plan est l'unité principale de travail en mode Architect.
+Un plan est l’unité de conception en mode Architect. Il contient une conversation
+et le système AgSDL construit dans cette conversation. Les anciennes stratégies
+et leurs données d’exécution restent disponibles pour la migration et le suivi
+des tâches historiques.
 
-Un plan contient :
-- une conversation dédiée qui capture l'intention et les clarifications
-- la stratégie générée directement depuis cette conversation et le contexte du projet
-- la structure prédictive de branches associée à cette stratégie
-- les artefacts de relais produits par les tâches planifiées pour transmettre de l'information aux tâches dépendantes
+Le système décrit des responsabilités, des instructions, des échanges et des
+règles. Il peut être conçu progressivement, puis enregistré comme blueprint.
+Un blueprint est une copie réutilisable contenant les éléments à adapter au
+projet. L’adaptation crée une copie indépendante dans un autre plan ; elle
+conserve la provenance du modèle. Pour cette étape, un système conserve une
+seule conversation de conception, et les blueprints utilisent la persistance
+des plans existants.
 
-Un plan sert à définir une vague de travail cohérente.
-
-Exemples typiques :
-- une grosse fonctionnalité
-- une vague d'améliorations ciblée
-- un lot de livraison cohérent
-
-Plusieurs plans peuvent exister en parallèle pour un même groupe de projets.
-
-Plusieurs plans peuvent aussi être actifs en parallèle si leur exécution peut progresser simultanément.
-
-Lorsqu'un plan est terminé, il est archivé.
-Un plan archivé reste consultable pour l'audit et l'historique, mais n'est plus destiné à être modifié.
+Plusieurs plans peuvent coexister pour un projet ou un groupe. Concevoir le
+processus ne constitue pas son exécution. Les états historiques des plans
+continuent d’être conservés ; un plan archivé reste consultable.
 
 ### 6.5 Nœud de stratégie
 
@@ -256,30 +251,19 @@ Le mode `Debug` ne fait plus partie de l'application ni de la spécification fon
 
 ### 7.1 Mode Architect
 
-Le mode Architect est le mode de planification et de structuration.
+Le mode Architect sert à concevoir des systèmes agentiques avec l’IA. La
+conversation recueille l’intention, le contexte et les précisions ; le panneau
+droit permet de comprendre le processus et d’inspecter ses composants.
 
-Son objectif est de permettre à l'utilisateur de :
-- exprimer une intention dans la conversation du plan
-- définir ou affiner le périmètre du travail
-- répondre à des questions ciblées lorsque des informations importantes manquent
-- demander explicitement la génération d'une stratégie
-- valider la structure d'exécution attendue
+L’utilisateur peut commencer de zéro, adapter un système existant ou utiliser
+un blueprint. Il peut modifier localement les instructions et la configuration
+prise en charge. Les changements de structure passent principalement par la
+conversation. L’objectif, le contexte partagé, les règles et les informations
+à compléter sont consultables dans la fiche de conception du système.
 
-Le mode Architect constitue le cœur méthodologique de Macro.
-
-Fonctionnellement, il correspond au moment où un senior ou un lead technique briefe une équipe avant exécution.
-
-Le mode Architect doit supporter :
-- une conversation par plan
-- l'inspection du code pour enrichir le contexte lorsque cela est utile
-- une stratégie générée par l'IA depuis la conversation et le contexte du projet
-- la déclaration d'artefacts critiques attendus par tâche
-- une visualisation des dépendances et de la structure prédictive
-- la validation d'un plan
-- la préparation automatique de la structure d'exécution après validation
-
-Le mode Architect n'est pas un simple mode descriptif.
-Il doit préparer concrètement la suite de l'implémentation.
+Les contrôles de document et les champs à compléter accompagnent la conception
+progressive. Ils ne certifient pas l’exécution. Macro est le moteur retenu pour
+les agents ; l’adaptateur d’exécution du graphe reste un chantier distinct.
 
 #### Visualisation AgSDL
 
@@ -288,6 +272,8 @@ conserve sa place centrale. L’agent peut modifier le document ; une modale per
 aussi de modifier le nom, les instructions et les propriétés prises en charge d’un
 composant dans un plan en brouillon. Les outils, ressources et contrats restent
 dans des sections repliées ; les références partagées conservent leur propriétaire.
+Le canvas propose une lecture de l’enchaînement ou des échanges déclarés. Des
+groupes explicitement nommés peuvent être repliés, sans changer le processus.
 Le canvas montre les participants, les relations déclarées, les conditions et
 les étapes d’approbation. Les interfaces du système et les terminaux de fin ne
 créent pas de nœuds. Le bouton de détails dans l’en-tête donne accès au point de

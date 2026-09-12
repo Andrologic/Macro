@@ -19,6 +19,9 @@ afterEach(() => {
 
 describe("AgSDL viewer", () => {
   const mount = async (source = createExample("feature")) => {
+    // Document validation is tested in the service suite. Keep explicitly injected
+    // diagnostics stable while testing the modal's asynchronous retry behavior.
+    spyOn(useAgsdlStore.getState(), "validate").mockResolvedValue(undefined);
     useAgsdlStore.setState({ sessions: { [key]: {
       source, annexes: {}, version: "v1", persistedRevision: 1,
       dirty: false, saving: false, status: "draft", history: [], future: [], reports: [], error: null,
