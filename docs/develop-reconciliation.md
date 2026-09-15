@@ -80,3 +80,12 @@ without the local writer mutex. Restoring that mutex keeps the released atomic
 replacement and post-publication durability semantics, while serializing competing
 writers. All 20 update tests then passed, including generation fencing and
 interprocess publication locking.
+
+## Checkpoint integrity follow-up
+
+Applied the reviewed checkpoint commit `8991d4bb` after the reconciliation merge.
+The combined implementation preserves the released frozen index/snapshot and
+cancellation budget while verifying commit and tree hashes as well as blobs.
+`cargo test --manifest-path src-tauri/Cargo.toml --locked --offline --lib direct_
+-- --test-threads=1` passed all 94 selected tests on Windows. The executable and
+symbolic-link Unix cases remain unexecuted on this host.

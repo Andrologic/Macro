@@ -11102,9 +11102,18 @@ fn direct_checkpoint_repo_id(repo: &Repository) -> String {
         .to_string()
 }
 
-fn verify_direct_checkpoint_blob(
+fn direct_checkpoint_mode_kind(mode: u32) -> Option<git2::ObjectType> {
+    match mode {
+        0o040000 => Some(git2::ObjectType::Tree),
+        0o100644 | 0o100755 | 0o120000 => Some(git2::ObjectType::Blob),
+        _ => None,
+    }
+}
+
+fn verify_direct_checkpoint_object_hash(
     repo: &Repository,
     oid: Oid,
+    expected_kind: git2::ObjectType,
     operation: &str,
     cancellation: Option<&Arc<AtomicBool>>,
     budget: &mut DirectCheckpointVerificationBudget,
@@ -11116,9 +11125,9 @@ fn verify_direct_checkpoint_blob(
     let (mut reader, size, kind) = odb.reader(oid).map_err(|error| {
         BackendError::git_object_missing(error, Some(oid.to_string()), Some(operation.to_string()))
     })?;
-    if kind != git2::ObjectType::Blob {
+    if kind != expected_kind {
         return Err(BackendError::DirectCheckpointCorrupt {
-            message: "Macro's internal review checkpoint contains an invalid file object."
+            message: "Macro's internal review checkpoint contains an invalid object type."
                 .to_string(),
             checkpoint_id: direct_checkpoint_repo_id(repo),
             object_id: Some(oid.to_string()),
@@ -11135,7 +11144,7 @@ fn verify_direct_checkpoint_blob(
     }
     budget.remaining_bytes -= size;
     let mut hasher = Sha1::new();
-    hasher.update(format!("blob {size}\0").as_bytes());
+    hasher.update(format!("{} {size}\0", kind.str()).as_bytes());
     let mut bytes_read_total = 0usize;
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -11158,9 +11167,27 @@ fn verify_direct_checkpoint_blob(
         Oid::from_bytes(hasher.finalize().as_slice()).map_err(|error| BackendError::Git {
             message: format!("Failed to verify direct checkpoint object identity: {error}"),
         })?;
+    validate_direct_checkpoint_object_identity(
+        repo,
+        oid,
+        operation,
+        size,
+        bytes_read_total,
+        actual_oid,
+    )
+}
+
+fn validate_direct_checkpoint_object_identity(
+    repo: &Repository,
+    oid: Oid,
+    operation: &str,
+    size: usize,
+    bytes_read_total: usize,
+    actual_oid: Oid,
+) -> Result<()> {
     if bytes_read_total != size || actual_oid != oid {
         return Err(BackendError::DirectCheckpointCorrupt {
-            message: "Macro's internal review checkpoint contains an altered file object."
+            message: "Macro's internal review checkpoint contains an altered Git object."
                 .to_string(),
             checkpoint_id: direct_checkpoint_repo_id(repo),
             object_id: Some(oid.to_string()),
@@ -11171,6 +11198,23 @@ fn verify_direct_checkpoint_blob(
         });
     }
     Ok(())
+}
+
+fn verify_direct_checkpoint_blob(
+    repo: &Repository,
+    oid: Oid,
+    operation: &str,
+    cancellation: Option<&Arc<AtomicBool>>,
+    budget: &mut DirectCheckpointVerificationBudget,
+) -> Result<()> {
+    verify_direct_checkpoint_object_hash(
+        repo,
+        oid,
+        git2::ObjectType::Blob,
+        operation,
+        cancellation,
+        budget,
+    )
 }
 
 fn verify_direct_checkpoint_tree(
@@ -11189,7 +11233,14 @@ fn verify_direct_checkpoint_tree(
     if !visited_trees.insert(tree_id) {
         return Ok(());
     }
-    budget.consume_object()?;
+    verify_direct_checkpoint_object_hash(
+        repo,
+        tree_id,
+        git2::ObjectType::Tree,
+        "direct_checkpoint_head_tree",
+        cancellation,
+        budget,
+    )?;
     let tree = repo.find_tree(tree_id).map_err(|error| {
         BackendError::git_object_missing(
             error,
@@ -11203,7 +11254,8 @@ fn verify_direct_checkpoint_tree(
                 message: "Git review was cancelled.".to_string(),
             });
         }
-        if entry.filemode() == 0o160000 {
+        let mode = entry.filemode_raw() as u32;
+        if mode == 0o160000 {
             return Err(BackendError::DirectCheckpointCorrupt {
                 message: "Macro's internal review checkpoint contains an unsupported nested Git repository.".to_string(),
                 checkpoint_id: direct_checkpoint_repo_id(repo),
@@ -11214,7 +11266,7 @@ fn verify_direct_checkpoint_tree(
                 git_output: None,
             });
         }
-        match entry.kind() {
+        match direct_checkpoint_mode_kind(mode) {
             Some(git2::ObjectType::Tree) => verify_direct_checkpoint_tree(
                 repo,
                 entry.id(),
@@ -11235,7 +11287,19 @@ fn verify_direct_checkpoint_tree(
                     budget,
                 )?;
             }
-            _ => {}
+            _ => {
+                return Err(BackendError::DirectCheckpointCorrupt {
+                    message:
+                        "Macro's internal review checkpoint contains an invalid tree entry mode."
+                            .to_string(),
+                    checkpoint_id: direct_checkpoint_repo_id(repo),
+                    object_id: Some(entry.id().to_string()),
+                    operation: Some("direct_checkpoint_head_mode".to_string()),
+                    retry_attempted: false,
+                    accepted_history_at_risk: true,
+                    git_output: None,
+                });
+            }
         }
     }
     Ok(())
@@ -11291,7 +11355,14 @@ fn verify_direct_checkpoint_history_with_budget(
         if !visited.insert(commit_id) {
             continue;
         }
-        budget.consume_object()?;
+        verify_direct_checkpoint_object_hash(
+            repo,
+            commit_id,
+            git2::ObjectType::Commit,
+            "direct_checkpoint_head_commit",
+            cancellation,
+            budget,
+        )?;
         let commit = repo.find_commit(commit_id).map_err(|error| {
             BackendError::git_object_missing(
                 error,
@@ -11373,6 +11444,18 @@ fn verify_direct_checkpoint_index_entries_with_budget(
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return Err(BackendError::Git {
                 message: "Git review was cancelled.".to_string(),
+            });
+        }
+        if direct_checkpoint_mode_kind(entry.mode) != Some(git2::ObjectType::Blob) {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint contains an invalid index entry mode."
+                    .to_string(),
+                checkpoint_id: direct_checkpoint_repo_id(repo),
+                object_id: Some(entry.id.to_string()),
+                operation: Some("direct_checkpoint_index_mode".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: false,
+                git_output: None,
             });
         }
         if entry.flags & 0x3000 != 0 {
@@ -18767,7 +18850,46 @@ mod tests {
         assert_eq!(entry.filemode(), 0o120000);
         let blob = repo.find_blob(entry.id()).expect("link blob");
         assert_eq!(blob.content(), b"missing-pending-target");
+        fs::remove_file(project.join("linked.txt")).expect("remove accepted link");
+        symlink("another-target", project.join("linked.txt")).expect("later link edit");
+        restore_direct_worktree_paths(&repo, &project, vec!["linked.txt".to_string()])
+            .expect("restore accepted link");
+        assert_eq!(
+            fs::read_link(project.join("linked.txt")).expect("restored link target"),
+            Path::new("missing-pending-target")
+        );
         assert!(!project.join(".git").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_checkpoint_captures_and_restores_an_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temp, project, repo) = init_direct_checkpoint();
+        let script = project.join("script.sh");
+        fs::write(&script, "#!/bin/sh\nexit 0\n").expect("script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("executable mode");
+        ensure_direct_checkpoint_head(&repo).expect("capture executable");
+        fs::write(&script, "pending\n").expect("pending edit");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).expect("pending mode");
+
+        restore_direct_worktree_paths(&repo, &project, vec!["script.sh".to_string()])
+            .expect("restore executable");
+
+        assert_eq!(
+            fs::read_to_string(&script).expect("restored script"),
+            "#!/bin/sh\nexit 0\n"
+        );
+        assert_eq!(
+            fs::metadata(&script)
+                .expect("restored mode")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        ensure_direct_checkpoint_integrity(&repo).expect("checkpoint remains readable");
     }
 
     #[test]
@@ -19269,6 +19391,153 @@ mod tests {
             &HashMap::from([("file.txt".to_string(), "v1:regular:test".to_string())]),
         )
         .expect("the frozen snapshot matches the restored checkpoint revision");
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_rejects_incorrect_hash_or_length() {
+        let (_temp, _project_path, repo) = init_direct_checkpoint();
+        for (kind, operation) in [
+            (git2::ObjectType::Commit, "direct_checkpoint_head_commit"),
+            (git2::ObjectType::Tree, "direct_checkpoint_head_tree"),
+            (git2::ObjectType::Blob, "direct_checkpoint_head_blob"),
+        ] {
+            // Exercise the digest comparison without altering the object database.
+            let expected = Oid::hash_object(kind, b"original").expect("expected digest");
+            let changed = Oid::hash_object(kind, b"modified").expect("different digest");
+            for (actual, length) in [(changed, 8), (expected, 7)] {
+                let error = validate_direct_checkpoint_object_identity(
+                    &repo, expected, operation, 8, length, actual,
+                )
+                .expect_err("mismatched identity or length must be rejected");
+                assert!(matches!(
+                    error,
+                    BackendError::DirectCheckpointCorrupt {
+                        object_id: Some(ref object_id),
+                        operation: Some(ref reported_operation),
+                        accepted_history_at_risk: true,
+                        ..
+                    } if object_id == &expected.to_string() && reported_operation == operation
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_preserves_supported_file_modes() {
+        let (_temp, _project_path, repo) = init_direct_checkpoint();
+        let blob_id = repo.blob(b"content\n").expect("file contents");
+        let link_id = repo.blob(b"regular.txt").expect("link target");
+        let mut subtree = repo.treebuilder(None).expect("subtree builder");
+        subtree
+            .insert("nested.txt", blob_id, 0o100644)
+            .expect("nested file");
+        let subtree_id = subtree.write().expect("subtree");
+        let mut builder = repo.treebuilder(None).expect("tree builder");
+        builder
+            .insert("regular.txt", blob_id, 0o100644)
+            .expect("regular file");
+        builder
+            .insert("script.sh", blob_id, 0o100755)
+            .expect("executable file");
+        builder
+            .insert("link.txt", link_id, 0o120000)
+            .expect("symbolic link");
+        builder
+            .insert("directory", subtree_id, 0o040000)
+            .expect("directory");
+        let tree = repo
+            .find_tree(builder.write().expect("tree"))
+            .expect("read tree");
+        let signature = git2::Signature::now("Macro", "macro@local").expect("signature");
+        repo.commit(Some("HEAD"), &signature, &signature, "baseline", &tree, &[])
+            .expect("baseline commit");
+        let mut index = repo.index().expect("index");
+        index.read_tree(&tree).expect("populate complete index");
+        index.write().expect("persist index");
+
+        ensure_direct_checkpoint_integrity(&repo).expect("all supported modes remain readable");
+        for mode in [0, 0o100600, 0o100664, 0o140000, 0o160000] {
+            assert_eq!(direct_checkpoint_mode_kind(mode), None, "{mode:o}");
+        }
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_counts_commit_tree_and_blob_bytes() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let commit = repo.head().expect("head").peel_to_commit().expect("commit");
+        let tree = commit.tree().expect("tree");
+        let blob_id = tree.get_path(Path::new("file.txt")).expect("file").id();
+        let odb = repo.odb().expect("object database");
+        let total_bytes = [commit.id(), tree.id(), blob_id]
+            .into_iter()
+            .map(|oid| odb.read_header(oid).expect("object header").0)
+            .sum::<usize>();
+        let mut budget = DirectCheckpointVerificationBudget {
+            remaining_bytes: total_bytes,
+            remaining_objects: 3,
+        };
+
+        assert_eq!(
+            verify_direct_checkpoint_history_with_budget(&repo, None, &mut budget)
+                .expect("verify all object hashes within the exact budget"),
+            commit.id()
+        );
+        assert_eq!(budget.remaining_bytes, 0);
+        assert_eq!(budget.remaining_objects, 0);
+
+        let mut short_budget = DirectCheckpointVerificationBudget {
+            remaining_bytes: total_bytes - 1,
+            remaining_objects: 3,
+        };
+        assert!(matches!(
+            verify_direct_checkpoint_history_with_budget(&repo, None, &mut short_budget),
+            Err(BackendError::FilesystemFileTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn direct_checkpoint_object_verification_checks_type_and_cancellation() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let commit = repo.head().expect("head").peel_to_commit().expect("commit");
+        let mut budget = DirectCheckpointVerificationBudget::new();
+        let error = verify_direct_checkpoint_object_hash(
+            &repo,
+            commit.id(),
+            git2::ObjectType::Tree,
+            "direct_checkpoint_head_tree",
+            None,
+            &mut budget,
+        )
+        .expect_err("a commit is not a tree");
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                object_id: Some(ref object_id),
+                operation: Some(ref operation),
+                accepted_history_at_risk: true,
+                ..
+            } if object_id == &commit.id().to_string()
+                && operation == "direct_checkpoint_head_tree"
+        ));
+
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let error = verify_direct_checkpoint_object_hash(
+            &repo,
+            commit.id(),
+            git2::ObjectType::Commit,
+            "direct_checkpoint_head_commit",
+            Some(&cancelled),
+            &mut budget,
+        )
+        .expect_err("cancelled verification must stop before reading content");
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "Git review was cancelled."
+        ));
     }
 
     #[test]
