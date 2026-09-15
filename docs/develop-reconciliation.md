@@ -89,3 +89,14 @@ cancellation budget while verifying commit and tree hashes as well as blobs.
 `cargo test --manifest-path src-tauri/Cargo.toml --locked --offline --lib direct_
 -- --test-threads=1` passed all 94 selected tests on Windows. The executable and
 symbolic-link Unix cases remain unexecuted on this host.
+
+## Preview workflow follow-up
+
+Applied reviewed commit `3f8afe6d`. The preview version step explicitly uses Bash
+on Windows, with a validator regression test. The focused validator test and
+`bun run ci:workflows` passed after integration.
+
+The differential `bun run ci:pre-push` gate passed on the checkpoint integration
+commit, covering 147 related test files, ESLint on 111 files, versions, tracked
+binaries, workflows, updater configuration, translations, and Rust formatting.
+Run it again on the final preview integration commit before handoff.

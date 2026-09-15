@@ -284,6 +284,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Apply preview version
+        shell: bash
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: bun dev/version/bump.mjs "$VERSION"

@@ -211,6 +211,27 @@ describe('GitHub workflow validation', () => {
     expect(errors.some((error) => error.includes('PE architecture'))).toBe(true);
   });
 
+  test.each([undefined, 'pwsh'])('rejects preview version expansion with shell %s', (shell) => {
+    const errors = validateWorkflowDocument({
+      name: 'Preview',
+      on: { workflow_dispatch: {} },
+      permissions: { contents: 'read' },
+      jobs: {
+        build: {
+          'runs-on': '${{ matrix.runner }}',
+          steps: [{
+            name: 'Apply preview version',
+            shell,
+            env: { VERSION: '${{ needs.validate.outputs.version }}' },
+            run: 'bun dev/version/bump.mjs "$VERSION"',
+          }],
+        },
+      },
+    }, '.github/workflows/preview.yml');
+
+    expect(errors.some((error) => error.includes('environment variables work on Windows runners'))).toBe(true);
+  });
+
   test('requires channel workflows to use the shared publisher', () => {
     const errors = validateWorkflowDocument({
       name: 'Publish update channel',
