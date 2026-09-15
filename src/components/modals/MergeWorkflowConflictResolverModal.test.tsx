@@ -24,10 +24,16 @@ const gitStatusMock = mock(async () => ({
 }));
 const conflictFile: GitConflictFileDto = {
   path: 'src/conflict.ts',
-  base: { exists: true, content: 'base' },
-  ours: { exists: true, content: 'ours' },
-  theirs: { exists: true, content: 'theirs' },
-  worktree: { exists: true, content: '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>>' },
+  base: { exists: true, content: 'base', sizeBytes: 4, isBinary: false, tooLarge: false },
+  ours: { exists: true, content: 'ours', sizeBytes: 4, isBinary: false, tooLarge: false },
+  theirs: { exists: true, content: 'theirs', sizeBytes: 6, isBinary: false, tooLarge: false },
+  worktree: {
+    exists: true,
+    content: '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>>',
+    sizeBytes: 43,
+    isBinary: false,
+    tooLarge: false,
+  },
   isBinary: false,
   tooLarge: false,
 };
@@ -237,7 +243,7 @@ describe('MergeWorkflowConflictResolverModal', () => {
   it('preserves a clean worktree draft when one already exists', async () => {
     gitReadConflictFileMock.mockImplementation(async () => ({
       ...conflictFile,
-      worktree: { exists: true, content: 'manual clean resolution' },
+      worktree: { ...conflictFile.worktree, content: 'manual clean resolution', sizeBytes: 23 },
     }));
 
     await act(async () => {
@@ -369,7 +375,7 @@ describe('MergeWorkflowConflictResolverModal', () => {
   it('uses all current as a text draft change without staging immediately', async () => {
     gitReadConflictFileMock.mockImplementation(async () => ({
       ...conflictFile,
-      worktree: { exists: true, content: 'manual clean resolution' },
+      worktree: { ...conflictFile.worktree, content: 'manual clean resolution', sizeBytes: 23 },
     }));
 
     await act(async () => {
@@ -458,6 +464,8 @@ describe('MergeWorkflowConflictResolverModal', () => {
     gitReadConflictFileMock.mockImplementation(async () => ({
       ...conflictFile,
       isBinary: true,
+      ours: { ...conflictFile.ours, content: '', sizeBytes: 3_145_728, isBinary: true },
+      theirs: { ...conflictFile.theirs, content: '', sizeBytes: 4_194_304, isBinary: true },
     }));
 
     await act(async () => {
@@ -471,8 +479,15 @@ describe('MergeWorkflowConflictResolverModal', () => {
       await flushRender();
     });
 
+    expect(document.body.querySelector('[data-diff-merge-view="true"]')).toBeNull();
+    expect(document.body.textContent).toContain('This is a binary conflict.');
+    expect(document.body.textContent).toContain('Current');
+    expect(document.body.textContent).toContain('Binary · 3 MB');
+    expect(document.body.textContent).toContain('Incoming');
+    expect(document.body.textContent).toContain('Binary · 4 MB');
+
     const useIncomingButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Use all incoming'));
+      .find((button) => button.textContent?.includes('Choose incoming version'));
     await act(async () => {
       useIncomingButton?.click();
       await flushRender();
@@ -482,6 +497,54 @@ describe('MergeWorkflowConflictResolverModal', () => {
       repoPath: '/repos/project',
       path: 'src/conflict.ts',
       side: 'theirs',
+    });
+  });
+
+  it('presents an oversized text conflict without rendering empty file content', async () => {
+    gitReadConflictFileMock.mockImplementation(async () => ({
+      ...conflictFile,
+      tooLarge: true,
+      ours: {
+        ...conflictFile.ours,
+        content: '',
+        sizeBytes: 1_500_000,
+        tooLarge: true,
+      },
+      theirs: {
+        ...conflictFile.theirs,
+        content: '',
+        sizeBytes: 1_700_000,
+        tooLarge: true,
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository()}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-diff-merge-view="true"]')).toBeNull();
+    expect(document.body.textContent).toContain('This file is too large to edit here.');
+    expect(document.body.textContent).toContain('Text');
+    expect(document.body.textContent).toContain('over editor limit');
+
+    const chooseCurrentButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Choose current version'));
+    await act(async () => {
+      chooseCurrentButton?.click();
+      await flushRender();
+    });
+
+    expect(gitAcceptConflictSideMock).toHaveBeenCalledWith({
+      repoPath: '/repos/project',
+      path: 'src/conflict.ts',
+      side: 'ours',
     });
   });
 

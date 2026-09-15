@@ -7,9 +7,13 @@ import { pathToFileURL } from 'node:url';
 import { UPDATER_TARGETS } from './updater-manifest.mjs';
 
 const STABLE_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+const SEMVER_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
-function normalizedVersion(version) {
+function normalizedVersion(version, channel) {
   const value = String(version ?? '').replace(/^v/, '');
+  if (channel === 'preview') {
+    return SEMVER_VERSION.test(value) && value.includes('-') ? value : null;
+  }
   return STABLE_VERSION.test(value) ? value : null;
 }
 
@@ -26,15 +30,24 @@ function assetNameFromUrl(value) {
   }
 }
 
-export function validateUpdaterManifest(manifest, { repository = 'Andrologic/Macro' } = {}) {
+export function validateUpdaterManifest(
+  manifest,
+  { repository = 'Andrologic/Macro', channel = 'stable' } = {},
+) {
   const errors = [];
   if (!manifest || typeof manifest !== 'object') {
     return ['Manifest must be a JSON object.'];
   }
+  if (channel !== 'stable' && channel !== 'preview') {
+    return [`Unsupported updater channel: ${channel}.`];
+  }
 
-  const version = normalizedVersion(manifest.version);
+  const version = normalizedVersion(manifest.version, channel);
   if (!version) {
-    errors.push(`Manifest version must be a stable x.y.z version; found "${manifest.version}".`);
+    const expected = channel === 'preview'
+      ? 'a semantic version with a prerelease identifier'
+      : 'a stable x.y.z version';
+    errors.push(`Manifest version must be ${expected}; found "${manifest.version}".`);
   }
   if (typeof manifest.notes !== 'string') {
     errors.push('Manifest notes must be a string.');
@@ -76,11 +89,12 @@ export function validateUpdaterManifest(manifest, { repository = 'Andrologic/Mac
       errors.push(`Manifest URL is invalid for ${target}.`);
       continue;
     }
-    const expectedPath = version
-      ? `/${repository}/releases/download/v${version}/`
+    const releaseTag = channel === 'preview' ? 'preview' : version ? `v${version}` : null;
+    const expectedPath = releaseTag
+      ? `/${repository}/releases/download/${releaseTag}/`
       : `/${repository}/releases/download/`;
     if (url.protocol !== 'https:' || url.hostname !== 'github.com' || !url.pathname.startsWith(expectedPath)) {
-      errors.push(`Manifest URL for ${target} must be an HTTPS URL pinned to the v${version || 'x.y.z'} GitHub tag.`);
+      errors.push(`Manifest URL for ${target} must be an HTTPS URL pinned to the ${releaseTag || 'vX.Y.Z'} GitHub tag.`);
     }
     if (!assetNameFromUrl(platform.url)) {
       errors.push(`Manifest URL has no asset name for ${target}.`);
@@ -178,7 +192,7 @@ function argumentValue(args, name) {
 }
 
 function printUsage() {
-  console.log('Usage: bun dev/release/verify-updater.mjs --manifest <path-or-https-url> [--asset-root <path>] [--checksums <path>]');
+  console.log('Usage: bun dev/release/verify-updater.mjs --manifest <path-or-https-url> [--channel <stable|preview>] [--asset-root <path>] [--checksums <path>]');
 }
 
 async function main() {
@@ -190,7 +204,8 @@ async function main() {
   const source = argumentValue(args, '--manifest');
   if (!source) throw new Error('Argument --manifest is required.');
   const manifest = await readManifest(source);
-  const errors = validateUpdaterManifest(manifest);
+  const channel = argumentValue(args, '--channel') ?? 'stable';
+  const errors = validateUpdaterManifest(manifest, { channel });
   const assetRoot = argumentValue(args, '--asset-root');
   if (assetRoot) {
     errors.push(...verifyLocalUpdaterAssets(manifest, assetRoot, argumentValue(args, '--checksums')));
@@ -200,7 +215,7 @@ async function main() {
     errors.forEach((error) => console.error(`- ${error}`));
     process.exit(1);
   }
-  console.log(`Updater release verification passed for v${normalizedVersion(manifest.version)}.`);
+  console.log(`Updater release verification passed for ${channel} ${normalizedVersion(manifest.version, channel)}.`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

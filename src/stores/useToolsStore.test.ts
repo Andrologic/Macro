@@ -202,6 +202,38 @@ describe('useToolsStore chat toolbox policy', () => {
     }
   });
 
+  it('serializes rapid built-in tool toggles and persists both changes', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    const updateToolSettings = services.updateToolSettings as typeof services.updateToolSettings & {
+      mockImplementationOnce: (implementation: typeof services.updateToolSettings) => void;
+      mock: { calls: Array<[{ tools: Record<string, boolean> }]> };
+    };
+    let releaseFirstWrite: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    updateToolSettings.mockImplementationOnce(async () => firstWrite);
+
+    const firstToggle = useToolsStore.getState().toggleTool('web_search');
+    const secondToggle = useToolsStore.getState().toggleTool('question');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(updateToolSettings.mock.calls).toHaveLength(1);
+    releaseFirstWrite?.();
+    await Promise.all([firstToggle, secondToggle]);
+
+    expect(updateToolSettings.mock.calls).toHaveLength(2);
+    expect(updateToolSettings.mock.calls[1]?.[0].tools).toMatchObject({
+      web_search: false,
+      question: false,
+    });
+    expect(useToolsStore.getState().isToolEnabled('web_search')).toBe(false);
+    expect(useToolsStore.getState().isToolEnabled('question')).toBe(false);
+  });
+
   it('discovers and exposes enabled MCP tools by namespaced id', async () => {
     const { useToolsStore } = await loadUseToolsStore();
 

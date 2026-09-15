@@ -5,7 +5,13 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::sync::watch;
 use tokio::time::timeout;
+
+const WSL_STDIN_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const WSL_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const WSL_COMMAND_STDOUT_MAX_BYTES: usize = 4 * 1024 * 1024;
+const WSL_COMMAND_STDERR_MAX_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WslProjectPath {
@@ -97,7 +103,6 @@ struct BoundedByteCollector {
 
 impl BoundedByteCollector {
     fn new(max_bytes: usize) -> Self {
-        let max_bytes = max_bytes.max(2);
         let tail_limit = max_bytes / 4;
         Self {
             head: Vec::with_capacity(max_bytes.saturating_sub(tail_limit)),
@@ -153,6 +158,59 @@ where
         collector.push(&chunk[..read]);
     }
     Ok(collector.finish())
+}
+
+async fn finish_wsl_output_tasks(
+    mut stdout_task: tokio::task::JoinHandle<std::io::Result<BoundedWslStream>>,
+    mut stderr_task: tokio::task::JoinHandle<std::io::Result<BoundedWslStream>>,
+    drain_timeout: Duration,
+) -> Result<(BoundedWslStream, BoundedWslStream)> {
+    let joined = timeout(drain_timeout, async {
+        tokio::join!(&mut stdout_task, &mut stderr_task)
+    })
+    .await;
+    let (stdout, stderr) = match joined {
+        Ok(joined) => joined,
+        Err(_) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err(BackendError::Git {
+                message: "WSL output drain timed out; inherited output handles were discarded."
+                    .to_string(),
+            });
+        }
+    };
+    let stdout = stdout
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to join WSL stdout reader: {error}"),
+        })?
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to read WSL stdout: {error}"),
+        })?;
+    let stderr = stderr
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to join WSL stderr reader: {error}"),
+        })?
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to read WSL stderr: {error}"),
+        })?;
+    Ok((stdout, stderr))
+}
+
+fn exact_wsl_output(stream: BoundedWslStream, label: &str) -> Result<Vec<u8>> {
+    if stream.truncated() {
+        return Err(BackendError::Git {
+            message: format!(
+                "WSL {label} exceeded its {} byte capture limit.",
+                stream.retained_bytes()
+            ),
+        });
+    }
+    let mut bytes = stream.head;
+    bytes.extend(stream.tail);
+    Ok(bytes)
 }
 
 fn normalize_wsl_linux_path(parts: &[&str]) -> String {
@@ -342,37 +400,135 @@ async fn run_wsl_command_raw(
     for arg in args {
         command.arg(arg);
     }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     if stdin.is_some() {
         command.stdin(Stdio::piped());
     }
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     command.kill_on_drop(true);
-    let mut child = command.spawn().map_err(classify_wsl_launch_error)?;
-    if let Some(input) = stdin {
-        let mut child_stdin = child.stdin.take().ok_or_else(|| BackendError::Filesystem {
-            message: "Failed to open stdin for the WSL command.".to_string(),
-        })?;
-        child_stdin
-            .write_all(&input)
-            .await
-            .map_err(|error| BackendError::Filesystem {
-                message: format!("Failed to write to WSL: {}", error),
-            })?;
-        drop(child_stdin);
-    }
-    let output = timeout(timeout_duration, child.wait_with_output())
-        .await
-        .map_err(|_| BackendError::Git {
-            message: "WSL command timed out.".to_string(),
-        })?
-        .map_err(|error| BackendError::Git {
-            message: format!("WSL command failed: {}", error),
-        })?;
+    let child = command.spawn().map_err(classify_wsl_launch_error)?;
+    let output = wait_for_wsl_child(child, stdin, timeout_duration).await?;
     let output = WslCommandOutput {
         status: output.status,
         stdout: output.stdout,
         stderr: output.stderr,
     };
     Ok(output)
+}
+
+async fn wait_for_wsl_child(
+    child: tokio::process::Child,
+    stdin: Option<Vec<u8>>,
+    timeout_duration: Duration,
+) -> Result<std::process::Output> {
+    wait_for_wsl_child_with_cancellation(
+        child,
+        stdin,
+        WSL_STDIN_WRITE_TIMEOUT,
+        timeout_duration,
+        None,
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn wait_for_wsl_child_with_timeouts(
+    child: tokio::process::Child,
+    stdin: Option<Vec<u8>>,
+    stdin_timeout: Duration,
+    command_timeout: Duration,
+) -> Result<std::process::Output> {
+    wait_for_wsl_child_with_cancellation(child, stdin, stdin_timeout, command_timeout, None).await
+}
+
+pub(crate) async fn wait_for_wsl_child_with_cancellation(
+    mut child: tokio::process::Child,
+    stdin: Option<Vec<u8>>,
+    stdin_timeout: Duration,
+    command_timeout: Duration,
+    mut cancel_rx: Option<watch::Receiver<bool>>,
+) -> Result<std::process::Output> {
+    let stdout = child.stdout.take().ok_or_else(|| BackendError::Git {
+        message: "Failed to capture WSL stdout.".to_string(),
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| BackendError::Git {
+        message: "Failed to capture WSL stderr.".to_string(),
+    })?;
+    let stdout_task = tokio::spawn(read_bounded_stream(stdout, WSL_COMMAND_STDOUT_MAX_BYTES));
+    let stderr_task = tokio::spawn(read_bounded_stream(stderr, WSL_COMMAND_STDERR_MAX_BYTES));
+
+    if let Some(input) = stdin {
+        let mut child_stdin = child.stdin.take().ok_or_else(|| BackendError::Filesystem {
+            message: "Failed to open stdin for the WSL command.".to_string(),
+        })?;
+        let write_result = if let Some(cancel_rx) = cancel_rx.as_mut() {
+            tokio::select! {
+                result = timeout(stdin_timeout, child_stdin.write_all(&input)) => Some(result),
+                _ = cancel_rx.changed() => None,
+            }
+        } else {
+            Some(timeout(stdin_timeout, child_stdin.write_all(&input)).await)
+        };
+        drop(child_stdin);
+        let write_error = match write_result {
+            Some(Ok(Ok(()))) => None,
+            Some(Ok(Err(error))) => Some(BackendError::Filesystem {
+                message: format!("Failed to write to WSL: {error}"),
+            }),
+            Some(Err(_)) => Some(BackendError::Filesystem {
+                message: "WSL stdin write timed out.".to_string(),
+            }),
+            None => Some(BackendError::Validation(
+                "Project operation cancelled.".to_string(),
+            )),
+        };
+        if let Some(error) = write_error {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ =
+                finish_wsl_output_tasks(stdout_task, stderr_task, WSL_OUTPUT_DRAIN_TIMEOUT).await;
+            return Err(error);
+        }
+    }
+
+    let wait_result = if let Some(cancel_rx) = cancel_rx.as_mut() {
+        tokio::select! {
+            result = timeout(command_timeout, child.wait()) => Some(result),
+            _ = cancel_rx.changed() => None,
+        }
+    } else {
+        Some(timeout(command_timeout, child.wait()).await)
+    };
+    let status = match wait_result {
+        Some(Ok(result)) => result.map_err(|error| BackendError::Git {
+            message: format!("WSL command failed: {error}"),
+        })?,
+        Some(Err(_)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ =
+                finish_wsl_output_tasks(stdout_task, stderr_task, WSL_OUTPUT_DRAIN_TIMEOUT).await;
+            return Err(BackendError::Git {
+                message: "WSL command timed out.".to_string(),
+            });
+        }
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ =
+                finish_wsl_output_tasks(stdout_task, stderr_task, WSL_OUTPUT_DRAIN_TIMEOUT).await;
+            return Err(BackendError::Validation(
+                "Project operation cancelled.".to_string(),
+            ));
+        }
+    };
+    let (stdout, stderr) =
+        finish_wsl_output_tasks(stdout_task, stderr_task, WSL_OUTPUT_DRAIN_TIMEOUT).await?;
+    Ok(std::process::Output {
+        status,
+        stdout: exact_wsl_output(stdout, "stdout")?,
+        stderr: exact_wsl_output(stderr, "stderr")?,
+    })
 }
 
 async fn run_wsl_command_bounded_raw(
@@ -411,29 +567,15 @@ async fn run_wsl_command_bounded_raw(
         Err(_) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
+            let _ =
+                finish_wsl_output_tasks(stdout_task, stderr_task, WSL_OUTPUT_DRAIN_TIMEOUT).await;
             return Err(BackendError::Git {
                 message: "WSL command timed out.".to_string(),
             });
         }
     };
-    let stdout = stdout_task
-        .await
-        .map_err(|error| BackendError::Git {
-            message: format!("Failed to join bounded WSL stdout reader: {error}"),
-        })?
-        .map_err(|error| BackendError::Git {
-            message: format!("Failed to read bounded WSL stdout: {error}"),
-        })?;
-    let stderr = stderr_task
-        .await
-        .map_err(|error| BackendError::Git {
-            message: format!("Failed to join bounded WSL stderr reader: {error}"),
-        })?
-        .map_err(|error| BackendError::Git {
-            message: format!("Failed to read bounded WSL stderr: {error}"),
-        })?;
+    let (stdout, stderr) =
+        finish_wsl_output_tasks(stdout_task, stderr_task, WSL_OUTPUT_DRAIN_TIMEOUT).await?;
     Ok(BoundedWslCommandOutput {
         status,
         stdout,
@@ -622,5 +764,117 @@ mod tests {
         assert!(text.starts_with("abcdef"));
         assert!(text.ends_with("ij"));
         assert!(text.contains("omitted 2 bytes"));
+    }
+
+    #[test]
+    fn bounded_wsl_stream_honors_zero_and_one_byte_limits() {
+        let mut zero = BoundedByteCollector::new(0);
+        zero.push(b"abc");
+        let zero = zero.finish();
+        assert_eq!(zero.retained_bytes(), 0);
+        assert_eq!(zero.total_bytes(), 3);
+        assert!(zero.truncated());
+
+        let mut one = BoundedByteCollector::new(1);
+        one.push(b"abc");
+        let one = one.finish();
+        assert_eq!(one.retained_bytes(), 1);
+        assert_eq!(one.total_bytes(), 3);
+        assert!(one.truncated());
+    }
+
+    #[tokio::test]
+    async fn wsl_output_drain_timeout_aborts_inherited_readers() {
+        let stdout_task = tokio::spawn(async {
+            std::future::pending::<std::io::Result<BoundedWslStream>>().await
+        });
+        let stderr_task = tokio::spawn(async {
+            std::future::pending::<std::io::Result<BoundedWslStream>>().await
+        });
+
+        let error = finish_wsl_output_tasks(stdout_task, stderr_task, Duration::from_millis(20))
+            .await
+            .expect_err("inherited readers must not block indefinitely");
+
+        assert!(
+            matches!(error, BackendError::Git { message } if message.contains("drain timed out"))
+        );
+    }
+
+    #[tokio::test]
+    async fn wsl_stdin_write_has_an_independent_timeout() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = background_tokio_command("powershell.exe");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 5"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = background_tokio_command("sh");
+            command.args(["-c", "sleep 5"]);
+            command
+        };
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let child = command.spawn().expect("spawn stdin blocker");
+        let started = tokio::time::Instant::now();
+
+        let error = wait_for_wsl_child_with_timeouts(
+            child,
+            Some(vec![b'x'; 8 * 1024 * 1024]),
+            Duration::from_millis(100),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("stdin write must respect the timeout");
+
+        assert!(
+            matches!(error, BackendError::Filesystem { message } if message.contains("stdin write timed out"))
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn wsl_command_timeout_starts_after_stdin_write() {
+        let test_executable = std::env::current_exe().expect("resolve test executable");
+        let mut command = background_tokio_command(test_executable);
+        command.args([
+            "--ignored",
+            "--exact",
+            "project_path::tests::wsl_delayed_stdin_reader_helper",
+        ]);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let child = command.spawn().expect("spawn delayed stdin reader");
+        let started = tokio::time::Instant::now();
+
+        let error = wait_for_wsl_child_with_timeouts(
+            child,
+            Some(vec![b'x'; 8 * 1024 * 1024]),
+            Duration::from_secs(10),
+            Duration::from_millis(100),
+        )
+        .await
+        .expect_err("command execution must time out after stdin is written");
+
+        assert!(matches!(error, BackendError::Git { message } if message.contains("timed out")));
+        assert!(started.elapsed() >= Duration::from_millis(200));
+        assert!(started.elapsed() < Duration::from_secs(12));
+    }
+
+    #[test]
+    #[ignore]
+    fn wsl_delayed_stdin_reader_helper() {
+        std::thread::sleep(Duration::from_millis(200));
+        std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())
+            .expect("read delayed stdin");
+        std::thread::sleep(Duration::from_secs(5));
     }
 }

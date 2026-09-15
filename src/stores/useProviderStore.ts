@@ -32,6 +32,7 @@ import {
 } from '../services/providerCredentials';
 import { devLogger } from '../utils/devLogger';
 import { MACRO_AI_DEFAULT_MODEL_ID, MACRO_AI_PROVIDER_ID } from '../config/macroAi';
+import { createKeyedSerialQueue } from '../services/serialQueue';
 
 export { isLinkedProviderType, providerHasAuthSession };
 
@@ -90,6 +91,7 @@ let providerConfigMutationVersion = 0;
 const providerSettingsRequestVersionById = new Map<string, number>();
 const providerModelScanGenerationById = new Map<string, number>();
 const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
+const enqueueProviderMutation = createKeyedSerialQueue<string>();
 
 const invalidateProviderModelScans = (providerId: string): number => {
   const nextGeneration = (providerModelScanGenerationById.get(providerId) ?? 0) + 1;
@@ -798,6 +800,11 @@ interface ProviderStore {
   deleteManualModel: (providerId: string, modelId: string) => Promise<void>;
   loadProviderSettings: (providerId: string) => Promise<ProviderSettings | null>;
   updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) => Promise<void>;
+  updateCopilotProvider: (
+    providerId: string,
+    updates: Partial<ProviderConfig>,
+    copilotSendTimeoutMs: number,
+  ) => Promise<void>;
   commitRestoredSelection: (
     selection: {
       providerId: string;
@@ -2258,85 +2265,186 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
-  loadProviderSettings: async (providerId: string) => {
-    const requestVersion = startProviderSettingsRequest(providerId);
-    if (ipcIsTauriAvailable()) {
-      try {
-        const settings = await ipcGetProviderSettings(providerId);
-        const normalized: ProviderSettings = {
-          providerId: settings.provider_id,
-          filterFreeModels: settings.filter_free_models,
-          copilotSendTimeoutMs: settings.copilot_send_timeout_ms,
-        };
-        if (
-          providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
-          !get().providerConfigs.some((provider) => provider.id === providerId)
-        ) {
-          return get().providerSettingsById[providerId] ?? null;
+  loadProviderSettings: (providerId: string) =>
+    enqueueProviderMutation(providerId, async () => {
+      const requestVersion = startProviderSettingsRequest(providerId);
+      if (ipcIsTauriAvailable()) {
+        try {
+          const settings = await ipcGetProviderSettings(providerId);
+          const normalized: ProviderSettings = {
+            providerId,
+            filterFreeModels: settings.filter_free_models,
+            copilotSendTimeoutMs: settings.copilot_send_timeout_ms,
+          };
+          if (
+            providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
+            !get().providerConfigs.some((provider) => provider.id === providerId)
+          ) {
+            return get().providerSettingsById[providerId] ?? null;
+          }
+          set((state) => ({
+            providerSettingsById: { ...state.providerSettingsById, [providerId]: normalized },
+          }));
+          return normalized;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to load provider settings';
+          set({ lastError: message });
+          return null;
         }
-        set((state) => ({
-          providerSettingsById: { ...state.providerSettingsById, [providerId]: normalized },
-        }));
-        return normalized;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to load provider settings';
-        set({ lastError: message });
-        return null;
       }
-    }
 
-    const fallback: ProviderSettings = {
-      providerId,
-      filterFreeModels: false,
-      copilotSendTimeoutMs: null,
-    };
-    if (
-      providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
-      !get().providerConfigs.some((provider) => provider.id === providerId)
-    ) {
-      return get().providerSettingsById[providerId] ?? null;
-    }
-    set((state) => ({
-      providerSettingsById: { ...state.providerSettingsById, [providerId]: fallback },
-    }));
-    return fallback;
-  },
+      const fallback: ProviderSettings = {
+        providerId,
+        filterFreeModels: false,
+        copilotSendTimeoutMs: null,
+      };
+      if (
+        providerSettingsRequestVersionById.get(providerId) !== requestVersion ||
+        !get().providerConfigs.some((provider) => provider.id === providerId)
+      ) {
+        return get().providerSettingsById[providerId] ?? null;
+      }
+      set((state) => ({
+        providerSettingsById: { ...state.providerSettingsById, [providerId]: fallback },
+      }));
+      return fallback;
+    }),
 
-  updateProviderSettings: async (providerId: string, updates: Partial<ProviderSettings>) => {
-    const requestVersion = startProviderSettingsRequest(providerId);
-    const current = get().providerSettingsById[providerId] ?? {
-      providerId,
-      filterFreeModels: false,
-      copilotSendTimeoutMs: null,
-    };
-    const next: ProviderSettings = { ...current, ...updates, providerId };
+  updateProviderSettings: (providerId: string, updates: Partial<ProviderSettings>) =>
+    enqueueProviderMutation(providerId, async () => {
+      const requestVersion = startProviderSettingsRequest(providerId);
+      const current = get().providerSettingsById[providerId] ?? {
+        providerId,
+        filterFreeModels: false,
+        copilotSendTimeoutMs: null,
+      };
+      const next: ProviderSettings = { ...current, ...updates, providerId };
 
-    try {
-      if (tauriIpc.isTauriAvailable()) {
+      try {
+        if (tauriIpc.isTauriAvailable()) {
+          await tauriIpc.updateProviderSettings({
+            providerId,
+            ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
+              ? { filterFreeModels: next.filterFreeModels }
+              : {}),
+            ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
+              ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
+              : {}),
+          });
+        }
+
+        if (providerSettingsRequestVersionById.get(providerId) !== requestVersion) {
+          return;
+        }
+
+        set((state) => ({
+          providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
+        }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to update provider settings';
+        set({ lastError: message });
+        throw error;
+      }
+    }),
+
+  updateCopilotProvider: (providerId, updates, copilotSendTimeoutMs) =>
+    enqueueProviderMutation(providerId, async () => {
+      requireProviderConfigurationIpc();
+      providerConfigMutationVersion += 1;
+      startProviderSettingsRequest(providerId);
+      let persistedSettings: Awaited<ReturnType<typeof ipcGetProviderSettings>>;
+      try {
+        persistedSettings = await ipcGetProviderSettings(providerId);
+      } catch (error) {
+        set({ lastError: getErrorMessage(error, 'Failed to load provider settings') });
+        throw error;
+      }
+      const previousSettings: ProviderSettings = {
+        providerId,
+        filterFreeModels: persistedSettings.filter_free_models,
+        copilotSendTimeoutMs: persistedSettings.copilot_send_timeout_ms,
+      };
+      const nextSettings: ProviderSettings = {
+        ...previousSettings,
+        providerId,
+        copilotSendTimeoutMs,
+      };
+      const persistedUpdates: Partial<ProviderConfig> = { ...updates };
+      delete persistedUpdates.baseUrl;
+      delete persistedUpdates.apiKey;
+
+      try {
         await tauriIpc.updateProviderSettings({
           providerId,
-          ...(Object.prototype.hasOwnProperty.call(updates, 'filterFreeModels')
-            ? { filterFreeModels: next.filterFreeModels }
-            : {}),
-          ...(Object.prototype.hasOwnProperty.call(updates, 'copilotSendTimeoutMs')
-            ? { copilotSendTimeoutMs: next.copilotSendTimeoutMs ?? null }
-            : {}),
+          copilotSendTimeoutMs,
         });
-      }
+        try {
+          await ipcUpdateProviderConfig({
+            id: providerId,
+            name: persistedUpdates.name,
+            providerType: persistedUpdates.providerType,
+            baseUrl: undefined,
+            apiKey: undefined,
+            isLocal: persistedUpdates.isLocal,
+            isEnabled: persistedUpdates.isEnabled,
+          });
+        } catch (configError) {
+          try {
+            await tauriIpc.updateProviderSettings({
+              providerId,
+              copilotSendTimeoutMs: previousSettings.copilotSendTimeoutMs ?? null,
+            });
+          } catch (rollbackError) {
+            throw new Error(
+              `${getErrorMessage(configError, 'Failed to save provider')}. `
+              + `Failed to restore the Copilot timeout: ${getErrorMessage(rollbackError, 'unknown error')}`,
+            );
+          }
+          startProviderSettingsRequest(providerId);
+          set((state) => ({
+            providerSettingsById: {
+              ...state.providerSettingsById,
+              [providerId]: previousSettings,
+            },
+          }));
+          throw configError;
+        }
 
-      if (providerSettingsRequestVersionById.get(providerId) !== requestVersion) {
-        return;
+        startProviderSettingsRequest(providerId);
+        set((state) => {
+          const providerConfigs = state.providerConfigs.map((provider) =>
+            provider.id === providerId
+              ? applyNativeToolCallingToProviderConfig({ ...provider, ...persistedUpdates })
+              : provider
+          );
+          const updatedProvider = providerConfigs.find((provider) => provider.id === providerId);
+          const providers = state.providers.map((provider) =>
+            provider.id === providerId
+              ? applyNativeToolCallingToProvider(
+                  {
+                    ...provider,
+                    name: persistedUpdates.name ?? provider.name,
+                    isEnabled: persistedUpdates.isEnabled ?? provider.isEnabled,
+                  },
+                  updatedProvider?.providerType,
+                )
+              : provider
+          );
+          return {
+            providerConfigs,
+            providerSettingsById: {
+              ...state.providerSettingsById,
+              [providerId]: nextSettings,
+            },
+            ...clearProviderReachability({ ...state, providers }, providerId),
+          };
+        });
+      } catch (error) {
+        const message = getErrorMessage(error, 'Failed to update Copilot provider');
+        set({ lastError: message });
+        throw error;
       }
-
-      set((state) => ({
-        providerSettingsById: { ...state.providerSettingsById, [providerId]: next },
-      }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update provider settings';
-      set({ lastError: message });
-      throw error;
-    }
-  },
+    }),
 
   commitRestoredSelection: async (selection, options) => {
     const { providerId } = selection;
@@ -2539,8 +2647,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     });
   },
 
-  updateProviderConfig: async (id: string, updates: Partial<ProviderConfig>) => {
-    try {
+  updateProviderConfig: (id: string, updates: Partial<ProviderConfig>) =>
+    enqueueProviderMutation(id, async () => {
+      try {
       requireProviderConfigurationIpc();
       providerConfigMutationVersion += 1;
 
@@ -2710,12 +2819,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           },
         }));
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update provider';
-      set({ lastError: message });
-      throw error;
-    }
-  },
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to update provider';
+        set({ lastError: message });
+        throw error;
+      }
+    }),
 
   createProviderConfig: async (
     config: Omit<ProviderConfig, 'id' | 'hasStoredApiKey' | 'apiKeyLoaded' | 'isEnabled'>

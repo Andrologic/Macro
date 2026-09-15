@@ -575,10 +575,18 @@ pub fn run() {
             // Initialize database asynchronously
             tauri::async_runtime::spawn(async move {
                 match db::init_db(&app_handle).await {
-                    Ok(pool) => {
-                        pool_state.set_ready(pool);
-                        tracing::info!("Database initialized successfully");
-                    }
+                    Ok(pool) => match ai::chatgpt::recover_auth_mutations(&pool).await {
+                        Ok(()) => {
+                            pool_state.set_ready(pool);
+                            tracing::info!("Database initialized successfully");
+                        }
+                        Err(error) => {
+                            pool_state.set_failed(error.clone());
+                            tracing::error!(
+                                "Failed to recover durable authentication mutations: {error}"
+                            );
+                        }
+                    },
                     Err(e) => {
                         pool_state.set_failed(e.to_string());
                         tracing::error!("Failed to initialize database: {}", e);
@@ -660,6 +668,7 @@ pub fn run() {
             commands::db_import_messages,
             commands::db_update_message,
             commands::db_delete_messages_after,
+            commands::db_delete_conversation_turn,
             commands::db_trim_conversation_replay,
             commands::db_prepare_conversation_replay,
             commands::db_restore_conversation_replay,
@@ -745,6 +754,13 @@ pub fn run() {
             commands::workspace::workspace_remove_project,
             commands::workspace::workspace_close_project,
             commands::workspace::workspace_debug_reset_project,
+            commands::workspace::workspace_acquire_plan_lifecycle_lock,
+            commands::workspace::workspace_renew_plan_lifecycle_lock,
+            commands::workspace::workspace_release_plan_lifecycle_lock,
+            commands::workspace::workspace_acquire_task_lifecycle_lock,
+            commands::workspace::workspace_renew_task_lifecycle_lock,
+            commands::workspace::workspace_release_task_lifecycle_lock,
+            commands::workspace::workspace_quarantine_legacy_state_lock,
             commands::workspace::workspace_create_manual_feature_draft,
             commands::workspace::workspace_finalize_manual_feature,
             commands::workspace::workspace_bind_manual_feature_direct_checkpoint,
@@ -828,6 +844,7 @@ pub fn run() {
             commands::git::git_checkout,
             commands::git::git_merge_check,
             commands::git::git_merge,
+            commands::git::git_guarded_merge_state,
             commands::git::git_start_merge_resolution,
             commands::git::git_fast_forward,
             commands::git::git_rebase_check,
@@ -866,6 +883,8 @@ pub fn run() {
             commands::git::git_worktree_remove,
             commands::git::git_push,
             commands::git::git_remote_add_origin,
+            commands::git::git_prepare_guarded_branch_sync,
+            commands::git::git_guarded_branch_sync,
             commands::git::git_pull,
             commands::git::macro_branch_ensure,
             commands::git::macro_branch_status,

@@ -1089,6 +1089,7 @@ export type ConversationExecutionPhase =
   | 'preparing'
   | 'overflow_recovery'
   | 'streaming'
+  | 'persisting'
   | 'error';
 
 export interface ConversationRuntimeState {
@@ -1251,6 +1252,8 @@ export interface ChatMessage {
   provider_turn_state?: ProviderTurnState;
   context_refs?: PersistedContextReference[];
   completion_reason?: ChatCompletionReason;
+  persistence_state?: 'failed' | 'retrying';
+  persistence_error?: string;
 }
 
 export interface ProviderReplayEnvelope {

@@ -2,6 +2,7 @@ import { WorktreeDiagnosticsDialog } from './WorktreeDiagnosticsDialog';
 import { getWorktreeDiagnosticTargets, type WorktreeDiagnosticTarget } from '../../services/worktreeDiagnostics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { openPath } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../stores/useAppStore';
@@ -94,6 +95,14 @@ import { toServiceError } from '../../services/contracts/errors';
 import { SearchBar } from '../ui/SearchBar';
 import { filterTasksByQuery } from './taskQueueSearch';
 import { resolveTaskQueueSupervision, selectTaskQueueRequestSignature, type TaskQueueAttention } from '../../services/taskQueueAttention';
+import type { ArchivedTaskCleanupSaga } from '../../services/archivedTaskCleanup';
+import {
+  getLinkedDeletionSagaGeneration,
+  removeLinkedTaskDeletionSaga,
+  startLinkedTaskDeletionSaga,
+  upsertLinkedTaskDeletionSaga,
+  type LinkedTaskDeletionSaga,
+} from '../../services/linkedTaskDeletionSaga';
 
 const ConfirmPromptModal = React.lazy(() =>
   import('../ui/ConfirmPromptModal').then((module) => ({
@@ -214,6 +223,7 @@ type TaskActionKey =
   | 'rename'
   | 'delete'
   | 'archive'
+  | 'cleanup_worktree'
   | 'restore'
   | 'reopen';
 
@@ -730,6 +740,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     publishedStandaloneTasks,
     activateTask,
     createManualFeatureDraft,
+    deleteManualFeatureDraft,
     reserveManualFeatureCreation,
     releaseManualFeatureCreation,
     renameTask,
@@ -739,6 +750,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     reopenTask,
     taskCommandRuns,
     mergeWorkflowRuntimeByTaskId,
+    archivedTaskCleanupByTaskId,
+    cleanupArchivedTask,
     runTaskCommands,
     cancelTaskCommands,
     refreshFromPlan,
@@ -752,6 +765,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     publishedStandaloneTasks: state.publishedStandaloneTasks,
     activateTask: state.activateTask,
     createManualFeatureDraft: state.createManualFeatureDraft,
+    deleteManualFeatureDraft: state.deleteManualFeatureDraft,
     reserveManualFeatureCreation: state.reserveManualFeatureCreation,
     releaseManualFeatureCreation: state.releaseManualFeatureCreation,
     renameTask: state.renameTask,
@@ -761,6 +775,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
     reopenTask: state.reopenTask,
     taskCommandRuns: state.taskCommandRuns,
     mergeWorkflowRuntimeByTaskId: state.mergeWorkflowRuntimeByTaskId,
+    archivedTaskCleanupByTaskId: state.archivedTaskCleanupByTaskId,
+    cleanupArchivedTask: state.cleanupArchivedTask,
     runTaskCommands: state.runTaskCommands,
     cancelTaskCommands: state.cancelTaskCommands,
     refreshFromPlan: state.refreshFromPlan,
@@ -975,6 +991,8 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         : t('implement.manualFeatureUntitled', 'New feature');
     setPendingTaskId(taskId);
     let conversationId: string | null = null;
+    let draftCreationStarted = false;
+    let cleanupSaga: LinkedTaskDeletionSaga | null = null;
 
     try {
       setSelectedTask(taskId);
@@ -985,6 +1003,19 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
         targetGroupId
       );
       conversationId = conversation.id;
+      const now = new Date().toISOString();
+      const preparedCleanupSaga: LinkedTaskDeletionSaga = {
+        taskId,
+        conversationId: conversation.id,
+        phase: 'task_deleting',
+        draft: true,
+        executionTargets: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await startLinkedTaskDeletionSaga(preparedCleanupSaga);
+      cleanupSaga = preparedCleanupSaga;
+      draftCreationStarted = true;
       await createManualFeatureDraft({
         taskId,
         conversationId: conversation.id,
@@ -1012,23 +1043,79 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       if (!(await selectConversation(conversation.id))) {
         throw new Error('Impossible de sélectionner la nouvelle conversation.');
       }
+      await removeLinkedTaskDeletionSaga(
+        taskId,
+        undefined,
+        getLinkedDeletionSagaGeneration({
+          ...preparedCleanupSaga,
+          ownerType: 'task',
+          ownerId: taskId,
+        }),
+      );
+      cleanupSaga = null;
       setShowCreateTaskDialog(false);
     } catch (error) {
-      let cleanupError: unknown = null;
-      if (conversationId) {
+      const cleanupErrors: string[] = [];
+      let taskAbsenceConfirmed = !draftCreationStarted;
+      if (draftCreationStarted) {
         try {
-          await deleteConversation(conversationId, { mode: 'implement' });
+          await deleteManualFeatureDraft(taskId);
+          taskAbsenceConfirmed = true;
         } catch (cleanupFailure) {
-          cleanupError = cleanupFailure;
+          cleanupErrors.push(
+            `La tâche créée n'a pas pu être nettoyée : ${toServiceError(cleanupFailure).message}`,
+          );
+        }
+      }
+      if (conversationId && taskAbsenceConfirmed) {
+        try {
+          if (cleanupSaga) {
+            cleanupSaga = {
+              ...cleanupSaga,
+              phase: 'task_deleted',
+              updatedAt: new Date().toISOString(),
+              lastError: undefined,
+            };
+            await upsertLinkedTaskDeletionSaga(cleanupSaga);
+          }
+          await deleteConversation(conversationId, { mode: 'implement' });
+          if (cleanupSaga) {
+            await removeLinkedTaskDeletionSaga(
+              taskId,
+              cleanupSaga.targetBranch,
+              getLinkedDeletionSagaGeneration({
+                ...cleanupSaga,
+                ownerType: 'task',
+                ownerId: taskId,
+              }),
+            );
+            cleanupSaga = null;
+          }
+        } catch (cleanupFailure) {
+          cleanupErrors.push(
+            `La conversation créée n'a pas pu être nettoyée : ${toServiceError(cleanupFailure).message}`,
+          );
+        }
+      } else if (conversationId && cleanupSaga) {
+        const lastError = cleanupErrors.at(-1);
+        try {
+          cleanupSaga = {
+            ...cleanupSaga,
+            updatedAt: new Date().toISOString(),
+            lastError,
+          };
+          await upsertLinkedTaskDeletionSaga(cleanupSaga);
+        } catch (journalFailure) {
+          cleanupErrors.push(
+            `Le nettoyage en attente n'a pas pu être mis à jour : ${toServiceError(journalFailure).message}`,
+          );
         }
       }
       setSelectedTask(null);
       const message = toServiceError(error).message
         || t('implement.manualFeatureCreateFailed', 'Failed to create manual feature.');
       notify.error(message, {
-        description: cleanupError instanceof Error
-          ? `La conversation créée n'a pas pu être nettoyée : ${cleanupError.message}`
-          : undefined,
+        description: cleanupErrors.length > 0 ? cleanupErrors.join(' ') : undefined,
       });
     } finally {
       releaseManualFeatureCreation(taskId);
@@ -1677,6 +1764,16 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       });
     }
 
+    if (archived && archivedTaskCleanupByTaskId[task.id]) {
+      actions.push({
+        key: 'cleanup_worktree',
+        label: t('implement.cleanupArchivedTaskWorktree', 'Clean up worktree'),
+        icon: 'folder',
+        disabled: taskMutationDisabled,
+        title: taskMutationDisabled ? taskMutationDisabledTitle : undefined,
+      });
+    }
+
     if (!archived && capabilities.canArchive) {
       actions.push({
         key: 'archive',
@@ -1756,6 +1853,22 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       setRenameTarget(task);
       return;
     }
+    if (action === 'cleanup_worktree') {
+      setPendingTaskId(task.id);
+      try {
+        const remaining = await cleanupArchivedTask(task.id);
+        if (remaining) {
+          showArchivedCleanupNotification(remaining);
+        } else {
+          notify.success(
+            t('implement.archivedTaskCleanupComplete', 'Worktree cleanup completed'),
+          );
+        }
+      } finally {
+        setPendingTaskId((current) => (current === task.id ? null : current));
+      }
+      return;
+    }
     if (action === 'archive' || action === 'delete') {
       setConfirmTarget({ task, action });
       return;
@@ -1772,6 +1885,99 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
       setPendingTaskId((current) => (current === task.id ? null : current));
     }
   };
+
+  function showArchivedCleanupNotification(saga: ArchivedTaskCleanupSaga): void {
+    const target = saga.targets.find((candidate) => !candidate.worktreeRemoved || !candidate.branchRemoved)
+      ?? saga.targets[0];
+    if (!target) return;
+    const isBranchOnly = target.worktreeRemoved && !target.branchRemoved;
+    const isDirty = target.state === 'dirty' && !target.worktreeRemoved;
+    const description = isBranchOnly
+      ? t(
+        'implement.archivedTaskBranchCleanupPendingDescription',
+        'The worktree has already been removed, but Macro could not remove {{branch}}. The branch remains in {{path}}.',
+        {
+          branch: target.branchName,
+          path: target.repoPath,
+        },
+      )
+      : isDirty
+      ? t(
+        'implement.archivedTaskDirtyWorktreeDescription',
+        'The task is archived, but {{branch}} still has local changes in {{path}}. Resolve them, then retry cleanup.',
+        {
+          branch: target.branchName,
+          path: target.worktreePath || target.repoPath,
+        },
+      )
+      : t(
+        'implement.archivedTaskCleanupPendingDescription',
+        'The task is archived, but Macro could not finish cleaning {{branch}}. The worktree was preserved at {{path}}.',
+        {
+          branch: target.branchName,
+          path: target.worktreePath || target.repoPath,
+        },
+      );
+    notify.actionRequired(
+      t('implement.archivedTaskCleanupPending', 'Task archived, cleanup pending'),
+      {
+        notificationKey: `archived-task-cleanup:${saga.taskId}`,
+        category: 'task_attention_required',
+        tone: 'warning',
+        duration: 12000,
+        closeButton: true,
+        description,
+        actions: [
+          ...(!target.worktreeRemoved && target.worktreePath
+            ? [{
+              label: t('implement.openWorktree', 'Open worktree'),
+              variant: 'secondary' as const,
+              onClick: () => {
+                void openPath(target.worktreePath!).catch((error) => {
+                  notify.error(
+                    t('implement.openWorktreeFailed', 'Could not open the worktree'),
+                    { description: toServiceError(error).message },
+                  );
+                });
+              },
+            }]
+            : isBranchOnly
+              ? [{
+                label: t('implement.openRepository', 'Open repository'),
+                variant: 'secondary' as const,
+                onClick: () => {
+                  void openPath(target.repoPath).catch((error) => {
+                    notify.error(
+                      t('implement.openRepositoryFailed', 'Could not open the repository'),
+                      { description: toServiceError(error).message },
+                    );
+                  });
+                },
+              }]
+              : []),
+          {
+            label: t('common.retry', 'Retry'),
+            variant: 'primary' as const,
+            onClick: () => {
+              void cleanupArchivedTask(saga.taskId)
+                .then((remaining) => {
+                  if (remaining) {
+                    showArchivedCleanupNotification(remaining);
+                  } else {
+                    notify.success(
+                      t('implement.archivedTaskCleanupComplete', 'Worktree cleanup completed'),
+                    );
+                  }
+                })
+                .catch((error) => {
+                  notify.error(toServiceError(error).message);
+                });
+            },
+          },
+        ],
+      },
+    );
+  }
 
   const visibleTasks = useMemo(() => {
     if (showArchived) {
@@ -2566,7 +2772,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
               confirmTarget.action === 'archive'
                 ? t(
                   'implement.archiveTaskDescription',
-                  'Archive this task, remove its worktree and local branch, and keep its conversation history.'
+                  'Archive this task and keep its conversation history. Macro will remove a clean worktree and preserve it if cleanup needs attention.'
                 )
                 : t(
                   'implement.deleteTaskDescription',
@@ -2592,6 +2798,11 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
                 try {
                   if (confirmTarget.action === 'archive') {
                     await archiveTask(confirmTarget.task.id);
+                    const pendingCleanup = useTaskStore.getState()
+                      .archivedTaskCleanupByTaskId[confirmTarget.task.id];
+                    if (pendingCleanup) {
+                      showArchivedCleanupNotification(pendingCleanup);
+                    }
                   } else {
                     await deleteTask(confirmTarget.task.id);
                   }

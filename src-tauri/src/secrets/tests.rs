@@ -1,5 +1,7 @@
 use super::chatgpt::parse_serialized_chatgpt_secret;
-use super::store::test_store;
+use super::store::{
+    install_migration_failure_after_replace, test_store, with_test_store_file_lock,
+};
 use super::{
     delete_api_key, delete_provider_secret, get_api_key, get_chatgpt_secret, init,
     metadata_for_api_key, set_api_key, set_chatgpt_secret, ChatGptSecret,
@@ -131,6 +133,139 @@ fn init_backs_up_a_legacy_secret_file_before_upgrading_it() {
     assert_eq!(
         get_api_key("openai").expect("migrated secret").as_deref(),
         Some("kept")
+    );
+}
+
+#[test]
+fn init_finishes_a_migration_that_failed_after_replacing_the_canonical_file() {
+    let _guard = super::lock_test_store();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("provider-secrets.json");
+    let legacy = r#"{"version":1,"api_keys":{"openai":"kept"},"chatgpt_sessions":{}}"#;
+    std::fs::write(&path, legacy).expect("legacy secrets");
+    install_migration_failure_after_replace(path.clone());
+
+    let error = init(temp.path()).expect_err("injected migration failure");
+    assert!(error
+        .to_string()
+        .contains("injected secret migration failure after canonical replacement"));
+    assert!(temp
+        .path()
+        .join("provider-secrets.migration-pending.json")
+        .exists());
+    let replaced: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("replaced canonical secrets"))
+            .expect("version 2 canonical JSON");
+    assert_eq!(replaced["version"], serde_json::json!(2));
+
+    init(temp.path()).expect("recover pending secret migration");
+
+    assert!(!temp
+        .path()
+        .join("provider-secrets.migration-pending.json")
+        .exists());
+    assert_eq!(
+        get_api_key("openai").expect("recovered secret").as_deref(),
+        Some("kept")
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("provider-secrets.json.v1.bak"))
+            .expect("migration backup"),
+        legacy
+    );
+}
+
+#[test]
+fn pending_migration_preserves_a_divergent_canonical_store_and_quarantines_its_journal() {
+    let _guard = super::lock_test_store();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("provider-secrets.json");
+    let legacy = r#"{"version":1,"api_keys":{"openai":"old"},"chatgpt_sessions":{}}"#;
+    std::fs::write(&path, legacy).expect("legacy secrets");
+    install_migration_failure_after_replace(path.clone());
+    init(temp.path()).expect_err("inject migration response loss");
+
+    let divergent =
+        r#"{"version":2,"namespaces":{"providers":{"openai":"new"}},"chatgpt_sessions":{}}"#;
+    std::fs::write(&path, divergent).expect("write divergent canonical store");
+
+    init(temp.path()).expect("preserve divergent store");
+
+    assert_eq!(
+        get_api_key("openai")
+            .expect("read divergent key")
+            .as_deref(),
+        Some("new")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("canonical store"),
+        divergent
+    );
+    assert!(!temp
+        .path()
+        .join("provider-secrets.migration-pending.json")
+        .exists());
+    let quarantined = std::fs::read_dir(temp.path())
+        .expect("read quarantine")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with("provider-secrets.migration-pending.json.conflict-"))
+        .collect::<Vec<_>>();
+    assert_eq!(quarantined.len(), 1);
+}
+
+#[test]
+fn independent_secret_store_clients_serialize_read_modify_write_cycles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("provider-secrets.json");
+    let first = test_store(path.clone());
+    let second = test_store(path.clone());
+    let (first_holds_lock_tx, first_holds_lock_rx) = std::sync::mpsc::channel();
+    let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+    let (second_acquired_tx, second_acquired_rx) = std::sync::mpsc::channel();
+
+    let first_writer = std::thread::spawn(move || {
+        with_test_store_file_lock(&first, |store| {
+            store.update_file(|data| {
+                data.api_keys
+                    .insert("first".to_string(), "secret-a".to_string());
+            })?;
+            first_holds_lock_tx.send(()).expect("signal first lock");
+            release_first_rx.recv().expect("release first lock");
+            Ok(())
+        })
+        .expect("first writer");
+    });
+    first_holds_lock_rx.recv().expect("wait for first lock");
+
+    let second_writer = std::thread::spawn(move || {
+        with_test_store_file_lock(&second, |store| {
+            second_acquired_tx.send(()).expect("signal second lock");
+            store.update_file(|data| {
+                data.api_keys
+                    .insert("second".to_string(), "secret-b".to_string());
+            })
+        })
+        .expect("second writer");
+    });
+    assert!(second_acquired_rx
+        .recv_timeout(std::time::Duration::from_millis(150))
+        .is_err());
+    release_first_tx.send(()).expect("release first writer");
+    first_writer.join().expect("join first writer");
+    second_acquired_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("second writer acquired file lock");
+    second_writer.join().expect("join second writer");
+
+    let stored = test_store(path).read_file().expect("read merged store");
+    assert_eq!(
+        stored.api_keys.get("first").map(String::as_str),
+        Some("secret-a")
+    );
+    assert_eq!(
+        stored.api_keys.get("second").map(String::as_str),
+        Some("secret-b")
     );
 }
 

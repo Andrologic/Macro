@@ -88,6 +88,13 @@ const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
 const ACCEPT_MIME_TYPES: &str = "application/json, text/event-stream";
 
+fn matches_mime_type(value: &str, expected: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .is_some_and(|mime_type| mime_type.trim().eq_ignore_ascii_case(expected))
+}
+
 fn session_header_name() -> HeaderName {
     HeaderName::from_static("mcp-session-id")
 }
@@ -790,7 +797,7 @@ impl GuardedStreamableHttpClient {
             let content_type = response_header_value(response.headers(), "content-type");
             let is_sse = content_type
                 .as_deref()
-                .is_some_and(|value| value.starts_with(EVENT_STREAM_MIME_TYPE));
+                .is_some_and(|value| matches_mime_type(value, EVENT_STREAM_MIME_TYPE));
             let body = collect_probe_body(&mut response, is_sse).await?;
             Ok::<_, StreamableHttpError<AdapterError>>(RawHttpResponse {
                 status,
@@ -927,7 +934,7 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
             // negotiation applies its fail-closed rules.
             let json_error = if content_type
                 .as_deref()
-                .is_some_and(|ct| ct.starts_with(JSON_MIME_TYPE))
+                .is_some_and(|ct| matches_mime_type(ct, JSON_MIME_TYPE))
             {
                 parse_json_rpc_error(&body)
             } else {
@@ -954,13 +961,13 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
             return Ok(StreamableHttpPostResponse::Accepted);
         }
         match content_type.as_deref() {
-            Some(ct) if ct.starts_with(EVENT_STREAM_MIME_TYPE) => {
+            Some(ct) if matches_mime_type(ct, EVENT_STREAM_MIME_TYPE) => {
                 Ok(StreamableHttpPostResponse::Sse(
                     limited_sse_stream(response.bytes_stream(), max_sse_event_size),
                     session_from_server,
                 ))
             }
-            Some(ct) if ct.starts_with(JSON_MIME_TYPE) => {
+            Some(ct) if matches_mime_type(ct, JSON_MIME_TYPE) => {
                 let body = collect_bounded_body(&mut response, MAX_HTTP_RESPONSE_BYTES).await?;
                 // Unlike the SDK default, a success JSON body that does not
                 // parse stays an error for requests: silent acceptance would
@@ -1087,7 +1094,7 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
         }
         let content_type = response_header_value(response.headers(), "content-type");
         match content_type.as_deref() {
-            Some(ct) if ct.starts_with(EVENT_STREAM_MIME_TYPE) => {}
+            Some(ct) if matches_mime_type(ct, EVENT_STREAM_MIME_TYPE) => {}
             other => {
                 return Err(StreamableHttpError::UnexpectedContentType(
                     other.map(str::to_owned),
@@ -1251,7 +1258,7 @@ fn classify_probe_status(
         }
         // Some modern servers answer a discover POST with an SSE stream whose
         // first correlated message carries the result (plan §6.2 step 7).
-        if content_type.is_some_and(|ct| ct.starts_with(EVENT_STREAM_MIME_TYPE)) {
+        if content_type.is_some_and(|ct| matches_mime_type(ct, EVENT_STREAM_MIME_TYPE)) {
             return match first_sse_data_payload(payload) {
                 Some(data) => classify_probe_payload(&data, true, expected_id),
                 None => ProbeVerdict::Fatal {
@@ -2037,6 +2044,19 @@ mod tests {
         ] {
             assert!(validate_endpoint(forbidden).await.is_err(), "{forbidden}");
         }
+    }
+
+    #[test]
+    fn content_type_matching_is_case_insensitive_and_parameter_aware() {
+        assert!(matches_mime_type(
+            "Application/JSON; Charset=UTF-8",
+            JSON_MIME_TYPE
+        ));
+        assert!(matches_mime_type(
+            "Text/Event-Stream; charset=utf-8",
+            EVENT_STREAM_MIME_TYPE
+        ));
+        assert!(!matches_mime_type("application/json-seq", JSON_MIME_TYPE));
     }
 
     #[tokio::test]

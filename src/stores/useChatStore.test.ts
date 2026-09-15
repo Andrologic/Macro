@@ -16,6 +16,7 @@ import {
   type ArchitectPlanStatus,
 } from '../services/architectPlanService';
 import { createDeferred } from '../test-utils/deferred';
+import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
 import { registerArchitectLifecycleScenarios } from './__tests__/architectLifecycle.scenarios';
 import { registerArchitectStrategyScenarios } from './__tests__/architectStrategy.scenarios';
@@ -1096,6 +1097,15 @@ const dbSetAppSettingMock = mock(async ({ key, valueJson }: {
 }) => {
   appSettingValues.set(key, valueJson);
 });
+const dbCompareAndSwapAppSettingMock = mock(async ({ key, expectedValueJson, valueJson }: {
+  key: string;
+  expectedValueJson: string | null;
+  valueJson: string;
+}) => {
+  if ((appSettingValues.get(key) ?? null) !== expectedValueJson) return { applied: false };
+  appSettingValues.set(key, valueJson);
+  return { applied: true };
+});
 const dbDeleteAppSettingMock = mock(async (key: string) =>
   appSettingValues.delete(key)
 );
@@ -1301,6 +1311,7 @@ const updateMessageMock = mock(
   ) => undefined
 );
 const deleteMessagesAfterMock = mock(async () => undefined);
+const deleteConversationTurnMock = mock(async () => undefined);
 const dbTrimConversationReplayMock = mock(async () => undefined);
 const dbPrepareConversationReplayMock = mock(async () => undefined);
 const dbRestoreConversationReplayMock = mock(async () => true);
@@ -1848,6 +1859,7 @@ const registerUseChatStoreMocks = async () => {
     deleteConversations: deleteConversationsMock,
     dbGetAppSetting: dbGetAppSettingMock,
     dbSetAppSetting: dbSetAppSettingMock,
+    dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
     dbDeleteAppSetting: dbDeleteAppSettingMock,
     gitBranchList: gitBranchListMock,
     getChatBootstrapSnapshot: getChatBootstrapSnapshotMock,
@@ -1890,6 +1902,7 @@ const registerUseChatStoreMocks = async () => {
 	    fsDelete: fsDeleteMock,
 	    updateMessage: updateMessageMock,
     deleteMessagesAfter: deleteMessagesAfterMock,
+    deleteConversationTurn: deleteConversationTurnMock,
     dbTrimConversationReplay: dbTrimConversationReplayMock,
     dbPrepareConversationReplay: dbPrepareConversationReplayMock,
     dbRestoreConversationReplay: dbRestoreConversationReplayMock,
@@ -2543,6 +2556,7 @@ const useChatStoreScenarioContext = {
   dbUpsertConversationCompactionStateMock,
   dbUpsertArchitectPlanConversationSyncMock,
   deleteConversationMock,
+  deleteConversationTurnMock,
   deleteConversationsMock,
   deleteMessagesAfterMock,
   deleteConversationToolboxStateMock,
@@ -2767,6 +2781,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     appSettingValues.clear();
     dbGetAppSettingMock.mockClear();
     dbSetAppSettingMock.mockClear();
+    dbCompareAndSwapAppSettingMock.mockClear();
     dbDeleteAppSettingMock.mockClear();
     getArchitectPlanActivationPayloadMock.mockClear();
     getArchitectPlanChatMessagesMock.mockClear();
@@ -2837,6 +2852,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     deleteConversationToolboxStateMock.mockClear();
     updateConversationAISelectionMock.mockClear();
     deleteConversationMock.mockClear();
+    deleteConversationTurnMock.mockClear();
     deleteConversationsMock.mockClear();
     updateConversationScopeMock.mockClear();
     updateMessageMock.mockClear();
@@ -2911,6 +2927,112 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('keeps the restored conversation when plan rollback queues context synchronization', async () => {
+    const { useChatStore } = await loadChatStore();
+    await useChatStore.getState().initializeCritical();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(appStoreSubscribers.size).toBeGreaterThan(0);
+    const ensureConversationForCurrentMode =
+      useChatStore.getState().ensureConversationForCurrentMode;
+    const ensureConversationSpy = mock(() =>
+      ensureConversationForCurrentMode());
+    useChatStore.setState({
+      ensureConversationForCurrentMode: ensureConversationSpy,
+    });
+
+    Object.assign(appState, {
+      activeArchitectPlanId: 'plan-b',
+      activePlanContext: {
+        id: 'plan-b',
+        targetBranch: 'develop',
+        status: 'draft',
+      },
+      architectPlanSwitch: {
+        requestId: 8,
+        targetPlanId: 'plan-b',
+        targetBranch: 'develop',
+        status: 'error',
+        startedAt: 2,
+        summaryHint: null,
+        errorMessage: 'Plan activation failed',
+      },
+    });
+    useChatStore.setState({
+      selectedConversationId: null,
+      selectedConversationIdsByMode: { Architect: null },
+      hydrationStatus: 'ready',
+      restoreStatus: 'resolving',
+      activeContextKey: 'Architect::plan::plan-b::develop::group-1::project-1',
+      selectionRequestId: 8,
+      pendingArchitectPlanSwitchRequestId: null,
+      lastError: null,
+    });
+
+    const previousAppState = {
+      activeArchitectPlanId: 'plan-a',
+      activePlanContext: {
+        id: 'plan-a',
+        targetBranch: 'develop',
+        status: 'draft' as const,
+      },
+      architectPlanSwitch: {
+        requestId: 7,
+        targetPlanId: 'plan-a',
+        targetBranch: 'develop',
+        status: 'ready',
+        startedAt: 1,
+        summaryHint: null,
+        errorMessage: null,
+      },
+    };
+    const previousChatState = {
+      selectedConversationId: 'conversation-a',
+      selectedConversationIdsByMode: { Architect: 'conversation-a' },
+      restoreStatus: 'ready' as const,
+      activeContextKey: 'Architect::plan::plan-a::develop::group-1::project-1',
+      selectionRequestId: 5,
+      pendingArchitectPlanSwitchRequestId: null,
+      lastError: 'Previous conversation warning',
+    };
+
+    recoverFailedPlanActivation({
+      previousAppState,
+      previousChatState,
+      invalidateConversationResolution: () =>
+        useChatStore.getState().invalidateConversationResolution(),
+      restoreAppState: (state) => useAppStoreMock.setState(state),
+      getChatSelectionRequestId: () =>
+        useChatStore.getState().selectionRequestId,
+      restoreChatState: (state) => useChatStore.setState(state),
+      error: new Error('Plan activation failed'),
+      openReplicaRepair: () => false,
+      resolveErrorMessage: () => 'Plan activation failed',
+      setError: () => undefined,
+      notifyError: () => undefined,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const state = useChatStore.getState();
+    expect(ensureConversationSpy).toHaveBeenCalledTimes(1);
+    expect(appState.activeArchitectPlanId).toBe('plan-a');
+    expect(appState.activePlanContext).toEqual(previousAppState.activePlanContext);
+    expect(appState.architectPlanSwitch).toEqual(previousAppState.architectPlanSwitch);
+    expect(state.selectedConversationId).toBe('conversation-a');
+    expect(state.selectedConversationIdsByMode).toEqual(
+      previousChatState.selectedConversationIdsByMode,
+    );
+    expect(state.restoreStatus).toBe('ready');
+    expect(state.activeContextKey).toBe(
+      'Architect::plan::plan-a::develop::group-1::project-1'
+    );
+    expect(state.selectionRequestId).toBe(11);
+    expect(state.pendingArchitectPlanSwitchRequestId).toBeNull();
+    expect(state.lastError).toBe('Previous conversation warning');
   });
 
   it('kills an active terminal_run when its conversation generation is stopped', async () => {

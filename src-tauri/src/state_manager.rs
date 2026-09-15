@@ -1,14 +1,16 @@
 use crate::config::atomic_write_json;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const STATE_SCHEMA_VERSION: u32 = 1;
 const STATE_FILE_NAME: &str = "state.json";
+const STATE_LOCK_FILE_NAME: &str = "state.lock";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +39,7 @@ pub(crate) fn validate_backup_state(raw: &[u8]) -> Result<(), String> {
 #[derive(Clone)]
 pub struct StateManager {
     path: Arc<PathBuf>,
+    lock_path: Arc<PathBuf>,
     snapshot: Arc<RwLock<StateSnapshot>>,
     read_only: bool,
 }
@@ -45,6 +48,8 @@ impl StateManager {
     pub fn initialize(app_data_dir: &Path) -> Result<Self, String> {
         fs::create_dir_all(app_data_dir).map_err(|error| error.to_string())?;
         let path = app_data_dir.join(STATE_FILE_NAME);
+        let lock_path = app_data_dir.join(STATE_LOCK_FILE_NAME);
+        let _file_lock = lock_state_file(&lock_path)?;
         let mut read_only = false;
         let snapshot = if path.exists() {
             let raw = fs::read(&path).map_err(|error| error.to_string())?;
@@ -77,17 +82,10 @@ impl StateManager {
         };
         Ok(Self {
             path: Arc::new(path),
+            lock_path: Arc::new(lock_path),
             snapshot: Arc::new(RwLock::new(snapshot)),
             read_only,
         })
-    }
-
-    async fn persist(&self, snapshot: &StateSnapshot) -> Result<(), String> {
-        self.ensure_writable()?;
-        atomic_write_json(
-            self.path.as_path(),
-            &serde_json::to_value(snapshot).map_err(|error| error.to_string())?,
-        )
     }
 
     pub async fn snapshot(&self) -> StateSnapshot {
@@ -97,27 +95,44 @@ impl StateManager {
     pub async fn set(&self, key: String, value: Value) -> Result<StateSnapshot, String> {
         self.ensure_writable()?;
         validate_state_key(&key)?;
-        let mut snapshot = self.snapshot.write().await;
-        snapshot.values.insert(key, value);
-        self.persist(&snapshot).await?;
-        Ok(snapshot.clone())
+        self.mutate(move |snapshot| {
+            snapshot.values.insert(key, value);
+        })
+        .await
     }
 
     pub async fn delete(&self, key: &str) -> Result<StateSnapshot, String> {
         self.ensure_writable()?;
         validate_state_key(key)?;
-        let mut snapshot = self.snapshot.write().await;
-        snapshot.values.remove(key);
-        self.persist(&snapshot).await?;
-        Ok(snapshot.clone())
+        let key = key.to_string();
+        self.mutate(move |snapshot| {
+            snapshot.values.remove(&key);
+        })
+        .await
     }
 
     pub async fn clear(&self) -> Result<StateSnapshot, String> {
         self.ensure_writable()?;
-        let mut snapshot = self.snapshot.write().await;
-        snapshot.values.clear();
-        self.persist(&snapshot).await?;
-        Ok(snapshot.clone())
+        self.mutate(|snapshot| snapshot.values.clear()).await
+    }
+
+    async fn mutate<F>(&self, mutation: F) -> Result<StateSnapshot, String>
+    where
+        F: FnOnce(&mut StateSnapshot) + Send + 'static,
+    {
+        self.ensure_writable()?;
+        let mut published_snapshot = self.snapshot.write().await;
+        let path = self.path.as_ref().clone();
+        let lock_path = self.lock_path.as_ref().clone();
+        let next =
+            tokio::task::spawn_blocking(move || mutate_state_file(&path, &lock_path, mutation))
+                .await
+                .map_err(|error| {
+                    format!("La mise à jour de state.json a été interrompue : {error}")
+                })??;
+
+        *published_snapshot = next.clone();
+        Ok(next)
     }
 
     fn ensure_writable(&self) -> Result<(), String> {
@@ -129,6 +144,56 @@ impl StateManager {
         }
         Ok(())
     }
+}
+
+fn lock_state_file(lock_path: &Path) -> Result<File, String> {
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|error| {
+            format!(
+                "Impossible d’ouvrir le verrou d’état {} : {error}",
+                lock_path.display()
+            )
+        })?;
+    FileExt::lock_exclusive(&file).map_err(|error| {
+        format!(
+            "Impossible de verrouiller l’état {} : {error}",
+            lock_path.display()
+        )
+    })?;
+    Ok(file)
+}
+
+fn mutate_state_file<F>(path: &Path, lock_path: &Path, mutation: F) -> Result<StateSnapshot, String>
+where
+    F: FnOnce(&mut StateSnapshot),
+{
+    let _file_lock = lock_state_file(lock_path)?;
+    let mut snapshot = if path.exists() {
+        let raw = fs::read(path).map_err(|error| error.to_string())?;
+        let snapshot = serde_json::from_slice::<StateSnapshot>(&raw).map_err(|error| {
+            format!("state.json est invalide et ne peut pas être modifié : {error}")
+        })?;
+        if snapshot.schema_version > STATE_SCHEMA_VERSION {
+            return Err(
+                "state.json utilise une version plus récente et reste en lecture seule."
+                    .to_string(),
+            );
+        }
+        snapshot
+    } else {
+        StateSnapshot::default()
+    };
+
+    mutation(&mut snapshot);
+    atomic_write_json(
+        path,
+        &serde_json::to_value(&snapshot).map_err(|error| error.to_string())?,
+    )?;
+    Ok(snapshot)
 }
 
 fn validate_state_key(key: &str) -> Result<(), String> {
@@ -202,5 +267,66 @@ mod tests {
 
         assert!(error.contains("lecture seule"));
         assert_eq!(fs::read(&path).expect("preserved state"), original);
+    }
+
+    #[tokio::test]
+    async fn failed_persistence_does_not_publish_the_candidate_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(STATE_FILE_NAME);
+        let manager = StateManager::initialize(temp.path()).expect("state manager");
+        manager
+            .set("kept".to_string(), json!(true))
+            .await
+            .expect("seed state");
+
+        fs::remove_file(&path).expect("remove state file");
+        fs::create_dir(&path).expect("block the atomic replacement");
+
+        manager
+            .set("uncommitted".to_string(), json!(true))
+            .await
+            .expect_err("persistence must fail");
+
+        let snapshot = manager.snapshot().await;
+        assert_eq!(snapshot.values.get("kept"), Some(&json!(true)));
+        assert!(!snapshot.values.contains_key("uncommitted"));
+    }
+
+    #[tokio::test]
+    async fn independent_managers_reload_the_locked_snapshot_before_each_mutation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = StateManager::initialize(temp.path()).expect("first state manager");
+        let second = StateManager::initialize(temp.path()).expect("second state manager");
+
+        first
+            .set("first".to_string(), json!(1))
+            .await
+            .expect("first write");
+        let after_second_write = second
+            .set("second".to_string(), json!(2))
+            .await
+            .expect("second write from a stale manager");
+        assert_eq!(after_second_write.values.get("first"), Some(&json!(1)));
+        assert_eq!(after_second_write.values.get("second"), Some(&json!(2)));
+
+        let after_stale_delete = first
+            .delete("second")
+            .await
+            .expect("delete from a stale manager");
+        assert_eq!(after_stale_delete.values.get("first"), Some(&json!(1)));
+        assert!(!after_stale_delete.values.contains_key("second"));
+
+        second
+            .set("third".to_string(), json!(3))
+            .await
+            .expect("third write from a stale manager");
+        let after_stale_clear = first.clear().await.expect("clear from a stale manager");
+        assert!(after_stale_clear.values.is_empty());
+
+        let persisted: StateSnapshot = serde_json::from_slice(
+            &fs::read(temp.path().join(STATE_FILE_NAME)).expect("state file"),
+        )
+        .expect("valid state");
+        assert!(persisted.values.is_empty());
     }
 }

@@ -224,4 +224,76 @@ describe('macroMetadataCoordinator', () => {
 
     expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
   });
+
+  it('keeps a pending mutation when the metadata commit fails', async () => {
+    const commit = mock(async () => {
+      throw new Error('injected metadata commit failure');
+    });
+    const failingDeps = {
+      ...deps,
+      tauri: {
+        isTauriAvailable: () => true,
+        macroBranchCommitIfDirty: commit,
+      },
+    };
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'chat_synced',
+      importance: 'light',
+    }, failingDeps);
+
+    await expect(flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: ['/repos/web'],
+    }, failingDeps)).rejects.toThrow('injected metadata commit failure');
+
+    await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: ['/repos/web'],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledWith({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): sync project state',
+    });
+  });
+
+  it('keeps a pending mutation when the backend reports a dirty failed commit', async () => {
+    const reportedFailure = mock(async () => createMacroResult({
+      state: 'failed',
+      is_dirty: true,
+      committed: false,
+      reason: 'unknown_error',
+      next_action: 'retry',
+      error: 'injected metadata commit failure',
+    }));
+    const reportingDeps = {
+      ...deps,
+      tauri: {
+        isTauriAvailable: () => true,
+        macroBranchCommitIfDirty: reportedFailure,
+      },
+    };
+    recordMacroMetadataMutation({
+      workspacePath: '/repos/web',
+      kind: 'chat_synced',
+      importance: 'light',
+    }, reportingDeps);
+
+    const first = await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: ['/repos/web'],
+    }, reportingDeps);
+    expect(first[0]?.error).toBe('injected metadata commit failure');
+
+    await flushMacroMetadata({
+      trigger: 'explicit_checkpoint',
+      workspacePaths: ['/repos/web'],
+    }, deps);
+
+    expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledWith({
+      workspacePath: '/repos/web',
+      message: 'chore(@macro): sync project state',
+    });
+  });
 });
