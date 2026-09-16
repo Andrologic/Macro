@@ -227,7 +227,13 @@ fn update_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Impossible d'ouvrir le cache des mises à jour : {error}"))
 }
 
-fn target_matches_persisted_channel(app_data_dir: &Path, target: &str) -> Result<bool, String> {
+pub(crate) fn target_matches_persisted_channel(
+    app_data_dir: &Path,
+    target: &str,
+) -> Result<bool, String> {
+    if crate::local_backup::has_pending_startup_work(app_data_dir)? {
+        return Ok(false);
+    }
     let value = crate::state_manager::read_persisted_value(app_data_dir, "updateChannel")?;
     let channel = match value {
         None => "stable",
