@@ -5796,7 +5796,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const currentMcpRuntime = currentConfiguration
                       ? await resolveScopedMcpRuntime(currentConfiguration.mcpServers, toolsState.mcpServers ?? [], { projectIds: currentConfiguration.projectIds })
                       : { servers: toolsState.mcpServers ?? [], tools: toolsState.getEnabledMCPTools() };
-                    currentToolEnabled = currentToolEnabled && currentMcpRuntime.tools.some((tool) => tool.id === normalizedToolName);
+                    currentToolEnabled = currentToolEnabled && currentMcpRuntime.tools.some((tool) =>
+                      tool.id === normalizedToolName && tool.name === mcpApprovalTool?.name && tool.serverId === mcpApprovalTool?.serverId);
                     executionMcpServers = currentMcpRuntime.servers;
                     executionMcpProjectIds = currentConfiguration?.projectIds ?? currentExecutionContext.projectIds;
                   } else {
