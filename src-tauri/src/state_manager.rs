@@ -54,12 +54,12 @@ impl StateManager {
         let snapshot = if path.exists() {
             let raw = fs::read(&path).map_err(|error| error.to_string())?;
             match serde_json::from_slice::<StateSnapshot>(&raw) {
-                Ok(snapshot) if snapshot.schema_version <= STATE_SCHEMA_VERSION => snapshot,
+                Ok(snapshot) if snapshot.schema_version == STATE_SCHEMA_VERSION => snapshot,
                 Ok(_) => {
                     read_only = true;
                     tracing::warn!(
                         path = %path.display(),
-                        "state.json utilise une version future et ne sera pas modifié"
+                        "state.json utilise une version non prise en charge et ne sera pas modifié"
                     );
                     StateSnapshot::default()
                 }
@@ -138,7 +138,7 @@ impl StateManager {
     fn ensure_writable(&self) -> Result<(), String> {
         if self.read_only {
             return Err(
-                "state.json utilise une version plus récente et reste en lecture seule."
+                "state.json utilise une version non prise en charge et reste en lecture seule."
                     .to_string(),
             );
         }
@@ -177,9 +177,9 @@ where
         let snapshot = serde_json::from_slice::<StateSnapshot>(&raw).map_err(|error| {
             format!("state.json est invalide et ne peut pas être modifié : {error}")
         })?;
-        if snapshot.schema_version > STATE_SCHEMA_VERSION {
+        if snapshot.schema_version != STATE_SCHEMA_VERSION {
             return Err(
-                "state.json utilise une version plus récente et reste en lecture seule."
+                "state.json utilise une version non prise en charge et reste en lecture seule."
                     .to_string(),
             );
         }
@@ -270,6 +270,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsupported_older_state_version_is_never_overwritten() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(STATE_FILE_NAME);
+        fs::write(&path, br#"{"schemaVersion":0,"values":{"kept":true}}"#).expect("older state");
+        let original = fs::read(&path).expect("original state");
+        let manager = StateManager::initialize(temp.path()).expect("state manager");
+
+        let error = manager
+            .set("windowWidth".to_string(), json!(1280))
+            .await
+            .expect_err("older state must remain read-only");
+
+        assert!(error.contains("lecture seule"));
+        assert_eq!(fs::read(&path).expect("preserved state"), original);
+        assert!(validate_backup_state(&original).is_err());
+    }
+
+    #[tokio::test]
     async fn failed_persistence_does_not_publish_the_candidate_snapshot() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join(STATE_FILE_NAME);
@@ -278,18 +296,36 @@ mod tests {
             .set("kept".to_string(), json!(true))
             .await
             .expect("seed state");
+        manager
+            .set("removed".to_string(), json!(true))
+            .await
+            .expect("seed removable state");
 
-        fs::remove_file(&path).expect("remove state file");
-        fs::create_dir(&path).expect("block the atomic replacement");
+        let before = fs::read(&path).expect("original state");
+        // Keep the readable source intact, but fail the publication lock after
+        // the candidate has been mutated.
+        let publication_lock = path.with_extension("json.lock");
+        fs::remove_file(&publication_lock).expect("remove publication lock");
+        fs::create_dir(&publication_lock).expect("block publication");
 
         manager
             .set("uncommitted".to_string(), json!(true))
             .await
             .expect_err("persistence must fail");
+        manager
+            .delete("removed")
+            .await
+            .expect_err("delete persistence must fail");
+        manager
+            .clear()
+            .await
+            .expect_err("clear persistence must fail");
 
         let snapshot = manager.snapshot().await;
         assert_eq!(snapshot.values.get("kept"), Some(&json!(true)));
+        assert_eq!(snapshot.values.get("removed"), Some(&json!(true)));
         assert!(!snapshot.values.contains_key("uncommitted"));
+        assert_eq!(fs::read(&path).expect("preserved state"), before);
     }
 
     #[tokio::test]

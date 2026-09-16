@@ -380,7 +380,9 @@ impl ConfigManager {
             let approved_etag = etag(&approved);
             if document_etag == approved_etag {
                 durable_pending = None;
-                remove_file_if_exists(&pending_path)?;
+                if let Some(diagnostic) = cleanup_committed_pending(&pending_path, &key) {
+                    runtime_diagnostics.push(diagnostic);
+                }
             } else if durable_pending.as_ref().is_some_and(|pending| {
                 pending.approved_etag == approved_etag
                     && pending.pending.proposed_etag == document_etag
@@ -729,6 +731,9 @@ impl ConfigManager {
         };
         let _file_guard = lock_document_file_async(stored.path.clone()).await?;
         let (approved, disk_pending) = read_runtime_state(self.root(), &key)?;
+        // A retained cleanup file is not a new request for consent.
+        let disk_pending =
+            disk_pending.filter(|pending| pending.pending.proposed_document != approved);
         if let Some(durable) = disk_pending {
             let mut state = self.state.write().await;
             if let Some(current) = state.documents.get_mut(&key) {
@@ -1046,6 +1051,9 @@ impl ConfigManager {
             })?;
         let _file_guard = lock_document_file_async(current.path.clone()).await?;
         let (approved, disk_pending) = read_runtime_state(self.root(), &key)?;
+        // A retained cleanup file is not a new request for consent.
+        let disk_pending =
+            disk_pending.filter(|pending| pending.pending.proposed_document != approved);
 
         let raw = fs::read(&current.path).map_err(|error| {
             ConfigApiError::new(
@@ -1349,7 +1357,8 @@ impl ConfigManager {
                 },
             )?;
         }
-        remove_file_if_exists(&pending_document_path(self.root(), &key))?;
+        let cleanup_diagnostic =
+            cleanup_committed_pending(&pending_document_path(self.root(), &key), &key);
 
         let mut state = self.state.write().await;
         let stored = state.documents.get_mut(&key).ok_or_else(|| {
@@ -1363,6 +1372,7 @@ impl ConfigManager {
         stored.last_valid_value = durable.pending.proposed_document;
         stored.invalid = false;
         stored.diagnostics.clear();
+        stored.diagnostics.extend(cleanup_diagnostic);
         let document = to_document(&key, stored);
         state.pending_changes.remove(id);
         if durable.apply_modes.iter().any(|mode| mode == "restart") {
@@ -1812,6 +1822,19 @@ fn remove_file_if_exists(path: &Path) -> Result<(), ConfigApiError> {
             format!("Impossible de supprimer {} : {error}", path.display()),
         )),
     }
+}
+
+// The approved file is the commit point. Cleanup failure cannot undo consent
+// already persisted; retain the pending file for cleanup during the next load.
+fn cleanup_committed_pending(path: &Path, key: &DocumentKey) -> Option<ConfigDiagnostic> {
+    remove_file_if_exists(path).err().map(|error| ConfigDiagnostic {
+        document: key.kind,
+        scope: key.scope.clone(),
+        path: None,
+        code: "config.pending.cleanup_deferred".to_string(),
+        message: format!("La configuration est enregistrée. Le nettoyage sera repris au prochain chargement : {}", error.message),
+        severity: "warning".to_string(),
+    })
 }
 
 fn backup_corrupt_runtime_file(path: &Path) {
@@ -2573,24 +2596,52 @@ mod tests {
         let failure_marker = pending_path.with_extension("fail-remove");
         fs::write(&failure_marker, b"fail").expect("inject pending cleanup failure");
 
-        let error = manager
+        let document = manager
             .accept_pending_change(&pending.id)
             .await
-            .expect_err("pending cleanup must fail after promotion");
-        assert_eq!(error.code, "config.runtime.remove_failed");
+            .expect("promotion is committed despite deferred cleanup");
+        assert!(document
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "config.pending.cleanup_deferred"));
+        assert_eq!(
+            manager.get_snapshot(&[]).await.expect("snapshot").effective["tools"]["riskLevel"],
+            json!("yolo")
+        );
         assert_eq!(
             read_json_value(&approved_document_path(manager.root(), &key))
                 .expect("promoted baseline")["riskLevel"],
             json!("yolo")
         );
         assert!(pending_path.exists());
-        assert_eq!(manager.list_pending_changes().await.len(), 1);
-
-        fs::remove_file(failure_marker).expect("release pending cleanup");
-        manager
-            .accept_pending_change(&pending.id)
+        assert!(manager.list_pending_changes().await.is_empty());
+        let reloaded = manager
+            .reload(
+                ConfigDocumentKind::Tools,
+                ConfigScope::User,
+                ConfigChangeSource::ExternalEditor,
+            )
             .await
-            .expect("resume accepted pending cleanup");
+            .expect("reload accepted document");
+        assert!(reloaded.pending.is_none());
+        assert!(manager.list_pending_changes().await.is_empty());
+
+        let restarted = ConfigManager::initialize(manager.root().to_path_buf())
+            .await
+            .expect("restart with deferred cleanup");
+        assert_eq!(
+            restarted
+                .get_snapshot(&[])
+                .await
+                .expect("restarted snapshot")
+                .effective["tools"]["riskLevel"],
+            json!("yolo")
+        );
+        assert!(restarted.list_pending_changes().await.is_empty());
+        fs::remove_file(failure_marker).expect("release pending cleanup");
+        let manager = ConfigManager::initialize(manager.root().to_path_buf())
+            .await
+            .expect("restart cleans pending file");
 
         assert!(!pending_path.exists());
         assert!(manager.list_pending_changes().await.is_empty());

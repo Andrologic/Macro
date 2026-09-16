@@ -7336,7 +7336,7 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
     let mut access_repair_report = ProjectRegistryRepairReportDto::default();
     refresh_unknown_wsl_project_access(&mut state, &mut access_repair_report).await;
     let raw_state = state.clone();
-    let (sanitized_state, mut repair_report) = sanitize_workspace_state(workspace_path, state);
+    let (mut sanitized_state, mut repair_report) = sanitize_workspace_state(workspace_path, state);
     repair_report.project_access_states_updated +=
         access_repair_report.project_access_states_updated;
     if repair_report.has_repairs() {
@@ -7374,7 +7374,11 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
             );
             return Ok(Some(loaded_state));
         } else {
-            persist_state(metadata_root, &sanitized_state).await?;
+            let Some(current) = persist_loaded_state_repair(metadata_root, sanitized_state).await?
+            else {
+                return Ok(None);
+            };
+            sanitized_state = current;
         }
     }
 
@@ -7383,6 +7387,31 @@ async fn load_state(workspace_path: &Path, metadata_root: &Path) -> Result<Optio
     recover_physical_workspace_project_if_missing(&mut loaded_state, workspace_path, metadata_root);
 
     Ok(Some(loaded_state))
+}
+
+// A load can await an access probe while another writer commits. Publish repairs
+// only against the captured revision; on conflict return the current state.
+async fn persist_loaded_state_repair(
+    metadata_root: &Path,
+    mut candidate: WorkspaceState,
+) -> Result<Option<WorkspaceState>> {
+    let metadata_root = metadata_root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let _file_guard = lock_workspace_state_file(&metadata_root)?;
+        let Some(current) = load_raw_state_sync(&metadata_root)? else {
+            return Ok(None);
+        };
+        if current.workspace_revision != candidate.workspace_revision {
+            return Ok(Some(current));
+        }
+        candidate.workspace_revision = candidate.workspace_revision.saturating_add(1);
+        persist_state_sync(&metadata_root, &candidate)?;
+        Ok(Some(candidate))
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Workspace repair task failed: {error}"),
+    })?
 }
 
 async fn load_raw_state(metadata_root: &Path) -> Result<Option<WorkspaceState>> {
@@ -12418,6 +12447,72 @@ mod tests {
             0
         );
         assert!(state.manual_features.is_empty());
+    }
+
+    #[tokio::test]
+    async fn loaded_state_repair_preserves_newer_mutations() {
+        for change in ["archive", "remove", "move"] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let metadata_root = temp.path();
+            let mut candidate = WorkspaceState {
+                workspace_revision: 7,
+                standalone_projects: vec![make_project("project-kept", "/tmp/original")],
+                ..WorkspaceState::default()
+            };
+            let mut current = candidate.clone();
+            current.workspace_revision = 8;
+            match change {
+                "archive" => current.standalone_projects[0].status = "archived".into(),
+                "remove" => current.standalone_projects.clear(),
+                _ => current.standalone_projects[0].path = "/tmp/moved".into(),
+            }
+            persist_state_sync(metadata_root, &current).expect("newer mutation committed");
+            let before = stdfs::read(metadata_root.join(WORKSPACE_STATE_FILE)).expect("before");
+            candidate.standalone_projects[0].git_setup_state = PROJECT_GIT_SETUP_READY.into();
+            let loaded = persist_loaded_state_repair(metadata_root, candidate)
+                .await
+                .expect("stale repair")
+                .expect("current state");
+            assert_eq!(loaded.workspace_revision, 8);
+            assert_eq!(
+                loaded.standalone_projects.len(),
+                current.standalone_projects.len()
+            );
+            if let Some(project) = loaded.standalone_projects.first() {
+                assert_eq!(project.status, current.standalone_projects[0].status);
+                assert_eq!(project.path, current.standalone_projects[0].path);
+            }
+            assert_eq!(
+                stdfs::read(metadata_root.join(WORKSPACE_STATE_FILE)).expect("after"),
+                before
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn loaded_state_repair_advances_revision_and_does_not_recreate_deleted_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let candidate = WorkspaceState {
+            workspace_revision: 7,
+            ..WorkspaceState::default()
+        };
+        assert!(persist_loaded_state_repair(temp.path(), candidate.clone())
+            .await
+            .expect("missing")
+            .is_none());
+        persist_state_sync(temp.path(), &candidate).expect("seed");
+        let loaded = persist_loaded_state_repair(temp.path(), candidate)
+            .await
+            .expect("repair")
+            .expect("state");
+        assert_eq!(loaded.workspace_revision, 8);
+        assert_eq!(
+            load_raw_state_sync(temp.path())
+                .expect("read")
+                .expect("state")
+                .workspace_revision,
+            8
+        );
     }
 
     #[tokio::test]

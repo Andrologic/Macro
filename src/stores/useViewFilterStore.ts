@@ -33,6 +33,7 @@ const mutationVersions: Record<FilterField, number> = {
   architectShowArchived: 0,
   chatShowArchived: 0,
 };
+let hydrationVersions: Record<FilterField, number> | null = null;
 let hydrationPromise: Promise<void> | null = null;
 const persistenceQueues = new Map<PrefKey, Promise<void>>();
 
@@ -93,12 +94,8 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
       mutationVersions[field] += 1;
     });
     set((state) => ({ implement: update(state.implement) }));
-    if (pendingHydration) {
-      void pendingHydration.then(() => {
-        persist(PREF_KEYS.IMPLEMENT_VIEW_FILTERS, get().implement);
-      });
-      return;
-    }
+    // Successful hydration persists the merged state, including these edits.
+    if (pendingHydration) return;
     persist(PREF_KEYS.IMPLEMENT_VIEW_FILTERS, get().implement);
   };
 
@@ -106,12 +103,8 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
     const pendingHydration = get().isHydrated ? null : get().hydrate();
     mutationVersions.architectShowArchived += 1;
     set({ architect: next });
-    if (pendingHydration) {
-      void pendingHydration.then(() => {
-        persist(PREF_KEYS.ARCHITECT_VIEW_FILTERS, get().architect);
-      });
-      return;
-    }
+    // Successful hydration persists the merged state, including these edits.
+    if (pendingHydration) return;
     persist(PREF_KEYS.ARCHITECT_VIEW_FILTERS, next);
   };
 
@@ -119,12 +112,8 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
     const pendingHydration = get().isHydrated ? null : get().hydrate();
     mutationVersions.chatShowArchived += 1;
     set({ chat: next });
-    if (pendingHydration) {
-      void pendingHydration.then(() => {
-        persist(PREF_KEYS.CHAT_VIEW_FILTERS, get().chat);
-      });
-      return;
-    }
+    // Successful hydration persists the merged state, including these edits.
+    if (pendingHydration) return;
     persist(PREF_KEYS.CHAT_VIEW_FILTERS, next);
   };
 
@@ -137,7 +126,9 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
       if (get().isHydrated) return;
       if (hydrationPromise) return hydrationPromise;
 
-      const versions = { ...mutationVersions };
+      // Keep the first baseline across retries so local edits survive a failed read.
+      hydrationVersions ??= { ...mutationVersions };
+      const versions = hydrationVersions;
       hydrationPromise = Promise.all([
         loadPersistedPreference(PREF_KEYS.IMPLEMENT_VIEW_FILTERS),
         loadPersistedPreference(PREF_KEYS.ARCHITECT_VIEW_FILTERS),
@@ -180,28 +171,29 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
           }));
 
           if (
-            persistedImplement !== undefined &&
-            mutationVersions.implementProjectId === versions.implementProjectId &&
-            mutationVersions.implementStatus === versions.implementStatus &&
-            mutationVersions.implementShowArchived === versions.implementShowArchived &&
-            !jsonEqual(persistedImplement, implement)
+            mutationVersions.implementProjectId !== versions.implementProjectId ||
+            mutationVersions.implementStatus !== versions.implementStatus ||
+            mutationVersions.implementShowArchived !== versions.implementShowArchived ||
+            (persistedImplement !== undefined && !jsonEqual(persistedImplement, implement))
           ) {
-            persist(PREF_KEYS.IMPLEMENT_VIEW_FILTERS, implement);
+            persist(PREF_KEYS.IMPLEMENT_VIEW_FILTERS, get().implement);
           }
           if (
-            persistedArchitect !== undefined &&
-            mutationVersions.architectShowArchived === versions.architectShowArchived &&
-            !jsonEqual(persistedArchitect, architect)
+            mutationVersions.architectShowArchived !== versions.architectShowArchived ||
+            (persistedArchitect !== undefined && !jsonEqual(persistedArchitect, architect))
           ) {
-            persist(PREF_KEYS.ARCHITECT_VIEW_FILTERS, architect);
+            persist(PREF_KEYS.ARCHITECT_VIEW_FILTERS, get().architect);
           }
           if (
-            persistedChat !== undefined &&
-            mutationVersions.chatShowArchived === versions.chatShowArchived &&
-            !jsonEqual(persistedChat, chat)
+            mutationVersions.chatShowArchived !== versions.chatShowArchived ||
+            (persistedChat !== undefined && !jsonEqual(persistedChat, chat))
           ) {
-            persist(PREF_KEYS.CHAT_VIEW_FILTERS, chat);
+            persist(PREF_KEYS.CHAT_VIEW_FILTERS, get().chat);
           }
+          hydrationVersions = null;
+        })
+        .catch((error: unknown) => {
+          console.warn('View filters could not be hydrated; a later hydration can retry.', error);
         })
         .finally(() => {
           hydrationPromise = null;

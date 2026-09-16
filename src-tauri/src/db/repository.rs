@@ -580,21 +580,19 @@ pub async fn delete_app_setting(pool: &SqlitePool, key: &str) -> DbResult<bool> 
 }
 
 pub async fn toggle_pin_conversation(pool: &SqlitePool, id: &str) -> DbResult<bool> {
-    let row = sqlx::query("SELECT is_pinned FROM conversations WHERE id = ?")
-        .bind(id)
-        .fetch_one(pool)
-        .await?;
+    let row = sqlx::query(
+        r#"
+        UPDATE conversations
+        SET is_pinned = CASE WHEN COALESCE(is_pinned, 0) = 0 THEN 1 ELSE 0 END
+        WHERE id = ?
+        RETURNING is_pinned
+        "#,
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
 
-    let is_pinned: i32 = row.get("is_pinned");
-    let new_pinned = if is_pinned == 0 { 1 } else { 0 };
-
-    sqlx::query("UPDATE conversations SET is_pinned = ? WHERE id = ?")
-        .bind(new_pinned)
-        .bind(id)
-        .execute(pool)
-        .await?;
-
-    Ok(new_pinned != 0)
+    Ok(row.get::<i32, _>("is_pinned") != 0)
 }
 
 // ============ GIT REPOSITORIES ============
@@ -3304,13 +3302,15 @@ pub async fn reconcile_project_registry(
         session_context_updated: false,
     };
 
+    let mut tx = pool.begin().await?;
+
     let conversation_rows = sqlx::query(
         r#"
         SELECT id, group_id, project_id
         FROM conversations
         "#,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     for row in conversation_rows {
@@ -3335,7 +3335,7 @@ pub async fn reconcile_project_registry(
             .bind(&next_group_id)
             .bind(&next_project_id)
             .bind(&id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
             report.conversations_updated += 1;
         }
@@ -3348,7 +3348,7 @@ pub async fn reconcile_project_registry(
         FROM project_context_states
         "#,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     for row in project_context_rows {
@@ -3356,7 +3356,7 @@ pub async fn reconcile_project_registry(
         if !valid_project_ids.contains(&project_id) {
             sqlx::query("DELETE FROM project_context_states WHERE project_id = ?")
                 .bind(&project_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
             report.project_contexts_deleted += 1;
             continue;
@@ -3382,13 +3382,27 @@ pub async fn reconcile_project_registry(
             .bind(&next_group_id)
             .bind(&next_focus_project_id)
             .bind(&project_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
             report.project_contexts_updated += 1;
         }
     }
 
-    let session_context = get_session_context_state(pool).await?;
+    let session_context = sqlx::query(
+        r#"
+        SELECT selected_group_id, selected_project_id, mode, updated_at
+        FROM session_context_state
+        WHERE id = 1
+        "#,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .map(|row| SessionContextStateRecord {
+        selected_group_id: row.get("selected_group_id"),
+        selected_project_id: row.get("selected_project_id"),
+        mode: row.get("mode"),
+        updated_at: row.get("updated_at"),
+    });
     let next_selected_group_id = input
         .selected_group_id
         .filter(|group_id| valid_group_ids.contains(group_id));
@@ -3406,18 +3420,34 @@ pub async fn reconcile_project_registry(
         || current_selected_project_id != next_selected_project_id
     {
         let mode = session_context.and_then(|record| record.mode);
-        upsert_session_context_state(
-            pool,
-            UpsertSessionContextStateInput {
-                selected_group_id: next_selected_group_id,
-                selected_project_id: next_selected_project_id,
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"
+            INSERT INTO session_context_state (
+                id,
+                selected_group_id,
+                selected_project_id,
                 mode,
-            },
+                updated_at
+            )
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                selected_group_id = excluded.selected_group_id,
+                selected_project_id = excluded.selected_project_id,
+                mode = excluded.mode,
+                updated_at = excluded.updated_at
+            "#,
         )
+        .bind(&next_selected_group_id)
+        .bind(&next_selected_project_id)
+        .bind(&mode)
+        .bind(&now)
+        .execute(&mut *tx)
         .await?;
         report.session_context_updated = true;
     }
 
+    tx.commit().await?;
     Ok(report)
 }
 
@@ -4873,5 +4903,120 @@ mod tests {
             .expect("cleaned context");
         assert_eq!(cleaned.group_id, None);
         assert_eq!(cleaned.focus_project_id, None);
+    }
+
+    #[tokio::test]
+    async fn toggle_pin_conversation_is_atomic_under_concurrent_calls() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Concurrent pin").await;
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+        let mut tasks = Vec::new();
+
+        for _ in 0..2 {
+            let pool = pool.clone();
+            let conversation_id = conversation.id.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                toggle_pin_conversation(&pool, &conversation_id).await
+            }));
+        }
+
+        barrier.wait().await;
+        let first = tasks
+            .remove(0)
+            .await
+            .expect("first toggle task")
+            .expect("first toggle");
+        let second = tasks
+            .remove(0)
+            .await
+            .expect("second toggle task")
+            .expect("second toggle");
+
+        assert_ne!(first, second);
+        assert!(
+            !get_conversation(&pool, &conversation.id)
+                .await
+                .expect("read conversation")
+                .expect("conversation")
+                .is_pinned
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_rolls_back_when_a_late_repair_fails() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Reconcile rollback").await;
+        sqlx::query(
+            "UPDATE conversations SET group_id = 'group-stale', project_id = 'project-stale' WHERE id = ?",
+        )
+        .bind(&conversation.id)
+        .execute(&pool)
+        .await
+        .expect("seed stale conversation links");
+        upsert_project_context_state(
+            &pool,
+            UpsertProjectContextStateInput {
+                project_id: "project-valid".to_string(),
+                group_id: Some("group-stale".to_string()),
+                focus_project_id: Some("project-stale".to_string()),
+                last_plan_id: None,
+                last_task_id: None,
+                architect_conversation_id: None,
+                implement_conversation_id: None,
+            },
+        )
+        .await
+        .expect("seed stale project context");
+        sqlx::query(
+            r#"
+            CREATE TRIGGER fail_project_context_reconcile
+            BEFORE UPDATE OF group_id, focus_project_id ON project_context_states
+            WHEN OLD.project_id = 'project-valid'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected reconcile failure');
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("install repair failure trigger");
+
+        let result = reconcile_project_registry(
+            &pool,
+            ReconcileProjectRegistryInput {
+                valid_group_ids: vec!["group-valid".to_string()],
+                valid_project_ids: vec!["project-valid".to_string()],
+                selected_group_id: None,
+                selected_project_id: None,
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        let conversation_after = get_conversation(&pool, &conversation.id)
+            .await
+            .expect("read conversation after rollback")
+            .expect("conversation after rollback");
+        assert_eq!(conversation_after.group_id.as_deref(), Some("group-stale"));
+        assert_eq!(
+            conversation_after.project_id.as_deref(),
+            Some("project-stale")
+        );
+        let context_after = get_project_context_state(&pool, "project-valid")
+            .await
+            .expect("read context after rollback")
+            .expect("context after rollback");
+        assert_eq!(context_after.group_id.as_deref(), Some("group-stale"));
+        assert_eq!(
+            context_after.focus_project_id.as_deref(),
+            Some("project-stale")
+        );
+
+        sqlx::query("DROP TRIGGER fail_project_context_reconcile")
+            .execute(&pool)
+            .await
+            .expect("remove repair failure trigger");
     }
 }

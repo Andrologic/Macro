@@ -127,6 +127,11 @@ complétés par un verrou de fichier interprocessus ; l’ETag est relu sous ce
 verrou avant toute écriture. Le watcher desktop coalesce les événements puis
 rescane les documents chargés et les nouveaux documents projet.
 
+Une acceptation sensible est engagée dès que la baseline approuvée est écrite.
+Si le nettoyage de la proposition échoue ensuite, le résultat reste appliqué,
+avec un diagnostic de nettoyage différé. Le chargement suivant reprend ce
+nettoyage sans présenter une nouvelle demande de consentement.
+
 Chaque tour agent charge un snapshot correspondant à ses identifiants de projet
 et à son projet de focus. Le modèle, le niveau de risque, les outils autorisés
 et les limites issus de ce snapshot sont figés pour toute la durée du tour,
@@ -641,8 +646,11 @@ ni résumé de review supplémentaire n'est persisté.
 
 Ces filtres de liste utilisent des objets versionnés dans `state.json`. Le
 frontend normalise chaque valeur hydratée et revient aux valeurs par défaut
-pour une version inconnue. Les recherches textuelles, les sélections multiples
-et les filtres propres aux boîtes de dialogue ou au terminal restent des états
+pour une version inconnue. Une erreur de lecture native laisse le store non
+hydraté et autorise une nouvelle tentative. Les modifications locales restent
+prioritaires champ par champ lors de cette tentative ; aucune écriture issue
+des valeurs par défaut ne part avant une lecture réussie. Les recherches
+textuelles, les sélections multiples et les filtres propres aux boîtes de dialogue ou au terminal restent des états
 de session non persistés.
 
 ### 10.3 Metadata dans la branche `@macro`

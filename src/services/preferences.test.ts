@@ -95,6 +95,75 @@ describe('preferences JSON configuration adapter', () => {
     removeTauriRuntimeMock();
   });
 
+  it('rejects native write failures without publishing a cache value or change', async () => {
+    installTauriRuntimeMock(mock(async (command) => {
+      if (command === 'state_get_snapshot') return { schemaVersion: 1, values: { windowWidth: 1250 } };
+      if (command === 'state_set_value' || command === 'state_clear') throw new Error('disk unavailable');
+      return undefined;
+    }));
+    const prefs = await loadPreferencesModule();
+    await prefs.loadPreference(prefs.PREF_KEYS.WINDOW_WIDTH);
+    const changed = mock(() => undefined);
+    const failed = mock(() => undefined);
+    const unsubscribe = prefs.subscribePreference(prefs.PREF_KEYS.WINDOW_WIDTH, changed);
+    const unsubscribeErrors = prefs.subscribePreferencePersistenceErrors(failed);
+    await expect(prefs.savePreference(prefs.PREF_KEYS.WINDOW_WIDTH, 1337)).rejects.toThrow('disk unavailable');
+    expect(prefs.getCachedPreference(prefs.PREF_KEYS.WINDOW_WIDTH)).toBe(1250);
+    expect(changed).not.toHaveBeenCalled();
+    expect(failed).toHaveBeenCalledTimes(1);
+    await expect(prefs.clearPreferences()).rejects.toThrow('disk unavailable');
+    expect(prefs.getCachedPreference(prefs.PREF_KEYS.WINDOW_WIDTH)).toBe(1250);
+    unsubscribe();
+    unsubscribeErrors();
+  });
+
+  it('rejects invalid native acknowledgments and permits retrying failed reads', async () => {
+    let failRead = true;
+    installTauriRuntimeMock(mock(async (command) => {
+      if (command === 'state_get_snapshot') {
+        if (failRead) throw new Error('read unavailable');
+        return { schemaVersion: 1, values: { windowWidth: 1250 } };
+      }
+      return { schemaVersion: 0, values: {} };
+    }));
+    const prefs = await loadPreferencesModule();
+    await expect(prefs.loadPersistedPreference(prefs.PREF_KEYS.WINDOW_WIDTH)).rejects.toThrow('read unavailable');
+    failRead = false;
+    expect(await prefs.loadPersistedPreference(prefs.PREF_KEYS.WINDOW_WIDTH)).toBe(1250);
+    await expect(prefs.savePreference(prefs.PREF_KEYS.WINDOW_WIDTH, 1337)).rejects.toThrow('Invalid native state snapshot');
+    expect(prefs.getCachedPreference(prefs.PREF_KEYS.WINDOW_WIDTH)).toBe(1250);
+  });
+
+  it('isolates malformed persisted state without breaking startup collections', async () => {
+    installTauriRuntimeMock(mock(async () => ({ schemaVersion: 1, values: {
+      recentProjects: 'oops',
+      macroEnabledProjects: [{ projectId: 'p', groupId: null, name: 'Project', path: 42, lastOpenedAt: 'now' }],
+      architectPinnedPlanIds: [42],
+      windowWidth: 'wide',
+      isMaximized: {},
+      lastActiveMode: 'invalid',
+      terminalLastManualProjectByTask: { task: 42 },
+      windowHeight: 900,
+    } })));
+    const prefs = await loadPreferencesModule();
+    const loaded = await prefs.loadPreferences([
+      prefs.PREF_KEYS.RECENT_PROJECTS, prefs.PREF_KEYS.MACRO_ENABLED_PROJECTS,
+      prefs.PREF_KEYS.ARCHITECT_PINNED_PLAN_IDS, prefs.PREF_KEYS.WINDOW_WIDTH,
+      prefs.PREF_KEYS.IS_MAXIMIZED, prefs.PREF_KEYS.LAST_ACTIVE_MODE,
+      prefs.PREF_KEYS.TERMINAL_LAST_MANUAL_PROJECT_BY_TASK, prefs.PREF_KEYS.WINDOW_HEIGHT,
+    ]);
+    expect(loaded.recentProjects.filter(() => true)).toEqual([]);
+    expect(loaded.macroEnabledProjects).toEqual([]);
+    expect(loaded.architectPinnedPlanIds).toEqual([]);
+    expect(loaded.windowWidth).toBe(1200);
+    expect(loaded.isMaximized).toBe(false);
+    expect(loaded.lastActiveMode).toBe('Implement');
+    expect(loaded.terminalLastManualProjectByTask).toEqual({});
+    expect(loaded.windowHeight).toBe(900);
+    expect(await prefs.loadPersistedPreference(prefs.PREF_KEYS.RECENT_PROJECTS)).toBeUndefined();
+    await expect(prefs.savePreference(prefs.PREF_KEYS.RECENT_PROJECTS, 'oops')).rejects.toThrow('Invalid preference value');
+  });
+
   it('does not import or delete legacy preferences during the clean reset', async () => {
     localStorage.setItem('macro_implementExecutionMode', JSON.stringify('full_auto'));
     const { purgeLegacyImplementExecutionModePreference } = await loadPreferencesModule();
