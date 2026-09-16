@@ -182,4 +182,17 @@ describe('app update store', () => {
       availableUpdate: { version: '0.1.1' },
     });
   });
+  test('releases installing state when the native cache has disappeared and permits redownload', async () => {
+    const { client } = buildClient({ installError: new Error('UPDATE_STAGED_PACKAGE_MISSING') });
+    const store = createAppUpdateStore(client);
+    await store.getState().checkForUpdates();
+    store.getState().openDetails();
+    expect(await store.getState().installAndRestart()).toBe(false);
+    expect(store.getState().phase).toBe('error');
+    store.getState().closeDetails();
+    expect(store.getState().detailsOpen).toBe(false);
+    await store.getState().reset();
+    expect(await store.getState().checkForUpdates()).toBe('ready');
+  });
+
 });

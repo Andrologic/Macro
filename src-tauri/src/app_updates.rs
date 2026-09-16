@@ -665,7 +665,14 @@ fn read_manifest_directory_recovering_unlocked(
             }
             Ok(Some(manifest))
         }
-        Ok(None) => Ok(None),
+        Ok(None) => {
+            // A committed installation may have removed the manifest before a
+            // secondary cache deletion failed. Retry orphan cleanup on reads.
+            if let Err(error) = clear_staged_update_directory(directory) {
+                tracing::warn!("Update cache cleanup remains incomplete: {error}");
+            }
+            Ok(None)
+        }
         Err(_) => {
             invalidate_and_clear_staged_update_directory(directory)?;
             Ok(None)
@@ -896,7 +903,15 @@ pub fn app_update_discard(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn app_update_install_now(app: AppHandle) -> Result<(), String> {
-    activate_staged_update(&app, true).map(|_| ())
+    require_activation_started(activate_staged_update(&app, true)?)
+}
+
+fn require_activation_started(started: bool) -> Result<(), String> {
+    if started {
+        Ok(())
+    } else {
+        Err("UPDATE_STAGED_PACKAGE_MISSING".to_string())
+    }
 }
 
 pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, String> {
@@ -1085,25 +1100,152 @@ fn install_package(
     manifest: &StagedUpdateManifest,
     bytes: &[u8],
 ) -> Result<(), String> {
-    let mut builder = app
+    let updater = app
         .updater_builder()
         .target(manifest.target.clone())
-        .timeout(CHECK_TIMEOUT)
-        .version_comparator(|current, release| release.version != current);
-    let updater = builder.build().map_err(|error| error.to_string())?;
-    let update = tauri::async_runtime::block_on(updater.check())
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "La version préparée n'est plus disponible.".to_string())?;
-    if update.version != manifest.version {
-        return Err("La version préparée ne correspond plus à la version publiée.".to_string());
+        .build()
+        .map_err(|error| error.to_string())?;
+    let update = updater
+        .update_from_release(staged_release(manifest)?)
+        .map_err(|error| error.to_string())?;
+    finish_local_install(
+        || update.install(bytes).map_err(|error| error.to_string()),
+        || clear_staged_update(app),
+        || app.restart(),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn staged_release(
+    manifest: &StagedUpdateManifest,
+) -> Result<tauri_plugin_updater::RemoteRelease, String> {
+    // Installation only consumes verified local bytes. This URL is never requested.
+    serde_json::from_value(serde_json::json!({
+        "version": manifest.version,
+        "notes": manifest.notes,
+        "url": "https://cached-update.invalid/unused",
+        "signature": manifest.signature,
+    }))
+    .map_err(|error| format!("UPDATE_STATE_INVALID: {error}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn finish_local_install(
+    install: impl FnOnce() -> Result<(), String>,
+    cleanup: impl FnOnce() -> Result<(), String>,
+    restart: impl FnOnce(),
+) -> Result<(), String> {
+    install()?;
+    // Once replacement has committed, cleanup must not turn success into failure.
+    // On the next launch, the version check invalidates any remaining old cache.
+    if let Err(error) = cleanup() {
+        tracing::warn!("Update installed; cache cleanup will be retried: {error}");
     }
-    update.install(bytes).map_err(|error| error.to_string())?;
-    clear_staged_update(app)?;
-    app.restart();
+    restart();
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn forced_activation_requires_a_staged_package() {
+        assert_eq!(
+            super::require_activation_started(false),
+            Err("UPDATE_STAGED_PACKAGE_MISSING".into())
+        );
+        assert_eq!(super::require_activation_started(true), Ok(()));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn committed_install_restarts_even_when_cleanup_fails() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        super::finish_local_install(
+            || {
+                calls.borrow_mut().push("install");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("cleanup");
+                Err("permission denied".into())
+            },
+            || calls.borrow_mut().push("restart"),
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), vec!["install", "cleanup", "restart"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn committed_install_restarts_after_each_cache_cleanup_failure() {
+        for blocked in [
+            super::MANIFEST_FILE,
+            super::PUBLICATION_BACKUP_FILE,
+            super::CLEAN_SHUTDOWN_FILE,
+            "staged-update-blocked.bin",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::create_dir(directory.path().join(blocked)).unwrap();
+            let restarted = std::cell::Cell::new(false);
+            super::finish_local_install(
+                || Ok(()),
+                || super::invalidate_and_clear_staged_update_directory(directory.path()),
+                || restarted.set(true),
+            )
+            .unwrap();
+            assert!(
+                restarted.get(),
+                "cleanup failure at {blocked} prevented restart"
+            );
+            std::fs::remove_dir(directory.path().join(blocked)).unwrap();
+            super::invalidate_and_clear_staged_update_directory(directory.path()).unwrap();
+        }
+    }
+
+    #[test]
+    fn absent_manifest_retries_orphan_cleanup_without_blocking_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join(super::CLEAN_SHUTDOWN_FILE);
+        std::fs::create_dir(&marker).unwrap();
+        assert!(super::read_manifest_directory_recovering(directory.path())
+            .unwrap()
+            .is_none());
+        std::fs::remove_dir(&marker).unwrap();
+        std::fs::write(&marker, b"synthetic").unwrap();
+        let package = directory.path().join("staged-update-orphan.bin");
+        std::fs::write(&package, b"synthetic").unwrap();
+        assert!(super::read_manifest_directory_recovering(directory.path())
+            .unwrap()
+            .is_none());
+        assert!(!marker.exists());
+        assert!(!package.exists());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn staged_release_preserves_the_verified_package_metadata() {
+        let staged = manifest("1.0.0", "1.1.0");
+        let release = super::staged_release(&staged).unwrap();
+        assert_eq!(release.version.to_string(), staged.version);
+        assert_eq!(
+            release.signature(&staged.target).unwrap(),
+            &staged.signature
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn failed_install_preserves_cache_and_does_not_restart() {
+        assert_eq!(
+            super::finish_local_install(
+                || Err("installer rejected".into()),
+                || panic!("must retain cache"),
+                || panic!("must not restart"),
+            ),
+            Err("installer rejected".into())
+        );
+    }
+
     use crate::core::process::background_command;
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use std::time::Duration;

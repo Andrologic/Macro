@@ -74,6 +74,12 @@ Review the draft release in GitHub before publishing it manually.
 
 ## Tauri updater
 
+A staged package is installed from its local bytes after size, SHA-256 and
+signature verification. Activation does not query the channel again, so a newer
+published version or an offline launch does not invalidate the prepared package.
+After successful replacement, cache cleanup failures are logged and retried on
+a later cache read; they do not prevent the application from restarting.
+
 Macro checks the selected update channel at startup. It downloads a signed
 update in the background, then waits for the user to restart the app. Tauri
 replaces `{{target}}` with the channel-prefixed native target, such as
