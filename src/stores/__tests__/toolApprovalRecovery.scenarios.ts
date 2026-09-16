@@ -271,6 +271,33 @@ export const registerToolApprovalRecoveryScenarios = (context: UseChatStoreScena
       await context.flushAsyncWork();
     });
 
+    it.each(['trace', 'marker', 'immediate'])('honors denial during approval finalization: %s', async (stage) => {
+      const { useChatStore, onToolCall } = await context.startImplementToolConversation();
+      context.tauriAvailable = true;
+      const pending = onToolCall('terminal_run', { command: 'bun test', session_id: 'session-1' }, 'revocable-call');
+      await context.flushAsyncWork();
+      const gate = context.createDeferred();
+      let closing = false;
+      const pause = async () => { closing = true; await gate.promise; return undefined; };
+      if (stage === 'trace') context.updateMessageMock.mockImplementationOnce(pause);
+      if (stage === 'marker') context.dbDeleteAppSettingMock.mockImplementationOnce(async () => {
+        await pause();
+        return context.appSettingValues.delete('toolApprovalRecovery:v1');
+      });
+      useChatStore.getState().approvePendingToolApprovalOnce('implement-conv');
+      if (stage !== 'immediate') {
+        await context.flushAsyncWork();
+        expect(closing).toBe(true);
+      }
+      expect(useChatStore.getState().getPendingToolApproval('implement-conv')).not.toBeNull();
+      useChatStore.getState().denyPendingToolApproval('implement-conv', 'Changed my decision');
+      gate.resolve();
+      expect(String(await pending)).toContain('Changed my decision');
+      expect(context.terminalRunCommandFromChatMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().getPendingToolApproval('implement-conv')).toBeNull();
+      expect(hasRecovery()).toBe(false);
+    });
+
     it('persists identifiers before showing approval and removes them before executing', async () => {
       const { useChatStore, onToolCall } = await context.startImplementToolConversation();
       context.tauriAvailable = true;

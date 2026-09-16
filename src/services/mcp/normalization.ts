@@ -14,14 +14,17 @@ export const hasRunnableMCPTransport = (server: Pick<MCPServer, 'transport'>): b
 export const normalizeMCPServerTools = (
   server: Pick<MCPServer, 'id' | 'tools'>,
   tools: MCPTool[] = server.tools ?? []
-): MCPTool[] =>
-  tools.map((tool) => ({
+): MCPTool[] => {
+  const normalized = tools.map((tool) => ({
     ...tool,
     id: tool.id || buildMCPToolId(server.id, tool.name),
     serverId: server.id,
     inputSchema: tool.inputSchema ?? { type: 'object', properties: {} },
     enabled: tool.enabled !== false,
   }));
+  assertUniqueMCPToolIds(normalized);
+  return normalized;
+};
 
 export const normalizeMCPServer = (server: Partial<MCPServer> & { id: string }): MCPServer => {
   const id = normalizeMCPIdentifier(server.id || server.name || 'server');
@@ -59,3 +62,14 @@ export const toMCPServerSettingsMap = (servers: MCPServer[]): Record<string, MCP
 
 export const isMCPServerRecord = (value: unknown): value is MCPServer =>
   Boolean(value && typeof value === 'object' && 'id' in value && 'name' in value);
+
+/** Refuse ambiguous catalogs before exposing any callable tool. */
+export const assertUniqueMCPToolIds = (tools: readonly MCPTool[]): void => {
+  const names = new Map<string, string>();
+  for (const tool of tools) {
+    if (names.has(tool.id)) {
+      throw new Error(`Ambiguous MCP tool ID "${tool.id}": "${names.get(tool.id)}" and "${tool.name}".`);
+    }
+    names.set(tool.id, tool.name);
+  }
+};

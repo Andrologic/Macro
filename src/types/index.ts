@@ -756,6 +756,7 @@ export interface ToolTrace {
 export interface PendingToolApproval {
   /** Absent for a live resolver; interrupted requests require a new turn. */
   recoveryState?: 'interrupted';
+  mcpIdentity?: { serverId: string; toolName: string };
   conversationId: string;
   assistantMessageId: string;
   toolCallId: string;

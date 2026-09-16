@@ -90,6 +90,37 @@ describe('scoped MCP runtime', () => {
     expect(firstRuntime.tools).toEqual(secondRuntime.tools);
   });
 
+  it('keeps delimiter-bearing project scopes distinct', async () => {
+    const connect = mock(async (selector: MCPRuntimeSelector) => snapshotFor(selector));
+    const options = { deps: { mcpRuntimeConnect: connect,
+      mcpRuntimeRefreshCatalog: async (key: MCPRuntimeKey) => catalogFor(key, ['read']) } };
+    const scopes = [['a,b', 'c'], ['a', 'b,c']];
+    const results = await Promise.all(scopes.map((projectIds) =>
+      resolveScopedMcpRuntime({ docs: stdioDefinition }, [], { ...options, projectIds })));
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(results.every((runtime) => runtime.failures.length === 0)).toBe(true);
+    expect(connect.mock.calls.map(([selector]) => selector.projectIds)).toEqual(scopes);
+  });
+
+  it.each([
+    ['issues/list', 'issues_list'],
+    ['a'.repeat(65), 'a'.repeat(64) + 'b'],
+  ])('refuses ambiguous catalog identities for %s and %s', async (first, second) => {
+    const runtime = await resolveScopedMcpRuntime({ docs: stdioDefinition }, [], { deps: {
+      mcpRuntimeConnect: async (selector) => snapshotFor(selector),
+      mcpRuntimeRefreshCatalog: async (key) => {
+        const catalog = catalogFor(key, [first, second]);
+        catalog.tools[1].id = catalog.tools[0].id;
+        return catalog;
+      },
+    } });
+    expect(runtime.tools).toEqual([]);
+    expect(runtime.servers).toEqual([]);
+    expect(runtime.failures[0]?.message).toContain('Ambiguous MCP tool ID');
+    expect(runtime.failures[0]?.message).toContain(first);
+    expect(runtime.failures[0]?.message).toContain(second);
+  });
+
   it('reconnects once when catalog refresh reports a stale generation', async () => {
     let nextGeneration = 0;
     const connect = mock(async (received: MCPRuntimeSelector) => {
@@ -163,6 +194,15 @@ describe('scoped MCP runtime', () => {
       tools: [{ id: 'mcp__github_server__read', serverId: 'github_server', name: 'read' }],
     } as MCPServer], options)).rejects.toThrow('collide after normalization');
     expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('refuses cross-server ambiguity before dispatching a cached tool', async () => {
+    const callTool = mock(async () => ({ content: 'unused' }));
+    await expect(callScopedMcpTool('mcp__docs__nested__read', {}, [
+      { id: 'docs', tools: [{ id: 'mcp__docs__nested__read', serverId: 'docs', name: 'nested__read' }] } as MCPServer,
+      { id: 'docs__nested', tools: [{ id: 'mcp__docs__nested__read', serverId: 'docs__nested', name: 'read' }] } as MCPServer,
+    ], { deps: { mcpRuntimeCallTool: callTool } })).rejects.toThrow('Ambiguous MCP tool ID');
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   it('calls tools with the backend key and a UUID operation id', async () => {
