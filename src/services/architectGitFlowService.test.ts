@@ -156,9 +156,10 @@ type MockMergeParams = {
   intoBranch?: string;
   expectedBranchCommit?: string | null;
   expectedIntoCommit?: string | null;
+  completeMerge?: boolean;
 };
 const completedMergeIntents = new Set<string>();
-const getMergeIntentKey = (params: MockMergeParams): string => JSON.stringify(params);
+const getMergeIntentKey = ({ completeMerge: _complete, ...params }: MockMergeParams): string => JSON.stringify(params);
 const gitMergeMock = mock(async (params: MockMergeParams) => {
   completedMergeIntents.add(getMergeIntentKey(params));
   return 'merge-ok';
@@ -169,6 +170,7 @@ const gitGuardedMergeStateMock = mock(async (params: {
   intoBranch: string;
   expectedBranchCommit: string;
   expectedIntoCommit: string;
+  completeMerge?: boolean;
 }) => {
   const branches = await gitBranchListMock(params.repoPath);
   const targetCommit = branches.local.find((branch) => branch.name === params.intoBranch)?.commit ??
@@ -3057,19 +3059,37 @@ describe('architectGitFlowService', () => {
     expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
     expect(gitBranchDeleteMock).not.toHaveBeenCalled();
   });
-  for (const { planKind, conflict } of [
-    { planKind: 'release', conflict: false },
-    { planKind: 'hotfix', conflict: false },
-    { planKind: 'release', conflict: true },
+  for (const { planKind, conflict, complete, conflictTarget } of [
+    { planKind: 'release', conflict: false, complete: false, conflictTarget: 'develop' },
+    { planKind: 'hotfix', conflict: false, complete: false, conflictTarget: 'develop' },
+    { planKind: 'release', conflict: true, complete: false, conflictTarget: 'develop' },
+    { planKind: 'release', conflict: true, complete: true, conflictTarget: 'develop' },
+    { planKind: 'hotfix', conflict: true, complete: true, conflictTarget: 'main' },
   ] as const) {
-    it(`runs ${planKind} backmerges through the active task store before archiving, conflict=${conflict}`,  async () => {
+    it(`runs ${planKind} backmerges through the active task store before archiving, conflict=${conflict}, complete=${complete}, target=${conflictTarget}`,  async () => {
       const flowModule = await import('./architectGitFlowService');
       const runtimeModule = await import('./architectPlanRuntimeService');
       const { toPlanLocatorKey } = await import('./durableIdentity');
       const planBranch = `${planKind}/fixture`;
       let conflictPending = conflict;
+      let resolutionStaged = false;
+      gitGuardedMergeStateMock.mockImplementation(async (params) => {
+        if (resolutionStaged && params.repoPath === '/repos/api') {
+          if (!params.completeMerge) throw new Error('Recovery would abort the staged resolution');
+          expect(params.intoBranch).toBe(conflictTarget);
+          expect(params.expectedIntoCommit).toBe(`${conflictTarget}-sha`);
+          completedMergeIntents.add(getMergeIntentKey(params));
+          resolutionStaged = false;
+          worktreeStatusByPath.delete('/repos/api');
+        }
+        const branches = await gitBranchListMock(params.repoPath);
+        return {
+          status: completedMergeIntents.has(getMergeIntentKey(params)) ? 'integrated' : 'pending',
+          targetCommit: branches.local.find((branch) => branch.name === params.intoBranch)!.commit,
+        };
+      });
       gitMergeMock.mockImplementation(async (params: MockMergeParams) => {
-        if (conflictPending && params.repoPath === '/repos/api' && params.intoBranch === 'develop') {
+        if (conflictPending && params.repoPath === '/repos/api' && params.intoBranch === conflictTarget) {
           throw new Error('synthetic backmerge conflict');
         }
         completedMergeIntents.add(getMergeIntentKey(params));
@@ -3103,8 +3123,8 @@ describe('architectGitFlowService', () => {
         persistArchitectPlanMergeWorkflowSession: async () => undefined,
       }));
       try {
-        const { useTaskStore } = await import(`../stores/useTaskStore.ts?finalize-integration=${planKind}-${conflict}`);
-        const taskId = `plan-finalization:${planKind}-${conflict}`;
+        const { useTaskStore } = await import(`../stores/useTaskStore.ts?finalize-integration=${planKind}-${conflict}-${complete}`);
+        const taskId = `plan-finalization:${planKind}-${conflict}-${complete}`;
         const task = {
           id: taskId, plan_id: currentPlan.id, plan_storage_branch: 'develop',
           plan_target_branch: 'main', task_source: 'plan_finalization', status: 'InReview',
@@ -3126,18 +3146,31 @@ describe('architectGitFlowService', () => {
           expect(gitBranchDeleteMock).not.toHaveBeenCalled();
           expect(readPersistedLifecycleSagas()[0]).toMatchObject({
             finalizationRepositories: expect.arrayContaining([
-              expect.objectContaining({ projectId: 'api', phase: 'backmerge_merge_pending' }),
+              expect.objectContaining({ projectId: 'api', phase: conflictTarget === 'main' ? 'plan_merge_pending' : 'backmerge_merge_pending' }),
             ]),
           });
           conflictPending = false;
+          if (complete) {
+            resolutionStaged = true;
+            worktreeStatusByPath.set('/repos/api', createGitStatus({
+              branch: conflictTarget, is_clean: false, mergeInProgress: true,
+              staged_files: [{ path: 'resolved.txt', status: 'modified' }],
+            }));
+            for (const mergeStrategyAction of ['fast_forward', 'rebase_then_continue'] as const) {
+              await expect(useTaskStore.getState().runMergeWorkflow(taskId, { mergeStrategyAction }))
+                .rejects.toThrow('Finalization has already started');
+              expect(resolutionStaged).toBe(true);
+            }
+          }
         }
-        await useTaskStore.getState().runMergeWorkflow(taskId);
+        await useTaskStore.getState().runMergeWorkflow(taskId, complete ? { mergeStrategyAction: 'complete_merge' } : undefined);
+        expect(resolutionStaged).toBe(false);
         expect(gitMergeMock.mock.calls.map(([params]) => [params.repoPath, params.branchName, params.intoBranch])).toEqual([
           ['/repos/web', planBranch, 'main'],
           ['/repos/web', 'main', 'develop'],
           ['/repos/api', planBranch, 'main'],
           ['/repos/api', 'main', 'develop'],
-          ...(conflict ? [['/repos/api', 'main', 'develop']] : []),
+          ...(conflict && !complete ? [['/repos/api', 'main', 'develop']] : []),
         ]);
         expect(archiveArchitectPlanMock).toHaveBeenCalledTimes(1);
         expect(Math.max(...gitMergeMock.mock.invocationCallOrder)).toBeLessThan(archiveArchitectPlanMock.mock.invocationCallOrder[0]);

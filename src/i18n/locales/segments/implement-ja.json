@@ -407,6 +407,7 @@
     "full": "完全なファイルコンテキスト"
   },
   "errors": {
+    "finalizationStrategyLocked": "最終処理はすでに開始されています。保留中のマージを完了するか、戦略を変更せずに再開してください。",
     "directTaskCompletionFailed": "直接編集タスクを完了できませんでした。",
     "directTaskBranchChanged": "現在のブランチが {{expected}} から {{actual}} に変わりました。この Direct タスクをコミットする前に元のブランチへ戻してください。",
     "directProjectTaskAlreadyActive": "この直接編集プロジェクトには、すでにアクティブなタスクがあります。",

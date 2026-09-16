@@ -8115,7 +8115,7 @@ fn build_guarded_merge_state(
     })
 }
 
-fn abort_exact_incomplete_merge(
+fn verify_exact_incomplete_merge(
     repo: &Repository,
     into_branch: &str,
     expected_into_commit: &str,
@@ -8179,6 +8179,19 @@ fn abort_exact_incomplete_merge(
         });
     }
 
+    Ok(true)
+}
+
+fn abort_exact_incomplete_merge(
+    repo: &Repository,
+    into_branch: &str,
+    expected_into_commit: &str,
+    expected_merge_head: &str,
+) -> Result<bool> {
+    if !verify_exact_incomplete_merge(repo, into_branch, expected_into_commit, expected_merge_head)?
+    {
+        return Ok(false);
+    }
     let root = repo_root(repo)?;
     let output = run_git_command(&root, &["merge".to_string(), "--abort".to_string()])?;
     if !output.success {
@@ -8192,6 +8205,40 @@ fn abort_exact_incomplete_merge(
         });
     }
     Ok(true)
+}
+
+fn complete_guarded_merge_state(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: &str,
+    expected_into_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    let state = build_guarded_merge_state(
+        repo,
+        branch_name,
+        into_branch,
+        expected_branch_commit,
+        expected_into_commit,
+    )?;
+    if state.status == "integrated" {
+        return Ok(state);
+    }
+    if verify_exact_incomplete_merge(
+        repo,
+        into_branch,
+        expected_into_commit,
+        expected_branch_commit,
+    )? {
+        complete_merge_repo(repo)?;
+    }
+    build_guarded_merge_state(
+        repo,
+        branch_name,
+        into_branch,
+        expected_branch_commit,
+        expected_into_commit,
+    )
 }
 
 fn reconcile_guarded_merge_state(
@@ -9511,6 +9558,7 @@ pub async fn git_guarded_merge_state(
     into_branch: String,
     expected_branch_commit: String,
     expected_into_commit: String,
+    complete_merge: Option<bool>,
 ) -> Result<GitGuardedMergeStateDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_guarded_merge_state"));
@@ -9528,7 +9576,12 @@ pub async fn git_guarded_merge_state(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        reconcile_guarded_merge_state(
+        let reconcile = if complete_merge.unwrap_or(false) {
+            complete_guarded_merge_state
+        } else {
+            reconcile_guarded_merge_state
+        };
+        reconcile(
             &repo,
             &branch_name,
             &into_branch,
@@ -20913,6 +20966,73 @@ mod tests {
         .unwrap();
         assert_eq!(replay.status, "integrated");
         assert_eq!(replay.target_commit, first.target_commit);
+    }
+
+    #[test]
+    fn guarded_merge_completion_preserves_staged_resolution_and_fences_foreign_heads() {
+        let (temp, repo) = init_repo();
+        let base = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature", true).unwrap();
+        let source = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        checkout_repo(&repo, &base, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base change").unwrap();
+        commit_repo(&repo, "feat: base", true).unwrap();
+        let target = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        let output = run_git_command(
+            temp.path(),
+            &["merge".into(), "--no-ff".into(), "feature".into()],
+        )
+        .unwrap();
+        assert!(!output.success);
+        fs::write(temp.path().join("README.md"), "resolved content").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        index.write().unwrap();
+        assert!(!index.has_conflicts());
+        // A different MERGE_HEAD must leave the user's resolution untouched.
+        fs::write(repo.path().join("MERGE_HEAD"), &target).unwrap();
+        assert!(complete_guarded_merge_state(&repo, "feature", &base, &source, &target).is_err());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "resolved content"
+        );
+        assert_eq!(repo.state(), RepositoryState::Merge);
+        fs::write(repo.path().join("MERGE_HEAD"), &source).unwrap();
+        let result =
+            complete_guarded_merge_state(&repo, "feature", &base, &source, &target).unwrap();
+        assert_eq!(result.status, "integrated");
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(commit.parent_id(0).unwrap().to_string(), target);
+        assert_eq!(commit.parent_id(1).unwrap().to_string(), source);
+        let entry = commit
+            .tree()
+            .unwrap()
+            .get_path(Path::new("README.md"))
+            .unwrap();
+        assert_eq!(
+            repo.find_blob(entry.id()).unwrap().content(),
+            b"resolved content"
+        );
+        assert_eq!(
+            complete_guarded_merge_state(&repo, "feature", &base, &source, &target)
+                .unwrap()
+                .target_commit,
+            result.target_commit
+        );
     }
 
     #[test]

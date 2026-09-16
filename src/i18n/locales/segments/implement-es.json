@@ -407,6 +407,7 @@
     "full": "Contexto completo del archivo"
   },
   "errors": {
+    "finalizationStrategyLocked": "La finalización ya ha comenzado. Completa la fusión pendiente o continúa sin cambiar su estrategia.",
     "directTaskCompletionFailed": "No se pudo completar la tarea de edición directa.",
     "directTaskBranchChanged": "La rama actual cambió de {{expected}} a {{actual}}. Vuelve a la rama inicial antes de confirmar esta tarea Direct.",
     "directProjectTaskAlreadyActive": "Este proyecto de edición directa ya tiene una tarea activa.",

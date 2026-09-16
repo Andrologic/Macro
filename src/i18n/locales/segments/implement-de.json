@@ -407,6 +407,7 @@
     "full": "Vollständiger Dateikontext"
   },
   "errors": {
+    "finalizationStrategyLocked": "Die Finalisierung hat bereits begonnen. Schließe den ausstehenden Merge ab oder fahre fort, ohne die Strategie zu ändern.",
     "directTaskCompletionFailed": "Die Aufgabe im Direktbearbeitungsmodus konnte nicht abgeschlossen werden.",
     "directTaskBranchChanged": "Der aktuelle Branch wurde von {{expected}} zu {{actual}} gewechselt. Wechsle vor dem Commit dieser Direct-Aufgabe zurück.",
     "directProjectTaskAlreadyActive": "Dieses direkt bearbeitete Projekt hat bereits eine aktive Aufgabe.",

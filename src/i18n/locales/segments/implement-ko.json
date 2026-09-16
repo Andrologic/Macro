@@ -407,6 +407,7 @@
     "full": "전체 파일 컨텍스트"
   },
   "errors": {
+    "finalizationStrategyLocked": "마무리가 이미 시작되었습니다. 대기 중인 병합을 완료하거나 전략을 변경하지 않고 재개하세요.",
     "directTaskCompletionFailed": "직접 편집 작업을 완료하지 못했습니다.",
     "directTaskBranchChanged": "현재 브랜치가 {{expected}}에서 {{actual}}로 변경되었습니다. 이 Direct 작업을 커밋하기 전에 원래 브랜치로 돌아가세요.",
     "directProjectTaskAlreadyActive": "이 직접 편집 프로젝트에는 이미 활성 작업이 있습니다.",

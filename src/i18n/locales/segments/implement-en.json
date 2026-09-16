@@ -407,6 +407,7 @@
     "full": "Full file context"
   },
   "errors": {
+    "finalizationStrategyLocked": "Finalization has already started. Complete the pending merge or resume without changing its strategy.",
     "directTaskCompletionFailed": "The direct-edit task could not be completed.",
     "directTaskBranchChanged": "The current branch changed from {{expected}} to {{actual}}. Switch back before committing this Direct task.",
     "directProjectTaskAlreadyActive": "This direct-edit project already has an active task.",

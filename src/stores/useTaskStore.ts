@@ -5765,6 +5765,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             saga.planId === task.plan_id &&
             saga.branchName === branchName
         );
+        if (
+          pendingFinalizationSaga &&
+          isMergeWorkflowMergeExecutionAction(preferredAction) &&
+          preferredAction !== 'complete_merge'
+        ) {
+          throw new Error(tTask(
+            'implement.errors.finalizationStrategyLocked',
+            'Finalization has already started. Complete the pending merge or resume without changing its strategy.'
+          ));
+        }
         if (!pendingFinalizationSaga && isMergeWorkflowMergeExecutionAction(preferredAction)) {
           for (const repository of reviewRuntime.repositories.filter(
             (candidate) =>
@@ -5797,7 +5807,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
 
         const resolvedRuntime = currentRuntime || reviewRuntime;
-        if (resolvedRuntime.blockedRepositories.length > 0) {
+        if (
+          resolvedRuntime.blockedRepositories.length > 0 &&
+          !(pendingFinalizationSaga && preferredAction === 'complete_merge')
+        ) {
           throw createMergeWorkflowBlockedError({
             taskId: task.id,
             kind,
@@ -5818,6 +5831,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           finalizedPlan = await finalizePlanIntoBaseBranch({
             branchName,
             planId: task.plan_id,
+            ...(pendingFinalizationSaga && preferredAction === 'complete_merge' ? { completePendingMerges: true } : {}),
           });
         } catch (error) {
           await reloadAfterMergeFailure(error);
