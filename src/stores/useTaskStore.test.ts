@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
@@ -86,6 +86,9 @@ const gitBranchListMock = mock(async () => ({
 const gitBranchDeleteMock = mock(async (
   _params?: Parameters<typeof actualTauriIpc.gitBranchDelete>[0],
 ) => undefined);
+const directCheckpointEnsureMock = mock(async () => 'checkpoint-head');
+const bindManualCheckpointMock = mock(async () => ({} as never));
+const setActiveRootMock = mock(async () => undefined);
 const directCheckpointResolveIdMock = mock(async () => 'task-checkpoint-0000000000000001');
 const directCheckpointRemoveMock = mock(async () => true);
 const workspaceDeleteManualFeatureDraftMock = mock(async () => true);
@@ -296,6 +299,9 @@ mock.module('../services/tauriIpc', () => ({
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
   directCheckpointResolveId: directCheckpointResolveIdMock,
+  directCheckpointEnsure: directCheckpointEnsureMock,
+  workspaceBindManualFeatureDirectCheckpoint: bindManualCheckpointMock,
+  workspaceSetActiveRoot: setActiveRootMock,
   directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
@@ -334,6 +340,9 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
   directCheckpointResolveId: directCheckpointResolveIdMock,
+  directCheckpointEnsure: directCheckpointEnsureMock,
+  workspaceBindManualFeatureDirectCheckpoint: bindManualCheckpointMock,
+  workspaceSetActiveRoot: setActiveRootMock,
   directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
@@ -5068,6 +5077,85 @@ describe('task startup lifecycle races', () => {
     services.listTasks = mock(async () => ({ tasks: [], plans: [], hasStandaloneTasks: false, source: 'empty' as const }));
   });
   afterEach(() => { services.listTasks = originalListTasks; });
+  it.each([false, true])('starts a real Architect direct target with durable binding; binding fails: %s', async (failBinding) => {
+    const plans = await import('../services/architectPlanService');
+    const { deriveImplementTasksFromStrategy } = await import('../services/implementTaskDerivation');
+    const plan = { id: 'plan-direct', slug: 'direct', title: 'Direct', description: '', status: 'validated',
+      targetBranch: 'develop', projectId: 'project-1', projectIds: ['project-1'],
+      createdAt: '', updatedAt: '', predictedBranches: [],
+      nodes: [{ id: 'direct-task', title: 'Edit', type: 'task', status: 'pending', dependencies: [],
+        projectId: 'project-1', projectIds: ['project-1'], executionModesByProjectId: { 'project-1': 'direct' } }],
+    } as import('../services/architectPlanService').ArchitectPlanRecord;
+    const derived = deriveImplementTasksFromStrategy({ planId: plan.id, planSlug: plan.slug,
+      nodes: plan.nodes, predictedBranches: [] }).tasks[0];
+    const task = buildTask({ ...derived, task_source: 'architect', plan_id: plan.id, plan_storage_branch: 'develop' });
+    expect(task.execution_targets[0].executionMode).toBe('direct');
+    expect(task.execution_targets[0].checkpointId).toBeUndefined();
+    const getPlan = spyOn(plans, 'getArchitectPlan').mockImplementation(async () => plan);
+    let bound = false;
+    const updatePlan = spyOn(plans, 'updateArchitectPlan').mockImplementation(async (input) => {
+      if (input.directCheckpointBinding) {
+        if (failBinding) throw new Error('binding failed');
+        bound = true;
+        plan.nodes[0].directCheckpointIdsByProjectId = { 'project-1': input.directCheckpointBinding.checkpointId };
+      }
+      if (input.nodes) plan.nodes = input.nodes;
+      if (input.status) plan.status = input.status;
+      return plan;
+    });
+    directCheckpointEnsureMock.mockClear();
+    directCheckpointEnsureMock.mockImplementation(async () => { expect(bound).toBe(true); return 'head'; });
+    bindManualCheckpointMock.mockClear();
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      appStoreState.selectedTaskId = task.id;
+      appStoreState.getProjectById = () => ({ id: 'project-1', name: 'Direct', path: '/direct',
+        gitSetupState: 'not_git', directEdit: true });
+      services.listTasks = mock(async () => ({ tasks: [task], plans: [], hasStandaloneTasks: false, source: 'architect' as const }));
+      useTaskStore.setState({ tasks: [task], refreshFromPlan: async () => undefined });
+      await useTaskStore.getState().startTask(task.id);
+      expect(bindManualCheckpointMock).not.toHaveBeenCalled();
+      if (failBinding) {
+        expect(directCheckpointEnsureMock).not.toHaveBeenCalled();
+        expect(useTaskStore.getState().lastError).toContain('binding failed');
+      } else {
+        expect(directCheckpointEnsureMock).toHaveBeenCalledTimes(1);
+        expect(useTaskStore.getState().getTaskById(task.id)?.status).toBe('InProgress');
+        expect(plan.nodes[0].directCheckpointIdsByProjectId).toBeDefined();
+      }
+    } finally {
+      getPlan.mockRestore();
+      updatePlan.mockRestore();
+      directCheckpointEnsureMock.mockImplementation(async () => 'head');
+    }
+  });
+
+  it.each(['selection', 'deletion'] as const)('does not prepare a direct checkpoint during an obsolete activation: %s', async (change) => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const task = buildTask({ id: 'direct-a', status: 'InProgress', execution_targets: [{
+      projectId: 'project-1', executionMode: 'direct', executionKind: 'repository_root',
+      branchName: '', worktreeKey: 'direct:project-1:a', repoPath: '/direct',
+    }] });
+    appStoreState.selectedTaskId = task.id;
+    appStoreState.getProjectById = () => ({ id: 'project-1', path: '/direct', name: 'Direct',
+      directEdit: true, gitSetupState: 'not_git' });
+    useTaskStore.setState({ tasks: [task], activeRepositoryPath: '/selected-b' });
+    directCheckpointEnsureMock.mockClear();
+    directCheckpointResolveIdMock.mockClear();
+    bindManualCheckpointMock.mockClear();
+    setActiveRootMock.mockClear();
+    const activation = useTaskStore.getState().activateTask(task.id);
+    // The inspection yields before activation publishes; no write IPC may begin.
+    if (change === 'selection') appStoreState.selectedTaskId = 'task-b';
+    else useTaskStore.setState({ tasks: [] });
+    await activation;
+    expect(useTaskStore.getState().activeRepositoryPath).toBe('/selected-b');
+    expect(directCheckpointResolveIdMock).not.toHaveBeenCalled();
+    expect(directCheckpointEnsureMock).not.toHaveBeenCalled();
+    expect(bindManualCheckpointMock).not.toHaveBeenCalled();
+    expect(setActiveRootMock).not.toHaveBeenCalled();
+  });
+
   it('rechecks persisted Architect admission after waiting for another task on the same project', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
     appStoreState.selectedTaskId = 'task-b';

@@ -64,6 +64,7 @@ export interface PlanLifecycleCleanupResource {
   repoPath: string;
   branchName: string;
   expectedCommit: string | null;
+  intendedCommit?: string;
   worktreeKey?: string;
   expectedWorktreePath?: string;
 }
@@ -123,6 +124,7 @@ const isCleanupResource = (value: unknown): value is PlanLifecycleCleanupResourc
     typeof resource.repoPath === 'string' &&
     typeof resource.branchName === 'string' &&
     (typeof resource.expectedCommit === 'string' || resource.expectedCommit === null) &&
+    (resource.intendedCommit === undefined || (typeof resource.intendedCommit === 'string' && resource.intendedCommit.length > 0)) &&
     (resource.worktreeKey === undefined || typeof resource.worktreeKey === 'string') &&
     (resource.expectedWorktreePath === undefined || typeof resource.expectedWorktreePath === 'string');
 };

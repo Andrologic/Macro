@@ -89,75 +89,22 @@ describe('resolvePreparedTaskWorktreePath', () => {
     expect(directCheckpointEnsure).not.toHaveBeenCalled();
   });
 
-  it('derives a missing checkpoint id for a legacy direct target without using Git', async () => {
-    const directCheckpointEnsure = mock(async () => 'checkpoint-head');
-    const directCheckpointResolveId = mock(async () => 'task-direct-0000000000000001');
+  it('resolves a legacy direct target without creating or binding its checkpoint', async () => {
+    const directCheckpointEnsure = mock(async () => 'head');
+    const directCheckpointResolveId = mock(async () => 'checkpoint');
     const workspaceBindManualFeatureDirectCheckpoint = mock(async () => ({} as never));
-    const gitWorktreeInspect = mock(async () => ({
-      status: 'absent' as const,
-      taskId: 'project-direct::direct',
-      worktreePath: '',
-      branchName: 'direct',
-      isDirty: null,
-    }));
-
-    const legacyTarget: TaskExecutionTarget = {
-      ...directTarget,
-      executionMode: undefined,
-      checkpointId: undefined,
-    };
-    const resolved = await resolvePreparedTaskWorktreePath({
-      taskId: 'task-direct',
-      target: legacyTarget,
-      branchWorktrees: {},
-      getProjectById: () => ({
-        path: 'C:/projects/direct',
-        directEdit: true,
-        gitSetupState: 'not_git',
-      }),
-      tauri: {
-        isTauriAvailable: () => true,
-        gitWorktreeInspect,
-        directCheckpointEnsure,
-        directCheckpointResolveId,
-        workspaceBindManualFeatureDirectCheckpoint,
-      },
+    const target = { ...directTarget, checkpointId: undefined };
+    const result = await resolvePreparedTaskWorktreePath({
+      taskId: 'task-direct', target, branchWorktrees: {},
+      getProjectById: () => ({ path: '/direct', directEdit: true, gitSetupState: 'not_git' }),
+      tauri: { isTauriAvailable: () => true, gitWorktreeInspect: mock(async () => ({} as never)),
+        directCheckpointEnsure, directCheckpointResolveId, workspaceBindManualFeatureDirectCheckpoint },
     });
-
-    expect(resolved).toBe('C:/projects/direct');
-    expect(directCheckpointEnsure).toHaveBeenCalledWith({
-      taskId: 'task-direct',
-      projectPath: 'C:/projects/direct',
-      checkpointId: 'task-direct-0000000000000001',
-    });
-    expect(workspaceBindManualFeatureDirectCheckpoint).toHaveBeenCalledWith({
-      taskId: 'task-direct',
-      projectId: 'project-direct',
-      checkpointId: 'task-direct-0000000000000001',
-    });
-    expect(legacyTarget.checkpointId).toBe('task-direct-0000000000000001');
-    expect(legacyTarget.executionMode).toBe('direct');
-    await resolvePreparedTaskWorktreePath({
-      taskId: 'task-direct',
-      target: legacyTarget,
-      branchWorktrees: {},
-      getProjectById: () => ({
-        path: 'C:/projects/direct',
-        directEdit: true,
-        gitSetupState: 'not_git',
-      }),
-      tauri: {
-        isTauriAvailable: () => true,
-        gitWorktreeInspect,
-        directCheckpointEnsure,
-        directCheckpointResolveId,
-        workspaceBindManualFeatureDirectCheckpoint,
-      },
-    });
-    expect(directCheckpointResolveId).toHaveBeenCalledTimes(1);
-    expect(directCheckpointEnsure).toHaveBeenCalledTimes(1);
-    expect(workspaceBindManualFeatureDirectCheckpoint).toHaveBeenCalledTimes(1);
-    expect(gitWorktreeInspect).not.toHaveBeenCalled();
+    expect(result).toBe('/direct');
+    expect(directCheckpointEnsure).not.toHaveBeenCalled();
+    expect(directCheckpointResolveId).not.toHaveBeenCalled();
+    expect(workspaceBindManualFeatureDirectCheckpoint).not.toHaveBeenCalled();
+    expect(target.checkpointId).toBeUndefined();
   });
 
   it('does not create a checkpoint for a direct target whose project is unavailable', async () => {
@@ -224,92 +171,4 @@ describe('resolvePreparedTaskWorktreePath', () => {
     expect(gitWorktreeInspect).not.toHaveBeenCalled();
   });
 
-  it('preserves a structured checkpoint failure while resolving a legacy target', async () => {
-    const directCheckpointResolveId = mock(async () => {
-      throw {
-        code: 'DIRECT_CHECKPOINT_CORRUPT',
-        message: "Macro's internal review checkpoint is incomplete.",
-        details: { checkpointId: 'task-direct-0000000000000001' },
-      };
-    });
-    const gitWorktreeInspect = mock(async () => ({
-      status: 'absent' as const,
-      taskId: 'project-direct::direct',
-      worktreePath: '',
-      branchName: 'direct',
-      isDirty: null,
-    }));
-
-    await expect(resolvePreparedTaskWorktreePath({
-      taskId: 'task-direct',
-      target: { ...directTarget, checkpointId: undefined },
-      branchWorktrees: {},
-      getProjectById: () => ({
-        path: 'C:/projects/direct',
-        directEdit: true,
-        gitSetupState: 'not_git',
-      }),
-      tauri: {
-        isTauriAvailable: () => true,
-        gitWorktreeInspect,
-        directCheckpointEnsure: mock(async () => 'checkpoint-head'),
-        directCheckpointResolveId,
-        workspaceBindManualFeatureDirectCheckpoint: mock(async () => ({} as never)),
-      },
-    })).rejects.toMatchObject({
-      code: 'DIRECT_CHECKPOINT_CORRUPT',
-      details: {
-        checkpointId: 'task-direct-0000000000000001',
-        reviewProjectId: 'project-direct',
-      },
-    });
-    expect(gitWorktreeInspect).not.toHaveBeenCalled();
-  });
-
-  it('does not bind a legacy identity when checkpoint initialization fails', async () => {
-    const initializationError = {
-      code: 'DIRECT_CHECKPOINT_CORRUPT',
-      message: 'Macro could not initialize its internal review checkpoint.',
-      details: {
-        checkpointId: 'task-direct-0000000000000001',
-        operation: 'direct_checkpoint_init_tree_write',
-        acceptedHistoryAtRisk: false,
-      },
-    };
-    const bindCheckpoint = mock(async () => ({} as never));
-    const target: TaskExecutionTarget = { ...directTarget, checkpointId: undefined };
-
-    await expect(resolvePreparedTaskWorktreePath({
-      taskId: 'task-direct',
-      target,
-      branchWorktrees: {},
-      getProjectById: () => ({
-        path: 'C:/projects/direct',
-        directEdit: true,
-        gitSetupState: 'not_git',
-      }),
-      tauri: {
-        isTauriAvailable: () => true,
-        gitWorktreeInspect: mock(async () => ({
-          status: 'absent' as const,
-          taskId: 'project-direct::direct',
-          worktreePath: '',
-          branchName: 'direct',
-          isDirty: null,
-        })),
-        directCheckpointResolveId: mock(async () => 'task-direct-0000000000000001'),
-        directCheckpointEnsure: mock(async () => { throw initializationError; }),
-        workspaceBindManualFeatureDirectCheckpoint: bindCheckpoint,
-      },
-    })).rejects.toMatchObject({
-      ...initializationError,
-      details: {
-        ...initializationError.details,
-        reviewProjectId: 'project-direct',
-      },
-    });
-
-    expect(bindCheckpoint).not.toHaveBeenCalled();
-    expect(target.checkpointId).toBeUndefined();
-  });
 });

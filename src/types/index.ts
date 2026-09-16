@@ -137,6 +137,7 @@ export interface PlanNode {
   projectIds?: string[];
   /** Mode snapshot used when this plan target was accepted. */
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
+  directCheckpointIdsByProjectId?: Record<string, string>;
   estimatedTime?: string;
   archivedAt?: string | null;
   archiveReason?: string | null;

@@ -964,7 +964,17 @@ export const createArchitectGitFlowService = (
           const inspection = await deps.tauri.gitWorktreeInspect({ repoPath: resource.repoPath,
             taskId: resource.worktreeKey!, branchName: resource.branchName, readOnly: true });
           if (inspection.status !== 'absent') {
-            if (!resource.expectedCommit) throw new Error('Creation outcome is unconfirmed; inspect this resource before cleanup.');
+            if (!resource.expectedCommit) {
+              const branches = await deps.tauri.gitBranchList(resource.repoPath);
+              const actualCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit;
+              if (!resource.intendedCommit || actualCommit !== resource.intendedCommit ||
+                  inspection.status !== 'ready' || inspection.branchName !== resource.branchName ||
+                  inspection.worktreePath !== resource.expectedWorktreePath || inspection.isDirty !== false) {
+                throw new Error('Creation outcome does not match the recorded intent; inspect this resource before cleanup.');
+              }
+              resource.expectedCommit = resource.intendedCommit;
+              await upsertPlanLifecycleSaga(saga);
+            }
             await deps.tauri.gitWorktreeRemove({ repoPath: resource.repoPath, taskId: resource.worktreeKey!,
             branchName: resource.branchName, force: false, expectedCommit: resource.expectedCommit,
             expectedWorktreePath: resource.expectedWorktreePath });
@@ -976,7 +986,14 @@ export const createArchitectGitFlowService = (
           }
           const branches = await deps.tauri.gitBranchList(resource.repoPath);
           if (branches.local.some((branch) => branch.name === resource.branchName)) {
-            if (!resource.expectedCommit) throw new Error('Creation outcome is unconfirmed; inspect this resource before cleanup.');
+            if (!resource.expectedCommit) {
+              const actualCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit;
+              if (!resource.intendedCommit || actualCommit !== resource.intendedCommit) {
+                throw new Error('Creation outcome does not match the recorded intent; inspect this resource before cleanup.');
+              }
+              resource.expectedCommit = resource.intendedCommit;
+              await upsertPlanLifecycleSaga(saga);
+            }
             await deps.tauri.gitBranchDelete({ repoPath: resource.repoPath, branchName: resource.branchName,
               force: true, expectedCommit: resource.expectedCommit });
           }
@@ -1676,7 +1693,11 @@ export const createArchitectGitFlowService = (
     };
     const confirmResource = async (resource: PlanLifecycleCleanupResource, worktreePath?: string) => {
       const branches = await deps.tauri.gitBranchList(resource.repoPath);
-      resource.expectedCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit ?? null;
+      const actualCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit;
+      if (actualCommit && resource.intendedCommit && actualCommit !== resource.intendedCommit) {
+        throw new Error('Created resource moved away from its recorded provisioning commit.');
+      }
+      resource.expectedCommit = actualCommit ?? null;
       if (worktreePath) resource.expectedWorktreePath = worktreePath;
       await upsertPlanLifecycleSaga(saga);
     };
@@ -1685,6 +1706,12 @@ export const createArchitectGitFlowService = (
       for (const repository of repositories) {
         const branches = await deps.tauri.gitBranchList(repository.repoPath);
         const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+        const commits = new Map([...branches.local, ...branches.remote].map((branch) => [branch.name, branch.commit]));
+        const requireCommit = (ref: string): string => {
+          const commit = commits.get(ref);
+          if (!commit) throw new Error(`Unable to resolve provisioning source ${ref}.`);
+          return commit;
+        };
         const createdFeatureBranches: string[] = [];
         const existingFeatureBranches: string[] = [];
         const repositoryPlanBranchName = renderPlanBranchNameForProject({
@@ -1706,13 +1733,15 @@ export const createArchitectGitFlowService = (
             deps.getAppState().getProjectById(repository.projectId)?.path || repository.projectId
           );
           const intent = await recordIntent({ kind: 'branch', projectId: repository.projectId,
-            repoPath: repository.repoPath, branchName: repositoryPlanBranchName, expectedCommit: null });
+            repoPath: repository.repoPath, branchName: repositoryPlanBranchName, expectedCommit: null,
+            intendedCommit: requireCommit(fromRef) });
           await deps.tauri.gitBranchCreate({
             repoPath: repository.repoPath,
             branchName: repositoryPlanBranchName,
-            fromRef,
+            fromRef: intent.intendedCommit!,
           });
           await confirmResource(intent);
+          commits.set(repositoryPlanBranchName, intent.expectedCommit || intent.intendedCommit!);
           localBranchNames.add(repositoryPlanBranchName);
           createdPlanBranch = true;
         }
@@ -1724,13 +1753,15 @@ export const createArchitectGitFlowService = (
           }
 
           const intent = await recordIntent({ kind: 'branch', projectId: repository.projectId,
-            repoPath: repository.repoPath, branchName: featureBranch, expectedCommit: null });
+            repoPath: repository.repoPath, branchName: featureBranch, expectedCommit: null,
+            intendedCommit: requireCommit(repositoryPlanBranchName) });
           await deps.tauri.gitBranchCreate({
             repoPath: repository.repoPath,
             branchName: featureBranch,
-            fromRef: repositoryPlanBranchName,
+            fromRef: intent.intendedCommit!,
           });
           await confirmResource(intent);
+          commits.set(featureBranch, intent.expectedCommit || intent.intendedCommit!);
           localBranchNames.add(featureBranch);
           createdFeatureBranches.push(featureBranch);
         }
@@ -1748,7 +1779,7 @@ export const createArchitectGitFlowService = (
 
           const intent = await recordIntent({ kind: 'worktree', projectId: repository.projectId,
             repoPath: repository.repoPath, branchName: featureBranch, worktreeKey,
-            expectedCommit: null, expectedWorktreePath: inspection.worktreePath });
+            expectedCommit: null, intendedCommit: requireCommit(featureBranch), expectedWorktreePath: inspection.worktreePath });
           const ensuredWorktree = await deps.tauri.gitWorktreeCreate({
             repoPath: repository.repoPath,
             taskId: worktreeKey,

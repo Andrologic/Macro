@@ -60,35 +60,11 @@ export const resolvePreparedTaskWorktreePath = async (params: {
       target: params.target,
     });
     if (resolution.mode === 'direct') {
-      if (params.target.checkpointId) {
-        return repoPath;
-      }
-      if (
-        !params.taskId ||
-        !params.tauri.directCheckpointEnsure ||
-        !params.tauri.directCheckpointResolveId ||
-        !params.tauri.workspaceBindManualFeatureDirectCheckpoint
-      ) {
-        return null;
-      }
-      const checkpointId = await params.tauri.directCheckpointResolveId({
-        taskId: params.taskId,
-        projectPath: repoPath,
-      });
-      await params.tauri.directCheckpointEnsure({
-        taskId: params.taskId,
-        projectPath: repoPath,
-        checkpointId,
-      });
-      await params.tauri.workspaceBindManualFeatureDirectCheckpoint({
-        taskId: params.taskId,
-        projectId: params.target.projectId,
-        checkpointId,
-      });
-      params.target.executionMode = 'direct';
-      params.target.checkpointId = checkpointId;
+      // Selection and inspection are read-only. Startup owns checkpoint binding
+      // and preparation, including for legacy targets without an identity.
       return repoPath;
     }
+
     if (resolution.mode !== 'git') {
       return null;
     }

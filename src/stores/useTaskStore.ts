@@ -1643,19 +1643,25 @@ const ensureTargetWorktreePath = async (
         })
       );
     }
-    await tauriIpc.workspaceSetActiveRoot(projectPath);
     if (!target.checkpointId) {
-      const preparedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
-      if (!preparedPath) {
-        throw toServiceError(
-          tTask(
-            'implement.errors.cannotResolveTaskProject',
-            'Cannot resolve project for task {{taskId}}',
-            { taskId: task.id }
-          )
-        );
+      const checkpointId = await tauriIpc.directCheckpointResolveId({ taskId: task.id, projectPath });
+      // Persist ownership before creating the checkpoint. An interrupted ensure
+      // can then be retried through the task's durable identity.
+      if (task.task_source === 'architect' && task.plan_id) {
+        await updateArchitectPlan({
+          branchName: getTaskPlanStorageBranch(task), planId: task.plan_id,
+          directCheckpointBinding: { taskId: getTaskBusinessId(task), projectId: target.projectId, checkpointId },
+          setActive: false,
+        });
+      } else if (isManualStandaloneTask(task)) {
+        await tauriIpc.workspaceBindManualFeatureDirectCheckpoint({
+          taskId: task.id, projectId: target.projectId, checkpointId,
+        });
+      } else {
+        throw new Error('Direct checkpoint binding requires a durable task.');
       }
-      return preparedPath;
+      target.executionMode = 'direct';
+      target.checkpointId = checkpointId;
     }
     await tauriIpc.directCheckpointEnsure({
       taskId: task.id,
@@ -3526,7 +3532,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const selectionContextKey = `${appStateAfterSelection.selectedGroupId ?? ''}::${appStateAfterSelection.selectedProjectId ?? ''}`;
     const isCurrentTaskActivation = (): boolean => {
       const currentAppState = useAppStore.getState();
-      return requestId === taskActivationRequestId &&
+      const currentTask = task ? get().getTaskById(task.id) : undefined;
+      return Boolean(currentTask && task &&
+        getTaskStatusMutationIdentity(currentTask) === getTaskStatusMutationIdentity(task)) &&
+        requestId === taskActivationRequestId &&
         currentAppState.selectedTaskId === selectedTaskIdAtActivation &&
         `${currentAppState.selectedGroupId ?? ''}::${currentAppState.selectedProjectId ?? ''}` === selectionContextKey;
     };
@@ -3616,7 +3625,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     let knownWorktree = primaryTarget
       ? await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
       : null;
-    if (!knownWorktree && primaryTarget && shouldRestoreExecutionWorkspace) {
+    if (!isCurrentTaskActivation()) return;
+    if (!knownWorktree && primaryTarget && targetMode?.mode !== 'direct' && shouldRestoreExecutionWorkspace) {
       knownWorktree = await ensureTargetWorktreePath(
         executionTask,
         primaryTarget,

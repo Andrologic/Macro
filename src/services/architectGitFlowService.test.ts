@@ -123,7 +123,7 @@ const createGitStatus = (overrides: Partial<MockGitStatus> = {}): MockGitStatus 
 
 const createGitBranches = (names: string[]): { current: string; local: MockGitBranch[]; remote: MockGitBranch[] } => ({
   current: 'develop',
-  local: names.map((name) => ({ name, is_head: name === 'develop', commit: `${name}-sha` })),
+  local: names.map((name) => ({ name, is_head: name === 'develop', commit: [...gitBranchCreateMock.mock.calls].reverse().find(([params]) => params.branchName === name)?.[0].fromRef ?? `${name}-sha` })),
   remote: [],
 });
 
@@ -893,10 +893,10 @@ describe('architectGitFlowService', () => {
     });
 
     expect(gitBranchCreateMock.mock.calls.map(([params]) => params)).toEqual([
-      { repoPath: '/repos/web', branchName: 'plan/checkout', fromRef: 'develop' },
-      { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', fromRef: 'plan/checkout' },
-      { repoPath: '/repos/api', branchName: 'roadmap/checkout', fromRef: 'develop' },
-      { repoPath: '/repos/api', branchName: 'work/checkout/checkout-api', fromRef: 'roadmap/checkout' },
+      { repoPath: '/repos/web', branchName: 'plan/checkout', fromRef: 'develop-sha' },
+      { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', fromRef: 'develop-sha' },
+      { repoPath: '/repos/api', branchName: 'roadmap/checkout', fromRef: 'develop-sha' },
+      { repoPath: '/repos/api', branchName: 'work/checkout/checkout-api', fromRef: 'develop-sha' },
     ]);
 
     expect(result.provision).toEqual({
@@ -1097,6 +1097,73 @@ describe('architectGitFlowService', () => {
     expect(branches.get('/repos/api')).toEqual(['develop', 'plan/checkout', 'feature/checkout/checkout-api']);
     expect([...worktrees.values()].sort()).toEqual(['feature/checkout/checkout-api', 'feature/checkout/checkout-web']);
     expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
+  });
+
+  it.each(['branch', 'worktree'] as const)('recovers an interrupted %s creation before its confirmation', async (kind) => {
+    currentPlan.status = 'draft';
+    let interrupted = false;
+    let recovery = false;
+    const branchCommits = new Map<string, string>(kind === 'branch'
+      ? [['develop', 'creation-head']]
+      : [['develop', 'creation-head'], ['plan/checkout', 'creation-head'],
+         ['feature/checkout/checkout-web', 'creation-head'], ['feature/checkout/checkout-api', 'creation-head']]);
+    gitBranchListMock.mockImplementation(async () => {
+      if (interrupted && !recovery) throw new Error('process unavailable');
+      return { current: 'develop', remote: [], local: [...branchCommits].map(([name, commit]) => ({ name, commit, is_head: false })) };
+    });
+    gitBranchCreateMock.mockImplementation(async ({ branchName, fromRef }) => {
+      const journal = JSON.parse(persistedPlanLifecycleSagas)[0];
+      expect(journal.cleanupResources.at(-1)).toMatchObject({ intendedCommit: fromRef, expectedCommit: null });
+      branchCommits.set(branchName, fromRef);
+      interrupted = true;
+      throw new Error('response lost before confirmation');
+    });
+    gitWorktreeInspectMock.mockImplementation(async (params) => {
+      if (interrupted && !recovery) throw new Error('process unavailable');
+      return { taskId: params.taskId, worktreePath: '/repos/web/worktree',
+        branchName: interrupted ? params.branchName! : null, status: interrupted ? 'ready' : 'absent', isDirty: false };
+    });
+    gitWorktreeCreateMock.mockImplementation(async () => {
+      expect(JSON.parse(persistedPlanLifecycleSagas)[0].cleanupResources.at(-1))
+        .toMatchObject({ intendedCommit: 'creation-head', expectedCommit: null, expectedWorktreePath: '/repos/web/worktree' });
+      interrupted = true;
+      throw new Error('response lost before confirmation');
+    });
+    await expect(architectGitFlowService.validatePlanAndProvisionBranches({
+      branchName: 'develop', planId: currentPlan.id,
+    })).rejects.toThrow('response lost before confirmation');
+    expect(currentPlan.status).toBe('draft');
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    recovery = true;
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
+    if (kind === 'branch') expect(gitBranchDeleteMock).toHaveBeenCalledWith(expect.objectContaining({ expectedCommit: 'creation-head' }));
+    else expect(gitWorktreeRemoveMock).toHaveBeenCalledWith(expect.objectContaining({
+      expectedCommit: 'creation-head', expectedWorktreePath: '/repos/web/worktree', force: false,
+    }));
+  });
+
+  it.each(['commit', 'path', 'branch', 'dirty'] as const)('preserves an unconfirmed worktree with mismatched %s', async (mismatch) => {
+    currentPlan.status = 'draft';
+    persistLifecycleSaga({ operation: 'provision', cleanupResources: [{
+      kind: 'worktree', projectId: 'web', repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web',
+      expectedCommit: null, intendedCommit: 'creation-head', worktreeKey: 'interrupted',
+      expectedWorktreePath: '/repos/web/worktree',
+    }] });
+    gitBranchListMock.mockImplementation(async () => ({ current: 'develop', remote: [], local: [{
+      name: 'feature/checkout/checkout-web', commit: mismatch === 'commit' ? 'new-head' : 'creation-head', is_head: false,
+    }] }));
+    gitWorktreeInspectMock.mockImplementation(async (params) => ({
+      taskId: params.taskId, worktreePath: mismatch === 'path' ? '/other' : '/repos/web/worktree',
+      branchName: mismatch === 'branch' ? 'feature/other' : 'feature/checkout/checkout-web',
+      status: 'ready', isDirty: mismatch === 'dirty',
+    }));
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
   });
 
   it('journals failed rollback resources and resumes only their guarded cleanup', async () => {
@@ -1380,10 +1447,10 @@ describe('architectGitFlowService', () => {
     });
 
     expect(gitBranchCreateMock.mock.calls.map(([params]) => params)).toEqual([
-      { repoPath: '/repos/web', branchName: 'release/v0.2.0', fromRef: 'develop' },
-      { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', fromRef: 'release/v0.2.0' },
-      { repoPath: '/repos/api', branchName: 'release/0.2.0', fromRef: 'develop' },
-      { repoPath: '/repos/api', branchName: 'feature/checkout/checkout-api', fromRef: 'release/0.2.0' },
+      { repoPath: '/repos/web', branchName: 'release/v0.2.0', fromRef: 'develop-sha' },
+      { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', fromRef: 'develop-sha' },
+      { repoPath: '/repos/api', branchName: 'release/0.2.0', fromRef: 'develop-sha' },
+      { repoPath: '/repos/api', branchName: 'feature/checkout/checkout-api', fromRef: 'develop-sha' },
     ]);
     expect(result.plan.predictedBranches).toEqual(expect.arrayContaining([
       expect.objectContaining({ projectId: 'web', parentBranch: 'release/v0.2.0' }),

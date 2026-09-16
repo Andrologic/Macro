@@ -5170,6 +5170,7 @@ export const updateArchitectPlan = async (input: {
   contextProjectIds?: string[];
   targetBranchesByProjectId?: Record<string, string>;
   expectedProjectIds?: string[];
+  directCheckpointBinding?: { taskId: string; projectId: string; checkpointId: string };
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
@@ -5232,7 +5233,31 @@ export const updateArchitectPlan = async (input: {
 
   const requestedLabel = normalizePlanLabel(input.label ?? input.title);
 
-  const nextNodes = input.nodes !== undefined ? normalizePlanNodes(input.nodes) : existing.nodes;
+  if (input.directCheckpointBinding) {
+    const binding = input.directCheckpointBinding;
+    const node = existing.nodes.find((candidate) => candidate.id === binding.taskId);
+    if (!node || node.type !== 'task' || node.executionModesByProjectId?.[binding.projectId] !== 'direct' ||
+        !normalizeProjectIds(node.projectIds, node.projectId).includes(binding.projectId)) {
+      throw new Error('Direct checkpoint target does not belong to this Architect task.');
+    }
+    if (!binding.checkpointId.trim()) throw new Error('A direct checkpoint identity is required.');
+    const previous = node.directCheckpointIdsByProjectId?.[binding.projectId];
+    if (previous && previous !== binding.checkpointId) {
+      throw new Error('Direct checkpoint identity is already bound to another value.');
+    }
+    input = { ...input, nodes: existing.nodes.map((candidate) => candidate.id === binding.taskId
+      ? { ...candidate, directCheckpointIdsByProjectId: {
+          ...candidate.directCheckpointIdsByProjectId, [binding.projectId]: binding.checkpointId,
+        } }
+      : candidate) };
+  }
+  const nextNodes = input.nodes !== undefined ? normalizePlanNodes(input.nodes).map((node) => {
+    const previous = existing.nodes.find((candidate) => candidate.id === node.id);
+    const binding = input.directCheckpointBinding?.taskId === node.id ? input.directCheckpointBinding : undefined;
+    return { ...node, directCheckpointIdsByProjectId: binding
+      ? { ...previous?.directCheckpointIdsByProjectId, [binding.projectId]: binding.checkpointId }
+      : previous?.directCheckpointIdsByProjectId };
+  }) : existing.nodes;
   const nextPredictedBranches =
     input.predictedBranches !== undefined
       ? normalizePlanPredictedBranches(input.predictedBranches)
