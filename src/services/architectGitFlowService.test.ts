@@ -962,13 +962,18 @@ describe('architectGitFlowService', () => {
   });
 
   it('rolls back only branches created by a failed multi-repository provision', async () => {
-    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+    const created = new Map<string, string[]>();
+    gitBranchListMock.mockImplementation(async (repo) => createGitBranches(['develop', ...(created.get(repo) ?? [])]));
+    gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
+      created.set(repoPath, [...(created.get(repoPath) ?? []), branchName]);
+    });
     let createCount = 0;
-    gitBranchCreateMock.mockImplementation(async () => {
+    gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
       createCount += 1;
       if (createCount === 3) {
         throw new Error('API repository is unavailable');
       }
+      created.set(repoPath, [...(created.get(repoPath) ?? []), branchName]);
     });
 
     await expect(architectGitFlowService.validatePlanAndProvisionBranches({
@@ -981,18 +986,24 @@ describe('architectGitFlowService', () => {
         repoPath: '/repos/web',
         branchName: 'feature/checkout/checkout-web',
         force: true,
+        expectedCommit: expect.any(String),
       },
       {
         repoPath: '/repos/web',
         branchName: 'plan/checkout',
         force: true,
+        expectedCommit: expect.any(String),
       },
     ]);
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
 
   it('rolls back worktrees and only newly created branches when metadata validation fails', async () => {
-    gitBranchListMock.mockImplementation(async () => createGitBranches(['develop']));
+    const created = new Map<string, string[]>();
+    gitBranchListMock.mockImplementation(async (repo) => createGitBranches(['develop', ...(created.get(repo) ?? [])]));
+    gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
+      created.set(repoPath, [...(created.get(repoPath) ?? []), branchName]);
+    });
     gitWorktreeInspectMock.mockImplementation(async (params) => ({
       taskId: params.taskId,
       worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
@@ -1017,6 +1028,36 @@ describe('architectGitFlowService', () => {
       'feature/checkout/checkout-web',
       'plan/checkout',
     ]);
+  });
+
+  it('journals failed rollback resources and resumes only their guarded cleanup', async () => {
+    currentPlan.status = 'draft';
+    const created = new Map<string, string[]>();
+    gitBranchListMock.mockImplementation(async (repo) => createGitBranches(['develop', ...(created.get(repo) ?? [])]));
+    gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
+      const journal = JSON.parse(persistedPlanLifecycleSagas);
+      expect(journal[0].cleanupResources).toContainEqual(expect.objectContaining({ repoPath, branchName, expectedCommit: null }));
+      created.set(repoPath, [...(created.get(repoPath) ?? []), branchName]);
+    });
+    gitWorktreeInspectMock.mockImplementation(async (params) => ({ taskId: params.taskId,
+      worktreePath: `${params.repoPath}/worktree`, branchName: params.branchName ?? null, status: 'absent', isDirty: null }));
+    updateArchitectPlanMock.mockImplementationOnce(async () => { throw new Error('metadata failure'); });
+    gitWorktreeRemoveMock.mockImplementationOnce(async () => { throw new Error('worktree is dirty'); });
+    gitBranchDeleteMock.mockImplementationOnce(async () => { throw new Error('branch is locked'); });
+    await expect(architectGitFlowService.validatePlanAndProvisionBranches({ branchName: 'feature/implement', planId: 'plan-1' }))
+      .rejects.toThrow('Git provisioning cleanup remains pending');
+    const [pending] = JSON.parse(persistedPlanLifecycleSagas);
+    expect(pending.operation).toBe('provision');
+    expect(pending.lastError).toContain('worktree is dirty');
+    expect(pending.lastError).toContain('branch is locked');
+    expect(pending.cleanupResources.length).toBeGreaterThan(0);
+    gitWorktreeRemoveMock.mockClear();
+    gitBranchDeleteMock.mockClear();
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
+    for (const [params] of gitWorktreeRemoveMock.mock.calls) {
+      expect(params).toMatchObject({ force: false, expectedCommit: expect.any(String), expectedWorktreePath: expect.any(String) });
+    }
   });
 
   it('does not roll back a worktree reused after an absent inspection race', async () => {

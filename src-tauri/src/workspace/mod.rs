@@ -2366,6 +2366,54 @@ fn is_active_direct_feature_for_projects(
         && overlaps_selected_projects
 }
 
+// Call while holding the workspace state lock so admission and persistence
+// cannot race between windows.
+fn assert_direct_feature_admission(state: &WorkspaceState, task_id: &str) -> Result<()> {
+    let Some(feature) = state
+        .manual_features
+        .iter()
+        .find(|feature| feature.id == task_id)
+    else {
+        return Ok(());
+    };
+    let direct_project_ids: HashSet<String> = feature
+        .execution_targets
+        .iter()
+        .filter(|target| {
+            target.execution_mode.as_deref() == Some("direct")
+                || target.execution_kind.as_deref() == Some("repository_root")
+        })
+        .map(|target| target.project_id.clone())
+        .chain(
+            feature
+                .project_ids
+                .iter()
+                .filter(|id| {
+                    feature.task_kind.as_deref() == Some("direct")
+                        || find_project_by_id_in_state(state, id).is_some_and(|project| {
+                            project.direct_edit
+                                && project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT
+                        })
+                })
+                .cloned(),
+        )
+        .collect();
+    if direct_project_ids.is_empty() {
+        return Ok(());
+    }
+    let project_ids = direct_project_ids.iter().cloned().collect::<Vec<_>>();
+    if let Some(other) = state.manual_features.iter().find(|other| {
+        other.id != task_id
+            && is_active_direct_feature_for_projects(other, &project_ids, &direct_project_ids)
+    }) {
+        return Err(BackendError::Validation(format!(
+            "Direct-edit project already has an active task: {}",
+            other.title
+        )));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn create_manual_feature_draft(
     workspace_path: &Path,
@@ -2608,6 +2656,7 @@ pub async fn finalize_manual_feature(
             .enumerate()
             .any(|(index, candidate)| {
                 index != feature_index
+                    && candidate.task_kind.as_deref() != Some("direct")
                     && candidate
                         .feature_slug
                         .as_ref()
@@ -2783,6 +2832,7 @@ pub(crate) async fn revert_manual_feature_to_draft_with_existing_lifecycle_lock(
     }
 
     let preserve_direct_target = feature.task_kind.as_deref() == Some("direct");
+    let was_draft = feature.draft;
     feature.draft = true;
     feature.title = title
         .map(str::trim)
@@ -2800,6 +2850,18 @@ pub(crate) async fn revert_manual_feature_to_draft_with_existing_lifecycle_lock(
     feature.merged_at = None;
     if !preserve_direct_target {
         feature.execution_targets = Vec::new();
+    } else if !was_draft {
+        // The old generation is removed by the durable cleanup saga. Keep its
+        // tombstone and give this retained draft a fresh checkpoint identity.
+        for target in &mut feature.execution_targets {
+            if target.execution_mode.as_deref() == Some("direct") {
+                target.checkpoint_id = Some(format!(
+                    "{}-{}",
+                    metadata::direct_checkpoint_task_segment(normalized_task_id),
+                    &uuid::Uuid::new_v4().simple().to_string()[..16]
+                ));
+            }
+        }
     }
     feature.merge_workflow = None;
     feature.updated_at = Utc::now().to_rfc3339();
@@ -2991,6 +3053,8 @@ pub async fn restore_manual_feature(
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
 
+    assert_direct_feature_admission(&state, normalized_task_id)?;
+
     let feature = state
         .manual_features
         .iter_mut()
@@ -3087,6 +3151,10 @@ pub async fn update_standalone_task_status(
         return Err(BackendError::Validation(
             "Task status update requires a task id and status".to_string(),
         ));
+    }
+
+    if normalized_status != "Completed" {
+        assert_direct_feature_admission(&state, normalized_task_id)?;
     }
 
     if let Some(feature) = state
@@ -11695,6 +11763,217 @@ mod tests {
 
         assert!(
             matches!(result, Err(BackendError::Validation(message)) if message.contains("Refresh and try again"))
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_task_lifecycle_retry_restore_and_slug_admission() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join("metadata");
+        let direct_path = temp.path().join("direct");
+        let git_path = temp.path().join("git");
+        stdfs::create_dir_all(&direct_path).unwrap();
+        stdfs::create_dir_all(&git_path).unwrap();
+        init_git_repo(&git_path, "main", &[]);
+        let mut direct = make_project("direct-project", direct_path.to_str().unwrap());
+        direct.direct_edit = true;
+        direct.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
+        let state = WorkspaceState {
+            standalone_projects: vec![
+                direct,
+                make_project("git-project", git_path.to_str().unwrap()),
+            ],
+            ..WorkspaceState::default()
+        };
+        persist_sanitized_state(temp.path(), &metadata_root, state, "test")
+            .await
+            .unwrap();
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "conversation-a",
+            &["direct-project".to_string()],
+            &[],
+            None,
+            None,
+            None,
+            "direct",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let finalized = finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            None,
+            "Direct task",
+            "Description",
+            "shared-slug",
+            "direct",
+        )
+        .await
+        .unwrap();
+        let old_checkpoint = finalized.execution_targets[0]
+            .checkpoint_id
+            .clone()
+            .unwrap();
+        let reverted = revert_manual_feature_to_draft(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let new_checkpoint = reverted.execution_targets[0].checkpoint_id.clone().unwrap();
+        assert_ne!(old_checkpoint, new_checkpoint);
+        assert_eq!(new_checkpoint.rsplit_once('-').unwrap().1.len(), 16);
+        let repeated = revert_manual_feature_to_draft(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repeated.execution_targets[0].checkpoint_id.as_deref(),
+            Some(new_checkpoint.as_str())
+        );
+        let retried = finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            None,
+            "Direct task",
+            "Description",
+            "shared-slug",
+            "direct",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            retried.execution_targets[0].checkpoint_id.as_deref(),
+            Some(new_checkpoint.as_str())
+        );
+
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "git-task",
+            "conversation-b",
+            &["git-project".to_string()],
+            &[],
+            Some("main"),
+            None,
+            None,
+            "feature",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "git-task",
+            None,
+            "Git task",
+            "Description",
+            "shared-slug",
+            "feature",
+        )
+        .await
+        .unwrap();
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "git-task-2",
+            "conversation-c",
+            &["git-project".to_string()],
+            &[],
+            Some("main"),
+            None,
+            None,
+            "feature",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "git-task-2",
+            None,
+            "Git task 2",
+            "Description",
+            "shared-slug",
+            "feature"
+        )
+        .await
+        .is_err());
+
+        archive_manual_feature(temp.path(), &metadata_root, "direct-task", None, None)
+            .await
+            .unwrap();
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "direct-task-2",
+            "conversation-d",
+            &["direct-project".to_string()],
+            &[],
+            None,
+            None,
+            None,
+            "direct",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            restore_manual_feature(temp.path(), &metadata_root, "direct-task")
+                .await
+                .is_err()
+        );
+        assert!(update_standalone_task_status(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "InProgress"
+        )
+        .await
+        .is_err());
+        let state = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .unwrap();
+        assert!(state
+            .manual_features
+            .iter()
+            .find(|feature| feature.id == "direct-task")
+            .unwrap()
+            .archived_at
+            .is_some());
+        archive_manual_feature(temp.path(), &metadata_root, "direct-task-2", None, None)
+            .await
+            .unwrap();
+        let (first, second) = tokio::join!(
+            restore_manual_feature(temp.path(), &metadata_root, "direct-task"),
+            restore_manual_feature(temp.path(), &metadata_root, "direct-task-2")
+        );
+        assert_ne!(
+            first.is_ok(),
+            second.is_ok(),
+            "only one concurrent admission may succeed"
         );
     }
 

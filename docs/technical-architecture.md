@@ -774,6 +774,10 @@ La réparation des worktrees refuse les chemins non vides et les branches inatte
 
 Le diagnostic de tâche utilise `git_worktree_inspect` avec `readOnly: true` : les inspections n'y réparent pas les liens Git. L'action explicite utilise la création protégée existante puis inspecte de nouveau. Les capacités de projet sont centralisées dans `projectCapabilities` : les refus WSL de métadonnées, worktrees, revue et parcours de fusion ne retirent pas les opérations Git disposant d'une implémentation Linux.
 
+Le démarrage d'une tâche réserve son opération locale et acquiert le verrou natif de cycle de vie avant la préparation. Les tâches autonomes réservent leur statut natif avant de préparer leurs ressources. Un retour tardif peut enregistrer les worktrees préparés pour une tâche encore présente, mais ne publie le workspace actif que si la génération d'activation et la sélection sont toujours valides. Le résolveur inspecte les worktrees Git même lorsqu'un chemin est en cache.
+
+Le provisionnement d'un plan inscrit chaque intention de création dans le journal de cycle de vie avant la mutation Git. Il confirme ensuite le commit et le chemin obtenus. Un rollback conserve les erreurs et les ressources restantes dans ce journal ; sa reprise retire les worktrees avant les branches, avec les identités attendues et sans forcer le retrait des fichiers de travail. Une création dont le résultat est indéterminé reste bloquée pour inspection. Les ressources préexistantes, réutilisées ou réparées ne sont pas considérées comme nouvellement créées.
+
 ### 12.5 Branche `@macro`
 
 La branche `@macro` sert de branche metadata dédiée.

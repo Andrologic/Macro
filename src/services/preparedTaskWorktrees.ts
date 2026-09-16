@@ -97,14 +97,6 @@ export const resolvePreparedTaskWorktreePath = async (params: {
       return repoPath;
     }
 
-    const cached = resolveCachedPreparedTaskWorktreePath(
-      params.target,
-      params.branchWorktrees
-    );
-    if (cached) {
-      return cached;
-    }
-
     const inspection = await params.tauri.gitWorktreeInspect({
       repoPath,
       taskId: params.target.worktreeKey,

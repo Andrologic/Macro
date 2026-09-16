@@ -934,6 +934,55 @@ export const createArchitectGitFlowService = (
       ...(overrides.tauri || {}),
     },
   };
+  const finishProvision = async (plan: ArchitectPlanRecord): Promise<void> => {
+    const saga = (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
+      entry.planId === plan.id && entry.branchName === plan.targetBranch);
+    if (saga) await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+  };
+
+  const rollbackProvisionSaga = async (saga: PlanLifecycleSaga): Promise<void> => {
+    const errors: string[] = [];
+    // Worktrees must be removed before their branches. Each successful removal
+    // is durable; an interrupted rollback can resume without claiming new work.
+    const resources = [...(saga.cleanupResources ?? [])].reverse().sort((a, b) =>
+      Number(b.kind === 'worktree') - Number(a.kind === 'worktree'));
+    for (const resource of resources) {
+      try {
+        if (!resource.expectedCommit) throw new Error('Creation outcome is unconfirmed; inspect this resource before cleanup.');
+        if (resource.kind === 'worktree') {
+          await deps.tauri.gitWorktreeRemove({ repoPath: resource.repoPath, taskId: resource.worktreeKey!,
+            branchName: resource.branchName, force: false, expectedCommit: resource.expectedCommit,
+            expectedWorktreePath: resource.expectedWorktreePath });
+        } else {
+          if (saga.cleanupResources?.some((other) => other.kind === 'worktree' &&
+            other.repoPath === resource.repoPath && other.branchName === resource.branchName)) {
+            throw new Error('The worktree still requires cleanup.');
+          }
+          await deps.tauri.gitBranchDelete({ repoPath: resource.repoPath, branchName: resource.branchName,
+            force: true, expectedCommit: resource.expectedCommit });
+        }
+        saga.cleanupResources = saga.cleanupResources?.filter((entry) => entry !== resource);
+        saga.updatedAt = new Date().toISOString();
+        await upsertPlanLifecycleSaga(saga);
+      } catch (error) {
+        errors.push(`${resource.kind} ${resource.branchName} (${resource.repoPath}): ${toServiceError(error).message}`);
+      }
+    }
+    if (errors.length) {
+      saga.lastError = errors.join('\n');
+      await upsertPlanLifecycleSaga(saga);
+      throw new Error(`Git provisioning cleanup remains pending:\n${saga.lastError}`);
+    }
+    await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+  };
+
+  const rollbackPreservingError = async (rollback: () => Promise<void>, error: unknown): Promise<never> => {
+    try { await rollback(); } catch (cleanupError) {
+      throw new Error(`${toServiceError(error).message}\n${toServiceError(cleanupError).message}`, { cause: error });
+    }
+    throw error;
+  };
+
   const provisionRollbacks = new WeakMap<ProvisionPlanBranchesResult, () => Promise<void>>();
   const rollbackProvisionResultWithDeps = async (
     provision: ProvisionPlanBranchesResult,
@@ -1586,20 +1635,25 @@ export const createArchitectGitFlowService = (
     });
 
     const results: ProvisionedPlanRepositoryResult[] = [];
-    const createdBranches: Array<{ repoPath: string; branchName: string }> = [];
-    const createdWorktrees: Array<{ repoPath: string; taskId: string; branchName: string }> = [];
-    const rollbackCreatedGitResources = async (): Promise<void> => {
-      await Promise.allSettled(
-        [...createdWorktrees].reverse().map(({ repoPath, taskId, branchName }) =>
-          deps.tauri.gitWorktreeRemove({ repoPath, taskId, branchName, force: true })
-        )
-      );
-      await Promise.allSettled(
-        [...createdBranches].reverse().map(({ repoPath, branchName }) =>
-          deps.tauri.gitBranchDelete({ repoPath, branchName, force: true })
-        )
-      );
+    const previous = (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
+      entry.planId === plan.id && entry.branchName === plan.targetBranch);
+    if (previous) await rollbackProvisionSaga(previous);
+    const now = new Date().toISOString();
+    const saga: PlanLifecycleSaga = { planId: plan.id, branchName: plan.targetBranch,
+      operation: 'provision', phase: 'prepared', cleanupResources: [], createdAt: now, updatedAt: now };
+    await startPlanLifecycleSaga(saga);
+    const recordIntent = async (resource: PlanLifecycleCleanupResource) => {
+      saga.cleanupResources!.push(resource);
+      await upsertPlanLifecycleSaga(saga);
+      return resource;
     };
+    const confirmResource = async (resource: PlanLifecycleCleanupResource, worktreePath?: string) => {
+      const branches = await deps.tauri.gitBranchList(resource.repoPath);
+      resource.expectedCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit ?? null;
+      if (worktreePath) resource.expectedWorktreePath = worktreePath;
+      await upsertPlanLifecycleSaga(saga);
+    };
+    const rollbackCreatedGitResources = () => rollbackProvisionSaga(saga);
     try {
       for (const repository of repositories) {
         const branches = await deps.tauri.gitBranchList(repository.repoPath);
@@ -1624,12 +1678,14 @@ export const createArchitectGitFlowService = (
             repositorySourceBranchName,
             deps.getAppState().getProjectById(repository.projectId)?.path || repository.projectId
           );
+          const intent = await recordIntent({ kind: 'branch', projectId: repository.projectId,
+            repoPath: repository.repoPath, branchName: repositoryPlanBranchName, expectedCommit: null });
           await deps.tauri.gitBranchCreate({
             repoPath: repository.repoPath,
             branchName: repositoryPlanBranchName,
             fromRef,
           });
-          createdBranches.push({ repoPath: repository.repoPath, branchName: repositoryPlanBranchName });
+          await confirmResource(intent);
           localBranchNames.add(repositoryPlanBranchName);
           createdPlanBranch = true;
         }
@@ -1640,12 +1696,14 @@ export const createArchitectGitFlowService = (
             continue;
           }
 
+          const intent = await recordIntent({ kind: 'branch', projectId: repository.projectId,
+            repoPath: repository.repoPath, branchName: featureBranch, expectedCommit: null });
           await deps.tauri.gitBranchCreate({
             repoPath: repository.repoPath,
             branchName: featureBranch,
             fromRef: repositoryPlanBranchName,
           });
-          createdBranches.push({ repoPath: repository.repoPath, branchName: featureBranch });
+          await confirmResource(intent);
           localBranchNames.add(featureBranch);
           createdFeatureBranches.push(featureBranch);
         }
@@ -1661,6 +1719,9 @@ export const createArchitectGitFlowService = (
             continue;
           }
 
+          const intent = await recordIntent({ kind: 'worktree', projectId: repository.projectId,
+            repoPath: repository.repoPath, branchName: featureBranch, worktreeKey,
+            expectedCommit: null, expectedWorktreePath: inspection.worktreePath });
           const ensuredWorktree = await deps.tauri.gitWorktreeCreate({
             repoPath: repository.repoPath,
             taskId: worktreeKey,
@@ -1674,12 +1735,12 @@ export const createArchitectGitFlowService = (
               extraBranches: [repositoryPlanBranchName],
             }),
           });
-          if (ensuredWorktree.status === 'created' || ensuredWorktree.status === 'repaired') {
-            createdWorktrees.push({
-              repoPath: repository.repoPath,
-              taskId: worktreeKey,
-              branchName: featureBranch,
-            });
+          if (ensuredWorktree.status === 'created') {
+            await confirmResource(intent, ensuredWorktree.worktreePath);
+          } else {
+            // Repaired or concurrently reused worktrees did not originate here.
+            saga.cleanupResources = saga.cleanupResources!.filter((resource) => resource !== intent);
+            await upsertPlanLifecycleSaga(saga);
           }
         }
 
@@ -1693,8 +1754,7 @@ export const createArchitectGitFlowService = (
         });
       }
     } catch (error) {
-      await rollbackCreatedGitResources();
-      throw error;
+      return rollbackPreservingError(rollbackCreatedGitResources, error);
     }
 
     const result: ProvisionPlanBranchesResult = {
@@ -1716,9 +1776,11 @@ export const createArchitectGitFlowService = (
     plan: ArchitectPlanRecord,
     explicitRepoPath?: string,
   ): Promise<ProvisionPlanBranchesResult> =>
-    withPlanLifecycleLock(deps, plan.targetBranch, plan.id, () =>
-      provisionPlanBranchesUnlocked(plan, explicitRepoPath)
-    );
+    withPlanLifecycleLock(deps, plan.targetBranch, plan.id, async () => {
+      const result = await provisionPlanBranchesUnlocked(plan, explicitRepoPath);
+      await finishProvision(plan);
+      return result;
+    });
 
   const validatePlanAndProvisionBranchesUnlocked = async (params: {
     branchName: string;
@@ -1778,10 +1840,10 @@ export const createArchitectGitFlowService = (
         setActive: params.setActive !== false,
       });
     } catch (error) {
-      await rollbackProvisionResultWithDeps(provision);
-      throw error;
+      return rollbackPreservingError(() => rollbackProvisionResultWithDeps(provision), error);
     }
 
+    await finishProvision(normalizedPlan);
     return {
       plan: {
         ...validatedPlan,
@@ -1957,8 +2019,7 @@ export const createArchitectGitFlowService = (
       try {
         restored = await deps.restoreArchitectPlan(params.branchName, params.planId);
       } catch (error) {
-        await rollbackProvisionResultWithDeps(provision).catch(() => undefined);
-        throw error;
+        return rollbackPreservingError(() => rollbackProvisionResultWithDeps(provision), error);
       }
       if (pendingArchiveSaga) {
         await removePlanLifecycleSaga(
@@ -1968,6 +2029,7 @@ export const createArchitectGitFlowService = (
           getPlanLifecycleSagaGeneration(pendingArchiveSaga),
         );
       }
+      await finishProvision(plan);
       return restored;
     }
     const restored = await deps.restoreArchitectPlan(params.branchName, params.planId);
@@ -2809,6 +2871,14 @@ export const createArchitectGitFlowService = (
     let currentSaga = saga;
     try {
       const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
+      if (saga.operation === 'provision') {
+        if (plan && (plan.status === 'validated' || plan.status === 'in_progress')) {
+          await finishProvision(plan);
+        } else {
+          await rollbackProvisionSaga(saga);
+        }
+        return;
+      }
       if (saga.operation === 'finalize') {
         await finalizePlanIntoBaseBranchUnlocked({
           branchName: saga.branchName,

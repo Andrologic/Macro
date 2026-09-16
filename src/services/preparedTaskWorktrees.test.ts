@@ -13,6 +13,21 @@ const directTarget: TaskExecutionTarget = {
 };
 
 describe('resolvePreparedTaskWorktreePath', () => {
+  it.each(['absent', 'stale_registration'] as const)('rejects a cached worktree when inspection is %s', async (status) => {
+    const gitWorktreeInspect = mock(async () => ({
+      status, taskId: 'worktree-a', worktreePath: '/repo/missing', branchName: 'feature/a', isDirty: null,
+    }));
+    const result = await resolvePreparedTaskWorktreePath({
+      target: { projectId: 'git', executionMode: 'git', executionKind: 'worktree',
+        worktreeKey: 'worktree-a', branchName: 'feature/a' },
+      branchWorktrees: { 'worktree-a': '/repo/missing' },
+      getProjectById: () => ({ path: '/repo', gitSetupState: 'ready' }),
+      tauri: { isTauriAvailable: () => true, gitWorktreeInspect },
+    });
+    expect(result).toBeNull();
+    expect(gitWorktreeInspect).toHaveBeenCalledTimes(1);
+  });
+
   it('uses a persisted direct checkpoint without revalidating it before every snapshot', async () => {
     const directCheckpointEnsure = mock(async () => 'checkpoint-head');
     const gitWorktreeInspect = mock(async () => ({

@@ -2100,7 +2100,7 @@ interface TaskCommandRunState {
   startedAt: string;
 }
 
-type TaskOperationKind = 'commands' | 'archive' | 'cleanup' | 'restore' | 'delete' | 'merge';
+type TaskOperationKind = 'start' | 'revert' | 'commands' | 'archive' | 'cleanup' | 'restore' | 'delete' | 'merge';
 
 interface TaskCommandRunCompletion {
   promise: Promise<void>;
@@ -2919,6 +2919,7 @@ const cleanupTaskExecutionTargets = async (
 export const useTaskStore = create<TaskStore>((set, get) => {
   const activeMergeWorkflowRuns = new Map<string, Promise<void>>();
   const activeTaskOperations = new Map<string, TaskOperationKind>();
+  const startingDirectProjects = new Set<string>();
   const taskStatusMutationGenerations = new Map<string, number>();
   const activePlanWorktreeMutations = new Set<string>();
   let activeManualFeatureCreationId: string | null = null;
@@ -3755,6 +3756,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    if (!acquireTaskOperation(existingTask.id, 'revert')) {
+      throw new Error(getTaskCommandMutationBlockedMessage('complete'));
+    }
+
     try {
       if (!tauriIpc.isTauriAvailable()) {
         throw new Error('Manual features require the desktop runtime.');
@@ -3900,6 +3905,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
       throw normalized;
+    } finally {
+      releaseTaskOperation(existingTask.id, 'revert');
     }
   },
 
@@ -4653,6 +4660,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    if (task.archived_at || task.draft) return;
+
     if (task.status === 'Completed') {
       set({ lastError: tTask('implement.errors.taskAlreadyCompleted', 'Task is already completed.') });
       return;
@@ -4688,14 +4697,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     const directProjectIds = new Set(
-      getExecutionTargets(task).filter(isDirectEditTarget).map((target) => target.projectId),
+      getExecutionTargets(task).filter((target) => isDirectEditTarget(target) || isRepositoryRootTarget(target)).map((target) => target.projectId),
     );
     const conflictingDirectTask = directProjectIds.size > 0
       ? get().tasks.find((candidate) =>
           candidate.id !== task.id &&
           ['InProgress', 'AwaitingResponse', 'InReview'].includes(candidate.status) &&
           getExecutionTargets(candidate).some(
-            (target) => directProjectIds.has(target.projectId) && isDirectEditTarget(target),
+            (target) => directProjectIds.has(target.projectId) && (isDirectEditTarget(target) || isRepositoryRootTarget(target)),
           ),
         )
       : null;
@@ -4710,96 +4719,143 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    const appState = useAppStore.getState();
-    if (appState.selectedTaskId !== task.id) {
-      appState.setSelectedTask(task.id);
+    if ([...directProjectIds].some((id) => startingDirectProjects.has(id)) ||
+      !acquireTaskOperation(task.id, 'start')) {
+      set({ lastError: getTaskCommandMutationBlockedMessage('complete') });
+      return;
     }
-
-    const mergeRuntime = get().mergeWorkflowRuntimeByTaskId[task.id] ?? null;
-    if (isPlanFinalizationRuntimeTask(task) || mergeRuntime) {
-      try {
-        const runtime = await get().loadMergeWorkflowReview(task.id, {
-          force: task.status === 'Failed',
-        });
-        const { repoPath, branchName } = resolveMergeWorkflowActivationContext({
-          task,
-          runtime,
-          preferredProjectId: appState.selectedProjectId,
-          resolveRepoPath: resolveTaskRepositoryPath,
-        });
-        const mergeWorkspaceContext = buildMergeWorkflowWorkspaceContext(
-          runtime,
-          appState.selectedProjectId
-        );
-
-        set({
-          activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
-          activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
-          activeWorkspacePathOverridesByProjectId:
-            mergeWorkspaceContext.activeWorkspacePathOverridesByProjectId,
-          missingBaseBranchIssue: null,
-          lastError: null,
-        });
-
-        await syncWorkspaceRoot(mergeWorkspaceContext.activeRepositoryPath || repoPath);
-        return;
-      } catch (error) {
-        const failureState = buildMergeWorkflowFailureState(error, {
-          taskId: task.id,
-          kind: isPlanFinalizationRuntimeTask(task)
-            ? 'plan_finalization'
-            : 'task_completion',
-        });
-        set((state) => ({
-          ...applyMergeWorkflowRuntimePatch(state, task.id, {
-            taskId: task.id,
-            kind: isPlanFinalizationRuntimeTask(task)
-              ? 'plan_finalization'
-              : 'task_completion',
-            ...failureState.runtimePatch,
-          }),
-          lastError: failureState.lastError,
-        }));
-        return;
-      }
-    }
-
+    directProjectIds.forEach((id) => startingDirectProjects.add(id));
     try {
-      const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
-        task,
-        get().branchWorktrees,
-        undefined,
-        { onWorkspacesPrepared: options?.onWorkspacesPrepared },
-      );
-      const primaryTarget =
-        preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
-        preparedTargets[0];
-      const primaryWorktree = primaryTarget?.worktreePath || null;
+      await withTaskLifecycleLock(task.id, async () => {
+        const appState = useAppStore.getState();
+        if (appState.selectedTaskId !== task.id) {
+          appState.setSelectedTask(task.id);
+        }
 
-      set((state) => ({
-        branchWorktrees: {
-          ...state.branchWorktrees,
-          ...createdWorktrees,
-        },
-        activeBranchName: task.assigned_branch,
-        activeRepositoryPath: primaryWorktree,
-        activeWorkspacePathOverridesByProjectId: {},
-        missingBaseBranchIssue: null,
-        lastError: null,
-      }));
+        const requestId = ++taskActivationRequestId;
+        const selection = useAppStore.getState();
+        const selectionContextKey = `${selection.selectedGroupId ?? ''}::${selection.selectedProjectId ?? ''}`;
+        const taskStillExists = () => {
+          const current = get().getTaskById(task.id);
+          return current && !current.archived_at && !current.draft &&
+            getTaskStatusMutationIdentity(current) === getTaskStatusMutationIdentity(task);
+        };
+        const isCurrentStart = () => {
+          const current = useAppStore.getState();
+          return taskStillExists() && requestId === taskActivationRequestId &&
+            current.selectedTaskId === task.id &&
+            `${current.selectedGroupId ?? ''}::${current.selectedProjectId ?? ''}` === selectionContextKey;
+        };
 
-      await syncWorkspaceRoot(primaryWorktree);
-      await get().setTaskStatus(task.id, 'InProgress');
-    } catch (error) {
-      if (error instanceof MissingTaskBaseBranchError) {
-        set({
-          missingBaseBranchIssue: error.issue,
-          lastError: error.issue.message,
-        });
-        return;
-      }
-      const normalized = toServiceError(error);
-      set({ lastError: normalized.message });
+        const mergeRuntime = get().mergeWorkflowRuntimeByTaskId[task.id] ?? null;
+        if (isPlanFinalizationRuntimeTask(task) || mergeRuntime) {
+          try {
+            const runtime = await get().loadMergeWorkflowReview(task.id, {
+              force: task.status === 'Failed',
+            });
+            const { repoPath, branchName } = resolveMergeWorkflowActivationContext({
+              task,
+              runtime,
+              preferredProjectId: appState.selectedProjectId,
+              resolveRepoPath: resolveTaskRepositoryPath,
+            });
+            const mergeWorkspaceContext = buildMergeWorkflowWorkspaceContext(
+              runtime,
+              appState.selectedProjectId
+            );
+
+            if (!isCurrentStart()) return;
+            set({
+              activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
+              activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
+              activeWorkspacePathOverridesByProjectId:
+                mergeWorkspaceContext.activeWorkspacePathOverridesByProjectId,
+              missingBaseBranchIssue: null,
+              lastError: null,
+            });
+
+            await syncWorkspaceRoot(mergeWorkspaceContext.activeRepositoryPath || repoPath);
+            return;
+          } catch (error) {
+            if (!isCurrentStart()) return;
+            const failureState = buildMergeWorkflowFailureState(error, {
+              taskId: task.id,
+              kind: isPlanFinalizationRuntimeTask(task)
+                ? 'plan_finalization'
+                : 'task_completion',
+            });
+            set((state) => ({
+              ...applyMergeWorkflowRuntimePatch(state, task.id, {
+                taskId: task.id,
+                kind: isPlanFinalizationRuntimeTask(task)
+                  ? 'plan_finalization'
+                  : 'task_completion',
+                ...failureState.runtimePatch,
+              }),
+              lastError: failureState.lastError,
+            }));
+            return;
+          }
+        }
+
+        let reservedStatus = false;
+        try {
+          if (isManualStandaloneTask(task)) {
+            await tauriIpc.workspaceUpdateStandaloneTaskStatus({ taskId: task.id, status: 'InProgress' });
+            reservedStatus = true;
+          }
+          const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
+            task,
+            get().branchWorktrees,
+            undefined,
+            { onWorkspacesPrepared: options?.onWorkspacesPrepared },
+          );
+          if (!taskStillExists()) return;
+          const primaryTarget =
+            preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
+            preparedTargets[0];
+          const primaryWorktree = primaryTarget?.worktreePath || null;
+
+          set((state) => ({
+            branchWorktrees: {
+              ...state.branchWorktrees,
+              ...createdWorktrees,
+            },
+            ...(isCurrentStart() ? {
+              activeBranchName: task.assigned_branch,
+              activeRepositoryPath: primaryWorktree,
+              activeWorkspacePathOverridesByProjectId: {},
+              missingBaseBranchIssue: null,
+              lastError: null,
+            } : {}),
+          }));
+
+          if (isCurrentStart()) await syncWorkspaceRoot(primaryWorktree);
+          await get().setTaskStatus(task.id, 'InProgress');
+        } catch (error) {
+          let failure = error;
+          if (reservedStatus && taskStillExists()) {
+            try {
+              await tauriIpc.workspaceUpdateStandaloneTaskStatus({ taskId: task.id, status: task.status });
+            } catch (rollbackError) {
+              failure = new Error(`${toServiceError(error).message}\n${toServiceError(rollbackError).message}`);
+            }
+          }
+          if (!isCurrentStart()) return;
+          if (error instanceof MissingTaskBaseBranchError) {
+            set({
+              missingBaseBranchIssue: error.issue,
+              lastError: error.issue.message,
+            });
+            return;
+          }
+          const normalized = toServiceError(failure);
+          set({ lastError: normalized.message });
+        }
+      });
+    } finally {
+      directProjectIds.forEach((id) => startingDirectProjects.delete(id));
+      releaseTaskOperation(task.id, 'start');
     }
   },
 

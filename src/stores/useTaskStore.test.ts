@@ -26,9 +26,9 @@ const gitWorktreeRemoveMock = mock(async () => ({
   removed: true,
   removedPath: '/repos/web/.macro/worktrees/task-1',
 }));
-const gitWorktreeInspectMock = mock(async (params: { taskId: string; branchName?: string | null }): Promise<GitWorktreeInspectionDto> => ({
+const gitWorktreeInspectMock = mock(async (params: { repoPath?: string; taskId: string; branchName?: string | null }): Promise<GitWorktreeInspectionDto> => ({
   taskId: params.taskId,
-  worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+  worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
   branchName: params.branchName ?? null,
   status: 'ready' as const,
   isDirty: false,
@@ -1012,9 +1012,9 @@ describe('useTaskStore merge workflow review loading', () => {
     gitBranchWorktreeCreateMock.mockClear();
     gitWorktreeCreateMock.mockClear();
     gitWorktreeInspectMock.mockClear();
-    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
       taskId: params.taskId,
-      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
       branchName: params.branchName ?? null,
       status: 'ready' as const,
       isDirty: false,
@@ -1531,7 +1531,7 @@ describe('useTaskStore merge workflow review loading', () => {
       }],
     });
     let worktreeExists = true;
-    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
       taskId: params.taskId,
       worktreePath: '/repos/web/.macro/worktrees/ambiguous-worktree-removal',
       branchName: params.branchName ?? null,
@@ -1563,9 +1563,9 @@ describe('useTaskStore merge workflow review loading', () => {
     try {
       await useTaskStore.getState().archiveTask(task.id);
     } finally {
-      gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
         taskId: params.taskId,
-        worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+        worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
         branchName: params.branchName ?? null,
         status: 'ready' as const,
         isDirty: false,
@@ -1675,7 +1675,7 @@ describe('useTaskStore merge workflow review loading', () => {
         repoPath: '/repos/web',
       }],
     });
-    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
       taskId: params.taskId,
       worktreePath: '/repos/web/.macro/worktrees/ambiguous-branch-removal',
       branchName: params.branchName ?? null,
@@ -1707,9 +1707,9 @@ describe('useTaskStore merge workflow review loading', () => {
     try {
       await useTaskStore.getState().archiveTask(task.id);
     } finally {
-      gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
         taskId: params.taskId,
-        worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+        worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
         branchName: params.branchName ?? null,
         status: 'ready' as const,
         isDirty: false,
@@ -1745,7 +1745,7 @@ describe('useTaskStore merge workflow review loading', () => {
         repoPath: '/repos/web',
       }],
     });
-    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
       taskId: params.taskId,
       worktreePath: '/repos/web/.macro/worktrees/dirty-archive',
       branchName: params.branchName ?? null,
@@ -1770,9 +1770,9 @@ describe('useTaskStore merge workflow review loading', () => {
     try {
       await useTaskStore.getState().archiveTask(task.id);
     } finally {
-      gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
         taskId: params.taskId,
-        worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+        worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
         branchName: params.branchName ?? null,
         status: 'ready' as const,
         isDirty: false,
@@ -1870,9 +1870,9 @@ describe('useTaskStore merge workflow review loading', () => {
     try {
       await cleanup;
     } finally {
-      gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
         taskId: params.taskId,
-        worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+        worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
         branchName: params.branchName ?? null,
         status: 'ready' as const,
         isDirty: false,
@@ -2554,9 +2554,9 @@ describe('useTaskStore merge workflow review loading', () => {
     const conversationId = 'conv-missing-after-crash';
     let worktreeExists = true;
     let branchExists = true;
-    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
       taskId: params.taskId,
-      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
       branchName: params.branchName ?? null,
       status: worktreeExists ? 'ready' as const : 'absent' as const,
       isDirty: false,
@@ -2633,9 +2633,9 @@ describe('useTaskStore merge workflow review loading', () => {
     const originalCommit = '1111111111111111111111111111111111111111';
     const recreatedCommit = '2222222222222222222222222222222222222222';
     let currentCommit: string | null = recreatedCommit;
-    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
       taskId: params.taskId,
-      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
       branchName: params.branchName ?? null,
       status: 'absent' as const,
       isDirty: false,
@@ -2803,9 +2803,9 @@ describe('useTaskStore merge workflow review loading', () => {
     let worktreeExists = true;
     let branchExists = true;
     let rejectBranchCheckpoint = true;
-    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
       taskId: params.taskId,
-      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
       branchName: params.branchName ?? null,
       status: worktreeExists ? 'ready' as const : 'absent' as const,
       isDirty: false,
@@ -2888,9 +2888,9 @@ describe('useTaskStore merge workflow review loading', () => {
     });
     let worktreeExists = true;
     let rejectWorktreeCheckpoint = true;
-    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+    gitWorktreeInspectMock.mockImplementation(async (params: { repoPath?: string; taskId: string; branchName?: string | null }) => ({
       taskId: params.taskId,
-      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      worktreePath: `${params.repoPath ?? '/repos/web'}/.macro/worktrees/${params.taskId}`,
       branchName: params.branchName ?? null,
       status: worktreeExists ? 'ready' as const : 'absent' as const,
       isDirty: false,
@@ -4570,7 +4570,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
       expect.objectContaining({
         taskId: 'task-1',
         projectId: 'project-1',
-        cwd: '/repos/web/.macro/worktrees/task-1',
+        cwd: '/repos/web/.macro/worktrees/project-1::feature/run-app',
         command: 'npm test',
       })
     );
@@ -4762,7 +4762,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
         projectId: 'project-1',
         projectName: 'Project One',
         repoPath: '/repos/web',
-        worktreePath: '/repos/web/.macro/worktrees/task-1',
+        worktreePath: '/repos/web/.macro/worktrees/project-1::feature/run-app',
         command: 'bun install',
       })
     );
@@ -5056,6 +5056,56 @@ describe('useTaskStore task preparation safety', () => {
     expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
     expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().lastError).toContain('Initialize Git or enable direct editing');
+  });
+
+});
+
+
+describe('task startup lifecycle races', () => {
+  it.each([true, false])('does not publish a stale startup; task still exists: %s', async (taskExists) => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    appStoreState.selectedTaskId = 'task-a';
+    appStoreState.selectedProjectId = 'project-1';
+    appStoreState.getProjectById = () => ({ id: 'project-1', name: 'Project', path: '/repo', gitSetupState: 'ready' });
+    let finish!: (value: GitWorktreeInspectionDto) => void;
+    gitWorktreeInspectMock.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const task = buildStandaloneTask({ id: 'task-a', standalone_kind: 'manual_feature',
+      assigned_branch: 'feature/a', branch_name: 'feature/a',
+      execution_targets: [{ projectId: 'project-1', executionMode: 'git', executionKind: 'worktree',
+        branchName: 'feature/a', worktreeKey: 'worktree-a', repoPath: '/repo' }] });
+    useTaskStore.setState({ tasks: [task], branchWorktrees: {}, refreshFromPlan: async () => undefined });
+    const starting = useTaskStore.getState().startTask('task-a');
+    for (let i = 0; i < 20 && !finish; i++) await Promise.resolve();
+    expect(finish).toBeDefined();
+    await expect(useTaskStore.getState().revertManualFeatureToDraft({ taskId: 'task-a' })).rejects.toThrow();
+    appStoreState.selectedTaskId = 'task-b';
+    if (!taskExists) useTaskStore.setState({ tasks: [] });
+    useTaskStore.setState({ activeRepositoryPath: '/repo/b', activeBranchName: 'feature/b' });
+    finish({ taskId: 'worktree-a', worktreePath: '/repo/a', branchName: 'feature/a', status: 'ready', isDirty: false });
+    await starting;
+    expect(useTaskStore.getState().activeRepositoryPath).toBe('/repo/b');
+    expect(useTaskStore.getState().activeBranchName).toBe('feature/b');
+    expect(useTaskStore.getState().branchWorktrees['worktree-a']).toBe(taskExists ? '/repo/a' : undefined);
+  });
+  it('reserves a direct project before waiting for native admission', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    appStoreState.selectedTaskId = 'task-a';
+    appStoreState.getProjectById = () => ({ id: 'project-1', name: 'Project', path: '/repo', gitSetupState: 'ready' });
+    const target = { projectId: 'project-1', executionMode: 'git' as const, executionKind: 'repository_root' as const,
+      branchName: 'develop', worktreeKey: 'root', repoPath: '/repo' };
+    useTaskStore.setState({ tasks: ['task-a', 'task-b'].map((id) => buildStandaloneTask({ id,
+      standalone_kind: 'manual_feature', execution_targets: [target] })), refreshFromPlan: async () => undefined });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    updateStandaloneTaskStatusImpl = async () => gate;
+    workspaceUpdateStandaloneTaskStatusMock.mockClear();
+    const first = useTaskStore.getState().startTask('task-a');
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await useTaskStore.getState().startTask('task-b');
+    expect(workspaceUpdateStandaloneTaskStatusMock.mock.calls.map(([params]) => params.taskId)).toEqual(['task-a']);
+    release();
+    await first;
+    updateStandaloneTaskStatusImpl = null;
   });
 
 });
