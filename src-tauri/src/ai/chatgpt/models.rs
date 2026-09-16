@@ -365,19 +365,58 @@ pub async fn sync_models(pool: &SqlitePool, provider_id: &str) -> Result<Vec<AiM
 
     let models = build_provider_models(&entries, provider.plan_type.as_deref());
 
-    repository::replace_discovered_provider_models(pool, provider_id, &models)
-        .await
-        .map_err(db_error_to_string)?;
-
-    let persisted_models = repository::list_models_by_provider(pool, provider_id)
-        .await
-        .map_err(db_error_to_string)?;
+    let persisted_models =
+        persist_models_for_current_session(pool, provider_id, &provider, &secret, &models).await?;
     info!(
         provider_id = %provider_id,
         model_count = persisted_models.len(),
         "ChatGPT model sync completed"
     );
     Ok(persisted_models)
+}
+
+async fn persist_models_for_current_session(
+    pool: &SqlitePool,
+    provider_id: &str,
+    expected_provider: &ProviderConfig,
+    expected_secret: &ChatGptSecret,
+    models: &[ProviderModelInput],
+) -> Result<Vec<AiModel>, String> {
+    let _auth_guard = lock_auth_mutation(provider_id).await?;
+    recover_pending_disconnect_locked(pool, provider_id).await?;
+
+    let provider = repository::get_provider_config(pool, provider_id)
+        .await
+        .map_err(db_error_to_string)?
+        .ok_or_else(|| format!("Provider {provider_id} not found."))?;
+    let current_secret = secrets::reload_chatgpt_secret(provider_id)
+        .map_err(|error| format!("Failed to reload the current ChatGPT session: {error}"))?;
+    let is_authenticated = provider.auth_status.as_deref() == Some("authenticated");
+    let configuration_matches = provider.provider_type == expected_provider.provider_type
+        && provider.base_url == expected_provider.base_url;
+    if !is_authenticated
+        || !configuration_matches
+        || current_secret.as_ref() != Some(expected_secret)
+    {
+        warn!(
+            provider_id = %provider_id,
+            auth_status = provider.auth_status.as_deref().unwrap_or("missing"),
+            has_current_secret = current_secret.is_some(),
+            configuration_matches,
+            "discarding ChatGPT model sync because its provider configuration or authenticated session changed"
+        );
+        return Err(
+            "ChatGPT provider configuration or authentication changed while models were loading. The stale catalog was not saved."
+                .to_string(),
+        );
+    }
+
+    repository::replace_discovered_provider_models(pool, provider_id, models)
+        .await
+        .map_err(db_error_to_string)?;
+    repository::list_models_by_provider(pool, provider_id)
+        .await
+        .map_err(db_error_to_string)
 }
 
 async fn fetch_remote_models(
@@ -533,12 +572,13 @@ pub(super) fn model_supports_plan(entry: &ModelsCacheEntry, plan_type: &str) -> 
 mod tests {
     use super::{
         disconnect_auth_with_secret_delete, disconnect_journal_key, disconnected_metadata,
-        prepare_disconnect, recover_auth_mutations,
+        persist_models_for_current_session, prepare_disconnect, recover_auth_mutations,
     };
     use crate::ai::chatgpt::lock_auth_mutation;
     use crate::ai::chatgpt::session::{
         ensure_fresh_secret, install_persist_after_secret_hook, persist_chatgpt_session,
     };
+    use crate::ai::chatgpt::types::ModelsCacheEntry;
     use crate::core::process::background_command;
     use crate::secrets::ChatGptSecret;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -616,6 +656,35 @@ mod tests {
         .expect("app settings schema");
         sqlx::query(
             r#"
+            CREATE TABLE ai_models (
+                id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                owned_by TEXT,
+                pricing_prompt TEXT,
+                pricing_completion TEXT,
+                pricing_request TEXT,
+                reasoning_efforts_json TEXT,
+                default_reasoning_effort TEXT,
+                context_window_tokens INTEGER,
+                input_limit_tokens INTEGER,
+                output_limit_tokens INTEGER,
+                context_window_source TEXT,
+                context_limits_updated_at TEXT,
+                is_enabled INTEGER DEFAULT 1,
+                is_manual INTEGER DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("model schema");
+        sqlx::query(
+            r#"
             INSERT INTO provider_configs (
                 id, name, provider_type, base_url, has_stored_api_key, is_enabled, is_local,
                 auth_status, auth_source, plan_type, account_label, token_expires_at,
@@ -638,6 +707,140 @@ mod tests {
         .await
         .expect("provider row");
         pool
+    }
+
+    #[tokio::test]
+    async fn completed_model_fetch_is_persisted_for_the_same_authenticated_session() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
+        let pool = provider_pool().await;
+        let expected_secret = test_secret();
+        crate::secrets::set_chatgpt_secret("chatgpt", &expected_secret).expect("persist secret");
+        let expected_provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
+            .await
+            .expect("provider query")
+            .expect("provider");
+        let models = super::build_provider_models(
+            &[ModelsCacheEntry {
+                slug: "synthetic-model".to_string(),
+                display_name: Some("Synthetic model".to_string()),
+                description: None,
+                default_reasoning_level: None,
+                supported_reasoning_levels: None,
+                visibility: None,
+                available_in_plans: None,
+            }],
+            Some("plus"),
+        );
+
+        let persisted = persist_models_for_current_session(
+            &pool,
+            "chatgpt",
+            &expected_provider,
+            &expected_secret,
+            &models,
+        )
+        .await
+        .expect("current session catalog");
+
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].model_id, "synthetic-model");
+    }
+
+    #[tokio::test]
+    async fn completed_model_fetch_is_not_persisted_after_disconnect() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
+        let pool = provider_pool().await;
+        let expected_secret = test_secret();
+        crate::secrets::set_chatgpt_secret("chatgpt", &expected_secret).expect("persist secret");
+        let expected_provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
+            .await
+            .expect("provider query")
+            .expect("provider");
+        sqlx::query(
+            r#"
+            INSERT INTO ai_models (
+                id, provider_id, model_id, name, is_manual, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, 0, ?, ?)
+            "#,
+        )
+        .bind("chatgpt:existing-model")
+        .bind("chatgpt")
+        .bind("existing-model")
+        .bind("Existing model")
+        .bind("2026-09-16T00:00:00Z")
+        .bind("2026-09-16T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("existing catalog");
+
+        disconnect_auth_with_secret_delete(&pool, "chatgpt", |provider_id| {
+            crate::secrets::delete_provider_secret(provider_id).map_err(|error| error.to_string())
+        })
+        .await
+        .expect("disconnect");
+
+        let error = persist_models_for_current_session(
+            &pool,
+            "chatgpt",
+            &expected_provider,
+            &expected_secret,
+            &[],
+        )
+        .await
+        .expect_err("stale model sync must be rejected");
+
+        assert!(error.contains("stale catalog was not saved"));
+        let model_ids = sqlx::query("SELECT model_id FROM ai_models WHERE provider_id = ?")
+            .bind("chatgpt")
+            .fetch_all(&pool)
+            .await
+            .expect("catalog query")
+            .into_iter()
+            .map(|row| row.get::<String, _>("model_id"))
+            .collect::<Vec<_>>();
+        assert_eq!(model_ids, vec!["existing-model"]);
+    }
+
+    #[tokio::test]
+    async fn completed_model_fetch_is_not_persisted_after_base_url_changes() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("secret tempdir");
+        crate::secrets::init(temp.path()).expect("initialize secret store");
+        let pool = provider_pool().await;
+        let expected_secret = test_secret();
+        crate::secrets::set_chatgpt_secret("chatgpt", &expected_secret).expect("persist secret");
+        let expected_provider = crate::db::repository::get_provider_config(&pool, "chatgpt")
+            .await
+            .expect("provider query")
+            .expect("provider");
+        sqlx::query("UPDATE provider_configs SET base_url = ? WHERE id = ?")
+            .bind("https://replacement.invalid/backend-api")
+            .bind("chatgpt")
+            .execute(&pool)
+            .await
+            .expect("replace base URL");
+
+        let error = persist_models_for_current_session(
+            &pool,
+            "chatgpt",
+            &expected_provider,
+            &expected_secret,
+            &[],
+        )
+        .await
+        .expect_err("stale provider configuration must be rejected");
+
+        assert!(error.contains("stale catalog was not saved"));
+        assert!(
+            crate::db::repository::list_models_by_provider(&pool, "chatgpt")
+                .await
+                .expect("catalog query")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

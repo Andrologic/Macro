@@ -1462,6 +1462,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           }
         }
 
+        if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
+
         const providerLabel = config.providerType === 'copilot' ? 'GitHub Copilot' : 'ChatGPT';
         const message =
           error instanceof Error ? error.message : `Failed to sync ${providerLabel} models`;
@@ -2722,9 +2724,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }
       try {
         await enqueueProviderModelPersistence(id, async () => {
-          if (endpointChanged && !apiKeyChanged) {
-            await tauriIpc.upsertProviderModels({ providerId: id, models: [], replaceDiscovered: true });
-          }
           await ipcUpdateProviderConfig({
             id,
             name: persistedUpdates.name,
@@ -2734,6 +2733,35 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             isLocal: persistedUpdates.isLocal,
             isEnabled: persistedUpdates.isEnabled,
           });
+          if (endpointChanged && !apiKeyChanged && currentConfig) {
+            try {
+              await tauriIpc.upsertProviderModels({ providerId: id, models: [], replaceDiscovered: true });
+            } catch (catalogError) {
+              try {
+                await ipcUpdateProviderConfig({
+                  id,
+                  name: currentConfig.name,
+                  providerType: currentConfig.providerType,
+                  baseUrl: currentConfig.baseUrl,
+                  isLocal: currentConfig.isLocal,
+                  isEnabled: currentConfig.isEnabled,
+                });
+              } catch (rollbackError) {
+                set((state) => ({
+                  modelsByProvider: { ...state.modelsByProvider, [id]: [] },
+                  ...(state.selectedProviderId === id ? { selectedModelId: null, selectedReasoningEffort: null } : {}),
+                }));
+                let reloadFailure = '';
+                try {
+                  await get().loadProviderConfigs();
+                } catch (reloadError) {
+                  reloadFailure = ` Failed to reload provider configuration: ${getErrorMessage(reloadError, 'unknown error')}`;
+                }
+                throw new Error(`${getErrorMessage(catalogError, 'Failed to clear the old catalog')}. Failed to restore the provider configuration: ${getErrorMessage(rollbackError, 'unknown error')}.${reloadFailure}`);
+              }
+              throw catalogError;
+            }
+          }
         });
       } finally {
         providerTransportMutations.delete(id);
@@ -3447,21 +3475,33 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       throw new Error('GitHub Copilot sign-out is managed in your terminal. Run `copilot logout` there.');
     }
 
-    try {
-      const updated = normalizeDbProviderConfig(await tauriIpc.aiDisconnectProviderAuth(providerId));
-      set((state) => ({
-        ...clearProviderReachability(state, providerId),
-        authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
-        modelsByProvider: {
-          ...state.modelsByProvider,
-          [providerId]: (state.modelsByProvider[providerId] || []).filter((model) => model.isManual),
-        },
-      }));
-      await get().loadProviderConfigs();
-      return updated;
-    } catch (error) {
-      throw new Error(getErrorMessage(error, 'Failed to disconnect provider auth.'));
-    }
+    return enqueueProviderMutation(providerId, async () => {
+      providerConfigMutationVersion += 1;
+      invalidateProviderModelScans(providerId);
+      providerTransportMutations.add(providerId);
+      set((state) => ({ ...clearProviderReachability(state, providerId), isLoadingModels: false }));
+      try {
+        const updated = normalizeDbProviderConfig(await enqueueProviderModelPersistence(
+          providerId,
+          () => tauriIpc.aiDisconnectProviderAuth(providerId),
+        ));
+        set((state) => ({
+          providerConfigs: state.providerConfigs.map((entry) => entry.id === providerId ? updated : entry),
+          ...clearProviderReachability(state, providerId),
+          authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
+          modelsByProvider: {
+            ...state.modelsByProvider,
+            [providerId]: (state.modelsByProvider[providerId] || []).filter((model) => model.isManual),
+          },
+        }));
+        await get().loadProviderConfigs();
+        return updated;
+      } catch (error) {
+        throw new Error(getErrorMessage(error, 'Failed to disconnect provider auth.'));
+      } finally {
+        providerTransportMutations.delete(providerId);
+      }
+    });
   },
 
   testConnection: async (providerId: string) => {
@@ -3509,6 +3549,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         try {
           const status = await tauriIpc.aiGetCopilotStatus(providerId);
+          if (!isCurrent()) return obsoleteResult;
           const success = isCopilotConnected(status);
           const message = getCopilotStatusMessage(status);
 
@@ -3523,6 +3564,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             source: 'linked_auth',
           };
         } catch (error) {
+          if (!isCurrent()) return obsoleteResult;
           const message = getErrorMessage(error, 'Failed to check GitHub Copilot status.');
           set((state) => ({
             ...withReachabilityRecord(state, providerId, {

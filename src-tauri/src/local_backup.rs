@@ -702,7 +702,7 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
             }
         }
         let normalized = temp.path().join("normalized.db");
-        snapshot_database(&temp.path().join("macro.db"), &normalized, false).await?;
+        snapshot_database(&temp.path().join("macro.db"), &normalized, true).await?;
         archive.files.remove("data/macro.db-wal");
         archive.files.remove("data/macro.db-shm");
         archive.files.remove("data/macro.db");
@@ -1434,5 +1434,102 @@ mod tests {
                 .unwrap();
         assert_eq!(title, "WAL committed");
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn user_raw_restore_scrubs_provider_auth_but_preserves_raw_rollback() {
+        let (temp, data, config) = profile().await;
+        let pool = crate::db::create_pool(&data.join("macro.db"))
+            .await
+            .unwrap();
+        crate::db::repository::upsert_provider_config_by_id(
+            &pool,
+            "synthetic-provider",
+            "Synthetic provider",
+            "openai",
+            "https://current.invalid/v1",
+            false,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            UPDATE provider_configs
+            SET api_key = 'portable-secret-sentinel',
+                has_stored_api_key = 1,
+                auth_status = 'authenticated',
+                auth_source = 'oauth',
+                token_expires_at = '2099-01-01T00:00:00Z'
+            WHERE id = 'synthetic-provider'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let raw = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        let raw_path = temp.path().join("raw-profile.json");
+        preserve_raw(&raw, &raw_path).unwrap();
+
+        let portable = load_restore_archive(&raw_path).await.unwrap();
+        let portable_db = temp.path().join("portable.db");
+        fs::write(
+            &portable_db,
+            STANDARD
+                .decode(&portable.files["data/macro.db"].data)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut portable_connection = connection(&portable_db).await.unwrap();
+        let portable_auth: (
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            r#"
+                SELECT api_key, has_stored_api_key, auth_status, auth_source, token_expires_at
+                FROM provider_configs
+                WHERE id = 'synthetic-provider'
+                "#,
+        )
+        .fetch_one(&mut portable_connection)
+        .await
+        .unwrap();
+        assert_eq!(portable_auth, (None, 0, None, None, None));
+        portable_connection.close().await.unwrap();
+
+        let (_rollback_temp, rollback_data, rollback_config) = profile().await;
+        apply_files(&raw, &rollback_data, &rollback_config, true).unwrap();
+        let mut rollback_connection = connection(&rollback_data.join("macro.db")).await.unwrap();
+        let rollback_auth: (
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            r#"
+                SELECT api_key, has_stored_api_key, auth_status, auth_source, token_expires_at
+                FROM provider_configs
+                WHERE id = 'synthetic-provider'
+                "#,
+        )
+        .fetch_one(&mut rollback_connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            rollback_auth,
+            (
+                Some("portable-secret-sentinel".to_string()),
+                1,
+                Some("authenticated".to_string()),
+                Some("oauth".to_string()),
+                Some("2099-01-01T00:00:00Z".to_string())
+            )
+        );
+        rollback_connection.close().await.unwrap();
     }
 }
