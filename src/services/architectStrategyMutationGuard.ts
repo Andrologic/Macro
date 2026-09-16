@@ -839,11 +839,18 @@ export const applyStrategyMutationPreview = async (
     throw new Error(`Plan ${params.preview.planId} is unavailable.`);
   }
 
+  const expectedRevision = params.preview.baseRevision;
   if (
-    params.preview.baseRevision !== null &&
-    currentPlan.revision &&
-    currentPlan.revision !== params.preview.baseRevision
+    typeof expectedRevision !== "number" ||
+    !Number.isInteger(expectedRevision) ||
+    expectedRevision < 1
   ) {
+    throw new Error(
+      "Cannot apply a strategy preview without a usable base revision. Re-read the plan and regenerate the preview.",
+    );
+  }
+
+  if (currentPlan.revision !== expectedRevision) {
     throw new Error(
       "The plan changed after this preview was generated. Discard the preview and regenerate it.",
     );
@@ -872,6 +879,7 @@ export const applyStrategyMutationPreview = async (
   const persistPlan = () => deps.updateArchitectPlan({
     branchName: params.preview.targetBranch,
     planId: params.preview.planId,
+    expectedRevision,
     description: params.preview.metadataUpdate.description,
     ...(params.preview.metadataUpdate.title
       ? { title: params.preview.metadataUpdate.title }

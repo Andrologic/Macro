@@ -6,6 +6,16 @@ const actualArchitectGitFlowService = await import('../services/architectGitFlow
 const actualArchitectGitNaming = await import('../services/architectGitNaming');
 const actualServices = await import('../services');
 const actualTauriIpc = await import('../services/tauriIpc');
+type GitWorkflowRequest = Parameters<typeof actualTauriIpc.gitWorkflow>[0];
+type GitWorkflowSession = Awaited<ReturnType<typeof actualTauriIpc.gitWorkflow>>;
+type GitWorktreeInspectRequest = Parameters<typeof actualTauriIpc.gitWorktreeInspect>[0];
+type GitMergeCheckRequest = Parameters<typeof actualTauriIpc.gitMergeCheck>[0];
+type GitDiffRequest = Parameters<typeof actualTauriIpc.gitDiff>[0];
+type GitWorktreeRemoveRequest = Parameters<typeof actualTauriIpc.gitWorktreeRemove>[0];
+type GitWorktreeCreateRequest = Parameters<typeof actualTauriIpc.gitWorktreeCreate>[0];
+type GitBranchDeleteRequest = Parameters<typeof actualTauriIpc.gitBranchDelete>[0];
+type GitBranchDeleteRemoteRequest = Parameters<typeof actualTauriIpc.gitBranchDeleteRemote>[0];
+type GitBranches = Awaited<ReturnType<typeof actualTauriIpc.gitBranchList>>;
 
 let isolatedTaskStoreImportCounter = 0;
 
@@ -73,9 +83,12 @@ const updateArchitectPlanMock = mock(async (input: { nodes?: typeof planState.no
 });
 const commitArchitectPlanMetadataMock = mock(async () => undefined);
 const writeArchitectTaskExecutionMock = mock(async () => undefined);
-const gitWorktreeInspectMock = mock(async () => ({
-  status: 'ready' as const,
+const gitWorktreeInspectMock = mock(async (_params: GitWorktreeInspectRequest): Promise<Awaited<ReturnType<typeof actualTauriIpc.gitWorktreeInspect>>> => ({
+  taskId: 'repo-1',
   worktreePath: '/worktrees/task-1',
+  branchName: 'feature/task-1',
+  status: 'ready',
+  isDirty: false,
 }));
 const gitStatusMock = mock(async () => ({
   branch: 'feature/task-1',
@@ -84,10 +97,17 @@ const gitStatusMock = mock(async () => ({
   untracked_files: [],
   is_clean: true,
 }));
-const gitDiffMock = mock(async () => 'diff --git a/src/task.ts b/src/task.ts');
-const gitWorktreeRemoveMock = mock(async () => ({
+const gitDiffMock = mock(async (_params?: GitDiffRequest) => 'diff --git a/src/task.ts b/src/task.ts');
+const gitWorktreeRemoveMock = mock(async (_params?: GitWorktreeRemoveRequest) => ({
   removed: true,
   removedPath: '/worktrees/task-1',
+}));
+const gitWorktreeCreateMock = mock(async (params: GitWorktreeCreateRequest) => ({
+  taskId: params.taskId,
+  worktreePath: '/worktrees/task-1',
+  branchName: params.branchName,
+  createdByThisCall: false,
+  status: 'reused' as const,
 }));
 const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; worktreeKey: string; branchName: string }) => ({
   worktreeKey: params.worktreeKey,
@@ -95,43 +115,175 @@ const gitBranchWorktreeCreateMock = mock(async (params: { repoPath: string; work
   branchName: params.branchName,
   status: 'reused' as const,
 }));
-const gitBranchListMock = mock(async (): Promise<{
-  local: Array<{ name: string; is_head: boolean; commit: string }>;
-  remote: Array<{ name: string; is_head: boolean; commit: string }>;
-  current: string;
-}> => ({
+const gitBranchListMock = mock(async (_repoPath = '/repos/web'): Promise<GitBranches> => ({
   local: [{ name: 'feature/task-1', is_head: false, commit: 'abc123' }],
   remote: [],
   current: 'develop',
 }));
 const gitCheckoutMock = mock(async () => undefined);
-const gitMergeCheckMock = mock(async () => ({
+const gitMergeCheckMock = mock(async (_params?: GitMergeCheckRequest) => ({
   mergeable: true,
   conflictFiles: [] as string[],
   hasChanges: true,
 }));
 const gitMergeMock = mock(async ({
+  repoPath: _repoPath,
   branchName,
   intoBranch,
 }: {
+  repoPath: string;
   branchName: string;
   intoBranch: string;
 }) => `Merged ${branchName} into ${intoBranch}`);
-const gitFastForwardMock = mock(async () => 'Fast-forwarded plan/checkout');
+const gitFastForwardMock = mock(async (_params: {
+  repoPath: string;
+  sourceBranch: string;
+  targetBranch: string;
+}) => 'Fast-forwarded plan/checkout');
 const gitRebaseCheckMock = mock(async () => ({
   rebaseable: true,
   conflictFiles: [] as string[],
   output: 'Successfully rebased',
 }));
-const gitRebaseBranchMock = mock(async () => 'Successfully rebased');
-const gitBranchDeleteMock = mock(async () => undefined);
-const gitBranchDeleteRemoteMock = mock(async () => undefined);
+const gitRebaseBranchMock = mock(async (_params: {
+  repoPath: string;
+  branchName: string;
+  ontoBranch: string;
+  confirm: boolean;
+}) => 'Successfully rebased');
+const gitBranchDeleteMock = mock(async (_params?: GitBranchDeleteRequest) => undefined);
+const gitBranchDeleteRemoteMock = mock(async (_params?: GitBranchDeleteRemoteRequest) => undefined);
 const gitPullMock = mock(async () => undefined);
-const fsReadFileWithOptionsMock = mock(async (_params?: { path?: string }): Promise<{ content: string }> => {
-  throw new Error('not found');
+const gitWorkflowSessions = new Map<string, GitWorkflowSession>();
+const worktreeInspectionOverrides = new Map<string, {
+  status: 'ready' | 'absent';
+  worktreePath?: string;
+}>();
+const runtimeFiles = new Map<string, { content: string; revision: string }>();
+const runtimeSettings = new Map<string, string>();
+
+const gitWorkflowRepoKey = (repoPath: string): string =>
+  repoPath.replace(/\/\.macro\/worktrees\/integration-[^/]+$/, '');
+const gitWorkflowKey = (params: Pick<GitWorkflowRequest, 'repoPath' | 'taskId' | 'sourceBranch' | 'targetBranch'>): string =>
+  [gitWorkflowRepoKey(params.repoPath), params.taskId, params.sourceBranch, params.targetBranch].join('::');
+
+const gitWorkflowMock = mock(async (params: GitWorkflowRequest): Promise<GitWorkflowSession | null> => {
+  const key = gitWorkflowKey(params);
+  if (params.action === 'inspect') {
+    return gitWorkflowSessions.get(key) ?? null;
+  }
+
+  let output = 'Merge integrated.';
+  if (params.action === 'merge_commit') {
+    output = await gitMergeMock({
+      repoPath: params.repoPath,
+      branchName: params.sourceBranch,
+      intoBranch: params.targetBranch,
+    });
+  } else if (params.action === 'fast_forward') {
+    output = await gitFastForwardMock({
+      repoPath: params.repoPath,
+      sourceBranch: params.sourceBranch,
+      targetBranch: params.targetBranch,
+    });
+  } else if (params.action === 'rebase_then_continue') {
+    await gitRebaseBranchMock({
+      repoPath: params.repoPath,
+      branchName: params.sourceBranch,
+      ontoBranch: params.targetBranch,
+      confirm: true,
+    });
+    output = await gitFastForwardMock({
+      repoPath: params.repoPath,
+      sourceBranch: params.sourceBranch,
+      targetBranch: params.targetBranch,
+    });
+  } else if (params.action === 'no_changes') {
+    output = 'No changes; source is already integrated.';
+  }
+
+  const sourceCommit = params.sourceBranch === 'feature/task-1-api' ? 'def456' : 'abc123';
+
+  const session: GitWorkflowSession = {
+    taskId: params.taskId,
+    sessionId: `session-${params.taskId}-${params.sourceBranch}-${params.targetBranch}`,
+    sourceBranch: params.sourceBranch,
+    targetBranch: params.targetBranch,
+    sourceCommit,
+    targetCommit: params.targetBranch === 'plan/checkout-api' ? 'target456' : 'target123',
+    integratedCommit: params.targetBranch === 'plan/checkout-api' ? 'integrated456' : 'integrated123',
+    status: 'integrated',
+    output,
+  };
+  gitWorkflowSessions.set(key, session);
+  return session;
+});
+
+const worktreeInspectionKey = (params: Pick<GitWorktreeInspectRequest, 'repoPath' | 'taskId'>): string =>
+  `${params.repoPath}::${params.taskId}`;
+
+gitWorktreeInspectMock.mockImplementation(async (params: GitWorktreeInspectRequest) => ({
+  taskId: params.taskId,
+  status: worktreeInspectionOverrides.get(worktreeInspectionKey(params))?.status ?? 'ready',
+  worktreePath: worktreeInspectionOverrides.get(worktreeInspectionKey(params))?.worktreePath ?? '/worktrees/task-1',
+  branchName: params.branchName ?? 'feature/task-1',
+  isDirty: false,
+}));
+
+const runtimeFileKey = (params: {
+  path?: string;
+  workspacePath?: string | null;
+  workspaceScope?: string;
+}): string => [params.workspaceScope, params.workspacePath, params.path].join('::');
+
+const createFilesystemNotFoundError = (): Error & { code: string } => {
+  const error = new Error('not found') as Error & { code: string };
+  error.code = 'FilesystemNotFound';
+  return error;
+};
+
+const fsReadFileWithOptionsMock = mock(async (params?: {
+  path?: string;
+  workspacePath?: string | null;
+  workspaceScope?: string;
+}): Promise<{ content: string; revision?: string }> => {
+  if (params?.path?.endsWith('/runtime.json')) {
+    const file = runtimeFiles.get(runtimeFileKey(params));
+    if (!file) throw createFilesystemNotFoundError();
+    return file;
+  }
+  throw createFilesystemNotFoundError();
 });
 const fsExistsMock = mock(async (_path?: string): Promise<boolean> => false);
-const fsWriteFileMock = mock(async () => ({ bytesWritten: 0 }));
+const fsWriteFileMock = mock(async (params?: {
+  path?: string;
+  content?: string;
+  workspacePath?: string | null;
+  workspaceScope?: string;
+}) => {
+  if (params?.path?.endsWith('/runtime.json') && typeof params.content === 'string') {
+    const key = runtimeFileKey(params);
+    const previousRevision = runtimeFiles.get(key)?.revision;
+    const nextRevision = previousRevision ? `${previousRevision}-next` : 'runtime-revision-1';
+    runtimeFiles.set(key, { content: params.content, revision: nextRevision });
+  }
+  return { bytesWritten: params?.content?.length ?? 0 };
+});
+const dbGetAppSettingMock = mock(async (key: string) => {
+  const value = runtimeSettings.get(key);
+  return value === undefined ? null : { key, value_json: value, updated_at: '' };
+});
+const dbCompareAndSwapAppSettingMock = mock(async (params: {
+  key: string;
+  expectedValueJson: string | null;
+  valueJson: string;
+}) => {
+  if ((runtimeSettings.get(params.key) ?? null) !== params.expectedValueJson) {
+    return { applied: false };
+  }
+  runtimeSettings.set(params.key, params.valueJson);
+  return { applied: true };
+});
 const workspaceGetActiveRootMock = mock(async () => '/repos/web');
 const workspaceArchiveManualFeatureMock = mock(async () => ({
   archivedAt: '2026-08-30T10:00:00.000Z',
@@ -159,10 +311,10 @@ const appStoreState = {
     id: 'plan-1',
     status: 'in_progress',
   },
-  getProjectById: (_projectId: string) => ({
-    id: 'project-1',
-    name: 'Project One',
-    path: '/repos/web',
+  getProjectById: (projectId: string) => ({
+    id: projectId,
+    name: projectId === 'project-2' ? 'Project Two' : 'Project One',
+    path: projectId === 'project-2' ? '/repos/api' : '/repos/web',
     gitSetupState: 'ready' as const,
     directEdit: false,
     gitFlowSettings: {
@@ -242,7 +394,9 @@ mock.module('../services/tauriIpc', () => ({
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
+  gitWorkflow: gitWorkflowMock,
   gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
+  gitWorktreeCreate: gitWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -251,6 +405,8 @@ mock.module('../services/tauriIpc', () => ({
   fsExists: fsExistsMock,
   fsReadFileWithOptions: fsReadFileWithOptionsMock,
   fsWriteFile: fsWriteFileMock,
+  dbGetAppSetting: dbGetAppSettingMock,
+  dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
   workspaceGetActiveRoot: workspaceGetActiveRootMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
@@ -269,7 +425,9 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitFastForward: gitFastForwardMock,
   gitRebaseCheck: gitRebaseCheckMock,
   gitRebaseBranch: gitRebaseBranchMock,
+  gitWorkflow: gitWorkflowMock,
   gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
+  gitWorktreeCreate: gitWorktreeCreateMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
@@ -278,6 +436,8 @@ mock.module('../services/tauriIpc.ts', () => ({
   fsExists: fsExistsMock,
   fsReadFileWithOptions: fsReadFileWithOptionsMock,
   fsWriteFile: fsWriteFileMock,
+  dbGetAppSetting: dbGetAppSettingMock,
+  dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
   workspaceGetActiveRoot: workspaceGetActiveRootMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceUpdateStandaloneTaskStatus: workspaceUpdateStandaloneTaskStatusMock,
@@ -446,9 +606,11 @@ describe('useTaskStore.finishTask', () => {
     commitArchitectPlanMetadataMock.mockClear();
     writeArchitectTaskExecutionMock.mockClear();
     gitWorktreeInspectMock.mockClear();
+    worktreeInspectionOverrides.clear();
     gitStatusMock.mockClear();
     gitDiffMock.mockClear();
     gitBranchWorktreeCreateMock.mockClear();
+    gitWorktreeCreateMock.mockClear();
     gitWorktreeRemoveMock.mockClear();
     gitWorktreeRemoveMock.mockImplementation(async () => ({
       removed: true,
@@ -475,17 +637,32 @@ describe('useTaskStore.finishTask', () => {
     }));
     gitMergeMock.mockClear();
     gitFastForwardMock.mockClear();
+    gitWorkflowMock.mockClear();
+    gitWorkflowSessions.clear();
     projectCompletionMergePolicy = 'merge_commit';
     gitRebaseCheckMock.mockClear();
     gitRebaseBranchMock.mockClear();
     gitPullMock.mockClear();
     fsReadFileWithOptionsMock.mockClear();
-    fsReadFileWithOptionsMock.mockImplementation(async () => {
-      throw new Error('not found');
+    fsReadFileWithOptionsMock.mockImplementation(async (params?: {
+      path?: string;
+      workspacePath?: string | null;
+      workspaceScope?: string;
+    }) => {
+      if (params?.path?.endsWith('/runtime.json')) {
+        const file = runtimeFiles.get(runtimeFileKey(params));
+        if (!file) throw createFilesystemNotFoundError();
+        return file;
+      }
+      throw createFilesystemNotFoundError();
     });
     fsExistsMock.mockClear();
     fsExistsMock.mockImplementation(async () => false);
     fsWriteFileMock.mockClear();
+    runtimeFiles.clear();
+    runtimeSettings.clear();
+    dbGetAppSettingMock.mockClear();
+    dbCompareAndSwapAppSettingMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
     syncTerminalDisplayMetadataMock.mockClear();
@@ -888,10 +1065,19 @@ describe('useTaskStore.finishTask', () => {
       targetBranch: 'plan/checkout',
     });
     expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      taskId: 'repo-1',
+      force: false,
+      branchName: 'feature/task-1',
+      expectedCommit: 'abc123',
+      expectedWorktreePath: '/worktrees/task-1',
+    });
     expect(gitBranchDeleteMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
       branchName: 'feature/task-1',
       force: true,
+      expectedCommit: 'abc123',
     });
   });
 
@@ -1022,10 +1208,11 @@ describe('useTaskStore.finishTask', () => {
       repoPath: '/repos/web',
       branchName: 'feature/task-1',
       force: true,
+      expectedCommit: 'abc123',
     });
   });
 
-  it('does not fail a completed merge when branch cleanup fails after integration', async () => {
+  it('keeps a completed merge blocked when branch cleanup fails after integration', async () => {
     gitMergeCheckMock.mockImplementation(async () => ({
       mergeable: true,
       conflictFiles: [],
@@ -1056,9 +1243,9 @@ describe('useTaskStore.finishTask', () => {
       lastError: null,
     });
 
-    await useTaskStore.getState().finishTask('task-1', {
+    await expect(useTaskStore.getState().finishTask('task-1', {
       mergeStrategyAction: 'fast_forward',
-    });
+    })).rejects.toThrow('not merged into current HEAD');
 
     expect(gitFastForwardMock).toHaveBeenCalledWith({
       repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
@@ -1069,12 +1256,44 @@ describe('useTaskStore.finishTask', () => {
       repoPath: '/repos/web',
       branchName: 'feature/task-1',
       force: true,
+      expectedCommit: 'abc123',
     });
+    expect(gitBranchDeleteRemoteMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().getTaskById('task-1')).not.toMatchObject({
+      status: 'Completed',
+    });
+
+    const persistedTask = useTaskStore.getState().getTaskById('task-1');
+    expect(persistedTask?.merge_workflow).toBeTruthy();
+    const worktreeCreateCallsAfterFailure = gitWorktreeCreateMock.mock.calls.length;
+    gitBranchDeleteRemoteMock.mockReset();
+    gitBranchDeleteRemoteMock.mockImplementation(async () => undefined);
+    worktreeInspectionOverrides.set('/repos/web::repo-1', {
+      status: 'absent',
+      worktreePath: '/worktrees/task-1',
+    });
+
+    const { useTaskStore: reloadedTaskStore } = await loadIsolatedTaskStore();
+    reloadedTaskStore.setState({
+      tasks: [persistedTask!] as never[],
+      branchWorktrees: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      lastError: null,
+    });
+
+    await reloadedTaskStore.getState().finishTask('task-1', {
+      mergeStrategyAction: 'fast_forward',
+    });
+
+    expect(gitWorktreeCreateMock).toHaveBeenCalledTimes(worktreeCreateCallsAfterFailure);
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
     expect(gitBranchDeleteRemoteMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
       branchName: 'feature/task-1',
+      expectedCommit: 'abc123',
     });
-    expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
+    expect(reloadedTaskStore.getState().getTaskById('task-1')).toMatchObject({
       status: 'Completed',
     });
   });
@@ -1107,6 +1326,187 @@ describe('useTaskStore.finishTask', () => {
     })).rejects.toThrow('worktree still locked');
 
     expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('resumes a no-changes completion after cleanup failure and an absent source worktree', async () => {
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: false,
+      ahead: 0,
+      behind: 0,
+    }));
+    gitDiffMock.mockImplementation(async () => '');
+    gitBranchDeleteMock.mockImplementationOnce(async () => {
+      throw new Error('branch cleanup failed');
+    });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask()] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1', {
+      allowWithoutCodeChanges: true,
+    })).rejects.toThrow('branch cleanup failed');
+
+    const persistedTask = useTaskStore.getState().getTaskById('task-1');
+    expect(persistedTask?.merge_workflow).toBeTruthy();
+    expect(gitWorkflowMock.mock.calls.filter(([params]) => params.action === 'no_changes')).toHaveLength(1);
+    const worktreeCreateCallsAfterFailure = gitWorktreeCreateMock.mock.calls.length;
+
+    worktreeInspectionOverrides.set('/repos/web::repo-1', {
+      status: 'absent',
+      worktreePath: '/worktrees/task-1',
+    });
+
+    const { useTaskStore: reloadedTaskStore } = await loadIsolatedTaskStore();
+    reloadedTaskStore.setState({
+      tasks: [persistedTask!] as never[],
+      branchWorktrees: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      lastError: null,
+    });
+
+    await reloadedTaskStore.getState().finishTask('task-1', {
+      allowWithoutCodeChanges: true,
+    });
+
+    expect(gitWorktreeCreateMock).toHaveBeenCalledTimes(worktreeCreateCallsAfterFailure);
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
+    expect(gitBranchDeleteMock).toHaveBeenLastCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/task-1',
+      force: true,
+      expectedCommit: 'abc123',
+    });
+    expect(reloadedTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      status: 'Completed',
+    });
+  });
+
+  it('keeps partial multi-repository cleanup resumable by repository after reload', async () => {
+    const apiTarget = {
+      projectId: 'project-2',
+      executionMode: 'git',
+      branchName: 'feature/task-1-api',
+      worktreeKey: 'repo-2',
+      repoPath: '/repos/api',
+      planBranchName: 'plan/checkout-api',
+      targetBranchName: 'develop',
+    };
+    const deletedBranches = new Set<string>();
+    let worktreeRemoveCalls = 0;
+
+    gitMergeCheckMock.mockImplementation(async (params) => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: !params?.repoPath.includes('/repos/api/'),
+      ahead: params?.repoPath.includes('/repos/api/') ? 0 : 1,
+      behind: params?.repoPath.includes('/repos/api/') ? 0 : 1,
+    }));
+    gitDiffMock.mockImplementation(async (params) =>
+      params?.repoPath.includes('/repos/api/') ? '' : 'diff --git a/src/task.ts b/src/task.ts'
+    );
+    gitBranchListMock.mockImplementation(async (repoPath) => {
+      const isApi = repoPath === '/repos/api';
+      const branchName = isApi ? 'feature/task-1-api' : 'feature/task-1';
+      return {
+        local: deletedBranches.has(`${repoPath}::${branchName}`)
+          ? []
+          : [{ name: branchName, is_head: false, commit: isApi ? 'def456' : 'abc123' }],
+        remote: [],
+        current: 'develop',
+      };
+    });
+    gitBranchDeleteMock.mockImplementation(async (params) => {
+      if (params) deletedBranches.add(`${params.repoPath}::${params.branchName}`);
+    });
+    gitWorktreeRemoveMock.mockImplementation(async (params) => {
+      worktreeRemoveCalls += 1;
+      if (worktreeRemoveCalls === 2) {
+        throw new Error('api cleanup failed');
+      }
+      if (params?.repoPath === '/repos/web') {
+        worktreeInspectionOverrides.set('/repos/web::repo-1', {
+          status: 'absent',
+          worktreePath: '/worktrees/task-1',
+        });
+      }
+      return {
+        removed: true,
+        removedPath: params?.repoPath === '/repos/api'
+          ? '/worktrees/task-1-api'
+          : '/worktrees/task-1',
+      };
+    });
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildArchitectTask({
+        project_ids: ['project-1', 'project-2'],
+        execution_targets: [buildArchitectTask().execution_targets[0], apiTarget],
+      })] as never[],
+      branchWorktrees: {
+        'repo-1': '/worktrees/task-1',
+        'repo-2': '/worktrees/task-1-api',
+      },
+      activeBranchName: 'feature/task-1',
+      activeRepositoryPath: '/worktrees/task-1',
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().finishTask('task-1')).rejects.toThrow(
+      'api cleanup failed',
+    );
+
+    const persistedTask = useTaskStore.getState().getTaskById('task-1');
+    expect(persistedTask?.merge_workflow).toBeTruthy();
+    const worktreeCreateCallsAfterFailure = gitWorktreeCreateMock.mock.calls.length;
+
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      branchName: 'feature/task-1',
+      force: true,
+      expectedCommit: 'abc123',
+    });
+    expect(gitBranchDeleteMock).not.toHaveBeenCalledWith({
+      repoPath: '/repos/api',
+      branchName: 'feature/task-1-api',
+      force: true,
+      expectedCommit: 'def456',
+    });
+
+    const { useTaskStore: reloadedTaskStore } = await loadIsolatedTaskStore();
+    reloadedTaskStore.setState({
+      tasks: [persistedTask!] as never[],
+      branchWorktrees: {},
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      lastError: null,
+    });
+
+    await reloadedTaskStore.getState().finishTask('task-1');
+
+    expect(gitWorktreeCreateMock).toHaveBeenCalledTimes(worktreeCreateCallsAfterFailure);
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(3);
+    expect(gitBranchDeleteMock).toHaveBeenCalledTimes(2);
+    expect(gitBranchDeleteMock).toHaveBeenLastCalledWith({
+      repoPath: '/repos/api',
+      branchName: 'feature/task-1-api',
+      force: true,
+      expectedCommit: 'def456',
+    });
+    expect(reloadedTaskStore.getState().getTaskById('task-1')).toMatchObject({
+      status: 'Completed',
+    });
   });
 
   it('keeps architect tasks open when the merge workflow is blocked', async () => {

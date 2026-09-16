@@ -5157,6 +5157,7 @@ export const createArchitectPlan = async (
 export const updateArchitectPlan = async (input: {
   branchName: string;
   planId: string;
+  expectedRevision?: number;
   title?: string;
   label?: string;
   slug?: string;
@@ -5187,7 +5188,23 @@ export const updateArchitectPlan = async (input: {
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const existing = replicaSet.canonical.plan;
-  const inputKeys = Object.keys(input).filter((key) => key !== 'branchName' && key !== 'planId');
+  if (
+    input.expectedRevision !== undefined &&
+    (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1)
+  ) {
+    throw new Error('Expected architect plan revision must be a positive integer.');
+  }
+  if (
+    input.expectedRevision !== undefined &&
+    existing.revision !== input.expectedRevision
+  ) {
+    throw new Error(
+      `Architect plan revision changed before mutation: expected ${input.expectedRevision}, found ${existing.revision ?? 'unavailable'}.`,
+    );
+  }
+  const inputKeys = Object.keys(input).filter(
+    (key) => key !== 'branchName' && key !== 'planId' && key !== 'expectedRevision',
+  );
   const isRestoringArchivedPlan =
     existing.status === 'archived' &&
     isArchitectPlanRestorableStatus(input.status) &&

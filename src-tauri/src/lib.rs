@@ -966,6 +966,7 @@ pub fn run() {
             commands::git::git_write_conflict_resolution,
             commands::git::git_accept_conflict_side,
             commands::git::git_complete_merge,
+            commands::git::workflow::git_workflow,
             commands::git::git_get_tree,
             commands::git::git_branch_worktree_inspect,
             commands::git::git_branch_worktree_create,

@@ -500,6 +500,8 @@
   "taskNextActionMergeTask": "Next: merge task branches",
   "aiResolvingConflict": "AI resolving...",
   "checkingMergeResolution": "Checking merge resolution...",
+  "verifyingConflictSession": "Se está verificando la sesión de fusión antes de activar la edición de archivos...",
+  "conflictSessionBelongsToAnotherTask": "Esta sesión de fusión pertenece a otra tarea. Actualiza la revisión de la fusión antes de editar.",
   "preparingConflictResolution": "Preparing conflict resolution...",
   "stagedResolutionStatus": "Resolution staged",
   "stagedResolutionTitle": "Merge resolution is staged",
