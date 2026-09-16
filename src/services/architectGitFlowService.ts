@@ -948,18 +948,26 @@ export const createArchitectGitFlowService = (
       Number(b.kind === 'worktree') - Number(a.kind === 'worktree'));
     for (const resource of resources) {
       try {
-        if (!resource.expectedCommit) throw new Error('Creation outcome is unconfirmed; inspect this resource before cleanup.');
         if (resource.kind === 'worktree') {
-          await deps.tauri.gitWorktreeRemove({ repoPath: resource.repoPath, taskId: resource.worktreeKey!,
+          const inspection = await deps.tauri.gitWorktreeInspect({ repoPath: resource.repoPath,
+            taskId: resource.worktreeKey!, branchName: resource.branchName, readOnly: true });
+          if (inspection.status !== 'absent') {
+            if (!resource.expectedCommit) throw new Error('Creation outcome is unconfirmed; inspect this resource before cleanup.');
+            await deps.tauri.gitWorktreeRemove({ repoPath: resource.repoPath, taskId: resource.worktreeKey!,
             branchName: resource.branchName, force: false, expectedCommit: resource.expectedCommit,
             expectedWorktreePath: resource.expectedWorktreePath });
+          }
         } else {
           if (saga.cleanupResources?.some((other) => other.kind === 'worktree' &&
             other.repoPath === resource.repoPath && other.branchName === resource.branchName)) {
             throw new Error('The worktree still requires cleanup.');
           }
-          await deps.tauri.gitBranchDelete({ repoPath: resource.repoPath, branchName: resource.branchName,
-            force: true, expectedCommit: resource.expectedCommit });
+          const branches = await deps.tauri.gitBranchList(resource.repoPath);
+          if (branches.local.some((branch) => branch.name === resource.branchName)) {
+            if (!resource.expectedCommit) throw new Error('Creation outcome is unconfirmed; inspect this resource before cleanup.');
+            await deps.tauri.gitBranchDelete({ repoPath: resource.repoPath, branchName: resource.branchName,
+              force: true, expectedCommit: resource.expectedCommit });
+          }
         }
         saga.cleanupResources = saga.cleanupResources?.filter((entry) => entry !== resource);
         saga.updatedAt = new Date().toISOString();
@@ -1735,10 +1743,10 @@ export const createArchitectGitFlowService = (
               extraBranches: [repositoryPlanBranchName],
             }),
           });
-          if (ensuredWorktree.status === 'created') {
+          if (ensuredWorktree.createdByThisCall ?? ensuredWorktree.status === 'created') {
             await confirmResource(intent, ensuredWorktree.worktreePath);
           } else {
-            // Repaired or concurrently reused worktrees did not originate here.
+            // Link repairs and concurrently reused worktrees did not originate here.
             saga.cleanupResources = saga.cleanupResources!.filter((resource) => resource !== intent);
             await upsertPlanLifecycleSaga(saga);
           }

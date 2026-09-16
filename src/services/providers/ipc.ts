@@ -191,6 +191,7 @@ export const gitWorktreeCreate = async (
   taskId: string;
   worktreePath: string;
   branchName: string;
+  createdByThisCall?: boolean;
   status: 'created' | 'reused' | 'repaired';
 }> => {
   const project = useAppStore.getState().getProjectById(projectId);

@@ -10,6 +10,7 @@ import type {
   GitBranchWorktreeInspectionDto,
   GitBranchWorktreeRemoveDto,
   GitWorktreeEnsureDto,
+  GitWorktreeInspectionDto,
 } from './tauriIpc';
 
 const actualTauriIpc = await import('./tauriIpc');
@@ -213,7 +214,7 @@ const gitBranchCreateMock = mock(async (_params: { repoPath: string; branchName:
 const workspaceAcquirePlanLifecycleLockMock = mock(async () => 'plan-lifecycle-lease');
 const workspaceRenewPlanLifecycleLockMock = mock(async () => undefined);
 const workspaceReleasePlanLifecycleLockMock = mock(async () => undefined);
-const gitWorktreeInspectMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => {
+const gitWorktreeInspectMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null; readOnly?: boolean }): Promise<GitWorktreeInspectionDto> => {
   const worktreePath = `${params.repoPath}/.macro/worktrees/task${params.taskId}`;
   if (worktreeStatusByPath.has(worktreePath)) {
     const status = worktreeStatusByPath.get(worktreePath);
@@ -998,7 +999,7 @@ describe('architectGitFlowService', () => {
     expect(updateArchitectPlanMock).not.toHaveBeenCalled();
   });
 
-  it('rolls back worktrees and only newly created branches when metadata validation fails', async () => {
+  it.each(['created', 'repaired'] as const)('rolls back newly created worktrees with status %s when metadata validation fails', async (status) => {
     const created = new Map<string, string[]>();
     gitBranchListMock.mockImplementation(async (repo) => createGitBranches(['develop', ...(created.get(repo) ?? [])]));
     gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
@@ -1008,9 +1009,12 @@ describe('architectGitFlowService', () => {
       taskId: params.taskId,
       worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
       branchName: null,
-      status: 'absent' as const,
+      status: params.readOnly ? 'ready' : status === 'repaired' ? 'stale_registration' : 'absent',
       isDirty: null,
     }));
+    gitWorktreeCreateMock.mockImplementation(async (params) => ({ taskId: params.taskId,
+      worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
+      branchName: params.branchName, status, createdByThisCall: true }));
     updateArchitectPlanMock.mockImplementationOnce(async () => {
       throw new Error('metadata write failed');
     });
@@ -1040,7 +1044,7 @@ describe('architectGitFlowService', () => {
       created.set(repoPath, [...(created.get(repoPath) ?? []), branchName]);
     });
     gitWorktreeInspectMock.mockImplementation(async (params) => ({ taskId: params.taskId,
-      worktreePath: `${params.repoPath}/worktree`, branchName: null, status: 'absent', isDirty: null }));
+      worktreePath: `${params.repoPath}/worktree`, branchName: params.branchName ?? null, status: params.readOnly ? 'ready' : 'absent', isDirty: null }));
     updateArchitectPlanMock.mockImplementationOnce(async () => { throw new Error('metadata failure'); });
     gitWorktreeRemoveMock.mockImplementationOnce(async () => { throw new Error('worktree is dirty'); });
     gitBranchDeleteMock.mockImplementationOnce(async () => { throw new Error('branch is locked'); });
@@ -1058,6 +1062,28 @@ describe('architectGitFlowService', () => {
     for (const [params] of gitWorktreeRemoveMock.mock.calls) {
       expect(params).toMatchObject({ force: false, expectedCommit: expect.any(String), expectedWorktreePath: expect.any(String) });
     }
+  });
+
+  it('checkpoints an already absent worktree before resuming branch cleanup', async () => {
+    currentPlan.status = 'draft';
+    persistedPlanLifecycleSagas = JSON.stringify([{
+      planId: 'plan-1', branchName: 'feature/implement', operation: 'provision', phase: 'prepared',
+      createdAt: '2026-09-16T00:00:00Z', updatedAt: '2026-09-16T00:00:00Z', cleanupResources: [
+        { kind: 'branch', projectId: 'web', repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', expectedCommit: 'head' },
+        { kind: 'worktree', projectId: 'web', repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web',
+          worktreeKey: 'task-key', expectedCommit: 'head', expectedWorktreePath: '/repos/web/worktree' },
+      ],
+    }]);
+    gitWorktreeInspectMock.mockImplementation(async (params) => ({ taskId: params.taskId,
+      worktreePath: '/repos/web/worktree', branchName: null, status: 'absent', isDirty: null }));
+    gitWorktreeRemoveMock.mockImplementation(async () => { throw new Error('native removal must not be replayed'); });
+    gitBranchDeleteMock.mockImplementation(async () => {
+      expect(JSON.parse(persistedPlanLifecycleSagas)[0].cleanupResources).toHaveLength(1);
+    });
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
   });
 
   it('does not roll back a worktree reused after an absent inspection race', async () => {

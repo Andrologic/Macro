@@ -372,6 +372,7 @@ pub struct GitBranchWorktreeInspectionDto {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitWorktreeEnsureDto {
+    pub created_by_this_call: bool,
     pub task_id: String,
     pub worktree_path: String,
     pub branch_name: String,
@@ -14951,6 +14952,7 @@ pub async fn git_worktree_create(
             &fallback_branches,
         )?;
         Ok(GitWorktreeEnsureDto {
+            created_by_this_call: ensured.created_by_this_call,
             task_id: ensured.task_id,
             worktree_path: ensured.worktree_path.to_string_lossy().into_owned(),
             branch_name: ensured.branch_name,

@@ -325,6 +325,7 @@ export interface GitTaskStartPointsDto {
 }
 
 export interface GitWorktreeEnsureDto {
+  createdByThisCall?: boolean;
   taskId: string;
   worktreePath: string;
   branchName: string;

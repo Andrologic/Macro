@@ -1629,7 +1629,7 @@ const ensureTargetWorktreePath = async (
   task: CatalogedImplementTask,
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>,
-  onGitEnsureResult?: (status: 'created' | 'reused' | 'repaired') => void,
+  onGitEnsureResult?: (createdByThisCall: boolean) => void,
 ): Promise<string> => {
   const directProject = useAppStore.getState().getProjectById(target.projectId);
   const targetMode = resolveExecutionTargetMode(target);
@@ -1738,7 +1738,7 @@ const ensureTargetWorktreePath = async (
     );
   }
 
-  onGitEnsureResult?.(ensured.status);
+  onGitEnsureResult?.(ensured.createdByThisCall ?? ensured.status === 'created');
   return ensured.worktreePath;
 };
 
@@ -2195,8 +2195,8 @@ const ensureTaskExecutionTargetsReady = async (
         executionTask,
         target,
         branchWorktrees,
-        (status) => {
-          createdByThisAttempt = status === 'created';
+        (created) => {
+          createdByThisAttempt = created;
         },
       );
 

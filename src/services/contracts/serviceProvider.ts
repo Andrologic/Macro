@@ -126,6 +126,7 @@ export interface ServiceProvider {
     taskId: string;
     worktreePath: string;
     branchName: string;
+    createdByThisCall?: boolean;
     status: 'created' | 'reused' | 'repaired';
   }>;
   gitWorktreeRemove: (
