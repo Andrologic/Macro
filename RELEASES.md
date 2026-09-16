@@ -272,6 +272,11 @@ the `preview` GitHub environment with the same Tauri updater and Apple signing
 secrets as the `release` environment. No second repository or personal access
 token is involved.
 
+Preview versions advance monotonically. A nightly version is lower than an RC
+with the same `major.minor.patch`, so the workflow refuses to publish a nightly
+after that RC. This prevents the Preview updater from offering an older build
+after the release candidate has advanced the channel.
+
 Desktop builds compile the Macro AI runtime sidecar into `src-tauri/binaries/`
 before packaging. Universal macOS builds combine the Apple Silicon and Intel
 sidecars with `lipo`, then Tauri embeds the packaged sidecar as
