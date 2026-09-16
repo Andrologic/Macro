@@ -3460,6 +3460,86 @@ pub async fn fs_move(
     move_native_path_internal(&workspace, &src_effective, &dest_effective).await
 }
 
+fn symlink_identity(path: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
+    #[cfg(unix)]
+    {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| io_error_to_backend_error(error, path))?;
+        Ok(workspace_root_identity_from_std(&metadata))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|error| io_error_to_backend_error(error, path))?;
+        workspace_root_identity_from_handle(file.as_raw_handle(), path)
+    }
+}
+
+fn remove_symlink(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if std::fs::symlink_metadata(path)?
+            .file_type()
+            .is_symlink_dir()
+        {
+            return std::fs::remove_dir(path);
+        }
+    }
+    std::fs::remove_file(path)
+}
+
+fn move_symlink_across_devices(
+    src: &Path,
+    dest: &Path,
+    remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), BackendError> {
+    let target = std::fs::read_link(src).map_err(|error| io_error_to_backend_error(error, src))?;
+    // Creation is exclusive: never overwrite a destination we could not restore.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, dest)
+        .map_err(|error| io_error_to_backend_error(error, dest))?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        let is_directory_link = std::fs::symlink_metadata(src)
+            .map_err(|error| io_error_to_backend_error(error, src))?
+            .file_type()
+            .is_symlink_dir();
+        let result = if is_directory_link {
+            std::os::windows::fs::symlink_dir(&target, dest)
+        } else {
+            std::os::windows::fs::symlink_file(&target, dest)
+        };
+        result.map_err(|error| io_error_to_backend_error(error, dest))?;
+    }
+    let published_identity = symlink_identity(dest)?;
+    if let Err(error) = remove_source(src) {
+        if symlink_identity(dest).ok() != Some(published_identity) {
+            return Err(BackendError::Filesystem {
+                message: format!("Move source removal failed: {error}. Destination changed; rollback left it untouched."),
+            });
+        }
+        remove_symlink(dest).map_err(|rollback| BackendError::Filesystem {
+            message: format!(
+                "Move source removal failed: {error}. Destination rollback failed: {rollback}"
+            ),
+        })?;
+        return Err(io_error_to_backend_error(error, src));
+    }
+    Ok(())
+}
+
 async fn move_symlink_after_rename_error(
     src: &Path,
     dest: &Path,
@@ -3470,57 +3550,9 @@ async fn move_symlink_after_rename_error(
     }
     let src = src.to_path_buf();
     let dest = dest.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let target =
-            std::fs::read_link(&src).map_err(|error| io_error_to_backend_error(error, &src))?;
-        #[cfg(windows)]
-        let is_directory_link = {
-            use std::os::windows::fs::FileTypeExt;
-            std::fs::symlink_metadata(&src)
-                .map_err(|error| io_error_to_backend_error(error, &src))?
-                .file_type()
-                .is_symlink_dir()
-        };
-        let parent = dest
-            .parent()
-            .ok_or_else(|| BackendError::FilesystemInvalidPath {
-                message: "Move destination has no parent".to_string(),
-            })?;
-        std::fs::create_dir_all(parent)
-            .map_err(|error| io_error_to_backend_error(error, parent))?;
-        // Stage on the destination filesystem so publication is a single rename.
-        // TempDir removes an unpublished link without following its target.
-        let staging = tempfile::Builder::new()
-            .prefix(".macro-move-")
-            .tempdir_in(parent)
-            .map_err(|error| io_error_to_backend_error(error, parent))?;
-        let staged_link = staging.path().join("link");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, &staged_link)
-            .map_err(|error| io_error_to_backend_error(error, &dest))?;
-        #[cfg(windows)]
-        {
-            let result = if is_directory_link {
-                std::os::windows::fs::symlink_dir(&target, &staged_link)
-            } else {
-                std::os::windows::fs::symlink_file(&target, &staged_link)
-            };
-            result.map_err(|error| io_error_to_backend_error(error, &dest))?;
-        }
-        std::fs::rename(&staged_link, &dest)
-            .map_err(|error| io_error_to_backend_error(error, &dest))?;
-        #[cfg(unix)]
-        let removal = std::fs::remove_file(&src);
-        #[cfg(windows)]
-        let removal = if is_directory_link {
-            std::fs::remove_dir(&src)
-        } else {
-            std::fs::remove_file(&src)
-        };
-        removal.map_err(|error| io_error_to_backend_error(error, &src))
-    })
-    .await
-    .map_err(capability_task_error)?
+    tokio::task::spawn_blocking(move || move_symlink_across_devices(&src, &dest, remove_symlink))
+        .await
+        .map_err(capability_task_error)?
 }
 
 async fn move_native_path_internal(
@@ -3771,11 +3803,38 @@ mod tests {
             fs::read_to_string(dest.join("untouched.txt")).unwrap(),
             "retained"
         );
-        assert!(fs::read_dir(workspace.path()).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".macro-move-")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_files_cross_device_move_rolls_back_failed_source_removal() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
+        let src = workspace.path().join("alias");
+        let dest = workspace.path().join("destination");
+        std::os::unix::fs::symlink("target.txt", &src).unwrap();
+        let result = move_symlink_across_devices(&src, &dest, |_| {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        });
+        assert!(result.is_err());
+        assert!(fs::symlink_metadata(&dest).is_err());
+        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
+            "retained"
+        );
+
+        let result = move_symlink_across_devices(&src, &dest, |_| {
+            fs::rename(&dest, workspace.path().join("old-alias"))?;
+            fs::write(&dest, "concurrent content")?;
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        });
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Destination changed"));
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "concurrent content");
+        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
     }
 
     #[test]
