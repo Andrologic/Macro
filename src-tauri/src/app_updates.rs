@@ -227,6 +227,27 @@ fn update_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Impossible d'ouvrir le cache des mises à jour : {error}"))
 }
 
+fn target_matches_persisted_channel(app_data_dir: &Path, target: &str) -> Result<bool, String> {
+    let value = crate::state_manager::read_persisted_value(app_data_dir, "updateChannel")?;
+    let channel = match value {
+        None => "stable",
+        Some(serde_json::Value::String(channel)) if channel == "stable" => "stable",
+        Some(serde_json::Value::String(channel)) if channel == "preview" => "preview",
+        _ => return Err("UPDATE_CHANNEL_INVALID".to_string()),
+    };
+    Ok(target
+        .strip_prefix(channel)
+        .is_some_and(|suffix| suffix.starts_with('-')))
+}
+
+fn update_target_matches_channel(app: &AppHandle, target: &str) -> Result<bool, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    target_matches_persisted_channel(&app_data_dir, target)
+}
+
 fn manifest_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(update_dir(app)?.join(MANIFEST_FILE))
 }
@@ -738,6 +759,9 @@ fn mark_clean_shutdown(app: &AppHandle) -> Result<(), String> {
     let Some(manifest) = read_manifest_recovering_unlocked(&app)? else {
         return remove_file_if_present(&marker_path);
     };
+    if !update_target_matches_channel(app, &manifest.target)? {
+        return remove_file_if_present(&marker_path);
+    }
     let marker = CleanShutdownMarker {
         current_version: app.package_info().version.to_string(),
         staged_version: manifest.version,
@@ -792,7 +816,9 @@ pub fn app_update_status(app: AppHandle) -> Result<AppUpdateSnapshot, String> {
     let current_version = app.package_info().version.to_string();
     let mut update = read_manifest_recovering_unlocked(&app)?;
     if let Some(item) = update.as_ref() {
-        if !staged_update_belongs_to_current_install(item, &current_version) {
+        if !update_target_matches_channel(&app, &item.target)? {
+            update = None;
+        } else if !staged_update_belongs_to_current_install(item, &current_version) {
             clear_staged_update(&app)?;
             update = None;
         }
@@ -810,6 +836,9 @@ pub async fn app_update_check_and_stage(
     allow_downgrades: bool,
 ) -> Result<AppUpdateSnapshot, String> {
     let current_version = app.package_info().version.to_string();
+    if !update_target_matches_channel(&app, &target)? {
+        return Err("UPDATE_CHANNEL_CHANGED".to_string());
+    }
     let update_directory = update_dir(&app)?;
     let stage_generation = {
         let _state_guard = lock_update_state();
@@ -829,7 +858,9 @@ pub async fn app_update_check_and_stage(
         let _file_guard = lock_update_directory(&update_directory)?;
         return Ok(AppUpdateSnapshot {
             current_version,
-            update: read_manifest_recovering_unlocked(&app)?,
+            update: read_manifest_recovering_unlocked(&app)?.filter(|manifest| {
+                update_target_matches_channel(&app, &manifest.target).unwrap_or(false)
+            }),
         });
     };
 
@@ -881,6 +912,9 @@ pub async fn app_update_check_and_stage(
         activation_attempts: 0,
         error: None,
     };
+    if !update_target_matches_channel(&app, &manifest.target)? {
+        return Err("UPDATE_CHANNEL_CHANGED".to_string());
+    }
     let manifest = publish_staged_update_directory_with_generation(
         &update_directory,
         &manifest,
@@ -923,6 +957,11 @@ pub fn activate_staged_update(app: &AppHandle, force: bool) -> Result<bool, Stri
     let Some(mut manifest) = read_manifest_recovering_unlocked(app)? else {
         return Ok(false);
     };
+    // A failed discard must not reactivate a package from the previous channel,
+    // including startup activation before the frontend store exists.
+    if !update_target_matches_channel(app, &manifest.target)? {
+        return Ok(false);
+    }
     let current_version = app.package_info().version.to_string();
     if !staged_update_belongs_to_current_install(&manifest, &current_version) {
         clear_staged_update(app)?;
@@ -1147,6 +1186,63 @@ fn finish_local_install(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn persisted_channel_blocks_old_packages_after_failed_invalidation_and_restart() {
+        let profile = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        assert!(
+            super::target_matches_persisted_channel(profile.path(), "stable-windows-x86_64")
+                .unwrap()
+        );
+        assert!(
+            !super::target_matches_persisted_channel(profile.path(), "windows-x86_64").unwrap()
+        );
+        let mut old_manifest = manifest("0.1.0", "0.1.1");
+        old_manifest.target = "stable-windows-x86_64".to_string();
+        std::fs::write(
+            cache.path().join(super::MANIFEST_FILE),
+            serde_json::to_vec(&old_manifest).unwrap(),
+        )
+        .unwrap();
+        // A failure at the first reset write leaves the old manifest untouched.
+        std::fs::create_dir(cache.path().join(super::UPDATE_GENERATION_FILE)).unwrap();
+        std::fs::write(
+            profile.path().join("state.json"),
+            br#"{"schemaVersion":1,"values":{"updateChannel":"preview"}}"#,
+        )
+        .unwrap();
+        assert!(super::invalidate_and_clear_staged_update_directory(cache.path()).is_err());
+        let recovered = read_manifest_file(&cache.path().join(super::MANIFEST_FILE))
+            .unwrap()
+            .unwrap();
+        assert!(
+            !super::target_matches_persisted_channel(profile.path(), &recovered.target).unwrap()
+        );
+        // Fresh reads use durable state, with no frontend or in-memory blocker.
+        assert!(
+            !super::target_matches_persisted_channel(profile.path(), "stable-windows-x86_64")
+                .unwrap()
+        );
+        assert!(
+            super::target_matches_persisted_channel(profile.path(), "preview-windows-x86_64")
+                .unwrap()
+        );
+        std::fs::write(profile.path().join("state.json"), b"corrupt").unwrap();
+        assert!(
+            super::target_matches_persisted_channel(profile.path(), "stable-windows-x86_64")
+                .is_err()
+        );
+        std::fs::write(
+            profile.path().join("state.json"),
+            br#"{"schemaVersion":2,"values":{"updateChannel":"stable"}}"#,
+        )
+        .unwrap();
+        assert!(
+            super::target_matches_persisted_channel(profile.path(), "stable-windows-x86_64")
+                .is_err()
+        );
+    }
+
     #[test]
     fn forced_activation_requires_a_staged_package() {
         assert_eq!(
