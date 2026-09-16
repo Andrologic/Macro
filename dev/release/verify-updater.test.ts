@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { beforeAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -101,6 +101,15 @@ function manifest() {
 }
 
 describe('updater release verification', () => {
+  beforeAll(() => {
+    const build = spawnSync('cargo', [
+      'build', '--locked', '--quiet', '--manifest-path', MINISIGN_VERIFIER_MANIFEST,
+    ], { encoding: 'utf8' });
+    if (build.status !== 0) {
+      throw new Error(build.stderr || build.error?.message || 'Unable to build the signature verifier.');
+    }
+  }, 120_000);
+
   test('accepts a complete tag-pinned manifest', () => {
     expect(validateUpdaterManifest(manifest())).toEqual([]);
   });
@@ -187,7 +196,7 @@ describe('updater release verification', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test('rejects signatures that only match the manifest text', () => {
     const root = mkdtempSync(join(tmpdir(), 'macro-updater-crypto-'));
@@ -207,7 +216,7 @@ describe('updater release verification', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test('verifies all five assets through the standalone CLI', () => {
     const root = mkdtempSync(join(tmpdir(), 'macro-minisign-cli-'));
@@ -272,7 +281,7 @@ describe('updater release verification', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test('composes and verifies stable, nightly, and rc releases through both CLIs', () => {
     const cases = [
@@ -294,7 +303,7 @@ describe('updater release verification', () => {
         rmSync(root, { recursive: true, force: true });
       }
     }
-  });
+  }, 30_000);
 
   test('rejects a foreign key, malformed signature, and altered asset through the real CLI', () => {
     const foreignKeyRoot = mkdtempSync(join(tmpdir(), 'macro-updater-foreign-key-'));
@@ -343,5 +352,5 @@ describe('updater release verification', () => {
     } finally {
       rmSync(alteredAssetRoot, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });
