@@ -32,7 +32,7 @@ export interface AppUpdateState {
   installAndRestart: () => Promise<boolean>;
   openDetails: () => void;
   closeDetails: () => void;
-  reset: () => Promise<void>;
+  reset: (beforeReset?: () => Promise<void>) => Promise<void>;
 }
 
 const INITIAL_STATE = {
@@ -54,6 +54,8 @@ export const createAppUpdateStore = (
   let initializePromise: Promise<void> | null = null;
   let checkPromise: Promise<AppUpdateCheckOutcome> | null = null;
   let installPromise: Promise<boolean> | null = null;
+  let resetPromise: Promise<void> | null = null;
+  let resetBlocked = false;
   let stateRevision = 0;
   let upToDateTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -62,170 +64,262 @@ export const createAppUpdateStore = (
     upToDateTimer = null;
   };
 
-  return create<AppUpdateState>((set, get) => ({
-    ...INITIAL_STATE,
+  return create<AppUpdateState>((set, get) => {
+    const neutralizeStagedUpdate = () => set({
+      ...INITIAL_STATE,
+    });
 
-    initialize: async () => {
-      if (initializePromise) return initializePromise;
-      const revision = stateRevision;
-      initializePromise = (async () => {
+    const runReset = async (beforeReset?: () => Promise<void>) => {
+      clearUpToDateTimer();
+      stateRevision += 1;
+      neutralizeStagedUpdate();
+      if (initializePromise) await initializePromise;
+      if (checkPromise) await checkPromise;
+      if (installPromise) await installPromise;
+
+      let beforeResetError: unknown = null;
+      try {
+        await beforeReset?.();
+      } catch (error) {
+        beforeResetError = error;
+      }
+
+      let cleanupError: unknown = null;
+      try {
+        await client.reset();
+      } catch (error) {
+        cleanupError = error;
+      }
+      set(INITIAL_STATE);
+      resetBlocked = cleanupError !== null;
+      if (beforeResetError !== null) throw beforeResetError;
+      if (cleanupError !== null) throw cleanupError;
+    };
+
+    const startReset = (beforeReset?: () => Promise<void>) => {
+      let resolveReset!: () => void;
+      let rejectReset!: (error: unknown) => void;
+      const currentReset = new Promise<void>((resolve, reject) => {
+        resolveReset = resolve;
+        rejectReset = reject;
+      });
+      resetPromise = currentReset;
+      void runReset(beforeReset).then(
+        () => {
+          if (resetPromise === currentReset) resetPromise = null;
+          resolveReset();
+        },
+        (error) => {
+          if (resetPromise === currentReset) resetPromise = null;
+          rejectReset(error);
+        },
+      );
+      return currentReset;
+    };
+
+    const queueReset = (
+      previousReset: Promise<void>,
+      beforeReset?: () => Promise<void>,
+    ) => {
+      let resolveReset!: () => void;
+      let rejectReset!: (error: unknown) => void;
+      const queuedReset = new Promise<void>((resolve, reject) => {
+        resolveReset = resolve;
+        rejectReset = reject;
+      });
+      resetPromise = queuedReset;
+      void (async () => {
         try {
-          const result = await client.status();
-          if (revision !== stateRevision) return;
-          if (!result.update) {
-            set({ currentVersion: result.currentVersion });
-            return;
-          }
-          const activationFailed = Boolean(result.update.activationError);
-          set({
-            phase: activationFailed ? 'error' : 'ready',
-            currentVersion: result.currentVersion,
-            availableUpdate: result.update,
-            downloadedBytes: 0,
-            totalBytes: result.update.activationError ? null : 0,
-            error: activationFailed
-              ? toAppUpdateErrorMessage(result.update.activationError, 'install')
-              : null,
-            errorOperation: activationFailed ? 'install' : null,
-          });
+          await previousReset;
+        } catch {
+          // A queued transition still gets its own cleanup attempt.
+        }
+        try {
+          await runReset(beforeReset);
+          resolveReset();
         } catch (error) {
-          if (revision !== stateRevision) return;
-          set({
-            phase: 'error',
-            error: toAppUpdateErrorMessage(error, 'check'),
-            errorOperation: 'check',
-          });
+          rejectReset(error);
         } finally {
-          initializePromise = null;
+          if (resetPromise === queuedReset) resetPromise = null;
         }
       })();
-      return initializePromise;
-    },
+      return queuedReset;
+    };
 
-    checkForUpdates: async (options) => {
-      if (initializePromise) await initializePromise;
-      if (checkPromise) return checkPromise;
-      if (get().phase === 'installing') return 'error';
-      const explicit = options?.explicit !== false;
+    return {
+      ...INITIAL_STATE,
 
-      checkPromise = (async () => {
-        clearUpToDateTimer();
-        let downloadStarted = false;
-        set({
-          phase: explicit ? 'checking' : 'idle',
-          checkInProgress: true,
-          error: null,
-          errorOperation: null,
-          downloadedBytes: 0,
-          totalBytes: null,
-        });
-
-        try {
-          const result = await client.checkAndDownload((event) => {
-            if (event.type === 'started') {
-              downloadStarted = true;
-              set({
-                phase: 'downloading',
-                downloadedBytes: 0,
-                totalBytes: event.contentLength,
-              });
-            } else if (event.type === 'progress') {
-              downloadStarted = true;
-              set((state) => ({
-                phase: 'downloading',
-                downloadedBytes: state.downloadedBytes + event.chunkLength,
-              }));
+      initialize: async () => {
+        if (resetPromise || resetBlocked) return;
+        if (initializePromise) return initializePromise;
+        const revision = stateRevision;
+        initializePromise = (async () => {
+          try {
+            const result = await client.status();
+            if (revision !== stateRevision) return;
+            if (!result.update) {
+              set({ currentVersion: result.currentVersion });
+              return;
             }
-          });
-
-          if (!result.update) {
+            const activationFailed = Boolean(result.update.activationError);
             set({
-              phase: explicit ? 'upToDate' : 'idle',
+              phase: activationFailed ? 'error' : 'ready',
               currentVersion: result.currentVersion,
-              availableUpdate: null,
+              availableUpdate: result.update,
+              downloadedBytes: 0,
+              totalBytes: result.update.activationError ? null : 0,
+              error: activationFailed
+                ? toAppUpdateErrorMessage(result.update.activationError, 'install')
+                : null,
+              errorOperation: activationFailed ? 'install' : null,
             });
-            if (explicit) {
-              upToDateTimer = setTimeout(() => {
-                if (get().phase === 'upToDate') set({ phase: 'idle' });
-                upToDateTimer = null;
-              }, upToDateDisplayMs);
-            }
-            return 'upToDate';
+          } catch (error) {
+            if (revision !== stateRevision) return;
+            set({
+              phase: 'error',
+              error: toAppUpdateErrorMessage(error, 'check'),
+              errorOperation: 'check',
+            });
+          } finally {
+            initializePromise = null;
           }
+        })();
+        return initializePromise;
+      },
 
-          set((state) => ({
-            phase: result.update?.activationError ? 'error' : 'ready',
-            currentVersion: result.currentVersion,
-            availableUpdate: result.update,
-            downloadedBytes: state.totalBytes ?? state.downloadedBytes,
-            error: result.update?.activationError
-              ? toAppUpdateErrorMessage(result.update.activationError, 'install')
-              : null,
-            errorOperation: result.update?.activationError ? 'install' : null,
-          }));
-          return 'ready';
-        } catch (error) {
+      checkForUpdates: async (options) => {
+        if (resetPromise || resetBlocked) return 'error';
+        const revision = stateRevision;
+        if (initializePromise) await initializePromise;
+        if (revision !== stateRevision) return 'error';
+        if (checkPromise) return checkPromise;
+        if (get().phase === 'installing') return 'error';
+        const explicit = options?.explicit !== false;
+
+        checkPromise = (async () => {
+          clearUpToDateTimer();
+          let downloadStarted = false;
           set({
-            phase: 'error',
-            error: toAppUpdateErrorMessage(
-              error,
-              downloadStarted ? 'download' : 'check',
-            ),
-            errorOperation: downloadStarted ? 'download' : 'check',
+            phase: explicit ? 'checking' : 'idle',
+            checkInProgress: true,
+            error: null,
+            errorOperation: null,
             downloadedBytes: 0,
             totalBytes: null,
           });
-          return 'error';
-        } finally {
-          set({ checkInProgress: false });
-          checkPromise = null;
-        }
-      })();
 
-      return checkPromise;
-    },
+          try {
+            const result = await client.checkAndDownload((event) => {
+              if (revision !== stateRevision) return;
+              if (event.type === 'started') {
+                downloadStarted = true;
+                set({
+                  phase: 'downloading',
+                  downloadedBytes: 0,
+                  totalBytes: event.contentLength,
+                });
+              } else if (event.type === 'progress') {
+                downloadStarted = true;
+                set((state) => ({
+                  phase: 'downloading',
+                  downloadedBytes: state.downloadedBytes + event.chunkLength,
+                }));
+              }
+            });
 
-    installAndRestart: async () => {
-      if (installPromise) return installPromise;
-      const state = get();
-      const canRetryInstall = state.phase === 'error'
-        && state.errorOperation === 'install'
-        && state.availableUpdate !== null;
-      if (state.phase !== 'ready' && !canRetryInstall) return false;
+            if (revision !== stateRevision) return 'error';
 
-      installPromise = (async () => {
-        set({ phase: 'installing', error: null, errorOperation: null });
-        try {
-          await client.installAndRelaunch();
-          return true;
-        } catch (error) {
-          set({
-            phase: 'error',
-            error: toAppUpdateErrorMessage(error, 'install'),
-            errorOperation: 'install',
-          });
-          return false;
-        } finally {
-          installPromise = null;
-        }
-      })();
+            if (!result.update) {
+              set({
+                phase: explicit ? 'upToDate' : 'idle',
+                currentVersion: result.currentVersion,
+                availableUpdate: null,
+              });
+              if (explicit) {
+                upToDateTimer = setTimeout(() => {
+                  if (get().phase === 'upToDate') set({ phase: 'idle' });
+                  upToDateTimer = null;
+                }, upToDateDisplayMs);
+              }
+              return 'upToDate';
+            }
 
-      return installPromise;
-    },
+            set((state) => ({
+              phase: result.update?.activationError ? 'error' : 'ready',
+              currentVersion: result.currentVersion,
+              availableUpdate: result.update,
+              downloadedBytes: state.totalBytes ?? state.downloadedBytes,
+              error: result.update?.activationError
+                ? toAppUpdateErrorMessage(result.update.activationError, 'install')
+                : null,
+              errorOperation: result.update?.activationError ? 'install' : null,
+            }));
+            return 'ready';
+          } catch (error) {
+            if (revision !== stateRevision) return 'error';
+            set({
+              phase: 'error',
+              error: toAppUpdateErrorMessage(
+                error,
+                downloadStarted ? 'download' : 'check',
+              ),
+              errorOperation: downloadStarted ? 'download' : 'check',
+              downloadedBytes: 0,
+              totalBytes: null,
+            });
+            return 'error';
+          } finally {
+            if (revision === stateRevision) set({ checkInProgress: false });
+            checkPromise = null;
+          }
+        })();
 
-    openDetails: () => set({ detailsOpen: true }),
-    closeDetails: () => {
-      if (get().phase !== 'installing') set({ detailsOpen: false });
-    },
-    reset: async () => {
-      clearUpToDateTimer();
-      stateRevision += 1;
-      if (initializePromise) await initializePromise;
-      if (checkPromise) await checkPromise;
-      await client.reset();
-      set(INITIAL_STATE);
-    },
-  }));
+        return checkPromise;
+      },
+
+      installAndRestart: async () => {
+        if (resetPromise || resetBlocked) return false;
+        if (installPromise) return installPromise;
+        const state = get();
+        const canRetryInstall = state.phase === 'error'
+          && state.errorOperation === 'install'
+          && state.availableUpdate !== null;
+        if (state.phase !== 'ready' && !canRetryInstall) return false;
+
+        const revision = stateRevision;
+        installPromise = (async () => {
+          if (revision === stateRevision) {
+            set({ phase: 'installing', error: null, errorOperation: null });
+          }
+          try {
+            await client.installAndRelaunch();
+            return true;
+          } catch (error) {
+            if (revision !== stateRevision) return false;
+            set({
+              phase: 'error',
+              error: toAppUpdateErrorMessage(error, 'install'),
+              errorOperation: 'install',
+            });
+            return false;
+          } finally {
+            installPromise = null;
+          }
+        })();
+
+        return installPromise;
+      },
+
+      openDetails: () => set({ detailsOpen: true }),
+      closeDetails: () => {
+        if (get().phase !== 'installing') set({ detailsOpen: false });
+      },
+      reset: async (beforeReset) => {
+        if (resetPromise) return queueReset(resetPromise, beforeReset);
+        return startReset(beforeReset);
+      },
+    };
+  });
 };
 
 export const useAppUpdateStore = createAppUpdateStore(appUpdaterClient);

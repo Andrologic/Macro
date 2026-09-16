@@ -65,8 +65,7 @@ export const UpdateChannelSettings: React.FC = () => {
     };
   }, []);
 
-  const refreshForChannel = useCallback(async () => {
-    await reset();
+  const checkForChannel = useCallback(async () => {
     if (!isAutomaticUpdaterEnabled()) return;
 
     const outcome = await checkForUpdates({ explicit: true });
@@ -76,7 +75,12 @@ export const UpdateChannelSettings: React.FC = () => {
           ?? t('updates.checkFailed', 'Unable to check for updates'),
       );
     }
-  }, [checkForUpdates, reset, t]);
+  }, [checkForUpdates, t]);
+
+  const refreshForChannel = useCallback(async () => {
+    await reset();
+    await checkForChannel();
+  }, [checkForChannel, reset]);
 
   const reportChannelRefreshError = useCallback((error: unknown) => {
     if (!mountedRef.current) return;
@@ -114,16 +118,20 @@ export const UpdateChannelSettings: React.FC = () => {
     setChannel(nextChannel);
     setChannelRefreshError(null);
     setSaving(true);
+    let channelSaved = false;
     try {
-      await saveUpdateChannel(nextChannel);
-      try {
-        await refreshForChannel();
-        if (mountedRef.current) setChannelRefreshError(null);
-      } catch (refreshError) {
-        reportChannelRefreshError(refreshError);
-      }
+      await reset(async () => {
+        await saveUpdateChannel(nextChannel);
+        channelSaved = true;
+      });
+      await checkForChannel();
+      if (mountedRef.current) setChannelRefreshError(null);
     } catch (changeError) {
       if (!mountedRef.current) return;
+      if (channelSaved) {
+        reportChannelRefreshError(changeError);
+        return;
+      }
       setChannel(previousChannel);
       setChannelRefreshError(null);
       notify.error(t('settings.configuration.saveFailed', 'Could not save configuration'), {

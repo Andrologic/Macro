@@ -6,7 +6,9 @@ import { createRoot, type Root } from 'react-dom/client';
 const initializeMock = mock(async () => undefined);
 const checkForUpdatesMock = mock(async () => 'upToDate' as const);
 const openDetailsMock = mock(() => undefined);
-const resetMock = mock(async () => undefined);
+const resetMock = mock(async (beforeReset?: () => Promise<void>) => {
+  await beforeReset?.();
+});
 const loadUpdateChannelMock = mock(async (): Promise<'stable' | 'preview'> => 'preview');
 const saveUpdateChannelMock = mock(async (_channel?: 'stable' | 'preview') => undefined);
 const notifyErrorMock = mock(() => undefined);
@@ -204,7 +206,8 @@ describe('UpdateChannelSettings', () => {
 
   it('keeps the saved channel visible and retries the updater refresh when reset fails', async () => {
     loadUpdateChannelMock.mockImplementation(async () => 'stable');
-    resetMock.mockImplementationOnce(async () => {
+    resetMock.mockImplementationOnce(async (beforeReset): Promise<void> => {
+      await beforeReset?.();
       throw new Error('cache reset denied');
     });
     await renderSettings(true);
@@ -213,6 +216,8 @@ describe('UpdateChannelSettings', () => {
       .find((button) => button.textContent?.includes('Preview'));
     await act(async () => {
       previewChoice?.click();
+      await Promise.resolve();
+      await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -267,7 +272,7 @@ describe('UpdateChannelSettings', () => {
     const choices = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
     expect(choices[0]?.getAttribute('aria-checked')).toBe('true');
     expect(choices[1]?.getAttribute('aria-checked')).toBe('false');
-    expect(resetMock).not.toHaveBeenCalled();
+    expect(resetMock).toHaveBeenCalledTimes(1);
     expect(notifyErrorMock).toHaveBeenCalledWith(
       'Could not save configuration',
       { description: 'preference write denied' },
