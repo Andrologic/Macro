@@ -147,12 +147,13 @@ impl Drop for LiveTerminalSession {
         let _ = self.windows_job.terminate();
         let child = self.child.clone();
         std::thread::spawn(move || {
-            if let Ok(mut child) = child.lock() {
-                if !matches!(child.try_wait(), Ok(Some(_))) {
-                    let _ = child.kill();
-                    let _ = child.wait();
+            if let Ok(mut guard) = child.lock() {
+                if !matches!(guard.try_wait(), Ok(Some(_))) {
+                    let _ = guard.kill();
                 }
             }
+            // Retain reap ownership without holding the shared mutex while waiting.
+            while poll_child_exit_code(&child, Duration::from_secs(5)).is_none() {}
         });
     }
 }
@@ -1156,6 +1157,14 @@ fn gated_powershell_script(command: &str) -> String {
     )
 }
 
+#[cfg(any(windows, test))]
+fn wsl_interactive_shell_script(prompt: &str) -> String {
+    format!(
+        "export MACRO_TERMINAL_PROMPT={}; export PS1='${{MACRO_TERMINAL_PROMPT}}'; if [ -x /bin/bash ]; then exec /bin/bash --noprofile --norc -i; else exec /bin/sh -i; fi",
+        shell_single_quote(prompt)
+    )
+}
+
 #[cfg(windows)]
 fn build_shell_command(
     record: &TerminalTabRecord,
@@ -1177,7 +1186,7 @@ fn build_shell_command(
         command.env("MACRO_WSL_CWD", wsl_path.linux_path);
         command.env(
             "MACRO_WSL_COMMAND",
-            "if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi",
+            wsl_interactive_shell_script(&render_terminal_prompt(record)),
         );
         gate.apply(&mut command);
         return Ok((command, ManagedShellKind::Posix, gate));
@@ -1578,27 +1587,37 @@ fn schedule_live_output_flush(
     });
 }
 
-fn wait_for_child_exit_code(child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>) -> i32 {
-    let Ok(mut guard) = child.lock() else {
-        return 1;
-    };
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+fn poll_child_exit_code(
+    child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>,
+    timeout: Duration,
+) -> Option<i32> {
+    let deadline = std::time::Instant::now() + timeout;
     loop {
-        match guard.try_wait() {
-            Ok(Some(status)) => return status.exit_code() as i32,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            _ => {
-                let _ = guard.kill();
-                return guard
-                    .wait()
-                    .map(|status| status.exit_code() as i32)
-                    .unwrap_or(1);
+        {
+            let Ok(mut guard) = child.lock() else {
+                return Some(1);
+            };
+            match guard.try_wait() {
+                Ok(Some(status)) => return Some(status.exit_code() as i32),
+                Err(_) => return Some(1),
+                Ok(None) => {}
             }
         }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn wait_for_child_exit_code(child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>) -> i32 {
+    if let Some(code) = poll_child_exit_code(child, Duration::from_secs(2)) {
+        return code;
+    }
+    if let Ok(mut guard) = child.lock() {
+        let _ = guard.kill();
+    }
+    poll_child_exit_code(child, Duration::from_secs(5)).unwrap_or(1)
 }
 
 #[derive(Default)]
@@ -1929,14 +1948,12 @@ async fn spawn_live_tab(
     #[cfg(windows)]
     let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
         let _ = child.kill();
-        let _ = child.wait();
         error
     })?;
     #[cfg(windows)]
     launch_gate.release().map_err(|error| {
         let _ = windows_job.terminate();
         let _ = child.kill();
-        let _ = child.wait();
         error
     })?;
 
@@ -1944,7 +1961,6 @@ async fn spawn_live_tab(
         Ok(writer) => writer,
         Err(error) => {
             let _ = child.kill();
-            let _ = child.wait();
             return Err(command_error(format!(
                 "Failed to open terminal writer: {}",
                 error
@@ -1955,7 +1971,6 @@ async fn spawn_live_tab(
         Ok(reader) => reader,
         Err(error) => {
             let _ = child.kill();
-            let _ = child.wait();
             return Err(command_error(format!(
                 "Failed to open terminal reader: {}",
                 error
@@ -2004,7 +2019,6 @@ async fn spawn_live_tab(
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(mut child) = child.lock() {
                 let _ = child.kill();
-                let _ = child.wait();
             }
         })
         .await;
@@ -2021,7 +2035,6 @@ async fn spawn_live_tab(
             let _ = tokio::task::spawn_blocking(move || {
                 if let Ok(mut child) = session.child.lock() {
                     let _ = child.kill();
-                    let _ = child.wait();
                 }
             })
             .await;
@@ -2088,14 +2101,12 @@ async fn spawn_command_tab(
     #[cfg(windows)]
     let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
         let _ = child.kill();
-        let _ = child.wait();
         error
     })?;
     #[cfg(windows)]
     launch_gate.release().map_err(|error| {
         let _ = windows_job.terminate();
         let _ = child.kill();
-        let _ = child.wait();
         error
     })?;
 
@@ -2103,7 +2114,6 @@ async fn spawn_command_tab(
         Ok(writer) => writer,
         Err(error) => {
             let _ = child.kill();
-            let _ = child.wait();
             return Err(command_error(format!(
                 "Failed to open terminal writer: {}",
                 error
@@ -2114,7 +2124,6 @@ async fn spawn_command_tab(
         Ok(reader) => reader,
         Err(error) => {
             let _ = child.kill();
-            let _ = child.wait();
             return Err(command_error(format!(
                 "Failed to open terminal reader: {}",
                 error
@@ -2163,7 +2172,6 @@ async fn spawn_command_tab(
             let _ = tokio::task::spawn_blocking(move || {
                 if let Ok(mut child) = session.child.lock() {
                     let _ = child.kill();
-                    let _ = child.wait();
                 }
             })
             .await;
@@ -2782,23 +2790,23 @@ async fn terminate_live_terminal_process(
     let child_result = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::task::spawn_blocking(move || {
-            let mut guard = child
-                .lock()
-                .map_err(|_| command_error("Failed to lock terminal child during close"))?;
-            match guard.try_wait() {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) => {
+            {
+                let mut guard = child
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock terminal child during close"))?;
+                if guard
+                    .try_wait()
+                    .map_err(|error| command_error(error.to_string()))?
+                    .is_none()
+                {
                     guard.kill().map_err(|error| {
                         command_error(format!("Failed to terminate terminal process: {error}"))
                     })?;
-                    guard.wait().map(|_| ()).map_err(|error| {
-                        command_error(format!("Failed to reap terminal process: {error}"))
-                    })
                 }
-                Err(error) => Err(command_error(format!(
-                    "Failed to inspect terminal process: {error}"
-                ))),
             }
+            poll_child_exit_code(&child, Duration::from_secs(4))
+                .map(|_| ())
+                .ok_or_else(|| command_error("Terminal child did not exit after termination"))
         }),
     )
     .await
@@ -3693,6 +3701,10 @@ mod tests {
         let child = pair.slave.spawn_command(command).unwrap();
         tree.process_group_id = child.process_id();
         drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut reader, &mut std::io::sink());
+        });
         LiveTerminalSession {
             child: Arc::new(StdMutex::new(child)),
             writer: Arc::new(StdMutex::new(pair.master.take_writer().unwrap())),
@@ -3773,6 +3785,14 @@ mod tests {
         let mut decoder = TerminalUtf8Decoder::default();
         assert_eq!(decoder.decode(&[0xff, b'a', 0xc3], false), "�a");
         assert_eq!(decoder.decode(&[], true), "�");
+    }
+
+    #[test]
+    fn wsl_prompt_script_keeps_labels_in_a_literal_variable() {
+        let script = wsl_interactive_shell_script("L'été | Tâche > ");
+        assert!(script.starts_with("export MACRO_TERMINAL_PROMPT='L'\\''été | Tâche > ';"));
+        assert!(script.contains("export PS1='${MACRO_TERMINAL_PROMPT}'"));
+        assert!(script.contains("/bin/bash --noprofile --norc -i"));
     }
 
     #[test]
