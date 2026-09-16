@@ -3,7 +3,11 @@ import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE_MESSAGE,
 } from '../services/serviceRuntime';
-import type { GitMergeCheckDto, GitWorktreeInspectionDto } from '../services/tauriIpc';
+import type {
+  GitMergeCheckDto,
+  GitWorkflowSessionDto,
+  GitWorktreeInspectionDto,
+} from '../services/tauriIpc';
 import type {
   MergeWorkflowRepositoryResult,
   MergeWorkflowRuntimeState,
@@ -48,8 +52,8 @@ const gitWorktreeCreateMock = mock(async (params: { repoPath: string; taskId: st
 const gitStatusMock = mock(async () => ({
   branch: 'plan/review-actions',
   is_clean: true,
-  conflicted_files: [],
-  conflictedFiles: [],
+  conflicted_files: [] as string[],
+  conflictedFiles: [] as string[],
   merge_in_progress: false,
   mergeInProgress: false,
 }));
@@ -78,6 +82,57 @@ const gitStartMergeResolutionMock = mock(async () => ({
   output: 'Automatic merge failed',
 }));
 const gitCompleteMergeMock = mock(async () => 'Merge completed');
+const gitWorkflowSessions = new Map<string, GitWorkflowSessionDto>();
+const foreignWorkflowRepositories = new Set<string>();
+const gitWorkflowKey = (params: {
+  repoPath: string;
+  taskId: string;
+  sourceBranch: string;
+  targetBranch: string;
+}): string => `${params.taskId}:${params.repoPath}:${params.sourceBranch}:${params.targetBranch}`;
+const findGitWorkflowSession = (params: Parameters<typeof actualTauriIpc.gitWorkflow>[0]): GitWorkflowSessionDto | undefined =>
+  gitWorkflowSessions.get(gitWorkflowKey(params)) ?? Array.from(gitWorkflowSessions.values()).find((session) =>
+    session.taskId === params.taskId &&
+    session.sourceBranch === params.sourceBranch &&
+    session.targetBranch === params.targetBranch &&
+    session.status === 'integrated'
+  );
+const makeGitWorkflowSession = (
+  params: Parameters<typeof actualTauriIpc.gitWorkflow>[0],
+  status: GitWorkflowSessionDto['status'],
+): GitWorkflowSessionDto => ({
+  taskId: params.taskId,
+  sessionId: `session:${params.taskId}:${params.repoPath}:${params.sourceBranch}`,
+  sourceBranch: params.sourceBranch,
+  targetBranch: params.targetBranch,
+  sourceCommit: 'source-commit',
+  targetCommit: 'target-commit',
+  integratedCommit: status === 'integrated' ? 'integrated-commit' : null,
+  status,
+  output: status === 'conflicted' ? 'Automatic merge failed' : `${params.action} completed`,
+});
+const gitWorkflowMock = mock(async (
+  params: Parameters<typeof actualTauriIpc.gitWorkflow>[0],
+): Promise<GitWorkflowSessionDto | null> => {
+  const key = gitWorkflowKey(params);
+  const current = findGitWorkflowSession(params);
+  if (params.action === 'inspect') return current ?? null;
+  if (foreignWorkflowRepositories.has(key)) {
+    return null;
+  }
+  if (params.expectedSessionId && current?.sessionId !== params.expectedSessionId) return null;
+  const status: GitWorkflowSessionDto['status'] =
+    params.action === 'start' || params.action === 'adopt_plan'
+      ? 'conflicted'
+      : params.action === 'abort'
+        ? 'aborted'
+        : params.action === 'prepare'
+          ? 'prepared'
+          : 'integrated';
+  const session = makeGitWorkflowSession(params, status);
+  gitWorkflowSessions.set(key, session);
+  return session;
+});
 const gitBranchListMock = mock(async () => ({
   local: [{ name: 'feature/quick-export', is_head: false, commit: 'abc123' }],
   remote: [],
@@ -85,6 +140,9 @@ const gitBranchListMock = mock(async () => ({
 }));
 const gitBranchDeleteMock = mock(async (
   _params?: Parameters<typeof actualTauriIpc.gitBranchDelete>[0],
+) => undefined);
+const gitWorkflowCleanupMock = mock(async (
+  _params?: Parameters<typeof actualTauriIpc.gitWorkflowCleanup>[0],
 ) => undefined);
 const directCheckpointEnsureMock = mock(async () => 'checkpoint-head');
 const bindManualCheckpointMock = mock(async () => ({} as never));
@@ -292,12 +350,14 @@ mock.module('../services/tauriIpc', () => ({
   gitRebaseBranch: gitRebaseBranchMock,
   gitStartMergeResolution: gitStartMergeResolutionMock,
   gitCompleteMerge: gitCompleteMergeMock,
+  gitWorkflow: gitWorkflowMock,
   gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeCreate: gitWorktreeCreateMock,
   gitWorktreeInspect: gitWorktreeInspectMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
+  gitWorkflowCleanup: gitWorkflowCleanupMock,
   directCheckpointResolveId: directCheckpointResolveIdMock,
   directCheckpointEnsure: directCheckpointEnsureMock,
   workspaceBindManualFeatureDirectCheckpoint: bindManualCheckpointMock,
@@ -333,12 +393,14 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitRebaseBranch: gitRebaseBranchMock,
   gitStartMergeResolution: gitStartMergeResolutionMock,
   gitCompleteMerge: gitCompleteMergeMock,
+  gitWorkflow: gitWorkflowMock,
   gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
   gitWorktreeCreate: gitWorktreeCreateMock,
   gitWorktreeInspect: gitWorktreeInspectMock,
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
+  gitWorkflowCleanup: gitWorkflowCleanupMock,
   directCheckpointResolveId: directCheckpointResolveIdMock,
   directCheckpointEnsure: directCheckpointEnsureMock,
   workspaceBindManualFeatureDirectCheckpoint: bindManualCheckpointMock,
@@ -469,6 +531,9 @@ beforeEach(() => {
       }
     : null;
   dbAppSettings.clear();
+  gitWorkflowSessions.clear();
+  foreignWorkflowRepositories.clear();
+  gitWorkflowMock.mockClear();
   chatStoreConversations = [];
   chatStoreRuntimeById = {};
   dbGetAppSettingMock.mockClear();
@@ -1037,6 +1102,8 @@ describe('useTaskStore merge workflow review loading', () => {
       current: 'develop',
     }));
     gitBranchDeleteMock.mockClear();
+    gitWorkflowCleanupMock.mockClear();
+    gitWorkflowCleanupMock.mockImplementation(async () => undefined);
     directCheckpointResolveIdMock.mockClear();
     directCheckpointResolveIdMock.mockImplementation(async () => 'task-checkpoint-0000000000000001');
     directCheckpointRemoveMock.mockClear();
@@ -3185,6 +3252,11 @@ describe('useTaskStore merge workflow review loading', () => {
         content: expect.not.stringContaining('/repos/web'),
       })
     );
+    expect(gitWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({
+      repoPath: '/repos/api',
+      taskId: 'task-1',
+      action: 'start',
+    }));
   });
 
   it('does not include dirty repositories in unscoped assistant conflict prompts', async () => {
@@ -3236,9 +3308,90 @@ describe('useTaskStore merge workflow review loading', () => {
         content: expect.not.stringContaining('/repos/api'),
       })
     );
+    expect(gitWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({
+      repoPath: '/repos/web',
+      taskId: 'task-1',
+      action: 'start',
+    }));
+    expect(gitWorkflowMock).not.toHaveBeenCalledWith(expect.objectContaining({
+      repoPath: '/repos/api',
+      action: 'start',
+    }));
   });
 
-  it('starts and completes manual merge conflict resolution for a repository', async () => {
+  it('refuses a foreign native merge before sending an assistant conflict prompt', async () => {
+    const runtime = buildBlockedMergeRuntime();
+    foreignWorkflowRepositories.add(gitWorkflowKey({
+      repoPath: '/repos/web',
+      taskId: 'task-1',
+      sourceBranch: 'feature/review-actions',
+      targetBranch: 'plan/review-actions',
+    }));
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask()],
+      mergeWorkflowRuntimeByTaskId: { 'task-1': runtime },
+      loadMergeWorkflowReview: mock(async () => runtime),
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().resolveMergeWorkflowAutomatically('task-1', {
+      blockerResolutionAction: 'assistant',
+    })).rejects.toThrow('No owned merge conflict is available for resolution.');
+
+    expect(gitWorkflowMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      taskId: 'task-1',
+      sourceBranch: 'feature/review-actions',
+      targetBranch: 'plan/review-actions',
+      action: 'start',
+    });
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(runtime.repositories[0].progressState).toBe('pending');
+    expect(runtime.repositories[0].workflowSession).toBeUndefined();
+  });
+
+  it('keeps native merge actions task-scoped when two tasks share a repository', async () => {
+    const runtime = buildBlockedMergeRuntime();
+    const taskTwo = buildMergeReviewTask({ id: 'task-2' });
+    const foreignKey = gitWorkflowKey({
+      repoPath: '/repos/web',
+      taskId: 'task-2',
+      sourceBranch: 'feature/review-actions',
+      targetBranch: 'plan/review-actions',
+    });
+    foreignWorkflowRepositories.add(foreignKey);
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildMergeReviewTask(), taskTwo],
+      mergeWorkflowRuntimeByTaskId: { 'task-2': runtime },
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+      lastError: null,
+    });
+
+    await expect(useTaskStore.getState().startMergeWorkflowManualResolution(
+      'task-2', 'project-1::/repos/web'
+    )).rejects.toThrow('Merge session is unavailable.');
+    await expect(useTaskStore.getState().completeMergeWorkflowManualResolution(
+      'task-2', 'project-1::/repos/web'
+    )).rejects.toThrow('Merge integration was not confirmed.');
+    await useTaskStore.getState().abortMergeWorkflowManualResolution('task-2', 'project-1::/repos/web');
+
+    expect(gitWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-2', action: 'start' }));
+    expect(gitWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-2', action: 'complete' }));
+    expect(gitWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-2', action: 'abort' }));
+    expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
+    expect(gitCompleteMergeMock).not.toHaveBeenCalled();
+    expect(gitAbortMergeMock).not.toHaveBeenCalled();
+    expect(runtime.repositories[0].progressState).toBe('pending');
+  });
+
+  it('uses task-scoped workflow sessions for manual start, complete, and abort', async () => {
     const runtime = buildBlockedMergeRuntime();
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({
@@ -3256,20 +3409,43 @@ describe('useTaskStore merge workflow review loading', () => {
     const startResult = await useTaskStore
       .getState()
       .startMergeWorkflowManualResolution('task-1', 'project-1::/repos/web');
+    runtime.repositories[0].workflowSession = startResult?.workflowSession;
     const completeResult = await useTaskStore
       .getState()
       .completeMergeWorkflowManualResolution('task-1', 'project-1::/repos/web');
+    await useTaskStore
+      .getState()
+      .abortMergeWorkflowManualResolution('task-1', 'project-1::/repos/web');
 
     expect(startResult?.status).toBe('conflicted');
-    expect(gitStartMergeResolutionMock).toHaveBeenCalledWith({
+    expect(startResult?.workflowSession?.status).toBe('conflicted');
+    expect(gitWorkflowMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
-      branchName: 'feature/review-actions',
-      intoBranch: 'plan/review-actions',
+      taskId: 'task-1',
+      sourceBranch: 'feature/review-actions',
+      targetBranch: 'plan/review-actions',
+      action: 'start',
     });
-    expect(completeResult).toBe('Merge completed');
-    expect(gitCompleteMergeMock).toHaveBeenCalledWith({
+    expect(completeResult).toBe('complete completed');
+    expect(gitWorkflowMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
+      taskId: 'task-1',
+      sourceBranch: 'feature/review-actions',
+      targetBranch: 'plan/review-actions',
+      action: 'complete',
+      expectedSessionId: startResult?.workflowSession?.sessionId,
     });
+    expect(gitWorkflowMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      taskId: 'task-1',
+      sourceBranch: 'feature/review-actions',
+      targetBranch: 'plan/review-actions',
+      action: 'abort',
+      expectedSessionId: startResult?.workflowSession?.sessionId,
+    });
+    expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
+    expect(gitCompleteMergeMock).not.toHaveBeenCalled();
+    expect(gitAbortMergeMock).not.toHaveBeenCalled();
     expect(
       useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']?.repositories[0]?.progressState
     ).toBe('merged');
@@ -3422,9 +3598,13 @@ describe('useTaskStore merge workflow review loading', () => {
       'Cannot update plan metadata for task task-1.'
     );
 
-    expect(gitCompleteMergeMock).toHaveBeenCalledWith({
-      repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
-    });
+    expect(gitWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-1',
+      sourceBranch: 'feature/review-actions',
+      targetBranch: 'plan/review-actions',
+      action: 'complete',
+    }));
+    expect(gitCompleteMergeMock).not.toHaveBeenCalled();
     expect(gitFastForwardMock).not.toHaveBeenCalled();
     expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
     expect(useTaskStore.getState().mergeWorkflowRuntimeByTaskId['task-1']).toBeDefined();
@@ -3433,7 +3613,7 @@ describe('useTaskStore merge workflow review loading', () => {
     );
   });
 
-  it('does not start a second manual merge resolution when conflicts are already materialized', async () => {
+  it('validates an existing native conflict through the task-scoped workflow', async () => {
     const runtime = buildBlockedMergeRuntime();
     runtime.repositories = runtime.repositories.map((repository) => ({
       ...repository,
@@ -3441,6 +3621,14 @@ describe('useTaskStore merge workflow review loading', () => {
       conflictFiles: ['src/main.ts'],
     }));
     runtime.blockedRepositories = runtime.repositories;
+    gitStatusMock.mockImplementationOnce(async () => ({
+      branch: 'plan/review-actions',
+      is_clean: false,
+      conflicted_files: ['src/main.ts'] as string[],
+      conflictedFiles: ['src/main.ts'],
+      merge_in_progress: true,
+      mergeInProgress: true,
+    }));
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({
       tasks: [buildMergeReviewTask()],
@@ -3458,10 +3646,15 @@ describe('useTaskStore merge workflow review loading', () => {
       .getState()
       .startMergeWorkflowManualResolution('task-1', 'project-1::/repos/web');
 
-    expect(startResult).toEqual({
-      status: 'conflicted',
-      conflictFiles: ['src/main.ts'],
-      output: '',
+    expect(startResult?.status).toBe('conflicted');
+    expect(startResult?.conflictFiles).toEqual(['src/main.ts']);
+    expect(startResult?.workflowSession?.status).toBe('conflicted');
+    expect(gitWorkflowMock).toHaveBeenCalledWith({
+      repoPath: '/repos/web',
+      taskId: 'task-1',
+      sourceBranch: 'feature/review-actions',
+      targetBranch: 'plan/review-actions',
+      action: 'start',
     });
     expect(gitStartMergeResolutionMock).not.toHaveBeenCalled();
   });

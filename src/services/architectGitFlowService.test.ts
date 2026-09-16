@@ -21,6 +21,7 @@ let afterPlanLifecycleSave: ((valueJson: string) => void) | null = null;
 mock.module('./tauriIpc', () => ({
   ...actualTauriIpc,
   isTauriAvailable: () => true,
+  gitWorkflow: async () => null,
   dbGetAppSetting: async (key: string) => ({
     key,
     value_json: key === 'pendingPlanLifecycles:v1' ? persistedPlanLifecycleSagas : null,
@@ -352,6 +353,7 @@ const buildPlan = () => ({
   projectIds: ['web', 'api'],
   createdAt: '2026-03-07T00:00:00.000Z',
   updatedAt: '2026-03-07T00:00:00.000Z',
+  revision: 1,
   nodes: [
     {
       id: 'task-web',
@@ -1053,12 +1055,59 @@ describe('architectGitFlowService', () => {
     await expect(applyStrategyMutationPreview({ preview }, {
       getArchitectPlan: getArchitectPlanMock,
       provisionPlanBranches: architectGitFlowService.provisionPlanBranches,
-      updateArchitectPlan: async () => {
+      updateArchitectPlan: async (params: { expectedRevision?: number }) => {
+        expect(params.expectedRevision).toBe(1);
         expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
         throw new Error('strategy metadata failed');
       },
     })).rejects.toThrow('strategy metadata failed');
     expect(gitBranchDeleteMock).toHaveBeenCalledTimes(4);
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
+  });
+
+  it('rejects a stale auto-provisioned strategy preview while preserving the intervening plan revision', async () => {
+    currentPlan.status = 'draft';
+    currentPlan.nodes = currentPlan.nodes.map((node: Record<string, unknown>) => ({ ...node, status: 'pending' }));
+    worktreeStatusByPath.set(
+      getExpectedWorktreePath('web', '/repos/web', 'feature/checkout/checkout-web'),
+      null,
+    );
+    worktreeStatusByPath.set(
+      getExpectedWorktreePath('api', '/repos/api', 'feature/checkout/checkout-api'),
+      null,
+    );
+    const created = new Map<string, string[]>();
+    gitBranchListMock.mockImplementation(async (repo) => createGitBranches(['develop', ...(created.get(repo) ?? [])]));
+    gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
+      created.set(repoPath, [...(created.get(repoPath) ?? []), branchName]);
+      currentPlan = { ...currentPlan, revision: 2 };
+    });
+
+    const { applyStrategyMutationPreview, prepareStrategyMutationPreview } = await import('./architectStrategyMutationGuard');
+    const preview = prepareStrategyMutationPreview({
+      source: 'strategy_update',
+      plan: currentPlan,
+      candidateNodes: currentPlan.nodes,
+      metadataUpdate: { description: 'Updated strategy' },
+    });
+    preview.autoProvisionBranches = true;
+
+    const updateArchitectPlanWithRevisionGuard = async (params: { expectedRevision?: number }) => {
+      expect(params.expectedRevision).toBe(1);
+      if (currentPlan.revision !== params.expectedRevision) {
+        throw new Error('The plan changed after this preview was generated. Discard the preview and regenerate it.');
+      }
+      return currentPlan;
+    };
+
+    await expect(applyStrategyMutationPreview({ preview }, {
+      getArchitectPlan: getArchitectPlanMock,
+      provisionPlanBranches: architectGitFlowService.provisionPlanBranches,
+      updateArchitectPlan: updateArchitectPlanWithRevisionGuard,
+    })).rejects.toThrow('The plan changed after this preview was generated.');
+
+    expect(currentPlan.revision).toBe(2);
+    expect(gitBranchDeleteMock).toHaveBeenCalled();
     expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
   });
 

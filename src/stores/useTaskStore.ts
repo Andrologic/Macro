@@ -182,6 +182,7 @@ export interface MergeWorkflowAutomaticResolutionResult {
 }
 
 export interface MergeWorkflowManualResolutionStartResult {
+  workflowSession?: tauriIpc.GitWorkflowSessionDto;
   status: 'merged' | 'conflicted' | string;
   conflictFiles: string[];
   output: string;
@@ -1291,9 +1292,10 @@ const resolveMergeWorkflowBlockers = async (
       isAbortableMergeWorkflowRepository
     );
     for (const repository of repositories) {
-      await tauriIpc.gitAbortMerge({
-        repoPath: repository.repoPath,
-        confirm: true,
+      await tauriIpc.gitWorkflow({
+        repoPath: repository.repoPath, taskId: task.id,
+        sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName, action: 'abort',
+        expectedSessionId: repository.workflowSession?.sessionId,
       });
     }
     return repositories.length;
@@ -1320,48 +1322,20 @@ const resolveRepositoryMergeStrategyAction = (
 };
 
 const runRepositoryMergeStrategy = async (
+  taskId: string,
   repository: MergeWorkflowRepositoryResult,
   preferredAction: MergeWorkflowBlockerResolutionAction | null | undefined
 ): Promise<string | undefined> => {
   const action = resolveRepositoryMergeStrategyAction(repository, preferredAction);
-  if (!action) {
-    return undefined;
-  }
-
+  if (!action) return undefined;
   return serializeMergeWorkflowRepositoryOperation(repository, async () => {
-    if (action === 'fast_forward') {
-      return tauriIpc.gitFastForward({
-        repoPath: repository.repoPath,
-        sourceBranch: repository.sourceBranchName,
-        targetBranch: repository.targetBranchName,
-      });
-    }
-
-    if (action === 'complete_merge') {
-      return tauriIpc.gitCompleteMerge({
-        repoPath: repository.repoPath,
-      });
-    }
-
-    if (action === 'rebase_then_continue') {
-      await tauriIpc.gitRebaseBranch({
-        repoPath: repository.repoPath,
-        branchName: repository.sourceBranchName,
-        ontoBranch: repository.targetBranchName,
-        confirm: true,
-      });
-      return tauriIpc.gitFastForward({
-        repoPath: repository.repoPath,
-        sourceBranch: repository.sourceBranchName,
-        targetBranch: repository.targetBranchName,
-      });
-    }
-
-    return tauriIpc.gitMerge({
-      repoPath: repository.repoPath,
-      branchName: repository.sourceBranchName,
-      intoBranch: repository.targetBranchName,
+    const result = await tauriIpc.gitWorkflow({
+      repoPath: repository.repoPath, taskId,
+      sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName, action: action === 'complete_merge' ? 'complete' : action,
+      expectedSessionId: repository.workflowSession?.sessionId,
     });
+    if (result?.status !== 'integrated') throw new Error('Merge integration was not confirmed. Resolve the remaining conflicts.');
+    return result.output || 'Merge integrated.';
   });
 };
 
@@ -1472,6 +1446,10 @@ const toWorkspaceManualFeatureMergeWorkflowDto = (
         lastLoadedAt: session.lastLoadedAt,
         message: session.message,
         repositories: session.repositories.map((repository) => ({
+          workflowSession: repository.workflowSession,
+          repositoryRootPath: repository.repositoryRootPath,
+          integrationWorktreePath: repository.integrationWorktreePath,
+          mergeInProgress: repository.mergeInProgress,
           id: repository.id,
           projectId: repository.projectId,
           repoPath: repository.repoPath,
@@ -2172,7 +2150,7 @@ const ensureTaskExecutionTargetsReady = async (
   task: CatalogedImplementTask,
   branchWorktrees: Record<string, string>,
   commandRegistryOverride?: Awaited<ReturnType<typeof loadTaskProjectCommandRegistry>>,
-  options?: { onWorkspacesPrepared?: () => void },
+  options?: { onWorkspacesPrepared?: () => void; skipIntegratedTargets?: Set<string> },
 ): Promise<{
   createdWorktrees: Record<string, string>;
   preparedTargets: PreparedTaskExecutionTarget[];
@@ -2198,6 +2176,7 @@ const ensureTaskExecutionTargetsReady = async (
 
   try {
     for (const target of executionTargets) {
+      if (options?.skipIntegratedTargets?.has(target.worktreeKey)) continue;
       let createdByThisAttempt = false;
       const worktreePath = await ensureTargetWorktreePath(
         executionTask,
@@ -2631,6 +2610,22 @@ type MergeWorkflowExecutionTarget = TaskExecutionTarget & {
   worktreePath?: string;
 };
 
+const integratedWorkflowRepository = (
+  target: TaskExecutionTarget & { repoPath: string },
+  repoPath: string,
+  integrationWorktreePath: string | null,
+  workflowSession: tauriIpc.GitWorkflowSessionDto,
+): MergeWorkflowRepositoryResult => ({
+  id: `${target.projectId}::${repoPath}`, projectId: target.projectId,
+  repoPath, repositoryRootPath: target.repoPath, integrationWorktreePath,
+  sourceBranchName: workflowSession.sourceBranch, targetBranchName: workflowSession.targetBranch,
+  workflowSession, progressState: 'merged', hadChangesAtStart: true,
+  mergeAppliedAt: null, isClean: true, hasChanges: false, ahead: 0, behind: 0,
+  mergeable: true, conflictFiles: [], dirtyFiles: [], mergeInProgress: false,
+  diff: '', checkStatus: 'passed', blockingKind: null, nextAction: null, blockingReason: null,
+  isSourcePublished: false, mergeStrategy: 'no_source_changes', recommendedAction: null, availableActions: [],
+});
+
 const buildTaskCompletionMergeWorkflowRuntime = async (params: {
   task: CatalogedImplementTask;
   executionTargets: MergeWorkflowExecutionTarget[];
@@ -2652,6 +2647,14 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
     }
 
     const repositoryRootPath = target.repoPath;
+    const existingSession = await tauriIpc.gitWorkflow({
+      repoPath: repositoryRootPath, taskId: params.task.id,
+      sourceBranch: target.branchName, targetBranch: integrationBranchName, action: 'inspect',
+    });
+    if (existingSession?.status === 'integrated') {
+      repositories.push(integratedWorkflowRepository(target, repositoryRootPath, null, existingSession));
+      continue;
+    }
     const integrationWorktreePath = await ensurePlanIntegrationWorktreePathForTarget(
       params.task,
       target,
@@ -2685,6 +2688,7 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
     if (
       params.prepareTargetBranches &&
       params.syncStandaloneTargets &&
+      (!existingSession || existingSession.status === 'aborted') &&
       params.task.task_source === 'standalone' &&
       status.branch === integrationBranchName &&
       status.is_clean &&
@@ -2693,6 +2697,15 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
     ) {
       await syncIntegrationBranchIfConfigured(operationRepoPath, integrationBranchName);
       status = await tauriIpc.gitStatus(operationRepoPath);
+    }
+
+    const workflowSession = await tauriIpc.gitWorkflow({
+      repoPath: operationRepoPath, taskId: params.task.id,
+      sourceBranch: target.branchName, targetBranch: integrationBranchName, action: 'inspect',
+    });
+    if (workflowSession?.status === 'integrated') {
+      repositories.push(integratedWorkflowRepository(target, operationRepoPath, integrationWorktreePath, workflowSession));
+      continue;
     }
 
     const diff = await tauriIpc.gitDiff({
@@ -2744,6 +2757,7 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
     });
 
     repositories.push({
+      workflowSession: workflowSession ?? undefined,
       id: `${target.projectId}::${operationRepoPath}`,
       projectId: target.projectId,
       repoPath: operationRepoPath,
@@ -2882,53 +2896,37 @@ const resolveMissingBaseBranchSourceRef = async (
 };
 
 const cleanupTaskExecutionTargets = async (
-  executionTargets: Array<TaskExecutionTarget & { repoPath: string }>
+  executionTargets: Array<TaskExecutionTarget & { repoPath: string }>,
+  task: CatalogedImplementTask,
 ): Promise<string[]> => {
   const removedWorktreeKeys: string[] = [];
 
   for (const target of executionTargets) {
     const branches = await tauriIpc.gitBranchList(target.repoPath);
-    const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
-    const remoteBranchNames = new Set((branches.remote || []).map((branch) => branch.name));
-
-    await tauriIpc.gitWorktreeRemove({
+    const session = await tauriIpc.gitWorkflow({
+      repoPath: target.repoPath, taskId: task.id, sourceBranch: target.branchName,
+      targetBranch: getTaskIntegrationBranch(task, target)!,
+      action: 'inspect',
+    });
+    if (session?.status !== 'integrated') throw new Error('Cleanup requires a verified integrated merge.');
+    const inspection = await tauriIpc.gitWorktreeInspect({
+      repoPath: target.repoPath, taskId: target.worktreeKey, branchName: target.branchName, readOnly: true,
+    });
+    await tauriIpc.gitWorkflowCleanup({
       repoPath: target.repoPath,
-      taskId: target.worktreeKey,
-      force: false,
-      branchName: target.branchName,
+      identity: {
+        taskId: session.taskId,
+        sessionId: session.sessionId,
+        sourceBranch: session.sourceBranch,
+        targetBranch: session.targetBranch,
+      },
+      worktreeKey: target.worktreeKey,
+      removeRemote: (branches.remote || []).some(
+        (branch) => branch.name === `origin/${target.branchName}`,
+      ),
+      expectedWorktreePath: inspection.status === 'absent' ? null : inspection.worktreePath,
     });
     removedWorktreeKeys.push(target.worktreeKey);
-
-    if (localBranchNames.has(target.branchName)) {
-      try {
-        await tauriIpc.gitBranchDelete({
-          repoPath: target.repoPath,
-          branchName: target.branchName,
-          force: true,
-        });
-      } catch (error) {
-        devLogger.warn('[taskCleanup] Could not delete local task branch after merge.', {
-          repoPath: target.repoPath,
-          branchName: target.branchName,
-          error: toServiceError(error).message,
-        });
-      }
-    }
-
-    if (remoteBranchNames.has(`origin/${target.branchName}`)) {
-      try {
-        await tauriIpc.gitBranchDeleteRemote({
-          repoPath: target.repoPath,
-          branchName: target.branchName,
-        });
-      } catch (error) {
-        devLogger.warn('[taskCleanup] Could not delete remote task branch after merge.', {
-          repoPath: target.repoPath,
-          branchName: target.branchName,
-          error: toServiceError(error).message,
-        });
-      }
-    }
   }
 
   return removedWorktreeKeys;
@@ -3060,6 +3058,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       ? buildPersistedMergeWorkflowSessionForRuntime(runtime, previousSession)
       : null;
 
+    await persistMergeWorkflowSessionForTask(task, nextSession);
     set((state) => {
       const nextRuntimeByTaskId = runtime
         ? updateMergeWorkflowRuntimeState(state.mergeWorkflowRuntimeByTaskId, task.id, runtime)
@@ -3084,7 +3083,6 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       };
     });
 
-    await persistMergeWorkflowSessionForTask(task, nextSession);
     return nextSession;
   };
 
@@ -5528,6 +5526,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           return null;
         }
 
+        if (kind === 'plan_finalization') {
+          for (const repository of nextRuntime.repositories) {
+            const session = await tauriIpc.gitWorkflow({
+              repoPath: repository.repoPath, taskId,
+              sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName,
+              action: 'inspect',
+            });
+            repository.workflowSession = session ?? undefined;
+          }
+        }
+
         const persistedSession = task.merge_workflow ?? null;
         const resolvedRuntime = {
           ...nextRuntime,
@@ -5787,6 +5796,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
             try {
               const mergeOutput = await runRepositoryMergeStrategy(
+                task.id,
                 repository,
                 preferredAction
               );
@@ -5828,6 +5838,22 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
         let finalizedPlan: Awaited<ReturnType<typeof finalizePlanIntoBaseBranch>>;
         try {
+          // Checkpoint an assistant-completed merge before the plan saga can remove
+          // its source branch. Explicit completion keeps the same native ownership.
+          for (const repository of resolvedRuntime.repositories) {
+            const session = await tauriIpc.gitWorkflow({
+              repoPath: repository.repoPath, taskId,
+              sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName,
+              action: 'inspect',
+            });
+            if (session?.status === 'conflicted' && preferredAction === 'complete_merge') {
+              await tauriIpc.gitWorkflow({
+                repoPath: repository.repoPath, taskId,
+                sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName,
+                action: 'complete', expectedSessionId: session.sessionId,
+              });
+            }
+          }
           finalizedPlan = await finalizePlanIntoBaseBranch({
             branchName,
             planId: task.plan_id,
@@ -5911,12 +5937,25 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       executionTargets.forEach(assertExecutionTargetRunnable);
       const hasDirectTargets = executionTargets.some(isDirectEditTarget);
 
+      const integratedTargets = new Map<string, tauriIpc.GitWorkflowSessionDto>();
+      const allGitTargets = getExecutionTargetsWithRepoPaths(task).filter(isGitExecutionTarget);
+      for (const target of allGitTargets) {
+        const targetBranch = getTaskIntegrationBranch(task, target);
+        if (!targetBranch) throw new Error('Missing integration branch.');
+        const session = await tauriIpc.gitWorkflow({
+          repoPath: target.repoPath, taskId, sourceBranch: target.branchName,
+          targetBranch, action: 'inspect',
+        });
+        if (session?.status === 'integrated') integratedTargets.set(target.worktreeKey, session);
+      }
       let executionTargetsWithRepoPaths: Array<
         TaskExecutionTarget & { repoPath: string; worktreePath: string }
       > = [];
       try {
         const { createdWorktrees, preparedTargets } =
-          await ensureTaskExecutionTargetsReady(task, get().branchWorktrees);
+          await ensureTaskExecutionTargetsReady(task, get().branchWorktrees, undefined, {
+            skipIntegratedTargets: new Set(integratedTargets.keys()),
+          });
         set((state) => ({
           branchWorktrees: {
             ...state.branchWorktrees,
@@ -5956,6 +5995,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }),
         session: task.merge_workflow ?? null,
       });
+      for (const target of allGitTargets) {
+        const session = integratedTargets.get(target.worktreeKey);
+        if (session) reviewRuntime.repositories.push(integratedWorkflowRepository(target, target.repoPath, null, session));
+      }
+      reviewRuntime.phase = resolveMergeWorkflowPhaseFromRepositories(reviewRuntime.repositories);
       await persistRuntime(reviewRuntime);
 
       if (reviewRuntime.blockedRepositories.length > 0) {
@@ -5976,6 +6020,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
       const repositories: TaskCompletionRepositoryRecord[] = [
         ...(options?.repositories || []),
+        ...reviewRuntime.repositories.filter((repository) => repository.progressState === 'merged').map((repository) => ({
+          projectId: repository.projectId,
+          repoPath: repository.repositoryRootPath,
+          branchName: repository.sourceBranchName,
+          planBranchName: repository.targetBranchName,
+          mergeOutput: repository.workflowSession?.output,
+        })),
       ];
       let mergedRepositoryCount = reviewRuntime.repositories.filter(
         (repository) => repository.progressState === 'merged'
@@ -6033,6 +6084,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           const mergeOutput = allowWithoutCodeChanges
             ? undefined
             : await runRepositoryMergeStrategy(
+                task.id,
                 repository,
                 options?.mergeStrategyAction
               );
@@ -6085,8 +6137,18 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         message: null,
       });
 
+      for (const repository of (currentRuntime || reviewRuntime).repositories) {
+        if (repository.progressState !== 'no_changes') continue;
+        const receipt = await tauriIpc.gitWorkflow({
+          repoPath: repository.repoPath, taskId,
+          sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName,
+          action: 'no_changes', expectedSessionId: repository.workflowSession?.sessionId,
+        });
+        if (receipt?.status !== 'integrated') throw new Error('The source branch is not integrated. Cleanup was stopped.');
+      }
+
       const removedWorktreeKeys = tauriIpc.isTauriAvailable()
-        ? await cleanupTaskExecutionTargets(executionTargetsWithRepoPaths)
+        ? await cleanupTaskExecutionTargets(allGitTargets, task)
         : [];
 
       set((state) => ({
@@ -6423,11 +6485,23 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       : options?.blockerResolutionAction === 'assistant'
         ? runtime.blockedRepositories.filter(isMergeWorkflowFileConflictRepository)
         : runtime.blockedRepositories;
+    const scopedRepositories = (promptRepositories.length > 0 ? promptRepositories : runtime.blockedRepositories)
+      .map((repository) => ({ ...repository }));
+    for (const repository of scopedRepositories) {
+      if (!isMergeWorkflowFileConflictRepository(repository) && !repository.mergeInProgress) continue;
+      const action = isPlanFinalizationRuntimeTask(task) && repository.mergeInProgress ? 'adopt_plan' : 'start';
+      const session = await serializeMergeWorkflowRepositoryOperation(repository, () => tauriIpc.gitWorkflow({
+        repoPath: repository.repoPath, taskId,
+        sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName, action,
+        expectedSessionId: repository.workflowSession?.sessionId,
+        ...(action === 'adopt_plan' ? { planId: task.plan_id, storageBranch: getTaskPlanStorageBranch(task) } : {}),
+      }));
+      if (!session || session.status !== 'conflicted') throw new Error('No owned merge conflict is available for resolution.');
+      repository.workflowSession = session;
+    }
     const scopedRuntime = {
       ...runtime,
-      blockedRepositories: promptRepositories.length > 0
-        ? promptRepositories
-        : runtime.blockedRepositories,
+      blockedRepositories: scopedRepositories,
     };
 
     const appState = useAppStore.getState();
@@ -6465,21 +6539,22 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return null;
     }
 
-    if (repository.mergeInProgress && repository.conflictFiles.length > 0) {
+    const result = await serializeMergeWorkflowRepositoryOperation(repository, async () => {
+      const action = task && isPlanFinalizationRuntimeTask(task) && repository.mergeInProgress ? 'adopt_plan' : 'start';
+      const session = await tauriIpc.gitWorkflow({
+        repoPath: repository.repoPath, taskId, sourceBranch: repository.sourceBranchName,
+        targetBranch: repository.targetBranchName, action,
+        expectedSessionId: repository.workflowSession?.sessionId,
+        ...(action === 'adopt_plan' && task ? { planId: task.plan_id, storageBranch: getTaskPlanStorageBranch(task) } : {}),
+      });
+      if (!session) throw new Error('Merge session is unavailable.');
+      const status = await tauriIpc.gitStatus(repository.repoPath);
       return {
-        status: 'conflicted',
-        conflictFiles: repository.conflictFiles,
-        output: '',
+        status: session.status === 'integrated' ? 'merged' : 'conflicted',
+        conflictFiles: status.conflictedFiles ?? status.conflicted_files ?? [], output: session.output,
+        workflowSession: session,
       };
-    }
-
-    const result = await serializeMergeWorkflowRepositoryOperation(repository, () =>
-      tauriIpc.gitStartMergeResolution({
-        repoPath: repository.repoPath,
-        branchName: repository.sourceBranchName,
-        intoBranch: repository.targetBranchName,
-      })
-    );
+    });
     const refreshedRuntime = await get().loadMergeWorkflowReview(taskId, { force: true });
     if (task && refreshedRuntime && result.status === 'merged') {
       const completedRuntime = evolveMergeWorkflowRuntimeRepository({
@@ -6502,10 +6577,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     const output = await serializeMergeWorkflowRepositoryOperation(repository, () =>
-      tauriIpc.gitCompleteMerge({
-        repoPath: repository.repoPath,
+      tauriIpc.gitWorkflow({
+        repoPath: repository.repoPath, taskId, sourceBranch: repository.sourceBranchName,
+        targetBranch: repository.targetBranchName, action: 'complete',
+        expectedSessionId: repository.workflowSession?.sessionId,
       })
     );
+    if (output?.status !== 'integrated') throw new Error('Merge integration was not confirmed.');
     const refreshedRuntime = await get().loadMergeWorkflowReview(taskId, { force: true });
     if (task && refreshedRuntime) {
       const completedRuntime = evolveMergeWorkflowRuntimeRepository({
@@ -6515,7 +6593,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       });
       await syncRuntimePersistence(task, completedRuntime);
     }
-    return output;
+    return output.output;
   },
 
   abortMergeWorkflowManualResolution: async (taskId, repositoryId) => {
@@ -6527,9 +6605,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     await serializeMergeWorkflowRepositoryOperation(repository, () =>
-      tauriIpc.gitAbortMerge({
-        repoPath: repository.repoPath,
-        confirm: true,
+      tauriIpc.gitWorkflow({
+        repoPath: repository.repoPath, taskId, sourceBranch: repository.sourceBranchName,
+        targetBranch: repository.targetBranchName, action: 'abort',
+        expectedSessionId: repository.workflowSession?.sessionId,
       })
     );
     await get().loadMergeWorkflowReview(taskId, { force: true });

@@ -2,6 +2,8 @@
 
 #[path = "git/review.rs"]
 mod review;
+#[path = "git/workflow.rs"]
+pub(crate) mod workflow;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -26,6 +28,7 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
+use crate::commands::{get_pool, DbPool};
 use crate::core::error::{BackendError, Result};
 use crate::core::process::{
     background_command, background_contained_tokio_command, ContainedBackgroundProcess,
@@ -624,6 +627,14 @@ struct GitCommandOutput {
 }
 
 fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
+    run_git_command_with_reflog_action(cwd, args, None)
+}
+
+fn run_git_command_with_reflog_action(
+    cwd: &Path,
+    args: &[String],
+    reflog_action: Option<&str>,
+) -> Result<GitCommandOutput> {
     let repo = Repository::discover(cwd)?;
     ensure_safe_config(&repo)?;
 
@@ -631,6 +642,9 @@ fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
     command
         .env_clear()
         .envs(std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())));
+    if let Some(action) = reflog_action {
+        command.env("GIT_REFLOG_ACTION", action);
+    }
     command.current_dir(cwd).args(args);
     let output = command.output().map_err(|e| BackendError::Git {
         message: format!("Failed to run git command '{}': {}", args.join(" "), e),
@@ -7824,6 +7838,16 @@ pub(crate) fn rebase_branch_repo(
     onto_branch: &str,
     confirm: Option<bool>,
 ) -> Result<String> {
+    rebase_branch_repo_with_reflog_action(repo, branch_name, onto_branch, confirm, None)
+}
+
+fn rebase_branch_repo_with_reflog_action(
+    repo: &Repository,
+    branch_name: &str,
+    onto_branch: &str,
+    confirm: Option<bool>,
+    reflog_action: Option<&str>,
+) -> Result<String> {
     if !confirm.unwrap_or(false) {
         return Err(BackendError::Git {
             message: "Rebase requires confirm=true".to_string(),
@@ -7856,10 +7880,18 @@ pub(crate) fn rebase_branch_repo(
         root.clone()
     };
 
-    let output = run_git_command(
-        &command_root,
-        &["rebase".to_string(), onto_branch.to_string()],
-    )?;
+    let rebase_args = if reflog_action.is_some() {
+        vec![
+            "-c".into(),
+            "core.logAllRefUpdates=true".into(),
+            "rebase".into(),
+            "--merge".into(),
+            onto_branch.to_string(),
+        ]
+    } else {
+        vec!["rebase".into(), onto_branch.to_string()]
+    };
+    let output = run_git_command_with_reflog_action(&command_root, &rebase_args, reflog_action)?;
 
     if !output.success {
         let conflict_files = collect_command_conflict_files(&command_root);
@@ -9366,6 +9398,7 @@ pub async fn git_branch_delete_remote(
     repo_path: String,
     branch_name: String,
     remote: Option<String>,
+    expected_commit: Option<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
         let _repo_guard =
@@ -9376,14 +9409,50 @@ pub async fn git_branch_delete_remote(
             .trim()
             .to_string();
         validate_remote_name(&remote_name)?;
+        if let Some(expected_commit) = expected_commit.as_deref() {
+            Oid::from_str(expected_commit).map_err(|_| BackendError::GitInvalidCommit {
+                message: format!("Invalid expected remote branch commit: {expected_commit}"),
+            })?;
+            let output = run_wsl_git_allow_failure(
+                &wsl_repo_path,
+                &[
+                    "ls-remote".to_string(),
+                    "--heads".to_string(),
+                    remote_name.clone(),
+                    format!("refs/heads/{branch_name}"),
+                ],
+                WSL_GIT_MUTATION_TIMEOUT,
+            )
+            .await?;
+            if !output.status.success() {
+                return Err(wsl_git_failure(&output, "git ls-remote WSL failed"));
+            }
+            let stdout = output.stdout_text();
+            let remote_oid = stdout
+                .lines()
+                .find_map(|line| line.split_whitespace().next())
+                .filter(|oid| !oid.is_empty());
+            let Some(remote_oid) = remote_oid else {
+                return Ok(());
+            };
+            if remote_oid != expected_commit {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Refusing remote branch deletion because {remote_name}/{branch_name} changed from {expected_commit} to {remote_oid}."
+                    ),
+                });
+            }
+        }
+        let mut args = vec!["push".to_string(), remote_name, "--delete".to_string()];
+        if let Some(expected_commit) = expected_commit {
+            args.push(format!(
+                "--force-with-lease=refs/heads/{branch_name}:{expected_commit}"
+            ));
+        }
+        args.push(branch_name);
         run_wsl_git_checked(
             &wsl_repo_path,
-            &[
-                "push".to_string(),
-                remote_name,
-                "--delete".to_string(),
-                branch_name,
-            ],
+            &args,
             WSL_GIT_MUTATION_TIMEOUT,
             "git push --delete WSL failed",
         )
@@ -9410,19 +9479,58 @@ pub async fn git_branch_delete_remote(
             .trim()
             .to_string();
         validate_remote_name(&remote_name)?;
+        if let Some(expected_commit) = expected_commit.as_deref() {
+            Oid::from_str(expected_commit).map_err(|_| BackendError::GitInvalidCommit {
+                message: format!("Invalid expected remote branch commit: {expected_commit}"),
+            })?;
+        }
 
         let root = repo_root(&repo)?;
         drop(repo);
 
-        let output = run_git_command(
-            &root,
-            &[
-                "push".to_string(),
-                remote_name.clone(),
-                "--delete".to_string(),
-                branch_name.clone(),
-            ],
-        )?;
+        if let Some(expected_commit) = expected_commit.as_deref() {
+            let output = run_git_command(
+                &root,
+                &[
+                    "ls-remote".to_string(),
+                    "--heads".to_string(),
+                    remote_name.clone(),
+                    format!("refs/heads/{branch_name}"),
+                ],
+            )?;
+            if !output.success {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "git ls-remote failed: {}",
+                        command_output_text(&output)
+                    ),
+                });
+            }
+            let remote_oid = output
+                .stdout
+                .lines()
+                .find_map(|line| line.split_whitespace().next())
+                .filter(|oid| !oid.is_empty());
+            let Some(remote_oid) = remote_oid else {
+                return Ok(());
+            };
+            if remote_oid != expected_commit {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Refusing remote branch deletion because {remote_name}/{branch_name} changed from {expected_commit} to {remote_oid}."
+                    ),
+                });
+            }
+        }
+
+        let mut args = vec!["push".to_string(), remote_name, "--delete".to_string()];
+        if let Some(expected_commit) = expected_commit {
+            args.push(format!(
+                "--force-with-lease=refs/heads/{branch_name}:{expected_commit}"
+            ));
+        }
+        args.push(branch_name);
+        let output = run_git_command(&root, &args)?;
         if !output.success {
             let details = command_output_text(&output);
             let message = if details.is_empty() {
@@ -9506,6 +9614,7 @@ pub async fn git_merge_check(
 pub async fn git_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     into_branch: String,
@@ -9528,6 +9637,7 @@ pub async fn git_merge(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9553,6 +9663,7 @@ pub async fn git_merge(
 pub async fn git_guarded_merge_state(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     into_branch: String,
@@ -9569,6 +9680,7 @@ pub async fn git_guarded_merge_state(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9598,6 +9710,7 @@ pub async fn git_guarded_merge_state(
 pub async fn git_start_merge_resolution(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     into_branch: String,
@@ -9611,6 +9724,7 @@ pub async fn git_start_merge_resolution(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9629,6 +9743,7 @@ pub async fn git_start_merge_resolution(
 pub async fn git_fast_forward(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     source_branch: String,
     target_branch: String,
@@ -9642,6 +9757,7 @@ pub async fn git_fast_forward(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9692,6 +9808,7 @@ pub async fn git_rebase_check(
 pub async fn git_rebase_branch(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     onto_branch: String,
@@ -9706,6 +9823,7 @@ pub async fn git_rebase_branch(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9873,6 +9991,7 @@ pub async fn git_reset(
 pub async fn git_abort_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     confirm: Option<bool>,
 ) -> Result<()> {
@@ -9891,6 +10010,7 @@ pub async fn git_abort_merge(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -14643,8 +14763,10 @@ pub async fn git_review_file(
 pub async fn git_read_conflict_file(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     path: String,
+    workflow_session: Option<workflow::GitWorkflowSessionIdentity>,
 ) -> Result<GitConflictFileDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_read_conflict_file"));
@@ -14652,16 +14774,56 @@ pub async fn git_read_conflict_file(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    let workflow_context = if let Some(identity) = workflow_session {
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
+        let request_repo = git_state.open_repo(&validated)?;
+        let (key, common_dir) = {
+            let repo = request_repo.lock().map_err(|_| BackendError::Internal {
+                message: "Failed to lock repository".to_string(),
+            })?;
+            (
+                workflow::workflow_key(
+                    &repo,
+                    &identity.task_id,
+                    &identity.source_branch,
+                    &identity.target_branch,
+                )?,
+                workflow::repository_common_dir(&repo)?,
+            )
+        };
+        workflow::ensure_workflow_exclusive(&db_pool, &common_dir, &key).await?;
+        let journal = workflow::load_journal_for_key(&db_pool, &key).await?;
+        let operation_path = validate_repo_path(
+            &workflow::journal_repo_path(&journal).to_string_lossy(),
+            &workspace,
+        )?;
+        Some((journal, identity, operation_path))
+    } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
+        None
+    };
 
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let repo = git_state.open_repo(&validated)?;
+        let operation_path = workflow_context
+            .as_ref()
+            .map(|(_, _, path)| path.clone())
+            .unwrap_or(validated);
+        let repo = git_state.open_repo(&operation_path)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+        if let Some((journal, identity, _)) = workflow_context.as_ref() {
+            workflow::verify_conflict_journal(&repo, journal, identity)?;
+        }
 
-        read_git_conflict_file(&repo, &validated, &relative_path)
+        read_git_conflict_file(&repo, &repo_root(&repo)?, &relative_path)
     })
     .await
     .map_err(to_join_error)?
@@ -14672,10 +14834,12 @@ pub async fn git_read_conflict_file(
 pub async fn git_write_conflict_resolution(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     path: String,
     content: String,
     stage: Option<bool>,
+    workflow_session: Option<workflow::GitWorkflowSessionIdentity>,
 ) -> Result<()> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation(
@@ -14688,18 +14852,56 @@ pub async fn git_write_conflict_resolution(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    let workflow_context = if let Some(identity) = workflow_session {
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
+        let request_repo = git_state.open_repo(&validated)?;
+        let (key, common_dir) = {
+            let repo = request_repo.lock().map_err(|_| BackendError::Internal {
+                message: "Failed to lock repository".to_string(),
+            })?;
+            (
+                workflow::workflow_key(
+                    &repo,
+                    &identity.task_id,
+                    &identity.source_branch,
+                    &identity.target_branch,
+                )?,
+                workflow::repository_common_dir(&repo)?,
+            )
+        };
+        workflow::ensure_workflow_exclusive(&db_pool, &common_dir, &key).await?;
+        let journal = workflow::load_journal_for_key(&db_pool, &key).await?;
+        let operation_path = validate_repo_path(
+            &workflow::journal_repo_path(&journal).to_string_lossy(),
+            &workspace,
+        )?;
+        Some((journal, identity, operation_path))
+    } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
+        None
+    };
 
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let repo = git_state.open_repo(&validated)?;
+        let operation_path = workflow_context
+            .as_ref()
+            .map(|(_, _, path)| path.clone())
+            .unwrap_or(validated);
+        let repo = git_state.open_repo(&operation_path)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+        if let Some((journal, identity, _)) = workflow_context.as_ref() {
+            workflow::verify_conflict_journal(&repo, journal, identity)?;
+        }
 
         write_git_conflict_resolution(
             &repo,
-            &validated,
+            &repo_root(&repo)?,
             &relative_path,
             &content,
             stage.unwrap_or(true),
@@ -14714,9 +14916,11 @@ pub async fn git_write_conflict_resolution(
 pub async fn git_accept_conflict_side(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     path: String,
     side: String,
+    workflow_session: Option<workflow::GitWorkflowSessionIdentity>,
 ) -> Result<()> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_accept_conflict_side"));
@@ -14727,15 +14931,53 @@ pub async fn git_accept_conflict_side(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    let workflow_context = if let Some(identity) = workflow_session {
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
+        let request_repo = git_state.open_repo(&validated)?;
+        let (key, common_dir) = {
+            let repo = request_repo.lock().map_err(|_| BackendError::Internal {
+                message: "Failed to lock repository".to_string(),
+            })?;
+            (
+                workflow::workflow_key(
+                    &repo,
+                    &identity.task_id,
+                    &identity.source_branch,
+                    &identity.target_branch,
+                )?,
+                workflow::repository_common_dir(&repo)?,
+            )
+        };
+        workflow::ensure_workflow_exclusive(&db_pool, &common_dir, &key).await?;
+        let journal = workflow::load_journal_for_key(&db_pool, &key).await?;
+        let operation_path = validate_repo_path(
+            &workflow::journal_repo_path(&journal).to_string_lossy(),
+            &workspace,
+        )?;
+        Some((journal, identity, operation_path))
+    } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
+        None
+    };
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
-        let repo = git_state.open_repo(&validated)?;
+        let operation_path = workflow_context
+            .as_ref()
+            .map(|(_, _, path)| path.clone())
+            .unwrap_or(validated);
+        let repo = git_state.open_repo(&operation_path)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+        if let Some((journal, identity, _)) = workflow_context.as_ref() {
+            workflow::verify_conflict_journal(&repo, journal, identity)?;
+        }
 
-        accept_git_conflict_side(&repo, &validated, &relative_path, &side)
+        accept_git_conflict_side(&repo, &repo_root(&repo)?, &relative_path, &side)
     })
     .await
     .map_err(to_join_error)?
@@ -14746,6 +14988,7 @@ pub async fn git_accept_conflict_side(
 pub async fn git_complete_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
 ) -> Result<String> {
     if parse_wsl_repo_path(&repo_path).is_some() {
@@ -14757,6 +15000,7 @@ pub async fn git_complete_merge(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -15407,6 +15651,7 @@ pub async fn git_prepare_guarded_branch_sync(
 pub async fn git_guarded_branch_sync(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     expected_branch_commit: String,
@@ -15420,6 +15665,7 @@ pub async fn git_guarded_branch_sync(
     let git_state = git_state.inner().clone();
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -15536,6 +15782,7 @@ pub async fn git_remote_add_origin(
 pub async fn git_pull(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     remote: Option<String>,
     branch: Option<String>,
@@ -15551,6 +15798,7 @@ pub async fn git_pull(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;

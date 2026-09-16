@@ -1228,6 +1228,10 @@ export interface WorkspaceManualFeatureExecutionTargetDto {
 }
 
 export interface WorkspaceManualFeatureMergeWorkflowRepositoryDto {
+  workflowSession?: GitWorkflowSessionDto;
+  repositoryRootPath?: string | null;
+  integrationWorktreePath?: string | null;
+  mergeInProgress?: boolean;
   id: string;
   projectId: string;
   repoPath: string;
@@ -2367,11 +2371,13 @@ export async function gitBranchDeleteRemote(params: {
   repoPath: string;
   branchName: string;
   remote?: string;
+  expectedCommit?: string;
 }): Promise<void> {
   return invoke("git_branch_delete_remote", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     remote: params.remote ?? null,
+    expectedCommit: params.expectedCommit ?? null,
   });
 }
 
@@ -2418,6 +2424,50 @@ export async function gitGuardedMergeState(params: {
     expectedBranchCommit: params.expectedBranchCommit,
     expectedIntoCommit: params.expectedIntoCommit,
     ...(params.completeMerge ? { completeMerge: true } : {}),
+  });
+}
+
+export interface GitWorkflowSessionIdentity {
+  taskId: string;
+  sessionId: string;
+  sourceBranch: string;
+  targetBranch: string;
+}
+
+export interface GitWorkflowSessionDto extends GitWorkflowSessionIdentity {
+  sourceCommit: string;
+  targetCommit: string;
+  integratedCommit: string | null;
+  status: 'prepared' | 'conflicted' | 'integrated' | 'aborted';
+  output: string;
+}
+
+export async function gitWorkflow(params: {
+  repoPath: string;
+  taskId: string;
+  sourceBranch: string;
+  targetBranch: string;
+  expectedSessionId?: string;
+  action: 'inspect' | 'prepare' | 'start' | 'merge_commit' | 'fast_forward' | 'rebase_then_continue' | 'complete' | 'abort' | 'adopt_plan' | 'no_changes';
+  planId?: string;
+  storageBranch?: string;
+}): Promise<GitWorkflowSessionDto | null> {
+  return invoke<GitWorkflowSessionDto | null>('git_workflow', params);
+}
+
+export async function gitWorkflowCleanup(params: {
+  repoPath: string;
+  identity: GitWorkflowSessionIdentity;
+  worktreeKey: string;
+  removeRemote: boolean;
+  expectedWorktreePath?: string | null;
+}): Promise<void> {
+  return invoke('git_workflow_cleanup', {
+    repoPath: params.repoPath,
+    identity: params.identity,
+    worktreeKey: params.worktreeKey,
+    removeRemote: params.removeRemote,
+    expectedWorktreePath: params.expectedWorktreePath ?? null,
   });
 }
 
@@ -2688,22 +2738,26 @@ export async function gitReviewFile(params: {
 
 export async function gitReadConflictFile(params: {
   repoPath: string;
+  workflowSession?: GitWorkflowSessionIdentity;
   path: string;
 }): Promise<GitConflictFileDto> {
   return invoke<GitConflictFileDto>("git_read_conflict_file", {
     repoPath: params.repoPath,
+    ...(params.workflowSession ? { workflowSession: params.workflowSession } : {}),
     path: params.path,
   });
 }
 
 export async function gitWriteConflictResolution(params: {
   repoPath: string;
+  workflowSession?: GitWorkflowSessionIdentity;
   path: string;
   content: string;
   stage?: boolean;
 }): Promise<void> {
   return invoke("git_write_conflict_resolution", {
     repoPath: params.repoPath,
+    ...(params.workflowSession ? { workflowSession: params.workflowSession } : {}),
     path: params.path,
     content: params.content,
     stage: params.stage ?? true,
@@ -2712,11 +2766,13 @@ export async function gitWriteConflictResolution(params: {
 
 export async function gitAcceptConflictSide(params: {
   repoPath: string;
+  workflowSession?: GitWorkflowSessionIdentity;
   path: string;
   side: "ours" | "theirs";
 }): Promise<void> {
   return invoke("git_accept_conflict_side", {
     repoPath: params.repoPath,
+    ...(params.workflowSession ? { workflowSession: params.workflowSession } : {}),
     path: params.path,
     side: params.side,
   });

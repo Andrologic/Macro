@@ -409,7 +409,37 @@ pub struct ManualFeatureMergeWorkflowDirtyFileDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualFeatureMergeWorkflowGitSessionDto {
+    pub session_id: String,
+    pub task_id: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub source_commit: String,
+    pub target_commit: String,
+    pub integrated_commit: Option<String>,
+    pub status: String,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualFeatureMergeWorkflowRepositoryDto {
+    #[serde(
+        default,
+        rename = "workflowSession",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workflow_session: Option<ManualFeatureMergeWorkflowGitSessionDto>,
+    #[serde(
+        default,
+        rename = "repositoryRootPath",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub repository_root_path: Option<String>,
+    #[serde(default, rename = "integrationWorktreePath")]
+    pub integration_worktree_path: Option<String>,
+    #[serde(default, rename = "mergeInProgress")]
+    pub merge_in_progress: bool,
     pub id: String,
     #[serde(rename = "projectId")]
     pub project_id: String,
@@ -958,4 +988,36 @@ pub struct ProjectRegistryDiagnosticsDto {
     pub sanitized_project_count: usize,
     #[serde(rename = "repairReport")]
     pub repair_report: ProjectRegistryRepairReportDto,
+}
+
+#[cfg(test)]
+mod merge_workflow_tests {
+    use super::ManualFeatureMergeWorkflowRepositoryDto;
+
+    #[test]
+    fn merge_workflow_repository_preserves_native_receipt_and_workspace_identity() {
+        let value = serde_json::json!({
+            "id": "web::/repo/integration", "projectId": "web", "repoPath": "/repo/integration",
+            "repositoryRootPath": "/repo", "integrationWorktreePath": "/repo/integration",
+            "sourceBranchName": "feature/task", "targetBranchName": "develop",
+            "state": "blocked", "mergeInProgress": true,
+            "workflowSession": {
+                "sessionId": "session-1", "taskId": "task-1",
+                "sourceBranch": "feature/task", "targetBranch": "develop",
+                "sourceCommit": "abc", "targetCommit": "def", "integratedCommit": null,
+                "status": "conflicted", "output": "Merge pending"
+            }
+        });
+        let repository: ManualFeatureMergeWorkflowRepositoryDto =
+            serde_json::from_value(value.clone()).expect("deserialize merge repository");
+        let persisted = serde_json::to_value(repository).expect("serialize merge repository");
+        for field in [
+            "workflowSession",
+            "repositoryRootPath",
+            "integrationWorktreePath",
+            "mergeInProgress",
+        ] {
+            assert_eq!(persisted[field], value[field], "lost {field}");
+        }
+    }
 }

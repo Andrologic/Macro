@@ -500,6 +500,8 @@
   "taskNextActionMergeTask": "Next: merge task branches",
   "aiResolvingConflict": "AI resolving...",
   "checkingMergeResolution": "Checking merge resolution...",
+  "verifyingConflictSession": "ファイル編集を有効にする前に、マージセッションを確認しています…",
+  "conflictSessionBelongsToAnotherTask": "このマージセッションは別のタスクに属しています。編集する前にマージレビューを更新してください。",
   "preparingConflictResolution": "Preparing conflict resolution...",
   "stagedResolutionStatus": "Resolution staged",
   "stagedResolutionTitle": "Merge resolution is staged",

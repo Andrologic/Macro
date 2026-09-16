@@ -2159,6 +2159,65 @@ describe('architectPlanService', () => {
     expect(updated.revision).toBe(created.revision);
   });
 
+  it.each([0, -1, 1.5, Number.NaN])('rejects an unusable expected revision', async (expectedRevision) => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000990-invalid-expected-revision',
+    });
+
+    await expect(
+      service.updateArchitectPlan({
+        branchName,
+        planId: created.id,
+        expectedRevision,
+        description: 'This update must not persist.',
+      }),
+    ).rejects.toThrow('Expected architect plan revision must be a positive integer.');
+  });
+
+  it('preserves a durable update that lands after a strategy preview was read', async () => {
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: '1710000000991-preview-race',
+      description: 'Original strategy',
+    });
+    const guard = await import('./architectStrategyMutationGuard');
+    const preview = guard.prepareStrategyMutationPreview({
+      source: 'strategy_generate',
+      plan: created,
+      candidateNodes: created.nodes,
+      metadataUpdate: { description: 'Preview strategy' },
+    });
+    let durableUpdate: Promise<ArchitectPlanRecord> | undefined;
+
+    await expect(
+      guard.applyStrategyMutationPreview(
+        { preview },
+        {
+          getArchitectPlan: async (targetBranch, planId) => {
+            const planAtPreviewRead = await service.getArchitectPlan(targetBranch, planId);
+            durableUpdate = service.updateArchitectPlan({
+              branchName: targetBranch,
+              planId,
+              description: 'Durable strategy update',
+            });
+            await durableUpdate;
+            return planAtPreviewRead;
+          },
+          updateArchitectPlan: service.updateArchitectPlan,
+          provisionPlanBranches: async () => {
+            throw new Error('Preview provisioning should not start after a revision conflict.');
+          },
+        },
+      ),
+    ).rejects.toThrow('plan revision changed before mutation');
+
+    await durableUpdate;
+    const reloaded = await service.getArchitectPlan(branchName, created.id);
+    expect(reloaded?.description).toBe('Durable strategy update');
+    expect(reloaded?.revision).toBe((created.revision || 1) + 1);
+  });
+
   it('does not bump revision when saving an identical chat transcript twice', async () => {
     const created = await service.createArchitectPlan({
       branchName,

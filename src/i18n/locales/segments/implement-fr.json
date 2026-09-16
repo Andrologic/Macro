@@ -500,6 +500,8 @@
   "taskNextActionMergeTask": "Suivant : fusionner les branches de tâche",
   "aiResolvingConflict": "Résolution du conflit par l’IA...",
   "checkingMergeResolution": "Vérification de la résolution de la fusion...",
+  "verifyingConflictSession": "Vérification de la session de fusion avant d’autoriser la modification des fichiers...",
+  "conflictSessionBelongsToAnotherTask": "Cette session de fusion appartient à une autre tâche. Actualisez la revue de fusion avant de modifier les fichiers.",
   "preparingConflictResolution": "Préparation de la résolution du conflit...",
   "stagedResolutionStatus": "Résolution indexée",
   "stagedResolutionTitle": "La résolution de la fusion est indexée",

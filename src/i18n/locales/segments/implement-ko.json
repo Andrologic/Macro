@@ -500,6 +500,8 @@
   "taskNextActionMergeTask": "Next: merge task branches",
   "aiResolvingConflict": "AI resolving...",
   "checkingMergeResolution": "Checking merge resolution...",
+  "verifyingConflictSession": "파일 편집을 활성화하기 전에 병합 세션을 확인하고 있습니다...",
+  "conflictSessionBelongsToAnotherTask": "이 병합 세션은 다른 작업에 속합니다. 편집하기 전에 병합 검토를 새로 고치세요.",
   "preparingConflictResolution": "Preparing conflict resolution...",
   "stagedResolutionStatus": "Resolution staged",
   "stagedResolutionTitle": "Merge resolution is staged",

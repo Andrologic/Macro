@@ -38,6 +38,18 @@ type RepositoryResolutionState =
   | 'checking_resolution'
   | 'manual_preparing'
   | 'manual_open';
+
+interface ResolutionCheckRequest {
+  taskId: string;
+  repositoryIds: Set<string>;
+  cancelled: boolean;
+}
+
+interface AutomaticResolutionRequest {
+  taskId: string;
+  repositoryId: string;
+  cancelled: boolean;
+}
 type IncidentTone = 'danger' | 'warning' | 'info' | 'success' | 'muted';
 type IncidentKind =
   | 'dirty'
@@ -379,6 +391,9 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
     useState<string | null>(null);
   const [manualResolutionRepositoryId, setManualResolutionRepositoryId] = useState<string | null>(null);
   const lastBlockingNotificationKeyRef = useRef<string | null>(null);
+  const resolutionCheckRequestRef = useRef<ResolutionCheckRequest | null>(null);
+  const automaticResolutionRequestRef = useRef<AutomaticResolutionRequest | null>(null);
+  const resolutionStateTaskIdRef = useRef(task.id);
 
   const hasMergeRuntime = Boolean(runtime);
   const runtimePhase = runtime?.phase;
@@ -448,6 +463,32 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   }, [manualResolutionRepositoryId, repositories]);
 
   useEffect(() => {
+    resolutionStateTaskIdRef.current = task.id;
+    if (resolutionCheckRequestRef.current) {
+      resolutionCheckRequestRef.current.cancelled = true;
+      resolutionCheckRequestRef.current = null;
+    }
+    if (automaticResolutionRequestRef.current) {
+      automaticResolutionRequestRef.current.cancelled = true;
+      automaticResolutionRequestRef.current = null;
+    }
+    setRepositoryResolutionStateById({});
+    setIsResolvingAutomatically(false);
+    setManualResolutionRepositoryId(null);
+  }, [task.id]);
+
+  useEffect(() => () => {
+    if (resolutionCheckRequestRef.current?.taskId === task.id) {
+      resolutionCheckRequestRef.current.cancelled = true;
+      resolutionCheckRequestRef.current = null;
+    }
+    if (automaticResolutionRequestRef.current?.taskId === task.id) {
+      automaticResolutionRequestRef.current.cancelled = true;
+      automaticResolutionRequestRef.current = null;
+    }
+  }, [task.id]);
+
+  useEffect(() => {
     const repositoryIds = new Set(repositories.map((repository) => repository.id));
     setRepositoryResolutionStateById((current) => {
       let changed = false;
@@ -468,12 +509,54 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
   }, [manualResolutionRepositoryId, repositories]);
 
   useEffect(() => {
-    if (isTaskAssistantActive) return;
-
+    const activeRequest = resolutionCheckRequestRef.current;
+    if (isTaskAssistantActive) {
+      if (activeRequest?.taskId === task.id) {
+        activeRequest.cancelled = true;
+        resolutionCheckRequestRef.current = null;
+        setRepositoryResolutionStateById((current) => {
+          const next = { ...current };
+          let changed = false;
+          for (const repositoryId of activeRequest.repositoryIds) {
+            if (next[repositoryId] === 'checking_resolution') {
+              next[repositoryId] = 'ai_resolving';
+              changed = true;
+            }
+          }
+          return changed ? next : current;
+        });
+      }
+      return;
+    }
     const repositoryIdsToRefresh = Object.entries(repositoryResolutionStateById)
       .filter(([, state]) => state === 'ai_resolving')
       .map(([repositoryId]) => repositoryId);
     if (repositoryIdsToRefresh.length === 0) return;
+
+    if (activeRequest?.taskId === task.id && !activeRequest.cancelled) {
+      for (const repositoryId of repositoryIdsToRefresh) {
+        activeRequest.repositoryIds.add(repositoryId);
+      }
+      setRepositoryResolutionStateById((current) => {
+        const next = { ...current };
+        let changed = false;
+        for (const repositoryId of repositoryIdsToRefresh) {
+          if (next[repositoryId] === 'ai_resolving') {
+            next[repositoryId] = 'checking_resolution';
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+      return;
+    }
+
+    const request: ResolutionCheckRequest = {
+      taskId: task.id,
+      repositoryIds: new Set(repositoryIdsToRefresh),
+      cancelled: false,
+    };
+    resolutionCheckRequestRef.current = request;
 
     setRepositoryResolutionStateById((current) => {
       const next = { ...current };
@@ -485,13 +568,19 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       return next;
     });
 
-    let cancelled = false;
-    void loadMergeWorkflowReview(task.id, { force: true }).finally(() => {
-      if (cancelled) return;
+    const finishResolutionCheck = () => {
+      if (
+        request.cancelled ||
+        resolutionCheckRequestRef.current !== request ||
+        resolutionStateTaskIdRef.current !== request.taskId
+      ) {
+        return;
+      }
+      resolutionCheckRequestRef.current = null;
       setRepositoryResolutionStateById((current) => {
         const next = { ...current };
         let changed = false;
-        for (const repositoryId of repositoryIdsToRefresh) {
+        for (const repositoryId of request.repositoryIds) {
           if (next[repositoryId] === 'checking_resolution') {
             delete next[repositoryId];
             changed = true;
@@ -499,11 +588,12 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
         }
         return changed ? next : current;
       });
-    });
-
-    return () => {
-      cancelled = true;
     };
+
+    void loadMergeWorkflowReview(task.id, { force: true }).then(
+      finishResolutionCheck,
+      finishResolutionCheck
+    );
   }, [
     isTaskAssistantActive,
     loadMergeWorkflowReview,
@@ -750,6 +840,12 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       return;
     }
     if (action === 'assistant') {
+      const request: AutomaticResolutionRequest = {
+        taskId: task.id,
+        repositoryId: repository.id,
+        cancelled: false,
+      };
+      automaticResolutionRequestRef.current = request;
       setRepositoryResolutionStateById((current) => ({
         ...current,
         [repository.id]: 'ai_resolving',
@@ -758,17 +854,37 @@ export const MergeWorkflowTaskPanel: React.FC<MergeWorkflowTaskPanelProps> = ({
       void resolveMergeWorkflowAutomatically(task.id, {
         blockerResolutionAction: 'assistant',
         repositoryId: repository.id,
-      }).then(notifyAutomaticResolutionResult).catch((error) => {
+      }).then((resolution) => {
+        if (
+          request.cancelled ||
+          automaticResolutionRequestRef.current !== request ||
+          resolutionStateTaskIdRef.current !== request.taskId
+        ) {
+          return;
+        }
+        notifyAutomaticResolutionResult(resolution);
+      }).catch((error) => {
+        if (
+          request.cancelled ||
+          automaticResolutionRequestRef.current !== request ||
+          resolutionStateTaskIdRef.current !== request.taskId
+        ) {
+          return;
+        }
         setRepositoryResolutionStateById((current) => {
           const next = { ...current };
-          if (next[repository.id] === 'ai_resolving') {
-            delete next[repository.id];
+          if (next[request.repositoryId] === 'ai_resolving') {
+            delete next[request.repositoryId];
           }
           return next;
         });
         notify.error(toServiceError(error).message);
       }).finally(() => {
-        setIsResolvingAutomatically(false);
+        if (automaticResolutionRequestRef.current !== request) return;
+        automaticResolutionRequestRef.current = null;
+        if (!request.cancelled && resolutionStateTaskIdRef.current === request.taskId) {
+          setIsResolvingAutomatically(false);
+        }
       });
       return;
     }
