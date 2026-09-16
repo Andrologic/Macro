@@ -303,13 +303,17 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
     const loadPromise = tauriIpc
       .getConversationCitationContent(id)
       .then((content) => {
+        const current = get().citations.find((citation) => citation.id === id) ?? null;
         if (typeof content !== 'string') {
-          return get().citations.find((citation) => citation.id === id) ?? null;
+          return current;
+        }
+        if (!current || current !== existing) {
+          return current;
         }
         let updatedCitation: Citation | null = null;
         set((state) => ({
           citations: state.citations.map((citation) =>
-            citation.id === id
+            citation.id === id && citation === existing
               ? (updatedCitation = { ...citation, content })
               : citation
           ),
@@ -407,6 +411,10 @@ export const useCitationsStore = create<CitationsState>((set, get) => ({
       return id;
     } catch (error) {
       const previousCitation = citationsBeforeAdd.find((candidate) => candidate.id === id);
+      const currentCitation = get().citations.find((candidate) => candidate.id === id);
+      if (currentCitation !== citation) {
+        throw error;
+      }
       set((state) => ({
         citations: previousCitation
           ? state.citations.map((candidate) =>

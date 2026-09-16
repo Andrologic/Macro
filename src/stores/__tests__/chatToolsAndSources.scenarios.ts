@@ -661,6 +661,40 @@ export const registerChatToolsAndSourcesScenarios = (
       expect(streamOptions.guidedToolRetry).toBeUndefined();
     });
 
+    it('reads empty and whitespace attachments as exact raw pages instead of a homonymous workspace file', async () => {
+      const { useChatStore, onToolCall } = await context.startImplementToolConversation();
+      useChatStore.setState({ composerContextRefs: [{
+        id: 'file:project-1:notes.txt',
+        kind: 'file',
+        title: 'notes.txt',
+        data: {
+          id: 'file:project-1:notes.txt',
+          path: 'notes.txt',
+          relativePath: 'notes.txt',
+          projectId: 'project-1',
+          projectName: 'Test',
+          language: 'text',
+          sizeBytes: 20,
+          modified: '2026-09-16T00:00:00Z',
+          isFocused: true,
+        },
+      }] });
+      fsReadFileWithOptionsMock.mockClear();
+      for (const content of ['', '  first line\n\n', ' \n\t  \n']) {
+        context.citationRecords = [{
+          id: 'attachment-test', type: 'file', scope: 'context',
+          source: 'notes.txt', title: 'notes.txt', path: 'attachment://test/notes.txt',
+          content, snippet: 'fallback preview', messageId: 'attachment-message',
+          conversationId: 'implement-conv', timestamp: '2026-09-16T00:00:00Z',
+        }];
+        const page = String(await onToolCall('read_file', { file: 'notes.txt', raw: true }, 'read-attachment'));
+        expect(page).toContain('MODE: RAW_UTF8');
+        expect(page).toContain(`TOTAL_BYTES: ${new TextEncoder().encode(content).byteLength}`);
+        expect(page.match(/---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/)?.[1]).toBe(content);
+      }
+      expect(fsReadFileWithOptionsMock).not.toHaveBeenCalled();
+    });
+
     it('reads the full attached file content through the chat read_file tool', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
       appState.mode = 'Chat';
@@ -710,7 +744,7 @@ export const registerChatToolsAndSourcesScenarios = (
 
       await useChatStore.getState().sendMessage({
         conversationId: 'chat-conv',
-        content: 'Lis le fichier attache.',
+        content: 'Lis le fichier attaché.',
       });
 
       const streamOptions = ((streamChatMock as unknown as {

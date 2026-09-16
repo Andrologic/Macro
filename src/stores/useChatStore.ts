@@ -75,7 +75,7 @@ import {
   type ChatStreamTokenControls,
 } from "../services/chatStreamOrchestrator";
 import { createChatStreamLifecycleRuntime } from "../services/chatStreamLifecycleRuntime";
-import { formatConversationFilePage } from "../services/conversationFileTool";
+import { formatConversationFilePage, readConversationFileBody } from "../services/conversationFileTool";
 import {
   buildSpilledToolResultPreview,
   shouldSpillToolResult,
@@ -5125,7 +5125,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ? await useCitationsStore.getState().ensureCitationContentLoaded(match.id)
       : null;
     const matchForRead = hydratedMatch ?? match;
-    const matchedCitationHasContent = Boolean(matchForRead?.content);
+    const matchedCitationHasContent = typeof matchForRead?.content === "string";
     if (matchedFileRef && !matchedCitationHasContent) {
       return readWorkspaceFileRef(conversationId, matchedFileRef, args);
     }
@@ -5137,13 +5137,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     const label = matchForRead.path || matchForRead.title || matchForRead.source;
-    const content = getCitationBody(matchForRead);
+    const content = readConversationFileBody(matchForRead);
     const extractNotice =
       extractText && /\.docx$/i.test(label || "")
         ? "Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text."
         : "";
 
-    if (!content) {
+    if (!content && !matchedCitationHasContent) {
       return `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ""}`;
     }
     return formatConversationFilePage({

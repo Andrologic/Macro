@@ -180,6 +180,11 @@ expected_revision=$3
 requested_mode=$4
 tmp=$5
 lock_path=$6
+if [ -L "$p" ]; then
+  cat > /dev/null
+  printf 'Writing a symbolic link is not supported; edit its target explicitly.\n' >&2
+  exit 5
+fi
 dir=$(dirname -- "$p")
 cleanup_tmp() { rm -f -- "$tmp"; }
 trap cleanup_tmp EXIT HUP INT TERM
@@ -2187,6 +2192,18 @@ async fn write_file_internal_with_revision_impl(
     } else {
         None
     };
+    match tokio::fs::symlink_metadata(&validated_path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(BackendError::FilesystemInvalidPath {
+                message: "Writing a symbolic link is not supported; edit its target explicitly."
+                    .to_string(),
+            });
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(io_error_to_backend_error(error, &validated_path));
+        }
+        _ => {}
+    }
     if !allow_outside {
         return write_file_with_workspace_capability(
             workspace,
@@ -3534,6 +3551,44 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn wsl_write_script_refuses_symbolic_link_without_replacing_it() {
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("target.txt");
+        let link = workspace.path().join("link.txt");
+        let temp = workspace.path().join("write.tmp");
+        fs::write(&target, "original").unwrap();
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+        let mut child = crate::core::process::background_command("sh")
+            .arg("-c")
+            .arg(WSL_WRITE_FILE_SCRIPT)
+            .arg("macro-wsl-link-test")
+            .arg(&link)
+            .arg("1")
+            .arg(content_revision(b"original"))
+            .arg("")
+            .arg(&temp)
+            .arg(workspace.path().join("write.lock"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("execute WSL script with a synthetic symbolic link");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&vec![b'x'; 128 * 1024])
+            .expect("drain the rejected draft without a broken pipe");
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("symbolic link"));
+        assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        assert!(!temp.exists());
+    }
+
     #[test]
     fn wsl_write_script_guards_both_publication_modes() {
         assert!(WSL_WRITE_FILE_SCRIPT.contains("tmp=$5"));
@@ -4241,6 +4296,35 @@ mod tests {
         assert!(!dto.skipped);
         let written = fs::read_to_string(workspace.path().join("file.txt")).unwrap();
         assert_eq!(written, "second");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_write_symbolic_link_refuses_without_replacing_link_or_target() {
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("target.txt");
+        let link = workspace.path().join("link.txt");
+        fs::write(&target, "original").unwrap();
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+        for allow_outside in [false, true] {
+            let error = write_file_internal_with_revision(
+                workspace.path(),
+                "link.txt".to_string(),
+                "draft".to_string(),
+                Some(true),
+                Some(allow_outside),
+                Some(&content_revision(b"original")),
+            )
+            .await
+            .expect_err("symbolic link must not be replaced");
+            assert!(error.to_string().contains("symbolic link"), "{error}");
+            assert!(fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("target.txt"));
+            assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        }
     }
 
     #[cfg(unix)]

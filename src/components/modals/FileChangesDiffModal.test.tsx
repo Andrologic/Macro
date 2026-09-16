@@ -389,6 +389,25 @@ describe('FileChangesDiffModal', () => {
     expect(document.body.querySelectorAll('[data-pending-validation-indicator="true"]').length).toBeGreaterThan(0);
   });
 
+  it('keeps a focused chunk restoration in the draft and prevents validation before saving', async () => {
+    updateRightDraftMock.mockImplementation((content: string) => {
+      initialStoreState!.updateRightDraft(content);
+    });
+    await act(async () => {
+      root?.render(<FileChangesDiffModal onClose={() => undefined} />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector('.cm-merge-revert button')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      await flushRender();
+    });
+    expect(updateRightDraftMock).toHaveBeenCalledWith(diffSession.originalContent);
+    expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe(diffSession.originalContent);
+    expect(useFileChangesStore.getState().diffModalSession?.isDirty).toBe(true);
+    expect(findButton('Validate file')).toBeUndefined();
+    expect(stageChangesMock).not.toHaveBeenCalled();
+  });
+
   it('switches between focused diff and full file context on demand', async () => {
     await act(async () => {
       root?.render(<FileChangesDiffModal onClose={() => undefined} />);
