@@ -724,6 +724,44 @@ fn processes_with_containment_id(containment_id: &str) -> HashSet<u32> {
         .collect()
 }
 
+/// Owns the process group and tagged descendants of a PTY child.
+#[cfg(unix)]
+pub(crate) struct TerminalProcessTree {
+    pub(crate) containment_id: String,
+    pub(crate) process_group_id: Option<u32>,
+}
+
+#[cfg(unix)]
+impl TerminalProcessTree {
+    pub(crate) fn new() -> Self {
+        Self {
+            containment_id: next_containment_id(),
+            process_group_id: None,
+        }
+    }
+
+    pub(crate) fn terminate(&mut self) {
+        if self.process_group_id.is_none() {
+            return;
+        }
+        for process_id in
+            suspend_unix_process_tree(self.process_group_id, &self.containment_id, None)
+        {
+            signal_process(process_id, libc::SIGKILL);
+        }
+        if let Some(id) = self.process_group_id.take() {
+            signal_process_group(id, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalProcessTree {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 #[cfg(unix)]
 fn suspend_unix_process_tree(
     root_id: Option<u32>,
