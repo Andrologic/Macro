@@ -831,9 +831,10 @@ const assertPlanReadyForFinalization = (plan: ArchitectPlanRecord): void => {
 
 export const provisionPlanBranches = async (
   plan: ArchitectPlanRecord,
-  explicitRepoPath?: string
+  explicitRepoPath?: string,
+  persistPlan?: () => Promise<void>,
 ): Promise<ProvisionPlanBranchesResult> =>
-  getDefaultArchitectGitFlowService().provisionPlanBranches(plan, explicitRepoPath);
+  getDefaultArchitectGitFlowService().provisionPlanBranches(plan, explicitRepoPath, persistPlan);
 
 export const validatePlanAndProvisionBranches = async (params: {
   branchName: string;
@@ -934,6 +935,17 @@ export const createArchitectGitFlowService = (
       ...(overrides.tauri || {}),
     },
   };
+  const provisionMatchesPersistedPlan = (saga: PlanLifecycleSaga, plan: ArchitectPlanRecord | null): boolean => {
+    if (!plan || !['validated', 'in_progress'].includes(plan.status)) return false;
+    const repositories = resolvePlanProjectRepoPathsWithDeps(plan);
+    return (saga.cleanupResources ?? []).every((resource) => repositories.some((repository) =>
+      repository.repoPath === resource.repoPath && [
+        renderPlanBranchNameForProject({ plan, projectId: repository.projectId, getProjectById: deps.getAppState().getProjectById }),
+        ...listPlanBranchNamesForProject({ plan, projectId: repository.projectId, getProjectById: deps.getAppState().getProjectById }),
+      ].includes(resource.branchName),
+    ));
+  };
+
   const finishProvision = async (plan: ArchitectPlanRecord): Promise<void> => {
     const saga = (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
       entry.planId === plan.id && entry.branchName === plan.targetBranch);
@@ -1645,7 +1657,11 @@ export const createArchitectGitFlowService = (
     const results: ProvisionedPlanRepositoryResult[] = [];
     const previous = (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
       entry.planId === plan.id && entry.branchName === plan.targetBranch);
-    if (previous) await rollbackProvisionSaga(previous);
+    if (previous) {
+      const persistedPlan = await deps.getArchitectPlan(previous.branchName, previous.planId);
+      if (provisionMatchesPersistedPlan(previous, persistedPlan)) await finishProvision(persistedPlan!);
+      else await rollbackProvisionSaga(previous);
+    }
     const now = new Date().toISOString();
     const saga: PlanLifecycleSaga = { planId: plan.id, branchName: plan.targetBranch,
       operation: 'provision', phase: 'prepared', cleanupResources: [], createdAt: now, updatedAt: now };
@@ -1783,9 +1799,15 @@ export const createArchitectGitFlowService = (
   const provisionPlanBranchesWithDeps = async (
     plan: ArchitectPlanRecord,
     explicitRepoPath?: string,
+    persistPlan?: () => Promise<void>,
   ): Promise<ProvisionPlanBranchesResult> =>
     withPlanLifecycleLock(deps, plan.targetBranch, plan.id, async () => {
       const result = await provisionPlanBranchesUnlocked(plan, explicitRepoPath);
+      try {
+        await persistPlan?.();
+      } catch (error) {
+        return rollbackPreservingError(() => rollbackProvisionResultWithDeps(result), error);
+      }
       await finishProvision(plan);
       return result;
     });
@@ -2880,8 +2902,8 @@ export const createArchitectGitFlowService = (
     try {
       const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
       if (saga.operation === 'provision') {
-        if (plan && (plan.status === 'validated' || plan.status === 'in_progress')) {
-          await finishProvision(plan);
+        if (provisionMatchesPersistedPlan(saga, plan)) {
+          await finishProvision(plan!);
         } else {
           await rollbackProvisionSaga(saga);
         }

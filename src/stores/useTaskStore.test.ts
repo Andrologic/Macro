@@ -149,11 +149,12 @@ const workspaceAcquireTaskLifecycleLockMock = mock(async () => 'task-lifecycle-l
 const workspaceRenewTaskLifecycleLockMock = mock(async () => undefined);
 const workspaceReleaseTaskLifecycleLockMock = mock(async () => undefined);
 const workspaceUpdateStandaloneTaskStatusMock = mock(
-  async (params: { taskId: string; status: string }) => {
+  async (params: { taskId: string; status: string; expectedRevision?: number; expectedStatus?: string }) => {
     if (!updateStandaloneTaskStatusImpl) {
-      return;
+      return 1;
     }
     await updateStandaloneTaskStatusImpl(params);
+    return 1;
   }
 );
 const syncTerminalDisplayMetadataMock = mock(async () => undefined);
@@ -5105,6 +5106,23 @@ describe('task startup lifecycle races', () => {
     await activation;
     expect(useTaskStore.getState().branchWorktrees['worktree-a']).toBe(replaced ? '/repo/new' : undefined);
     expect(useTaskStore.getState().branchWorktrees.other).toBe('/other');
+  });
+
+  it('ties a failed startup rollback to its native reservation revision', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    appStoreState.selectedTaskId = 'task-a';
+    appStoreState.getProjectById = () => ({ id: 'project-1', name: 'Project', path: '/repo', gitSetupState: 'ready' });
+    const task = buildStandaloneTask({ id: 'task-a', status: 'Pending', standalone_kind: 'manual_feature', execution_targets: [{
+      projectId: 'project-1', executionMode: 'git', executionKind: 'repository_root',
+      branchName: 'develop', worktreeKey: 'root', repoPath: '/repo',
+    }] });
+    useTaskStore.setState({ tasks: [task], refreshFromPlan: async () => undefined });
+    workspaceUpdateStandaloneTaskStatusMock.mockClear();
+    await useTaskStore.getState().startTask(task.id, { onWorkspacesPrepared: () => { throw new Error('preparation failed'); } });
+    expect(workspaceUpdateStandaloneTaskStatusMock.mock.calls.map(([params]) => params)).toEqual([
+      { taskId: task.id, status: 'InProgress', expectedStatus: 'Pending' },
+      { taskId: task.id, status: 'Pending', expectedRevision: 1, expectedStatus: 'InProgress' },
+    ]);
   });
 
   it('reserves a direct project before waiting for native admission', async () => {

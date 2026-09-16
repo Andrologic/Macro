@@ -3143,8 +3143,31 @@ pub async fn update_standalone_task_status(
     task_id: &str,
     status: &str,
 ) -> Result<()> {
+    update_standalone_task_status_with_revision(
+        workspace_path,
+        metadata_root,
+        task_id,
+        status,
+        None,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+pub async fn update_standalone_task_status_with_revision(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    status: &str,
+    expected_revision: Option<u64>,
+    expected_status: Option<&str>,
+) -> Result<Option<u64>> {
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    if expected_revision.is_some_and(|revision| revision != state.workspace_revision) {
+        return Ok(None);
+    }
     let normalized_task_id = task_id.trim();
     let normalized_status = status.trim();
     if normalized_task_id.is_empty() || normalized_status.is_empty() {
@@ -3162,16 +3185,21 @@ pub async fn update_standalone_task_status(
         .iter_mut()
         .find(|candidate| candidate.id == normalized_task_id)
     {
+        if (expected_status.is_some() && feature.archived_at.is_some())
+            || expected_status.is_some_and(|status| status != feature.status)
+        {
+            return Ok(None);
+        }
         feature.status = normalized_status.to_string();
         feature.updated_at = Utc::now().to_rfc3339();
-        persist_sanitized_state(
+        let (persisted, _) = persist_sanitized_state(
             workspace_path,
             metadata_root,
             state,
             "update_manual_feature_status",
         )
         .await?;
-        return Ok(());
+        return Ok(Some(persisted.workspace_revision));
     }
 
     let Some(plan) = state.current_plan.as_mut() else {
@@ -3192,6 +3220,11 @@ pub async fn update_standalone_task_status(
             .map(|value| value == normalized_task_id)
             .unwrap_or(false)
         {
+            if expected_status.is_some_and(|status| {
+                task_object.get("status").and_then(Value::as_str) != Some(status)
+            }) {
+                return Ok(None);
+            }
             task_object.insert(
                 "status".to_string(),
                 Value::String(normalized_status.to_string()),
@@ -3209,14 +3242,14 @@ pub async fn update_standalone_task_status(
     }
 
     plan.updated_at = Utc::now().to_rfc3339();
-    persist_sanitized_state(
+    let (persisted, _) = persist_sanitized_state(
         workspace_path,
         metadata_root,
         state,
         "update_standalone_task_status",
     )
     .await?;
-    Ok(())
+    Ok(Some(persisted.workspace_revision))
 }
 
 pub async fn update_manual_feature_merge_workflow(
@@ -11864,6 +11897,82 @@ mod tests {
             Some(new_checkpoint.as_str())
         );
 
+        let reservation = update_standalone_task_status_with_revision(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "InProgress",
+            None,
+            Some("Pending"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        update_standalone_task_status(temp.path(), &metadata_root, "direct-task", "InReview")
+            .await
+            .unwrap();
+        assert_eq!(
+            update_standalone_task_status_with_revision(
+                temp.path(),
+                &metadata_root,
+                "direct-task",
+                "Pending",
+                Some(reservation),
+                Some("InProgress")
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        let latest = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .unwrap();
+        assert_eq!(
+            latest
+                .manual_features
+                .iter()
+                .find(|feature| feature.id == "direct-task")
+                .unwrap()
+                .status,
+            "InReview"
+        );
+        // Returning to the same status does not make the old reservation current.
+        let next = update_standalone_task_status_with_revision(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "InProgress",
+            None,
+            Some("InReview"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            update_standalone_task_status_with_revision(
+                temp.path(),
+                &metadata_root,
+                "direct-task",
+                "Pending",
+                Some(reservation),
+                Some("InProgress")
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        assert!(update_standalone_task_status_with_revision(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "Pending",
+            Some(next),
+            Some("InProgress")
+        )
+        .await
+        .unwrap()
+        .is_some());
+
         create_manual_feature_draft(
             temp.path(),
             &metadata_root,
@@ -11924,6 +12033,19 @@ mod tests {
         archive_manual_feature(temp.path(), &metadata_root, "direct-task", None, None)
             .await
             .unwrap();
+        assert_eq!(
+            update_standalone_task_status_with_revision(
+                temp.path(),
+                &metadata_root,
+                "direct-task",
+                "InProgress",
+                None,
+                Some("Pending")
+            )
+            .await
+            .unwrap(),
+            None
+        );
         create_manual_feature_draft(
             temp.path(),
             &metadata_root,

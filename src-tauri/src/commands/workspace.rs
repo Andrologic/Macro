@@ -1655,12 +1655,21 @@ pub async fn workspace_update_standalone_task_status(
     git_state: State<'_, GitState>,
     task_id: String,
     status: String,
-) -> Result<()> {
+    expected_revision: Option<u64>,
+    expected_status: Option<String>,
+) -> Result<Option<u64>> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::update_standalone_task_status(&workspace_path, &metadata_root, &task_id, &status)
-        .await
+    workspace::update_standalone_task_status_with_revision(
+        &workspace_path,
+        &metadata_root,
+        &task_id,
+        &status,
+        expected_revision,
+        expected_status.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]

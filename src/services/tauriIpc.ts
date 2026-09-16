@@ -3600,10 +3600,14 @@ export async function workspaceDeleteManualFeature(params: {
 export async function workspaceUpdateStandaloneTaskStatus(params: {
   taskId: string;
   status: string;
-}): Promise<void> {
+  expectedRevision?: number;
+  expectedStatus?: string;
+}): Promise<number | null> {
   return invoke("workspace_update_standalone_task_status", {
     taskId: params.taskId,
     status: params.status,
+    ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}),
+    ...(params.expectedStatus !== undefined ? { expectedStatus: params.expectedStatus } : {}),
   });
 }
 

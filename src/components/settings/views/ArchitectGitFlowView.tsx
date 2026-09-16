@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Icon } from '../../ui/Icon';
-import { loadPreference, PREF_KEYS, savePreferences } from '../../../services/preferences';
+import { loadPreference, PREF_KEYS, saveConfigPreferencesAtomically } from '../../../services/preferences';
 import {
   type ArchitectGitNamingSettings,
   renderGitFlowBranchName,
   renderStandaloneFeatureBranchName,
   validateArchitectGitNamingSettings,
 } from '../../../services/architectGitNaming';
+import { toServiceError } from '../../../services/contracts/errors';
 import { notify } from '../../ui/toastService';
 import { cn } from '../../../utils/cn';
 import { SettingsSectionHeader } from '../SettingsSectionHeader';
@@ -80,7 +81,7 @@ export const ArchitectGitFlowView: React.FC = () => {
 
     let cancelled = false;
     void loadSettings().catch((error: unknown) => {
-      if (!cancelled) notify.error(t('common.error'), { description: String(error) });
+      if (!cancelled) notify.error(t('common.error'), { description: toServiceError(error).message });
     });
 
     return () => {
@@ -139,7 +140,7 @@ export const ArchitectGitFlowView: React.FC = () => {
     setIsSaving(true);
     setSaveSuccess(false);
     try {
-      await savePreferences({
+      await saveConfigPreferencesAtomically({
         [PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: settings.mainBranch.trim() || defaultSettings.mainBranch,
         [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: settings.baseBranch.trim() || defaultSettings.baseBranch,
         [PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY]: settings.completionMergePolicy,
@@ -154,7 +155,7 @@ export const ArchitectGitFlowView: React.FC = () => {
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2500);
     } catch (error) {
-      notify.error(t('common.error'), { description: String(error) });
+      notify.error(t('common.error'), { description: toServiceError(error).message });
     } finally {
       setIsSaving(false);
     }

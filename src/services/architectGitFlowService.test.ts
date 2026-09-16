@@ -1034,6 +1034,32 @@ describe('architectGitFlowService', () => {
     ]);
   });
 
+  it('keeps the public provisioning journal until the strategy metadata callback commits', async () => {
+    currentPlan.status = 'draft';
+    currentPlan.nodes = currentPlan.nodes.map((node: Record<string, unknown>) => ({ ...node, status: 'pending' }));
+    const created = new Map<string, string[]>();
+    gitBranchListMock.mockImplementation(async (repo) => createGitBranches(['develop', ...(created.get(repo) ?? [])]));
+    gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
+      created.set(repoPath, [...(created.get(repoPath) ?? []), branchName]);
+    });
+    const { applyStrategyMutationPreview, prepareStrategyMutationPreview } = await import('./architectStrategyMutationGuard');
+    const preview = prepareStrategyMutationPreview({ source: 'strategy_update', plan: currentPlan,
+      candidateNodes: currentPlan.nodes, metadataUpdate: { description: 'Updated strategy' } });
+    expect(preview.conflicts).toEqual([]);
+    expect(preview.status).toBe('valid');
+    preview.autoProvisionBranches = true;
+    await expect(applyStrategyMutationPreview({ preview }, {
+      getArchitectPlan: getArchitectPlanMock,
+      provisionPlanBranches: architectGitFlowService.provisionPlanBranches,
+      updateArchitectPlan: async () => {
+        expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
+        throw new Error('strategy metadata failed');
+      },
+    })).rejects.toThrow('strategy metadata failed');
+    expect(gitBranchDeleteMock).toHaveBeenCalledTimes(4);
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
+  });
+
   it('journals failed rollback resources and resumes only their guarded cleanup', async () => {
     currentPlan.status = 'draft';
     const created = new Map<string, string[]>();

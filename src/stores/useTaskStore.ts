@@ -4807,11 +4807,15 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           }
         }
 
-        let reservedStatus = false;
+        let reservedRevision: number | null = null;
         try {
           if (isManualStandaloneTask(task)) {
-            await tauriIpc.workspaceUpdateStandaloneTaskStatus({ taskId: task.id, status: 'InProgress' });
-            reservedStatus = true;
+            const revision = await tauriIpc.workspaceUpdateStandaloneTaskStatus({
+              taskId: task.id, status: 'InProgress', expectedStatus: task.status,
+            });
+            if (revision === null) throw new Error('Task changed before startup admission.');
+            reservedRevision = revision;
+
           }
           const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
             task,
@@ -4840,12 +4844,20 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           }));
 
           if (isCurrentStart()) await syncWorkspaceRoot(primaryWorktree);
-          await get().setTaskStatus(task.id, 'InProgress');
+          if (reservedRevision !== null) {
+            await get().refreshFromPlan();
+            await syncManualFeatureTaskMetadata(get().getTaskById(task.id), (message) => {
+              if (isCurrentStart()) set({ lastError: message });
+            });
+          } else await get().setTaskStatus(task.id, 'InProgress');
         } catch (error) {
           let failure = error;
-          if (reservedStatus && taskStillExists()) {
+          if (reservedRevision !== null && taskStillExists()) {
             try {
-              await tauriIpc.workspaceUpdateStandaloneTaskStatus({ taskId: task.id, status: task.status });
+              await tauriIpc.workspaceUpdateStandaloneTaskStatus({
+                taskId: task.id, status: task.status, expectedRevision: reservedRevision, expectedStatus: 'InProgress',
+              });
+              await get().refreshFromPlan();
             } catch (rollbackError) {
               failure = new Error(`${toServiceError(error).message}\n${toServiceError(rollbackError).message}`);
             }

@@ -8,7 +8,7 @@ const notifyError = mock(() => undefined);
 mock.module('../../../services/preferences', () => ({
   ...actualPreferences,
   loadPreference: async () => null,
-  savePreferences: save,
+  saveConfigPreferencesAtomically: save,
 }));
 mock.module('../../ui/toastService', () => ({ notify: { error: notifyError } }));
 const { ArchitectGitFlowView } = await import('./ArchitectGitFlowView');

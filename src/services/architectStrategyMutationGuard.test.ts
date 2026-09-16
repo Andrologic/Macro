@@ -320,15 +320,19 @@ describe('architectStrategyMutationGuard', () => {
     });
 
     expect(preview.status).toBe('valid');
+    preview.autoProvisionBranches = true;
 
     const getArchitectPlanMock = mock(async () => plan);
-    const provisionPlanBranchesMock = mock(async () => ({
+    const provisionPlanBranchesMock = mock(async (_plan: unknown, _repo: unknown, persist?: () => Promise<void>) => {
+      await persist?.();
+      return ({
       planBranchName: 'plan/checkout-rework',
       repositories: [],
       createdPlanBranch: false,
       createdFeatureBranches: [],
       existingFeatureBranches: [],
-    }));
+    });
+    });
     const updateArchitectPlanMock = mock(async (params: {
       slug?: string;
       status?: string;
@@ -350,6 +354,7 @@ describe('architectStrategyMutationGuard', () => {
       }
     );
 
+    expect(provisionPlanBranchesMock).toHaveBeenCalledTimes(1);
     expect(updateArchitectPlanMock).toHaveBeenCalledWith(
       expect.objectContaining({
         slug: 'checkout-rework',
