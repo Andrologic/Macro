@@ -417,6 +417,61 @@ describe('useProviderStore secret resolution', () => {
     });
   });
 
+  for (const replacement of ['synthetic-new-key', '']) {
+    it(`rejects an obsolete key reveal after replacement with ${replacement || 'no key'}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      await useProviderStore.getState().loadProviderConfigs();
+      let release!: (key: string) => void;
+      revealProviderApiKeyMock.mockImplementationOnce(() => new Promise<string>((resolve) => {
+        release = resolve;
+      }));
+      const pending = useProviderStore.getState().resolveProviderApiKey('provider-openai');
+      const rejected = pending.catch((error: unknown) => error);
+      await useProviderStore.getState().updateProviderConfig('provider-openai', { apiKey: replacement });
+      release('synthetic-old-key');
+      expect(await rejected).toBeInstanceOf(Error);
+      expect(String(await rejected)).toContain('configuration changed');
+      expect(useProviderStore.getState().providerConfigs[0].apiKey).toBe(replacement || undefined);
+      expect(await useProviderStore.getState().resolveProviderApiKey('provider-openai')).toBe(replacement || undefined);
+    });
+  }
+
+  for (const updates of [{ baseUrl: 'https://new.invalid/v1' }, { providerType: 'custom' }]) {
+    it(`discards a pending scan when transport changes: ${JSON.stringify(updates)}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      await useProviderStore.getState().loadProviderConfigs();
+      let release!: (value: never) => void;
+      probeModelsEndpointMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      const scan = useProviderStore.getState().scanModelsForProvider('provider-openai');
+      await flushAsyncWork();
+      let finishUpdate!: () => void;
+      updateProviderConfigMock.mockImplementationOnce(() => new Promise<void>((resolve) => { finishUpdate = resolve; }));
+      const update = useProviderStore.getState().updateProviderConfig('provider-openai', updates);
+      await flushAsyncWork();
+      release({ success: true, status: 'reachable', source: 'models_endpoint', message: 'ok', models: [{ id: 'old-model' }] } as never);
+      await scan;
+      expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+      expect(upsertProviderModelsMock).toHaveBeenCalledWith({ providerId: 'provider-openai', models: [], replaceDiscovered: true });
+      finishUpdate();
+      await update;
+      expect(useProviderStore.getState().modelsByProvider['provider-openai'] ?? []).toEqual([]);
+      expect(useProviderStore.getState().providerReachabilityById['provider-openai']?.status).not.toBe('reachable');
+    });
+  }
+
+  it('does not publish an old endpoint connection check after an URL update', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    let release!: (value: never) => void;
+    probeProviderReachabilityMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const pending = useProviderStore.getState().testConnection('provider-openai');
+    await flushAsyncWork();
+    await useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://replacement.invalid/v1' });
+    release({ success: true, status: 'reachable', source: 'models_endpoint', message: 'ok', models: [] } as never);
+    expect((await pending).success).toBe(false);
+    expect(useProviderStore.getState().providerReachabilityById['provider-openai']?.status).not.toBe('reachable');
+  });
+
   it('uses a stored API key to scan models after a restart', async () => {
     const providerStore = await loadProviderStore();
     await providerStore.useProviderStore.getState().loadProviderConfigs();

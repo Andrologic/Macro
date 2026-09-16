@@ -1417,6 +1417,63 @@ const extractProviderErrorMessage = async (response: Response): Promise<Provider
   );
 };
 
+const getProviderErrorString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value : undefined;
+
+const getProviderErrorStatus = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
+const extractSseProviderError = (
+  payload: unknown,
+  rawData: string,
+): ProviderRuntimeError | null => {
+  if (!payload || typeof payload !== 'object' || !('error' in payload)) {
+    return null;
+  }
+
+  const envelope = payload as {
+    error?: unknown;
+    status?: unknown;
+    status_code?: unknown;
+  };
+  const error = envelope.error;
+  const details = error && typeof error === 'object'
+    ? error as {
+      message?: unknown;
+      code?: unknown;
+      type?: unknown;
+      status?: unknown;
+      status_code?: unknown;
+    }
+    : {};
+  const providerMessage = getProviderErrorString(details.message) ?? getProviderErrorString(error);
+  const providerCode = getProviderErrorString(details.code);
+  const providerType = getProviderErrorString(details.type);
+  const status =
+    getProviderErrorStatus(details.status) ??
+    getProviderErrorStatus(details.status_code) ??
+    getProviderErrorStatus(envelope.status) ??
+    getProviderErrorStatus(envelope.status_code);
+  const message = [providerMessage, providerCode, providerType]
+    .filter((part): part is string => Boolean(part))
+    .join(' ') || 'Provider sent an error event in the stream';
+
+  return classifyProviderError(message, status, undefined, {
+    providerMessage,
+    providerCode,
+    providerType,
+    providerRawBodyExcerpt: rawData.slice(0, 1200),
+  });
+};
+
 const getRetryDelayMs = (attempt: number, retryAfterMs?: number): number => {
   const exponential = GENERIC_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1);
   const delay = retryAfterMs ?? exponential;
@@ -1515,15 +1572,14 @@ const readStreamChunkWithIdleTimeout = async (
   try {
     const idleTimeout = new Promise<never>((_, reject) => {
       timeoutId = globalThis.setTimeout(() => {
+        const error = new ProviderRuntimeError('Provider stream stalled before sending more data', {
+          kind: 'stream_idle_timeout',
+          retryable: true,
+        });
+        reject(error);
         void reader.cancel().catch(() => {
           // Ignore cancellation errors while closing an idle stream.
         });
-        reject(
-          new ProviderRuntimeError('Provider stream stalled before sending more data', {
-            kind: 'stream_idle_timeout',
-            retryable: true,
-          })
-        );
       }, timeoutMs);
     });
     const abort = new Promise<never>((_, reject) => {
@@ -2695,6 +2751,7 @@ export const __testables = {
   normalizeChatCompletionMessageSequence,
   normalizeToolCallIdForProvider,
   normalizeToolCallResolution,
+  readStreamChunkWithIdleTimeout,
   resolveChatCompletionProviderCapabilities: resolveChatCompletionProviderProfile,
   resolveChatCompletionProviderProfile,
   serializeCopilotConversationPrompt,
@@ -4185,78 +4242,111 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
         }
       };
 
-      const processSseEvent = (rawEvent: string) => {
+      const processSseEvent = (rawEvent: string): boolean => {
         const data = extractSseData(rawEvent);
         if (!data) {
-          return;
+          return false;
         }
         if (data === '[DONE]') {
           turnCompletion.reason ??= hasCompleteToolCallBatch(toolCalls)
             ? 'completed'
             : 'incomplete';
-          return;
+          return true;
         }
 
+        let parsed: unknown;
         try {
-          const parsed = JSON.parse(data);
-          const choice = parsed.choices?.[0] ?? {};
-          const delta = choice.delta ?? {};
-          const message = choice.message ?? {};
-          if (typeof choice.finish_reason === 'string') {
-            const finishReason = choice.finish_reason.trim();
-            turnCompletion.reason =
-              finishReason === 'length' ||
-              finishReason === 'max_tokens' ||
-              finishReason === 'max_output_tokens'
-                ? 'length'
-                : finishReason === 'stop' ||
-                    finishReason === 'tool_calls' ||
-                    finishReason === 'function_call'
-                  ? 'completed'
-                  : finishReason || 'incomplete';
-          }
-          const reasoning = delta?.reasoning ?? delta?.reasoning_content;
-          appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
-          appendReasoningDetails(turnReasoningDetails, message?.reasoning_details);
-
-          if (typeof reasoning === 'string' && reasoning.length > 0) {
-            turnReasoningContent += reasoning;
-            startThinking();
-            appendTurnChunk(reasoning);
-          }
-
-          // Handle tool calls
-          if (delta?.tool_calls) {
-            for (const toolCallDelta of delta.tool_calls) {
-              const index = toolCallDelta.index ?? 0;
-              if (!toolCalls[index]) {
-                toolCalls[index] = {
-                  id: toolCallDelta.id || '',
-                  type: 'function',
-                  function: { name: '', arguments: '' },
-                };
-              }
-              if (toolCallDelta.id) {
-                toolCalls[index].id = toolCallDelta.id;
-              }
-              if (toolCallDelta.function?.name) {
-                toolCalls[index].function.name = toolCallDelta.function.name;
-              }
-              if (toolCallDelta.function?.arguments) {
-                toolCalls[index].function.arguments += toolCallDelta.function.arguments;
-              }
-            }
-          }
-
-          if (delta?.content) {
-            endThinking();
-            turnApiContent += delta.content;
-            appendTurnChunk(delta.content);
-          }
+          parsed = JSON.parse(data);
         } catch {
           // Skip malformed JSON - some providers send non-JSON lines.
           devLogger.debug('Failed to parse SSE data:', data);
+          return false;
         }
+
+        const providerError = extractSseProviderError(parsed, data);
+        if (providerError) {
+          throw providerError;
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          // Skip valid JSON values that are not Chat Completions event objects.
+          devLogger.debug('Ignoring non-object SSE JSON data:', data);
+          return false;
+        }
+
+        const payload = parsed as {
+          error?: unknown;
+          choices?: Array<{
+            delta?: {
+              reasoning?: unknown;
+              reasoning_content?: unknown;
+              reasoning_details?: unknown;
+              tool_calls?: Array<{
+                index?: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }>;
+              content?: string;
+            };
+            message?: { reasoning_details?: unknown };
+            finish_reason?: unknown;
+          }>;
+        };
+
+        const choice = payload.choices?.[0];
+        const delta = choice?.delta ?? {};
+        const message = choice?.message ?? {};
+        if (typeof choice?.finish_reason === 'string') {
+          const finishReason = choice.finish_reason.trim();
+          turnCompletion.reason =
+            finishReason === 'length' ||
+            finishReason === 'max_tokens' ||
+            finishReason === 'max_output_tokens'
+              ? 'length'
+              : finishReason === 'stop' ||
+                  finishReason === 'tool_calls' ||
+                  finishReason === 'function_call'
+                ? 'completed'
+                : finishReason || 'incomplete';
+        }
+        const reasoning = delta?.reasoning ?? delta?.reasoning_content;
+        appendReasoningDetails(turnReasoningDetails, delta?.reasoning_details);
+        appendReasoningDetails(turnReasoningDetails, message?.reasoning_details);
+
+        if (typeof reasoning === 'string' && reasoning.length > 0) {
+          turnReasoningContent += reasoning;
+          startThinking();
+          appendTurnChunk(reasoning);
+        }
+
+        // Handle tool calls
+        if (delta?.tool_calls) {
+          for (const toolCallDelta of delta.tool_calls) {
+            const index = toolCallDelta.index ?? 0;
+            if (!toolCalls[index]) {
+              toolCalls[index] = {
+                id: '',
+                type: 'function',
+                function: { name: '', arguments: '' },
+              };
+            }
+            if (toolCallDelta.id) {
+              toolCalls[index].id = toolCallDelta.id;
+            }
+            if (toolCallDelta.function?.name) {
+              toolCalls[index].function.name = toolCallDelta.function.name;
+            }
+            if (toolCallDelta.function?.arguments) {
+              toolCalls[index].function.arguments += toolCallDelta.function.arguments;
+            }
+          }
+        }
+
+        if (delta?.content) {
+          endThinking();
+          turnApiContent += delta.content;
+          appendTurnChunk(delta.content);
+        }
+        return false;
       };
 
       try {
@@ -4282,17 +4372,35 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
           );
 
           if (done) {
+            let receivedDone = false;
             for (const event of sseParser.push(decoder.decode())) {
-              processSseEvent(event);
+              if (processSseEvent(event)) {
+                receivedDone = true;
+                break;
+              }
             }
-            for (const event of sseParser.flush()) {
-              processSseEvent(event);
+            if (!receivedDone) {
+              for (const event of sseParser.flush()) {
+                if (processSseEvent(event)) {
+                  break;
+                }
+              }
             }
             break;
           }
 
+          let receivedDone = false;
           for (const event of sseParser.push(decoder.decode(value, { stream: true }))) {
-            processSseEvent(event);
+            if (processSseEvent(event)) {
+              receivedDone = true;
+              break;
+            }
+          }
+          if (receivedDone) {
+            await reader.cancel().catch(() => {
+              // Ignore cancellation errors after a terminal SSE marker.
+            });
+            break;
           }
         }
         consecutiveStreamRetryCount = 0;

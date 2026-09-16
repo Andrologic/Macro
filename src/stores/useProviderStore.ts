@@ -90,6 +90,7 @@ const lastModelRefreshStartedAtByProviderId = new Map<string, number>();
 let providerConfigMutationVersion = 0;
 const providerSettingsRequestVersionById = new Map<string, number>();
 const providerModelScanGenerationById = new Map<string, number>();
+const providerTransportMutations = new Set<string>();
 const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
 const enqueueProviderMutation = createKeyedSerialQueue<string>();
 
@@ -1115,6 +1116,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   resolveProviderApiKey: async (providerId: string, options?: { forceRefresh?: boolean }) => {
+    if (providerTransportMutations.has(providerId)) {
+      throw new Error('Provider configuration is being updated. Retry the request.');
+    }
     const config = get().providerConfigs.find((provider) => provider.id === providerId);
     if (!config) {
       throw new Error('Provider not found');
@@ -1132,8 +1136,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return config.apiKey?.trim() ? config.apiKey : undefined;
     }
 
+    const generation = providerModelScanGenerationById.get(providerId) ?? 0;
     try {
       const apiKey = (await ipcRevealProviderApiKey(providerId)) || undefined;
+      const currentConfig = get().providerConfigs.find((provider) => provider.id === providerId);
+      if (
+        (providerModelScanGenerationById.get(providerId) ?? 0) !== generation ||
+        !currentConfig ||
+        currentConfig.providerType !== config.providerType ||
+        currentConfig.baseUrl !== config.baseUrl ||
+        currentConfig.isLocal !== config.isLocal
+      ) {
+        throw new Error('Provider configuration changed while accessing its API key. Retry the request.');
+      }
       set((state) => ({
         providerConfigs: state.providerConfigs.map((provider) =>
           provider.id === providerId
@@ -1309,6 +1324,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   scanModelsForProvider: async (providerId: string) => {
+    if (providerTransportMutations.has(providerId)) return get().modelsByProvider[providerId] || [];
     const scanGeneration = providerModelScanGenerationById.get(providerId) ?? 0;
     const isCurrentScan = () =>
       (providerModelScanGenerationById.get(providerId) ?? 0) === scanGeneration;
@@ -2693,18 +2709,34 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             isEnabled: nextIsEnabled,
           };
 
-      await ipcUpdateProviderConfig({
-        id,
-        name: persistedUpdates.name,
-        providerType: persistedUpdates.providerType,
-        baseUrl: persistedUpdates.baseUrl,
-        apiKey: persistedUpdates.apiKey,
-        isLocal: persistedUpdates.isLocal,
-        isEnabled: persistedUpdates.isEnabled,
-      });
-
-      if (apiKeyChanged) {
+      const endpointChanged = !!currentConfig && (
+        (persistedUpdates.baseUrl !== undefined && persistedUpdates.baseUrl !== currentConfig.baseUrl) ||
+        (persistedUpdates.providerType !== undefined && persistedUpdates.providerType !== currentConfig.providerType) ||
+        nextIsLocal !== currentConfig.isLocal
+      );
+      const transportChanged = shouldInvalidateReachability || apiKeyChanged || endpointChanged;
+      if (transportChanged) {
         invalidateProviderModelScans(id);
+        providerTransportMutations.add(id);
+        set((state) => ({ ...clearProviderReachability(state, id), isLoadingModels: false }));
+      }
+      try {
+        await enqueueProviderModelPersistence(id, async () => {
+          if (endpointChanged && !apiKeyChanged) {
+            await tauriIpc.upsertProviderModels({ providerId: id, models: [], replaceDiscovered: true });
+          }
+          await ipcUpdateProviderConfig({
+            id,
+            name: persistedUpdates.name,
+            providerType: persistedUpdates.providerType,
+            baseUrl: persistedUpdates.baseUrl,
+            apiKey: persistedUpdates.apiKey,
+            isLocal: persistedUpdates.isLocal,
+            isEnabled: persistedUpdates.isEnabled,
+          });
+        });
+      } finally {
+        providerTransportMutations.delete(id);
       }
 
       set((state) => {
@@ -2734,7 +2766,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             ) ?? null
           : null;
         const selectedProviderKeyChanged =
-          apiKeyChanged && !!nextApiKey && state.selectedProviderId === id;
+          (endpointChanged || (apiKeyChanged && !!nextApiKey)) && state.selectedProviderId === id;
         const nextSelectedProviderId = selectedProviderBecameUnavailable
           ? fallbackProvider?.id ?? null
           : state.selectedProviderId;
@@ -2747,7 +2779,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           : selectedProviderKeyChanged
             ? null
             : state.selectedModelId;
-        const modelsByProvider = apiKeyChanged
+        const modelsByProvider = apiKeyChanged || endpointChanged
           ? { ...state.modelsByProvider, [id]: [] }
           : state.modelsByProvider;
 
@@ -2782,7 +2814,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           ...(shouldInvalidateReachability
             ? clearProviderReachability(state, id)
             : {}),
-          ...(apiKeyChanged ? { isLoadingModels: false } : {}),
+          ...(transportChanged ? { isLoadingModels: false } : {}),
         };
       });
 
@@ -3433,6 +3465,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   testConnection: async (providerId: string) => {
+    const generation = providerModelScanGenerationById.get(providerId) ?? 0;
+    const isCurrent = () => !providerTransportMutations.has(providerId) &&
+      (providerModelScanGenerationById.get(providerId) ?? 0) === generation;
+    const obsoleteResult = { success: false, message: 'Provider configuration changed. Retry the connection check.', status: 'unknown' as const };
+    if (!isCurrent()) return obsoleteResult;
     const { providerConfigs, resolveProviderApiKey } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
 
@@ -3535,6 +3572,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
 
     const apiKey = config.isLocal ? undefined : await resolveProviderApiKey(providerId);
+    if (!isCurrent()) return obsoleteResult;
     const { selectedProviderId, selectedModelId, modelsByProvider } = get();
     const probeModels = getReachabilityProbeModels({
       providerId,
@@ -3551,6 +3589,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       modelIds: probeModels.modelIds,
       timeout: 5000,
     });
+    if (!isCurrent()) return obsoleteResult;
 
     set((state) => ({
       ...withReachabilityRecord(state, providerId, {
