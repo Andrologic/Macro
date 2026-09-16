@@ -1749,13 +1749,19 @@ fn rollback_config_publication(
 
     let current_document = read_json_value(canonical_path)?;
     let current_etag = etag(&current_document);
-    if current_etag == publication.previous_etag {
-        return remove_file_if_exists(&publication_document_path(root, key));
-    }
-    if current_etag != publication.proposed_etag {
+    if current_etag != publication.previous_etag && current_etag != publication.proposed_etag {
         return Err(ConfigApiError::new(
             "config.publication.conflict",
             "Le document canonique a changé depuis la publication interrompue. Macro conserve cette version et le journal pour une récupération explicite.",
+        ));
+    }
+
+    let approved_path = approved_document_path(root, key);
+    let approved_etag = etag(&read_json_value(&approved_path)?);
+    if approved_etag != publication.previous_etag && approved_etag != publication.proposed_etag {
+        return Err(ConfigApiError::new(
+            "config.publication.conflict",
+            "La copie approuvée a changé depuis la publication interrompue. Macro conserve cette version et le journal pour une récupération explicite.",
         ));
     }
 
@@ -1766,22 +1772,36 @@ fn rollback_config_publication(
             "Échec injecté pendant la compensation de publication.",
         ));
     }
-    atomic_write_json_locked(canonical_path, &publication.previous_document).map_err(|error| {
-        ConfigApiError::new(
+    if current_etag != publication.previous_etag {
+        atomic_write_json_locked(canonical_path, &publication.previous_document).map_err(
+            |error| {
+                ConfigApiError::new(
+                    "config.publication.rollback_failed",
+                    format!("Impossible de restaurer le document canonique : {error}"),
+                )
+            },
+        )?;
+    }
+    #[cfg(test)]
+    if canonical_path
+        .with_extension("fail-rollback-after-canonical")
+        .exists()
+    {
+        return Err(ConfigApiError::new(
             "config.publication.rollback_failed",
-            format!("Impossible de restaurer le document canonique : {error}"),
-        )
-    })?;
-    atomic_write_json(
-        &approved_document_path(root, key),
-        &publication.previous_document,
-    )
-    .map_err(|error| {
-        ConfigApiError::new(
-            "config.publication.rollback_failed",
-            format!("Impossible de restaurer la copie approuvée : {error}"),
-        )
-    })?;
+            "Interruption injectée après la restauration du document canonique.",
+        ));
+    }
+    // Both files must be restored before deleting the recovery journal, even
+    // when an earlier attempt already restored the canonical document.
+    if approved_etag != publication.previous_etag {
+        atomic_write_json(&approved_path, &publication.previous_document).map_err(|error| {
+            ConfigApiError::new(
+                "config.publication.rollback_failed",
+                format!("Impossible de restaurer la copie approuvée : {error}"),
+            )
+        })?;
+    }
     remove_file_if_exists(&publication_document_path(root, key))
 }
 
@@ -2206,6 +2226,76 @@ mod tests {
             .await
             .expect("recovered settings");
         assert_eq!(recovered.value, previous);
+    }
+
+    #[tokio::test]
+    async fn interrupted_compensation_restores_approved_before_removing_journal() {
+        let (_temp, manager) = manager().await;
+        let root = manager.root().to_path_buf();
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("tools");
+        let canonical_path = PathBuf::from(&document.file_path);
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: ConfigScope::User,
+        };
+        let approved_path = approved_document_path(&root, &key);
+        let publication_path = publication_document_path(&root, &key);
+        let previous = read_json_value(&approved_path).expect("previous approved");
+        let cleanup_failure = pending_document_path(&root, &key).with_extension("fail-remove");
+        let interruption = canonical_path.with_extension("fail-rollback-after-canonical");
+        fs::create_dir_all(cleanup_failure.parent().expect("pending directory"))
+            .expect("create pending directory");
+        fs::write(&cleanup_failure, b"fail").expect("inject cleanup failure");
+        fs::write(&interruption, b"fail").expect("interrupt compensation");
+        let error = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/riskLevel".into(),
+                    from: None,
+                    value: Some(json!("strict")),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect_err("interrupted compensation");
+        assert_eq!(error.code, "config.publication.failed_with_rollback_failed");
+        assert_eq!(
+            read_json_value(&canonical_path).expect("canonical restored"),
+            previous
+        );
+        assert_eq!(
+            read_json_value(&approved_path).expect("approved not yet restored")["riskLevel"],
+            json!("strict")
+        );
+        assert!(publication_path.exists());
+        fs::remove_file(cleanup_failure).expect("release cleanup failure");
+        fs::remove_file(interruption).expect("release interruption");
+        drop(manager);
+        let restarted = ConfigManager::initialize(root)
+            .await
+            .expect("resume compensation");
+        assert_eq!(
+            read_json_value(&canonical_path).expect("canonical"),
+            previous
+        );
+        assert_eq!(read_json_value(&approved_path).expect("approved"), previous);
+        assert!(!publication_path.exists());
+        assert!(restarted.list_pending_changes().await.is_empty());
+        assert_eq!(
+            restarted
+                .get_snapshot(&[])
+                .await
+                .expect("snapshot")
+                .effective["tools"]["riskLevel"],
+            json!("balanced")
+        );
     }
 
     #[tokio::test]
