@@ -811,8 +811,10 @@ mod tests {
         };
         #[cfg(not(windows))]
         let mut command = {
-            let mut command = background_tokio_command("sh");
-            command.args(["-c", "sleep 5"]);
+            // A shell can leave sleep holding the output pipes after it is killed,
+            // adding the output-drain timeout to this stdin-only timeout test.
+            let mut command = background_tokio_command("sleep");
+            command.arg("5");
             command
         };
         command
