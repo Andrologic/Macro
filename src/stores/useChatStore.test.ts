@@ -1085,6 +1085,24 @@ const getChatBootstrapSnapshotMock = mock(async (params?: {
     ),
   };
 });
+// The native state API returns a complete JSON snapshot only after a successful
+// write. Keep this double separate from SQLite app settings and from preferences'
+// browser-only cache so a missing or rejected IPC cannot silently succeed.
+let nativePreferenceValues: Record<string, unknown> = {};
+const nativePreferenceSnapshot = (): import('../services/tauriIpc').StateSnapshotDto => ({
+  schemaVersion: 1,
+  values: structuredClone(nativePreferenceValues),
+});
+const stateGetSnapshotMock = mock(async () => nativePreferenceSnapshot());
+const stateSetValueMock = mock(async (key: string, value: unknown) => {
+  nativePreferenceValues[key] = structuredClone(value);
+  return nativePreferenceSnapshot();
+});
+const stateClearMock = mock(async () => {
+  nativePreferenceValues = {};
+  return nativePreferenceSnapshot();
+});
+
 const appSettingValues = new Map<string, string>();
 const dbGetAppSettingMock = mock(async (key: string) => {
   const valueJson = appSettingValues.get(key);
@@ -1797,6 +1815,9 @@ const registerUseChatStoreMocks = async () => {
   mock.module('../services/tauriIpc', () => ({
     ...actualTauriIpc,
     isTauriAvailable: () => tauriAvailable,
+    stateGetSnapshot: stateGetSnapshotMock,
+    stateSetValue: stateSetValueMock,
+    stateClear: stateClearMock,
     aiStreamChat: async (params: {
       requestId: string;
       providerId: string;
@@ -2781,6 +2802,10 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     chatSnapshotConversations = [];
     chatSnapshotMessages = [];
     appSettingValues.clear();
+    nativePreferenceValues = {};
+    stateGetSnapshotMock.mockClear();
+    stateSetValueMock.mockClear();
+    stateClearMock.mockClear();
     dbGetAppSettingMock.mockClear();
     dbSetAppSettingMock.mockClear();
     dbCompareAndSwapAppSettingMock.mockClear();
@@ -2930,6 +2955,42 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('keeps rejected native preference writes observable and retryable in the chat harness', async () => {
+    tauriAvailable = true;
+    const prefs = await import('../services/preferences');
+    await prefs.savePreference(prefs.PREF_KEYS.AI_CONTEXT_SELECTIONS, { version: 2, conversationSelections: {} });
+    const saved = nativePreferenceSnapshot();
+    const changed = mock(() => undefined);
+    const failed = mock(() => undefined);
+    const unsubscribe = prefs.subscribePreference(prefs.PREF_KEYS.AI_CONTEXT_SELECTIONS, changed);
+    const unsubscribeErrors = prefs.subscribePreferencePersistenceErrors(failed);
+    const next = { version: 2, conversationSelections: { 'synthetic-conversation': { providerId: 'provider-1', modelId: 'model-1' } } };
+    try {
+      stateSetValueMock.mockImplementationOnce(async () => { throw new Error('Synthetic state write refused'); });
+      await expect(prefs.savePreference(prefs.PREF_KEYS.AI_CONTEXT_SELECTIONS, next)).rejects.toThrow('Synthetic state write refused');
+      expect(nativePreferenceSnapshot()).toEqual(saved);
+      expect(await prefs.loadPersistedPreference<unknown>(prefs.PREF_KEYS.AI_CONTEXT_SELECTIONS)).toEqual(saved.values.aiContextSelections);
+      expect(changed).not.toHaveBeenCalled();
+      expect(failed).toHaveBeenCalledTimes(1);
+      await prefs.savePreference(prefs.PREF_KEYS.AI_CONTEXT_SELECTIONS, next);
+      expect(await prefs.loadPersistedPreference<unknown>(prefs.PREF_KEYS.AI_CONTEXT_SELECTIONS)).toEqual(next);
+      expect(changed).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+      unsubscribeErrors();
+    }
+  });
+
+  it('propagates native preference read failures instead of inventing an empty saved state', async () => {
+    tauriAvailable = true;
+    const prefs = await import('../services/preferences');
+    nativePreferenceValues = { aiContextSelections: { version: 2, conversationSelections: {} } };
+    stateGetSnapshotMock.mockImplementationOnce(async () => { throw new Error('Synthetic state read refused'); });
+    await expect(prefs.loadPersistedPreference<unknown>(prefs.PREF_KEYS.AI_CONTEXT_SELECTIONS)).rejects.toThrow('Synthetic state read refused');
+    expect(stateSetValueMock).not.toHaveBeenCalled();
+    expect(await prefs.loadPersistedPreference<unknown>(prefs.PREF_KEYS.AI_CONTEXT_SELECTIONS)).toEqual(nativePreferenceValues.aiContextSelections);
   });
 
   it('keeps the restored conversation when plan rollback queues context synchronization', async () => {

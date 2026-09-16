@@ -665,6 +665,7 @@ export const registerConversationSelectionScenarios = (
     });
 
     it('restores the conversation model from the database when preferences are empty', async () => {
+      context.tauriAvailable = true;
       providerState.modelsByProvider = {
         'provider-1': [
           { id: 'model-1a', name: 'Model 1A', isEnabled: true },
@@ -680,7 +681,6 @@ export const registerConversationSelectionScenarios = (
         providerSelectionsByMode: {},
       });
 
-      context.tauriAvailable = true;
       context.chatSnapshotConversations = [
         createChatSnapshotConversation('conv-a', {
           provider_id: 'provider-1',
@@ -712,6 +712,7 @@ export const registerConversationSelectionScenarios = (
     });
 
     it('prefers the database conversation model over a stale preference entry', async () => {
+      context.tauriAvailable = true;
       providerState.modelsByProvider = {
         'provider-1': [
           { id: 'model-1a', name: 'Model 1A', isEnabled: true },
@@ -734,7 +735,6 @@ export const registerConversationSelectionScenarios = (
         providerSelectionsByMode: {},
       });
 
-      context.tauriAvailable = true;
       context.chatSnapshotConversations = [
         createChatSnapshotConversation('conv-a', {
           provider_id: 'provider-1',
@@ -1294,6 +1294,7 @@ export const registerConversationSelectionScenarios = (
     });
 
     it('migrates legacy AI context selections to version 2 and preserves the restored selection', async () => {
+      context.tauriAvailable = true;
       providerState.modelsByProvider = {
         'provider-1': [{ id: 'model-1a', name: 'Model 1A', isEnabled: true }],
       };
@@ -1318,7 +1319,6 @@ export const registerConversationSelectionScenarios = (
         },
       });
 
-      context.tauriAvailable = true;
       context.chatSnapshotConversations = [
         createChatSnapshotConversation('conv-a'),
       ];
