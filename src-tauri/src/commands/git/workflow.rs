@@ -883,7 +883,11 @@ pub async fn git_workflow(
         repository_common_dir(&repo)?
     };
     let mut existing = load_journal(&pool, &key).await?;
-    session_guard::verify_requested_session(existing.as_ref(), expected_session_id.as_deref())?;
+    session_guard::verify_requested_session(
+        existing.as_ref(),
+        expected_session_id.as_deref(),
+        &action,
+    )?;
     if let Some(journal) = existing.as_ref() {
         session_matches(&journal.session, &task_id, &source_branch, &target_branch)?;
     }

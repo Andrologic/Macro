@@ -94,8 +94,15 @@ fn ensure_source_is_not_checked_out(repo: &Repository, branch_name: &str) -> Res
     Ok(())
 }
 
-fn remote_branch_oid(repo_root: &Path, branch_name: &str) -> Result<Option<String>> {
-    let output = super::super::run_git_command(
+fn remote_branch_oid<F>(
+    repo_root: &Path,
+    branch_name: &str,
+    run_network: &mut F,
+) -> Result<Option<String>>
+where
+    F: FnMut(&Path, &[String]) -> Result<super::super::GitCommandOutput>,
+{
+    let output = run_network(
         repo_root,
         &[
             "ls-remote".to_string(),
@@ -118,7 +125,14 @@ fn remote_branch_oid(repo_root: &Path, branch_name: &str) -> Result<Option<Strin
         .map(str::to_owned))
 }
 
-fn delete_remote_branch_if_present(repo: &Repository, journal: &GitWorkflowJournal) -> Result<()> {
+fn delete_remote_branch_if_present<F>(
+    repo: &Repository,
+    journal: &GitWorkflowJournal,
+    run_network: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&Path, &[String]) -> Result<super::super::GitCommandOutput>,
+{
     match repo.find_remote("origin") {
         Ok(_) => {}
         Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(()),
@@ -132,7 +146,7 @@ fn delete_remote_branch_if_present(repo: &Repository, journal: &GitWorkflowJourn
     let root = super::super::repo_root(repo)?;
     let branch_name = &journal.session.source_branch;
     let expected = journal.session.source_commit.as_str();
-    let Some(actual) = remote_branch_oid(&root, branch_name)? else {
+    let Some(actual) = remote_branch_oid(&root, branch_name, run_network)? else {
         return Ok(());
     };
     if actual != expected {
@@ -141,7 +155,7 @@ fn delete_remote_branch_if_present(repo: &Repository, journal: &GitWorkflowJourn
         )));
     }
 
-    let output = super::super::run_git_command(
+    let output = run_network(
         &root,
         &[
             "push".to_string(),
@@ -169,6 +183,37 @@ pub(crate) fn cleanup_integrated_repo(
     remove_remote: bool,
     expected_worktree_path: Option<&str>,
 ) -> Result<()> {
+    cleanup_integrated_repo_with_network(
+        repo,
+        git_state,
+        journal,
+        identity,
+        worktree_key,
+        remove_remote,
+        expected_worktree_path,
+        |root, args| {
+            super::super::run_git_command_with_timeout(
+                root,
+                args,
+                super::super::NATIVE_GIT_NETWORK_TIMEOUT,
+            )
+        },
+    )
+}
+
+fn cleanup_integrated_repo_with_network<F>(
+    repo: &Repository,
+    git_state: &GitState,
+    journal: &GitWorkflowJournal,
+    identity: &GitWorkflowSessionIdentity,
+    worktree_key: &str,
+    remove_remote: bool,
+    expected_worktree_path: Option<&str>,
+    mut run_network: F,
+) -> Result<()>
+where
+    F: FnMut(&Path, &[String]) -> Result<super::super::GitCommandOutput>,
+{
     verify_cleanup_session(repo, journal, identity)?;
     let mut transaction = lock_cleanup_refs(repo, journal)?;
 
@@ -255,7 +300,7 @@ pub(crate) fn cleanup_integrated_repo(
     // Keep the source ref untouched when the remote lease fails. A retry can
     // then remove the remote and finish the local transaction idempotently.
     if remove_remote {
-        delete_remote_branch_if_present(repo, journal)?;
+        delete_remote_branch_if_present(repo, journal, &mut run_network)?;
     }
 
     if source_exists_after_worktree {
@@ -308,7 +353,7 @@ pub async fn git_workflow_cleanup(
         )?
     };
     let journal = load_journal_for_key(&pool, &key).await?;
-    session_guard::verify_requested_session(Some(&journal), Some(&identity.session_id))?;
+    session_guard::verify_requested_session(Some(&journal), Some(&identity.session_id), "cleanup")?;
     ensure_workflow_exclusive(&pool, Path::new(&journal.common_dir), &key).await?;
 
     tokio::task::spawn_blocking(move || {

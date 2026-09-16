@@ -15782,6 +15782,7 @@ pub async fn git_remote_add_origin(
 pub async fn git_pull(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     remote: Option<String>,
     branch: Option<String>,
@@ -15797,6 +15798,7 @@ pub async fn git_pull(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;

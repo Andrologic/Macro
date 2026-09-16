@@ -155,6 +155,7 @@ const gitRebaseBranchMock = mock(async (_params: {
 const gitBranchDeleteMock = mock(async (_params?: GitBranchDeleteRequest) => undefined);
 const gitBranchDeleteRemoteMock = mock(async (_params?: GitBranchDeleteRemoteRequest) => undefined);
 const gitWorkflowCleanupMock = mock(async (_params?: GitWorkflowCleanupRequest) => undefined);
+let syncTargetsBeforeFinish = false;
 const gitPullMock = mock(async () => undefined);
 const gitWorkflowSessions = new Map<string, GitWorkflowSession>();
 const worktreeInspectionOverrides = new Map<string, {
@@ -169,10 +170,15 @@ const gitWorkflowRepoKey = (repoPath: string): string =>
 const gitWorkflowKey = (params: Pick<GitWorkflowRequest, 'repoPath' | 'taskId' | 'sourceBranch' | 'targetBranch'>): string =>
   [gitWorkflowRepoKey(params.repoPath), params.taskId, params.sourceBranch, params.targetBranch].join('::');
 
-const gitWorkflowMock = mock(async (params: GitWorkflowRequest): Promise<GitWorkflowSession | null> => {
+const executeWorkflowMock = async (params: GitWorkflowRequest): Promise<GitWorkflowSession | null> => {
   const key = gitWorkflowKey(params);
   if (params.action === 'inspect') {
     return gitWorkflowSessions.get(key) ?? null;
+  }
+
+  const current = gitWorkflowSessions.get(key);
+  if (current && params.expectedSessionId !== current.sessionId) {
+    throw new Error('Expected current Git workflow session id.');
   }
 
   let output = 'Merge integrated.';
@@ -219,7 +225,8 @@ const gitWorkflowMock = mock(async (params: GitWorkflowRequest): Promise<GitWork
   };
   gitWorkflowSessions.set(key, session);
   return session;
-});
+};
+const gitWorkflowMock = mock(executeWorkflowMock);
 
 const worktreeInspectionKey = (params: Pick<GitWorktreeInspectRequest, 'repoPath' | 'taskId'>): string =>
   `${params.repoPath}::${params.taskId}`;
@@ -376,12 +383,12 @@ mock.module('../services/architectGitFlowService.ts', () => ({
 
 mock.module('../services/architectGitNaming', () => ({
   ...actualArchitectGitNaming,
-  shouldSyncTargetBranchBeforeFinish: () => false,
+  shouldSyncTargetBranchBeforeFinish: () => syncTargetsBeforeFinish,
 }));
 
 mock.module('../services/architectGitNaming.ts', () => ({
   ...actualArchitectGitNaming,
-  shouldSyncTargetBranchBeforeFinish: () => false,
+  shouldSyncTargetBranchBeforeFinish: () => syncTargetsBeforeFinish,
 }));
 
 mock.module('../services/tauriIpc', () => ({
@@ -644,11 +651,14 @@ describe('useTaskStore.finishTask', () => {
     gitMergeMock.mockClear();
     gitFastForwardMock.mockClear();
     gitWorkflowMock.mockClear();
+    gitWorkflowMock.mockImplementation(executeWorkflowMock);
     gitWorkflowSessions.clear();
     projectCompletionMergePolicy = 'merge_commit';
     gitRebaseCheckMock.mockClear();
     gitRebaseBranchMock.mockClear();
+    syncTargetsBeforeFinish = false;
     gitPullMock.mockClear();
+    gitPullMock.mockImplementation(async () => undefined);
     fsReadFileWithOptionsMock.mockClear();
     fsReadFileWithOptionsMock.mockImplementation(async (params?: {
       path?: string;
@@ -1322,6 +1332,50 @@ describe('useTaskStore.finishTask', () => {
       mergeStrategyAction: 'fast_forward',
     })).rejects.toThrow('worktree still locked');
 
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the observed session to no_changes and refuses replacement by another window', async () => {
+    const request = { repoPath: '/repos/web', taskId: 'task-1', sourceBranch: 'feature/task-1', targetBranch: 'plan/checkout' };
+    const s1: NonNullable<GitWorkflowSession> = {
+      ...request, sessionId: 's1', sourceCommit: 'abc123', targetCommit: 'target123',
+      integratedCommit: null, status: 'prepared', output: 'Prepared',
+    };
+    gitWorkflowSessions.set(gitWorkflowKey(request), s1);
+    gitMergeCheckMock.mockImplementation(async () => ({ mergeable: true, conflictFiles: [], hasChanges: false, ahead: 0, behind: 0 }));
+    gitDiffMock.mockImplementation(async () => '');
+    gitWorkflowMock.mockImplementation(async (params) => {
+      if (params.action === 'no_changes') {
+        // Another window has abandoned S1 and created S2 after this review.
+        gitWorkflowSessions.set(gitWorkflowKey(params), { ...s1, sessionId: 's2' });
+      }
+      return executeWorkflowMock(params);
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [buildArchitectTask()] as never[], branchWorktrees: { 'repo-1': '/worktrees/task-1' } });
+    await expect(useTaskStore.getState().finishTask('task-1', { allowWithoutCodeChanges: true })).rejects.toThrow('Expected current Git workflow session id');
+    expect(gitWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'no_changes', expectedSessionId: 's1' }));
+    expect(gitWorkflowCleanupMock).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).not.toBe('Completed');
+  });
+
+  it('does not pull an active session target while resuming a standalone merge', async () => {
+    syncTargetsBeforeFinish = true;
+    const request = { repoPath: '/repos/web', taskId: 'task-1', sourceBranch: 'feature/task-1', targetBranch: 'develop' };
+    const session: NonNullable<GitWorkflowSession> = {
+      ...request, sessionId: 's1', sourceCommit: 'abc123', targetCommit: 'target123',
+      integratedCommit: null, status: 'prepared', output: 'Prepared',
+    };
+    gitWorkflowSessions.set(gitWorkflowKey(request), session);
+    gitStatusMock.mockImplementation(async () => ({ branch: 'develop', staged_files: [], unstaged_files: [], untracked_files: [], is_clean: true }));
+    gitPullMock.mockImplementation(async () => { throw new Error('Remote advance would invalidate the prepared target'); });
+    const task = buildArchitectTask({ task_source: 'standalone', plan_id: null, base_branch: 'develop',
+      execution_targets: [{ ...buildArchitectTask().execution_targets[0], planBranchName: null }] });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task] as never[], branchWorktrees: { 'repo-1': '/worktrees/task-1' } });
+    await useTaskStore.getState().finishTask('task-1');
+    expect(gitPullMock).not.toHaveBeenCalled();
+    expect(gitWorkflowMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'merge_commit', expectedSessionId: 's1' }));
     expect(gitWorkflowCleanupMock).toHaveBeenCalledTimes(1);
   });
 

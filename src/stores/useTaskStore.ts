@@ -1295,7 +1295,7 @@ const resolveMergeWorkflowBlockers = async (
       await tauriIpc.gitWorkflow({
         repoPath: repository.repoPath, taskId: task.id,
         sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName, action: 'abort',
-        expectedSessionId: repository.workflowSession?.status === 'aborted' ? undefined : repository.workflowSession?.sessionId,
+        expectedSessionId: repository.workflowSession?.sessionId,
       });
     }
     return repositories.length;
@@ -1332,7 +1332,7 @@ const runRepositoryMergeStrategy = async (
     const result = await tauriIpc.gitWorkflow({
       repoPath: repository.repoPath, taskId,
       sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName, action: action === 'complete_merge' ? 'complete' : action,
-      expectedSessionId: repository.workflowSession?.status === 'aborted' ? undefined : repository.workflowSession?.sessionId,
+      expectedSessionId: repository.workflowSession?.sessionId,
     });
     if (result?.status !== 'integrated') throw new Error('Merge integration was not confirmed. Resolve the remaining conflicts.');
     return result.output || 'Merge integrated.';
@@ -2688,6 +2688,7 @@ const buildTaskCompletionMergeWorkflowRuntime = async (params: {
     if (
       params.prepareTargetBranches &&
       params.syncStandaloneTargets &&
+      (!existingSession || existingSession.status === 'aborted') &&
       params.task.task_source === 'standalone' &&
       status.branch === integrationBranchName &&
       status.is_clean &&
@@ -6141,7 +6142,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         const receipt = await tauriIpc.gitWorkflow({
           repoPath: repository.repoPath, taskId,
           sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName,
-          action: 'no_changes',
+          action: 'no_changes', expectedSessionId: repository.workflowSession?.sessionId,
         });
         if (receipt?.status !== 'integrated') throw new Error('The source branch is not integrated. Cleanup was stopped.');
       }
@@ -6492,7 +6493,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const session = await serializeMergeWorkflowRepositoryOperation(repository, () => tauriIpc.gitWorkflow({
         repoPath: repository.repoPath, taskId,
         sourceBranch: repository.sourceBranchName, targetBranch: repository.targetBranchName, action,
-        expectedSessionId: repository.workflowSession?.status === 'aborted' ? undefined : repository.workflowSession?.sessionId,
+        expectedSessionId: repository.workflowSession?.sessionId,
         ...(action === 'adopt_plan' ? { planId: task.plan_id, storageBranch: getTaskPlanStorageBranch(task) } : {}),
       }));
       if (!session || session.status !== 'conflicted') throw new Error('No owned merge conflict is available for resolution.');
@@ -6543,7 +6544,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const session = await tauriIpc.gitWorkflow({
         repoPath: repository.repoPath, taskId, sourceBranch: repository.sourceBranchName,
         targetBranch: repository.targetBranchName, action,
-        expectedSessionId: repository.workflowSession?.status === 'aborted' ? undefined : repository.workflowSession?.sessionId,
+        expectedSessionId: repository.workflowSession?.sessionId,
         ...(action === 'adopt_plan' && task ? { planId: task.plan_id, storageBranch: getTaskPlanStorageBranch(task) } : {}),
       });
       if (!session) throw new Error('Merge session is unavailable.');
@@ -6579,7 +6580,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       tauriIpc.gitWorkflow({
         repoPath: repository.repoPath, taskId, sourceBranch: repository.sourceBranchName,
         targetBranch: repository.targetBranchName, action: 'complete',
-        expectedSessionId: repository.workflowSession?.status === 'aborted' ? undefined : repository.workflowSession?.sessionId,
+        expectedSessionId: repository.workflowSession?.sessionId,
       })
     );
     if (output?.status !== 'integrated') throw new Error('Merge integration was not confirmed.');
@@ -6607,7 +6608,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       tauriIpc.gitWorkflow({
         repoPath: repository.repoPath, taskId, sourceBranch: repository.sourceBranchName,
         targetBranch: repository.targetBranchName, action: 'abort',
-        expectedSessionId: repository.workflowSession?.status === 'aborted' ? undefined : repository.workflowSession?.sessionId,
+        expectedSessionId: repository.workflowSession?.sessionId,
       })
     );
     await get().loadMergeWorkflowReview(taskId, { force: true });

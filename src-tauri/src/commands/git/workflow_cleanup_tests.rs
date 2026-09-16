@@ -197,14 +197,15 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
             &journal.session.target_commit,
         ],
     );
-    assert!(cleanup_integrated_repo(
+    assert!(cleanup_integrated_repo_with_network(
         &repo,
         &state,
         &journal,
         &identity(&journal),
         "cleanup",
         true,
-        worktree.to_str()
+        worktree.to_str(),
+        super::super::super::run_git_command
     )
     .is_err());
     assert!(!worktree.exists());
@@ -222,7 +223,7 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
         ],
     );
     for _ in 0..2 {
-        cleanup_integrated_repo(
+        cleanup_integrated_repo_with_network(
             &repo,
             &state,
             &journal,
@@ -230,6 +231,7 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
             "cleanup",
             true,
             worktree.to_str(),
+            super::super::super::run_git_command,
         )
         .unwrap();
     }
@@ -237,4 +239,51 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
         .find_branch("feature", git2::BranchType::Local)
         .is_err());
     assert!(git(remote.path(), &["for-each-ref", "refs/heads/feature"]).is_empty());
+}
+
+#[test]
+fn cleanup_network_timeout_releases_both_ref_locks_and_preserves_source() {
+    for timeout_during_push in [false, true] {
+        let (_temp, repo, state, journal, worktree) = fixture();
+        repo.remote("origin", "https://example.invalid/repository.git")
+            .unwrap();
+        let started = std::time::Instant::now();
+        let error = cleanup_integrated_repo_with_network(
+            &repo,
+            &state,
+            &journal,
+            &identity(&journal),
+            "cleanup",
+            true,
+            worktree.to_str(),
+            |root, args| {
+                assert!(lock_cleanup_refs(&repo, &journal).is_err());
+                if timeout_during_push && args[0] == "ls-remote" {
+                    return Ok(super::super::super::GitCommandOutput {
+                        success: true,
+                        code: Some(0),
+                        stderr: String::new(),
+                        stdout: format!("{}\trefs/heads/feature\n", journal.session.source_commit),
+                    });
+                }
+                super::super::super::run_git_command_with_timeout(
+                    root,
+                    &[
+                        "-c".into(),
+                        "alias.macro-timeout=!sh -c 'sleep 30 & wait'".into(),
+                        "macro-timeout".into(),
+                    ],
+                    std::time::Duration::from_millis(200),
+                )
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        assert_eq!(
+            local_branch_commit(&repo, "feature").unwrap().to_string(),
+            journal.session.source_commit
+        );
+        lock_cleanup_refs(&repo, &journal).expect("timeout must release both transaction locks");
+    }
 }
