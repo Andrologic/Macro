@@ -367,14 +367,18 @@ fn require_clean_removal_path(path: &Path) -> Result<()> {
                 path.display()
             ),
         })?;
+    // Ignored files can still be the only copy of local data. Non-forced
+    // removal must prove the whole directory disposable, not just tracked files.
+    let mut status_options = get_status_options();
+    status_options
+        .include_ignored(true)
+        .recurse_ignored_dirs(true);
     if repository
         .workdir()
         .and_then(|root| root.canonicalize().ok())
         != path.canonicalize().ok()
         || repository.state() != git2::RepositoryState::Clean
-        || !repository
-            .statuses(Some(&mut get_status_options()))?
-            .is_empty()
+        || !repository.statuses(Some(&mut status_options))?.is_empty()
     {
         return Err(BackendError::GitRepositoryNotClean {
             message: format!("Worktree {} is not known to be clean", path.display()),

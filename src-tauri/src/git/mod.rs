@@ -3571,6 +3571,59 @@ mod tests {
     }
 
     #[test]
+    fn integrity_worktree_removal_preserves_ignored_local_data() {
+        for branch in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let repo = init_repo(temp.path());
+            let state = GitState::new();
+            let path = if branch {
+                state
+                    .ensure_branch_worktree(&repo, "ignored", "topic", None, &["main".into()])
+                    .unwrap()
+                    .worktree_path
+            } else {
+                state
+                    .ensure_task_worktree(&repo, "ignored", "topic", None, None, &[])
+                    .unwrap()
+                    .worktree_path
+            };
+            let excludes_path = repo.path().join("info/exclude");
+            let excludes = fs::read_to_string(&excludes_path).unwrap_or_default();
+            fs::write(excludes_path, format!("{excludes}\n/local-cache/\n")).unwrap();
+            fs::create_dir_all(path.join("local-cache/nested")).unwrap();
+            let data_path = path.join("local-cache/nested/data.bin");
+            fs::write(&data_path, b"local ignored data").unwrap();
+            let linked_repo = Repository::open(&path).unwrap();
+            assert!(linked_repo
+                .statuses(Some(&mut repo::get_status_options()))
+                .unwrap()
+                .is_empty());
+            if branch {
+                state
+                    .remove_branch_worktree(&repo, "ignored", "topic", false)
+                    .expect_err("ignored data must survive");
+            } else {
+                state
+                    .remove_task_worktree(&repo, "ignored", false, None)
+                    .expect_err("ignored data must survive");
+            }
+            assert_eq!(fs::read(&data_path).unwrap(), b"local ignored data");
+            assert!(path.join(".git").exists());
+            drop(linked_repo);
+            if branch {
+                state
+                    .remove_branch_worktree(&repo, "ignored", "topic", true)
+                    .unwrap();
+            } else {
+                state
+                    .remove_task_worktree(&repo, "ignored", true, None)
+                    .unwrap();
+            }
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
     fn test_remove_task_worktree_reports_already_absent() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());
