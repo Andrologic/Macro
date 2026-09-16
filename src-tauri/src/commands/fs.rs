@@ -3460,6 +3460,69 @@ pub async fn fs_move(
     move_native_path_internal(&workspace, &src_effective, &dest_effective).await
 }
 
+async fn move_symlink_after_rename_error(
+    src: &Path,
+    dest: &Path,
+    rename_error: std::io::Error,
+) -> Result<(), BackendError> {
+    if rename_error.kind() != std::io::ErrorKind::CrossesDevices {
+        return Err(io_error_to_backend_error(rename_error, src));
+    }
+    let src = src.to_path_buf();
+    let dest = dest.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let target =
+            std::fs::read_link(&src).map_err(|error| io_error_to_backend_error(error, &src))?;
+        #[cfg(windows)]
+        let is_directory_link = {
+            use std::os::windows::fs::FileTypeExt;
+            std::fs::symlink_metadata(&src)
+                .map_err(|error| io_error_to_backend_error(error, &src))?
+                .file_type()
+                .is_symlink_dir()
+        };
+        let parent = dest
+            .parent()
+            .ok_or_else(|| BackendError::FilesystemInvalidPath {
+                message: "Move destination has no parent".to_string(),
+            })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| io_error_to_backend_error(error, parent))?;
+        // Stage on the destination filesystem so publication is a single rename.
+        // TempDir removes an unpublished link without following its target.
+        let staging = tempfile::Builder::new()
+            .prefix(".macro-move-")
+            .tempdir_in(parent)
+            .map_err(|error| io_error_to_backend_error(error, parent))?;
+        let staged_link = staging.path().join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &staged_link)
+            .map_err(|error| io_error_to_backend_error(error, &dest))?;
+        #[cfg(windows)]
+        {
+            let result = if is_directory_link {
+                std::os::windows::fs::symlink_dir(&target, &staged_link)
+            } else {
+                std::os::windows::fs::symlink_file(&target, &staged_link)
+            };
+            result.map_err(|error| io_error_to_backend_error(error, &dest))?;
+        }
+        std::fs::rename(&staged_link, &dest)
+            .map_err(|error| io_error_to_backend_error(error, &dest))?;
+        #[cfg(unix)]
+        let removal = std::fs::remove_file(&src);
+        #[cfg(windows)]
+        let removal = if is_directory_link {
+            std::fs::remove_dir(&src)
+        } else {
+            std::fs::remove_file(&src)
+        };
+        removal.map_err(|error| io_error_to_backend_error(error, &src))
+    })
+    .await
+    .map_err(capability_task_error)?
+}
+
 async fn move_native_path_internal(
     workspace: &Path,
     src: &str,
@@ -3505,9 +3568,13 @@ async fn move_native_path_internal(
             Ok(())
         }
         Err(rename_err) => {
-            // Copy follows symlinks. Preserve the alias and its target when rename is unavailable.
             if source_is_symlink {
-                return Err(io_error_to_backend_error(rename_err, &validated_src));
+                return move_symlink_after_rename_error(
+                    &validated_src,
+                    &validated_dest,
+                    rename_err,
+                )
+                .await;
             }
             // Rename failed (likely cross-filesystem), fallback to copy + delete
             tracing::debug!("Rename failed, falling back to copy+delete: {}", rename_err);
@@ -3663,6 +3730,52 @@ mod tests {
             fs::read_to_string(workspace.path().join("regular.txt")).unwrap(),
             "retained"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_files_cross_device_move_recreates_aliases_and_keeps_source_on_failure() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
+        fs::create_dir(workspace.path().join("folder")).unwrap();
+        for target in ["target.txt", "folder"] {
+            let src = workspace.path().join(format!("{target}-alias"));
+            let dest = workspace.path().join(format!("{target}-moved"));
+            std::os::unix::fs::symlink(target, &src).unwrap();
+            move_symlink_after_rename_error(&src, &dest, std::io::ErrorKind::CrossesDevices.into())
+                .await
+                .unwrap();
+            assert_eq!(fs::read_link(&dest).unwrap(), PathBuf::from(target));
+            assert!(fs::symlink_metadata(&src).is_err());
+            assert!(workspace.path().join(target).exists());
+        }
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
+            "retained"
+        );
+
+        let src = workspace.path().join("retained-alias");
+        std::os::unix::fs::symlink("target.txt", &src).unwrap();
+        let dest = workspace.path().join("occupied");
+        fs::create_dir(&dest).unwrap();
+        fs::write(dest.join("untouched.txt"), "retained").unwrap();
+        assert!(move_symlink_after_rename_error(
+            &src,
+            &dest,
+            std::io::ErrorKind::CrossesDevices.into()
+        )
+        .await
+        .is_err());
+        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(
+            fs::read_to_string(dest.join("untouched.txt")).unwrap(),
+            "retained"
+        );
+        assert!(fs::read_dir(workspace.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".macro-move-")));
     }
 
     #[test]
