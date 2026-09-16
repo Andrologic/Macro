@@ -4449,21 +4449,29 @@ export async function webSearchSetSecret(input: {
 export async function webSearchExecute(input: {
   query: string;
   includeRawContent?: boolean;
+  executionId?: string | null;
 }): Promise<NativeWebSearchResult[]> {
   return invoke<NativeWebSearchResult[]>('web_search_execute', {
     query: input.query,
     includeRawContent: input.includeRawContent ?? false,
+    executionId: input.executionId ?? null,
   });
 }
 
 export async function webFetchExecute(input: {
   url: string;
   resourceKind: "page" | "favicon";
+  executionId?: string | null;
 }): Promise<NativeWebFetchResource> {
   return invoke<NativeWebFetchResource>("web_fetch_execute", {
     url: input.url,
     resourceKind: input.resourceKind,
+    executionId: input.executionId ?? null,
   });
+}
+
+export async function cancelWebSearchExecution(executionId: string): Promise<boolean> {
+  return invoke<boolean>("web_search_cancel_execution", { executionId });
 }
 
 export interface StateSnapshotDto {

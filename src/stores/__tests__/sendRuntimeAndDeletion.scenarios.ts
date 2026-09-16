@@ -1883,6 +1883,29 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(deleteConversationToolboxStateMock).not.toHaveBeenCalledWith('chat-b');
     });
 
+    it('passes the captured Architect destination to completion metadata sync', async () => {
+      appState.mode = 'Architect';
+      const plan = createScenarioPlan('started', { id: 'captured-plan', targetBranch: 'develop', conversationId: 'captured-chat' });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: plan.targetBranch };
+      streamChatMock.mockImplementationOnce((async (options: import('../../services/streamingChat').StreamingChatOptions) => {
+        appState.activeArchitectPlanId = 'other-plan';
+        appState.activePlanContext = { id: 'other-plan', targetBranch: 'feature/other' };
+        await options.onComplete?.({ visibleContent: 'Synthetic answer', toolTraces: [] });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('captured-chat')], selectedConversationId: 'captured-chat',
+      }));
+      await useChatStore.getState().sendMessage({ conversationId: 'captured-chat', content: 'Finish this plan.' });
+      await flushAsyncWork();
+      expect(context.syncMacroMetadataAfterStreamMock).toHaveBeenCalledWith({
+        mode: 'Architect', conversationId: 'captured-chat', trigger: 'send',
+        architectPlan: { planId: plan.id, targetBranch: 'develop' },
+      });
+    });
+
     it('keeps the Architect plan and branch captured at send when the selection changes', async () => {
       appState.mode = 'Architect';
       const planA = createScenarioPlan('blank', {

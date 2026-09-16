@@ -210,6 +210,30 @@ describe("createChatStreamLifecycleRuntime", () => {
     expect(events).toContain("metadata");
   });
 
+  test.each(["content_filter", "safety", "unknown_terminal"])("reports %s without a successful task transition", async (reason) => {
+    const { runtime, events, getMessage } = makeRuntime();
+    await runtime.onComplete({ visibleContent: "Partial", toolTraces: [], completionReason: reason }, makeControls());
+    expect(events).not.toContain("awaiting");
+    expect(events).not.toContain("metadata");
+    expect(events).toContain("persist-final");
+    expect(getMessage()?.completion_reason).toBe(reason);
+    expect(events.some((event) => event.startsWith("stream-error:"))).toBe(true);
+  });
+
+  test("waits for final persistence before metadata synchronization", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const { runtime, events } = makeRuntime({ overrides: {
+      persistAssistantStreamResult: async () => { await pending; events.push("persisted"); },
+    } });
+    const completion = runtime.onComplete({ visibleContent: "Final", toolTraces: [] }, makeControls());
+    await Promise.resolve();
+    expect(events).not.toContain("metadata");
+    release();
+    await completion;
+    expect(events.indexOf("persisted")).toBeLessThan(events.indexOf("metadata"));
+  });
+
   test("completion does not mark completed tasks as awaiting response", async () => {
     const controls = makeControls();
     const { runtime, events } = makeRuntime({

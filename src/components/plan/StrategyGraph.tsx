@@ -1244,15 +1244,22 @@ const StrategyGraphBase: React.FC<StrategyGraphProps> = ({ className }) => {
   const handleValidatePlan = async () => {
     if (!activePlanContext || isValidating) return;
     setIsValidating(true);
+    const capturedContext = activePlanContext;
+    const isCurrentValidation = () => {
+      const current = useAppStore.getState();
+      return current.mode === 'Architect' && current.activePlanContext === capturedContext;
+    };
     try {
       const { plan, provision } = await validatePlanAndProvisionBranches({
         branchName: targetBranch,
         planId: activePlanContext.id,
       });
+      if (!isCurrentValidation()) return;
       setPlanNodes(plan.nodes || []);
       setPredictedBranches(plan.predictedBranches || []);
-      setActivePlanContext({ ...activePlanContext, status: 'validated' });
       await useTaskStore.getState().refreshFromPlan();
+      if (!isCurrentValidation()) return;
+      setActivePlanContext({ ...capturedContext, status: 'validated' });
 
       const scopedProjectIds = getScopedProjectIds(projectRegistry, selectedGroupId, selectedProjectId);
       const activationCandidateTask = getPlanActivationCandidateTask(

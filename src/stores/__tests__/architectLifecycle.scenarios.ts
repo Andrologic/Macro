@@ -385,6 +385,79 @@ export const registerArchitectLifecycleScenarios = (
       );
     });
 
+    it('does not select a restored plan conversation after the visible selection changes', async () => {
+      context.tauriAvailable = true;
+      const plan = createPlan({ conversationId: 'shared-conv' });
+      architectPlans.set(plan.id, plan);
+      architectPlanMessages.set(plan.id, [{ id: 'source', role: 'user', content: 'Synthetic copy', createdAt: '2026-03-19T00:01:00.000Z' }]);
+      const started = createDeferred<void>();
+      const release = createDeferred<void>();
+      importMessagesMock.mockImplementationOnce(async (id, messages) => {
+        started.resolve();
+        await release.promise;
+        return messages.map((message) => ({ ...message, conversation_id: id }));
+      });
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('shared-conv'), createConversation('selected-b')] }));
+      const restoration = useChatStore.getState().ensureArchitectConversationForPlan({ plan, targetBranch: 'develop', sharedConversation: true });
+      await started.promise;
+      await useChatStore.getState().selectConversation('selected-b');
+      release.resolve();
+      await restoration;
+      expect(useChatStore.getState().selectedConversationId).toBe('selected-b');
+    });
+
+    it.each(['content', 'role', 'failure'])('reconciles same-ID transcript changes and stamps only after success: %s', async (change) => {
+      context.tauriAvailable = true;
+      const plan = createPlan({ conversationId: 'conv-1' });
+      architectPlans.set(plan.id, plan);
+      architectPlanMessages.set(plan.id, [{ id: 'same-id', role: 'user', content: 'Old content', createdAt: '2026-03-19T00:01:00.000Z' }]);
+      context.chatSnapshotMessages = [createChatMessageRecord({
+        id: 'same-id', conversation_id: 'conv-1', role: change === 'role' ? 'assistant' : 'user',
+        content: change === 'role' ? 'Old content' : 'Current content', created_at: '2026-03-19T00:01:00.000Z',
+      })];
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{ ...createConversation('conv-1'), message_count: 1 }] }));
+      if (change === 'failure') syncArchitectPlanChatFromConversationMock.mockImplementationOnce(async () => { throw new Error('Synthetic sync failure'); });
+      const operation = useChatStore.getState().ensureArchitectConversationForPlan({ plan, targetBranch: 'develop' });
+      if (change === 'failure') {
+        await expect(operation).rejects.toThrow('Synthetic sync failure');
+        expect(dbUpsertArchitectPlanConversationSyncMock).not.toHaveBeenCalled();
+      } else {
+        await operation;
+        expect(syncArchitectPlanChatFromConversationMock).toHaveBeenCalledWith({ branchName: 'develop', planId: plan.id, conversationId: 'conv-1' });
+        expect(dbUpsertArchitectPlanConversationSyncMock).toHaveBeenCalled();
+      }
+    });
+
+    it.each([false, true])('verifies a remapped shared transcript before binding (omit copy: %s)', async (omitCopy) => {
+      context.tauriAvailable = true;
+      const plan = createPlan({ conversationId: 'shared-conv' });
+      architectPlans.set(plan.id, plan);
+      const source = { id: 'global-message-id', role: 'user' as const, content: 'Synthetic shared history', createdAt: '2026-03-19T00:03:00.000Z' };
+      architectPlanMessages.set(plan.id, [source]);
+      context.chatSnapshotMessages = [{ id: source.id, conversation_id: 'shared-conv', role: source.role, content: source.content, created_at: source.createdAt }];
+      importMessagesMock.mockImplementationOnce(async (conversationId, messages) =>
+        omitCopy ? [] : messages.filter((message) => message.id !== source.id).map((message) => ({ ...message, conversation_id: conversationId })));
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('shared-conv')] }));
+      const operation = useChatStore.getState().ensureArchitectConversationForPlan({ plan, targetBranch: 'develop', sharedConversation: true });
+      if (omitCopy) {
+        await expect(operation).rejects.toThrow('copie du transcript');
+        expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+        expect(dbUpsertArchitectPlanConversationSyncMock).not.toHaveBeenCalled();
+      } else {
+        const result = await operation;
+        const copied = useChatStore.getState().getConversationMessages(result.conversationId!);
+        expect(copied).toHaveLength(1);
+        expect(copied[0]?.id).not.toBe(source.id);
+        expect(copied[0]?.content).toBe(source.content);
+        expect(copied[0]?.role).toBe(source.role);
+        expect(context.chatSnapshotMessages[0]?.content).toBe(source.content);
+        expect(updateArchitectPlanMock).toHaveBeenCalledWith(expect.objectContaining({ conversationId: result.conversationId }));
+      }
+    });
+
     it('creates a dedicated conversation and restores transcript when the plan conversation is shared', async () => {
       const originalNow = Date.now;
       Date.now = () => 1773900000000;

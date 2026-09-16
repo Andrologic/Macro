@@ -2909,6 +2909,28 @@ describe('StrategyGraph', () => {
     expect(notifyErrorMock).toHaveBeenCalledWith('Develop apply cleanup failed');
   });
 
+  it('leaves a newer plan selected when validation completes late', async () => {
+    seedStores('Pending', { includeConversation: false, selectedConversationId: null });
+    const original = { id: 'plan-1', title: 'One', description: '', status: 'draft' as const, targetBranch: 'develop' };
+    useAppStore.setState({ mode: 'Architect', activePlanContext: original });
+    let resolve!: (value: Awaited<ReturnType<typeof validatePlanAndProvisionBranchesMock>>) => void;
+    validatePlanAndProvisionBranchesMock.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const activateTask = mock(async () => undefined);
+    useTaskStore.setState({ activateTask });
+    act(() => { root?.render(<StrategyGraph />); });
+    await flushRender();
+    const button = Array.from(document.body.querySelectorAll('button')).find((item) => item.textContent?.includes('Validate Plan'));
+    expect(button).toBeDefined();
+    act(() => { button?.click(); });
+    const next = { ...original, id: 'plan-2', title: 'Two' };
+    act(() => { useAppStore.setState({ activePlanContext: next, planNodes: [] }); });
+    resolve({ plan: { id: 'plan-1', nodes: [], predictedBranches: [] }, provision: { createdPlanBranch: false, createdFeatureBranches: [] } });
+    await flushRender();
+    expect(useAppStore.getState().activePlanContext).toEqual(next);
+    expect(useAppStore.getState().mode).toBe('Architect');
+    expect(activateTask).not.toHaveBeenCalled();
+  });
+
   it('validates the plan, switches to Implement, and activates the first task without auto execution', async () => {
     seedStores('Pending', {
       includeConversation: false,

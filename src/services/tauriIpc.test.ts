@@ -47,6 +47,7 @@ describe("tauriIpc confined web fetch", () => {
         payload: {
           url: "https://example.com/page",
           resourceKind: "page",
+          executionId: null,
         },
       },
       {
@@ -54,7 +55,46 @@ describe("tauriIpc confined web fetch", () => {
         payload: {
           url: "https://example.com/favicon.ico",
           resourceKind: "favicon",
+          executionId: null,
         },
+      },
+    ]);
+  });
+
+  it("passes a native web execution id to start and cancel commands", async () => {
+    const tauriIpc = await loadTauriIpc();
+
+    await tauriIpc.webSearchExecute({
+      query: "macro",
+      executionId: "web-execution-123",
+    });
+    await tauriIpc.webFetchExecute({
+      url: "https://example.com/page",
+      resourceKind: "page",
+      executionId: "web-execution-456",
+    });
+    await tauriIpc.cancelWebSearchExecution("web-execution-456");
+
+    expect(invokeCalls).toEqual([
+      {
+        command: "web_search_execute",
+        payload: {
+          query: "macro",
+          includeRawContent: false,
+          executionId: "web-execution-123",
+        },
+      },
+      {
+        command: "web_fetch_execute",
+        payload: {
+          url: "https://example.com/page",
+          resourceKind: "page",
+          executionId: "web-execution-456",
+        },
+      },
+      {
+        command: "web_search_cancel_execution",
+        payload: { executionId: "web-execution-456" },
       },
     ]);
   });

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 let fetchMock: ReturnType<typeof mock>;
 let nativeWebFetchMock: ReturnType<typeof mock>;
 let nativeWebSearchMock: ReturnType<typeof mock>;
+let nativeWebCancelMock: ReturnType<typeof mock>;
 let importCounter = 0;
 
 const loadWebSearch = async (options: { tauriAvailable?: boolean } = {}) => {
@@ -10,6 +11,7 @@ const loadWebSearch = async (options: { tauriAvailable?: boolean } = {}) => {
   fetchMock = mock();
   nativeWebFetchMock = mock();
   nativeWebSearchMock = mock();
+  nativeWebCancelMock = mock(async () => true);
   mock.module('@tauri-apps/plugin-http', () => ({
     fetch: fetchMock,
   }));
@@ -17,6 +19,7 @@ const loadWebSearch = async (options: { tauriAvailable?: boolean } = {}) => {
     isTauriAvailable: () => options.tauriAvailable ?? false,
     webFetchExecute: nativeWebFetchMock,
     webSearchExecute: nativeWebSearchMock,
+    cancelWebSearchExecution: nativeWebCancelMock,
   }));
   importCounter += 1;
   return import(`./webSearch.ts?web-search-test=${importCounter}`);
@@ -174,6 +177,27 @@ describe('webSearch provider contracts', () => {
     await expect(request).rejects.toMatchObject({ name: 'AbortError' });
   });
 
+  it('does not fall back to another provider after caller cancellation', async () => {
+    const { webSearch } = await loadWebSearch();
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise(
+      (_resolve, reject) => init.signal?.addEventListener('abort', () => {
+        const error = new Error('cancelled');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true }),
+    ));
+    const controller = new AbortController();
+    const request = webSearch('cancel fallback', {
+      tavilyApiKey: 'tavily-test',
+      braveApiKey: 'brave-test',
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('cancels configured native searches before dispatch and while awaiting a result', async () => {
     const { webSearch } = await loadWebSearch({ tauriAvailable: true });
     const alreadyCancelled = new AbortController();
@@ -196,7 +220,47 @@ describe('webSearch provider contracts', () => {
     inFlight.abort();
     await expect(request).rejects.toMatchObject({ name: 'AbortError' });
     expect(nativeWebSearchMock).toHaveBeenCalledTimes(1);
+    expect(nativeWebSearchMock.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      executionId: expect.any(String),
+    }));
+    expect(nativeWebCancelMock).toHaveBeenCalledWith(
+      nativeWebSearchMock.mock.calls[0]?.[0]?.executionId,
+    );
     resolveNative([]);
+  });
+
+  it('cancels a native operation when the signal aborts during dispatch', async () => {
+    const { webSearch } = await loadWebSearch({ tauriAvailable: true });
+    const controller = new AbortController();
+    nativeWebSearchMock.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.resolve([]);
+    });
+
+    await expect(webSearch('abort during dispatch', {
+      configured: true,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    const executionId = nativeWebSearchMock.mock.calls[0]?.[0]?.executionId;
+    expect(executionId).toEqual(expect.any(String));
+    expect(nativeWebCancelMock).toHaveBeenCalledWith(executionId);
+  });
+
+  it('cancels native page fetches and does not swallow the abort in favicon fallback', async () => {
+    const { fetchWebPage } = await loadWebSearch({ tauriAvailable: true });
+    let resolveNative!: (resource: never) => void;
+    nativeWebFetchMock.mockImplementationOnce(() => new Promise<never>((resolve) => {
+      resolveNative = resolve;
+    }));
+    const controller = new AbortController();
+    const request = fetchWebPage('https://example.com/article', controller.signal);
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    const executionId = nativeWebFetchMock.mock.calls[0]?.[0]?.executionId;
+    expect(executionId).toEqual(expect.any(String));
+    expect(nativeWebCancelMock).toHaveBeenCalledWith(executionId);
+    resolveNative(undefined as never);
   });
 
   it('embeds fetched page favicons as data URLs', async () => {

@@ -2484,6 +2484,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     clearPendingArchitectPlanSwitchRequestId?: boolean;
   }): Promise<boolean> => {
     const stateAtStart = get();
+    if (stateAtStart.selectedConversationId !== params.conversationId ||
+        useAppStore.getState().mode !== params.mode ||
+        (params.requestId !== undefined && stateAtStart.selectionRequestId !== params.requestId)) {
+      return false;
+    }
     const requestId = params.requestId ?? stateAtStart.selectionRequestId + 1;
 
     set({
@@ -2502,7 +2507,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     const isCurrentRequest = () => {
       const state = get();
-      if (state.selectionRequestId !== requestId) {
+      if (state.selectionRequestId !== requestId ||
+          state.selectedConversationId !== params.conversationId ||
+          useAppStore.getState().mode !== params.mode) {
         return false;
       }
       if (
@@ -5919,7 +5926,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ) {
         return "Web search is not configured for this provider.";
       }
-      const results = await webSearch(query, webSearchOptions);
+      const results = await webSearch(query, { ...webSearchOptions, signal });
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
@@ -5938,7 +5945,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!enableWebFetch) {
         return "Web fetch is disabled for this provider.";
       }
-      const fetched = await fetchWebPage(url);
+      const fetched = await fetchWebPage(url, signal);
       if (!isCurrentOperation()) {
         return TOOL_EXECUTION_ABORTED_RESULT;
       }
@@ -10241,6 +10248,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const restartAssistantFromEditedMessage = async (params: {
+    architectPlanAtSend?: { planId: string; targetBranch: string };
     sessionId: string;
     turnId: string;
     messageId: string;
@@ -10377,6 +10385,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         replyToMessageId: params.messageId,
         userContent: params.userContent,
         modeAtSend: params.modeAtSend,
+        architectPlanAtSend: params.architectPlanAtSend,
         agentTypeAtSend,
         resolvedTaskId: params.taskId ?? "",
         selectedProviderId: params.providerId,
@@ -10941,6 +10950,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const startAssistantStream = (params: {
+    architectPlanAtSend?: { planId: string; targetBranch: string };
     sessionId: string;
     assistantMessage: ChatMessage;
     conversationId: string;
@@ -11907,6 +11917,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             mode,
             conversationId,
             trigger: "send",
+            architectPlan: params.architectPlanAtSend,
           });
         },
         setCompletionPersistenceError: ({
@@ -12810,6 +12821,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           error: toServiceError(error).message,
         },
       );
+      throw error;
     }
   };
 
@@ -12943,7 +12955,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       toComparableChatMessage,
     );
     const transcriptMessages = transcript.map((message) => ({
-      id: message.id,
+      id: createdConversation ? crypto.randomUUID() : message.id,
       role: message.role,
       content: message.content,
       createdAt: message.createdAt,
@@ -12958,6 +12970,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         conversation.id,
         transcriptMessages.slice(localMessages.length),
       );
+      const copiedMessages = getOrderedConversationMessages(conversation.id).map(toComparableChatMessage);
+      if (compareTranscriptSequence(copiedMessages, transcriptMessages, getSemanticTranscriptFingerprint).relation !== "equal") {
+        throw new Error("La copie du transcript Architect est incomplète. L’association au plan est annulée.");
+      }
       restoredTranscript = importedCount > 0;
       if (importedCount > 0) {
         await upsertArchitectConversationSync({
@@ -14641,15 +14657,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
         previousConversationId,
         conversationId,
       );
-      set({ restoreStatus: "resolving", lastError: null });
+      const requestId = get().selectionRequestId + 1;
+      const activeContextKey = get().activeContextKey;
+      set({ selectionRequestId: requestId, restoreStatus: "resolving", lastError: null });
+      const isCurrent = () => get().selectionRequestId === requestId &&
+        get().selectedConversationId === conversationId && useAppStore.getState().mode === mode;
       await ensureMessagesLoadedForConversation(conversationId);
+      if (!isCurrent()) return false;
       await hydrateConversationCitationsIfAvailable(conversationId);
       await hydrateConversationToolboxStateIfAvailable(conversationId);
       await getConversationCompactionState(conversationId);
+      if (!isCurrent()) return false;
       await runAiSelectionRestore({
         mode,
         conversationId,
-        activeContextKey: get().activeContextKey,
+        activeContextKey,
+        requestId,
         shouldShowResolving: true,
       });
       return true;
@@ -14694,6 +14717,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       fallbackGroupId,
       sharedConversation = false,
     }) => {
+      const selectionAtStart = get();
+      const appAtStart = useAppStore.getState();
       const ensuredConversation = await reconcileArchitectPlanConversation({
         plan,
         targetBranch,
@@ -14702,6 +14727,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sharedConversation,
       });
 
+      if (get().selectionRequestId !== selectionAtStart.selectionRequestId ||
+          get().selectedConversationId !== selectionAtStart.selectedConversationId ||
+          useAppStore.getState().mode !== appAtStart.mode ||
+          useAppStore.getState().activePlanContext !== appAtStart.activePlanContext) {
+        return ensuredConversation;
+      }
       if (ensuredConversation.conversationId) {
         const mode = useAppStore.getState().mode;
         const previousConversationId = get().selectedConversationId;
@@ -16348,6 +16379,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             replyToMessageId: persistedUserMessage.id,
             userContent: content,
             modeAtSend,
+            architectPlanAtSend,
             agentTypeAtSend,
             resolvedTaskId,
             selectedProviderId,
@@ -17108,6 +17140,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           taskId: target.task_id ?? "",
           userContent: newContent,
           modeAtSend: modeAtEdit,
+          architectPlanAtSend: appStateAtEdit.activeArchitectPlanId ? {
+            planId: appStateAtEdit.activeArchitectPlanId,
+            targetBranch: resolveTargetBranch(appStateAtEdit.activePlanContext?.targetBranch),
+          } : undefined,
           providerId: selectedProviderId,
           modelId: selectedModelId,
           reasoningEffort: selectedReasoningEffort,

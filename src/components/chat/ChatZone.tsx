@@ -358,8 +358,18 @@ const getAssistantCompletionNotice = (
           'The final no-tool pass did not produce a usable answer, so Macro showed a fallback summary.'
         ),
       };
-    default:
+    case undefined:
+    case 'completed':
+    case 'length_recovered':
+    case 'incomplete_recovered':
       return null;
+    default:
+      return {
+        title: t('chat.providerCompletionNoticeTitle', 'Response interrupted'),
+        description: t('chat.providerCompletionNoticeDescription',
+          'The provider ended this response with reason: {{reason}}. You can revise your request and try again.',
+          { reason: completionReason }),
+      };
   }
 };
 

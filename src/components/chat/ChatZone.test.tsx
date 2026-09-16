@@ -63,7 +63,7 @@ export type MockMessage = {
       free_text_placeholder?: string;
     }>;
   };
-  completion_reason?: 'completed' | 'tool_turn_limit' | 'post_tool_empty_fallback';
+  completion_reason?: import('../../types').ChatCompletionReason;
   persistence_state?: 'failed' | 'retrying';
   persistence_error?: string;
 };
@@ -3363,6 +3363,16 @@ describe('ChatZone', () => {
       resolveRefresh?.();
       await Promise.resolve();
     });
+  });
+
+  it.each(['content_filter', 'safety', 'unknown_terminal'])('renders a persisted provider termination notice for %s', async (reason) => {
+    chatState = { ...chatState, messages: [buildMessage({
+      id: 'assistant-filtered', role: 'assistant', content: 'Partial response', completion_reason: reason,
+    })] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const notice = requireContainer().querySelector(`[data-chat-completion-notice="${reason}"]`);
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain('Response interrupted');
   });
 
   it('renders a dedicated notice when the assistant hit the tool turn limit', async () => {

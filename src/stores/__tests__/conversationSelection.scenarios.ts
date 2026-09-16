@@ -442,6 +442,35 @@ export const registerConversationSelectionScenarios = (
       expect(useChatStore.getState().composerContextRefs).toEqual([]);
     });
 
+    it.each(['conversation', 'mode'])('ignores delayed AI restoration after a newer %s selection', async (change) => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      providerState.modelsByProvider = { 'provider-1': [
+        { id: 'model-a', name: 'A', isEnabled: true },
+        { id: 'model-b', name: 'B', isEnabled: true },
+      ] };
+      const { useChatStore } = await loadChatStore();
+      const gate = createDeferred<null>();
+      getConversationToolboxStateMock.mockImplementation(async (id: string) => id === 'conv-a' ? gate.promise : null);
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [
+          { ...createConversation('conv-a', ''), scope_mode: 'Chat', provider_id: 'provider-1', model_id: 'model-a' },
+          { ...createConversation('conv-b', ''), scope_mode: 'Chat', provider_id: 'provider-1', model_id: 'model-b' },
+        ],
+        selectedConversationId: null,
+      }));
+      const pending = useChatStore.getState().selectConversation('conv-a');
+      await flushAsyncWork();
+      await useChatStore.getState().selectConversation('conv-b');
+      const selection = { provider: providerState.selectedProviderId, model: providerState.selectedModelId };
+      if (change === 'mode') appState.mode = 'Architect';
+      gate.resolve(null);
+      expect(await pending).toBe(false);
+      expect(useChatStore.getState().selectedConversationId).toBe('conv-b');
+      expect({ provider: providerState.selectedProviderId, model: providerState.selectedModelId }).toEqual(selection);
+      expect(selection.model).toBe('model-b');
+    });
+
     it('ignores stale toolbox hydration after a newer conversation switch wins', async () => {
       context.tauriAvailable = true;
       context.citationRecords = [

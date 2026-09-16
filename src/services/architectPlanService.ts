@@ -5954,6 +5954,9 @@ export const syncArchitectPlanChatFromConversation = async (params: {
     }
     assertPlanReplicaSetWritable(replicaSet, 'sync chat transcript');
 
+    if (params.conversationId && replicaSet.canonical.plan.conversationId !== params.conversationId) {
+      throw new Error('La conversation ne correspond plus au plan Architect.');
+    }
     const conversationId = params.conversationId ?? replicaSet.canonical.plan.conversationId ?? null;
     if (!conversationId) {
       await saveArchitectPlanChatMessagesWithReplicaSet({

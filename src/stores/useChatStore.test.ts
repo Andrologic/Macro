@@ -891,14 +891,14 @@ const estimateChatCompletionSerializedPayloadTokensMock = mock(
       )
     )
 );
-const webSearchMock = mock(async (_query: string) => [
+const webSearchMock = mock(async (_query: string, _options?: { signal?: AbortSignal }) => [
   {
     url: 'https://example.com/search-result',
     title: 'Search Result',
     snippet: 'Relevant search context.',
   },
 ]);
-const fetchWebPageMock = mock(async (_url: string) => ({
+const fetchWebPageMock = mock(async (_url: string, _signal?: AbortSignal) => ({
   url: 'https://example.com/page',
   title: 'Fetched Page',
   snippet: 'Fetched snippet.',
@@ -1058,6 +1058,7 @@ const getLocalProjectContextStateMock = mock(
     lastTaskId: null,
   })
 );
+const syncMacroMetadataAfterStreamMock = mock(async (_params: unknown) => undefined);
 const syncArchitectPlanChatFromConversationMock = mock(async () => undefined);
 const getChatSnapshotMock = mock(async () => ({
   conversations: chatSnapshotConversations,
@@ -1969,7 +1970,7 @@ const registerUseChatStoreMocks = async () => {
   mock.module('../services/localProjectContext.ts', localProjectContextModule);
 
   mock.module('../services/macroSyncService', () => ({
-    syncMacroMetadataAfterStream: mock(async () => undefined),
+    syncMacroMetadataAfterStream: syncMacroMetadataAfterStreamMock,
   }));
 
   mock.module('../services/projectExecutionContext', () => ({
@@ -2609,6 +2610,7 @@ const useChatStoreScenarioContext = {
   terminalSessionsFromChat,
   toolsStoreState,
   syncArchitectPlanChatFromConversationMock,
+  syncMacroMetadataAfterStreamMock,
   updateArchitectPlanMock,
   updateConversationDetailsMock,
   updateConversationScopeMock,
@@ -2830,6 +2832,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
     getToolModePolicyMock.mockClear();
     getLocalProjectContextStateMock.mockClear();
     syncArchitectPlanChatFromConversationMock.mockClear();
+    syncMacroMetadataAfterStreamMock.mockClear();
     getChatSnapshotMock.mockClear();
     getChatBootstrapSnapshotMock.mockClear();
     listMessagesMock.mockClear();

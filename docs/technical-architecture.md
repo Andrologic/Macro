@@ -1069,13 +1069,30 @@ seule continuation dans la session et le tour courants. Cette requête ne publie
 aucun outil, demande uniquement le suffixe manquant et retire un éventuel
 chevauchement textuel. Une seconde réponse incomplète reste persistée comme
 telle et place le tour en erreur au lieu de déclencher les effets d'une fin
-normale.
+normale. Les motifs de filtrage et les motifs inconnus restent explicites dans
+le transcript, y compris après rechargement, et ne déclenchent pas les effets
+d’une fin normale.
+
+L’arrêt d’un tour transmet son signal aux outils `web_search` et `web_fetch`,
+y compris les lectures de favicon. Chaque appel natif annulable porte un
+identifiant d’exécution ; la commande d’annulation interrompt l’attente réseau
+et la lecture du corps. Le registre conserve temporairement les annulations
+reçues avant le démarrage de la commande.
 
 ### 15.2 Couplage avec les plans
 
-En mode Architect, certaines actions conversationnelles déclenchent une sync metadata à la fin du stream.
+En mode Architect, la synchronisation de fin de tour attend la réussite de
+l’écriture finale du message. Elle conserve le plan, la branche et la
+conversation capturés à l’envoi ou au rejeu. Le service vérifie encore
+l’association plan/conversation avant de remplacer le transcript. Un changement
+de sélection ne redirige pas cette écriture vers un autre plan.
 
-L'objectif est d'ancrer les changements de plan dans la branche metadata de façon régulière.
+La scission d’une conversation partagée attribue de nouveaux identifiants aux
+messages copiés et vérifie leurs rôles et contenus avant d’associer la copie au
+plan. La réconciliation compare aussi les contenus lorsque les identifiants
+sont inchangés ; elle n’enregistre pas de stamp après un échec de synchronisation.
+Les validations de plan et restaurations de sélection IA vérifient leur contexte
+avant d’appliquer un résultat asynchrone à la sélection visible.
 
 ### 15.3 Couplage avec le mode Implement
 

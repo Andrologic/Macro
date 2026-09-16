@@ -306,10 +306,11 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.providerContext.modelId,
       );
 
-      if (
-        result.completionReason === "length" ||
-        result.completionReason === "incomplete"
-      ) {
+      const abnormalCompletion = Boolean(result.completionReason && ![
+        "completed", "length_recovered", "incomplete_recovered",
+        "tool_turn_limit", "post_tool_empty_fallback",
+      ].includes(result.completionReason));
+      if (abnormalCompletion) {
         adapters.updateConversationAfterCompletion(
           stream.conversationId,
           result.visibleContent,
@@ -328,7 +329,9 @@ export const createChatStreamLifecycleRuntime = (params: {
             message:
               result.completionReason === "length"
                 ? "Le fournisseur a de nouveau atteint sa limite de sortie après la tentative de reprise."
-                : "Le fournisseur a interrompu la réponse avant sa fin.",
+                : result.completionReason === "incomplete"
+                  ? "Le fournisseur a interrompu la réponse avant sa fin."
+                  : `Le fournisseur a terminé la réponse avec le motif : ${result.completionReason}.`,
             suggestedAction: "Relance la demande pour poursuivre la réponse.",
           },
           assistantMessageId: stream.assistantMessageId,
