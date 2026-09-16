@@ -12,8 +12,8 @@ export const UPDATER_TARGETS = Object.freeze([
   'darwin-aarch64',
 ]);
 
-const SEMVER_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const STABLE_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+const PREVIEW_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(?:nightly\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)|rc\.(0|[1-9][0-9]*))$/;
 const REPOSITORY = /^[^/\s]+\/[^/\s]+$/;
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
@@ -34,13 +34,10 @@ function validateAssetName(value, label = 'assetName') {
 
 function validateVersion(version, channel) {
   const normalized = requireNonEmpty(version, 'version').replace(/^v/, '');
-  const expectedPattern = channel === 'preview' ? SEMVER_VERSION : STABLE_VERSION;
+  const expectedPattern = channel === 'preview' ? PREVIEW_VERSION : STABLE_VERSION;
   if (!expectedPattern.test(normalized)) {
-    const expected = channel === 'preview' ? 'a valid semantic version' : 'a stable x.y.z version';
+    const expected = channel === 'preview' ? 'a nightly or rc semantic version' : 'a stable x.y.z version';
     throw new Error(`Updater version must be ${expected}; found "${version}".`);
-  }
-  if (channel === 'preview' && !normalized.includes('-')) {
-    throw new Error(`Preview updater version must contain a prerelease identifier; found "${version}".`);
   }
   return normalized;
 }

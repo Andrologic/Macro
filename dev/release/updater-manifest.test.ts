@@ -162,7 +162,16 @@ describe('updater manifest', () => {
       repository: 'Andrologic/Macro',
       pubDate: '2026-08-19T10:20:30Z',
       artifacts: {},
-    })).toThrow('prerelease identifier');
+    })).toThrow('nightly or rc semantic version');
+
+    expect(() => createUpdaterManifest({
+      version: '0.2.0-beta.1',
+      tag: 'preview',
+      channel: 'preview',
+      repository: 'Andrologic/Macro',
+      pubDate: '2026-08-19T10:20:30Z',
+      artifacts: {},
+    })).toThrow('nightly or rc semantic version');
 
     expect(() => createUpdaterManifest({
       version: '0.2.0',
