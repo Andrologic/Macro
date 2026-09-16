@@ -1040,7 +1040,7 @@ describe('architectGitFlowService', () => {
       created.set(repoPath, [...(created.get(repoPath) ?? []), branchName]);
     });
     gitWorktreeInspectMock.mockImplementation(async (params) => ({ taskId: params.taskId,
-      worktreePath: `${params.repoPath}/worktree`, branchName: params.branchName ?? null, status: 'absent', isDirty: null }));
+      worktreePath: `${params.repoPath}/worktree`, branchName: null, status: 'absent', isDirty: null }));
     updateArchitectPlanMock.mockImplementationOnce(async () => { throw new Error('metadata failure'); });
     gitWorktreeRemoveMock.mockImplementationOnce(async () => { throw new Error('worktree is dirty'); });
     gitBranchDeleteMock.mockImplementationOnce(async () => { throw new Error('branch is locked'); });

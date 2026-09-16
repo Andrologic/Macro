@@ -1607,13 +1607,22 @@ const inspectTargetWorktreePath = async (
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>
 ): Promise<string | null> => {
-  return resolvePreparedTaskWorktreePath({
+  const preparedPath = await resolvePreparedTaskWorktreePath({
     taskId: task.id,
     target,
     branchWorktrees,
     getProjectById: useAppStore.getState().getProjectById,
     tauri: tauriIpc,
   });
+  if (!preparedPath && isGitExecutionTarget(target) && !isRepositoryRootTarget(target)) {
+    const keys = new Set([target.worktreeKey, `${target.projectId}::${target.branchName}`, target.branchName]);
+    useTaskStore.setState((state) => ({
+      branchWorktrees: Object.fromEntries(Object.entries(state.branchWorktrees).filter(([key, path]) =>
+        !keys.has(key) || path !== branchWorktrees[key],
+      )),
+    }));
+  }
+  return preparedPath;
 };
 
 const ensureTargetWorktreePath = async (

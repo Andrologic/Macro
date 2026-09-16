@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
 const actualPreferences = await import('../../../services/preferences');
-const save = mock(async (_values: unknown) => { throw new Error('disk unavailable'); });
+const save = mock(async (_values: unknown): Promise<void> => { throw new Error('disk unavailable'); });
 const notifyError = mock(() => undefined);
 mock.module('../../../services/preferences', () => ({
   ...actualPreferences,

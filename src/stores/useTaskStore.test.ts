@@ -5087,6 +5087,26 @@ describe('task startup lifecycle races', () => {
     expect(useTaskStore.getState().activeBranchName).toBe('feature/b');
     expect(useTaskStore.getState().branchWorktrees['worktree-a']).toBe(taskExists ? '/repo/a' : undefined);
   });
+  it.each([false, true])('invalidates only the inspected stale cache entry; replacement: %s', async (replaced) => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    appStoreState.selectedTaskId = 'task-a';
+    appStoreState.getProjectById = () => ({ id: 'project-1', name: 'Project', path: '/repo', gitSetupState: 'ready' });
+    let finish!: (value: GitWorktreeInspectionDto) => void;
+    gitWorktreeInspectMock.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const task = buildStandaloneTask({ id: 'task-a', status: 'Pending', execution_targets: [{
+      projectId: 'project-1', executionMode: 'git', executionKind: 'worktree',
+      branchName: 'feature/a', worktreeKey: 'worktree-a', repoPath: '/repo',
+    }] });
+    useTaskStore.setState({ tasks: [task], branchWorktrees: { 'worktree-a': '/repo/missing', other: '/other' } });
+    const activation = useTaskStore.getState().activateTask('task-a');
+    for (let i = 0; i < 20 && !finish; i++) await Promise.resolve();
+    if (replaced) useTaskStore.setState({ branchWorktrees: { 'worktree-a': '/repo/new', other: '/other' } });
+    finish({ taskId: 'worktree-a', worktreePath: '/repo/missing', branchName: null, status: 'absent', isDirty: null });
+    await activation;
+    expect(useTaskStore.getState().branchWorktrees['worktree-a']).toBe(replaced ? '/repo/new' : undefined);
+    expect(useTaskStore.getState().branchWorktrees.other).toBe('/other');
+  });
+
   it('reserves a direct project before waiting for native admission', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
     appStoreState.selectedTaskId = 'task-a';
