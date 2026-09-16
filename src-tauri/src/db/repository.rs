@@ -3353,7 +3353,9 @@ pub async fn reconcile_project_registry(
 
     for row in project_context_rows {
         let project_id: String = row.get("project_id");
-        if !valid_project_ids.contains(&project_id) {
+        // Group contexts historically use the `project_id` column as their
+        // primary key. Keep those rows when the group itself still exists.
+        if !valid_project_ids.contains(&project_id) && !valid_group_ids.contains(&project_id) {
             sqlx::query("DELETE FROM project_context_states WHERE project_id = ?")
                 .bind(&project_id)
                 .execute(&mut *tx)
@@ -4903,6 +4905,51 @@ mod tests {
             .expect("cleaned context");
         assert_eq!(cleaned.group_id, None);
         assert_eq!(cleaned.focus_project_id, None);
+    }
+
+    #[tokio::test]
+    async fn reconcile_project_registry_preserves_context_keyed_by_valid_group() {
+        let (_temp_dir, pool) = test_pool().await;
+
+        upsert_project_context_state(
+            &pool,
+            UpsertProjectContextStateInput {
+                project_id: "group-valid".to_string(),
+                group_id: Some("group-valid".to_string()),
+                focus_project_id: Some("project-removed".to_string()),
+                last_plan_id: Some("plan-group".to_string()),
+                last_task_id: Some("task-group".to_string()),
+                architect_conversation_id: None,
+                implement_conversation_id: None,
+            },
+        )
+        .await
+        .expect("insert group context");
+
+        let report = reconcile_project_registry(
+            &pool,
+            ReconcileProjectRegistryInput {
+                valid_group_ids: vec!["group-valid".to_string()],
+                valid_project_ids: Vec::new(),
+                selected_group_id: None,
+                selected_project_id: None,
+            },
+        )
+        .await
+        .expect("reconcile group context");
+
+        assert_eq!(report.project_contexts_deleted, 0);
+        assert_eq!(report.project_contexts_updated, 1);
+
+        let preserved = get_project_context_state(&pool, "group-valid")
+            .await
+            .expect("get group context")
+            .expect("group context");
+        assert_eq!(preserved.project_id, "group-valid");
+        assert_eq!(preserved.group_id.as_deref(), Some("group-valid"));
+        assert_eq!(preserved.focus_project_id, None);
+        assert_eq!(preserved.last_plan_id.as_deref(), Some("plan-group"));
+        assert_eq!(preserved.last_task_id.as_deref(), Some("task-group"));
     }
 
     #[tokio::test]

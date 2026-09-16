@@ -100,6 +100,12 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
     setQuery('');
   };
 
+  const resetSearch = useCallback(() => {
+    setIsOpen(false);
+    setIsCreating(false);
+    setQuery('');
+  }, []);
+
   const handleCreateNew = () => {
     if (onCreateGroup && query.trim()) {
       onCreateGroup(query.trim());
@@ -120,9 +126,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') {
-      setIsOpen(false);
-      setIsCreating(false);
-      setQuery('');
+      resetSearch();
     } else if (e.key === 'Enter' && showCreateOption) {
       e.preventDefault();
       handleCreateNew();
@@ -136,10 +140,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
       const clickedDropdown = dropdownRef.current?.contains(target) ?? false;
 
       if (!clickedTrigger && !clickedDropdown) {
-        setIsOpen(false);
-        if (!selectedGroupId) {
-          setQuery('');
-        }
+        resetSearch();
       }
     };
 
@@ -150,7 +151,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isOpen, selectedGroupId]);
+  }, [isOpen, resetSearch]);
 
   useEffect(() => {
     if (!isOpen) {

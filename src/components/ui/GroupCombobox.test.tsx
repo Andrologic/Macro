@@ -134,4 +134,50 @@ describe('GroupCombobox', () => {
 
     expect(onSelect).toHaveBeenCalledWith('alpha');
   });
+
+  it.each([
+    ['Escape', () => new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })],
+    ['an outside click', () => new MouseEvent('mousedown', { bubbles: true })],
+  ])('restores the selected group after abandoning search with %s', async (_action, createEvent) => {
+    const onSelect = mock(() => undefined);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <GroupCombobox
+          projectGroups={[{ id: 'alpha', name: 'Alpha' }]}
+          selectedGroupId="alpha"
+          onSelect={onSelect}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    const input = container.querySelector<HTMLInputElement>('input');
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value',
+    )?.set;
+    await act(async () => {
+      input?.focus();
+      valueSetter?.call(input, 'Alp');
+      input?.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(input?.value).toBe('Alp');
+    await act(async () => {
+      if (createEvent().type === 'mousedown') {
+        document.body.dispatchEvent(createEvent());
+      } else {
+        input?.dispatchEvent(createEvent());
+      }
+      await Promise.resolve();
+    });
+
+    expect(input?.value).toBe('Alpha');
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 });

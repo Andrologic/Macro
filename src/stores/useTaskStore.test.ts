@@ -883,6 +883,61 @@ describe('useTaskStore refreshFromPlan selection reconciliation', () => {
     expect(useTaskStore.getState().activeRepositoryPath).toBe('/repos/web/.macro/worktrees/fast');
   });
 
+  it('does not publish a slow activation after the selected project context changes', async () => {
+    appStoreState.selectedGroupId = 'group-a';
+    appStoreState.selectedProjectId = 'project-1';
+    appStoreState.setSelectedTask.mockImplementation((taskId: string | null) => {
+      appStoreState.selectedTaskId = taskId;
+    });
+    appStoreState.getProjectById = () => ({
+      id: 'project-1',
+      name: 'Project One',
+      path: '/repos/web',
+      gitSetupState: 'ready' as const,
+      directEdit: false,
+    });
+    let resolveInspection!: (value: GitWorktreeInspectionDto) => void;
+    gitWorktreeInspectMock.mockImplementationOnce(async () => await new Promise<GitWorktreeInspectionDto>((resolve) => {
+      resolveInspection = resolve;
+    }));
+    const task = buildStandaloneTask({
+      id: 'task-context-race',
+      status: 'InProgress',
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/context-race',
+        worktreeKey: 'project-1::feature/context-race',
+        executionKind: 'worktree',
+        repoPath: '/repos/web',
+      }],
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [task],
+      activeBranchName: null,
+      activeRepositoryPath: null,
+      activeWorkspacePathOverridesByProjectId: {},
+    });
+
+    const activation = useTaskStore.getState().activateTask(task.id);
+    await flushPromises();
+
+    appStoreState.selectedGroupId = 'group-b';
+    appStoreState.selectedProjectId = 'project-2';
+    resolveInspection({
+      taskId: task.id,
+      worktreePath: '/repos/web/.macro/worktrees/context-race',
+      branchName: 'feature/context-race',
+      status: 'ready',
+      isDirty: false,
+    });
+    await activation;
+
+    expect(useTaskStore.getState().activeBranchName).toBeNull();
+    expect(useTaskStore.getState().activeRepositoryPath).toBeNull();
+  });
+
   it('clears a missing selected task and reapplies chat selection when the catalog becomes empty', async () => {
     const originalListTasks = services.listTasks;
     services.listTasks = mock(async () => ({
@@ -2262,6 +2317,137 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
+  it('publishes the catalog reloaded after recovering a task-deleting saga', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-reload-after-delete',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: true,
+      conversation_id: 'conv-reload-after-delete',
+      assigned_branch: '',
+      branch_name: '',
+      execution_targets: [],
+    });
+    dbAppSettings.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: task.id,
+        conversationId: task.conversation_id,
+        phase: 'task_deleting',
+        draft: true,
+        executionTargets: [],
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    const originalListTasks = services.listTasks;
+    let catalogLoadCount = 0;
+    services.listTasks = mock(async () => {
+      catalogLoadCount += 1;
+      return catalogLoadCount === 1
+        ? {
+            tasks: [task],
+            plans: [],
+            hasStandaloneTasks: true,
+            source: 'mixed' as const,
+          }
+        : {
+            tasks: [],
+            plans: [],
+            hasStandaloneTasks: false,
+            source: 'empty' as const,
+          };
+    });
+    appStoreState.selectedTaskId = task.id;
+    appStoreState.setSelectedTask.mockImplementation((taskId: string | null) => {
+      appStoreState.selectedTaskId = taskId;
+    });
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: true,
+        activateSelectedTask: false,
+      });
+
+      expect(catalogLoadCount).toBe(2);
+      expect(useTaskStore.getState().tasks).toEqual([]);
+      expect(appStoreState.selectedTaskId).toBeNull();
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+  });
+
+  it('publishes the catalog reloaded after recovering a draft-reverting saga', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-reload-after-revert',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      conversation_id: 'conv-reload-after-revert',
+      assigned_branch: 'direct',
+      branch_name: 'direct',
+      execution_targets: [],
+    });
+    const revertedTask = {
+      ...task,
+      draft: true,
+      assigned_branch: '',
+      branch_name: '',
+      status: 'Pending' as const,
+    };
+    dbAppSettings.set(
+      'pendingLinkedTaskDeletions:v1',
+      JSON.stringify([{
+        taskId: task.id,
+        conversationId: task.conversation_id,
+        phase: 'draft_reverting',
+        draft: false,
+        targetBranch: '@direct-draft-revert',
+        executionTargets: [],
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      }]),
+    );
+    const originalListTasks = services.listTasks;
+    let catalogLoadCount = 0;
+    services.listTasks = mock(async () => {
+      catalogLoadCount += 1;
+      return catalogLoadCount === 1
+        ? {
+            tasks: [task],
+            plans: [],
+            hasStandaloneTasks: true,
+            source: 'mixed' as const,
+          }
+        : {
+            tasks: [revertedTask],
+            plans: [],
+            hasStandaloneTasks: true,
+            source: 'mixed' as const,
+          };
+    });
+    workspaceRevertManualFeatureToDraftMock.mockImplementationOnce(async () => ({
+      ...revertedTask,
+    } as never));
+
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false,
+        activateSelectedTask: false,
+      });
+
+      expect(catalogLoadCount).toBe(2);
+      expect(useTaskStore.getState().getTaskById(task.id)).toMatchObject({
+        draft: true,
+        status: 'Pending',
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+  });
+
   it('does not apply a stale draft-revert snapshot after another worker completed it', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-stale-revert',
@@ -3588,6 +3774,82 @@ describe('useTaskStore optimistic AwaitingResponse transitions', () => {
       'InProgress',
     );
     expect(useTaskStore.getState().lastError).toBe('Persistence failed');
+  });
+
+  it('does not let a late optimistic rollback overwrite a newer status transition', async () => {
+    let rejectAwaitingResponse!: (error: Error) => void;
+    let resolveInReview!: () => void;
+    updateStandaloneTaskStatusImpl = async ({ status }) => {
+      if (status === 'AwaitingResponse') {
+        await new Promise<void>((_resolve, reject) => {
+          rejectAwaitingResponse = reject;
+        });
+        return;
+      }
+
+      await new Promise<void>((resolve) => {
+        resolveInReview = resolve;
+      });
+    };
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refreshFromPlanMock = mock(async () => {
+      useTaskStore.setState({
+        tasks: [buildStandaloneTask({ status: 'InReview' })],
+      });
+    });
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'InProgress' })],
+      refreshFromPlan: refreshFromPlanMock,
+      lastError: null,
+    });
+
+    const awaitingResponse = useTaskStore.getState().setTaskStatus(
+      'task-1',
+      'AwaitingResponse',
+    );
+    await flushPromises();
+    const inReview = useTaskStore.getState().setTaskStatus('task-1', 'InReview');
+    await flushPromises();
+
+    invokeDeferredResolver(resolveInReview);
+    await inReview;
+    rejectAwaitingResponse(new Error('First transition failed late'));
+    await awaitingResponse;
+
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InReview');
+    expect(useTaskStore.getState().lastError).toBeNull();
+  });
+
+  it('does not roll back over a newer catalog status without a local transition', async () => {
+    let rejectAwaitingResponse!: (error: Error) => void;
+    updateStandaloneTaskStatusImpl = async ({ status }) => {
+      if (status !== 'AwaitingResponse') return;
+      await new Promise<void>((_resolve, reject) => {
+        rejectAwaitingResponse = reject;
+      });
+    };
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'InProgress' })],
+      lastError: null,
+    });
+
+    const awaitingResponse = useTaskStore.getState().setTaskStatus(
+      'task-1',
+      'AwaitingResponse',
+    );
+    await flushPromises();
+    useTaskStore.setState({
+      tasks: [buildStandaloneTask({ status: 'InReview' })],
+    });
+
+    rejectAwaitingResponse(new Error('Optimistic transition failed late'));
+    await awaitingResponse;
+
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('InReview');
+    expect(useTaskStore.getState().lastError).toBeNull();
   });
 
   it('allows an assistant follow-up while a task is in review', async () => {

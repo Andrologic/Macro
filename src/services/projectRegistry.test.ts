@@ -240,7 +240,30 @@ describe('projectRegistry', () => {
     ]);
   });
 
-  it('resolves stale group and project identifiers back to canonical entries', () => {
+  it('keeps Linux paths distinct inside WSL while folding Windows paths', () => {
+    const result = normalizeProjectRegistry({
+      standaloneProjects: [
+        makeProject('upper', '//wsl$/Ubuntu/home/App'),
+        makeProject('lower', '//wsl.localhost/ubuntu/home/app'),
+        makeProject('duplicate', '//WSL.LOCALHOST/UBUNTU/home/App'),
+        makeProject('windows', 'C:/App'),
+        makeProject('windows-copy', 'c:/app'),
+      ],
+      projectGroups: [], selectedGroupId: null, selectedProjectId: 'lower',
+    });
+    expect(result.standaloneProjects.map((project) => project.id)).toEqual(['upper', 'lower', 'windows']);
+    expect(result.selectedProjectId).toBe('lower');
+  });
+
+  it('requires exact IDs for homonymous projects and overlapping groups', () => {
+    const group = { id: 'current', name: 'App', isOpen: true, projects: [makeProject('a', '/synthetic/a'), makeProject('c', '/synthetic/c')] };
+    expect(resolveCanonicalProjectGroup([group], { id: 'old', name: 'App', projects: [makeProject('a', '/synthetic/a'), makeProject('b', '/synthetic/b')] })).toBeNull();
+    expect(resolveCanonicalProject([group], { id: 'old-project', name: 'a', path: '/synthetic/old' })).toBeNull();
+    expect(resolveCanonicalProjectGroup([group], group)?.id).toBe('current');
+    expect(resolveCanonicalProject([group], group.projects[0])?.id).toBe('a');
+  });
+
+  it('rejects stale identifiers even when paths overlap', () => {
     const projectGroups = [
       {
         id: 'group-main',
@@ -264,7 +287,7 @@ describe('projectRegistry', () => {
       path: 'C:\\dev\\app\\web',
     });
 
-    expect(resolvedGroup?.id).toBe('group-main');
-    expect(resolvedProject?.id).toBe('project-web');
+    expect(resolvedGroup).toBeNull();
+    expect(resolvedProject).toBeNull();
   });
 });

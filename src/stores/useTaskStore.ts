@@ -2122,8 +2122,34 @@ interface PreparedTaskExecutionTarget extends TaskExecutionTarget {
 
 interface OptimisticTaskStatusSnapshot {
   task: CatalogedImplementTask;
+  optimisticStatus: TaskStatus;
   previousPredictedBranches: ReturnType<typeof useAppStore.getState>['predictedBranches'] | null;
+  optimisticPredictedBranches: ReturnType<typeof useAppStore.getState>['predictedBranches'] | null;
+  mutationIdentity: string;
+  mutationGeneration: number;
 }
+
+const getTaskStatusMutationIdentity = (
+  task: Pick<
+    CatalogedImplementTask,
+    | 'id'
+    | 'node_id'
+    | 'task_source'
+    | 'plan_id'
+    | 'plan_storage_branch'
+    | 'plan_target_branch'
+  >,
+): string => {
+  const taskIdentity = getTaskBusinessId(task);
+  if (task.task_source !== 'architect' || !task.plan_id) {
+    return `${task.task_source}:${taskIdentity}`;
+  }
+
+  return `${task.task_source}:${toPlanLocatorKey({
+    branchName: getTaskPlanStorageBranch(task),
+    planId: task.plan_id,
+  })}:${taskIdentity}`;
+};
 
 const ensureTaskExecutionTargetsReady = async (
   task: CatalogedImplementTask,
@@ -2893,6 +2919,7 @@ const cleanupTaskExecutionTargets = async (
 export const useTaskStore = create<TaskStore>((set, get) => {
   const activeMergeWorkflowRuns = new Map<string, Promise<void>>();
   const activeTaskOperations = new Map<string, TaskOperationKind>();
+  const taskStatusMutationGenerations = new Map<string, number>();
   const activePlanWorktreeMutations = new Set<string>();
   let activeManualFeatureCreationId: string | null = null;
   const taskCommandRunCompletions = new Map<string, TaskCommandRunCompletion>();
@@ -2942,6 +2969,19 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       activeTaskOperations.delete(taskId);
     }
   };
+
+  const beginTaskStatusMutation = (
+    task: CatalogedImplementTask,
+  ): { identity: string; generation: number } => {
+    const identity = getTaskStatusMutationIdentity(task);
+    const generation = (taskStatusMutationGenerations.get(identity) ?? 0) + 1;
+    taskStatusMutationGenerations.set(identity, generation);
+    return { identity, generation };
+  };
+
+  const isCurrentTaskStatusMutation = (
+    snapshot: Pick<OptimisticTaskStatusSnapshot, 'mutationIdentity' | 'mutationGeneration'>,
+  ): boolean => taskStatusMutationGenerations.get(snapshot.mutationIdentity) === snapshot.mutationGeneration;
 
   const setTaskCommandCancellationFailure = (params: {
     taskId: string;
@@ -3134,15 +3174,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
       await resumePlanLifecycleSagas();
       if (!isCurrentRefresh()) return;
-      const catalog = await services.listTasks();
+      let catalog = await services.listTasks();
       if (!isCurrentRefresh()) return;
       const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
       if (!isCurrentRefresh()) return;
+      let shouldReloadCatalogAfterLinkedTaskRecovery = false;
       for (const pending of pendingLinkedTaskDeletions) {
         if (!isCurrentRefresh()) return;
         const catalogTask = resolveTaskReference(catalog.tasks, pending.taskId);
         const taskStillExists = Boolean(catalogTask);
         if (pending.phase === 'draft_reverting' || pending.phase === 'draft_reverted') {
+          shouldReloadCatalogAfterLinkedTaskRecovery = true;
           let recoverySaga = pending;
           await withTaskLifecycleLock(pending.taskId, async (taskLifecycleLeaseId) => {
             const currentPending = (await loadLinkedTaskDeletionSagas()).find(
@@ -3210,6 +3252,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           continue;
         }
         if (pending.phase === 'task_deleting' && !Array.isArray(pending.executionTargets)) {
+          shouldReloadCatalogAfterLinkedTaskRecovery = true;
           const message =
             "Le journal de suppression de cette tâche est trop ancien pour vérifier ses ressources Git. La suppression reste bloquée jusqu'à sa réparation.";
           await upsertLinkedTaskDeletionSaga({
@@ -3225,6 +3268,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
         let deletionSaga = pending;
         if (pending.phase === 'task_deleting') {
+          shouldReloadCatalogAfterLinkedTaskRecovery = true;
           let deletionRecoveryFailed = false;
           await withTaskLifecycleLock(pending.taskId, async (taskLifecycleLeaseId) => {
             try {
@@ -3287,6 +3331,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             updatedAt: new Date().toISOString(),
           });
         }
+      }
+      if (shouldReloadCatalogAfterLinkedTaskRecovery) {
+        catalog = await services.listTasks();
+        if (!isCurrentRefresh()) return;
       }
       const archivedTaskCleanupSagas = await loadArchivedTaskCleanupSagas();
       if (!isCurrentRefresh()) return;
@@ -3461,11 +3509,22 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       appState.setSelectedTask(taskId);
     }
 
+    const appStateAfterSelection = useAppStore.getState();
+    const selectedTaskIdAtActivation = appStateAfterSelection.selectedTaskId;
+    const selectionContextKey = `${appStateAfterSelection.selectedGroupId ?? ''}::${appStateAfterSelection.selectedProjectId ?? ''}`;
+    const isCurrentTaskActivation = (): boolean => {
+      const currentAppState = useAppStore.getState();
+      return requestId === taskActivationRequestId &&
+        currentAppState.selectedTaskId === selectedTaskIdAtActivation &&
+        `${currentAppState.selectedGroupId ?? ''}::${currentAppState.selectedProjectId ?? ''}` === selectionContextKey;
+    };
+
     if (!task) {
       return;
     }
 
     if (task.archived_at) {
+      if (!isCurrentTaskActivation()) return;
       set({
         activeBranchName: null,
         activeRepositoryPath: null,
@@ -3489,7 +3548,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           .map((projectId) => appState.getProjectById(projectId)?.path ?? null)
           .find((path): path is string => typeof path === 'string' && path.trim().length > 0) ?? null;
 
-      if (requestId !== taskActivationRequestId) return;
+      if (!isCurrentTaskActivation()) return;
       set({
         activeBranchName: null,
         activeRepositoryPath: projectPath,
@@ -3511,7 +3570,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         appState.selectedProjectId
       );
 
-      if (requestId !== taskActivationRequestId) return;
+      if (!isCurrentTaskActivation()) return;
       set({
         activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
         activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
@@ -3528,7 +3587,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const branchName = primaryTarget?.branchName || executionTask.assigned_branch;
     const targetMode = primaryTarget ? resolveExecutionTargetMode(primaryTarget) : null;
     if (targetMode && targetMode.mode !== 'git' && targetMode.mode !== 'direct') {
-      if (requestId !== taskActivationRequestId) return;
+      if (!isCurrentTaskActivation()) return;
       const message = formatProjectExecutionError(targetMode);
       set({
         activeBranchName: null,
@@ -3552,7 +3611,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         get().branchWorktrees,
       );
     }
-    if (requestId !== taskActivationRequestId) return;
+    if (!isCurrentTaskActivation()) return;
     if (knownWorktree) {
       if (primaryTarget) {
         set((state) => ({
@@ -3581,7 +3640,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         ? appState.getProjectById(executionTask.project_id)?.path ?? null
       : null;
 
-    if (requestId !== taskActivationRequestId) return;
+    if (!isCurrentTaskActivation()) return;
     set({
       activeBranchName: branchName,
       activeRepositoryPath: projectPath,
@@ -6443,6 +6502,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    const taskStatusMutation = beginTaskStatusMutation(currentTask);
+
     const applyOptimisticTaskStatus = (): OptimisticTaskStatusSnapshot | null => {
       if (!shouldApplyOptimisticTaskStatus(currentTask, status)) {
         return null;
@@ -6456,26 +6517,31 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           ? appState.predictedBranches
           : null;
       const nextTasks = applyTaskStatusLocally(get().tasks, currentTask, status);
+      const optimisticPredictedBranches = previousPredictedBranches
+        ? applyPredictedBranchLifecycle(
+            nextTasks,
+            previousPredictedBranches,
+            currentTask.id,
+            status
+          )
+        : null;
 
       set({
         tasks: nextTasks,
         lastError: null,
       });
 
-      if (previousPredictedBranches) {
-        appState.setPredictedBranches(
-          applyPredictedBranchLifecycle(
-            nextTasks,
-            previousPredictedBranches,
-            currentTask.id,
-            status
-          )
-        );
+      if (optimisticPredictedBranches) {
+        appState.setPredictedBranches(optimisticPredictedBranches);
       }
 
       return {
         task: currentTask,
+        optimisticStatus: status,
         previousPredictedBranches,
+        optimisticPredictedBranches,
+        mutationIdentity: taskStatusMutation.identity,
+        mutationGeneration: taskStatusMutation.generation,
       };
     };
 
@@ -6488,10 +6554,23 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         return;
       }
 
+      if (!isCurrentTaskStatusMutation(snapshot)) {
+        return;
+      }
+
+      const currentTask = get().tasks.find(
+        (candidate) => getTaskStatusMutationIdentity(candidate) === snapshot.mutationIdentity,
+      );
+      if (!currentTask || currentTask.status !== snapshot.optimisticStatus) {
+        return;
+      }
+
+      const currentAppState = useAppStore.getState();
+
       set((state) => ({
         tasks: applyTaskStatusLocally(
           state.tasks,
-          snapshot.task,
+          currentTask,
           snapshot.task.status
         ),
         lastError: errorMessage,
@@ -6499,12 +6578,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
       if (
         snapshot.previousPredictedBranches &&
+        snapshot.optimisticPredictedBranches &&
         snapshot.task.plan_id &&
-        useAppStore.getState().activeArchitectPlanId === snapshot.task.plan_id
+        currentAppState.activeArchitectPlanId === snapshot.task.plan_id &&
+        currentAppState.predictedBranches === snapshot.optimisticPredictedBranches
       ) {
-        useAppStore
-          .getState()
-          .setPredictedBranches(snapshot.previousPredictedBranches);
+        currentAppState.setPredictedBranches(snapshot.previousPredictedBranches);
       }
     };
 
