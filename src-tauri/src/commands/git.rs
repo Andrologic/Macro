@@ -28,8 +28,8 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
-use crate::core::error::{BackendError, Result};
 use crate::commands::{get_pool, DbPool};
+use crate::core::error::{BackendError, Result};
 use crate::core::process::{
     background_command, background_contained_tokio_command, ContainedBackgroundProcess,
 };
@@ -14736,9 +14736,11 @@ pub async fn git_read_conflict_file(
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
     let workflow_context = if let Some(identity) = workflow_session {
-        let db_pool = get_pool(&pool).await.map_err(|error| BackendError::Database {
-            message: error.message,
-        })?;
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
         let request_repo = git_state.open_repo(&validated)?;
         let (key, common_dir) = {
             let repo = request_repo.lock().map_err(|_| BackendError::Internal {
@@ -14809,9 +14811,11 @@ pub async fn git_write_conflict_resolution(
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
     let workflow_context = if let Some(identity) = workflow_session {
-        let db_pool = get_pool(&pool).await.map_err(|error| BackendError::Database {
-            message: error.message,
-        })?;
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
         let request_repo = git_state.open_repo(&validated)?;
         let (key, common_dir) = {
             let repo = request_repo.lock().map_err(|_| BackendError::Internal {
@@ -14885,9 +14889,11 @@ pub async fn git_accept_conflict_side(
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
     let workflow_context = if let Some(identity) = workflow_session {
-        let db_pool = get_pool(&pool).await.map_err(|error| BackendError::Database {
-            message: error.message,
-        })?;
+        let db_pool = get_pool(&pool)
+            .await
+            .map_err(|error| BackendError::Database {
+                message: error.message,
+            })?;
         let request_repo = git_state.open_repo(&validated)?;
         let (key, common_dir) = {
             let repo = request_repo.lock().map_err(|_| BackendError::Internal {

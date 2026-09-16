@@ -424,9 +424,17 @@ pub struct ManualFeatureMergeWorkflowGitSessionDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManualFeatureMergeWorkflowRepositoryDto {
-    #[serde(default, rename = "workflowSession", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "workflowSession",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub workflow_session: Option<ManualFeatureMergeWorkflowGitSessionDto>,
-    #[serde(default, rename = "repositoryRootPath", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "repositoryRootPath",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub repository_root_path: Option<String>,
     #[serde(default, rename = "integrationWorktreePath")]
     pub integration_worktree_path: Option<String>,
@@ -1003,7 +1011,12 @@ mod merge_workflow_tests {
         let repository: ManualFeatureMergeWorkflowRepositoryDto =
             serde_json::from_value(value.clone()).expect("deserialize merge repository");
         let persisted = serde_json::to_value(repository).expect("serialize merge repository");
-        for field in ["workflowSession", "repositoryRootPath", "integrationWorktreePath", "mergeInProgress"] {
+        for field in [
+            "workflowSession",
+            "repositoryRootPath",
+            "integrationWorktreePath",
+            "mergeInProgress",
+        ] {
             assert_eq!(persisted[field], value[field], "lost {field}");
         }
     }
