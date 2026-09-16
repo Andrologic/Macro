@@ -442,7 +442,7 @@ describe('streamingChat SSE stream handling', () => {
     mock.restore();
   });
 
-  it('skips valid non-object SSE JSON data', async () => {
+  it('skips non-object SSE data and accepts a null error field', async () => {
     const encoder = new TextEncoder();
     const fetchMock = mock(async () => ({
       ok: true,
@@ -451,7 +451,7 @@ describe('streamingChat SSE stream handling', () => {
           controller.enqueue(encoder.encode('data: null\n\n'));
           controller.enqueue(
             encoder.encode(
-              'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+              'data: {"error":null,"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
             ),
           );
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
@@ -466,7 +466,7 @@ describe('streamingChat SSE stream handling', () => {
     await streamChat({
       providerId: 'provider-1',
       providerType: 'openai',
-      baseUrl: 'https://example.test',
+      baseUrl: 'https://provider.invalid',
       modelId: 'model',
       messages: [{ role: 'user', content: 'Hello.' }],
       enableWebSearch: false,
@@ -505,7 +505,7 @@ describe('streamingChat SSE stream handling', () => {
     await streamChat({
       providerId: 'provider-1',
       providerType: 'openai',
-      baseUrl: 'https://example.test',
+      baseUrl: 'https://provider.invalid',
       modelId: 'model',
       messages: [{ role: 'user', content: 'Hello.' }],
       enableWebSearch: false,
@@ -555,7 +555,7 @@ describe('streamingChat SSE stream handling', () => {
     await streamChat({
       providerId: 'provider-1',
       providerType: 'openai',
-      baseUrl: 'https://example.test',
+      baseUrl: 'https://provider.invalid',
       modelId: 'model',
       messages: [{ role: 'user', content: 'Hello.' }],
       enableWebSearch: false,
@@ -629,7 +629,7 @@ describe('streamingChat SSE stream handling', () => {
     await streamChat({
       providerId: 'provider-1',
       providerType: 'openai',
-      baseUrl: 'https://example.test',
+      baseUrl: 'https://provider.invalid',
       modelId: 'model',
       messages: [{ role: 'user', content: 'Hello.' }],
       enableWebSearch: false,

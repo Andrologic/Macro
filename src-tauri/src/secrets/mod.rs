@@ -101,3 +101,8 @@ pub fn init(app_data_dir: &Path) -> Result<(), SecretError> {
 pub(crate) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<std::path::PathBuf, SecretError> {
     store::chatgpt_auth_lock_path(provider_id)
 }
+
+pub(crate) fn harden_private_file(path: &Path) -> Result<(), SecretError> {
+    store::set_private_file_permissions(path)?;
+    Ok(())
+}

@@ -459,6 +459,24 @@ describe('useProviderStore secret resolution', () => {
     });
   }
 
+  it('orders an endpoint update after an in-flight catalog write and clears the old catalog', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    let releaseWrite!: (models: never[]) => void;
+    upsertProviderModelsMock.mockImplementationOnce(() => new Promise<never[]>((resolve) => { releaseWrite = resolve; }));
+    const scan = useProviderStore.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+    const update = useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://replacement.invalid/v1' });
+    await flushAsyncWork();
+    expect(updateProviderConfigMock).not.toHaveBeenCalled();
+    releaseWrite([dbModel('provider-openai', 'obsolete-model')] as never[]);
+    await Promise.all([scan, update]);
+    expect(upsertProviderModelsMock).toHaveBeenLastCalledWith({ providerId: 'provider-openai', models: [], replaceDiscovered: true });
+    expect(useProviderStore.getState().modelsByProvider['provider-openai']).toEqual([]);
+    expect(useProviderStore.getState().providerConfigs[0].baseUrl).toBe('https://replacement.invalid/v1');
+  });
+
   it('does not publish an old endpoint connection check after an URL update', async () => {
     const { useProviderStore } = await loadProviderStore();
     await useProviderStore.getState().loadProviderConfigs();

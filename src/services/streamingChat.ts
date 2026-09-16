@@ -1445,6 +1445,7 @@ const extractSseProviderError = (
     status_code?: unknown;
   };
   const error = envelope.error;
+  if (error == null) return null;
   const details = error && typeof error === 'object'
     ? error as {
       message?: unknown;

@@ -2,8 +2,8 @@ use super::codex_files::{load_cached_model_entries, resolve_codex_client_version
 use super::lock_auth_mutation;
 use super::session::ensure_fresh_secret;
 use super::types::{
-    db_error_to_string, extract_response_error, ModelsCacheEntry, RemoteModelsResponse,
-    DEFAULT_ORIGINATOR,
+    build_http_client, db_error_to_string, extract_response_error, ModelsCacheEntry,
+    RemoteModelsResponse, DEFAULT_ORIGINATOR,
 };
 use crate::ai::reasoning_catalog::resolve_reasoning_capability;
 use crate::db::models::{AiModel, ProviderAuthMetadata, ProviderConfig, ProviderModelInput};
@@ -318,7 +318,7 @@ pub async fn sync_models(pool: &SqlitePool, provider_id: &str) -> Result<Vec<AiM
         .ok_or_else(|| format!("Provider {provider_id} not found."))?;
     let secret = ensure_fresh_secret(pool, provider_id).await?;
     let client_version = resolve_codex_client_version()?;
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
 
     let remote_models = fetch_remote_models(&client, &provider, &secret, &client_version).await;
     let entries = match remote_models {
