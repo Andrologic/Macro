@@ -10,6 +10,7 @@ import {
   type SupportedLanguage,
 } from "./languages";
 import { baseResources, loadTranslation } from "./resources";
+import { createSerialQueue } from "../services/serialQueue";
 
 const syncDocumentLanguage = (language: string | null | undefined) => {
   if (typeof document === "undefined") {
@@ -55,6 +56,7 @@ i18n
   });
 
 let initializationPromise: Promise<void> | null = null;
+const enqueueLanguageChange = createSerialQueue();
 
 export const initializeI18n = (): Promise<void> => {
   if (initializationPromise) {
@@ -88,22 +90,24 @@ i18n.on("languageChanged", (language) => {
 });
 syncDocumentLanguage(i18n.resolvedLanguage || i18n.language || DEFAULT_LANGUAGE);
 
-export async function changeLanguage(lang: SupportedLanguage): Promise<void> {
-  await ensureLanguageResources(lang);
-  await i18n.changeLanguage(lang);
+export function changeLanguage(lang: SupportedLanguage): Promise<void> {
+  return enqueueLanguageChange(async () => {
+    await ensureLanguageResources(lang);
+    await i18n.changeLanguage(lang);
 
-  try {
-    const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
-    notify.success(i18n.t("toast.languageChanged", { language: languageName }));
-  } catch {
-    // Toast not available.
-  }
+    try {
+      const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
+      notify.success(i18n.t("toast.languageChanged", { language: languageName }));
+    } catch {
+      // Toast not available.
+    }
 
-  try {
-    await savePreference(PREF_KEYS.LANGUAGE, lang);
-  } catch {
-    // La langue active reste utilisable pour la session si l’écriture échoue.
-  }
+    try {
+      await savePreference(PREF_KEYS.LANGUAGE, lang);
+    } catch {
+      // La langue active reste utilisable pour la session si l’écriture échoue.
+    }
+  });
 }
 
 export async function applyConfiguredLanguage(lang: SupportedLanguage): Promise<void> {

@@ -7,6 +7,7 @@ import {
   installReactI18nextMock,
 } from '../../../test-utils/reactI18nextMock';
 import type { ComposerEditorHandle } from './ComposerEditor';
+import { consumeComposerImagePaste } from './composerPaste';
 import type { ProjectGroup, SkillManifest, SkillSettings, WorkspaceFileReference } from '../../../types';
 
 const translationMock = createTranslationMock({});
@@ -226,6 +227,7 @@ describe('ComposerEditor context references', () => {
   let root: Root;
   let ComposerEditor: typeof import('./ComposerEditor').ComposerEditor;
   let getCollapsedComposerSelectionTextPosition: typeof import('./ComposerEditor').getCollapsedComposerSelectionTextPosition;
+  let registerComposerSubmitCommand: typeof import('./ComposerEditor').registerComposerSubmitCommand;
   let shouldUsePromptHistoryForPosition: typeof import('./ComposerEditor').shouldUsePromptHistoryForPosition;
 
   beforeEach(async () => {
@@ -251,6 +253,7 @@ describe('ComposerEditor context references', () => {
     ({
       ComposerEditor,
       getCollapsedComposerSelectionTextPosition,
+      registerComposerSubmitCommand,
       shouldUsePromptHistoryForPosition,
     } = await import('./ComposerEditor'));
     container = document.createElement('div');
@@ -1070,6 +1073,162 @@ describe('ComposerEditor context references', () => {
       subtitle: 'Agents · Global',
       data: testSkill,
     });
+  });
+
+  it('does not send when Enter confirms an active IME composition', async () => {
+    const onSend = mock(() => undefined);
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={onSend}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('変換中');
+      await Promise.resolve();
+    });
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+
+    await act(async () => {
+      editable?.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+      editable?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(onSend).not.toHaveBeenCalled();
+
+    await act(async () => {
+      editable?.dispatchEvent(new Event('compositionend', { bubbles: true }));
+      editable?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send when Lexical emits a null Enter command after composition', async () => {
+    const lexical = await import('lexical');
+    const editor = lexical.createEditor({
+      namespace: `ComposerNullEnterTest-${Date.now()}`,
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const onSend = mock(() => undefined);
+    const unregister = registerComposerSubmitCommand(editor, onSend, { current: false });
+
+    try {
+      expect(editor.dispatchCommand(lexical.KEY_ENTER_COMMAND, null)).toBe(false);
+      expect(onSend).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  it('stops an image paste before Lexical can insert accompanying text', async () => {
+    const editorRef = React.createRef<ComposerEditorHandle>();
+    const pastedFiles: File[] = [];
+
+    await act(async () => {
+      root.render(
+        <div
+          onPasteCapture={(event) => {
+            pastedFiles.push(...consumeComposerImagePaste(event));
+          }}
+        >
+          <ComposerEditor
+            ref={editorRef}
+            editable
+            placeholder="Message"
+            onTextChange={() => undefined}
+            onSend={() => undefined}
+          />
+        </div>
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('Texte existant.');
+      await Promise.resolve();
+    });
+
+    const itemFile = new File(['image'], 'capture.png', { type: 'image/png' });
+    const transferredFile = new File(['image'], 'capture.png', { type: 'image/png' });
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: {
+        items: [
+          { type: 'image/png', getAsFile: () => itemFile },
+          { type: 'text/plain', getAsFile: () => null },
+        ],
+        files: [transferredFile],
+        getData: (type: string) => type === 'text/plain' ? 'Texte collé.' : '',
+      },
+    });
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+
+    await act(async () => {
+      editable?.dispatchEvent(pasteEvent);
+      await Promise.resolve();
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(pasteEvent.cancelBubble).toBe(true);
+    expect(pastedFiles).toEqual([itemFile]);
+    expect(editorRef.current?.getTextContent()).toBe('Texte existant.');
+  });
+
+  it('does not run the active slash action when Enter confirms an IME composition', async () => {
+    const testSkill = buildSkill('global:agents:test-skill:aaa', { name: 'test-skill' });
+    skills = [testSkill];
+    settingsBySkillId = {
+      [testSkill.id]: { enabled: true, scriptsEnabled: false },
+    };
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    expect(await openSlashMenu(editorRef, '/test')).not.toBeNull();
+    const editable = container.querySelector('[data-shortcut-chat-input="true"]');
+
+    await act(async () => {
+      editable?.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+      editable?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(editorRef.current?.getTextContent()).toBe('/test');
+    expect(addComposerContextRef).not.toHaveBeenCalled();
   });
 
   it('navigates slash context with arrows and selects with Enter', async () => {

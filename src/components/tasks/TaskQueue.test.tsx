@@ -24,6 +24,7 @@ let useTaskStore!: typeof UseTaskStoreHook;
 let TaskQueueComponent!: typeof import('./TaskQueue').TaskQueue;
 let importCounter = 0;
 let virtualListRowKeys: Array<Array<string | number>> = [];
+let taskQueueAppSettings = new Map<string, string>();
 let notifyMock!: {
   info: ReturnType<typeof mock>;
   success: ReturnType<typeof mock>;
@@ -418,7 +419,28 @@ describe('TaskQueue', () => {
       implement: { ...DEFAULT_IMPLEMENT_VIEW_FILTERS },
       isHydrated: true,
     });
-    installTauriRuntimeMock();
+    taskQueueAppSettings = new Map<string, string>();
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined
+          ? null
+          : { key, value_json: value, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_set_app_setting') {
+        const valueJson = String(payload?.valueJson ?? '');
+        taskQueueAppSettings.set(key, valueJson);
+        return { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        const expectedValueJson = payload?.expectedValueJson ?? null;
+        if ((taskQueueAppSettings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
+      return undefined;
+    }));
     await loadTaskQueueModules();
     initialAppState = useAppStore.getState();
     initialChatState = useChatStore.getState();
@@ -1243,6 +1265,27 @@ describe('TaskQueue', () => {
         sequence_index: 1,
       }),
     ]);
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      archivedTaskCleanupByTaskId: {
+        'archived-task': {
+          operationId: 'cleanup-archived-task',
+          taskId: 'archived-task',
+          archiveToken: '2026-04-30T10:00:00.000Z',
+          targets: [{
+            worktreeKey: 'project-1::feature/archived-task',
+            repoPath: '/tmp/project-1',
+            branchName: 'feature/archived-task',
+            worktreePath: '/tmp/project-1/.macro/worktrees/archived-task',
+            worktreeRemoved: false,
+            branchRemoved: false,
+            state: 'dirty',
+          }],
+          createdAt: '2026-04-30T10:00:00.000Z',
+          updatedAt: '2026-04-30T10:00:00.000Z',
+        },
+      },
+    });
 
     await act(async () => {
       root?.render(<TaskQueueComponent />);
@@ -1272,6 +1315,155 @@ describe('TaskQueue', () => {
     expect(archiveToggle?.getAttribute('aria-pressed')).toBe('true');
     expect(document.body.textContent).not.toContain('Active task');
     expect(document.body.textContent).toContain('Archived task');
+
+    const taskActions = document.body.querySelector<HTMLButtonElement>(
+      'button[title="Task actions"]'
+    );
+    await act(async () => {
+      taskActions?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      await flushRender();
+    });
+    expect(document.body.querySelector('[role="menu"]')?.textContent)
+      .toContain('Clean up worktree');
+  });
+
+  it('warns after archiving succeeds with a pending dirty-worktree cleanup', async () => {
+    const task = makeTask('archive-with-dirty-worktree', 'Completed', {
+      title: 'Archive with local edits',
+      standalone_kind: 'manual_feature',
+    });
+    seedTasks([task]);
+    const archiveTask = mock(async (taskId: string) => {
+      useTaskStore.setState((state) => ({
+        archivedTaskCleanupByTaskId: {
+          ...state.archivedTaskCleanupByTaskId,
+          [taskId]: {
+            operationId: 'cleanup-dirty-worktree',
+            taskId,
+            archiveToken: '2026-04-30T10:00:00.000Z',
+            targets: [{
+              worktreeKey: 'project-1::feature/archive-with-dirty-worktree',
+              repoPath: '/tmp/project-1',
+              branchName: 'feature/archive-with-dirty-worktree',
+              worktreePath: '/tmp/project-1/.macro/worktrees/archive-with-dirty-worktree',
+              worktreeRemoved: false,
+              branchRemoved: false,
+              state: 'dirty',
+            }],
+            createdAt: '2026-04-30T10:00:00.000Z',
+            updatedAt: '2026-04-30T10:00:00.000Z',
+          },
+        },
+      }));
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      archiveTask: archiveTask as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('button[title="Task actions"]')?.click();
+      await flushRender();
+    });
+    const archiveAction = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((button) => button.textContent?.trim() === 'Archive');
+    await act(async () => {
+      archiveAction?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const confirmArchive = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [],
+    ).find((button) => button.textContent?.trim() === 'Archive');
+    await act(async () => {
+      confirmArchive?.click();
+      await flushRender();
+    });
+
+    expect(archiveTask).toHaveBeenCalledWith('archive-with-dirty-worktree');
+    expect(notifyMock.actionRequired).toHaveBeenCalledTimes(1);
+    const [title, options] = notifyMock.actionRequired.mock.calls[0] as [
+      string,
+      { description: string; actions: Array<{ label: string }> },
+    ];
+    expect(title).toBe('Task archived, cleanup pending');
+    expect(options.description).toContain('feature/archive-with-dirty-worktree');
+    expect(options.description).toContain('/tmp/project-1/.macro/worktrees/archive-with-dirty-worktree');
+    expect(options.actions.map((action) => action.label)).toEqual(['Open worktree', 'Retry']);
+  });
+
+  it('opens the repository instead of a removed worktree when branch cleanup remains', async () => {
+    const task = makeTask('archive-with-branch-cleanup', 'Completed', {
+      title: 'Archive after worktree removal',
+      standalone_kind: 'manual_feature',
+    });
+    seedTasks([task]);
+    const archiveTask = mock(async (taskId: string) => {
+      useTaskStore.setState((state) => ({
+        archivedTaskCleanupByTaskId: {
+          ...state.archivedTaskCleanupByTaskId,
+          [taskId]: {
+            operationId: 'cleanup-branch-only',
+            taskId,
+            archiveToken: '2026-04-30T10:00:00.000Z',
+            targets: [{
+              worktreeKey: 'project-1::feature/archive-with-branch-cleanup',
+              repoPath: '/tmp/project-1',
+              branchName: 'feature/archive-with-branch-cleanup',
+              worktreePath: '/tmp/project-1/.macro/worktrees/archive-with-branch-cleanup',
+              worktreeRemoved: true,
+              branchRemoved: false,
+              state: 'failed',
+              lastError: 'injected branch deletion failure',
+            }],
+            createdAt: '2026-04-30T10:00:00.000Z',
+            updatedAt: '2026-04-30T10:00:00.000Z',
+          },
+        },
+      }));
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      archiveTask: archiveTask as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('button[title="Task actions"]')?.click();
+      await flushRender();
+    });
+    const archiveAction = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((button) => button.textContent?.trim() === 'Archive');
+    await act(async () => {
+      archiveAction?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const confirmArchive = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [],
+    ).find((button) => button.textContent?.trim() === 'Archive');
+    await act(async () => {
+      confirmArchive?.click();
+      await flushRender();
+    });
+
+    const [, options] = notifyMock.actionRequired.mock.calls[0] as [
+      string,
+      { description: string; actions: Array<{ label: string }> },
+    ];
+    expect(options.description).toContain('worktree has already been removed');
+    expect(options.description).toContain('feature/archive-with-branch-cleanup');
+    expect(options.description).toContain('/tmp/project-1');
+    expect(options.actions.map((action) => action.label)).toEqual(['Open repository', 'Retry']);
   });
 
   it('opens project management from an accessible compact header action', async () => {
@@ -1439,7 +1631,7 @@ describe('TaskQueue', () => {
     seedTasks([makeTask('task-1', 'Pending')]);
     const createConversation = mock(async () => ({ id: 'conversation-created' }));
     const selectConversation = mock(async () => true);
-    const createManualFeatureDraft = mock(async () => undefined);
+    const createManualFeatureDraft = mock(async (_params: { taskId: string }) => undefined);
     const activateTask = mock(async () => undefined);
     useChatStore.setState({
       ...useChatStore.getState(),
@@ -1628,6 +1820,110 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it('preserves the conversation while ambiguous draft cleanup remains durable and unconfirmed', async () => {
+    const directProject = {
+      ...makeProject('project-folder', '/tmp/project-folder', 'Folder project'),
+      directEdit: true,
+      gitSetupState: 'not_git' as const,
+    };
+    seedTasks([]);
+    const appSettings = new Map<string, string>();
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = appSettings.get(key);
+        return value === undefined
+          ? null
+          : { key, value_json: value, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_set_app_setting') {
+        const valueJson = String(payload?.valueJson ?? '');
+        appSettings.set(key, valueJson);
+        return { key, value_json: valueJson, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        const expectedValueJson = payload?.expectedValueJson ?? null;
+        if ((appSettings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        appSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
+      return undefined;
+    }));
+    const createConversation = mock(async () => ({ id: 'conversation-created' }));
+    const selectConversation = mock(async () => true);
+    const deleteConversation = mock(async () => undefined);
+    const createManualFeatureDraft = mock(async (_params: { taskId: string }) => {
+      throw new Error('injected transport failure after draft persistence');
+    });
+    const activateTask = mock(async () => undefined);
+    const deleteManualFeatureDraft = mock(async () => {
+      throw new Error('injected durable draft cleanup failure');
+    });
+    useChatStore.setState({
+      ...useChatStore.getState(),
+      createConversation: createConversation as never,
+      selectConversation: selectConversation as never,
+      deleteConversation: deleteConversation as never,
+    });
+    useTaskStore.setState({
+      ...useTaskStore.getState(),
+      createManualFeatureDraft: createManualFeatureDraft as never,
+      activateTask: activateTask as never,
+      deleteManualFeatureDraft: deleteManualFeatureDraft as never,
+    });
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      projectGroups: [{
+        id: 'group-folder',
+        name: 'Folder group',
+        isOpen: true,
+        projects: [directProject],
+      }] as never,
+    });
+
+    await act(async () => {
+      root?.render(<TaskQueueComponent />);
+      await flushRender();
+    });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>(
+        '[data-tour-id="implement-create-task"]'
+      )?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const findDialogButton = (text: string) => Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []
+    ).find((button) => button.textContent?.includes(text));
+    await act(async () => {
+      findDialogButton('Folder project')?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      findDialogButton('Create task')?.click();
+      await flushRender();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const taskId = createManualFeatureDraft.mock.calls[0]?.[0]?.taskId;
+    expect(taskId).toEqual(expect.stringContaining('manual-feature-'));
+    expect(deleteManualFeatureDraft).toHaveBeenCalledWith(taskId);
+    expect(deleteConversation).not.toHaveBeenCalled();
+    expect(JSON.parse(appSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        taskId,
+        conversationId: 'conversation-created',
+        phase: 'task_deleting',
+        draft: true,
+        executionTargets: [],
+        lastError: expect.stringContaining('injected durable draft cleanup failure'),
+      }),
+    ]);
+    expect(notifyMock.error.mock.calls.some(([, options]) =>
+      String(options?.description ?? '').includes('injected durable draft cleanup failure')
+    )).toBe(true);
+  });
+
   it('opens task creation for a direct project without loading Git start points', async () => {
     const invokedCommands: string[] = [];
     installTauriRuntimeMock(mock(async (command) => {
@@ -1686,7 +1982,7 @@ describe('TaskQueue', () => {
       }],
       branches: [],
     };
-    installTauriRuntimeMock(mock(async (command) => {
+    installTauriRuntimeMock(mock(async (command, payload) => {
       if (command === 'git_task_start_points') {
         return gitTaskStartPoints;
       }
@@ -1701,6 +1997,24 @@ describe('TaskQueue', () => {
           unstaged: 0,
           untracked: 0,
         };
+      }
+      if (command === 'db_get_app_setting') {
+        const key = String(payload?.key ?? '');
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined
+          ? null
+          : {
+              key,
+              value_json: value,
+              updated_at: '2026-08-30T00:00:00Z',
+            };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        const key = String(payload?.key ?? '');
+        const expectedValueJson = payload?.expectedValueJson ?? null;
+        if ((taskQueueAppSettings.get(key) ?? null) !== expectedValueJson) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
       }
       return undefined;
     }));

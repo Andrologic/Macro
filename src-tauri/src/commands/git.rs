@@ -17,8 +17,9 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
 use chrono::{DateTime, Utc};
 use git2::{
-    BranchType, Commit, ConfigLevel, DiffFormat, DiffStatsFormat, Oid, Repository, RepositoryState,
-    ResetType, StashFlags, Status, StatusEntry, TreeWalkMode, TreeWalkResult,
+    BranchType, CheckoutNotificationType, Commit, ConfigLevel, DiffFormat, DiffStatsFormat, Oid,
+    Repository, RepositoryState, ResetType, StashFlags, Status, StatusEntry, TreeWalkMode,
+    TreeWalkResult,
 };
 use serde::Serialize;
 use sha1::Sha1;
@@ -56,6 +57,7 @@ const NATIVE_GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_GIT_COMMAND_OUTPUT_BYTES: u64 = 256 * 1024;
 static REBASE_CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
+static HARD_RESET_CHECKOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 struct GitReviewCancellationRegistry {
     active: HashMap<String, Arc<AtomicBool>>,
@@ -70,6 +72,31 @@ const MAX_DIRECT_REVIEW_SNAPSHOTS: usize = 256;
 const MAX_DIRECT_REVIEW_PATHS: usize = 4_096;
 const MAX_DIRECT_REVIEW_REVISION_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DIRECT_CHECKPOINT_VERIFICATION_OBJECTS: usize = 100_000;
+
+async fn acquire_archived_task_cleanup_guard(
+    workspace_path: &Path,
+    git_state: &GitState,
+    archive_task_id: Option<&str>,
+    archive_token: Option<&str>,
+) -> Result<Option<workspace::ArchivedTaskCleanupGuard>> {
+    let (Some(task_id), Some(token)) = (archive_task_id, archive_token) else {
+        if archive_task_id.is_some() || archive_token.is_some() {
+            return Err(BackendError::Validation(
+                "Le nettoyage requiert la tâche archivée et son jeton.".to_string(),
+            ));
+        }
+        return Ok(None);
+    };
+    let metadata_root = crate::commands::workspace::resolve_metadata_root(
+        workspace_path.to_path_buf(),
+        git_state.clone(),
+    )
+    .await?;
+    let guard = workspace::lock_archived_task_cleanup(&metadata_root, task_id).await?;
+    workspace::validate_archived_task_cleanup_token(workspace_path, &metadata_root, task_id, token)
+        .await?;
+    Ok(Some(guard))
+}
 
 struct DirectCheckpointVerificationBudget {
     remaining_bytes: usize,
@@ -287,6 +314,12 @@ pub struct GitSyncDto {
     pub output: String,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPreparedBranchSyncDto {
+    pub target_commit: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GitRemoteDto {
     pub remote: String,
@@ -382,6 +415,13 @@ pub struct GitMergeCheckDto {
     pub has_changes: bool,
     pub ahead: u32,
     pub behind: u32,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitGuardedMergeStateDto {
+    pub status: String,
+    pub target_commit: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -512,6 +552,9 @@ pub struct GitStartMergeResolutionDto {
 pub struct GitConflictFileSideDto {
     pub exists: bool,
     pub content: String,
+    pub size_bytes: usize,
+    pub is_binary: bool,
+    pub too_large: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -1990,6 +2033,26 @@ pub(crate) async fn wsl_git_commit(
     validate_commit_message(message)?;
     if stage_all {
         wsl_git_add(repo_path, &[".".to_string()]).await?;
+    } else {
+        let staged = run_wsl_git_allow_failure(
+            repo_path,
+            &[
+                "diff".to_string(),
+                "--cached".to_string(),
+                "--quiet".to_string(),
+            ],
+            WSL_GIT_TIMEOUT,
+        )
+        .await?;
+        match staged.status.code() {
+            Some(0) => {
+                return Err(BackendError::Git {
+                    message: "No staged changes to commit".to_string(),
+                })
+            }
+            Some(1) => {}
+            _ => return Err(wsl_git_failure(&staged, "git staged diff WSL failed")),
+        }
     }
     run_wsl_git_checked(
         repo_path,
@@ -2070,13 +2133,14 @@ pub(crate) async fn wsl_git_reset(
         });
     }
     let resolved_commit = match commit {
-        Some(commit) => Some(wsl_resolve_commit_oid(repo_path, &commit, "reset commit").await?),
-        None => None,
+        Some(commit) => wsl_resolve_commit_oid(repo_path, &commit, "reset commit").await?,
+        None => wsl_resolve_commit_oid(repo_path, "HEAD", "reset commit").await?,
     };
-    let mut args = vec!["reset".to_string(), format!("--{}", reset_mode)];
-    if let Some(commit) = resolved_commit {
-        args.push(commit);
+    if reset_mode == "hard" {
+        return wsl_hard_reset_preserving_untracked(repo_path, &resolved_commit).await;
     }
+    let mut args = vec!["reset".to_string(), format!("--{}", reset_mode)];
+    args.push(resolved_commit);
     run_wsl_git_checked(
         repo_path,
         &args,
@@ -2085,6 +2149,378 @@ pub(crate) async fn wsl_git_reset(
     )
     .await?;
     Ok(())
+}
+
+fn normalize_git_path(path: &[u8]) -> Vec<u8> {
+    let end = path
+        .iter()
+        .rposition(|byte| *byte != b'/')
+        .map_or(0, |index| index + 1);
+    path[..end].to_vec()
+}
+
+fn git_path_prefixes(path: &[u8]) -> Vec<&[u8]> {
+    let mut prefixes = Vec::new();
+    let mut end = path.len();
+    loop {
+        prefixes.push(&path[..end]);
+        let Some(separator) = path[..end].iter().rposition(|byte| *byte == b'/') else {
+            break;
+        };
+        end = separator;
+    }
+    prefixes
+}
+
+fn untracked_reset_collision_error(path: &[u8]) -> BackendError {
+    BackendError::Git {
+        message: format!(
+            "Hard reset would overwrite untracked path '{}'; move or remove it before retrying",
+            String::from_utf8_lossy(path)
+        ),
+    }
+}
+
+async fn wsl_hard_reset_preserving_untracked(
+    repo_path: &WslProjectPath,
+    target_commit: &str,
+) -> Result<()> {
+    const COLLISION_EXIT_CODE: i32 = 42;
+    let hard_reset = run_wsl_command_allow_failure(
+        repo_path,
+        "bash",
+        &[
+            "-c".to_string(),
+            r#"
+set -u
+repo=$1
+target_commit=$2
+git_common_dir=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir) || exit $?
+recovery_root=$git_common_dir/macro-hard-reset-recovery
+if [[ -L $recovery_root ]]; then
+  printf 'Hard reset recovery root must not be a symbolic link: %s\n' "$recovery_root" >&2
+  exit 43
+fi
+mkdir -p -- "$recovery_root" || exit $?
+scratch=$(mktemp -d "$recovery_root/transaction.XXXXXXXX") || exit $?
+mkdir -- "$scratch/original" "$scratch/rollback-target" || exit $?
+scratch_dev=$(stat -c '%d' -- "$scratch") || exit $?
+repo_dev=$(stat -c '%d' -- "$repo") || exit $?
+if [[ $scratch_dev != "$repo_dev" ]]; then
+  printf 'Hard reset recovery storage must be on the worktree filesystem.\n' >&2
+  rm -rf -- "$scratch"
+  exit 43
+fi
+if mv --help 2>/dev/null | grep -q -- '--no-copy'; then
+  safe_mv() { mv --no-copy -T -n -- "$1" "$2"; }
+else
+  safe_mv() {
+    source_dev=$(stat -c '%d' -- "$1") || return 1
+    destination_dev=$(stat -c '%d' -- "${2%/*}") || return 1
+    [[ $source_dev == "$destination_dev" ]] || return 1
+    mv -T -n -- "$1" "$2"
+  }
+fi
+mutation_started=0
+transaction_complete=0
+keep_scratch=0
+declare -a isolated_paths=()
+declare -a isolated_names=()
+declare -a isolated_ids=()
+declare -a materialized_paths=()
+declare -a materialized_ids=()
+
+rollback_reset() {
+  rollback_failed=0
+  for (( rollback_index=${#materialized_paths[@]} - 1; rollback_index >= 0; rollback_index-- )); do
+    materialized=${materialized_paths[$rollback_index]}
+    expected_id=${materialized_ids[$rollback_index]}
+    current_id=$(stat -c '%d:%i' -- "$repo/$materialized" 2>/dev/null) || current_id=
+    if [[ -n $expected_id && $current_id == "$expected_id" ]]; then
+      # Keep the inode linked. A process may still hold a writable descriptor.
+      rollback_path=$scratch/rollback-target/$materialized
+      mkdir -p -- "${rollback_path%/*}" || rollback_failed=1
+      safe_mv "$repo/$materialized" "$rollback_path" || rollback_failed=1
+      if [[ -e $repo/$materialized || -L $repo/$materialized ]]; then
+        rollback_failed=1
+        continue
+      fi
+      keep_scratch=1
+      isolated_id=$(stat -c '%d:%i' -- "$rollback_path" 2>/dev/null) || isolated_id=
+      if [[ $isolated_id != "$expected_id" ]]; then
+        safe_mv "$rollback_path" "$repo/$materialized" || rollback_failed=1
+        rollback_failed=1
+      fi
+    elif [[ -n $current_id ]]; then
+      rollback_failed=1
+    fi
+  done
+
+  for (( rollback_index=${#isolated_paths[@]} - 1; rollback_index >= 0; rollback_index-- )); do
+    indexed=${isolated_paths[$rollback_index]}
+    quarantine=${isolated_names[$rollback_index]}
+    expected_id=${isolated_ids[$rollback_index]}
+    quarantine_id=$(stat -c '%d:%i' -- "$quarantine" 2>/dev/null) || quarantine_id=
+    original_id=$(stat -c '%d:%i' -- "$repo/$indexed" 2>/dev/null) || original_id=
+    if [[ -n $quarantine_id ]]; then
+      if [[ $quarantine_id != "$expected_id" || -n $original_id ]]; then
+        rollback_failed=1
+        continue
+      fi
+      safe_mv "$quarantine" "$repo/$indexed" || rollback_failed=1
+      restored_id=$(stat -c '%d:%i' -- "$repo/$indexed" 2>/dev/null) || restored_id=
+      if [[ -e $quarantine || -L $quarantine || $restored_id != "$expected_id" ]]; then
+        rollback_failed=1
+      fi
+    elif [[ -z $original_id ]]; then
+      rollback_failed=1
+    fi
+  done
+
+  if [[ -n ${original_head-} ]]; then
+    if [[ -n ${original_head_ref-} ]]; then
+      current_head_ref=$(git -C "$repo" symbolic-ref -q HEAD 2>/dev/null) || current_head_ref=
+      if [[ $current_head_ref != "$original_head_ref" ]]; then
+        rollback_failed=1
+      fi
+      current_ref=$(git -C "$repo" rev-parse "$original_head_ref" 2>/dev/null) || current_ref=
+      if [[ $current_ref == "$target_commit" ]]; then
+        git -C "$repo" update-ref "$original_head_ref" "$original_head" "$target_commit" >/dev/null 2>&1 || rollback_failed=1
+      elif [[ $current_ref != "$original_head" ]]; then
+        rollback_failed=1
+      fi
+    else
+      current_head_ref=$(git -C "$repo" symbolic-ref -q HEAD 2>/dev/null) || current_head_ref=
+      current_ref=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || current_ref=
+      if [[ -n $current_head_ref ]]; then
+        rollback_failed=1
+      elif [[ $current_ref == "$target_commit" ]]; then
+        git -C "$repo" update-ref --no-deref HEAD "$original_head" "$target_commit" >/dev/null 2>&1 || rollback_failed=1
+      elif [[ $current_ref != "$original_head" ]]; then
+        rollback_failed=1
+      fi
+    fi
+  fi
+
+  if [[ -n ${index_path-} && -f $scratch/index.backup ]]; then
+    index_lock=$index_path.lock
+    if ( set -C; : > "$index_lock" ) 2>/dev/null; then
+      if cmp -s -- "$index_path" "$scratch/index.backup"; then
+        rm -f -- "$index_lock" || rollback_failed=1
+      elif [[ -f $scratch/index.expected ]] && cmp -s -- "$index_path" "$scratch/index.expected"; then
+        if cat -- "$scratch/index.backup" > "$index_lock" && chmod --reference="$scratch/index.backup" "$index_lock"; then
+          mv -f -- "$index_lock" "$index_path" || rollback_failed=1
+        else
+          rm -f -- "$index_lock"
+          rollback_failed=1
+        fi
+      else
+        cp -- "$index_path" "$scratch/index.concurrent" 2>/dev/null || true
+        rm -f -- "$index_lock"
+        rollback_failed=1
+      fi
+    else
+      rollback_failed=1
+    fi
+  fi
+  if (( rollback_failed != 0 )); then
+    keep_scratch=1
+    printf 'Hard reset rollback data retained at %s\n' "$scratch" >&2
+    return 1
+  fi
+}
+
+cleanup_reset() {
+  original_status=$?
+  trap - EXIT
+  if (( mutation_started != 0 && transaction_complete == 0 )); then
+    rollback_reset || original_status=1
+  fi
+  if (( keep_scratch == 0 )); then
+    rm -rf -- "$scratch"
+  fi
+  exit "$original_status"
+}
+trap cleanup_reset EXIT
+
+git -C "$repo" ls-files --others --exclude-standard -z > "$scratch/untracked" || exit $?
+git -C "$repo" ls-files --others --ignored --exclude-standard -z >> "$scratch/untracked" || exit $?
+git -C "$repo" ls-files -z > "$scratch/indexed" || exit $?
+git -C "$repo" ls-tree -r -z "$target_commit" > "$scratch/target-records" || exit $?
+: > "$scratch/target"
+while IFS= read -r -d '' target_record; do
+  target=${target_record#*$'\t'}
+  printf '%s\0' "$target" >> "$scratch/target"
+done < "$scratch/target-records"
+mapfile -d '' -t untracked_paths < "$scratch/untracked"
+mapfile -d '' -t target_paths < "$scratch/target"
+
+declare -A target_full_paths=()
+declare -A target_prefix_paths=()
+declare -A target_full_inodes=()
+declare -A target_prefix_inodes=()
+
+for target in "${target_paths[@]}"; do
+  target_full_paths["$target"]=1
+  target_prefix=$target
+  first_prefix=1
+  while true; do
+    if [[ -z ${target_prefix_paths["$target_prefix"]+present} ]]; then
+      target_prefix_paths["$target_prefix"]=1
+      prefix_id=$(stat -c '%d:%i' -- "$repo/$target_prefix" 2>/dev/null) || prefix_id=
+      if [[ -n $prefix_id ]]; then
+        target_prefix_inodes["$prefix_id"]=1
+      fi
+    elif (( first_prefix == 0 )); then
+      break
+    fi
+    if (( first_prefix == 1 )); then
+      first_prefix=0
+      target_id=$(stat -c '%d:%i' -- "$repo/$target" 2>/dev/null) || target_id=
+      if [[ -n $target_id ]]; then
+        target_full_inodes["$target_id"]=1
+      fi
+    fi
+    if [[ $target_prefix != */* ]]; then
+      break
+    fi
+    target_prefix=${target_prefix%/*}
+  done
+done
+
+for untracked in "${untracked_paths[@]}"; do
+  untracked_id=$(stat -c '%d:%i' -- "$repo/$untracked" 2>/dev/null) || untracked_id=
+  if [[ -n ${target_prefix_paths["$untracked"]+present}
+        || ( -n $untracked_id && -n ${target_prefix_inodes["$untracked_id"]+present} ) ]]; then
+    printf '%s\0' "$untracked"
+    exit 42
+  fi
+
+  untracked_prefix=$untracked
+  while true; do
+    prefix_id=$(stat -c '%d:%i' -- "$repo/$untracked_prefix" 2>/dev/null) || prefix_id=
+    if [[ -n ${target_full_paths["$untracked_prefix"]+present}
+          || ( -n $prefix_id && -n ${target_full_inodes["$prefix_id"]+present} ) ]]; then
+      printf '%s\0' "$untracked"
+      exit 42
+    fi
+    if [[ $untracked_prefix != */* ]]; then
+      break
+    fi
+    untracked_prefix=${untracked_prefix%/*}
+  done
+done
+
+original_head=$(git -C "$repo" rev-parse HEAD) || exit $?
+original_head_ref=$(git -C "$repo" symbolic-ref -q HEAD 2>/dev/null) || original_head_ref=
+index_path=$(git -C "$repo" rev-parse --path-format=absolute --git-path index) || exit $?
+cp -- "$index_path" "$scratch/index.backup" || exit $?
+
+mutation_started=1
+while IFS= read -r -d '' indexed; do
+  indexed_path=$repo/$indexed
+  if [[ -L $indexed_path || -f $indexed_path ]]; then
+    expected_id=$(stat -c '%d:%i' -- "$indexed_path") || exit $?
+    expected_oid=$(git -C "$repo" hash-object --no-filters -- "$indexed_path") || exit $?
+    # A copy is insufficient because an already-open descriptor can write later.
+    quarantine=$scratch/original/$indexed
+    mkdir -p -- "${quarantine%/*}" || exit $?
+    safe_mv "$indexed_path" "$quarantine" || exit $?
+    if [[ -e $indexed_path || -L $indexed_path ]]; then
+      printf 'Hard reset could not reserve an isolated backup path for: %s\n' "$indexed" >&2
+      exit 43
+    fi
+    keep_scratch=1
+    isolated_id=$(stat -c '%d:%i' -- "$quarantine" 2>/dev/null) || isolated_id=
+    isolated_oid=$(git -C "$repo" hash-object --no-filters -- "$quarantine" 2>/dev/null) || isolated_oid=
+    isolated_paths+=("$indexed")
+    isolated_names+=("$quarantine")
+    isolated_ids+=("$isolated_id")
+    if [[ -z $isolated_id || $isolated_id != "$expected_id" || $isolated_oid != "$expected_oid" ]]; then
+      printf 'Hard reset refused a concurrently replaced tracked path: %s\n' "$indexed" >&2
+      exit 43
+    fi
+  fi
+done < "$scratch/indexed"
+
+rm -f -- "$scratch/index.expected"
+GIT_INDEX_FILE="$scratch/index.expected" git -C "$repo" read-tree --reset "$target_commit" || exit $?
+for target in "${target_paths[@]}"; do
+  if ! GIT_INDEX_FILE="$scratch/index.expected" git -C "$repo" checkout-index -- "$target"; then
+    materialized_id=$(stat -c '%d:%i' -- "$repo/$target" 2>/dev/null) || materialized_id=
+    if [[ -n $materialized_id ]]; then
+      materialized_paths+=("$target")
+      materialized_ids+=("$materialized_id")
+    fi
+    exit 1
+  fi
+  materialized_paths+=("$target")
+  materialized_id=$(stat -c '%d:%i' -- "$repo/$target" 2>/dev/null) || materialized_id=
+  materialized_ids+=("$materialized_id")
+done
+
+index_lock=$index_path.lock
+if ! ( set -C; : > "$index_lock" ) 2>/dev/null; then
+  printf 'Hard reset could not reserve the Git index lock: %s\n' "$index_lock" >&2
+  exit 43
+fi
+if ! cmp -s -- "$index_path" "$scratch/index.backup"; then
+  cp -- "$index_path" "$scratch/index.concurrent" 2>/dev/null || true
+  rm -f -- "$index_lock"
+  printf 'Hard reset refused to overwrite a concurrently modified Git index.\n' >&2
+  exit 43
+fi
+if ! cat -- "$scratch/index.expected" > "$index_lock" || ! chmod --reference="$scratch/index.backup" "$index_lock"; then
+  rm -f -- "$index_lock"
+  exit 1
+fi
+
+current_head_ref=$(git -C "$repo" symbolic-ref -q HEAD 2>/dev/null) || current_head_ref=
+if [[ -n $original_head_ref ]]; then
+  if [[ $current_head_ref != "$original_head_ref" ]] \
+      || ! git -C "$repo" update-ref "$original_head_ref" "$target_commit" "$original_head"; then
+    rm -f -- "$index_lock"
+    printf 'Hard reset refused a concurrent HEAD update.\n' >&2
+    exit 43
+  fi
+else
+  current_ref=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || current_ref=
+  if [[ -n $current_head_ref || $current_ref != "$original_head" ]] \
+      || ! git -C "$repo" update-ref --no-deref HEAD "$target_commit" "$original_head"; then
+    rm -f -- "$index_lock"
+    printf 'Hard reset refused a concurrent detached HEAD update.\n' >&2
+    exit 43
+  fi
+fi
+if ! mv -f -- "$index_lock" "$index_path"; then
+  rm -f -- "$index_lock"
+  exit 1
+fi
+
+printf 'state=complete\ntarget=%s\n' "$target_commit" > "$scratch/recovery-state.txt" || exit $?
+transaction_complete=1
+"#
+            .to_string(),
+            "macro-git-hard-reset".to_string(),
+            repo_path.linux_path.clone(),
+            target_commit.to_string(),
+        ],
+        WSL_GIT_MUTATION_TIMEOUT,
+    )
+    .await?;
+
+    match hard_reset.status.code() {
+        Some(0) => Ok(()),
+        Some(COLLISION_EXIT_CODE) => {
+            let path = hard_reset
+                .stdout
+                .split(|byte| *byte == 0)
+                .next()
+                .unwrap_or_default();
+            Err(untracked_reset_collision_error(path))
+        }
+        _ => Err(wsl_git_failure(&hard_reset, "git hard reset WSL failed")),
+    }
 }
 
 pub(crate) async fn wsl_git_checkout(
@@ -3961,6 +4397,1849 @@ pub(crate) fn restore_paths(
     Ok(())
 }
 
+fn native_target_tree_paths(target: &Commit<'_>) -> Result<Vec<Vec<u8>>> {
+    let tree = target.tree()?;
+    let mut paths = Vec::new();
+    tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() == Some(git2::ObjectType::Tree) {
+            return TreeWalkResult::Ok;
+        }
+        let mut path = root.as_bytes().to_vec();
+        path.extend_from_slice(entry.name_bytes());
+        paths.push(path);
+        TreeWalkResult::Ok
+    })?;
+    Ok(paths)
+}
+
+fn native_untracked_paths(repo: &Repository) -> Result<Vec<Vec<u8>>> {
+    let mut options = get_status_options();
+    options.include_ignored(true).recurse_ignored_dirs(true);
+    let statuses = repo.statuses(Some(&mut options))?;
+    Ok(statuses
+        .iter()
+        .filter(|entry| entry.status().is_wt_new() || entry.status().is_ignored())
+        .map(|entry| normalize_git_path(entry.path_bytes()))
+        .collect())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct NativeFileIdentity {
+    volume: u64,
+    file: u64,
+}
+
+#[cfg(unix)]
+fn native_path_identity(path: &Path) -> Option<NativeFileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path).ok()?;
+    Some(NativeFileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn native_path_identity(path: &Path) -> Option<NativeFileIdentity> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide_path.push(0);
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    let succeeded = unsafe { GetFileInformationByHandle(handle, &mut information) } != 0;
+    unsafe {
+        CloseHandle(handle);
+    }
+    if !succeeded {
+        return None;
+    }
+
+    Some(NativeFileIdentity {
+        volume: u64::from(information.dwVolumeSerialNumber),
+        file: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_path_identity(_path: &Path) -> Option<NativeFileIdentity> {
+    None
+}
+
+#[cfg(unix)]
+fn native_git_path(path: &[u8]) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    Some(PathBuf::from(OsStr::from_bytes(path)))
+}
+
+#[cfg(windows)]
+fn native_git_path(path: &[u8]) -> Option<PathBuf> {
+    std::str::from_utf8(path).ok().map(PathBuf::from)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_git_path(path: &[u8]) -> Option<PathBuf> {
+    std::str::from_utf8(path).ok().map(PathBuf::from)
+}
+
+fn native_git_path_identity(repo_root: &Path, path: &[u8]) -> Option<NativeFileIdentity> {
+    let relative = native_git_path(path)?;
+    native_path_identity(&repo_root.join(relative))
+}
+
+fn find_native_untracked_reset_collision(
+    repo_root: &Path,
+    untracked_paths: &[Vec<u8>],
+    target_paths: &[Vec<u8>],
+) -> Option<Vec<u8>> {
+    let mut target_full_paths = HashSet::new();
+    let mut target_prefix_paths = HashSet::new();
+    let mut target_full_identities = HashSet::new();
+    let mut target_prefix_identities = HashSet::new();
+
+    for target in target_paths {
+        target_full_paths.insert(target.clone());
+        if let Some(identity) = native_git_path_identity(repo_root, target) {
+            target_full_identities.insert(identity);
+        }
+        for prefix in git_path_prefixes(target) {
+            if target_prefix_paths.insert(prefix.to_vec()) {
+                if let Some(identity) = native_git_path_identity(repo_root, prefix) {
+                    target_prefix_identities.insert(identity);
+                }
+            }
+        }
+    }
+
+    untracked_paths.iter().find_map(|untracked| {
+        let untracked_identity = native_git_path_identity(repo_root, untracked);
+        if target_prefix_paths.contains(untracked)
+            || untracked_identity
+                .is_some_and(|identity| target_prefix_identities.contains(&identity))
+        {
+            return Some(untracked.clone());
+        }
+
+        git_path_prefixes(untracked)
+            .into_iter()
+            .any(|prefix| {
+                target_full_paths.contains(prefix)
+                    || native_git_path_identity(repo_root, prefix)
+                        .is_some_and(|identity| target_full_identities.contains(&identity))
+            })
+            .then(|| untracked.clone())
+    })
+}
+
+fn ensure_native_hard_reset_preserves_untracked(
+    repo: &Repository,
+    target: &Commit<'_>,
+) -> Result<()> {
+    let Some(repo_root) = repo.workdir() else {
+        return Ok(());
+    };
+    let untracked_paths = native_untracked_paths(repo)?;
+    let target_paths = native_target_tree_paths(target)?;
+    if let Some(path) =
+        find_native_untracked_reset_collision(repo_root, &untracked_paths, &target_paths)
+    {
+        return Err(untracked_reset_collision_error(&path));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+type NativeHardResetTestHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static NATIVE_HARD_RESET_AFTER_PREFLIGHT_HOOKS: OnceLock<
+    Mutex<HashMap<PathBuf, NativeHardResetTestHook>>,
+> = OnceLock::new();
+#[cfg(test)]
+static NATIVE_HARD_RESET_BEFORE_FINAL_RESET_HOOKS: OnceLock<
+    Mutex<HashMap<PathBuf, NativeHardResetTestHook>>,
+> = OnceLock::new();
+#[cfg(test)]
+static NATIVE_HARD_RESET_BEFORE_TRACKED_ISOLATION_HOOKS: OnceLock<
+    Mutex<HashMap<PathBuf, NativeHardResetTestHook>>,
+> = OnceLock::new();
+#[cfg(test)]
+static NATIVE_HARD_RESET_AFTER_TRACKED_ISOLATION_HOOKS: OnceLock<
+    Mutex<HashMap<PathBuf, NativeHardResetTestHook>>,
+> = OnceLock::new();
+
+#[cfg(test)]
+fn install_native_hard_reset_after_preflight_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_AFTER_PREFLIGHT_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset test hooks")
+        .insert(repo_root, Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_native_hard_reset_after_preflight_hook(repo_root: &Path) {
+    let hook = NATIVE_HARD_RESET_AFTER_PREFLIGHT_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset test hooks")
+        .remove(repo_root);
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn install_native_hard_reset_before_final_reset_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_BEFORE_FINAL_RESET_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset final test hooks")
+        .insert(repo_root, Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_native_hard_reset_before_final_reset_hook(repo_root: &Path) -> bool {
+    let hook = NATIVE_HARD_RESET_BEFORE_FINAL_RESET_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset final test hooks")
+        .remove(repo_root);
+    if let Some(hook) = hook {
+        hook();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+fn install_native_hard_reset_before_tracked_isolation_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_BEFORE_TRACKED_ISOLATION_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset isolation test hooks")
+        .insert(repo_root, Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_native_hard_reset_before_tracked_isolation_hook(repo_root: &Path) {
+    let hook = NATIVE_HARD_RESET_BEFORE_TRACKED_ISOLATION_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset isolation test hooks")
+        .remove(repo_root);
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn install_native_hard_reset_after_tracked_isolation_hook(
+    repo_root: PathBuf,
+    hook: impl FnOnce() + Send + 'static,
+) {
+    NATIVE_HARD_RESET_AFTER_TRACKED_ISOLATION_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset post-isolation test hooks")
+        .insert(repo_root, Box::new(hook));
+}
+
+#[cfg(test)]
+fn run_native_hard_reset_after_tracked_isolation_hook(repo_root: &Path) {
+    let hook = NATIVE_HARD_RESET_AFTER_TRACKED_ISOLATION_HOOKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .expect("lock hard reset post-isolation test hooks")
+        .remove(repo_root);
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn run_native_hard_reset_after_preflight_hook(_repo_root: &Path) {}
+
+#[cfg(not(test))]
+fn run_native_hard_reset_before_final_reset_hook(_repo_root: &Path) -> bool {
+    false
+}
+
+#[cfg(not(test))]
+fn run_native_hard_reset_before_tracked_isolation_hook(_repo_root: &Path) {}
+
+#[cfg(not(test))]
+fn run_native_hard_reset_after_tracked_isolation_hook(_repo_root: &Path) {}
+
+fn remove_native_indexed_worktree_entries(
+    repo: &Repository,
+    repo_root: &Path,
+    target: &Commit<'_>,
+    scratch: &NativeHardResetCheckoutScratch,
+) -> Result<Vec<NativeHardResetBackup>> {
+    let worktree =
+        CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open the hard reset worktree: {error}"),
+                source: error,
+            }
+        })?;
+    let target_tree = target.tree()?;
+    let mut processed = HashSet::new();
+    let mut backups = Vec::new();
+    for entry in repo.index()?.iter() {
+        let path = entry.path;
+        if !processed.insert(path.clone()) {
+            continue;
+        }
+        let relative = native_git_path(&path).ok_or_else(|| BackendError::Git {
+            message: format!(
+                "Hard reset cannot represent tracked path '{}'.",
+                String::from_utf8_lossy(&path)
+            ),
+        })?;
+        let target_matches_index = target_tree.get_path(&relative).is_ok_and(|target_entry| {
+            target_entry.id() == entry.id && target_entry.filemode() as u32 == entry.mode
+        });
+        let worktree_is_clean = repo.status_file(&relative).is_ok_and(|status| {
+            !status.intersects(
+                Status::WT_NEW
+                    | Status::WT_MODIFIED
+                    | Status::WT_DELETED
+                    | Status::WT_RENAMED
+                    | Status::WT_TYPECHANGE
+                    | Status::CONFLICTED,
+            )
+        });
+        if target_matches_index && worktree_is_clean {
+            continue;
+        }
+        let removal = remove_native_indexed_worktree_entry(
+            &worktree,
+            repo_root,
+            &relative,
+            &String::from_utf8_lossy(&path),
+            scratch,
+        );
+        match removal {
+            Ok(Some(backup)) => backups.push(backup),
+            Ok(None) => {}
+            Err(error) => {
+                restore_native_hard_reset_backups(repo_root, scratch, &backups)?;
+                return Err(error);
+            }
+        }
+    }
+    for path in native_target_tree_paths(target)? {
+        if !processed.insert(path.clone()) {
+            continue;
+        }
+        let relative = native_git_path(&path).ok_or_else(|| BackendError::Git {
+            message: format!(
+                "Hard reset cannot represent tracked path '{}'.",
+                String::from_utf8_lossy(&path)
+            ),
+        })?;
+        if fs::symlink_metadata(repo_root.join(&relative)).is_ok() {
+            restore_native_hard_reset_backups(repo_root, scratch, &backups)?;
+            return Err(untracked_reset_collision_error(&path));
+        }
+        backups.push(NativeHardResetBackup {
+            relative,
+            data: NativeHardResetBackupData::Absent,
+        });
+    }
+    Ok(backups)
+}
+
+enum NativeHardResetBackupData {
+    Absent,
+    Preserved { identity: NativeFileIdentity },
+}
+
+struct NativeHardResetBackup {
+    relative: PathBuf,
+    data: NativeHardResetBackupData,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeEntryKind {
+    File,
+    Symlink,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct NativeEntryFingerprint {
+    kind: NativeEntryKind,
+    digest: [u8; 32],
+}
+
+fn native_capability_entry_fingerprint(
+    parent: &CapabilityDir,
+    name: &OsStr,
+    metadata: &cap_std::fs::Metadata,
+    display_path: &str,
+) -> Result<Option<NativeEntryFingerprint>> {
+    if metadata.file_type().is_symlink() {
+        let target = parent
+            .read_link_contents(name)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to inspect tracked link '{display_path}': {error}"),
+                source: error,
+            })?;
+        return Ok(Some(NativeEntryFingerprint {
+            kind: NativeEntryKind::Symlink,
+            digest: Sha256::digest(native_symlink_target_bytes(&target)).into(),
+        }));
+    }
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let mut file = parent.open(name).map_err(|error| BackendError::Io {
+        message: format!("Failed to inspect tracked path '{display_path}': {error}"),
+        source: error,
+    })?;
+    let opened_metadata = file.metadata().map_err(|error| BackendError::Io {
+        message: format!("Failed to verify tracked path '{display_path}': {error}"),
+        source: error,
+    })?;
+    if native_capability_identity(&opened_metadata) != native_capability_identity(metadata) {
+        return Err(BackendError::Git {
+            message: format!("Tracked path '{display_path}' changed while it was inspected"),
+        });
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| BackendError::Io {
+            message: format!("Failed to hash tracked path '{display_path}': {error}"),
+            source: error,
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(Some(NativeEntryFingerprint {
+        kind: NativeEntryKind::File,
+        digest: hasher.finalize().into(),
+    }))
+}
+
+fn remove_native_indexed_worktree_entry(
+    worktree: &CapabilityDir,
+    repo_root: &Path,
+    relative: &Path,
+    display_path: &str,
+    scratch: &NativeHardResetCheckoutScratch,
+) -> Result<Option<NativeHardResetBackup>> {
+    let file_name = relative.file_name().ok_or_else(|| BackendError::Git {
+        message: format!("Invalid tracked path during hard reset: {display_path}"),
+    })?;
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain the hard reset worktree: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!("Invalid tracked path during hard reset: {display_path}"),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                        message: format!(
+                            "Failed to open a tracked hard reset directory '{display_path}': {error}"
+                        ),
+                        source: error,
+                    })?;
+                }
+                Ok(_) => {
+                    return Err(BackendError::Git {
+                        message: format!(
+                            "Hard reset refused tracked path '{display_path}' through a linked or non-directory parent."
+                        ),
+                    })
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Some(NativeHardResetBackup {
+                        relative: relative.to_path_buf(),
+                        data: NativeHardResetBackupData::Absent,
+                    }))
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect tracked hard reset path '{display_path}': {error}"
+                        ),
+                        source: error,
+                    })
+                }
+            }
+        }
+    }
+
+    let metadata = match parent.symlink_metadata(file_name) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Some(NativeHardResetBackup {
+                relative: relative.to_path_buf(),
+                data: NativeHardResetBackupData::Absent,
+            }))
+        }
+        Err(error) => {
+            return Err(BackendError::Io {
+                message: format!(
+                    "Failed to inspect tracked hard reset path '{display_path}': {error}"
+                ),
+                source: error,
+            })
+        }
+    };
+    let expected_identity =
+        native_capability_identity(&metadata).ok_or_else(|| BackendError::Git {
+            message: format!("Cannot identify tracked hard reset path '{display_path}'"),
+        })?;
+    let expected_fingerprint =
+        native_capability_entry_fingerprint(&parent, file_name, &metadata, display_path)?;
+    if expected_fingerprint.is_none() {
+        return Ok(None);
+    }
+    run_native_hard_reset_before_tracked_isolation_hook(repo_root);
+
+    let recovery_root = scratch.original_dir()?;
+    let recovery_parent = open_or_create_native_worktree_parent(&recovery_root, relative)?;
+    // Preserve the inode itself. A copied snapshot can become stale when an editor
+    // keeps a writable handle open across the rename.
+    parent
+        .rename(file_name, &recovery_parent, file_name)
+        .map_err(|error| BackendError::Io {
+            message: format!("Failed to isolate tracked hard reset path '{display_path}': {error}"),
+            source: error,
+        })?;
+    scratch.retain();
+    let isolated_path = scratch.original_path().join(relative);
+    let restore_isolated = || recovery_parent.rename(file_name, &parent, file_name);
+    let isolated_metadata = match recovery_parent.symlink_metadata(file_name) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            scratch.retain();
+            return Err(BackendError::Io {
+                message: format!(
+                    "Failed to inspect isolated hard reset path '{}'; recovery data was retained at {}: {error}",
+                    isolated_path.display(),
+                    scratch.path().display()
+                ),
+                source: error,
+            });
+        }
+    };
+    if native_capability_identity(&isolated_metadata) != Some(expected_identity) {
+        let restore_result = restore_isolated();
+        if let Err(restore_error) = restore_result {
+            scratch.retain();
+            return Err(BackendError::Git {
+                message: format!(
+                    "Hard reset refused to remove concurrently replaced path '{display_path}'; the replacement was retained at {} because restoring its name failed: {restore_error}",
+                    isolated_path.display()
+                ),
+            });
+        }
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset refused to remove concurrently replaced path '{display_path}'"
+            ),
+        });
+    }
+    let isolated_fingerprint = match native_capability_entry_fingerprint(
+        &recovery_parent,
+        file_name,
+        &isolated_metadata,
+        display_path,
+    ) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            let restore_result = restore_isolated();
+            if restore_result.is_err() {
+                scratch.retain();
+            }
+            return Err(BackendError::Git {
+                message: format!(
+                    "{error}; hard reset could not verify isolated path '{display_path}'{}",
+                    restore_result
+                        .err()
+                        .map(|restore_error| format!(
+                            "; it remains at {}: {restore_error}",
+                            isolated_path.display()
+                        ))
+                        .unwrap_or_default()
+                ),
+            });
+        }
+    };
+    if isolated_fingerprint != expected_fingerprint {
+        let restore_result = restore_isolated();
+        if restore_result.is_err() {
+            scratch.retain();
+        }
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset refused concurrently modified tracked path '{display_path}'{}",
+                restore_result
+                    .err()
+                    .map(|error| format!("; it remains at {}: {error}", isolated_path.display()))
+                    .unwrap_or_default()
+            ),
+        });
+    }
+    run_native_hard_reset_after_tracked_isolation_hook(repo_root);
+    Ok(Some(NativeHardResetBackup {
+        relative: relative.to_path_buf(),
+        data: NativeHardResetBackupData::Preserved {
+            identity: expected_identity,
+        },
+    }))
+}
+
+fn open_or_create_native_worktree_parent(
+    worktree: &CapabilityDir,
+    relative: &Path,
+) -> Result<CapabilityDir> {
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain the hard reset worktree: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Invalid tracked path during hard reset: {}",
+                        relative.display()
+                    ),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(BackendError::Git {
+                        message: format!(
+                        "Hard reset rollback refused '{}' through a linked or non-directory parent",
+                        relative.display()
+                    ),
+                    })
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match parent.create_dir(segment) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(error) => {
+                            return Err(BackendError::Io {
+                                message: format!(
+                                    "Failed to recreate hard reset parent for '{}': {error}",
+                                    relative.display()
+                                ),
+                                source: error,
+                            })
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect hard reset rollback path '{}': {error}",
+                            relative.display()
+                        ),
+                        source: error,
+                    })
+                }
+            }
+            parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to open hard reset rollback parent for '{}': {error}",
+                    relative.display()
+                ),
+                source: error,
+            })?;
+        }
+    }
+    Ok(parent)
+}
+
+fn restore_native_hard_reset_backups(
+    repo_root: &Path,
+    scratch: &NativeHardResetCheckoutScratch,
+    backups: &[NativeHardResetBackup],
+) -> Result<()> {
+    let result = restore_native_hard_reset_backups_impl(repo_root, scratch, backups);
+    if let Err(error) = result {
+        scratch.retain();
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset rollback failed; recovery data was retained at {}: {error}",
+                scratch.path().display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn restore_native_hard_reset_backups_impl(
+    repo_root: &Path,
+    scratch: &NativeHardResetCheckoutScratch,
+    backups: &[NativeHardResetBackup],
+) -> Result<()> {
+    let worktree =
+        CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to reopen the hard reset worktree: {error}"),
+                source: error,
+            }
+        })?;
+    let recovery = scratch.original_dir()?;
+    for backup in backups.iter().rev() {
+        if matches!(&backup.data, NativeHardResetBackupData::Absent) {
+            continue;
+        }
+        let file_name = backup
+            .relative
+            .file_name()
+            .ok_or_else(|| BackendError::Git {
+                message: format!(
+                    "Invalid tracked rollback path: {}",
+                    backup.relative.display()
+                ),
+            })?;
+        let parent = open_or_create_native_worktree_parent(&worktree, &backup.relative)?;
+        match parent.symlink_metadata(file_name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Hard reset rollback refused to overwrite path '{}' created concurrently",
+                        backup.relative.display()
+                    ),
+                })
+            }
+            Err(error) => {
+                return Err(BackendError::Io {
+                    message: format!(
+                        "Failed to inspect hard reset rollback path '{}': {error}",
+                        backup.relative.display()
+                    ),
+                    source: error,
+                })
+            }
+        }
+        let NativeHardResetBackupData::Preserved { identity } = &backup.data else {
+            unreachable!("absent backups were handled before path restoration")
+        };
+        let recovery_parent = open_native_worktree_parent(&recovery, &backup.relative)?
+            .ok_or_else(|| BackendError::Git {
+                message: format!(
+                    "Hard reset recovery data is missing for '{}'",
+                    backup.relative.display()
+                ),
+            })?;
+        let recovery_metadata = recovery_parent
+            .symlink_metadata(file_name)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to inspect hard reset recovery data for '{}': {error}",
+                    backup.relative.display()
+                ),
+                source: error,
+            })?;
+        if native_capability_identity(&recovery_metadata) != Some(*identity) {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Hard reset refused changed recovery data for '{}'",
+                    backup.relative.display()
+                ),
+            });
+        }
+        recovery_parent
+            .rename(file_name, &parent, file_name)
+            .map_err(|error| BackendError::Io {
+                message: format!(
+                    "Failed to restore hard reset path '{}': {error}",
+                    backup.relative.display()
+                ),
+                source: error,
+            })?;
+    }
+    Ok(())
+}
+
+struct NativeHardResetCheckoutScratch {
+    path: PathBuf,
+    directory: CapabilityDir,
+    retain: AtomicBool,
+}
+
+impl NativeHardResetCheckoutScratch {
+    fn create(repo: &Repository) -> Result<Self> {
+        let root = repo.commondir().join("macro-hard-reset-recovery");
+        fs::create_dir_all(&root).map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to create the hard reset recovery root {}: {error}",
+                root.display()
+            ),
+            source: error,
+        })?;
+        let root_metadata = fs::symlink_metadata(&root).map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to inspect the hard reset recovery root {}: {error}",
+                root.display()
+            ),
+            source: error,
+        })?;
+        if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Hard reset recovery root is linked or is not a directory: {}",
+                    root.display()
+                ),
+            });
+        }
+        for _ in 0..32 {
+            let sequence = HARD_RESET_CHECKOUT_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!(
+                "transaction-{}-{sequence}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4().simple()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    let directory = CapabilityDir::open_ambient_dir(&path, ambient_authority())
+                        .map_err(|error| BackendError::Io {
+                            message: format!(
+                                "Failed to open hard reset recovery directory {}: {error}",
+                                path.display()
+                            ),
+                            source: error,
+                        })?;
+                    for child in ["original", "rollback-target", "checkout"] {
+                        directory
+                            .create_dir(child)
+                            .map_err(|error| BackendError::Io {
+                                message: format!(
+                                    "Failed to create hard reset recovery directory '{}': {error}",
+                                    path.join(child).display()
+                                ),
+                                source: error,
+                            })?;
+                    }
+                    return Ok(Self {
+                        path,
+                        directory,
+                        retain: AtomicBool::new(false),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to create a temporary hard reset directory: {error}"
+                        ),
+                        source: error,
+                    })
+                }
+            }
+        }
+        Err(BackendError::Io {
+            message: "Failed to reserve a temporary hard reset directory".to_string(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "temporary hard reset directory names are exhausted",
+            ),
+        })
+    }
+
+    fn retain(&self) {
+        self.retain.store(true, Ordering::Relaxed);
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn original_path(&self) -> PathBuf {
+        self.path.join("original")
+    }
+
+    fn checkout_path(&self) -> PathBuf {
+        self.path.join("checkout")
+    }
+
+    fn original_dir(&self) -> Result<CapabilityDir> {
+        self.directory
+            .open_dir("original")
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to open hard reset original recovery data: {error}"),
+                source: error,
+            })
+    }
+
+    fn rollback_target_dir(&self) -> Result<CapabilityDir> {
+        self.directory
+            .open_dir("rollback-target")
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to open hard reset rollback recovery data: {error}"),
+                source: error,
+            })
+    }
+}
+
+impl Drop for NativeHardResetCheckoutScratch {
+    fn drop(&mut self) {
+        if !self.retain.load(Ordering::Relaxed) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+struct NativeHardResetRepositorySnapshot {
+    head_name: Option<String>,
+    head_oid: Oid,
+    index_backup: PathBuf,
+    expected_index: PathBuf,
+}
+
+fn capture_native_hard_reset_repository_snapshot(
+    repo: &Repository,
+    target: &Commit<'_>,
+    scratch: &NativeHardResetCheckoutScratch,
+) -> Result<NativeHardResetRepositorySnapshot> {
+    let head = repo.head().map_err(|error| BackendError::Git {
+        message: format!("Failed to capture HEAD before hard reset: {error}"),
+    })?;
+    let head_oid = head.target().ok_or_else(|| BackendError::Git {
+        message: "Cannot hard reset an unborn HEAD".to_string(),
+    })?;
+    let head_name = if repo.head_detached().unwrap_or(false) {
+        None
+    } else {
+        head.name().ok().map(str::to_string)
+    };
+    let index_path = repo.path().join("index");
+    let index_backup = scratch.path().join("index.backup");
+    fs::copy(&index_path, &index_backup).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to back up the Git index {} before hard reset: {error}",
+            index_path.display()
+        ),
+        source: error,
+    })?;
+    let expected_index = scratch.path().join("index.expected");
+    fs::copy(&index_path, &expected_index).map_err(|error| BackendError::Io {
+        message: format!("Failed to prepare the expected hard reset index: {error}"),
+        source: error,
+    })?;
+    let mut expected = git2::Index::open(&expected_index)?;
+    expected.read_tree(&target.tree()?)?;
+    expected.write()?;
+    fs::write(
+        scratch.path().join("repository-state.txt"),
+        format!(
+            "head={head_oid}\nhead_name={}\nindex={}\n",
+            head_name.as_deref().unwrap_or("DETACHED"),
+            index_path.display()
+        ),
+    )
+    .map_err(|error| BackendError::Io {
+        message: format!("Failed to record hard reset recovery metadata: {error}"),
+        source: error,
+    })?;
+    Ok(NativeHardResetRepositorySnapshot {
+        head_name,
+        head_oid,
+        index_backup,
+        expected_index,
+    })
+}
+
+fn restore_native_hard_reset_head(
+    repo: &Repository,
+    snapshot: &NativeHardResetRepositorySnapshot,
+    reset_target: Oid,
+) -> Result<()> {
+    if let Some(head_name) = snapshot.head_name.as_deref() {
+        let current = repo
+            .refname_to_id(head_name)
+            .map_err(|error| BackendError::Git {
+                message: format!("Failed to inspect HEAD during hard reset rollback: {error}"),
+            })?;
+        if current == snapshot.head_oid {
+            return Ok(());
+        }
+        if current != reset_target {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Hard reset rollback refused to overwrite concurrent update of {head_name}"
+                ),
+            });
+        }
+        repo.reference_matching(
+            head_name,
+            snapshot.head_oid,
+            true,
+            reset_target,
+            "Macro hard reset rollback",
+        )?;
+    } else {
+        let head = repo.find_reference("HEAD")?;
+        if head.symbolic_target()?.is_some() {
+            return Err(BackendError::Git {
+                message: "Hard reset rollback refused to overwrite a concurrently attached HEAD"
+                    .to_string(),
+            });
+        }
+        let current = head.target().ok_or_else(|| BackendError::Git {
+            message: "Failed to inspect detached HEAD during hard reset rollback".to_string(),
+        })?;
+        if current == snapshot.head_oid {
+            return Ok(());
+        }
+        if current != reset_target {
+            return Err(BackendError::Git {
+                message: "Hard reset rollback refused to overwrite concurrent detached HEAD update"
+                    .to_string(),
+            });
+        }
+        repo.reference_matching(
+            "HEAD",
+            snapshot.head_oid,
+            true,
+            reset_target,
+            "Macro hard reset rollback",
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_native_index_file(replacement: &Path, index_path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+    let mut replaced = index_path.as_os_str().encode_wide().collect::<Vec<_>>();
+    replaced.push(0);
+    let mut replacement_wide = replacement.as_os_str().encode_wide().collect::<Vec<_>>();
+    replacement_wide.push(0);
+    if unsafe {
+        ReplaceFileW(
+            replaced.as_ptr(),
+            replacement_wide.as_ptr(),
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_native_index_file(replacement: &Path, index_path: &Path) -> std::io::Result<()> {
+    fs::rename(replacement, index_path)
+}
+
+fn advance_native_hard_reset_head(
+    repo: &Repository,
+    snapshot: &NativeHardResetRepositorySnapshot,
+    target: Oid,
+) -> Result<()> {
+    if let Some(head_name) = snapshot.head_name.as_deref() {
+        let head = repo.find_reference("HEAD")?;
+        if head.symbolic_target()? != Some(head_name) {
+            return Err(BackendError::Git {
+                message: "Hard reset refused a concurrent HEAD attachment change".to_string(),
+            });
+        }
+        let current = repo.refname_to_id(head_name)?;
+        if current != snapshot.head_oid {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Hard reset refused a concurrent update of {head_name} before finalization"
+                ),
+            });
+        }
+        if target != snapshot.head_oid {
+            repo.reference_matching(
+                head_name,
+                target,
+                true,
+                snapshot.head_oid,
+                "Macro hard reset",
+            )?;
+        }
+    } else {
+        let head = repo.find_reference("HEAD")?;
+        if head.symbolic_target()?.is_some() || head.target() != Some(snapshot.head_oid) {
+            return Err(BackendError::Git {
+                message: "Hard reset refused a concurrent detached HEAD update".to_string(),
+            });
+        }
+        if target != snapshot.head_oid {
+            repo.reference_matching("HEAD", target, true, snapshot.head_oid, "Macro hard reset")?;
+        }
+    }
+    Ok(())
+}
+
+fn finalize_native_hard_reset(
+    repo: &Repository,
+    snapshot: &NativeHardResetRepositorySnapshot,
+    target: Oid,
+) -> Result<()> {
+    let index_path = repo.path().join("index");
+    let index_lock = repo.path().join("index.lock");
+    let mut lock = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&index_lock)
+        .map_err(|error| BackendError::Io {
+            message: format!(
+                "Hard reset could not reserve Git index lock {}: {error}",
+                index_lock.display()
+            ),
+            source: error,
+        })?;
+    let finalize_result = (|| -> Result<()> {
+        let current = fs::read(&index_path).map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect the Git index before finalization: {error}"),
+            source: error,
+        })?;
+        let original = fs::read(&snapshot.index_backup).map_err(|error| BackendError::Io {
+            message: format!("Failed to read the original Git index before finalization: {error}"),
+            source: error,
+        })?;
+        if current != original {
+            let _ = fs::copy(
+                &index_path,
+                snapshot.index_backup.with_file_name("index.concurrent"),
+            );
+            return Err(BackendError::Git {
+                message: "Hard reset refused to overwrite a concurrently modified Git index"
+                    .to_string(),
+            });
+        }
+        let expected = fs::read(&snapshot.expected_index).map_err(|error| BackendError::Io {
+            message: format!("Failed to read the target Git index: {error}"),
+            source: error,
+        })?;
+        lock.write_all(&expected)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to stage the target Git index: {error}"),
+                source: error,
+            })?;
+        lock.sync_all().map_err(|error| BackendError::Io {
+            message: format!("Failed to flush the target Git index: {error}"),
+            source: error,
+        })?;
+        advance_native_hard_reset_head(repo, snapshot, target)?;
+        drop(lock);
+        replace_native_index_file(&index_lock, &index_path).map_err(|error| BackendError::Io {
+            message: format!("Failed to publish the target Git index: {error}"),
+            source: error,
+        })?;
+        Ok(())
+    })();
+    if finalize_result.is_err() {
+        let _ = fs::remove_file(&index_lock);
+    }
+    finalize_result
+}
+
+fn restore_native_hard_reset_index(
+    repo: &Repository,
+    snapshot: &NativeHardResetRepositorySnapshot,
+) -> Result<()> {
+    let index_path = repo.path().join("index");
+    let index_lock = repo.path().join("index.lock");
+    let mut lock = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&index_lock)
+        .map_err(|error| BackendError::Io {
+            message: format!(
+                "Hard reset rollback could not reserve Git index lock {}: {error}",
+                index_lock.display()
+            ),
+            source: error,
+        })?;
+    let restore_result = (|| -> Result<()> {
+        let current = fs::read(&index_path).map_err(|error| BackendError::Io {
+            message: format!("Failed to inspect the current Git index during rollback: {error}"),
+            source: error,
+        })?;
+        let original = fs::read(&snapshot.index_backup).map_err(|error| BackendError::Io {
+            message: format!("Failed to read the original Git index during rollback: {error}"),
+            source: error,
+        })?;
+        if current == original {
+            drop(lock);
+            fs::remove_file(&index_lock).map_err(|error| BackendError::Io {
+                message: format!("Failed to release the unused Git index lock: {error}"),
+                source: error,
+            })?;
+            return Ok(());
+        }
+        let expected = fs::read(&snapshot.expected_index).map_err(|error| BackendError::Io {
+            message: format!("Failed to read the target Git index during rollback: {error}"),
+            source: error,
+        })?;
+        if current != expected {
+            let _ = fs::copy(
+                &index_path,
+                snapshot.index_backup.with_file_name("index.current"),
+            );
+            return Err(BackendError::Git {
+                message:
+                    "Hard reset rollback refused to overwrite a concurrently modified Git index"
+                        .to_string(),
+            });
+        }
+        lock.write_all(&original)
+            .map_err(|error| BackendError::Io {
+                message: format!("Failed to stage the original Git index for rollback: {error}"),
+                source: error,
+            })?;
+        lock.sync_all().map_err(|error| BackendError::Io {
+            message: format!("Failed to flush the original Git index for rollback: {error}"),
+            source: error,
+        })?;
+        drop(lock);
+        replace_native_index_file(&index_lock, &index_path).map_err(|error| BackendError::Io {
+            message: format!("Failed to publish the original Git index: {error}"),
+            source: error,
+        })?;
+        Ok(())
+    })();
+    if restore_result.is_err() {
+        let _ = fs::remove_file(&index_lock);
+    }
+    restore_result
+}
+
+#[cfg(unix)]
+fn native_capability_identity(metadata: &cap_std::fs::Metadata) -> Option<NativeFileIdentity> {
+    use cap_fs_ext::MetadataExt;
+    Some(NativeFileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn native_capability_identity(metadata: &cap_std::fs::Metadata) -> Option<NativeFileIdentity> {
+    use cap_fs_ext::MetadataExt;
+    Some(NativeFileIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn native_capability_identity(_metadata: &cap_std::fs::Metadata) -> Option<NativeFileIdentity> {
+    None
+}
+
+fn open_native_worktree_parent(
+    worktree: &CapabilityDir,
+    relative: &Path,
+) -> Result<Option<CapabilityDir>> {
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain the hard reset worktree: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!("Invalid hard reset rollback path: {}", relative.display()),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    parent = parent.open_dir(segment).map_err(|error| BackendError::Io {
+                        message: format!(
+                            "Failed to open hard reset rollback path '{}': {error}",
+                            relative.display()
+                        ),
+                        source: error,
+                    })?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Ok(_) => {
+                    return Err(BackendError::Git {
+                        message: format!(
+                        "Hard reset rollback refused '{}' through a linked or non-directory parent",
+                        relative.display()
+                    ),
+                    })
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect hard reset rollback path '{}': {error}",
+                            relative.display()
+                        ),
+                        source: error,
+                    })
+                }
+            }
+        }
+    }
+    Ok(Some(parent))
+}
+
+fn remove_native_materialized_file(
+    worktree: &CapabilityDir,
+    scratch: &NativeHardResetCheckoutScratch,
+    relative: &Path,
+    expected: &NativeMaterializedState,
+) -> Result<()> {
+    let Some(parent) = open_native_worktree_parent(worktree, relative)? else {
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset rollback could not find materialized path '{}'",
+                relative.display()
+            ),
+        });
+    };
+    let file_name = relative.file_name().ok_or_else(|| BackendError::Git {
+        message: format!("Invalid hard reset rollback path: {}", relative.display()),
+    })?;
+    let recovery_root = scratch.rollback_target_dir()?;
+    let recovery_parent = open_or_create_native_worktree_parent(&recovery_root, relative)?;
+    // Rollback must retain this inode for the same open-handle reason as the
+    // original worktree entry.
+    parent
+        .rename(file_name, &recovery_parent, file_name)
+        .map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to preserve hard reset rollback path '{}': {error}",
+                relative.display()
+            ),
+            source: error,
+        })?;
+    scratch.retain();
+    let metadata = recovery_parent
+        .symlink_metadata(file_name)
+        .map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to verify preserved hard reset rollback path '{}': {error}",
+                relative.display()
+            ),
+            source: error,
+        })?;
+    let restore_isolated = || recovery_parent.rename(file_name, &parent, file_name);
+    if native_capability_identity(&metadata) != Some(expected.identity) {
+        let _ = restore_isolated();
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset rollback refused concurrently replaced path '{}'",
+                relative.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct NativeMaterializedState {
+    identity: NativeFileIdentity,
+}
+
+#[cfg(unix)]
+fn native_symlink_target_bytes(target: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    target.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn native_symlink_target_bytes(target: &Path) -> Vec<u8> {
+    target.to_string_lossy().as_bytes().to_vec()
+}
+
+fn capture_native_materialized_entries(
+    repo_root: &Path,
+    target: &Commit<'_>,
+    backups: &[NativeHardResetBackup],
+) -> Result<HashMap<PathBuf, NativeMaterializedState>> {
+    let tree = target.tree()?;
+    let mut materialized = HashMap::new();
+    for backup in backups {
+        let Ok(entry) = tree.get_path(&backup.relative) else {
+            continue;
+        };
+        if entry.kind() != Some(git2::ObjectType::Blob) {
+            continue;
+        }
+        let identity =
+            native_path_identity(&repo_root.join(&backup.relative)).ok_or_else(|| {
+                BackendError::Git {
+                    message: format!(
+                        "Hard reset did not materialize expected target path '{}'",
+                        backup.relative.display()
+                    ),
+                }
+            })?;
+        materialized.insert(
+            backup.relative.clone(),
+            NativeMaterializedState { identity },
+        );
+    }
+    Ok(materialized)
+}
+
+fn remove_native_materialized_entries(
+    repo_root: &Path,
+    scratch: &NativeHardResetCheckoutScratch,
+    backups: &[NativeHardResetBackup],
+    materialized: &HashMap<PathBuf, NativeMaterializedState>,
+) -> Result<()> {
+    let worktree =
+        CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open the hard reset worktree: {error}"),
+                source: error,
+            }
+        })?;
+    for backup in backups.iter().rev() {
+        let current_identity = native_path_identity(&repo_root.join(&backup.relative));
+        match (materialized.get(&backup.relative), current_identity) {
+            (Some(expected), Some(current)) if expected.identity == current => {
+                remove_native_materialized_file(&worktree, scratch, &backup.relative, expected)?;
+            }
+            (None, _) if matches!(&backup.data, NativeHardResetBackupData::Absent) => {}
+            (None, None) => {}
+            _ => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Hard reset rollback refused concurrently changed path '{}'",
+                        backup.relative.display()
+                    ),
+                })
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rollback_native_hard_reset(
+    repo: &Repository,
+    repo_root: &Path,
+    reset_target: Oid,
+    scratch: &NativeHardResetCheckoutScratch,
+    snapshot: &NativeHardResetRepositorySnapshot,
+    backups: &[NativeHardResetBackup],
+    materialized: &HashMap<PathBuf, NativeMaterializedState>,
+    original_error: BackendError,
+) -> BackendError {
+    let mut rollback_errors = Vec::new();
+    if let Err(error) =
+        remove_native_materialized_entries(repo_root, scratch, backups, materialized)
+    {
+        rollback_errors.push(error.to_string());
+    }
+    if let Err(error) = restore_native_hard_reset_backups(repo_root, scratch, backups) {
+        rollback_errors.push(error.to_string());
+    }
+    if let Err(error) = restore_native_hard_reset_head(repo, snapshot, reset_target) {
+        rollback_errors.push(error.to_string());
+    }
+    if let Err(error) = restore_native_hard_reset_index(repo, snapshot) {
+        rollback_errors.push(error.to_string());
+    }
+    if rollback_errors.is_empty() {
+        original_error
+    } else {
+        scratch.retain();
+        BackendError::Git {
+            message: format!(
+                "{original_error}; hard reset rollback was incomplete and recovery data was retained at {}: {}",
+                scratch.path().display(),
+                rollback_errors.join("; ")
+            ),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn create_native_hard_reset_file_without_overwrite(
+    worktree: &CapabilityDir,
+    relative: &Path,
+    source: &Path,
+) -> Result<()> {
+    let display_path = relative.to_string_lossy().replace('\\', "/");
+    let file_name = relative.file_name().ok_or_else(|| BackendError::Git {
+        message: format!("Invalid tracked path during hard reset: {display_path}"),
+    })?;
+    let mut parent = worktree.try_clone().map_err(|error| BackendError::Io {
+        message: format!("Failed to retain the hard reset worktree: {error}"),
+        source: error,
+    })?;
+    if let Some(parent_path) = relative.parent() {
+        for component in parent_path.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(BackendError::Git {
+                    message: format!("Invalid tracked path during hard reset: {display_path}"),
+                });
+            };
+            match parent.symlink_metadata(segment) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => return Err(untracked_reset_collision_error(display_path.as_bytes())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match parent.create_dir(segment) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(error) => {
+                            return Err(BackendError::Io {
+                                message: format!(
+                                    "Failed to create a tracked hard reset directory '{display_path}': {error}"
+                                ),
+                                source: error,
+                            })
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Err(BackendError::Io {
+                        message: format!(
+                            "Failed to inspect a tracked hard reset directory '{display_path}': {error}"
+                        ),
+                        source: error,
+                    })
+                }
+            }
+            parent = parent.open_dir(segment).map_err(|error| BackendError::Git {
+                message: format!(
+                    "Hard reset refused tracked path '{display_path}' through a linked or replaced directory: {error}"
+                ),
+            })?;
+        }
+    }
+
+    let source_metadata = fs::symlink_metadata(source).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to inspect temporary hard reset file '{}': {error}",
+            source.display()
+        ),
+        source: error,
+    })?;
+    if source_metadata.file_type().is_symlink() {
+        let link_target = fs::read_link(source).map_err(|error| BackendError::Io {
+            message: format!(
+                "Failed to read temporary hard reset link '{}': {error}",
+                source.display()
+            ),
+            source: error,
+        })?;
+        return parent
+            .symlink_file(link_target, file_name)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    untracked_reset_collision_error(display_path.as_bytes())
+                }
+                _ => BackendError::Io {
+                    message: format!(
+                        "Failed to create tracked hard reset link '{display_path}': {error}"
+                    ),
+                    source: error,
+                },
+            });
+    }
+    if !source_metadata.is_file() {
+        return Err(BackendError::Git {
+            message: format!(
+                "Hard reset produced an unsupported temporary entry for '{display_path}'"
+            ),
+        });
+    }
+
+    let mut source_file = fs::File::open(source).map_err(|error| BackendError::Io {
+        message: format!(
+            "Failed to open temporary hard reset file '{}': {error}",
+            source.display()
+        ),
+        source: error,
+    })?;
+    let mut options = CapabilityOpenOptions::new();
+    options.write(true).create_new(true);
+    let mut destination =
+        parent
+            .open_with(file_name, &options)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::AlreadyExists => {
+                    untracked_reset_collision_error(display_path.as_bytes())
+                }
+                _ => BackendError::Io {
+                    message: format!(
+                        "Failed to create tracked hard reset file '{display_path}': {error}"
+                    ),
+                    source: error,
+                },
+            })?;
+    std::io::copy(&mut source_file, &mut destination).map_err(|error| BackendError::Io {
+        message: format!("Failed to write tracked hard reset file '{display_path}': {error}"),
+        source: error,
+    })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn recover_native_case_sensitive_checkout_conflicts(
+    repo: &Repository,
+    repo_root: &Path,
+    target: &Commit<'_>,
+    conflicts: &[PathBuf],
+) -> Result<bool> {
+    if conflicts.is_empty() {
+        return Ok(false);
+    }
+
+    let target_paths = native_target_tree_paths(target)?;
+    let untracked_paths = native_untracked_paths(repo)?;
+    if find_native_untracked_reset_collision(repo_root, &untracked_paths, &target_paths).is_some() {
+        return Ok(false);
+    }
+
+    let mut conflict_paths = Vec::new();
+    let mut seen = HashSet::new();
+    for conflict in conflicts {
+        let Some(display_path) = conflict.to_str().map(|path| path.replace('\\', "/")) else {
+            return Ok(false);
+        };
+        let path_bytes = display_path.as_bytes();
+        if !target_paths
+            .iter()
+            .any(|target_path| target_path == path_bytes)
+            || fs::symlink_metadata(repo_root.join(conflict)).is_ok()
+            || !untracked_paths.iter().any(|untracked| {
+                untracked != path_bytes && untracked.eq_ignore_ascii_case(path_bytes)
+            })
+        {
+            return Ok(false);
+        }
+        if seen.insert(conflict.clone()) {
+            conflict_paths.push(conflict.clone());
+        }
+    }
+
+    let scratch = NativeHardResetCheckoutScratch::create(repo)?;
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout
+        .force()
+        .target_dir(&scratch.checkout_path())
+        .update_index(false);
+    for conflict in &conflict_paths {
+        checkout.path(conflict);
+    }
+    repo.checkout_tree(target.as_object(), Some(&mut checkout))?;
+
+    let worktree =
+        CapabilityDir::open_ambient_dir(repo_root, ambient_authority()).map_err(|error| {
+            BackendError::Io {
+                message: format!("Failed to open the hard reset worktree: {error}"),
+                source: error,
+            }
+        })?;
+    for conflict in &conflict_paths {
+        create_native_hard_reset_file_without_overwrite(
+            &worktree,
+            conflict,
+            &scratch.checkout_path().join(conflict),
+        )?;
+    }
+    Ok(true)
+}
+
+fn hard_reset_repo_preserving_untracked(repo: &Repository, target: &Commit<'_>) -> Result<()> {
+    let repo_root = repo_root(repo)?;
+    ensure_native_hard_reset_preserves_untracked(repo, target)?;
+    run_native_hard_reset_after_preflight_hook(&repo_root);
+
+    let scratch = NativeHardResetCheckoutScratch::create(repo)?;
+    let repository_snapshot =
+        capture_native_hard_reset_repository_snapshot(repo, target, &scratch)?;
+    let backups = remove_native_indexed_worktree_entries(repo, &repo_root, target, &scratch)?;
+    let checkout_conflicts = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+    let notified_conflicts = Arc::clone(&checkout_conflicts);
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout
+        .safe()
+        .recreate_missing(true)
+        .overwrite_ignored(false)
+        .update_index(false)
+        .notify_on(CheckoutNotificationType::CONFLICT)
+        .notify(move |why, path, _, _, _| {
+            if why.is_conflict() {
+                if let Some(path) = path {
+                    notified_conflicts
+                        .lock()
+                        .expect("lock hard reset checkout conflicts")
+                        .push(path.to_path_buf());
+                }
+            }
+            true
+        });
+    let checkout_result = repo.checkout_tree(target.as_object(), Some(&mut checkout));
+    drop(checkout);
+    if let Err(error) = checkout_result {
+        let conflicts = checkout_conflicts
+            .lock()
+            .expect("lock hard reset checkout conflicts")
+            .clone();
+        #[cfg(windows)]
+        match recover_native_case_sensitive_checkout_conflicts(repo, &repo_root, target, &conflicts)
+        {
+            Ok(true) => {
+                let materialized =
+                    match capture_native_materialized_entries(&repo_root, target, &backups) {
+                        Ok(materialized) => materialized,
+                        Err(error) => {
+                            return Err(rollback_native_hard_reset(
+                                repo,
+                                &repo_root,
+                                target.id(),
+                                &scratch,
+                                &repository_snapshot,
+                                &backups,
+                                &HashMap::new(),
+                                error,
+                            ));
+                        }
+                    };
+                let reset_result = if run_native_hard_reset_before_final_reset_hook(&repo_root) {
+                    Err(BackendError::Git {
+                        message: "Injected hard reset finalization failure".to_string(),
+                    })
+                } else {
+                    finalize_native_hard_reset(repo, &repository_snapshot, target.id())
+                };
+                if let Err(error) = reset_result {
+                    return Err(rollback_native_hard_reset(
+                        repo,
+                        &repo_root,
+                        target.id(),
+                        &scratch,
+                        &repository_snapshot,
+                        &backups,
+                        &materialized,
+                        BackendError::Git {
+                            message: format!(
+                                "Hard reset could not finalize repository state: {error}"
+                            ),
+                        },
+                    ));
+                }
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(recovery_error) => {
+                return Err(rollback_native_hard_reset(
+                    repo,
+                    &repo_root,
+                    target.id(),
+                    &scratch,
+                    &repository_snapshot,
+                    &backups,
+                    &HashMap::new(),
+                    recovery_error,
+                ));
+            }
+        }
+        return Err(rollback_native_hard_reset(
+            repo,
+            &repo_root,
+            target.id(),
+            &scratch,
+            &repository_snapshot,
+            &backups,
+            &HashMap::new(),
+            BackendError::Git {
+                message: format!(
+                    "Hard reset could not update tracked files without overwriting untracked data: {error}"
+                ),
+            },
+        ));
+    }
+    let materialized = match capture_native_materialized_entries(&repo_root, target, &backups) {
+        Ok(materialized) => materialized,
+        Err(error) => {
+            return Err(rollback_native_hard_reset(
+                repo,
+                &repo_root,
+                target.id(),
+                &scratch,
+                &repository_snapshot,
+                &backups,
+                &HashMap::new(),
+                error,
+            ));
+        }
+    };
+    let reset_result = if run_native_hard_reset_before_final_reset_hook(&repo_root) {
+        Err(BackendError::Git {
+            message: "Injected hard reset finalization failure".to_string(),
+        })
+    } else {
+        finalize_native_hard_reset(repo, &repository_snapshot, target.id())
+    };
+    if let Err(error) = reset_result {
+        return Err(rollback_native_hard_reset(
+            repo,
+            &repo_root,
+            target.id(),
+            &scratch,
+            &repository_snapshot,
+            &backups,
+            &materialized,
+            BackendError::Git {
+                message: format!("Hard reset could not finalize repository state: {error}"),
+            },
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) -> Result<()> {
     let target = if let Some(spec) = commit {
         resolve_commit(repo, &spec)?
@@ -3973,15 +6252,7 @@ pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) 
     let reset_type = match mode {
         "soft" => ResetType::Soft,
         "mixed" => ResetType::Mixed,
-        "hard" => {
-            let status = repo.statuses(Some(&mut get_status_options()))?;
-            if !status.is_empty() {
-                return Err(BackendError::GitRepositoryNotClean {
-                    message: "Hard reset requires a clean working tree".to_string(),
-                });
-            }
-            ResetType::Hard
-        }
+        "hard" => ResetType::Hard,
         other => {
             return Err(BackendError::Validation(format!(
                 "Invalid reset mode: {}",
@@ -3989,6 +6260,10 @@ pub(crate) fn reset_repo(repo: &Repository, mode: &str, commit: Option<String>) 
             )))
         }
     };
+
+    if reset_type == ResetType::Hard {
+        return hard_reset_repo_preserving_untracked(repo, &target);
+    }
 
     repo.reset(target.as_object(), reset_type, None)?;
     Ok(())
@@ -4668,7 +6943,7 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
         let commit = branch
             .get()
             .peel_to_commit()
-            .map(|c| short_hash(c.id()))
+            .map(|c| c.id().to_string())
             .unwrap_or_default();
         local.push(GitBranch {
             name,
@@ -4683,7 +6958,7 @@ pub(crate) fn build_git_branches(repo: &Repository) -> Result<GitBranchesDto> {
         let commit = branch
             .get()
             .peel_to_commit()
-            .map(|c| short_hash(c.id()))
+            .map(|c| c.id().to_string())
             .unwrap_or_default();
         remote.push(GitBranch {
             name,
@@ -4830,7 +7105,12 @@ fn create_branch_from_ref(repo: &Repository, branch_name: &str, from_ref: &str) 
     Ok(())
 }
 
-fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Result<()> {
+fn delete_local_branch(
+    repo: &Repository,
+    branch_name: &str,
+    force: bool,
+    expected_commit: Option<&str>,
+) -> Result<()> {
     let current = get_branch_name(repo)?;
     if current.as_deref() == Some(branch_name) {
         return Err(BackendError::Git {
@@ -4838,11 +7118,32 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
         });
     }
 
-    let mut branch = repo
+    let branch = repo
         .find_branch(branch_name, BranchType::Local)
         .map_err(|_| BackendError::GitBranchNotFound {
             message: format!("Branch not found: {}", branch_name),
         })?;
+
+    let actual_commit = branch
+        .get()
+        .peel_to_commit()
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?
+        .id();
+    if let Some(expected_commit) = expected_commit {
+        let expected_commit = Oid::from_str(expected_commit).map_err(|_| BackendError::Git {
+            message: format!("Invalid expected commit for branch {}", branch_name),
+        })?;
+        if actual_commit != expected_commit {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Refusing to delete branch {} because its durable identity changed",
+                    branch_name
+                ),
+            });
+        }
+    }
 
     if !force {
         if let Ok(head_commit) = repo.head().and_then(|head| head.peel_to_commit()) {
@@ -4868,9 +7169,95 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
         }
     }
 
-    branch.delete().map_err(|e| BackendError::Git {
-        message: e.to_string(),
+    drop(branch);
+    let ref_name = format!("refs/heads/{branch_name}");
+    let mut transaction = repo.transaction().map_err(|error| BackendError::Git {
+        message: error.to_string(),
     })?;
+    transaction
+        .lock_ref(&ref_name)
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+    let locked_commit = repo
+        .find_reference(&ref_name)
+        .and_then(|reference| reference.peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?
+        .id();
+    if locked_commit != actual_commit {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to delete branch {} because its durable identity changed",
+                branch_name
+            ),
+        });
+    }
+    transaction
+        .remove(&ref_name)
+        .map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+    transaction.commit().map_err(|error| BackendError::Git {
+        message: error.to_string(),
+    })?;
+
+    Ok(())
+}
+
+fn verify_expected_worktree_identity(
+    repo: &Repository,
+    expected_branch_name: &str,
+    actual_worktree_path: &Path,
+    actual_branch_name: Option<&str>,
+    expected_commit: Option<&str>,
+    expected_worktree_path: Option<&str>,
+) -> Result<()> {
+    if let Some(expected_worktree_path) = expected_worktree_path {
+        let expected_path = normalize_path(Path::new(expected_worktree_path));
+        let actual_path = normalize_path(actual_worktree_path);
+        if expected_path != actual_path {
+            return Err(BackendError::Git {
+                message: "Refusing to remove a worktree because its durable path identity changed"
+                    .to_string(),
+            });
+        }
+    }
+
+    if let Some(expected_commit) = expected_commit {
+        if expected_branch_name.is_empty() || actual_branch_name != Some(expected_branch_name) {
+            return Err(BackendError::Git {
+                message:
+                    "Refusing to remove a worktree because its durable branch identity changed"
+                        .to_string(),
+            });
+        }
+        let expected_oid = Oid::from_str(expected_commit).map_err(|_| BackendError::Git {
+            message: format!(
+                "Invalid expected commit for worktree branch {}",
+                expected_branch_name
+            ),
+        })?;
+        let actual_oid = repo
+            .find_branch(expected_branch_name, BranchType::Local)
+            .and_then(|branch| branch.get().peel_to_commit())
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to resolve worktree branch {}: {}",
+                    expected_branch_name, error
+                ),
+            })?
+            .id();
+        if expected_oid != actual_oid {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Refusing to remove worktree for branch {} because its durable commit identity changed",
+                    expected_branch_name
+                ),
+            });
+        }
+    }
 
     Ok(())
 }
@@ -4995,20 +7382,48 @@ fn conflict_side_from_bytes(bytes: Option<&[u8]>) -> GitConflictFileSideDto {
         return GitConflictFileSideDto {
             exists: false,
             content: String::new(),
+            size_bytes: 0,
+            is_binary: false,
+            too_large: false,
         };
     };
 
-    if bytes.len() > MAX_CONFLICT_FILE_BYTES || has_binary_marker(bytes) {
+    let size_bytes = bytes.len();
+    let is_binary = has_binary_marker(bytes);
+    let too_large = size_bytes > MAX_CONFLICT_FILE_BYTES;
+
+    if too_large || is_binary {
         return GitConflictFileSideDto {
             exists: true,
             content: String::new(),
+            size_bytes,
+            is_binary,
+            too_large,
         };
     }
 
     GitConflictFileSideDto {
         exists: true,
         content: String::from_utf8_lossy(bytes).to_string(),
+        size_bytes,
+        is_binary,
+        too_large,
     }
+}
+
+fn read_conflict_entry_bytes(
+    repo: &Repository,
+    entry: Option<&git2::IndexEntry>,
+) -> Result<Option<Vec<u8>>> {
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+
+    if entry.id == Oid::ZERO_SHA1 {
+        return Ok(None);
+    }
+
+    Ok(Some(repo.find_blob(entry.id)?.content().to_vec()))
 }
 
 fn read_conflict_entry_side(
@@ -5020,6 +7435,9 @@ fn read_conflict_entry_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -5031,6 +7449,9 @@ fn read_conflict_entry_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -5065,6 +7486,9 @@ fn read_worktree_conflict_side(
             GitConflictFileSideDto {
                 exists: false,
                 content: String::new(),
+                size_bytes: 0,
+                is_binary: false,
+                too_large: false,
             },
             false,
             false,
@@ -5577,6 +8001,347 @@ pub(crate) fn merge_repo(
     }
 }
 
+fn verify_expected_merge_identity(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: Option<&str>,
+    expected_into_commit: Option<&str>,
+) -> Result<()> {
+    for (branch_name, expected_commit, role) in [
+        (branch_name, expected_branch_commit, "source"),
+        (into_branch, expected_into_commit, "target"),
+    ] {
+        let Some(expected_commit) = expected_commit else {
+            continue;
+        };
+        let expected_oid = Oid::from_str(expected_commit).map_err(|_| BackendError::Git {
+            message: format!(
+                "Invalid expected {} commit for branch {}",
+                role, branch_name
+            ),
+        })?;
+        let actual_oid = repo
+            .find_branch(branch_name, BranchType::Local)
+            .and_then(|branch| branch.get().peel_to_commit())
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to resolve merge {} branch {}: {}",
+                    role, branch_name, error
+                ),
+            })?
+            .id();
+        if actual_oid != expected_oid {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Refusing to merge because the durable {} identity of branch {} changed",
+                    role, branch_name
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn build_guarded_merge_state(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: &str,
+    expected_into_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    validate_branch_name(branch_name)?;
+    validate_branch_name(into_branch)?;
+
+    let expected_branch_oid =
+        Oid::from_str(expected_branch_commit).map_err(|_| BackendError::Git {
+            message: format!("Invalid expected source commit for branch {}", branch_name),
+        })?;
+    let expected_into_oid = Oid::from_str(expected_into_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid expected target commit for branch {}", into_branch),
+    })?;
+    let actual_branch_oid = repo
+        .find_branch(branch_name, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to resolve merge source branch {}: {}",
+                branch_name, error
+            ),
+        })?
+        .id();
+    if actual_branch_oid != expected_branch_oid {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing to reconcile merge because the durable source identity of branch {} changed from {} to {}",
+                branch_name, expected_branch_oid, actual_branch_oid
+            ),
+        });
+    }
+
+    let actual_into_commit = repo
+        .find_branch(into_branch, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to resolve merge target branch {}: {}",
+                into_branch, error
+            ),
+        })?;
+    let actual_into_oid = actual_into_commit.id();
+    if actual_into_oid == expected_into_oid {
+        return Ok(GitGuardedMergeStateDto {
+            status: "pending".to_string(),
+            target_commit: actual_into_oid.to_string(),
+        });
+    }
+
+    let is_expected_merge = actual_into_commit.parent_count() == 2
+        && actual_into_commit.parent_id(0).ok() == Some(expected_into_oid)
+        && actual_into_commit.parent_id(1).ok() == Some(expected_branch_oid);
+    if is_expected_merge {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_into_oid.to_string(),
+        });
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "Refusing to reconcile merge because target branch {} changed from {} to unrelated commit {}",
+            into_branch, expected_into_oid, actual_into_oid
+        ),
+    })
+}
+
+fn abort_exact_incomplete_merge(
+    repo: &Repository,
+    into_branch: &str,
+    expected_into_commit: &str,
+    expected_merge_head: &str,
+) -> Result<bool> {
+    if repo.state() == RepositoryState::Clean {
+        return Ok(false);
+    }
+    if repo.state() != RepositoryState::Merge {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing durable merge recovery because repository state is {:?}",
+                repo.state()
+            ),
+        });
+    }
+    if get_branch_name(repo)?.as_deref() != Some(into_branch) {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing durable merge recovery because HEAD is not on target branch {}",
+                into_branch
+            ),
+        });
+    }
+    let expected_into_oid = Oid::from_str(expected_into_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid expected target commit for branch {}", into_branch),
+    })?;
+    let actual_into_oid = repo
+        .find_branch(into_branch, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to resolve merge target branch {}: {}",
+                into_branch, error
+            ),
+        })?
+        .id();
+    if actual_into_oid != expected_into_oid {
+        return Err(BackendError::Git {
+            message: format!(
+                "Refusing durable merge recovery because target branch {} changed from {} to {}",
+                into_branch, expected_into_oid, actual_into_oid
+            ),
+        });
+    }
+    let merge_head_contents =
+        fs::read_to_string(repo.path().join("MERGE_HEAD")).map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to inspect MERGE_HEAD during durable recovery: {}",
+                error
+            ),
+        })?;
+    let merge_heads = merge_head_contents
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if merge_heads.as_slice() != [expected_merge_head] {
+        return Err(BackendError::Git {
+            message: "Refusing durable merge recovery because MERGE_HEAD does not match the journaled source commit".to_string(),
+        });
+    }
+
+    let root = repo_root(repo)?;
+    let output = run_git_command(&root, &["merge".to_string(), "--abort".to_string()])?;
+    if !output.success {
+        let details = command_output_text(&output);
+        return Err(BackendError::Git {
+            message: if details.is_empty() {
+                format!("git merge --abort failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+    Ok(true)
+}
+
+fn reconcile_guarded_merge_state(
+    repo: &Repository,
+    branch_name: &str,
+    into_branch: &str,
+    expected_branch_commit: &str,
+    expected_into_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    abort_exact_incomplete_merge(
+        repo,
+        into_branch,
+        expected_into_commit,
+        expected_branch_commit,
+    )?;
+    build_guarded_merge_state(
+        repo,
+        branch_name,
+        into_branch,
+        expected_branch_commit,
+        expected_into_commit,
+    )
+}
+
+fn build_guarded_branch_sync_state(
+    repo: &Repository,
+    branch_name: &str,
+    expected_branch_commit: &str,
+    sync_target_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    validate_branch_name(branch_name)?;
+    let expected_oid = Oid::from_str(expected_branch_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid expected sync commit for branch {}", branch_name),
+    })?;
+    let sync_target_oid = Oid::from_str(sync_target_commit).map_err(|_| BackendError::Git {
+        message: format!("Invalid prepared sync target for branch {}", branch_name),
+    })?;
+    let actual_commit = repo
+        .find_branch(branch_name, BranchType::Local)
+        .and_then(|branch| branch.get().peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!("Failed to resolve sync branch {}: {}", branch_name, error),
+        })?;
+    let actual_oid = actual_commit.id();
+
+    if actual_oid == expected_oid {
+        let target_already_integrated = expected_oid == sync_target_oid
+            || repo
+                .graph_descendant_of(expected_oid, sync_target_oid)
+                .map_err(|error| BackendError::Git {
+                    message: format!("Failed to inspect prepared sync ancestry: {}", error),
+                })?;
+        return Ok(GitGuardedMergeStateDto {
+            status: if target_already_integrated {
+                "integrated"
+            } else {
+                "pending"
+            }
+            .to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+
+    if actual_oid == sync_target_oid {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+    let is_expected_merge = actual_commit.parent_count() == 2
+        && actual_commit.parent_id(0).ok() == Some(expected_oid)
+        && actual_commit.parent_id(1).ok() == Some(sync_target_oid);
+    if is_expected_merge {
+        return Ok(GitGuardedMergeStateDto {
+            status: "integrated".to_string(),
+            target_commit: actual_oid.to_string(),
+        });
+    }
+
+    Err(BackendError::Git {
+        message: format!(
+            "Refusing to reconcile sync because branch {} changed from {} to unrelated commit {}",
+            branch_name, expected_oid, actual_oid
+        ),
+    })
+}
+
+fn apply_guarded_branch_sync(
+    repo: &Repository,
+    branch_name: &str,
+    expected_branch_commit: &str,
+    sync_target_commit: &str,
+) -> Result<GitGuardedMergeStateDto> {
+    abort_exact_incomplete_merge(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    let initial = build_guarded_branch_sync_state(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    if initial.status == "integrated" {
+        return Ok(initial);
+    }
+
+    ensure_clean(repo)?;
+    if get_branch_name(repo)?.as_deref() != Some(branch_name) {
+        checkout_repo(repo, branch_name, false)?;
+    }
+    let root = repo_root(repo)?;
+    let output = run_git_command(
+        &root,
+        &[
+            "merge".to_string(),
+            "--no-edit".to_string(),
+            sync_target_commit.to_string(),
+        ],
+    )?;
+    if !output.success {
+        let merge_head_path = repo.path().join("MERGE_HEAD");
+        if merge_head_path.exists() {
+            let _ = run_git_command(&root, &["merge".to_string(), "--abort".to_string()]);
+        }
+        let details = command_output_text(&output);
+        return Err(BackendError::GitConflict {
+            message: if details.is_empty() {
+                format!("git sync merge failed (exit code: {:?})", output.code)
+            } else {
+                details
+            },
+        });
+    }
+
+    let completed = build_guarded_branch_sync_state(
+        repo,
+        branch_name,
+        expected_branch_commit,
+        sync_target_commit,
+    )?;
+    if completed.status != "integrated" {
+        return Err(BackendError::Git {
+            message: format!("Prepared sync for branch {} did not converge", branch_name),
+        });
+    }
+    Ok(completed)
+}
+
 pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> Result<String> {
     validate_commit_message(message)?;
     ensure_safe_config(repo)?;
@@ -5618,11 +8383,19 @@ pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> 
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
 
+    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    let index_matches_parent = parent
+        .as_ref()
+        .map_or_else(|| tree.len() == 0, |parent| parent.tree_id() == tree_id);
+    if index_matches_parent {
+        return Err(BackendError::Git {
+            message: "No staged changes to commit".to_string(),
+        });
+    }
+
     let signature = repo
         .signature()
         .unwrap_or_else(|_| git2::Signature::now("Macro", "macro@local").unwrap());
-
-    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
 
     let oid = if let Some(parent) = parent {
         repo.commit(
@@ -5920,6 +8693,16 @@ pub(crate) fn write_git_conflict_resolution(
     content: &str,
     stage: bool,
 ) -> Result<()> {
+    write_git_conflict_resolution_bytes(repo, repo_root, relative_path, content.as_bytes(), stage)
+}
+
+fn write_git_conflict_resolution_bytes(
+    repo: &Repository,
+    repo_root: &Path,
+    relative_path: &Path,
+    content: &[u8],
+    stage: bool,
+) -> Result<()> {
     let absolute_path = repo_root.join(relative_path);
     if let Some(parent) = absolute_path.parent() {
         fs::create_dir_all(parent).map_err(|error| BackendError::Io {
@@ -5949,21 +8732,49 @@ pub(crate) fn accept_git_conflict_side(
     relative_path: &Path,
     side: &str,
 ) -> Result<()> {
-    let conflict_file = read_git_conflict_file(repo, repo_root, relative_path)?;
-    let selected = match side {
-        "ours" => conflict_file.ours,
-        "theirs" => conflict_file.theirs,
-        other => {
-            return Err(BackendError::Validation(format!(
-                "Invalid conflict side: {}",
-                other
-            )))
+    if side != "ours" && side != "theirs" {
+        return Err(BackendError::Validation(format!(
+            "Invalid conflict side: {}",
+            side
+        )));
+    }
+
+    let mut index = repo.index()?;
+    index.read(true)?;
+    let conflicts = index.conflicts().map_err(|error| BackendError::Git {
+        message: error.to_string(),
+    })?;
+    let mut selected = None;
+    let mut found = false;
+    for conflict in conflicts {
+        let conflict = conflict.map_err(|error| BackendError::Git {
+            message: error.to_string(),
+        })?;
+        if !conflict_matches_path(&conflict, relative_path) {
+            continue;
         }
-    };
+
+        let entry = if side == "ours" {
+            conflict.our.as_ref()
+        } else {
+            conflict.their.as_ref()
+        };
+        selected = read_conflict_entry_bytes(repo, entry)?;
+        found = true;
+        break;
+    }
+    if !found {
+        return Err(BackendError::Git {
+            message: format!(
+                "No unresolved conflict found for {}",
+                relative_path.to_string_lossy()
+            ),
+        });
+    }
     let absolute_path = repo_root.join(relative_path);
 
-    if selected.exists {
-        write_git_conflict_resolution(repo, repo_root, relative_path, &selected.content, true)?;
+    if let Some(content) = selected {
+        write_git_conflict_resolution_bytes(repo, repo_root, relative_path, &content, true)?;
     } else {
         match fs::remove_file(&absolute_path) {
             Ok(_) => {}
@@ -6405,12 +9216,16 @@ pub async fn git_branch_create(
     from_ref: String,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_branch_create(&wsl_repo_path, &branch_name, &from_ref).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6432,14 +9247,32 @@ pub async fn git_branch_delete(
     repo_path: String,
     branch_name: String,
     force: Option<bool>,
+    archive_task_id: Option<String>,
+    archive_token: Option<String>,
+    expected_commit: Option<String>,
 ) -> Result<()> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    let _cleanup_guard = acquire_archived_task_cleanup_guard(
+        &workspace,
+        &git_state,
+        archive_task_id.as_deref(),
+        archive_token.as_deref(),
+    )
+    .await?;
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
+        if expected_commit.is_some() {
+            return Err(unsupported_wsl_git_operation(
+                "git_branch_delete with a durable identity",
+            ));
+        }
         return wsl_git_branch_delete(&wsl_repo_path, &branch_name, force.unwrap_or(false)).await;
     }
 
-    let workspace = workspace_root.inner().read().await.clone();
-    let git_state = git_state.inner().clone();
-
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6447,7 +9280,12 @@ pub async fn git_branch_delete(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        delete_local_branch(&repo, &branch_name, force.unwrap_or(false))
+        delete_local_branch(
+            &repo,
+            &branch_name,
+            force.unwrap_or(false),
+            expected_commit.as_deref(),
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -6463,6 +9301,8 @@ pub async fn git_branch_delete_remote(
     remote: Option<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         validate_branch_name(&branch_name)?;
         let remote_name = remote
             .unwrap_or_else(|| DEFAULT_REMOTE_NAME.to_string())
@@ -6486,6 +9326,9 @@ pub async fn git_branch_delete_remote(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -6539,12 +9382,16 @@ pub async fn git_checkout(
     create: bool,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_checkout(&wsl_repo_path, &branch_or_commit, create).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6595,14 +9442,25 @@ pub async fn git_merge(
     repo_path: String,
     branch_name: String,
     into_branch: String,
+    expected_branch_commit: Option<String>,
+    expected_into_commit: Option<String>,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
+        if expected_branch_commit.is_some() || expected_into_commit.is_some() {
+            return Err(unsupported_wsl_git_operation(
+                "git_merge with durable identity",
+            ));
+        }
         return wsl_git_merge(&wsl_repo_path, &branch_name, &into_branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6610,7 +9468,53 @@ pub async fn git_merge(
             message: "Failed to lock repository".to_string(),
         })?;
 
+        verify_expected_merge_identity(
+            &repo,
+            &branch_name,
+            &into_branch,
+            expected_branch_commit.as_deref(),
+            expected_into_commit.as_deref(),
+        )?;
         merge_repo(&repo, &branch_name, &into_branch)
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Reconcile a durable merge intent with the exact merge commit produced by `git_merge`.
+pub async fn git_guarded_merge_state(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    into_branch: String,
+    expected_branch_commit: String,
+    expected_into_commit: String,
+) -> Result<GitGuardedMergeStateDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_guarded_merge_state"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+
+        reconcile_guarded_merge_state(
+            &repo,
+            &branch_name,
+            &into_branch,
+            &expected_branch_commit,
+            &expected_into_commit,
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -6632,6 +9536,8 @@ pub async fn git_start_merge_resolution(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6661,6 +9567,8 @@ pub async fn git_fast_forward(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6689,6 +9597,9 @@ pub async fn git_rebase_check(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -6720,6 +9631,8 @@ pub async fn git_rebase_branch(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6743,12 +9656,16 @@ pub async fn git_commit(
     stage_all: bool,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_commit(&wsl_repo_path, &message, stage_all).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6771,11 +9688,16 @@ pub async fn git_add(
     paths: Vec<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_add(&wsl_repo_path, &paths).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -6800,6 +9722,8 @@ pub async fn git_restore_paths(
     target: Option<String>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_restore_paths(
             &wsl_repo_path,
             &paths,
@@ -6810,6 +9734,9 @@ pub async fn git_restore_paths(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -6829,7 +9756,7 @@ pub async fn git_restore_paths(
 }
 
 #[tauri::command]
-/// Reset the repository to a given commit.
+/// Reset HEAD and optionally the index and tracked working files to a commit.
 pub async fn git_reset(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
@@ -6839,12 +9766,16 @@ pub async fn git_reset(
     confirm: Option<bool>,
 ) -> Result<()> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_reset(&wsl_repo_path, &mode, commit, confirm).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6885,6 +9816,8 @@ pub async fn git_abort_merge(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -6907,12 +9840,16 @@ pub async fn git_stash(
     message: Option<String>,
 ) -> Result<String> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_stash(&wsl_repo_path, message).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -7039,9 +9976,10 @@ pub async fn git_review_snapshot(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let operation_cancellation = cancellation.clone();
         run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
             review::build_git_review_snapshot_with_cancellation(repo, &validated, || {
@@ -7856,6 +10794,32 @@ fn open_direct_checkpoint(
     open_direct_checkpoint_at(&app_data_dir, task_id, project_path, checkpoint_id, create)
 }
 
+fn resolve_direct_checkpoint_storage_lock_path(app: &AppHandle) -> Result<PathBuf> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| BackendError::Filesystem {
+            message: format!("Failed to resolve Macro application data directory: {error}"),
+        })?;
+    Ok(app_data_dir.join(DIRECT_CHECKPOINTS_DIR))
+}
+
+async fn lock_direct_checkpoint_repositories(
+    app: &AppHandle,
+    workspace: &Path,
+    project_path: &str,
+) -> Result<(workspace::GitRepositoryGuard, workspace::GitRepositoryGuard)> {
+    reject_unsupported_direct_project_path(project_path)?;
+    let validated = validate_repo_path(project_path, workspace)?;
+    let storage_path = resolve_direct_checkpoint_storage_lock_path(app)?;
+    // Keep a stable order for every direct-review command. The project lock
+    // protects the configured worktree, while the storage lock protects the
+    // internal checkpoint repositories and their tombstones.
+    let project_guard = workspace::lock_git_repository(&validated).await?;
+    let storage_guard = workspace::lock_git_repository(&storage_path).await?;
+    Ok((project_guard, storage_guard))
+}
+
 fn initialize_created_direct_checkpoint<F>(
     checkpoint_path: &Path,
     checkpoint_id: &str,
@@ -8138,9 +11102,18 @@ fn direct_checkpoint_repo_id(repo: &Repository) -> String {
         .to_string()
 }
 
-fn verify_direct_checkpoint_blob(
+fn direct_checkpoint_mode_kind(mode: u32) -> Option<git2::ObjectType> {
+    match mode {
+        0o040000 => Some(git2::ObjectType::Tree),
+        0o100644 | 0o100755 | 0o120000 => Some(git2::ObjectType::Blob),
+        _ => None,
+    }
+}
+
+fn verify_direct_checkpoint_object_hash(
     repo: &Repository,
     oid: Oid,
+    expected_kind: git2::ObjectType,
     operation: &str,
     cancellation: Option<&Arc<AtomicBool>>,
     budget: &mut DirectCheckpointVerificationBudget,
@@ -8152,9 +11125,9 @@ fn verify_direct_checkpoint_blob(
     let (mut reader, size, kind) = odb.reader(oid).map_err(|error| {
         BackendError::git_object_missing(error, Some(oid.to_string()), Some(operation.to_string()))
     })?;
-    if kind != git2::ObjectType::Blob {
+    if kind != expected_kind {
         return Err(BackendError::DirectCheckpointCorrupt {
-            message: "Macro's internal review checkpoint contains an invalid file object."
+            message: "Macro's internal review checkpoint contains an invalid object type."
                 .to_string(),
             checkpoint_id: direct_checkpoint_repo_id(repo),
             object_id: Some(oid.to_string()),
@@ -8171,7 +11144,7 @@ fn verify_direct_checkpoint_blob(
     }
     budget.remaining_bytes -= size;
     let mut hasher = Sha1::new();
-    hasher.update(format!("blob {size}\0").as_bytes());
+    hasher.update(format!("{} {size}\0", kind.str()).as_bytes());
     let mut bytes_read_total = 0usize;
     let mut buffer = [0u8; 64 * 1024];
     loop {
@@ -8194,9 +11167,27 @@ fn verify_direct_checkpoint_blob(
         Oid::from_bytes(hasher.finalize().as_slice()).map_err(|error| BackendError::Git {
             message: format!("Failed to verify direct checkpoint object identity: {error}"),
         })?;
+    validate_direct_checkpoint_object_identity(
+        repo,
+        oid,
+        operation,
+        size,
+        bytes_read_total,
+        actual_oid,
+    )
+}
+
+fn validate_direct_checkpoint_object_identity(
+    repo: &Repository,
+    oid: Oid,
+    operation: &str,
+    size: usize,
+    bytes_read_total: usize,
+    actual_oid: Oid,
+) -> Result<()> {
     if bytes_read_total != size || actual_oid != oid {
         return Err(BackendError::DirectCheckpointCorrupt {
-            message: "Macro's internal review checkpoint contains an altered file object."
+            message: "Macro's internal review checkpoint contains an altered Git object."
                 .to_string(),
             checkpoint_id: direct_checkpoint_repo_id(repo),
             object_id: Some(oid.to_string()),
@@ -8207,6 +11198,23 @@ fn verify_direct_checkpoint_blob(
         });
     }
     Ok(())
+}
+
+fn verify_direct_checkpoint_blob(
+    repo: &Repository,
+    oid: Oid,
+    operation: &str,
+    cancellation: Option<&Arc<AtomicBool>>,
+    budget: &mut DirectCheckpointVerificationBudget,
+) -> Result<()> {
+    verify_direct_checkpoint_object_hash(
+        repo,
+        oid,
+        git2::ObjectType::Blob,
+        operation,
+        cancellation,
+        budget,
+    )
 }
 
 fn verify_direct_checkpoint_tree(
@@ -8225,7 +11233,14 @@ fn verify_direct_checkpoint_tree(
     if !visited_trees.insert(tree_id) {
         return Ok(());
     }
-    budget.consume_object()?;
+    verify_direct_checkpoint_object_hash(
+        repo,
+        tree_id,
+        git2::ObjectType::Tree,
+        "direct_checkpoint_head_tree",
+        cancellation,
+        budget,
+    )?;
     let tree = repo.find_tree(tree_id).map_err(|error| {
         BackendError::git_object_missing(
             error,
@@ -8239,7 +11254,8 @@ fn verify_direct_checkpoint_tree(
                 message: "Git review was cancelled.".to_string(),
             });
         }
-        if entry.filemode() == 0o160000 {
+        let mode = entry.filemode_raw() as u32;
+        if mode == 0o160000 {
             return Err(BackendError::DirectCheckpointCorrupt {
                 message: "Macro's internal review checkpoint contains an unsupported nested Git repository.".to_string(),
                 checkpoint_id: direct_checkpoint_repo_id(repo),
@@ -8250,7 +11266,7 @@ fn verify_direct_checkpoint_tree(
                 git_output: None,
             });
         }
-        match entry.kind() {
+        match direct_checkpoint_mode_kind(mode) {
             Some(git2::ObjectType::Tree) => verify_direct_checkpoint_tree(
                 repo,
                 entry.id(),
@@ -8271,7 +11287,19 @@ fn verify_direct_checkpoint_tree(
                     budget,
                 )?;
             }
-            _ => {}
+            _ => {
+                return Err(BackendError::DirectCheckpointCorrupt {
+                    message:
+                        "Macro's internal review checkpoint contains an invalid tree entry mode."
+                            .to_string(),
+                    checkpoint_id: direct_checkpoint_repo_id(repo),
+                    object_id: Some(entry.id().to_string()),
+                    operation: Some("direct_checkpoint_head_mode".to_string()),
+                    retry_attempted: false,
+                    accepted_history_at_risk: true,
+                    git_output: None,
+                });
+            }
         }
     }
     Ok(())
@@ -8327,7 +11355,14 @@ fn verify_direct_checkpoint_history_with_budget(
         if !visited.insert(commit_id) {
             continue;
         }
-        budget.consume_object()?;
+        verify_direct_checkpoint_object_hash(
+            repo,
+            commit_id,
+            git2::ObjectType::Commit,
+            "direct_checkpoint_head_commit",
+            cancellation,
+            budget,
+        )?;
         let commit = repo.find_commit(commit_id).map_err(|error| {
             BackendError::git_object_missing(
                 error,
@@ -8409,6 +11444,18 @@ fn verify_direct_checkpoint_index_entries_with_budget(
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return Err(BackendError::Git {
                 message: "Git review was cancelled.".to_string(),
+            });
+        }
+        if direct_checkpoint_mode_kind(entry.mode) != Some(git2::ObjectType::Blob) {
+            return Err(BackendError::DirectCheckpointCorrupt {
+                message: "Macro's internal review checkpoint contains an invalid index entry mode."
+                    .to_string(),
+                checkpoint_id: direct_checkpoint_repo_id(repo),
+                object_id: Some(entry.id.to_string()),
+                operation: Some("direct_checkpoint_index_mode".to_string()),
+                retry_attempted: false,
+                accepted_history_at_risk: false,
+                git_output: None,
             });
         }
         if entry.flags & 0x3000 != 0 {
@@ -9033,6 +12080,8 @@ pub async fn direct_checkpoint_resolve_id(
     project_path: String,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&project_path, &workspace)?;
         if task_id.trim().is_empty() {
@@ -9061,6 +12110,8 @@ pub async fn direct_checkpoint_remove(
     project_path: String,
 ) -> Result<bool> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         validate_direct_checkpoint_owner(&checkpoint_id, &task_id)?;
         let validated = validate_repo_path(&project_path, &workspace)?;
@@ -9088,6 +12139,8 @@ pub async fn direct_checkpoint_ensure(
     checkpoint_id: Option<String>,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -9113,6 +12166,8 @@ pub async fn direct_review_snapshot(
     request_id: Option<String>,
 ) -> Result<DirectReviewSnapshotDto> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) =
         register_git_review_cancellation(request_id.as_deref())?;
     tokio::task::spawn_blocking(move || {
@@ -9239,6 +12294,8 @@ pub async fn direct_review_file(
     request_id: Option<String>,
 ) -> Result<GitReviewFileDto> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) =
         register_git_review_cancellation(request_id.as_deref())?;
     tokio::task::spawn_blocking(move || {
@@ -9755,6 +12812,8 @@ pub async fn direct_stage_paths(
         });
     }
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -9794,6 +12853,8 @@ pub async fn direct_unstage_paths(
     paths: Vec<String>,
 ) -> Result<()> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -11369,6 +14430,8 @@ pub async fn direct_restore_worktree_paths(
         });
     }
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     let (cancellation, cancellation_guard) = register_git_review_cancellation(Some(&request_id))?;
     tokio::task::spawn_blocking(move || {
         let _cancellation_guard = cancellation_guard;
@@ -11429,6 +14492,8 @@ pub async fn direct_accept_changes(
     checkpoint_id: Option<String>,
 ) -> Result<String> {
     let workspace = workspace_root.inner().read().await.clone();
+    let _direct_guards =
+        lock_direct_checkpoint_repositories(&app, &workspace, &project_path).await?;
     tokio::task::spawn_blocking(move || {
         with_locked_direct_checkpoint(
             &app,
@@ -11465,8 +14530,9 @@ pub async fn git_review_file(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
-        let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
         let operation_cancellation = cancellation.clone();
         run_review_with_missing_object_retry(&git_state, &validated, cancellation, |repo| {
@@ -11547,6 +14613,9 @@ pub async fn git_write_conflict_resolution(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
@@ -11583,6 +14652,8 @@ pub async fn git_accept_conflict_side(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let relative_path = validate_repo_relative_file_path(&path)?;
@@ -11611,6 +14682,8 @@ pub async fn git_complete_merge(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -11668,6 +14741,9 @@ pub async fn git_worktree_inspect(
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -11831,6 +14907,8 @@ pub async fn git_worktree_create(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -11885,6 +14963,9 @@ pub async fn git_branch_worktree_inspect(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -11932,6 +15013,8 @@ pub async fn git_branch_worktree_create(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -11972,6 +15055,8 @@ pub async fn git_branch_worktree_remove(
     worktree_key: String,
     branch_name: String,
     force: Option<bool>,
+    expected_commit: Option<String>,
+    expected_worktree_path: Option<String>,
 ) -> Result<GitBranchWorktreeRemoveDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_branch_worktree_remove"));
@@ -11980,12 +15065,24 @@ pub async fn git_branch_worktree_remove(
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+
+        let inspection = git_state.inspect_branch_worktree(&repo, &worktree_key, &branch_name)?;
+        verify_expected_worktree_identity(
+            &repo,
+            &branch_name,
+            &inspection.worktree_path,
+            inspection.branch_name.as_deref(),
+            expected_commit.as_deref(),
+            expected_worktree_path.as_deref(),
+        )?;
 
         let removed = git_state.remove_branch_worktree(
             &repo,
@@ -12014,20 +15111,46 @@ pub async fn git_worktree_remove(
     task_id: String,
     force: Option<bool>,
     branch_name: Option<String>,
+    archive_task_id: Option<String>,
+    archive_token: Option<String>,
+    expected_commit: Option<String>,
+    expected_worktree_path: Option<String>,
 ) -> Result<GitWorktreeRemoveDto> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    let _cleanup_guard = acquire_archived_task_cleanup_guard(
+        &workspace,
+        &git_state,
+        archive_task_id.as_deref(),
+        archive_token.as_deref(),
+    )
+    .await?;
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_worktree_remove"));
     }
 
-    let workspace = workspace_root.inner().read().await.clone();
-    let git_state = git_state.inner().clone();
-
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
         let repo = repo.lock().map_err(|_| BackendError::Internal {
             message: "Failed to lock repository".to_string(),
         })?;
+
+        let inspection = if let Some(branch_name) = branch_name.as_deref() {
+            git_state.inspect_task_worktree_for_branch(&repo, &task_id, branch_name)?
+        } else {
+            git_state.inspect_task_worktree(&repo, &task_id)?
+        };
+        verify_expected_worktree_identity(
+            &repo,
+            branch_name.as_deref().unwrap_or(""),
+            &inspection.worktree_path,
+            inspection.branch_name.as_deref(),
+            expected_commit.as_deref(),
+            expected_worktree_path.as_deref(),
+        )?;
 
         let removed = git_state.remove_task_worktree(
             &repo,
@@ -12060,12 +15183,16 @@ pub async fn git_fetch(
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "fetch", remote, branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12108,6 +15235,135 @@ pub async fn git_fetch(
 }
 
 #[tauri::command]
+/// Fetch and capture the exact upstream commit for a later durable branch sync.
+pub async fn git_prepare_guarded_branch_sync(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    expected_branch_commit: String,
+) -> Result<GitPreparedBranchSyncDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation(
+            "git_prepare_guarded_branch_sync",
+        ));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        build_guarded_branch_sync_state(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &expected_branch_commit,
+        )?;
+        let local_ref = format!("refs/heads/{}", branch_name);
+        let remote_name = repo
+            .branch_upstream_remote(&local_ref)
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Branch {} has no configured upstream: {}",
+                    branch_name, error
+                ),
+            })?
+            .as_str()
+            .map_err(|_| BackendError::Git {
+                message: format!("Branch {} has a non-UTF-8 upstream remote", branch_name),
+            })?
+            .to_string();
+        validate_remote_name(&remote_name)?;
+        let root = repo_root(&repo)?;
+        drop(repo);
+
+        let output = run_git_command_with_timeout(
+            &root,
+            &["fetch".to_string(), remote_name],
+            NATIVE_GIT_NETWORK_TIMEOUT,
+        )?;
+        if !output.success {
+            let details = command_output_text(&output);
+            return Err(BackendError::Git {
+                message: if details.is_empty() {
+                    format!("git fetch failed (exit code: {:?})", output.code)
+                } else {
+                    details
+                },
+            });
+        }
+
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        build_guarded_branch_sync_state(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &expected_branch_commit,
+        )?;
+        let target_commit = repo
+            .find_branch(&branch_name, BranchType::Local)
+            .and_then(|branch| branch.upstream())
+            .and_then(|branch| branch.get().peel_to_commit())
+            .map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to resolve upstream for branch {}: {}",
+                    branch_name, error
+                ),
+            })?
+            .id()
+            .to_string();
+        Ok(GitPreparedBranchSyncDto { target_commit })
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
+/// Apply or reconcile a branch sync whose local and upstream commits were journaled first.
+pub async fn git_guarded_branch_sync(
+    workspace_root: State<'_, WorkspaceRoot>,
+    git_state: State<'_, GitState>,
+    repo_path: String,
+    branch_name: String,
+    expected_branch_commit: String,
+    sync_target_commit: String,
+) -> Result<GitGuardedMergeStateDto> {
+    if parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("git_guarded_branch_sync"));
+    }
+
+    let workspace = workspace_root.inner().read().await.clone();
+    let git_state = git_state.inner().clone();
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    tokio::task::spawn_blocking(move || {
+        let validated = validate_repo_path(&repo_path, &workspace)?;
+        let repo = git_state.open_repo(&validated)?;
+        let repo = repo.lock().map_err(|_| BackendError::Internal {
+            message: "Failed to lock repository".to_string(),
+        })?;
+        apply_guarded_branch_sync(
+            &repo,
+            &branch_name,
+            &expected_branch_commit,
+            &sync_target_commit,
+        )
+    })
+    .await
+    .map_err(to_join_error)?
+}
+
+#[tauri::command]
 /// Push the current branch (or provided branch) to remote.
 pub async fn git_push(
     workspace_root: State<'_, WorkspaceRoot>,
@@ -12117,12 +15373,16 @@ pub async fn git_push(
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "push", remote, branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12174,11 +15434,16 @@ pub async fn git_remote_add_origin(
     url: String,
 ) -> Result<GitRemoteDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_remote_add_origin(&wsl_repo_path, &url).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
+
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
 
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
@@ -12202,12 +15467,16 @@ pub async fn git_pull(
     branch: Option<String>,
 ) -> Result<GitSyncDto> {
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
+        let _repo_guard =
+            workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path)).await?;
         return wsl_git_sync(&wsl_repo_path, "pull", remote, branch).await;
     }
 
     let workspace = workspace_root.inner().read().await.clone();
     let git_state = git_state.inner().clone();
 
+    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let _repo_guard = workspace::lock_git_repository(&validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -12269,6 +15538,7 @@ pub async fn macro_branch_ensure(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, repaired_after_move) =
@@ -12306,6 +15576,7 @@ pub async fn macro_branch_status(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, repaired_after_move) =
@@ -12338,6 +15609,7 @@ pub async fn macro_branch_commit_if_dirty(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
     let commit_message = message
         .unwrap_or_else(|| "chore(metadata): persist metadata updates".to_string())
         .trim()
@@ -12345,10 +15617,17 @@ pub async fn macro_branch_commit_if_dirty(
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
 
         let add_output = run_git_command(
             &worktree_path,
-            &["add".to_string(), "-A".to_string(), ".".to_string()],
+            &[
+                "add".to_string(),
+                "-A".to_string(),
+                "--".to_string(),
+                ".".to_string(),
+                ":!.workspace.json.lock".to_string(),
+            ],
         )?;
         if !add_output.success {
             let details = command_output_text(&add_output);
@@ -12472,9 +15751,11 @@ pub async fn macro_branch_push(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
         let push_output = run_git_command(
             &worktree_path,
             &[
@@ -12504,7 +15785,7 @@ pub async fn macro_branch_push(
             );
         }
 
-        let recovery_report = workspace::recover_missing_metadata_sync(
+        let recovery_report = workspace::recover_missing_metadata_sync_unlocked(
             &workspace,
             &worktree_path,
             &WorkspaceRecoverMissingMetadataRequestDto {
@@ -12550,9 +15831,11 @@ pub async fn macro_branch_pull(
     );
     ensure_macro_workspace_not_wsl(&workspace)?;
     let git_state = git_state.inner().clone();
+    let _repo_guard = workspace::lock_git_repository(&workspace).await?;
 
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
+        let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
         let pull_output = run_git_command(
             &worktree_path,
             &[
@@ -13519,6 +16802,23 @@ mod tests {
         }
 
         (temp, repo)
+    }
+
+    fn cleanup_test_hard_reset_recovery(error: &BackendError) {
+        let message = error.to_string();
+        let prefix = format!("macro-hard-reset-{}-", std::process::id());
+        let temp_root = std::env::temp_dir();
+        for entry in fs::read_dir(&temp_root).expect("read temporary directory") {
+            let entry = entry.expect("read temporary entry");
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with(&prefix) {
+                continue;
+            }
+            let path = entry.path();
+            if message.contains(&path.to_string_lossy().to_string()) {
+                fs::remove_dir_all(path).expect("remove test recovery directory");
+            }
+        }
     }
 
     fn init_direct_checkpoint() -> (TempDir, PathBuf, Repository) {
@@ -15550,7 +18850,46 @@ mod tests {
         assert_eq!(entry.filemode(), 0o120000);
         let blob = repo.find_blob(entry.id()).expect("link blob");
         assert_eq!(blob.content(), b"missing-pending-target");
+        fs::remove_file(project.join("linked.txt")).expect("remove accepted link");
+        symlink("another-target", project.join("linked.txt")).expect("later link edit");
+        restore_direct_worktree_paths(&repo, &project, vec!["linked.txt".to_string()])
+            .expect("restore accepted link");
+        assert_eq!(
+            fs::read_link(project.join("linked.txt")).expect("restored link target"),
+            Path::new("missing-pending-target")
+        );
         assert!(!project.join(".git").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_checkpoint_captures_and_restores_an_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temp, project, repo) = init_direct_checkpoint();
+        let script = project.join("script.sh");
+        fs::write(&script, "#!/bin/sh\nexit 0\n").expect("script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("executable mode");
+        ensure_direct_checkpoint_head(&repo).expect("capture executable");
+        fs::write(&script, "pending\n").expect("pending edit");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).expect("pending mode");
+
+        restore_direct_worktree_paths(&repo, &project, vec!["script.sh".to_string()])
+            .expect("restore executable");
+
+        assert_eq!(
+            fs::read_to_string(&script).expect("restored script"),
+            "#!/bin/sh\nexit 0\n"
+        );
+        assert_eq!(
+            fs::metadata(&script)
+                .expect("restored mode")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        ensure_direct_checkpoint_integrity(&repo).expect("checkpoint remains readable");
     }
 
     #[test]
@@ -16052,6 +19391,153 @@ mod tests {
             &HashMap::from([("file.txt".to_string(), "v1:regular:test".to_string())]),
         )
         .expect("the frozen snapshot matches the restored checkpoint revision");
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_rejects_incorrect_hash_or_length() {
+        let (_temp, _project_path, repo) = init_direct_checkpoint();
+        for (kind, operation) in [
+            (git2::ObjectType::Commit, "direct_checkpoint_head_commit"),
+            (git2::ObjectType::Tree, "direct_checkpoint_head_tree"),
+            (git2::ObjectType::Blob, "direct_checkpoint_head_blob"),
+        ] {
+            // Exercise the digest comparison without altering the object database.
+            let expected = Oid::hash_object(kind, b"original").expect("expected digest");
+            let changed = Oid::hash_object(kind, b"modified").expect("different digest");
+            for (actual, length) in [(changed, 8), (expected, 7)] {
+                let error = validate_direct_checkpoint_object_identity(
+                    &repo, expected, operation, 8, length, actual,
+                )
+                .expect_err("mismatched identity or length must be rejected");
+                assert!(matches!(
+                    error,
+                    BackendError::DirectCheckpointCorrupt {
+                        object_id: Some(ref object_id),
+                        operation: Some(ref reported_operation),
+                        accepted_history_at_risk: true,
+                        ..
+                    } if object_id == &expected.to_string() && reported_operation == operation
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_preserves_supported_file_modes() {
+        let (_temp, _project_path, repo) = init_direct_checkpoint();
+        let blob_id = repo.blob(b"content\n").expect("file contents");
+        let link_id = repo.blob(b"regular.txt").expect("link target");
+        let mut subtree = repo.treebuilder(None).expect("subtree builder");
+        subtree
+            .insert("nested.txt", blob_id, 0o100644)
+            .expect("nested file");
+        let subtree_id = subtree.write().expect("subtree");
+        let mut builder = repo.treebuilder(None).expect("tree builder");
+        builder
+            .insert("regular.txt", blob_id, 0o100644)
+            .expect("regular file");
+        builder
+            .insert("script.sh", blob_id, 0o100755)
+            .expect("executable file");
+        builder
+            .insert("link.txt", link_id, 0o120000)
+            .expect("symbolic link");
+        builder
+            .insert("directory", subtree_id, 0o040000)
+            .expect("directory");
+        let tree = repo
+            .find_tree(builder.write().expect("tree"))
+            .expect("read tree");
+        let signature = git2::Signature::now("Macro", "macro@local").expect("signature");
+        repo.commit(Some("HEAD"), &signature, &signature, "baseline", &tree, &[])
+            .expect("baseline commit");
+        let mut index = repo.index().expect("index");
+        index.read_tree(&tree).expect("populate complete index");
+        index.write().expect("persist index");
+
+        ensure_direct_checkpoint_integrity(&repo).expect("all supported modes remain readable");
+        for mode in [0, 0o100600, 0o100664, 0o140000, 0o160000] {
+            assert_eq!(direct_checkpoint_mode_kind(mode), None, "{mode:o}");
+        }
+    }
+
+    #[test]
+    fn direct_checkpoint_verification_counts_commit_tree_and_blob_bytes() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let commit = repo.head().expect("head").peel_to_commit().expect("commit");
+        let tree = commit.tree().expect("tree");
+        let blob_id = tree.get_path(Path::new("file.txt")).expect("file").id();
+        let odb = repo.odb().expect("object database");
+        let total_bytes = [commit.id(), tree.id(), blob_id]
+            .into_iter()
+            .map(|oid| odb.read_header(oid).expect("object header").0)
+            .sum::<usize>();
+        let mut budget = DirectCheckpointVerificationBudget {
+            remaining_bytes: total_bytes,
+            remaining_objects: 3,
+        };
+
+        assert_eq!(
+            verify_direct_checkpoint_history_with_budget(&repo, None, &mut budget)
+                .expect("verify all object hashes within the exact budget"),
+            commit.id()
+        );
+        assert_eq!(budget.remaining_bytes, 0);
+        assert_eq!(budget.remaining_objects, 0);
+
+        let mut short_budget = DirectCheckpointVerificationBudget {
+            remaining_bytes: total_bytes - 1,
+            remaining_objects: 3,
+        };
+        assert!(matches!(
+            verify_direct_checkpoint_history_with_budget(&repo, None, &mut short_budget),
+            Err(BackendError::FilesystemFileTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn direct_checkpoint_object_verification_checks_type_and_cancellation() {
+        let (_temp, project_path, repo) = init_direct_checkpoint();
+        fs::write(project_path.join("file.txt"), "accepted\n").expect("accepted file");
+        ensure_direct_checkpoint_head(&repo).expect("baseline");
+        let commit = repo.head().expect("head").peel_to_commit().expect("commit");
+        let mut budget = DirectCheckpointVerificationBudget::new();
+        let error = verify_direct_checkpoint_object_hash(
+            &repo,
+            commit.id(),
+            git2::ObjectType::Tree,
+            "direct_checkpoint_head_tree",
+            None,
+            &mut budget,
+        )
+        .expect_err("a commit is not a tree");
+        assert!(matches!(
+            error,
+            BackendError::DirectCheckpointCorrupt {
+                object_id: Some(ref object_id),
+                operation: Some(ref operation),
+                accepted_history_at_risk: true,
+                ..
+            } if object_id == &commit.id().to_string()
+                && operation == "direct_checkpoint_head_tree"
+        ));
+
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let error = verify_direct_checkpoint_object_hash(
+            &repo,
+            commit.id(),
+            git2::ObjectType::Commit,
+            "direct_checkpoint_head_commit",
+            Some(&cancelled),
+            &mut budget,
+        )
+        .expect_err("cancelled verification must stop before reading content");
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "Git review was cancelled."
+        ));
     }
 
     #[test]
@@ -17159,6 +20645,67 @@ mod tests {
         let (_temp, repo) = init_repo();
         let branches = build_git_branches(&repo).unwrap();
         assert!(branches.local.iter().any(|b| b.is_head));
+        assert!(branches
+            .local
+            .iter()
+            .all(|branch| branch.commit.len() == 40));
+    }
+
+    #[test]
+    fn branch_delete_refuses_a_recreated_branch_identity() {
+        let (_temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/recreated", &head, false).unwrap();
+
+        let error = delete_local_branch(
+            &repo,
+            "feature/recreated",
+            true,
+            Some("0000000000000000000000000000000000000000"),
+        )
+        .expect_err("a mismatched durable identity must fence branch deletion");
+
+        assert!(error.to_string().contains("durable identity changed"));
+        assert!(repo
+            .find_branch("feature/recreated", BranchType::Local)
+            .is_ok());
+    }
+
+    #[test]
+    fn branch_delete_uses_the_locked_reference_transaction() {
+        let (_temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/delete", &head, false).unwrap();
+        let expected_commit = head.id().to_string();
+
+        delete_local_branch(&repo, "feature/delete", true, Some(&expected_commit))
+            .expect("branch with unchanged identity should be deleted");
+
+        assert!(repo
+            .find_branch("feature/delete", BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn worktree_remove_refuses_a_recreated_branch_identity() {
+        let (temp, repo) = init_repo();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature/recreated", &head, false).unwrap();
+        let worktree_path = temp.path().join("worktree");
+
+        let error = verify_expected_worktree_identity(
+            &repo,
+            "feature/recreated",
+            &worktree_path,
+            Some("feature/recreated"),
+            Some("0000000000000000000000000000000000000000"),
+            Some(&worktree_path.to_string_lossy()),
+        )
+        .expect_err("a mismatched durable identity must fence worktree deletion");
+
+        assert!(error
+            .to_string()
+            .contains("durable commit identity changed"));
     }
 
     #[test]
@@ -17204,6 +20751,207 @@ mod tests {
     }
 
     #[test]
+    fn guarded_merge_rejects_a_target_branch_that_changed_after_preflight() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "late base change").unwrap();
+        commit_repo(&repo, "chore: late base change", true).unwrap();
+
+        let error = verify_expected_merge_identity(
+            &repo,
+            "feature",
+            &base_branch,
+            Some(&feature_commit.to_string()),
+            Some(&expected_base.to_string()),
+        )
+        .expect_err("a changed target ref must fence the merge");
+
+        assert!(error.to_string().contains("durable target identity"));
+    }
+
+    #[test]
+    fn guarded_merge_state_recognizes_only_the_exact_intended_merge_commit() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        let pending = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(pending.status, "pending");
+        assert_eq!(pending.target_commit, expected_base.to_string());
+
+        merge_repo(&repo, "feature", &base_branch).unwrap();
+        let integrated = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(integrated.status, "integrated");
+        assert_ne!(integrated.target_commit, expected_base.to_string());
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("unrelated.txt"), "unrelated change").unwrap();
+        commit_repo(&repo, "chore: unrelated change", true).unwrap();
+        let error = build_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .expect_err("a later target commit must not impersonate the intended merge");
+        assert!(error.to_string().contains("unrelated commit"));
+    }
+
+    #[test]
+    fn guarded_branch_sync_replays_a_completed_fast_forward_without_mutating_again() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "prepared-upstream", true).unwrap();
+        fs::write(temp.path().join("upstream.txt"), "upstream change").unwrap();
+        commit_repo(&repo, "feat: upstream change", true).unwrap();
+        let sync_target = repo
+            .find_branch("prepared-upstream", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        let first = apply_guarded_branch_sync(
+            &repo,
+            &base_branch,
+            &expected_base.to_string(),
+            &sync_target.to_string(),
+        )
+        .unwrap();
+        assert_eq!(first.status, "integrated");
+        assert_eq!(first.target_commit, sync_target.to_string());
+
+        let replay = apply_guarded_branch_sync(
+            &repo,
+            &base_branch,
+            &expected_base.to_string(),
+            &sync_target.to_string(),
+        )
+        .unwrap();
+        assert_eq!(replay.status, "integrated");
+        assert_eq!(replay.target_commit, first.target_commit);
+    }
+
+    #[test]
+    fn guarded_merge_recovery_aborts_only_its_exact_incomplete_merge() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let expected_base = repo
+            .find_branch(&base_branch, BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature change").unwrap();
+        commit_repo(&repo, "feat: feature change", true).unwrap();
+        let feature_commit = repo
+            .find_branch("feature", BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        let root = repo_root(&repo).unwrap();
+        let output = run_git_command(
+            &root,
+            &[
+                "merge".to_string(),
+                "--no-ff".to_string(),
+                "--no-commit".to_string(),
+                "feature".to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(output.success);
+        assert_eq!(repo.state(), RepositoryState::Merge);
+
+        let reconciled = reconcile_guarded_merge_state(
+            &repo,
+            "feature",
+            &base_branch,
+            &feature_commit.to_string(),
+            &expected_base.to_string(),
+        )
+        .unwrap();
+        assert_eq!(reconciled.status, "pending");
+        assert_eq!(repo.state(), RepositoryState::Clean);
+        assert_eq!(
+            repo.find_branch(&base_branch, BranchType::Local)
+                .unwrap()
+                .get()
+                .peel_to_commit()
+                .unwrap()
+                .id(),
+            expected_base
+        );
+    }
+
+    #[test]
     fn test_git_merge_check_detects_conflicts() {
         let (temp, repo) = init_repo();
         let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
@@ -17244,6 +20992,9 @@ mod tests {
 
         let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
         assert_eq!(file.base.content, "hello");
+        assert_eq!(file.base.size_bytes, 5);
+        assert!(!file.base.is_binary);
+        assert!(!file.base.too_large);
         assert_eq!(file.ours.content, "base branch change");
         assert_eq!(file.theirs.content, "feature branch change");
         assert!(file.worktree.content.contains("<<<<<<<"));
@@ -17312,6 +21063,66 @@ mod tests {
             fs::read_to_string(temp.path().join("README.md")).unwrap(),
             "feature branch change"
         );
+    }
+
+    #[test]
+    fn test_accept_binary_conflict_side_preserves_selected_bytes() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let incoming = vec![0, 1, 2, 3, 4];
+        let current = vec![0, 5, 6, 7, 8];
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), &incoming).unwrap();
+        commit_repo(&repo, "feat: update binary readme on feature", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), &current).unwrap();
+        commit_repo(&repo, "feat: update binary readme on base", true).unwrap();
+
+        let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+        assert_eq!(result.status, "conflicted");
+        let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert!(file.is_binary);
+        assert!(file.theirs.content.is_empty());
+        assert_eq!(file.theirs.size_bytes, incoming.len());
+        assert!(file.theirs.is_binary);
+        assert!(!file.theirs.too_large);
+
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "ours").unwrap();
+
+        assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), current);
+        assert!(build_git_status(&repo).unwrap().conflicted_files.is_empty());
+    }
+
+    #[test]
+    fn test_accept_large_conflict_side_preserves_selected_bytes() {
+        let (temp, repo) = init_repo();
+        let base_branch = get_branch_name(&repo).unwrap().expect("base branch");
+        let incoming = vec![b'i'; MAX_CONFLICT_FILE_BYTES + 1];
+        let current = vec![b'c'; MAX_CONFLICT_FILE_BYTES + 1];
+
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("README.md"), &incoming).unwrap();
+        commit_repo(&repo, "feat: update large readme on feature", true).unwrap();
+
+        checkout_repo(&repo, &base_branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), &current).unwrap();
+        commit_repo(&repo, "feat: update large readme on base", true).unwrap();
+
+        let result = start_merge_resolution_repo(&repo, "feature", &base_branch).unwrap();
+        assert_eq!(result.status, "conflicted");
+        let file = read_git_conflict_file(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert!(file.too_large);
+        assert!(file.theirs.content.is_empty());
+        assert_eq!(file.theirs.size_bytes, incoming.len());
+        assert!(!file.theirs.is_binary);
+        assert!(file.theirs.too_large);
+
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+
+        assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), incoming);
+        assert!(build_git_status(&repo).unwrap().conflicted_files.is_empty());
     }
 
     #[test]
@@ -17394,6 +21205,39 @@ mod tests {
         fs::write(temp.path().join("notes.txt"), "notes").unwrap();
         let hash = commit_repo(&repo, "feat: add notes", true).unwrap();
         assert!(!hash.is_empty());
+    }
+
+    #[test]
+    fn test_git_commit_without_stage_all_rejects_unstaged_only_change() {
+        let (temp, repo) = init_repo();
+        fs::write(temp.path().join("README.md"), "unstaged change").unwrap();
+
+        let error = commit_repo(&repo, "fix: should not be empty", false)
+            .expect_err("unstaged-only commit must fail before git commit");
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "No staged changes to commit"
+        ));
+    }
+
+    #[test]
+    fn test_git_commit_without_stage_all_rejects_untracked_only_root_commit() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = Repository::init(temp.path()).expect("init empty repo");
+        fs::write(temp.path().join("untracked.txt"), "untracked").expect("write untracked file");
+
+        let error = commit_repo(&repo, "feat: should not be empty", false)
+            .expect_err("untracked-only root commit must fail");
+
+        assert!(matches!(
+            error,
+            BackendError::Git { message } if message == "No staged changes to commit"
+        ));
+        assert!(
+            repo.head().is_err(),
+            "an empty root commit must not be created"
+        );
     }
 
     #[test]
@@ -17736,7 +21580,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reset_repo_hard() {
+    fn test_reset_repo_hard_discards_tracked_changes_and_preserves_untracked_files() {
         let (temp, repo) = init_repo();
         let initial_commit = repo.head().unwrap().target().unwrap().to_string();
 
@@ -17750,10 +21594,577 @@ mod tests {
         let parent = repo.head().unwrap().peel_to_commit().unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
             .unwrap();
+        drop(parent);
+        drop(tree);
 
-        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+        fs::write(&file_path, "staged dirty change").unwrap();
+        index.add_path(Path::new("README.md")).unwrap();
+        index.write().unwrap();
+        fs::write(&file_path, "worktree dirty change").unwrap();
+        let staged_only_path = temp.path().join("staged-only.txt");
+        fs::write(&staged_only_path, "discard staged addition").unwrap();
+        index.add_path(Path::new("staged-only.txt")).unwrap();
+        index.write().unwrap();
+        let untracked_path = temp.path().join("untracked.txt");
+        fs::write(&untracked_path, "keep untracked").unwrap();
+
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
         let contents = fs::read_to_string(&file_path).unwrap();
         assert_eq!(contents, "hello");
+        let pair = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(pair.index_content, "hello");
+        assert_eq!(pair.worktree_content, "hello");
+        assert!(
+            !staged_only_path.exists(),
+            "hard reset must discard staged additions that are absent from the target"
+        );
+        assert_eq!(
+            fs::read_to_string(untracked_path).unwrap(),
+            "keep untracked"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_rejects_untracked_file_and_directory_collisions() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("collision.txt"), "tracked target").unwrap();
+        fs::create_dir_all(temp.path().join("target-directory")).unwrap();
+        fs::write(
+            temp.path().join("target-directory/tracked.txt"),
+            "tracked target",
+        )
+        .unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset targets", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "collision.txt\n").unwrap();
+        fs::write(temp.path().join("collision.txt"), "untracked file").unwrap();
+        let file_error = reset_repo(&repo, "hard", Some(target_commit.clone()))
+            .expect_err("hard reset must reject an untracked file collision");
+        assert!(file_error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("collision.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("collision.txt")).unwrap(),
+            "untracked file"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+
+        fs::remove_file(temp.path().join("collision.txt")).unwrap();
+        fs::create_dir_all(temp.path().join("target-directory/tracked.txt")).unwrap();
+        fs::write(
+            temp.path().join("target-directory/tracked.txt/local.txt"),
+            "untracked directory contents",
+        )
+        .unwrap();
+        let directory_error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject an untracked directory collision");
+        assert!(directory_error
+            .to_string()
+            .contains("target-directory/tracked.txt/local.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("target-directory/tracked.txt/local.txt")).unwrap(),
+            "untracked directory contents"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_preserves_collision_created_after_preflight() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        let collision_path = temp.path().join("late-collision.txt");
+        fs::write(&collision_path, "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add late reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+        fs::write(repo.path().join("info/exclude"), "late-collision.txt\n").unwrap();
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
+
+        let hook_collision_path = collision_path.clone();
+        install_native_hard_reset_after_preflight_hook(repo_root(&repo).unwrap(), move || {
+            fs::write(hook_collision_path, "concurrent untracked file").unwrap();
+        });
+
+        reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("checkout must refuse a collision created after the preflight");
+
+        assert_eq!(
+            fs::read_to_string(collision_path).unwrap(),
+            "concurrent untracked file"
+        );
+        let readme = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(readme.index_content, "hello");
+        assert_eq!(readme.worktree_content, "dirty tracked worktree");
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_preserves_a_tracked_path_replaced_during_backup() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        let readme_path = temp.path().join("README.md");
+        let displaced_path = temp.path().join("README.before-concurrent-replacement");
+        fs::write(&readme_path, "dirty tracked worktree").unwrap();
+        let hook_readme_path = readme_path.clone();
+        let hook_displaced_path = displaced_path.clone();
+        install_native_hard_reset_before_tracked_isolation_hook(
+            repo_root(&repo).unwrap(),
+            move || {
+                fs::rename(&hook_readme_path, &hook_displaced_path).unwrap();
+                fs::write(&hook_readme_path, "concurrent replacement").unwrap();
+            },
+        );
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject a tracked path replacement during backup");
+
+        assert!(error.to_string().contains("concurrently replaced path"));
+        assert_eq!(
+            fs::read_to_string(readme_path).unwrap(),
+            "concurrent replacement"
+        );
+        assert_eq!(
+            fs::read_to_string(displaced_path).unwrap(),
+            "dirty tracked worktree"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        assert_eq!(
+            read_git_file_pair(&repo, temp.path(), Path::new("README.md"))
+                .unwrap()
+                .index_content,
+            "hello"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_preserves_a_tracked_path_modified_during_backup() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        let readme_path = temp.path().join("README.md");
+        fs::write(&readme_path, "dirty tracked worktree").unwrap();
+        let hook_readme_path = readme_path.clone();
+        install_native_hard_reset_before_tracked_isolation_hook(
+            repo_root(&repo).unwrap(),
+            move || {
+                fs::write(&hook_readme_path, "concurrent in-place update").unwrap();
+            },
+        );
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject a tracked path update during backup");
+
+        assert!(error
+            .to_string()
+            .contains("concurrently modified tracked path 'README.md'"));
+        assert_eq!(
+            fs::read_to_string(readme_path).unwrap(),
+            "concurrent in-place update"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        assert_eq!(
+            read_git_file_pair(&repo, temp.path(), Path::new("README.md"))
+                .unwrap()
+                .index_content,
+            "hello"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_retains_writes_through_an_open_file_handle() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+
+        let readme_path = temp.path().join("README.md");
+        fs::write(&readme_path, "dirty tracked worktree").unwrap();
+        let mut open_writer = fs::OpenOptions::new()
+            .write(true)
+            .open(&readme_path)
+            .unwrap();
+        install_native_hard_reset_after_tracked_isolation_hook(
+            repo_root(&repo).unwrap(),
+            move || {
+                open_writer.set_len(0).unwrap();
+                open_writer
+                    .write_all(b"concurrent open-handle update")
+                    .unwrap();
+                open_writer.sync_all().unwrap();
+            },
+        );
+
+        reset_repo(&repo, "hard", Some(target_commit)).unwrap();
+
+        assert_eq!(fs::read_to_string(readme_path).unwrap(), "target readme");
+        let recovery_root = repo.path().join("macro-hard-reset-recovery");
+        let retained = fs::read_dir(recovery_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("original/README.md"))
+            .filter_map(|path| fs::read_to_string(path).ok())
+            .any(|contents| contents == "concurrent open-handle update");
+        assert!(
+            retained,
+            "the inode updated through the open handle must remain recoverable"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_recovery_survives_linked_worktree_removal() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        let worktree_temp = TempDir::new().unwrap();
+        let worktree_path = worktree_temp.path().join("linked-reset-worktree");
+        let add_output = run_git_command(
+            temp.path(),
+            &[
+                "worktree".to_string(),
+                "add".to_string(),
+                "-b".to_string(),
+                "recovery-check".to_string(),
+                worktree_path.to_string_lossy().into_owned(),
+                initial_commit,
+            ],
+        )
+        .unwrap();
+        assert!(add_output.success, "{}", add_output.stderr);
+
+        let worktree_repo = Repository::open(&worktree_path).unwrap();
+        fs::write(worktree_path.join("README.md"), "discarded worktree data").unwrap();
+        reset_repo(&worktree_repo, "hard", Some(target_commit)).unwrap();
+        let recovery_root = repo.commondir().join("macro-hard-reset-recovery");
+        let retained_path = fs::read_dir(&recovery_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("original/README.md"))
+            .find(|path| {
+                fs::read_to_string(path).is_ok_and(|contents| contents == "discarded worktree data")
+            })
+            .expect("the linked worktree recovery must use the common Git directory");
+        drop(worktree_repo);
+
+        let remove_output = run_git_command(
+            temp.path(),
+            &[
+                "worktree".to_string(),
+                "remove".to_string(),
+                worktree_path.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+        assert!(remove_output.success, "{}", remove_output.stderr);
+        assert_eq!(
+            fs::read_to_string(retained_path).unwrap(),
+            "discarded worktree data"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_rolls_back_a_finalization_failure() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        fs::write(temp.path().join("target-only.txt"), "target only").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add final reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(temp.path().join("README.md"), "staged readme").unwrap();
+        add_paths(&repo, &["README.md".to_string()]).unwrap();
+        fs::write(temp.path().join("README.md"), "dirty readme").unwrap();
+        fs::write(temp.path().join("staged-only.txt"), "staged only").unwrap();
+        add_paths(&repo, &["staged-only.txt".to_string()]).unwrap();
+
+        install_native_hard_reset_before_final_reset_hook(repo_root(&repo).unwrap(), || {});
+        let reset_error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("injected finalization failure must roll back");
+        assert!(
+            !reset_error.to_string().contains("rollback was incomplete"),
+            "{reset_error}"
+        );
+
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        let readme = read_git_file_pair(&repo, temp.path(), Path::new("README.md")).unwrap();
+        assert_eq!(readme.index_content, "staged readme");
+        assert_eq!(readme.worktree_content, "dirty readme");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("staged-only.txt")).unwrap(),
+            "staged only"
+        );
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("staged-only.txt"), 0)
+            .is_some());
+        assert!(!temp.path().join("target-only.txt").exists());
+    }
+
+    #[test]
+    fn test_reset_repo_hard_does_not_overwrite_a_concurrently_modified_index() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
+        fs::write(
+            temp.path().join("concurrent-index.txt"),
+            "concurrent staged data",
+        )
+        .unwrap();
+        let hook_repo_root = repo_root(&repo).unwrap();
+        install_native_hard_reset_before_final_reset_hook(hook_repo_root.clone(), move || {
+            let concurrent_repo = Repository::open(&hook_repo_root).unwrap();
+            let mut concurrent_index = concurrent_repo.index().unwrap();
+            concurrent_index
+                .add_path(Path::new("concurrent-index.txt"))
+                .unwrap();
+            concurrent_index.write().unwrap();
+        });
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("injected finalization failure must retain a concurrent index update");
+
+        assert!(error
+            .to_string()
+            .contains("concurrently modified Git index"));
+        let mut retained_index = repo.index().unwrap();
+        retained_index.read(true).unwrap();
+        assert!(retained_index
+            .get_path(Path::new("concurrent-index.txt"), 0)
+            .is_some());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("concurrent-index.txt")).unwrap(),
+            "concurrent staged data"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "dirty tracked worktree"
+        );
+        cleanup_test_hard_reset_recovery(&error);
+    }
+
+    #[test]
+    fn test_reset_repo_hard_does_not_delete_a_concurrently_modified_target_file() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
+
+        let hook_readme = temp.path().join("README.md");
+        install_native_hard_reset_before_final_reset_hook(repo_root(&repo).unwrap(), move || {
+            fs::write(hook_readme, "concurrent target modification").unwrap();
+        });
+
+        let error = reset_repo(&repo, "hard", Some(target_commit)).expect_err(
+            "injected finalization failure must retain a concurrent target modification",
+        );
+
+        assert!(error
+            .to_string()
+            .contains("Injected hard reset finalization failure"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "dirty tracked worktree"
+        );
+        let recovery_root = repo.path().join("macro-hard-reset-recovery");
+        let retained = fs::read_dir(recovery_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path().join("rollback-target/README.md"))
+            .filter_map(|path| fs::read_to_string(path).ok())
+            .any(|contents| contents == "concurrent target modification");
+        assert!(
+            retained,
+            "the concurrently modified reset target must remain recoverable"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+        let mut restored_index = repo.index().unwrap();
+        restored_index.read(true).unwrap();
+        assert_eq!(
+            repo.find_blob(
+                restored_index
+                    .get_path(Path::new("README.md"), 0)
+                    .unwrap()
+                    .id
+            )
+            .unwrap()
+            .content(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn test_reset_repo_hard_does_not_overwrite_a_concurrently_moved_head() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("README.md"), "target readme").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add reset target", true).unwrap();
+        fs::write(temp.path().join("README.md"), "concurrent commit").unwrap();
+        let concurrent_commit = commit_repo(&repo, "feat: concurrent commit", true).unwrap();
+        let concurrent_oid = repo.revparse_single(&concurrent_commit).unwrap().id();
+        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+        fs::write(temp.path().join("README.md"), "dirty tracked worktree").unwrap();
+
+        let hook_repo_root = repo_root(&repo).unwrap();
+        let head_name = repo.head().unwrap().name().unwrap().to_string();
+        install_native_hard_reset_before_final_reset_hook(hook_repo_root.clone(), move || {
+            let concurrent_repo = Repository::open(&hook_repo_root).unwrap();
+            concurrent_repo
+                .reference(&head_name, concurrent_oid, true, "concurrent branch update")
+                .unwrap();
+        });
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("injected finalization failure must retain a concurrent HEAD update");
+
+        assert!(error
+            .to_string()
+            .contains("concurrent update of refs/heads/"));
+        assert!(repo
+            .head()
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string()
+            .starts_with(&concurrent_commit));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("README.md")).unwrap(),
+            "dirty tracked worktree"
+        );
+        cleanup_test_hard_reset_recovery(&error);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_reset_repo_hard_rejects_case_alias_in_insensitive_directory() {
+        let (temp, repo) = init_repo();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(temp.path().join("case-collision.txt"), "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add case collision target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit.clone())).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "CASE-COLLISION.txt\n").unwrap();
+        fs::write(temp.path().join("CASE-COLLISION.txt"), "untracked file").unwrap();
+
+        let error = reset_repo(&repo, "hard", Some(target_commit))
+            .expect_err("hard reset must reject an alias on a case-insensitive directory");
+
+        assert!(error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("case-collision.txt"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("CASE-COLLISION.txt")).unwrap(),
+            "untracked file"
+        );
+        assert_eq!(
+            repo.head().unwrap().target().unwrap().to_string(),
+            initial_commit
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_reset_repo_hard_allows_distinct_case_in_case_sensitive_directory() {
+        let (temp, repo) = init_repo();
+        let case_sensitive_directory = temp.path().join("case-sensitive");
+        fs::create_dir(&case_sensitive_directory).unwrap();
+        let status = background_command("fsutil.exe")
+            .args(["file", "setCaseSensitiveInfo"])
+            .arg(&case_sensitive_directory)
+            .arg("enable")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !status.is_ok_and(|status| status.success()) {
+            return;
+        }
+
+        let lowercase_probe = case_sensitive_directory.join("case-probe");
+        let uppercase_probe = case_sensitive_directory.join("CASE-PROBE");
+        fs::write(&lowercase_probe, "lowercase probe").unwrap();
+        let distinct_case_is_supported = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&uppercase_probe)
+            .is_ok();
+        fs::remove_file(&lowercase_probe).unwrap();
+        if distinct_case_is_supported {
+            fs::remove_file(&uppercase_probe).unwrap();
+        } else {
+            return;
+        }
+
+        repo.config()
+            .unwrap()
+            .set_bool("core.ignorecase", false)
+            .unwrap();
+        fs::write(case_sensitive_directory.join(".keep"), "keep directory").unwrap();
+        commit_repo(&repo, "test: retain case-sensitive directory", true).unwrap();
+        let initial_commit = repo.head().unwrap().target().unwrap().to_string();
+        fs::write(case_sensitive_directory.join("foo.txt"), "tracked target").unwrap();
+        let target_commit = commit_repo(&repo, "feat: add case-sensitive target", true).unwrap();
+        reset_repo(&repo, "hard", Some(initial_commit)).unwrap();
+
+        fs::write(repo.path().join("info/exclude"), "case-sensitive/FOO.txt\n").unwrap();
+        fs::write(case_sensitive_directory.join("FOO.txt"), "untracked file").unwrap();
+
+        reset_repo(&repo, "hard", Some(target_commit)).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(case_sensitive_directory.join("FOO.txt")).unwrap(),
+            "untracked file"
+        );
+        assert_eq!(
+            fs::read_to_string(case_sensitive_directory.join("foo.txt")).unwrap(),
+            "tracked target"
+        );
     }
 
     #[test]

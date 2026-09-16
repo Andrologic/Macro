@@ -103,6 +103,7 @@ type AppStoreState = {
   predictedBranches: unknown[];
   strategyMutationPreview: {
     planId: string;
+    targetBranch: string;
     status: 'valid' | 'blocked';
     autoProvisionBranches: boolean;
     frozenNodes: Array<{ id: string; title: string; reason: 'started' | 'completed' | 'dependency_locked' }>;
@@ -422,6 +423,16 @@ const flushRender = async () => {
   await Promise.resolve();
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   await Promise.resolve();
+};
+
+const createDeferred = <T,>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 };
 
 const makeProject = (id: string, path: string, name: string): MockProject => ({
@@ -2470,6 +2481,7 @@ describe('StrategyGraph', () => {
       },
       strategyMutationPreview: {
         planId: 'plan-1',
+        targetBranch: 'develop',
         status: 'valid',
         autoProvisionBranches: true,
         frozenNodes: [{ id: 'task-1', title: 'Architect node', reason: 'started' }],
@@ -2510,6 +2522,50 @@ describe('StrategyGraph', () => {
     expect(notifySuccessMock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not expose a strategy preview from another branch replica', async () => {
+    seedStores('Pending');
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Release plan',
+        description: 'Release branch state',
+        status: 'in_progress',
+        targetBranch: 'release/2.0',
+      },
+      strategyMutationPreview: {
+        planId: 'plan-1',
+        targetBranch: 'develop',
+        status: 'valid',
+        autoProvisionBranches: false,
+        frozenNodes: [],
+        rewrittenPendingNodes: [{ id: 'task-2', title: 'Develop-only rewrite' }],
+        newNodes: [],
+        removedPendingNodes: [],
+        conflicts: [],
+      },
+    });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    expect(document.body.textContent).not.toContain('Regeneration preview');
+    expect(document.body.textContent).not.toContain('Develop-only rewrite');
+    expect(
+      Array.from(document.querySelectorAll('button')).some((button) =>
+        button.textContent?.includes('Apply regeneration')
+      )
+    ).toBe(false);
+    expect(
+      Array.from(document.querySelectorAll('button')).some(
+        (button) => button.textContent?.trim() === 'Discard'
+      )
+    ).toBe(false);
+    expect(applyStrategyMutationPreviewMock).not.toHaveBeenCalled();
+    expect(persistArchitectPlanStrategyPreviewMock).not.toHaveBeenCalled();
+  });
+
   it('keeps direct execution modes when discarding a strategy preview', async () => {
     seedStores('Pending');
     useAppStore.setState({
@@ -2523,6 +2579,7 @@ describe('StrategyGraph', () => {
       },
       strategyMutationPreview: {
         planId: 'plan-1',
+        targetBranch: 'develop',
         status: 'valid',
         autoProvisionBranches: false,
         frozenNodes: [],
@@ -2556,6 +2613,300 @@ describe('StrategyGraph', () => {
         preview: null,
       })
     );
+  });
+
+  it('restores a discarded strategy preview when persistence fails', async () => {
+    seedStores('Pending');
+    const preview: NonNullable<AppStoreState['strategyMutationPreview']> = {
+      planId: 'plan-1',
+      targetBranch: 'develop',
+      status: 'valid',
+      autoProvisionBranches: false,
+      frozenNodes: [],
+      rewrittenPendingNodes: [{ id: 'task-2', title: 'Keep this rewrite' }],
+      newNodes: [],
+      removedPendingNodes: [],
+      conflicts: [],
+    };
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+      strategyMutationPreview: preview,
+    });
+    persistArchitectPlanStrategyPreviewMock.mockImplementationOnce(async () => {
+      throw new Error('Preview persistence failed');
+    });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    const discardButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Discard'
+    );
+    act(() => {
+      discardButton?.click();
+    });
+    await flushRender();
+
+    expect(useAppStore.getState().strategyMutationPreview).toEqual(preview);
+    expect(document.body.textContent).toContain('Keep this rewrite');
+    expect(notifyErrorMock).toHaveBeenCalledWith('Preview persistence failed');
+  });
+
+  it('does not restore a discarded preview over a newer plan branch state', async () => {
+    seedStores('Pending');
+    const discardedPreview: NonNullable<AppStoreState['strategyMutationPreview']> = {
+      planId: 'plan-1',
+      targetBranch: 'develop',
+      status: 'valid',
+      autoProvisionBranches: false,
+      frozenNodes: [],
+      rewrittenPendingNodes: [{ id: 'task-2', title: 'Discarded rewrite' }],
+      newNodes: [],
+      removedPendingNodes: [],
+      conflicts: [],
+    };
+    const newerPreview: NonNullable<AppStoreState['strategyMutationPreview']> = {
+      ...discardedPreview,
+      targetBranch: 'release/2.0',
+      rewrittenPendingNodes: [{ id: 'task-3', title: 'Newer release rewrite' }],
+    };
+    const persistenceDeferred = createDeferred<undefined>();
+    persistArchitectPlanStrategyPreviewMock.mockImplementationOnce(
+      () => persistenceDeferred.promise
+    );
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+      strategyMutationPreview: discardedPreview,
+    });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+    const discardButton = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Discard'
+    );
+    act(() => {
+      discardButton?.click();
+    });
+    await flushRender();
+
+    const releaseContext: MockPlanContext = {
+      id: 'plan-1',
+      title: 'Release plan',
+      description: 'Newer branch state',
+      status: 'in_progress',
+      targetBranch: 'release/2.0',
+    };
+    act(() => {
+      useAppStore.setState({
+        activePlanContext: releaseContext,
+        strategyMutationPreview: newerPreview,
+      });
+    });
+    await act(async () => {
+      persistenceDeferred.reject(new Error('Develop preview cleanup failed'));
+      await flushRender();
+    });
+
+    expect(useAppStore.getState().activePlanContext).toBe(releaseContext);
+    expect(useAppStore.getState().strategyMutationPreview).toBe(newerPreview);
+    expect(notifyErrorMock).toHaveBeenCalledWith('Develop preview cleanup failed');
+  });
+
+  it('restores the previous strategy state when applying the preview only partially succeeds', async () => {
+    seedStores('Pending');
+    const previousPlanNodes = useAppStore.getState().planNodes;
+    const previousPredictedBranches = [{
+      id: 'previous-branch',
+      name: 'feature/previous-branch',
+      parentBranch: 'develop',
+      projectId: 'project-1',
+      color: '#60a5fa',
+      status: 'pending',
+      taskIds: ['task-1'],
+    }];
+    const previousPlanContext: MockPlanContext = {
+      id: 'plan-1',
+      title: 'Plan One',
+      description: 'Original plan description',
+      status: 'in_progress',
+      targetBranch: 'develop',
+    };
+    const preview: NonNullable<AppStoreState['strategyMutationPreview']> = {
+      planId: 'plan-1',
+      targetBranch: 'develop',
+      status: 'valid',
+      autoProvisionBranches: false,
+      frozenNodes: [],
+      rewrittenPendingNodes: [{ id: 'task-2', title: 'Pending rewrite' }],
+      newNodes: [],
+      removedPendingNodes: [],
+      conflicts: [],
+    };
+    useAppStore.setState({
+      activePlanContext: previousPlanContext,
+      predictedBranches: previousPredictedBranches,
+      strategyMutationPreview: preview,
+    });
+    applyStrategyMutationPreviewMock.mockImplementationOnce(async () => ({
+      id: 'plan-1',
+      slug: 'plan-1',
+      title: 'Plan One',
+      label: 'Plan One',
+      description: 'Mutated plan description',
+      status: 'in_progress',
+      targetBranch: 'develop',
+      targetBranchesByProjectId: { 'project-1': 'develop' },
+      executionModesByProjectId: { 'project-1': 'direct' },
+      nodes: [
+        {
+          id: 'mutated-task',
+          title: 'Mutated task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          projectId: 'project-1',
+        },
+      ],
+      predictedBranches: [{
+        id: 'mutated-branch',
+        name: 'feature/mutated-branch',
+        parentBranch: 'develop',
+        projectId: 'project-1',
+        color: '#f97316',
+        status: 'pending',
+        taskIds: ['mutated-task'],
+      }],
+    }));
+    persistArchitectPlanStrategyPreviewMock.mockImplementationOnce(async () => {
+      throw new Error('Preview cleanup failed');
+    });
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+
+    const applyButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Apply regeneration')
+    );
+    act(() => {
+      applyButton?.click();
+    });
+    await flushRender();
+
+    expect(useAppStore.getState().activePlanContext).toEqual(previousPlanContext);
+    expect(useAppStore.getState().planNodes).toEqual(previousPlanNodes);
+    expect(useAppStore.getState().predictedBranches).toEqual(previousPredictedBranches);
+    expect(useAppStore.getState().strategyMutationPreview).toEqual(preview);
+    expect(notifyErrorMock).toHaveBeenCalledWith('Preview cleanup failed');
+  });
+
+  it('does not roll back a failed apply over a newer plan branch state', async () => {
+    seedStores('Pending');
+    const originalPreview: NonNullable<AppStoreState['strategyMutationPreview']> = {
+      planId: 'plan-1',
+      targetBranch: 'develop',
+      status: 'valid',
+      autoProvisionBranches: false,
+      frozenNodes: [],
+      rewrittenPendingNodes: [{ id: 'task-2', title: 'Develop rewrite' }],
+      newNodes: [],
+      removedPendingNodes: [],
+      conflicts: [],
+    };
+    useAppStore.setState({
+      activePlanContext: {
+        id: 'plan-1',
+        title: 'Plan One',
+        description: 'Plan description',
+        status: 'in_progress',
+        targetBranch: 'develop',
+      },
+      strategyMutationPreview: originalPreview,
+    });
+    const persistenceDeferred = createDeferred<undefined>();
+    persistArchitectPlanStrategyPreviewMock.mockImplementationOnce(
+      () => persistenceDeferred.promise
+    );
+
+    act(() => {
+      root?.render(<StrategyGraph />);
+    });
+    await flushRender();
+    const applyButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Apply regeneration')
+    );
+    expect(applyButton).not.toBeUndefined();
+    act(() => {
+      applyButton?.click();
+    });
+    await flushRender();
+    expect(applyStrategyMutationPreviewMock).toHaveBeenCalledTimes(1);
+    expect(persistArchitectPlanStrategyPreviewMock).toHaveBeenCalledTimes(1);
+
+    const releaseContext: MockPlanContext = {
+      id: 'plan-1',
+      title: 'Release plan',
+      description: 'Newer branch state',
+      status: 'in_progress',
+      targetBranch: 'release/2.0',
+    };
+    const releaseNodes: MockPlanNode[] = [{
+      id: 'release-task',
+      title: 'Release task',
+      type: 'task',
+      status: 'pending',
+      dependencies: [],
+      projectId: 'project-1',
+    }];
+    const releaseBranches = [{
+      id: 'release-branch',
+      name: 'release/2.0/task',
+      parentBranch: 'release/2.0',
+      projectId: 'project-1',
+      color: '#60a5fa',
+      status: 'pending',
+      taskIds: ['release-task'],
+    }];
+    const releasePreview: NonNullable<AppStoreState['strategyMutationPreview']> = {
+      ...originalPreview,
+      targetBranch: 'release/2.0',
+      rewrittenPendingNodes: [{ id: 'release-task', title: 'Release rewrite' }],
+    };
+    act(() => {
+      useAppStore.setState({
+        activePlanContext: releaseContext,
+        planNodes: releaseNodes,
+        predictedBranches: releaseBranches,
+        strategyMutationPreview: releasePreview,
+      });
+    });
+    await act(async () => {
+      persistenceDeferred.reject(new Error('Develop apply cleanup failed'));
+      await flushRender();
+    });
+
+    expect(useAppStore.getState().activePlanContext).toBe(releaseContext);
+    expect(useAppStore.getState().planNodes).toBe(releaseNodes);
+    expect(useAppStore.getState().predictedBranches).toBe(releaseBranches);
+    expect(useAppStore.getState().strategyMutationPreview).toBe(releasePreview);
+    expect(notifyErrorMock).toHaveBeenCalledWith('Develop apply cleanup failed');
   });
 
   it('validates the plan, switches to Implement, and activates the first task without auto execution', async () => {

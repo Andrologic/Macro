@@ -348,11 +348,13 @@ export const createChatStreamLifecycleRuntime = (params: {
         stream.providerContext,
       );
 
-      void persistAssistantStreamResultAndConsolidate(result);
-      void adapters.syncMacroMetadataAfterStream(
-        stream.modeAtSend,
-        stream.conversationId,
-      );
+      const persisted = await persistAssistantStreamResultAndConsolidate(result);
+      if (persisted) {
+        void adapters.syncMacroMetadataAfterStream(
+          stream.modeAtSend,
+          stream.conversationId,
+        );
+      }
       tokenControls.dispose();
     },
 

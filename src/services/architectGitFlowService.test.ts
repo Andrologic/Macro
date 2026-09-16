@@ -15,6 +15,7 @@ import type {
 const actualTauriIpc = await import('./tauriIpc');
 let persistedPlanLifecycleSagas = '[]';
 let failPlanLifecycleSave: Error | null = null;
+let afterPlanLifecycleSave: ((valueJson: string) => void) | null = null;
 
 mock.module('./tauriIpc', () => ({
   ...actualTauriIpc,
@@ -33,6 +34,22 @@ mock.module('./tauriIpc', () => ({
       }
       persistedPlanLifecycleSagas = valueJson;
     }
+  },
+  dbCompareAndSwapAppSetting: async ({ key, expectedValueJson, valueJson }: {
+    key: string;
+    expectedValueJson: string | null;
+    valueJson: string;
+  }) => {
+    if (key !== 'pendingPlanLifecycles:v1') return { applied: true };
+    if (persistedPlanLifecycleSagas !== expectedValueJson) return { applied: false };
+    if (failPlanLifecycleSave) {
+      const error = failPlanLifecycleSave;
+      failPlanLifecycleSave = null;
+      throw error;
+    }
+    persistedPlanLifecycleSagas = valueJson;
+    afterPlanLifecycleSave?.(valueJson);
+    return { applied: true };
   },
 }));
 
@@ -132,7 +149,47 @@ const gitRebaseCheckMock = mock(async (_params: { repoPath: string; branchName: 
   conflictFiles: [],
   output: '',
 }));
-const gitMergeMock = mock(async (_params: { repoPath: string; branchName?: string; intoBranch?: string }) => 'merge-ok');
+type MockMergeParams = {
+  repoPath: string;
+  branchName?: string;
+  intoBranch?: string;
+  expectedBranchCommit?: string | null;
+  expectedIntoCommit?: string | null;
+};
+const completedMergeIntents = new Set<string>();
+const getMergeIntentKey = (params: MockMergeParams): string => JSON.stringify(params);
+const gitMergeMock = mock(async (params: MockMergeParams) => {
+  completedMergeIntents.add(getMergeIntentKey(params));
+  return 'merge-ok';
+});
+const gitGuardedMergeStateMock = mock(async (params: {
+  repoPath: string;
+  branchName: string;
+  intoBranch: string;
+  expectedBranchCommit: string;
+  expectedIntoCommit: string;
+}) => {
+  const branches = await gitBranchListMock(params.repoPath);
+  const targetCommit = branches.local.find((branch) => branch.name === params.intoBranch)?.commit ??
+    params.expectedIntoCommit;
+  const merged = completedMergeIntents.has(getMergeIntentKey(params)) ||
+    targetCommit !== params.expectedIntoCommit;
+  return {
+    status: merged ? 'integrated' as const : 'pending' as const,
+    targetCommit,
+  };
+});
+const gitPrepareGuardedBranchSyncMock = mock(async (params: {
+  repoPath: string;
+  branchName: string;
+  expectedBranchCommit: string;
+}) => ({ targetCommit: params.expectedBranchCommit }));
+const gitGuardedBranchSyncMock = mock(async (params: {
+  repoPath: string;
+  branchName: string;
+  expectedBranchCommit: string;
+  syncTargetCommit: string;
+}) => ({ status: 'integrated' as const, targetCommit: params.syncTargetCommit }));
 const gitPullMock = mock(async (_params: { repoPath: string; branch?: string }) => ({
   branch: _params.branch || 'develop',
   remote: 'origin',
@@ -144,10 +201,18 @@ const gitBranchListMock = mock(async (_repoPath: string) => createGitBranches([
   'feature/checkout/checkout-web',
   'feature/checkout/checkout-api',
 ]));
-const gitBranchDeleteMock = mock(async (_params: { repoPath: string; branchName: string; force?: boolean }) => undefined);
+const gitBranchDeleteMock = mock(async (_params: {
+  repoPath: string;
+  branchName: string;
+  force?: boolean;
+  expectedCommit?: string | null;
+}) => undefined);
 const gitBranchDeleteRemoteMock = mock(async (_params: { repoPath: string; branchName: string }) => undefined);
 const gitCheckoutMock = mock(async (_params: { repoPath: string; branchOrCommit: string }) => undefined);
 const gitBranchCreateMock = mock(async (_params: { repoPath: string; branchName: string; fromRef: string }) => undefined);
+const workspaceAcquirePlanLifecycleLockMock = mock(async () => 'plan-lifecycle-lease');
+const workspaceRenewPlanLifecycleLockMock = mock(async () => undefined);
+const workspaceReleasePlanLifecycleLockMock = mock(async () => undefined);
 const gitWorktreeInspectMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => {
   const worktreePath = `${params.repoPath}/.macro/worktrees/task${params.taskId}`;
   if (worktreeStatusByPath.has(worktreePath)) {
@@ -177,7 +242,13 @@ const gitWorktreeInspectMock = mock(async (params: { repoPath: string; taskId: s
     isDirty: false,
   };
 });
-const gitWorktreeRemoveMock = mock(async (params: { repoPath: string; taskId: string; branchName?: string | null }) => ({
+const gitWorktreeRemoveMock = mock(async (params: {
+  repoPath: string;
+  taskId: string;
+  branchName?: string | null;
+  expectedCommit?: string | null;
+  expectedWorktreePath?: string | null;
+}) => ({
   taskId: params.taskId,
   worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
   removedPath: true,
@@ -218,6 +289,8 @@ const gitBranchWorktreeRemoveMock = mock(
     repoPath: string;
     worktreeKey: string;
     branchName: string;
+    expectedCommit?: string | null;
+    expectedWorktreePath?: string | null;
   }): Promise<GitBranchWorktreeRemoveDto> =>
     buildBranchWorktreeRemove(params),
 );
@@ -320,6 +393,34 @@ const buildPlan = () => ({
   ],
 });
 
+const buildPersistedCleanupResources = () => [
+  { projectId: 'web', repoPath: '/repos/web', featureBranch: 'feature/checkout/checkout-web' },
+  { projectId: 'api', repoPath: '/repos/api', featureBranch: 'feature/checkout/checkout-api' },
+].flatMap(({ projectId, repoPath, featureBranch }) => {
+  const featureWorktreeKey = toBranchWorktreeKey(projectId, featureBranch);
+  const planWorktreeKey = toPlanIntegrationWorktreeKey(projectId, 'plan/checkout');
+  return [
+    {
+      kind: 'branch', projectId, repoPath, branchName: featureBranch,
+      expectedCommit: `${featureBranch}-sha`,
+    },
+    {
+      kind: 'branch', projectId, repoPath, branchName: 'plan/checkout',
+      expectedCommit: 'plan/checkout-sha',
+    },
+    {
+      kind: 'worktree', projectId, repoPath, branchName: featureBranch,
+      expectedCommit: `${featureBranch}-sha`, worktreeKey: featureWorktreeKey,
+      expectedWorktreePath: `${repoPath}/.macro/worktrees/task${featureWorktreeKey}`,
+    },
+    {
+      kind: 'worktree', projectId, repoPath, branchName: 'plan/checkout',
+      expectedCommit: 'plan/checkout-sha', worktreeKey: planWorktreeKey,
+      expectedWorktreePath: buildPlanIntegrationWorktreePath(repoPath, planWorktreeKey),
+    },
+  ];
+});
+
 const persistLifecycleSaga = (overrides: Record<string, unknown> = {}) => {
   persistedPlanLifecycleSagas = JSON.stringify([{
     planId: 'plan-1',
@@ -327,6 +428,7 @@ const persistLifecycleSaga = (overrides: Record<string, unknown> = {}) => {
     operation: 'delete',
     phase: 'prepared',
     conversationId: 'conversation-1',
+    cleanupResources: buildPersistedCleanupResources(),
     createdAt: '2026-08-13T00:00:00.000Z',
     updatedAt: '2026-08-13T00:00:00.000Z',
     ...overrides,
@@ -424,6 +526,7 @@ describe('architectGitFlowService', () => {
     currentPlan = buildPlan();
     persistedPlanLifecycleSagas = '[]';
     failPlanLifecycleSave = null;
+    afterPlanLifecycleSave = null;
     worktreeStatusByPath.clear();
     worktreeStatusByPath.set(
       getExpectedWorktreePath('web', '/repos/web', 'feature/checkout/checkout-web'),
@@ -465,7 +568,31 @@ describe('architectGitFlowService', () => {
     }));
 
     gitMergeMock.mockReset();
-    gitMergeMock.mockImplementation(async ({ repoPath }: { repoPath: string }) => `merged:${repoPath}`);
+    completedMergeIntents.clear();
+    gitMergeMock.mockImplementation(async (params: MockMergeParams) => {
+      completedMergeIntents.add(getMergeIntentKey(params));
+      return `merged:${params.repoPath}`;
+    });
+    gitGuardedMergeStateMock.mockReset();
+    gitGuardedMergeStateMock.mockImplementation(async (params) => {
+      const branches = await gitBranchListMock(params.repoPath);
+      const targetCommit = branches.local.find((branch) => branch.name === params.intoBranch)?.commit ??
+        params.expectedIntoCommit;
+      return {
+        status: completedMergeIntents.has(getMergeIntentKey(params)) ||
+          targetCommit !== params.expectedIntoCommit ? 'integrated' as const : 'pending' as const,
+        targetCommit,
+      };
+    });
+    gitPrepareGuardedBranchSyncMock.mockReset();
+    gitPrepareGuardedBranchSyncMock.mockImplementation(async (params) => ({
+      targetCommit: params.expectedBranchCommit,
+    }));
+    gitGuardedBranchSyncMock.mockReset();
+    gitGuardedBranchSyncMock.mockImplementation(async (params) => ({
+      status: 'integrated' as const,
+      targetCommit: params.syncTargetCommit,
+    }));
     gitPullMock.mockReset();
 
     gitBranchListMock.mockReset();
@@ -479,6 +606,12 @@ describe('architectGitFlowService', () => {
     gitBranchDeleteRemoteMock.mockReset();
     gitCheckoutMock.mockReset();
     gitBranchCreateMock.mockReset();
+    workspaceAcquirePlanLifecycleLockMock.mockReset();
+    workspaceAcquirePlanLifecycleLockMock.mockImplementation(async () => 'plan-lifecycle-lease');
+    workspaceRenewPlanLifecycleLockMock.mockReset();
+    workspaceRenewPlanLifecycleLockMock.mockImplementation(async () => undefined);
+    workspaceReleasePlanLifecycleLockMock.mockReset();
+    workspaceReleasePlanLifecycleLockMock.mockImplementation(async () => undefined);
     gitWorktreeInspectMock.mockReset();
     gitWorktreeRemoveMock.mockReset();
     gitWorktreeCreateMock.mockReset();
@@ -564,6 +697,9 @@ describe('architectGitFlowService', () => {
         gitMergeCheck: gitMergeCheckMock,
         gitRebaseCheck: gitRebaseCheckMock,
         gitMerge: gitMergeMock,
+        gitGuardedMergeState: gitGuardedMergeStateMock,
+        gitPrepareGuardedBranchSync: gitPrepareGuardedBranchSyncMock,
+        gitGuardedBranchSync: gitGuardedBranchSyncMock,
         gitPull: gitPullMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
@@ -576,6 +712,9 @@ describe('architectGitFlowService', () => {
         gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
         gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
         gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
+        workspaceAcquirePlanLifecycleLock: workspaceAcquirePlanLifecycleLockMock,
+        workspaceRenewPlanLifecycleLock: workspaceRenewPlanLifecycleLockMock,
+        workspaceReleasePlanLifecycleLock: workspaceReleasePlanLifecycleLockMock,
       },
       getAppState: () => ({
         selectedGroupId: 'group-main',
@@ -702,6 +841,7 @@ describe('architectGitFlowService', () => {
         branchName: 'feature/storage',
         operation: 'archive',
         phase: 'metadata_written',
+        cleanupResources: buildPersistedCleanupResources(),
         createdAt: now,
         updatedAt: now,
       },
@@ -710,6 +850,7 @@ describe('architectGitFlowService', () => {
         branchName: 'develop',
         operation: 'archive',
         phase: 'metadata_written',
+        cleanupResources: buildPersistedCleanupResources(),
         createdAt: now,
         updatedAt: now,
       },
@@ -1466,11 +1607,15 @@ describe('architectGitFlowService', () => {
         repoPath: '/repos/web',
         taskId: toBranchWorktreeKey('web', 'feature/checkout/checkout-web'),
         branchName: 'feature/checkout/checkout-web',
+        expectedCommit: 'feature/checkout/checkout-web-sha',
+        expectedWorktreePath: `/repos/web/.macro/worktrees/task${toBranchWorktreeKey('web', 'feature/checkout/checkout-web')}`,
       },
       {
         repoPath: '/repos/api',
         taskId: toBranchWorktreeKey('api', 'feature/checkout/checkout-api'),
         branchName: 'feature/checkout/checkout-api',
+        expectedCommit: 'feature/checkout/checkout-api-sha',
+        expectedWorktreePath: `/repos/api/.macro/worktrees/task${toBranchWorktreeKey('api', 'feature/checkout/checkout-api')}`,
       },
     ]);
     expect(gitBranchWorktreeRemoveMock.mock.calls.map(([params]) => params)).toEqual([
@@ -1478,18 +1623,28 @@ describe('architectGitFlowService', () => {
         repoPath: '/repos/web',
         worktreeKey: toPlanIntegrationWorktreeKey('web', 'plan/checkout'),
         branchName: 'plan/checkout',
+        expectedCommit: 'plan/checkout-sha',
+        expectedWorktreePath: buildPlanIntegrationWorktreePath(
+          '/repos/web',
+          toPlanIntegrationWorktreeKey('web', 'plan/checkout'),
+        ),
       },
       {
         repoPath: '/repos/api',
         worktreeKey: toPlanIntegrationWorktreeKey('api', 'plan/checkout'),
         branchName: 'plan/checkout',
+        expectedCommit: 'plan/checkout-sha',
+        expectedWorktreePath: buildPlanIntegrationWorktreePath(
+          '/repos/api',
+          toPlanIntegrationWorktreeKey('api', 'plan/checkout'),
+        ),
       },
     ]);
     expect(gitBranchDeleteMock.mock.calls.map(([params]) => params)).toEqual([
-      { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', force: false },
-      { repoPath: '/repos/web', branchName: 'plan/checkout', force: false },
-      { repoPath: '/repos/api', branchName: 'feature/checkout/checkout-api', force: false },
-      { repoPath: '/repos/api', branchName: 'plan/checkout', force: false },
+      { repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web', force: false, expectedCommit: 'feature/checkout/checkout-web-sha' },
+      { repoPath: '/repos/web', branchName: 'plan/checkout', force: false, expectedCommit: 'plan/checkout-sha' },
+      { repoPath: '/repos/api', branchName: 'feature/checkout/checkout-api', force: false, expectedCommit: 'feature/checkout/checkout-api-sha' },
+      { repoPath: '/repos/api', branchName: 'plan/checkout', force: false, expectedCommit: 'plan/checkout-sha' },
     ]);
     expect(result.cleanup).toEqual([
       {
@@ -1527,6 +1682,278 @@ describe('architectGitFlowService', () => {
         cleanupError: null,
       },
     ]);
+  });
+
+  it('resumes the remaining repository after a checkpointed multi-repository merge failure', async () => {
+    const commitsByRepo = new Map([
+      ['/repos/web', new Map([
+        ['develop', 'web-base-before'],
+        ['plan/checkout', 'web-plan'],
+        ['feature/checkout/checkout-web', 'web-feature'],
+      ])],
+      ['/repos/api', new Map([
+        ['develop', 'api-base-before'],
+        ['plan/checkout', 'api-plan'],
+        ['feature/checkout/checkout-api', 'api-feature'],
+      ])],
+    ]);
+    gitBranchListMock.mockImplementation(async (repoPath: string) => ({
+      current: 'develop',
+      local: Array.from(commitsByRepo.get(repoPath) ?? []).map(([name, commit]) => ({
+        name,
+        commit,
+        is_head: name === 'develop',
+      })),
+      remote: [],
+    }));
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+    }));
+    let failApiMerge = true;
+    gitMergeMock.mockImplementation(async ({ repoPath, intoBranch }) => {
+      if (repoPath === '/repos/api' && failApiMerge) {
+        failApiMerge = false;
+        throw new Error('injected api merge failure');
+      }
+      commitsByRepo.get(repoPath)?.set(
+        intoBranch || 'develop',
+        repoPath === '/repos/web' ? 'web-base-merged' : 'api-base-merged',
+      );
+      return `merged:${repoPath}`;
+    });
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('injected api merge failure');
+
+    const pendingAfterFailure = readPersistedLifecycleSagas().find(
+      (saga) => saga.operation === 'finalize',
+    );
+    expect(pendingAfterFailure).toEqual(expect.objectContaining({
+      phase: 'prepared',
+      finalizationRepositories: expect.arrayContaining([
+        expect.objectContaining({ repoPath: '/repos/web', phase: 'complete' }),
+        expect.objectContaining({ repoPath: '/repos/api', phase: 'plan_merge_pending' }),
+      ]),
+    }));
+
+    const result = await architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+
+    expect(result.plan.status).toBe('archived');
+    expect(gitMergeMock.mock.calls.filter(([params]) => params.repoPath === '/repos/web'))
+      .toHaveLength(1);
+    expect(gitMergeMock.mock.calls.filter(([params]) => params.repoPath === '/repos/api'))
+      .toHaveLength(2);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('recovers a merge that changed the base ref before its checkpoint was durable', async () => {
+    currentPlan = {
+      ...currentPlan,
+      projectIds: ['web'],
+      nodes: currentPlan.nodes.filter((node: { projectId: string }) => node.projectId === 'web'),
+      predictedBranches: currentPlan.predictedBranches.filter(
+        (branch: { projectId: string }) => branch.projectId === 'web',
+      ),
+    };
+    const commits = new Map([
+      ['develop', 'base-before'],
+      ['plan/checkout', 'plan-source'],
+      ['feature/checkout/checkout-web', 'feature-source'],
+    ]);
+    gitBranchListMock.mockImplementation(async () => ({
+      current: 'develop',
+      local: Array.from(commits).map(([name, commit]) => ({
+        name,
+        commit,
+        is_head: name === 'develop',
+      })),
+      remote: [],
+    }));
+    gitMergeMock.mockImplementation(async () => {
+      commits.set('develop', 'base-after-ambiguous-merge');
+      return 'merge completed before response loss';
+    });
+    let checkpointFailureArmed = false;
+    afterPlanLifecycleSave = (valueJson) => {
+      const finalization = (JSON.parse(valueJson) as Array<Record<string, any>>).find(
+        (saga) => saga.operation === 'finalize',
+      );
+      const repository = finalization?.finalizationRepositories?.[0];
+      if (
+        !checkpointFailureArmed && repository?.phase === 'plan_merge_pending' &&
+        repository?.mergeRequired === true
+      ) {
+        checkpointFailureArmed = true;
+        failPlanLifecycleSave = new Error('injected merge checkpoint failure');
+      }
+    };
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('injected merge checkpoint failure');
+    expect(commits.get('develop')).toBe('base-after-ambiguous-merge');
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitMergeMock).toHaveBeenCalledTimes(1);
+    expect(updateArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(archiveArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('recovers a base sync that completed before its checkpoint was durable', async () => {
+    currentPlan = {
+      ...currentPlan,
+      projectIds: ['web'],
+      nodes: currentPlan.nodes.filter((node: { projectId: string }) => node.projectId === 'web'),
+      predictedBranches: currentPlan.predictedBranches.filter(
+        (branch: { projectId: string }) => branch.projectId === 'web',
+      ),
+    };
+    const commits = new Map([
+      ['develop', 'base-before'],
+      ['plan/checkout', 'plan-source'],
+      ['feature/checkout/checkout-web', 'feature-source'],
+    ]);
+    gitBranchListMock.mockImplementation(async () => ({
+      current: 'develop',
+      local: Array.from(commits).map(([name, commit]) => ({
+        name,
+        commit,
+        is_head: name === 'develop',
+      })),
+      remote: [],
+    }));
+    gitPrepareGuardedBranchSyncMock.mockImplementation(async () => ({
+      targetCommit: 'base-upstream',
+    }));
+    let syncMutations = 0;
+    gitGuardedBranchSyncMock.mockImplementation(async (params) => {
+      const current = commits.get(params.branchName);
+      if (current === params.expectedBranchCommit) {
+        syncMutations += 1;
+        commits.set(params.branchName, params.syncTargetCommit);
+      } else if (current !== params.syncTargetCommit) {
+        throw new Error('unexpected foreign branch identity');
+      }
+      return { status: 'integrated', targetCommit: params.syncTargetCommit };
+    });
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: false,
+    }));
+    let checkpointFailureArmed = false;
+    afterPlanLifecycleSave = (valueJson) => {
+      const finalization = (JSON.parse(valueJson) as Array<Record<string, any>>).find(
+        (saga) => saga.operation === 'finalize',
+      );
+      if (!checkpointFailureArmed &&
+        finalization?.finalizationRepositories?.[0]?.phase === 'base_sync_pending') {
+        checkpointFailureArmed = true;
+        failPlanLifecycleSave = new Error('injected base sync checkpoint failure');
+      }
+    };
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('injected base sync checkpoint failure');
+    expect(commits.get('develop')).toBe('base-upstream');
+    expect(syncMutations).toBe(1);
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(syncMutations).toBe(1);
+    expect(gitGuardedBranchSyncMock).toHaveBeenCalledTimes(2);
+    expect(gitMergeMock).not.toHaveBeenCalled();
+    expect(archiveArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('recovers a backmerge that completed before its checkpoint was durable', async () => {
+    currentPlan = {
+      ...buildPlan(),
+      projectIds: ['web'],
+      nodes: buildPlan().nodes.filter((node: { projectId: string }) => node.projectId === 'web'),
+      predictedBranches: buildPlan().predictedBranches.filter(
+        (branch: { projectId: string }) => branch.projectId === 'web',
+      ),
+      planKind: 'release',
+      targetBranchesByProjectId: { web: 'main' },
+      gitFlowPlan: {
+        version: 1,
+        planKind: 'release',
+        slug: '0.2.0',
+        projects: {
+          web: {
+            projectId: 'web',
+            sourceBranch: 'develop',
+            integrationBranch: '',
+            targetBranch: 'main',
+            backmergeBranch: 'develop',
+            confirmedVersion: '0.2.0',
+            confirmedSlug: '0.2.0',
+          },
+        },
+      },
+    };
+    const commits = new Map([
+      ['main', 'main-before'],
+      ['develop', 'develop-before'],
+      ['release/v0.2.0', 'release-source'],
+      ['feature/checkout/checkout-web', 'feature-source'],
+    ]);
+    gitBranchListMock.mockImplementation(async () => ({
+      current: 'develop',
+      local: Array.from(commits).map(([name, commit]) => ({ name, commit, is_head: name === 'develop' })),
+      remote: [],
+    }));
+    gitMergeCheckMock.mockImplementation(async () => ({
+      mergeable: true,
+      conflictFiles: [],
+      hasChanges: true,
+    }));
+    gitMergeMock.mockImplementation(async (params) => {
+      commits.set(
+        params.intoBranch || '',
+        params.intoBranch === 'main' ? 'main-after-merge' : 'develop-after-backmerge',
+      );
+      return `merged:${params.intoBranch}`;
+    });
+    let checkpointFailureArmed = false;
+    afterPlanLifecycleSave = (valueJson) => {
+      const finalization = (JSON.parse(valueJson) as Array<Record<string, any>>).find(
+        (saga) => saga.operation === 'finalize',
+      );
+      if (!checkpointFailureArmed &&
+        finalization?.finalizationRepositories?.[0]?.phase === 'backmerge_merge_pending') {
+        checkpointFailureArmed = true;
+        failPlanLifecycleSave = new Error('injected backmerge checkpoint failure');
+      }
+    };
+
+    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+      branchName: 'develop',
+      planId: 'plan-1',
+    })).rejects.toThrow('injected backmerge checkpoint failure');
+    expect(commits.get('develop')).toBe('develop-after-backmerge');
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitMergeMock.mock.calls.filter(([params]) => params.intoBranch === 'develop'))
+      .toHaveLength(1);
+    expect(archiveArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
   });
 
   it('finalizes release plans into main and backmerges main into develop', async () => {
@@ -1592,16 +2019,34 @@ describe('architectGitFlowService', () => {
         backmergeOutput: 'merged:/repos/api',
       },
     ]);
-    expect(gitCheckoutMock.mock.calls.map(([params]) => params)).toEqual(expect.arrayContaining([
-      { repoPath: '/repos/web', branchOrCommit: 'main', create: false },
-      { repoPath: '/repos/web', branchOrCommit: 'develop', create: false },
-      { repoPath: '/repos/api', branchOrCommit: 'main', create: false },
-      { repoPath: '/repos/api', branchOrCommit: 'develop', create: false },
-    ]));
+    expect(gitPrepareGuardedBranchSyncMock.mock.calls.map(([params]) => params)).toEqual([
+      { repoPath: '/repos/web', branchName: 'main', expectedBranchCommit: 'main-sha' },
+      { repoPath: '/repos/api', branchName: 'main', expectedBranchCommit: 'main-sha' },
+      { repoPath: '/repos/web', branchName: 'develop', expectedBranchCommit: 'develop-sha' },
+      { repoPath: '/repos/api', branchName: 'develop', expectedBranchCommit: 'develop-sha' },
+    ]);
     expect(gitMergeMock.mock.calls.map(([params]) => params)).toEqual([
-      { repoPath: '/repos/web', branchName: 'release/v0.2.0', intoBranch: 'main' },
-      { repoPath: '/repos/web', branchName: 'main', intoBranch: 'develop' },
-      { repoPath: '/repos/api', branchName: 'main', intoBranch: 'develop' },
+      {
+        repoPath: '/repos/web',
+        branchName: 'release/v0.2.0',
+        intoBranch: 'main',
+        expectedBranchCommit: 'release/v0.2.0-sha',
+        expectedIntoCommit: 'main-sha',
+      },
+      {
+        repoPath: '/repos/web',
+        branchName: 'main',
+        intoBranch: 'develop',
+        expectedBranchCommit: 'main-sha',
+        expectedIntoCommit: 'develop-sha',
+      },
+      {
+        repoPath: '/repos/api',
+        branchName: 'main',
+        intoBranch: 'develop',
+        expectedBranchCommit: 'main-sha',
+        expectedIntoCommit: 'develop-sha',
+      },
     ]);
   });
 
@@ -1743,6 +2188,9 @@ describe('architectGitFlowService', () => {
         gitMergeCheck: gitMergeCheckMock,
         gitRebaseCheck: gitRebaseCheckMock,
         gitMerge: gitMergeMock,
+        gitGuardedMergeState: gitGuardedMergeStateMock,
+        gitPrepareGuardedBranchSync: gitPrepareGuardedBranchSyncMock,
+        gitGuardedBranchSync: gitGuardedBranchSyncMock,
         gitPull: gitPullMock,
         gitBranchList: gitBranchListMock,
         gitBranchDelete: gitBranchDeleteMock,
@@ -1755,6 +2203,8 @@ describe('architectGitFlowService', () => {
         gitBranchWorktreeInspect: gitBranchWorktreeInspectMock,
         gitBranchWorktreeCreate: gitBranchWorktreeCreateMock,
         gitBranchWorktreeRemove: gitBranchWorktreeRemoveMock,
+        workspaceAcquirePlanLifecycleLock: workspaceAcquirePlanLifecycleLockMock,
+        workspaceReleasePlanLifecycleLock: workspaceReleasePlanLifecycleLockMock,
       },
       getAppState: () => ({
         selectedGroupId: 'group-main',
@@ -1895,9 +2345,122 @@ describe('architectGitFlowService', () => {
     expect(gitBranchDeleteRemoteMock).not.toHaveBeenCalled();
   });
 
+  it('serializes archive cleanup and restore for the same plan', async () => {
+    let held = false;
+    let nextLease = 0;
+    const waiters: Array<() => void> = [];
+    workspaceAcquirePlanLifecycleLockMock.mockImplementation(async () => {
+      if (held) {
+        await new Promise<void>((resolve) => waiters.push(resolve));
+      }
+      held = true;
+      nextLease += 1;
+      return `lease-${nextLease}`;
+    });
+    workspaceReleasePlanLifecycleLockMock.mockImplementation(async () => {
+      held = false;
+      waiters.shift()?.();
+    });
+
+    let unblockFirstRemoval!: () => void;
+    const firstRemovalBlocked = new Promise<void>((resolve) => {
+      unblockFirstRemoval = resolve;
+    });
+    let removalStarted!: () => void;
+    const removalHasStarted = new Promise<void>((resolve) => {
+      removalStarted = resolve;
+    });
+    let blockRemoval = true;
+    gitWorktreeRemoveMock.mockImplementation(async (params: { repoPath: string; taskId: string }) => {
+      if (blockRemoval) {
+        blockRemoval = false;
+        removalStarted();
+        await firstRemovalBlocked;
+      }
+      return {
+        taskId: params.taskId,
+        worktreePath: `${params.repoPath}/.macro/worktrees/task${params.taskId}`,
+        removedPath: true,
+        prunedRegistration: true,
+        alreadyAbsent: false,
+      };
+    });
+
+    const archivePromise = architectGitFlowService.archivePlanAndCleanupBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+    await removalHasStarted;
+    const restorePromise = architectGitFlowService.restorePlanAndProvisionBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    });
+    await Promise.resolve();
+
+    expect(workspaceAcquirePlanLifecycleLockMock).toHaveBeenCalledTimes(2);
+    expect(restoreArchitectPlanMock).not.toHaveBeenCalled();
+    expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+
+    unblockFirstRemoval();
+    await archivePromise;
+    await restorePromise;
+
+    expect(restoreArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(workspaceReleasePlanLifecycleLockMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists cleanup identities before refusing a recreated branch', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    let branchWasRecreated = false;
+    afterPlanLifecycleSave = (valueJson) => {
+      const sagas = JSON.parse(valueJson) as Array<{ cleanupResources?: unknown[] }>;
+      if (sagas.some((saga) => saga.cleanupResources?.length)) {
+        branchWasRecreated = true;
+      }
+    };
+    gitBranchListMock.mockImplementation(async (repoPath: string) => {
+      const branches = createGitBranches([
+        'develop',
+        'plan/checkout',
+        repoPath === '/repos/web' ? 'feature/checkout/checkout-web' : 'feature/checkout/checkout-api',
+      ]);
+      if (branchWasRecreated) {
+        branches.local = branches.local.map((branch) =>
+          branch.name === 'feature/checkout/checkout-web'
+            ? { ...branch, commit: 'recreated-branch-oid' }
+            : branch
+        );
+      }
+      return branches;
+    });
+
+    await expect(architectGitFlowService.deletePlanAndCleanupBranches({
+      branchName: 'feature/implement',
+      planId: 'plan-1',
+    })).rejects.toThrow('durable identity changed');
+
+    expect(readPersistedLifecycleSagas()).toEqual([expect.objectContaining({
+      operation: 'delete',
+      phase: 'prepared',
+      cleanupResources: expect.arrayContaining([expect.objectContaining({
+        kind: 'branch',
+        branchName: 'feature/checkout/checkout-web',
+        expectedCommit: 'feature/checkout/checkout-web-sha',
+      })]),
+    })]);
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(deleteArchitectPlanMock).not.toHaveBeenCalled();
+  });
+
   it('keeps an archive saga pending after a later repository rejects cleanup, then retries only the remaining work', async () => {
     currentPlan = { ...buildPlan(), status: 'archived' };
-    persistLifecycleSaga({ operation: 'archive' });
+    persistLifecycleSaga({
+      operation: 'archive',
+      cleanupResources: buildPersistedCleanupResources()
+        .filter((resource) => resource.kind === 'worktree')
+        .map((resource) => ({ ...resource, expectedCommit: null })),
+    });
     const removedWorktrees = new Set<string>();
     let failApiCleanup = true;
     gitBranchListMock.mockImplementation(async () => createGitBranches(['develop', 'feature/unrelated']));
@@ -2003,6 +2566,70 @@ describe('architectGitFlowService', () => {
     expect(gitWorktreeRemoveMock).toHaveBeenCalled();
     expect(commitArchitectPlanMetadataMock).toHaveBeenCalledTimes(1);
     expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('quarantines historical cleanup work that has no durable resource identities', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({
+      operation: 'archive',
+      phase: 'metadata_written',
+      cleanupResources: undefined,
+    });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(commitArchitectPlanMetadataMock).not.toHaveBeenCalled();
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('does not replay archive cleanup after its durable checkpoint', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({
+      operation: 'archive',
+      phase: 'git_cleanup_complete',
+      cleanupResources: undefined,
+    });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('does not replay delete cleanup after its durable checkpoint', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({
+      operation: 'delete',
+      phase: 'git_cleanup_complete',
+      cleanupResources: undefined,
+    });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(deleteArchitectPlanMock).toHaveBeenCalledTimes(1);
+    expect(readPersistedLifecycleSagas()).toEqual([]);
+  });
+
+  it('drops a stale resume snapshot after acquiring the lifecycle lock', async () => {
+    currentPlan = { ...buildPlan(), status: 'archived' };
+    persistLifecycleSaga({ operation: 'archive', phase: 'metadata_written' });
+    workspaceAcquirePlanLifecycleLockMock.mockImplementationOnce(async () => {
+      persistedPlanLifecycleSagas = '[]';
+      currentPlan = { ...buildPlan(), status: 'validated' };
+      return 'plan-lifecycle-lease';
+    });
+
+    await architectGitFlowService.resumePlanLifecycleSagas();
+
+    expect(currentPlan.status).toBe('validated');
+    expect(archiveArchitectPlanMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
   });
 
   it('resumes metadata_commit_pending without replaying cleanup', async () => {

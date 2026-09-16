@@ -2,18 +2,24 @@ import { usePersistenceHealth } from "../../services/persistenceHealth";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import type {
+  ChatMessage,
   ConversationQuestionnaireDraft,
   ConversationQuestionnaireState,
 } from "../../types";
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
+  UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
+  clearUnsavedAssistantResponsesForConversations,
   clearQuestionnaireDraftsForConversations,
   loadComposerDraftsFromStorage,
   loadMessageImagesFromStorage,
   loadQuestionnaireDraftsFromStorage,
+  loadUnsavedAssistantResponsesFromStorage,
+  removeUnsavedAssistantResponseFromStorage,
   saveComposerDraftsToStorage,
   saveMessageImagesToStorage,
   saveQuestionnaireDraftsToStorage,
+  saveUnsavedAssistantResponseToStorage,
   setActiveQuestionnaireDraftStep,
   setQuestionnaireDraftForConversation,
   type MessageImageAttachment,
@@ -28,6 +34,10 @@ class MemoryLocalStorage {
 
   setItem(key: string, value: string): void {
     this.values.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
   }
 
   clear(): void {
@@ -194,6 +204,105 @@ describe("chatLocalSessionState", () => {
     saveMessageImagesToStorage({ "message-1": [image] });
 
     expect(loadMessageImagesFromStorage()).toEqual({ "message-1": [image] });
+  });
+
+  it("keeps failed assistant responses in local recovery storage", () => {
+    const message: ChatMessage = {
+      id: "assistant-1",
+      turn_id: "turn-1",
+      task_id: "",
+      conversation_id: "conv-1",
+      role: "assistant",
+      content: "Réponse à récupérer",
+      timestamp: "2026-08-30T08:00:00.000Z",
+      hidden_context: "contexte ".repeat(600),
+      tool_traces: [],
+      persistence_state: "failed",
+      persistence_error: "SQLite indisponible",
+    };
+
+    expect(saveUnsavedAssistantResponseToStorage(message)).toBe(true);
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([message]);
+
+    expect(removeUnsavedAssistantResponseFromStorage(message.id)).toBe(true);
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([]);
+    expect(
+      window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY),
+    ).toBeNull();
+  });
+
+  it("rejects an oversized recovery record before reporting it as saved", () => {
+    const message: ChatMessage = {
+      id: "assistant-too-large",
+      task_id: "",
+      conversation_id: "conv-1",
+      role: "assistant",
+      content: "x".repeat(4_000_001),
+      timestamp: "2026-08-30T08:00:00.000Z",
+      persistence_state: "failed",
+      persistence_error: "SQLite indisponible",
+    };
+
+    expect(saveUnsavedAssistantResponseToStorage(message)).toBe(false);
+    expect(
+      window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY),
+    ).toBeNull();
+  });
+
+  it("rejects a recovery record whose combined serialized fields exceed the limit", () => {
+    const message: ChatMessage = {
+      id: "assistant-combined-too-large",
+      task_id: "",
+      conversation_id: "conv-1",
+      role: "assistant",
+      content: "x".repeat(2_100_000),
+      hidden_context: "y".repeat(2_100_000),
+      timestamp: "2026-08-30T08:00:00.000Z",
+      persistence_state: "failed",
+      persistence_error: "SQLite indisponible",
+    };
+
+    expect(saveUnsavedAssistantResponseToStorage(message)).toBe(false);
+    expect(
+      window.localStorage.getItem(UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY),
+    ).toBeNull();
+  });
+
+  it("restores an interrupted retry as failed and prunes deleted conversations", () => {
+    window.localStorage.setItem(
+      UNSAVED_ASSISTANT_RESPONSES_STORAGE_KEY,
+      JSON.stringify({
+        "assistant-1": {
+          id: "assistant-1",
+          turn_id: "turn-1",
+          task_id: "",
+          conversation_id: "conv-1",
+          role: "assistant",
+          content: "Réponse locale",
+          timestamp: "2026-08-30T08:00:00.000Z",
+          persistence_state: "retrying",
+          persistence_error: "Échec initial",
+        },
+        invalid: {
+          id: "user-1",
+          task_id: "",
+          conversation_id: "conv-2",
+          role: "user",
+          content: "Ne pas restaurer",
+          timestamp: "2026-08-30T08:01:00.000Z",
+        },
+      }),
+    );
+
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        persistence_state: "failed",
+      }),
+    ]);
+
+    expect(clearUnsavedAssistantResponsesForConversations(["conv-1"])).toBe(true);
+    expect(loadUnsavedAssistantResponsesFromStorage()).toEqual([]);
   });
 
   it("round-trips a composer draft with an image and a context reference", () => {

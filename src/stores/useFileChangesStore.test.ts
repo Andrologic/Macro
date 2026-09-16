@@ -279,11 +279,28 @@ const gitReadFilePairMock = mock(async ({ repoPath, path }: { repoPath: string; 
   };
 });
 
-const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: string }) => {
+const fsWriteFileMock = mock(async ({
+  path,
+  content,
+  expectedRevision,
+}: {
+  path: string;
+  content: string;
+  expectedRevision?: string | null;
+}) => {
   const normalized = path.replace(/\\/g, '/');
   const isWorktreeA = normalized.startsWith(`${worktreeAPath}/`);
   const base = isWorktreeA ? worktreeAPath : worktreeBPath;
   const relative = normalized.slice(base.length + 1);
+  const current = currentFiles[base]?.[relative];
+  const actualRevision = current === undefined || current === null
+    ? 'absent'
+    : `revision:${current}`;
+  if (expectedRevision && expectedRevision !== actualRevision) {
+    throw Object.assign(new Error('The file changed after the diff loaded.'), {
+      code: 'REVISION_CONFLICT',
+    });
+  }
   currentFiles[base] ||= {};
   currentFiles[base][relative] = content;
   return {
@@ -291,6 +308,7 @@ const fsWriteFileMock = mock(async ({ path, content }: { path: string; content: 
     bytes_written: content.length,
     created: false,
     skipped: false,
+    revision: `revision:${content}`,
   };
 });
 
@@ -880,7 +898,7 @@ describe('useFileChangesStore', () => {
     const deferredStore = createFileChangesStore({
       tauri: { isTauriAvailable: () => true, gitStatus: gitStatusMock, gitWorktreeInspect: gitWorktreeInspectMock,
         gitDiff: gitDiffMock, gitMergeCheck: gitMergeCheckMock, gitReadFilePair: gitReadFilePairMock,
-        fsExists: fsExistsMock, fsReadFileWithOptions: fsReadFileWithOptionsMock, fsWriteFile: fsWriteFileMock,
+        fsExists: fsExistsMock, fsReadFileWithOptions: mock(async () => ({ content, revision: `revision:${content}`, language: 'typescript', is_binary: false, size: content.length, encoding: 'utf-8' })), fsWriteFile: fsWriteFileMock,
         gitRestorePaths: gitRestorePathsMock, gitAdd: gitAddMock, gitCommit: gitCommitMock,
         gitReviewSnapshot: mock(async () => { await snapshotGate; return { branch: repository.branchName, stagedPaths: [],
           changes: [{ ...original, requiresHydration: true, originalContent: '', indexContent: '', modifiedContent: '',
@@ -906,7 +924,8 @@ describe('useFileChangesStore', () => {
     const state = deferredStore.getState();
     expect(state.selectedDiffTarget).toEqual({ repositoryId: repositoryIdA, changeId: changeIdA });
     expect(state.diffModalSession?.rightDraftContent).toBe(dirty ? 'draft written during refresh' : content);
-    expect(state.diffModalSession?.lastLoadedModifiedContent).toBe(content);
+    expect(state.diffModalSession?.lastLoadedModifiedContent).toBe(dirty ? original.modifiedContent : content);
+    if (dirty) expect(state.diffModalSession?.editRevision).toBeNull();
     expect(state.diffModalSession?.isHydratingFullContext).toBe(false);
     expect(store.getChange(repositoryIdA, changeIdA)?.requiresHydration).toBe(false);
     expect(store.isChangeReviewed(repositoryIdA, changeIdA)).toBe(false);
@@ -2687,6 +2706,177 @@ describe('useFileChangesStore', () => {
     expect(useFileChangesStore.getState().getChange(repositoryIdA, changeIdA)?.modifiedContent).toContain('const value = 2;');
   });
 
+  it('does not attach a newer revision to a draft edited during revision capture', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    let markReadStarted: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve;
+    });
+    let releaseRead: () => void = () => undefined;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const externalContent = 'const external = true;\n';
+    fsReadFileWithOptionsMock.mockImplementationOnce(async () => {
+      markReadStarted();
+      await readGate;
+      return {
+        content: externalContent,
+        language: 'TypeScript',
+        is_binary: false,
+        size: externalContent.length,
+        encoding: 'utf-8',
+        revision: `revision:${externalContent}`,
+      };
+    });
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await readStarted;
+    const editedDraft = 'const value = 42;\nconsole.log(value);';
+    store.updateRightDraft(editedDraft);
+    currentFiles[worktreeAPath]['src/main.ts'] = externalContent;
+    releaseRead();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (!useFileChangesStore.getState().getDiffModalSession()?.isHydratingFullContext) break;
+      await Promise.resolve();
+    }
+
+    const session = useFileChangesStore.getState().getDiffModalSession();
+    expect(session?.rightDraftContent).toBe(editedDraft);
+    expect(session?.lastLoadedModifiedContent).toContain('const value = 2;');
+    expect(session?.editRevision).toBeNull();
+    await expect(store.saveRightDraft()).rejects.toThrow(
+      'the loaded revision is unavailable',
+    );
+    expect(fsWriteFileMock).not.toHaveBeenCalled();
+    expect(currentFiles[worktreeAPath]['src/main.ts']).toBe(externalContent);
+  });
+
+  it('ignores hydration from an older modal session reopened on the same file', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    const staleContent = 'const staleSession = true;\n';
+    const freshContent = 'const freshSession = true;\n';
+    let markFirstReadStarted: () => void = () => undefined;
+    const firstReadStarted = new Promise<void>((resolve) => {
+      markFirstReadStarted = resolve;
+    });
+    let releaseFirstRead: () => void = () => undefined;
+    const firstReadGate = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    fsReadFileWithOptionsMock.mockImplementationOnce(async () => {
+      markFirstReadStarted();
+      await firstReadGate;
+      return {
+        content: staleContent,
+        language: 'TypeScript',
+        is_binary: false,
+        size: staleContent.length,
+        encoding: 'utf-8',
+        revision: `revision:${staleContent}`,
+      };
+    });
+    fsReadFileWithOptionsMock.mockImplementationOnce(async () => ({
+      content: freshContent,
+      language: 'TypeScript',
+      is_binary: false,
+      size: freshContent.length,
+      encoding: 'utf-8',
+      revision: `revision:${freshContent}`,
+    }));
+
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await firstReadStarted;
+    const firstSessionId = useFileChangesStore.getState().diffModalSession?.sessionId;
+    store.closeDiffModal();
+    currentFiles[worktreeAPath]['src/main.ts'] = freshContent;
+    store.openDiffModal(repositoryIdA, changeIdA);
+    const secondSessionId = useFileChangesStore.getState().diffModalSession?.sessionId;
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision === `revision:${freshContent}`) {
+        break;
+      }
+      await Promise.resolve();
+    }
+    expect(secondSessionId).not.toBe(firstSessionId);
+    expect(useFileChangesStore.getState().diffModalSession?.rightDraftContent).toBe(freshContent);
+    expect(useFileChangesStore.getState().diffModalSession?.editRevision)
+      .toBe(`revision:${freshContent}`);
+
+    releaseFirstRead();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await Promise.resolve();
+    }
+
+    const finalState = useFileChangesStore.getState();
+    expect(finalState.diffModalSession?.sessionId).toBe(secondSessionId);
+    expect(finalState.diffModalSession?.rightDraftContent).toBe(freshContent);
+    expect(finalState.diffModalSession?.editRevision).toBe(`revision:${freshContent}`);
+    expect(finalState.getChange(repositoryIdA, changeIdA)?.modifiedContent).toBe(freshContent);
+  });
+
+  it('does not publish a completed save into a modal session reopened on the same file', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision) break;
+      await Promise.resolve();
+    }
+
+    const staleDraft = 'const staleSave = true;\n';
+    store.updateRightDraft(staleDraft);
+    let markWriteStarted: () => void = () => undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    let releaseWrite: () => void = () => undefined;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    fsWriteFileMock.mockImplementationOnce(async ({ path, content }) => {
+      markWriteStarted();
+      await writeGate;
+      currentFiles[worktreeAPath]['src/main.ts'] = content;
+      return {
+        path,
+        bytes_written: content.length,
+        created: false,
+        skipped: false,
+        revision: `revision:${content}`,
+      };
+    });
+
+    const staleSessionId = useFileChangesStore.getState().diffModalSession?.sessionId;
+    const pendingSave = store.saveRightDraft();
+    await writeStarted;
+    store.closeDiffModal();
+    const freshContent = 'const freshSessionAfterSave = true;\n';
+    currentFiles[worktreeAPath]['src/main.ts'] = freshContent;
+    store.openDiffModal(repositoryIdA, changeIdA);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision === `revision:${freshContent}`) break;
+      await Promise.resolve();
+    }
+    const freshSessionId = useFileChangesStore.getState().diffModalSession?.sessionId;
+    const gitStatusCallsBeforeCompletion = gitStatusMock.mock.calls.length;
+
+    releaseWrite();
+    await pendingSave;
+
+    const finalState = useFileChangesStore.getState();
+    expect(freshSessionId).not.toBe(staleSessionId);
+    expect(finalState.diffModalSession?.sessionId).toBe(freshSessionId);
+    expect(finalState.diffModalSession?.rightDraftContent).toBe(freshContent);
+    expect(finalState.diffModalSession?.editRevision).toBe(`revision:${freshContent}`);
+    expect(finalState.diffModalSession?.isSaving).toBe(false);
+    expect(finalState.getRepository(repositoryIdA)?.savingChangeId).toBeNull();
+    expect(gitStatusMock.mock.calls.length).toBe(gitStatusCallsBeforeCompletion);
+  });
+
   it('opens the diff modal with full file hydration while keeping focused as the initial presentation mode', async () => {
     const store = useFileChangesStore.getState();
     await store.loadCurrentChanges();
@@ -2784,6 +2974,102 @@ describe('useFileChangesStore', () => {
     expect(session?.rightDraftContent).toContain('const value = 9;');
     expect(change?.modifiedContent).toContain('const value = 9;');
     expect(repository?.stats.pendingVisibleFileCount).toBe(1);
+  });
+
+  it('accepts a draft save whose durable write succeeded before its response was lost', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision) break;
+      await Promise.resolve();
+    }
+    const nextContent = 'const durableWriteLostItsResponse = true;\n';
+    store.updateRightDraft(nextContent);
+    fsWriteFileMock.mockImplementationOnce(async ({ content }) => {
+      currentFiles[worktreeAPath]['src/main.ts'] = content;
+      throw new Error('injected response loss after durable write');
+    });
+
+    await store.saveRightDraft();
+
+    const session = useFileChangesStore.getState().diffModalSession;
+    expect(currentFiles[worktreeAPath]['src/main.ts']).toBe(nextContent);
+    expect(session?.rightDraftContent).toBe(nextContent);
+    expect(session?.lastLoadedModifiedContent).toBe(nextContent);
+    expect(session?.editRevision).toBe(`revision:${nextContent}`);
+    expect(session?.isDirty).toBe(false);
+    expect(session?.isSaving).toBe(false);
+    expect(useFileChangesStore.getState().lastError).toBeNull();
+    expect(fsWriteFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps text entered while an earlier draft save is still pending', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (useFileChangesStore.getState().diffModalSession?.editRevision) break;
+      await Promise.resolve();
+    }
+    const savedContent = 'const savedWhileTyping = true;\n';
+    const newerDraft = 'const typedBeforeSaveReturned = true;\n';
+    let releaseWrite!: () => void;
+    let markWriteStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    const writeReleased = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    fsWriteFileMock.mockImplementationOnce(async ({ content }) => {
+      markWriteStarted();
+      await writeReleased;
+      currentFiles[worktreeAPath]['src/main.ts'] = content;
+      return {
+        path: `${worktreeAPath}/src/main.ts`,
+        bytes_written: content.length,
+        created: false,
+        skipped: false,
+        revision: `revision:${content}`,
+      };
+    });
+
+    store.updateRightDraft(savedContent);
+    const pendingSave = store.saveRightDraft();
+    await writeStarted;
+    store.updateRightDraft(newerDraft);
+    releaseWrite();
+    await pendingSave;
+
+    const session = useFileChangesStore.getState().diffModalSession;
+    expect(currentFiles[worktreeAPath]['src/main.ts']).toBe(savedContent);
+    expect(session?.rightDraftContent).toBe(newerDraft);
+    expect(session?.lastLoadedModifiedContent).toBe(savedContent);
+    expect(session?.editRevision).toBe(`revision:${savedContent}`);
+    expect(session?.isDirty).toBe(true);
+    expect(session?.isSaving).toBe(false);
+  });
+
+  it('rejects a draft save when the file changed after the diff loaded', async () => {
+    const store = useFileChangesStore.getState();
+    await store.loadCurrentChanges();
+    store.openDiffModal(repositoryIdA, changeIdA);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    store.updateRightDraft('const value = 9;\nconsole.log(value);');
+    currentFiles[worktreeAPath]['src/main.ts'] = 'const external = true;';
+
+    await expect(store.saveRightDraft()).rejects.toThrow(
+      'The file changed after the diff loaded.',
+    );
+
+    expect(fsWriteFileMock).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRevision: expect.stringContaining('revision:const value = 2;'),
+    }));
+    expect(currentFiles[worktreeAPath]['src/main.ts']).toBe('const external = true;');
+    expect(useFileChangesStore.getState().getDiffModalSession()?.isDirty).toBe(true);
   });
 
   it('stages visible changes in batch for a repository scope', async () => {

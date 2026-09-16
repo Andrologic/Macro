@@ -1176,8 +1176,9 @@ pub async fn delete_messages_after(
     after_message_id: &str,
 ) -> DbResult<()> {
     let mut transaction = pool.begin().await?;
-    let row = sqlx::query("SELECT created_at FROM messages WHERE id = ?")
+    let row = sqlx::query("SELECT created_at FROM messages WHERE id = ? AND conversation_id = ?")
         .bind(after_message_id)
+        .bind(conversation_id)
         .fetch_one(&mut *transaction)
         .await?;
 
@@ -1196,6 +1197,45 @@ pub async fn delete_messages_after(
     .bind(after_message_id)
     .execute(&mut *transaction)
     .await?;
+    refresh_conversation_metadata_with_connection(
+        &mut *transaction,
+        conversation_id.to_string(),
+        None,
+    )
+    .await?;
+    transaction.commit().await?;
+
+    Ok(())
+}
+
+pub async fn delete_conversation_turn(
+    pool: &SqlitePool,
+    conversation_id: &str,
+    turn_id: &str,
+) -> DbResult<()> {
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM conversation_citations
+        WHERE conversation_id = ?
+          AND message_id IN (
+              SELECT id FROM messages
+              WHERE conversation_id = ? AND turn_id = ?
+          )
+        "#,
+    )
+    .bind(conversation_id)
+    .bind(conversation_id)
+    .bind(turn_id)
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query("DELETE FROM messages WHERE conversation_id = ? AND turn_id = ?")
+        .bind(conversation_id)
+        .bind(turn_id)
+        .execute(&mut *transaction)
+        .await?;
     refresh_conversation_metadata_with_connection(
         &mut *transaction,
         conversation_id.to_string(),
@@ -3571,7 +3611,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pruning_an_empty_provider_catalog_removes_only_discovered_models() {
+    async fn replacing_with_an_empty_provider_catalog_removes_only_discovered_models() {
         let (_temp_dir, pool) = test_pool().await;
         upsert_provider_config_by_id(
             &pool,
@@ -3604,9 +3644,9 @@ mod tests {
             .expect("insert model");
         }
 
-        prune_provider_models(&pool, "provider-openai", &[])
+        replace_discovered_provider_models(&pool, "provider-openai", &[])
             .await
-            .expect("prune empty catalog");
+            .expect("replace with empty catalog");
 
         let rows = sqlx::query("SELECT model_id FROM ai_models ORDER BY model_id")
             .fetch_all(&pool)
@@ -3965,6 +4005,123 @@ mod tests {
             .expect("conversation");
         assert_eq!(refreshed.message_count, 1);
         assert_eq!(refreshed.last_message.as_deref(), Some("Keep me"));
+    }
+
+    #[tokio::test]
+    async fn delete_messages_after_rejects_an_anchor_from_another_conversation() {
+        let (_temp_dir, pool) = test_pool().await;
+        let first = create_test_conversation(&pool, "First").await;
+        let second = create_test_conversation(&pool, "Second").await;
+        import_messages(
+            &pool,
+            &first.id,
+            vec![ImportMessageInput {
+                id: "first-message".to_string(),
+                turn_id: None,
+                role: "user".to_string(),
+                content: "Keep first".to_string(),
+                created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                completion_reason: None,
+            }],
+        )
+        .await
+        .expect("import first message");
+        import_messages(
+            &pool,
+            &second.id,
+            vec![ImportMessageInput {
+                id: "second-message".to_string(),
+                turn_id: None,
+                role: "user".to_string(),
+                content: "Foreign anchor".to_string(),
+                created_at: "2026-03-19T00:01:00.000Z".to_string(),
+                completion_reason: None,
+            }],
+        )
+        .await
+        .expect("import second message");
+
+        delete_messages_after(&pool, &first.id, "second-message")
+            .await
+            .expect_err("foreign anchor must be rejected");
+
+        let remaining = list_messages(&pool, &first.id)
+            .await
+            .expect("list first messages");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "first-message");
+    }
+
+    #[tokio::test]
+    async fn delete_conversation_turn_removes_every_message_in_only_that_turn() {
+        let (_temp_dir, pool) = test_pool().await;
+        let conversation = create_test_conversation(&pool, "Thread").await;
+
+        import_messages(
+            &pool,
+            &conversation.id,
+            vec![
+                ImportMessageInput {
+                    id: "previous-user".to_string(),
+                    turn_id: Some("turn-previous".to_string()),
+                    role: "user".to_string(),
+                    content: "Keep previous turn".to_string(),
+                    created_at: "2026-03-19T00:00:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "failed-user".to_string(),
+                    turn_id: Some("turn-failed".to_string()),
+                    role: "user".to_string(),
+                    content: "Delete failed prompt".to_string(),
+                    created_at: "2026-03-19T00:01:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "failed-steering".to_string(),
+                    turn_id: Some("turn-failed".to_string()),
+                    role: "user".to_string(),
+                    content: "Delete failed steering".to_string(),
+                    created_at: "2026-03-19T00:02:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+                ImportMessageInput {
+                    id: "later-user".to_string(),
+                    turn_id: Some("turn-later".to_string()),
+                    role: "user".to_string(),
+                    content: "Keep unrelated later turn".to_string(),
+                    created_at: "2026-03-19T00:03:00.000Z".to_string(),
+                    completion_reason: None,
+                },
+            ],
+        )
+        .await
+        .expect("import messages");
+
+        delete_conversation_turn(&pool, &conversation.id, "turn-failed")
+            .await
+            .expect("delete failed turn");
+
+        let remaining_ids = list_messages(&pool, &conversation.id)
+            .await
+            .expect("list messages")
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            remaining_ids,
+            vec!["previous-user".to_string(), "later-user".to_string()]
+        );
+
+        let refreshed = get_conversation(&pool, &conversation.id)
+            .await
+            .expect("get conversation")
+            .expect("conversation");
+        assert_eq!(refreshed.message_count, 2);
+        assert_eq!(
+            refreshed.last_message.as_deref(),
+            Some("Keep unrelated later turn")
+        );
     }
 
     #[tokio::test]

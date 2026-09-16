@@ -23,6 +23,22 @@ describe('updater release verification', () => {
     expect(validateUpdaterManifest(manifest())).toEqual([]);
   });
 
+  test('accepts a prerelease manifest pinned to the preview tag', () => {
+    const value = manifest();
+    value.version = '0.2.1-nightly.20260830.42';
+    for (const platform of Object.values(value.platforms)) {
+      platform.url = platform.url.replace(
+        '/releases/download/v0.2.0/',
+        '/releases/download/preview/',
+      );
+    }
+
+    expect(validateUpdaterManifest(value, { channel: 'preview' })).toEqual([]);
+    expect(validateUpdaterManifest(value)).toContain(
+      'Manifest version must be a stable x.y.z version; found "0.2.1-nightly.20260830.42".',
+    );
+  });
+
   test('rejects incomplete or mutable manifest entries', () => {
     const value = manifest();
     delete value.platforms['darwin-aarch64'];

@@ -70,7 +70,17 @@
     "interrupted": "Démarrage interrompu",
     "failedTitle": "Macro n’a pas pu terminer son démarrage.",
     "failedDescription": "Macro n’a pas pu initialiser ses données locales. Vous pouvez réessayer sans risque.",
-    "failedSteps": "Étapes en échec"
+    "failedSteps": "Étapes en échec",
+    "metadataRecovery": {
+      "restoredWithCommit": "Métadonnées @macro restaurées depuis l'historique ({{commit}})",
+      "restored": "Métadonnées @macro restaurées depuis l'historique",
+      "restoredDescription": "Macro a restauré le dernier instantané valide des métadonnées avant de charger l'espace de travail.",
+      "reconstructed": "Métadonnées @macro reconfigurées à partir des projets locaux",
+      "reconstructedDescription": "Macro a reconstruit un état minimal des métadonnées à partir des projets locaux connus.",
+      "skipped": "Récupération automatique de @macro ignorée",
+      "blockedConflictDescription": "Macro a trouvé des conflits non résolus dans l'espace de travail des métadonnées et n'a pas appliqué la récupération automatique.",
+      "blockedDirtyDescription": "Macro a trouvé des modifications locales dans l'espace de travail des métadonnées et n'a pas appliqué la récupération automatique."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "Une tâche est encore en cours. Fermer Macro interrompra son travail.",
@@ -478,6 +488,11 @@
     "imageImportFailed": "Aucune image ajoutée. Utilisez des images PNG, JPEG, GIF ou WebP valides : 2 Mo par image, 8 Mo au total et 10 images maximum.",
     "newChat": "Nouvelle discussion",
     "newConversation": "Nouvelle conversation",
+    "unsavedAssistant": {
+      "label": "Non enregistrée",
+      "saving": "Enregistrement de la réponse...",
+      "description": "Macro n'a pas pu enregistrer cette réponse. Réessayez ou supprimez-la avant d'envoyer un autre message."
+    },
     "loadingConversation": "Restaurer la conversation...",
     "showHistory": "Afficher l'historique",
     "hideHistory": "Masquer l'historique",
@@ -1746,6 +1761,8 @@
     "strategyPreviewNew": "Nouvelles tâches",
     "strategyPreviewRemoved": "Suppressions en attente",
     "strategyPreviewConflicts": "Conflits",
+    "strategyPreviewDiscardError": "Impossible d'abandonner l'aperçu de stratégie.",
+    "strategyPreviewApplyError": "Impossible d'appliquer l'aperçu de stratégie.",
     "applyStrategyPreview": "Appliquer la régénération",
     "selectPlanToStart": "Sélectionnez ou créez un plan pour démarrer l’architecture.",
     "createFirstPlanToStart": "Créez votre premier plan pour démarrer l’architecture.",
@@ -2122,6 +2139,7 @@
   },
   "notifications": {
     "centerTitle": "Notifications",
+    "mcpServersUnavailable": "Certains serveurs MCP sont indisponibles",
     "openCenter": "Ouvrir les notifications",
     "closeCenter": "Fermer les notifications",
     "clearAll": "Tout effacer",

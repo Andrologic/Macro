@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { cn } from '../../utils/cn';
 import { Button } from './Button';
+import { Dialog } from './Dialog';
 import { Input } from './Input';
 
 interface ConfirmPromptModalProps {
@@ -41,7 +42,6 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
   onConfirm,
 }) => {
   const [value, setValue] = useState(initialValue);
-  const titleId = useId();
   const descriptionId = useId();
 
   useEffect(() => {
@@ -50,47 +50,25 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
     }
   }, [isOpen, initialValue]);
 
-  useEffect(() => {
-    if (!isOpen || isSubmitting) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, isSubmitting, onCancel]);
-
   if (!isOpen) return null;
 
   const showInput = inputPlaceholder !== undefined || requireInput;
   const confirmDisabled = isSubmitting || (requireInput && !value.trim());
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+    <Dialog
+      title={title}
+      onClose={isSubmitting ? () => undefined : onCancel}
+      closeOnBackdropClick={!isSubmitting}
+      ariaDescribedBy={description ? descriptionId : undefined}
+      backdropClassName="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 p-4"
+      panelClassName="flex max-h-[calc(100vh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+    >
       <div
-        className="absolute inset-0 bg-black/50"
-        aria-hidden="true"
-        onClick={() => {
-          if (!isSubmitting) {
-            onCancel();
-          }
-        }}
-      />
-
-      <div
-        className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-sm flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={description ? descriptionId : undefined}
-        tabIndex={-1}
+        className="contents"
       >
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <h3 id={titleId} className="text-sm font-semibold text-foreground">{title}</h3>
+          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
           {description && (
             <p id={descriptionId} className="mt-2 text-sm text-muted-foreground">{description}</p>
           )}
@@ -138,7 +116,7 @@ export const ConfirmPromptModal: React.FC<ConfirmPromptModalProps> = ({
           )}
         </div>
       </div>
-    </div>
+    </Dialog>
   );
 };
 

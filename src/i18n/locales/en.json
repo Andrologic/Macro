@@ -70,7 +70,17 @@
     "interrupted": "Startup interrupted",
     "failedTitle": "Macro could not finish booting.",
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",
-    "failedSteps": "Failed steps"
+    "failedSteps": "Failed steps",
+    "metadataRecovery": {
+      "restoredWithCommit": "Metadata @macro restored from history ({{commit}})",
+      "restored": "Metadata @macro restored from history",
+      "restoredDescription": "Macro restored the latest valid metadata snapshot before loading the workspace.",
+      "reconstructed": "Metadata @macro reconfigured from local projects",
+      "reconstructedDescription": "Macro rebuilt a minimal metadata state from locally known projects.",
+      "skipped": "Automatic @macro recovery skipped",
+      "blockedConflictDescription": "Macro found unresolved conflicts in the metadata worktree and did not apply recovery automatically.",
+      "blockedDirtyDescription": "Macro found local changes in the metadata worktree and did not apply recovery automatically."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
@@ -479,6 +489,11 @@
     "imageImportFailed": "No images added. Use valid PNG, JPEG, GIF or WebP images, up to 2 MB each, 8 MB total and 10 images.",
     "newChat": "New Chat",
     "newConversation": "New Conversation",
+    "unsavedAssistant": {
+      "label": "Not saved",
+      "saving": "Saving response...",
+      "description": "Macro could not save this response. Retry or remove it before sending another message."
+    },
     "loadingConversation": "Restoring conversation...",
     "showHistory": "Show history",
     "hideHistory": "Hide history",
@@ -1747,6 +1762,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "Failed to discard strategy preview.",
+    "strategyPreviewApplyError": "Failed to apply strategy preview.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Select or create a plan to start architecting.",
     "createFirstPlanToStart": "Create your first plan to start architecting.",
@@ -2168,6 +2185,7 @@
   },
   "notifications": {
     "centerTitle": "Notifications",
+    "mcpServersUnavailable": "Some MCP servers are unavailable",
     "openCenter": "Open notifications",
     "closeCenter": "Close notifications",
     "clearAll": "Clear all",

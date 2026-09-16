@@ -34,7 +34,8 @@ export const isConversationRuntimeActive = (
 ): boolean =>
   runtime?.phase === "preparing" ||
   runtime?.phase === "overflow_recovery" ||
-  runtime?.phase === "streaming";
+  runtime?.phase === "streaming" ||
+  runtime?.phase === "persisting";
 
 export const getConversationRuntimeSnapshot = (
   conversationRuntimeById: Record<string, ConversationRuntimeState | undefined>,

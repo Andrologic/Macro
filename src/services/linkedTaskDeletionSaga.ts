@@ -1,6 +1,25 @@
 import * as tauriIpc from './tauriIpc';
+import { allocateDurableGeneration, isDurableGeneration } from './durableGeneration';
 
 const SAGA_KEY = 'pendingLinkedTaskDeletions:v1';
+const COMPLETED_SAGA_KEY = 'completedLinkedTaskDeletions:v1';
+const GENERATION_COUNTER_KEY = 'linkedTaskDeletionGenerationCounters:v1';
+const MAX_CAS_ATTEMPTS = 32;
+
+export interface LinkedTaskDeletionSagaTransport {
+  isTauriAvailable: () => boolean;
+  dbGetAppSetting: typeof tauriIpc.dbGetAppSetting;
+  dbCompareAndSwapAppSetting: typeof tauriIpc.dbCompareAndSwapAppSetting;
+}
+
+const defaultTransport: LinkedTaskDeletionSagaTransport = tauriIpc;
+
+export class StaleLinkedTaskDeletionSagaError extends Error {
+  constructor() {
+    super('Cette génération de suppression liée n’est plus active.');
+    this.name = 'StaleLinkedTaskDeletionSagaError';
+  }
+}
 
 export type LinkedConversationDeletionOwner = 'task' | 'plan' | 'conversation';
 export type LinkedConversationDeletionPhase =
@@ -17,6 +36,8 @@ export interface LinkedTaskDeletionTarget {
   repoPath: string;
   branchName: string;
   branchExisted: boolean;
+  expectedCommit?: string | null;
+  expectedWorktreePath?: string | null;
   worktreeRemoved: boolean;
   branchRemoved: boolean;
   cleanupKind?: 'git' | 'direct';
@@ -29,8 +50,12 @@ export interface LinkedConversationDeletionSaga {
   ownerId: string;
   conversationId: string;
   phase: LinkedConversationDeletionPhase;
+  generation?: number;
+  legacyCreatedAt?: string;
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
+  archivedCleanupOperationId?: string;
+  archivedCleanupCreatedAt?: string;
   targetBranch?: string;
   revertTitle?: string | null;
   revertDescription?: string | null;
@@ -43,8 +68,12 @@ export interface LinkedTaskDeletionSaga {
   taskId: string;
   conversationId: string;
   phase: LinkedConversationDeletionPhase;
+  generation?: number;
+  legacyCreatedAt?: string;
   draft?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
+  archivedCleanupOperationId?: string;
+  archivedCleanupCreatedAt?: string;
   targetBranch?: string;
   revertTitle?: string | null;
   revertDescription?: string | null;
@@ -92,6 +121,15 @@ export const getLinkedDeletionSagaKey = (
   ? `conversation:${encodeURIComponent(saga.ownerId)}`
   : `${saga.ownerType}:${encodeURIComponent(saga.targetBranch || '')}:${encodeURIComponent(saga.ownerId)}`;
 
+export const getLinkedDeletionSagaGeneration = (
+  saga: Pick<
+    LinkedConversationDeletionSaga,
+    'ownerType' | 'ownerId' | 'targetBranch' | 'createdAt' | 'generation'
+  >,
+): string => `${getLinkedDeletionSagaKey(saga)}:${isDurableGeneration(saga.generation)
+  ? `g${saga.generation}`
+  : saga.createdAt}`;
+
 const parseSagas = (value: string | null | undefined): LinkedConversationDeletionSaga[] => {
   if (!value) return [];
   try {
@@ -115,7 +153,22 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
           candidate.phase !== 'draft_reverted' &&
           candidate.phase !== 'plan_conversation_created' &&
           candidate.phase !== 'plan_deleting') ||
-        !isAllowedOwnerPhase(ownerType, candidate.phase)
+        !isAllowedOwnerPhase(ownerType, candidate.phase) ||
+        (candidate.generation !== undefined && !isDurableGeneration(candidate.generation)) ||
+        (
+          candidate.legacyCreatedAt !== undefined &&
+          (
+            !isDurableGeneration(candidate.generation) ||
+            candidate.legacyCreatedAt !== candidate.createdAt
+          )
+        ) ||
+        (
+          candidate.archivedCleanupOperationId !== undefined &&
+          typeof candidate.archivedCleanupOperationId !== 'string'
+        ) || (
+          candidate.archivedCleanupCreatedAt !== undefined &&
+          typeof candidate.archivedCleanupCreatedAt !== 'string'
+        )
       ) {
         throw new LinkedConversationDeletionSagaCorruptionError(value);
       }
@@ -131,72 +184,367 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
   }
 };
 
-export const loadLinkedConversationDeletionSagas = async (): Promise<LinkedConversationDeletionSaga[]> => {
-  if (!tauriIpc.isTauriAvailable()) return [];
-  const setting = await tauriIpc.dbGetAppSetting(SAGA_KEY);
-  return parseSagas(setting?.value_json);
+export const loadLinkedConversationDeletionSagas = async (
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<LinkedConversationDeletionSaga[]> => {
+  if (!transport.isTauriAvailable()) return [];
+  const setting = await transport.dbGetAppSetting(SAGA_KEY);
+  const completed = await loadCompletedRegistry(transport);
+  return parseSagas(setting?.value_json).filter(
+    (saga) => !registryCompletesSaga(completed, saga),
+  );
 };
 
-const saveLinkedConversationDeletionSagas = async (sagas: LinkedConversationDeletionSaga[]): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable()) return;
-  await tauriIpc.dbSetAppSetting({ key: SAGA_KEY, valueJson: JSON.stringify(sagas) });
+interface CompletedLinkedDeletionRegistry {
+  version: 3;
+  highWatermarks: Record<string, number>;
+  legacyHighWatermarks: Record<string, string>;
+  legacyGenerations: string[];
+}
+
+const emptyCompletedRegistry = (): CompletedLinkedDeletionRegistry => ({
+  version: 3,
+  highWatermarks: {},
+  legacyHighWatermarks: {},
+  legacyGenerations: [],
+});
+
+const parseCompletedRegistry = (value: string | null | undefined): CompletedLinkedDeletionRegistry => {
+  if (!value) return emptyCompletedRegistry();
+  const parsed: unknown = JSON.parse(value);
+  if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string')) {
+    return { ...emptyCompletedRegistry(), legacyGenerations: parsed };
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new LinkedConversationDeletionSagaCorruptionError(value);
+  }
+  const legacyRegistry = parsed as {
+    version?: unknown;
+    highWatermarks?: unknown;
+    legacyGenerations?: unknown;
+  };
+  if (
+    legacyRegistry.version === 2 && legacyRegistry.highWatermarks &&
+    typeof legacyRegistry.highWatermarks === 'object' &&
+    Object.values(legacyRegistry.highWatermarks).every((entry) => typeof entry === 'string') &&
+    Array.isArray(legacyRegistry.legacyGenerations) &&
+    legacyRegistry.legacyGenerations.every((entry) => typeof entry === 'string')
+  ) {
+    return {
+      ...emptyCompletedRegistry(),
+      legacyHighWatermarks: legacyRegistry.highWatermarks as Record<string, string>,
+      legacyGenerations: legacyRegistry.legacyGenerations,
+    };
+  }
+  const registry = parsed as Partial<CompletedLinkedDeletionRegistry>;
+  if (
+    registry.version !== 3 || !registry.highWatermarks || typeof registry.highWatermarks !== 'object' ||
+    !Object.values(registry.highWatermarks).every(isDurableGeneration) ||
+    !registry.legacyHighWatermarks || typeof registry.legacyHighWatermarks !== 'object' ||
+    !Object.values(registry.legacyHighWatermarks).every((entry) => typeof entry === 'string') ||
+    !Array.isArray(registry.legacyGenerations) ||
+    !registry.legacyGenerations.every((entry) => typeof entry === 'string')
+  ) throw new LinkedConversationDeletionSagaCorruptionError(value);
+  return registry as CompletedLinkedDeletionRegistry;
 };
 
-let pendingMutation: Promise<void> = Promise.resolve();
+const loadCompletedRegistry = async (
+  transport: LinkedTaskDeletionSagaTransport,
+): Promise<CompletedLinkedDeletionRegistry> => parseCompletedRegistry(
+  (await transport.dbGetAppSetting(COMPLETED_SAGA_KEY))?.value_json,
+);
 
-const serializeMutation = async <T>(operation: () => Promise<T>): Promise<T> => {
-  const previous = pendingMutation;
-  let release!: () => void;
-  pendingMutation = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous.catch(() => undefined);
-  try {
-    return await operation();
-  } finally {
-    release();
+const registryCompletesSaga = (
+  registry: CompletedLinkedDeletionRegistry,
+  saga: LinkedConversationDeletionSaga,
+): boolean => {
+  const sagaKey = getLinkedDeletionSagaKey(saga);
+  if (!isDurableGeneration(saga.generation)) {
+    return registry.legacyGenerations.includes(getLinkedDeletionSagaGeneration(saga)) ||
+      (registry.legacyHighWatermarks[sagaKey] ?? '') >= saga.createdAt;
+  }
+  if ((registry.highWatermarks[sagaKey] ?? 0) >= saga.generation) return true;
+  if (!saga.legacyCreatedAt) return false;
+  return registry.legacyGenerations.includes(`${sagaKey}:${saga.legacyCreatedAt}`) ||
+    (registry.legacyHighWatermarks[sagaKey] ?? '') >= saga.legacyCreatedAt;
+};
+
+const updateSetting = async (
+  key: string,
+  mutation: (currentValue: string | null) => string,
+  transport: LinkedTaskDeletionSagaTransport,
+): Promise<void> => {
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const expectedValueJson = (await transport.dbGetAppSetting(key))?.value_json ?? null;
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key,
+      expectedValueJson,
+      valueJson: mutation(expectedValueJson),
+    });
+    if (result.applied) return;
+  }
+  throw new Error(`Conflit persistant pendant la mise à jour du réglage ${key}.`);
+};
+
+const mutateLinkedConversationDeletionSagas = async (
+  mutation: (current: LinkedConversationDeletionSaga[]) => LinkedConversationDeletionSaga[],
+  transport: LinkedTaskDeletionSagaTransport,
+): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const setting = await transport.dbGetAppSetting(SAGA_KEY);
+    const expectedValueJson = setting?.value_json ?? null;
+    const valueJson = JSON.stringify(mutation(parseSagas(expectedValueJson)));
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key: SAGA_KEY,
+      expectedValueJson,
+      valueJson,
+    });
+    if (result.applied) return;
+  }
+  throw new Error('Conflit persistant pendant la mise à jour du journal de suppression liée.');
+};
+
+const phaseRank = (phase: LinkedConversationDeletionPhase): number => {
+  if (phase === 'prepared' || phase === 'plan_conversation_created') return 0;
+  if (phase === 'task_deleting' || phase === 'draft_reverting' || phase === 'plan_deleting') return 1;
+  return 2;
+};
+
+const mergeTargetProgress = (
+  persisted: LinkedTaskDeletionTarget[] | undefined,
+  incoming: LinkedTaskDeletionTarget[] | undefined,
+  preferIncomingDetails: boolean,
+): LinkedTaskDeletionTarget[] | undefined => {
+  if (!incoming) return persisted;
+  if (!persisted) return incoming;
+  const incomingKeys = new Set(incoming.map((target) => target.worktreeKey));
+  return [
+    ...incoming.map((target) => {
+      const current = persisted.find((candidate) => candidate.worktreeKey === target.worktreeKey);
+      if (!current) return target;
+      const details = preferIncomingDetails ? target : current;
+      return {
+        ...details,
+        branchExisted: current.branchExisted || target.branchExisted,
+        worktreeRemoved: current.worktreeRemoved || target.worktreeRemoved,
+        branchRemoved: current.branchRemoved || target.branchRemoved,
+        checkpointRemoved: current.checkpointRemoved || target.checkpointRemoved,
+      };
+    }),
+    ...persisted.filter((target) => !incomingKeys.has(target.worktreeKey)),
+  ];
+};
+
+const mergeSameGenerationProgress = (
+  persisted: LinkedConversationDeletionSaga,
+  incoming: LinkedConversationDeletionSaga,
+): LinkedConversationDeletionSaga => {
+  if (
+    persisted.createdAt !== incoming.createdAt ||
+    (
+      persisted.legacyCreatedAt !== undefined &&
+      incoming.legacyCreatedAt !== undefined &&
+      persisted.legacyCreatedAt !== incoming.legacyCreatedAt
+    )
+  ) {
+    throw new StaleLinkedTaskDeletionSagaError();
+  }
+  const incomingTransfersNewerCleanup = Boolean(
+    incoming.archivedCleanupOperationId && (
+      !persisted.archivedCleanupOperationId ||
+      incoming.archivedCleanupOperationId === persisted.archivedCleanupOperationId ||
+      Boolean(
+        incoming.archivedCleanupCreatedAt &&
+        persisted.archivedCleanupCreatedAt &&
+        incoming.archivedCleanupCreatedAt > persisted.archivedCleanupCreatedAt
+      )
+    )
+  );
+  return {
+    ...incoming,
+    legacyCreatedAt: persisted.legacyCreatedAt ?? incoming.legacyCreatedAt,
+    executionTargets: mergeTargetProgress(
+      persisted.executionTargets,
+      incoming.executionTargets,
+      incomingTransfersNewerCleanup,
+    ),
+    archivedCleanupOperationId: incomingTransfersNewerCleanup
+      ? incoming.archivedCleanupOperationId
+      : persisted.archivedCleanupOperationId,
+    archivedCleanupCreatedAt: incomingTransfersNewerCleanup
+      ? incoming.archivedCleanupCreatedAt
+      : persisted.archivedCleanupCreatedAt,
+  };
+};
+
+const persistLinkedConversationDeletionSaga = async (
+  saga: LinkedConversationDeletionSaga,
+  transport: LinkedTaskDeletionSagaTransport,
+  startNewGeneration: boolean,
+): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  if (
+    saga.legacyCreatedAt !== undefined &&
+    (!isDurableGeneration(saga.generation) || saga.legacyCreatedAt !== saga.createdAt)
+  ) {
+    throw new StaleLinkedTaskDeletionSagaError();
+  }
+  if (startNewGeneration && (saga.generation !== undefined || saga.legacyCreatedAt !== undefined)) {
+    throw new StaleLinkedTaskDeletionSagaError();
+  }
+  const completionIdentity = { ...saga };
+  if (
+    !startNewGeneration &&
+    registryCompletesSaga(await loadCompletedRegistry(transport), completionIdentity)
+  ) {
+    throw new StaleLinkedTaskDeletionSagaError();
+  }
+  const convertsLegacyGeneration = !startNewGeneration && !isDurableGeneration(saga.generation);
+  if (!isDurableGeneration(saga.generation)) {
+    saga.generation = await allocateDurableGeneration({
+      settingKey: GENERATION_COUNTER_KEY,
+      identityKey: getLinkedDeletionSagaKey(saga),
+      transport,
+    });
+    if (convertsLegacyGeneration) saga.legacyCreatedAt = saga.createdAt;
+  }
+  const generation = getLinkedDeletionSagaGeneration(saga);
+  const completedAfterAllocation = await loadCompletedRegistry(transport);
+  if (
+    (!startNewGeneration && registryCompletesSaga(completedAfterAllocation, completionIdentity)) ||
+    registryCompletesSaga(completedAfterAllocation, saga)
+  ) {
+    throw new StaleLinkedTaskDeletionSagaError();
+  }
+  await mutateLinkedConversationDeletionSagas(
+    (current) => {
+      const existing = current.find((entry) => hasSameOwnerIdentity(entry, saga));
+      if (existing) {
+        if (startNewGeneration) throw new StaleLinkedTaskDeletionSagaError();
+        const existingGeneration = getLinkedDeletionSagaGeneration(existing);
+        if (existingGeneration !== generation) {
+          if (
+            isDurableGeneration(existing.generation) &&
+            existing.generation >= saga.generation!
+          ) throw new StaleLinkedTaskDeletionSagaError();
+          if (!isDurableGeneration(existing.generation) && !isDurableGeneration(saga.generation) &&
+            existing.createdAt >= saga.createdAt) throw new StaleLinkedTaskDeletionSagaError();
+          if (isDurableGeneration(existing.generation) && !isDurableGeneration(saga.generation)) {
+            throw new StaleLinkedTaskDeletionSagaError();
+          }
+        } else if (phaseRank(existing.phase) > phaseRank(saga.phase)) {
+          throw new StaleLinkedTaskDeletionSagaError();
+        }
+      }
+      const next = existing && getLinkedDeletionSagaGeneration(existing) === generation
+        ? mergeSameGenerationProgress(existing, saga)
+        : saga;
+      return [
+        ...current.filter((entry) => !hasSameOwnerIdentity(entry, saga)),
+        next,
+      ];
+    },
+    transport,
+  );
+  const completedAfterUpsert = await loadCompletedRegistry(transport);
+  if (
+    (!startNewGeneration && registryCompletesSaga(completedAfterUpsert, completionIdentity)) ||
+    registryCompletesSaga(completedAfterUpsert, saga)
+  ) {
+    await mutateLinkedConversationDeletionSagas(
+      (current) => current.filter(
+        (entry) => getLinkedDeletionSagaGeneration(entry) !== generation,
+      ),
+      transport,
+    );
+    throw new StaleLinkedTaskDeletionSagaError();
   }
 };
 
+export const startLinkedConversationDeletionSaga = async (
+  saga: LinkedConversationDeletionSaga,
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<void> => persistLinkedConversationDeletionSaga(saga, transport, true);
+
 export const upsertLinkedConversationDeletionSaga = async (
   saga: LinkedConversationDeletionSaga,
-): Promise<void> => {
-  await serializeMutation(async () => {
-    const current = await loadLinkedConversationDeletionSagas();
-    await saveLinkedConversationDeletionSagas([
-      ...current.filter(
-        (entry) => !hasSameOwnerIdentity(entry, saga),
-      ),
-      saga,
-    ]);
-  });
-};
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<void> => persistLinkedConversationDeletionSaga(saga, transport, false);
 
 export const removeLinkedConversationDeletionSaga = async (
   ownerType: LinkedConversationDeletionOwner,
   ownerId: string,
   targetBranch?: string,
+  generation?: string,
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
 ): Promise<void> => {
-  await serializeMutation(async () => {
-    const current = await loadLinkedConversationDeletionSagas();
-    const matches = current.filter((entry) => entry.ownerType === ownerType && entry.ownerId === ownerId);
-    if (ownerType !== 'conversation' && targetBranch === undefined && matches.length > 1) return;
-    await saveLinkedConversationDeletionSagas(current.filter((entry) =>
+  if (!transport.isTauriAvailable()) return;
+  if (!generation) throw new Error('La génération de suppression liée est requise.');
+  const sagaKey = getLinkedDeletionSagaKey({ ownerType, ownerId, targetBranch });
+  const generationPrefix = `${sagaKey}:`;
+  if (!generation.startsWith(generationPrefix) || generation.length === generationPrefix.length) {
+    throw new Error('La génération de suppression liée ne correspond pas à son identité.');
+  }
+  const generationValue = generation.slice(generationPrefix.length);
+  const durableGeneration = /^g[1-9]\d*$/.test(generationValue)
+    ? Number(generationValue.slice(1))
+    : null;
+  if (durableGeneration !== null && !isDurableGeneration(durableGeneration)) {
+    throw new Error('La génération durable de suppression liée est invalide.');
+  }
+  await updateSetting(
+    COMPLETED_SAGA_KEY,
+    (value) => {
+      const registry = parseCompletedRegistry(value);
+      if (durableGeneration !== null) {
+        return JSON.stringify({
+          ...registry,
+          highWatermarks: {
+            ...registry.highWatermarks,
+            [sagaKey]: Math.max(registry.highWatermarks[sagaKey] ?? 0, durableGeneration),
+          },
+        });
+      }
+      return JSON.stringify({
+        ...registry,
+        legacyHighWatermarks: {
+          ...registry.legacyHighWatermarks,
+          [sagaKey]: (registry.legacyHighWatermarks[sagaKey] ?? '') > generationValue
+            ? registry.legacyHighWatermarks[sagaKey]
+            : generationValue,
+        },
+      });
+    },
+    transport,
+  );
+  await mutateLinkedConversationDeletionSagas((current) => {
+    return current.filter((entry) =>
       entry.ownerType !== ownerType || entry.ownerId !== ownerId ||
-      (ownerType !== 'conversation' && targetBranch !== undefined && entry.targetBranch !== targetBranch)
-    ));
-  });
+      (ownerType !== 'conversation' && targetBranch !== undefined && entry.targetBranch !== targetBranch) ||
+      (
+        getLinkedDeletionSagaGeneration(entry) !== generation &&
+        (durableGeneration !== null || entry.legacyCreatedAt !== generationValue)
+      )
+    );
+  }, transport);
 };
 
-export const loadLinkedTaskDeletionSagas = async (): Promise<LinkedTaskDeletionSaga[]> =>
-  (await loadLinkedConversationDeletionSagas()).flatMap((saga) =>
+export const loadLinkedTaskDeletionSagas = async (
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<LinkedTaskDeletionSaga[]> =>
+  (await loadLinkedConversationDeletionSagas(transport)).flatMap((saga) =>
     saga.ownerType === 'task'
       ? [{
           taskId: saga.ownerId,
           conversationId: saga.conversationId,
           phase: saga.phase,
+          generation: saga.generation,
+          legacyCreatedAt: saga.legacyCreatedAt,
           draft: saga.draft,
           executionTargets: saga.executionTargets,
+          archivedCleanupOperationId: saga.archivedCleanupOperationId,
+          archivedCleanupCreatedAt: saga.archivedCleanupCreatedAt,
           targetBranch: saga.targetBranch,
           revertTitle: saga.revertTitle,
           revertDescription: saga.revertDescription,
@@ -209,12 +557,41 @@ export const loadLinkedTaskDeletionSagas = async (): Promise<LinkedTaskDeletionS
 
 export const upsertLinkedTaskDeletionSaga = async (
   saga: LinkedTaskDeletionSaga,
-): Promise<void> =>
-  upsertLinkedConversationDeletionSaga({
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<void> => {
+  const conversationSaga: LinkedConversationDeletionSaga = {
     ...saga,
     ownerType: 'task',
     ownerId: saga.taskId,
-  });
+  };
+  await upsertLinkedConversationDeletionSaga(conversationSaga, transport);
+  saga.generation = conversationSaga.generation;
+  saga.legacyCreatedAt = conversationSaga.legacyCreatedAt;
+};
 
-export const removeLinkedTaskDeletionSaga = async (taskId: string, targetBranch?: string): Promise<void> =>
-  removeLinkedConversationDeletionSaga('task', taskId, targetBranch);
+export const startLinkedTaskDeletionSaga = async (
+  saga: LinkedTaskDeletionSaga,
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<void> => {
+  const conversationSaga: LinkedConversationDeletionSaga = {
+    ...saga,
+    ownerType: 'task',
+    ownerId: saga.taskId,
+  };
+  await startLinkedConversationDeletionSaga(conversationSaga, transport);
+  saga.generation = conversationSaga.generation;
+  saga.legacyCreatedAt = conversationSaga.legacyCreatedAt;
+};
+
+export const removeLinkedTaskDeletionSaga = async (
+  taskId: string,
+  targetBranch?: string,
+  generation?: string,
+  transport: LinkedTaskDeletionSagaTransport = defaultTransport,
+): Promise<void> => removeLinkedConversationDeletionSaga(
+  'task',
+  taskId,
+  targetBranch,
+  generation,
+  transport,
+);

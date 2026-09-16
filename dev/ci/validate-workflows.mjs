@@ -252,6 +252,10 @@ export function validateWorkflowDocument(document, filePath) {
   }
 
   if (filePath.endsWith('preview.yml')) {
+    const applyPreviewVersion = document.jobs.build?.steps?.find((step) => step?.name === 'Apply preview version');
+    if (applyPreviewVersion?.shell !== 'bash') {
+      fail('preview version application must use Bash so environment variables work on Windows runners.');
+    }
     if (document.permissions?.actions !== 'read') {
       fail('preview validation must keep actions: read permission to verify reusable CI results.');
     }

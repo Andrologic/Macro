@@ -353,7 +353,15 @@ pub async fn db_retry_initialize(
 
     pool.set_initializing();
     match crate::db::init_db(&app).await {
-        Ok(sqlite_pool) => pool.set_ready(sqlite_pool),
+        Ok(sqlite_pool) => {
+            if let Err(error) = crate::ai::chatgpt::recover_auth_mutations(&sqlite_pool).await {
+                pool.set_failed(error.clone());
+                return Err(command_error(format!(
+                    "Database authentication recovery failed: {error}"
+                )));
+            }
+            pool.set_ready(sqlite_pool);
+        }
         Err(error) => {
             let message = error.to_string();
             pool.set_failed(message.clone());
@@ -476,6 +484,9 @@ async fn resolve_workspace_for_tool_path(
         let workspace_for_task = workspace.to_path_buf();
         let workspace_for_fallback = workspace.to_path_buf();
         let git_state_for_task = git_state.clone();
+        let _repo_guard = crate::workspace::lock_git_repository(workspace)
+            .await
+            .map_err(|error| command_error(error.to_string()))?;
         let resolved = tokio::task::spawn_blocking(move || {
             git_state_for_task.resolve_macro_metadata_root(&workspace_for_task)
         })
@@ -3862,6 +3873,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 git::wsl_git_add(&wsl_repo_path, &paths)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3881,6 +3896,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let status = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -3916,6 +3935,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 let before = git::build_wsl_git_log(&wsl_repo_path, 1, None)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -3944,6 +3967,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let result = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -3999,6 +4026,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 git::wsl_git_checkout(&wsl_repo_path, &branch_or_commit, create)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4016,6 +4047,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let status = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -4052,6 +4087,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 let output = git::wsl_git_merge(&wsl_repo_path, &branch_name, &into_branch)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4074,6 +4113,10 @@ async fn execute_workspace_tool_inner(
             let into_branch_for_task = into_branch.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
             let (output, status) = tokio::task::spawn_blocking(move || {
                 let validated =
                     validate_agent_git_repo_path(&repo_path_for_task, &workspace_for_task)?;
@@ -4116,6 +4159,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 git::wsl_git_reset(&wsl_repo_path, &mode, commit, confirm)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4132,6 +4179,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let status = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -4173,6 +4224,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let status = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -4204,6 +4259,10 @@ async fn execute_workspace_tool_inner(
             if let Some(wsl_repo_path) =
                 resolve_confined_wsl_repo_path_for_workspace(&workspace, &repo_path).await?
             {
+                let _repo_guard =
+                    crate::workspace::lock_git_repository(Path::new(&wsl_repo_path.unc_path))
+                        .await
+                        .map_err(|error| command_error(error.to_string()))?;
                 let stash = git::wsl_git_stash(&wsl_repo_path, message)
                     .await
                     .map_err(|error| command_error(error.to_string()))?;
@@ -4221,6 +4280,10 @@ async fn execute_workspace_tool_inner(
             let repo_path_for_task = repo_path.clone();
             let workspace_for_task = workspace.clone();
             let git_state_for_task = git_state.clone();
+            let validated = validate_agent_git_repo_path(&repo_path, &workspace)?;
+            let _repo_guard = crate::workspace::lock_git_repository(&validated)
+                .await
+                .map_err(|error| command_error(error.to_string()))?;
 
             let result = tokio::task::spawn_blocking(move || {
                 let validated =
@@ -4658,6 +4721,19 @@ pub async fn db_delete_messages_after(
     let pool = get_pool(&pool).await?;
 
     repository::delete_messages_after(&pool, &conversation_id, &after_message_id)
+        .await
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn db_delete_conversation_turn(
+    pool: State<'_, DbPool>,
+    conversation_id: String,
+    turn_id: String,
+) -> CommandResult<()> {
+    let pool = get_pool(&pool).await?;
+
+    repository::delete_conversation_turn(&pool, &conversation_id, &turn_id)
         .await
         .map_err(CommandError::from)
 }
@@ -5630,11 +5706,20 @@ pub async fn db_delete_provider_config(
 
     let lock = provider_mutation_lock(&id);
     let _guard = lock.lock().await;
-    configured_provider_configs(config_manager.inner(), &pool)
+    let provider = configured_provider_configs(config_manager.inner(), &pool)
         .await?
         .into_iter()
         .find(|provider| provider.id == id)
         .ok_or_else(|| command_error(format!("Provider {} not found", id)))?;
+    let _chatgpt_auth_guard = if provider.provider_type == "chatgpt" {
+        Some(
+            crate::ai::chatgpt::lock_auth_mutation(&id)
+                .await
+                .map_err(command_error)?,
+        )
+    } else {
+        None
+    };
     let escaped = id.replace('~', "~0").replace('/', "~1");
     let previous_api_key = secrets::get_api_key(&id)
         .map_err(|error| command_error(format!("Failed to read provider secret: {error}")))?;

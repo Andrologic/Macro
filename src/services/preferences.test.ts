@@ -136,6 +136,77 @@ describe('preferences JSON configuration adapter', () => {
     expect(localStorage.getItem('macro_theme')).toBeNull();
   });
 
+  it('serializes concurrent speech preferences against the latest providers ETag', async () => {
+    let revision = 0;
+    let providersDocument = {
+      kind: 'providers' as const,
+      scope: { type: 'user' as const },
+      value: { $schema: './schemas/v1/providers.schema.json', schemaVersion: 1 } as Record<string, unknown>,
+      etag: 'providers-etag-0',
+      readOnly: false,
+      invalid: false,
+      filePath: 'providers.json',
+      diagnostics: [],
+    };
+    const appliedEtags: string[] = [];
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      if (command === 'config_get_document') {
+        return structuredClone(providersDocument);
+      }
+      if (command === 'config_apply_patch') {
+        const request = payload?.request as {
+          expectedEtag: string;
+          patch: Array<{ op: string; path: string; value: unknown }>;
+        };
+        if (request.expectedEtag !== providersDocument.etag) {
+          throw new Error('stale ETag');
+        }
+        appliedEtags.push(request.expectedEtag);
+        const operation = request.patch[0];
+        if (operation?.op === 'add' && operation.path === '/speech') {
+          providersDocument = {
+            ...providersDocument,
+            value: { ...providersDocument.value, speech: operation.value },
+            etag: `providers-etag-${++revision}`,
+          };
+        }
+        return {
+          status: 'applied',
+          document: structuredClone(providersDocument),
+          pendingChange: null,
+          restartRequired: false,
+        };
+      }
+      if (command === 'config_get_snapshot') {
+        return {
+          schemaVersion: 1,
+          effective: { providers: providersDocument.value },
+          projectEffective: {},
+          documents: [structuredClone(providersDocument)],
+          provenance: [],
+          diagnostics: [],
+          pendingRestartPaths: [],
+        };
+      }
+      if (command === 'config_list_pending_changes') return [];
+      return undefined;
+    }));
+    const { savePreference, PREF_KEYS } = await loadPreferencesModule();
+
+    await Promise.all([
+      savePreference(PREF_KEYS.SPEECH_PROVIDER_ID, 'speech-custom'),
+      savePreference(PREF_KEYS.SPEECH_MAX_DURATION_SECONDS, 240),
+    ]);
+
+    expect(appliedEtags).toEqual(['providers-etag-0', 'providers-etag-1']);
+    expect(providersDocument.value).toMatchObject({
+      speech: {
+        providerId: 'speech-custom',
+        maxDurationSeconds: 240,
+      },
+    });
+  });
+
   it('stores the dedicated metadata model in the agents model-selection format', async () => {
     const { calls } = installConfigRuntime();
     const { savePreference, PREF_KEYS } = await loadPreferencesModule();

@@ -11,6 +11,7 @@ use crate::git::{detect_preferred_git_flow_branches, GitState};
 pub use crate::project_path::parse_wsl_unc_path;
 use crate::project_path::{wsl_unc_path, ProjectPathKind, WslProjectPath};
 use chrono::Utc;
+use fs2::FileExt;
 use git2::{
     BranchType, IndexAddOption, Oid, Repository, RepositoryInitOptions, ResetType, Signature, Sort,
 };
@@ -32,20 +33,23 @@ use metadata::{
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::{watch, Mutex as AsyncMutex, OwnedMutexGuard};
-use tokio::time::timeout;
 
 const WORKSPACE_STATE_FILE: &str = "workspace.json";
 const WORKSPACE_STATE_BACKUP_FILE: &str = "workspace.json.bak";
 const WORKSPACE_STATE_FILE_LOCK: &str = ".workspace.json.lock";
+const WORKSPACE_STATE_LEGACY_LOCK_QUARANTINE_PREFIX: &str =
+    ".workspace.json.lock.legacy-quarantine-";
 const LEGACY_WORKSPACE_META_DIR: &str = ".macro";
 const MANUAL_FEATURES_METADATA_DIR: &str = "manual-features";
 const MANUAL_FEATURE_METADATA_FILE: &str = "feature.json";
@@ -79,6 +83,12 @@ const PROJECT_WSL_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
 const NEW_REPO_OWNERSHIP_MARKER: &str = ".macro-create-in-progress";
 
 static WORKSPACE_STATE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
+static ARCHIVED_TASK_CLEANUP_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
+static PLAN_LIFECYCLE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
+    OnceLock::new();
+static GIT_REPOSITORY_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
 static NEW_REPO_TARGET_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> =
     OnceLock::new();
@@ -114,11 +124,11 @@ fn take_new_repo_cancellation_after_init(project_path: &Path) -> bool {
         .remove(&new_repo_cancellation_key(project_path))
 }
 
-fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
+pub(crate) fn workspace_state_lock_key(metadata_root: &Path) -> PathBuf {
     std::fs::canonicalize(metadata_root).unwrap_or_else(|_| absolutize_path(metadata_root))
 }
 
-async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
+pub(crate) async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
     let key = workspace_state_lock_key(metadata_root);
     let lock = {
         let locks = WORKSPACE_STATE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
@@ -133,35 +143,350 @@ async fn lock_workspace_state(metadata_root: &Path) -> OwnedMutexGuard<()> {
     lock.lock_owned().await
 }
 
-struct WorkspaceFileLock {
-    path: PathBuf,
+async fn lock_archived_task_cleanup_process(lock_path: &Path) -> OwnedMutexGuard<()> {
+    let key = lock_path.to_path_buf();
+    let lock = {
+        let locks = ARCHIVED_TASK_CLEANUP_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+        let mut locks = locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
+
+pub struct ArchivedTaskCleanupGuard {
+    _process_guard: OwnedMutexGuard<()>,
+    file: std::fs::File,
+}
+
+pub struct PlanLifecycleGuard {
+    _process_guard: OwnedMutexGuard<()>,
+    file: std::fs::File,
+}
+
+pub struct GitRepositoryGuard {
+    _process_guard: OwnedMutexGuard<()>,
+    file: std::fs::File,
+}
+
+impl Drop for PlanLifecycleGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+impl Drop for GitRepositoryGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+fn git_repository_lock_identity(repo_path: &Path) -> PathBuf {
+    if let Some(wsl_path) = parse_wsl_unc_path(&repo_path.to_string_lossy()) {
+        // `\\wsl$` and `\\wsl.localhost` are aliases for the same WSL
+        // location. Normalize both spellings before deriving the lock key.
+        let normalized_distro = wsl_path.distro.to_ascii_lowercase();
+        let normalized_unc = wsl_unc_path(&normalized_distro, &wsl_path.linux_path);
+        return workspace_state_lock_key(Path::new(&normalized_unc));
+    }
+    Repository::discover(repo_path)
+        .or_else(|_| Repository::open(repo_path))
+        .ok()
+        .map(|repo| {
+            let common_dir = repo.commondir();
+            if !repo.is_bare() && common_dir.file_name() == Some(OsStr::new(".git")) {
+                if let Some(repository_root) = common_dir.parent() {
+                    return workspace_state_lock_key(repository_root);
+                }
+            }
+            workspace_state_lock_key(common_dir)
+        })
+        .unwrap_or_else(|| workspace_state_lock_key(repo_path))
+}
+
+fn git_repository_lock_path(repo_path: &Path) -> PathBuf {
+    let identity = git_repository_lock_identity(repo_path)
+        .to_string_lossy()
+        .to_string();
+    let digest = Sha256::digest(identity.as_bytes());
+    std::env::temp_dir()
+        .join("macro")
+        .join("git-repository-locks")
+        .join(format!("{digest:x}.lock"))
+}
+
+pub async fn lock_git_repository(repo_path: &Path) -> Result<GitRepositoryGuard> {
+    if repo_path.as_os_str().is_empty() {
+        return Err(BackendError::Validation(
+            "Le verrou Git requiert un chemin de dépôt.".to_string(),
+        ));
+    }
+    let lock_path = git_repository_lock_path(repo_path);
+    let process_guard = {
+        let lock = {
+            let locks = GIT_REPOSITORY_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+            let mut locks = locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks
+                .entry(lock_path.clone())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    };
+    let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de créer le dossier de verrouillage Git : {error}"),
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible d’ouvrir le verrou du dépôt Git : {error}"),
+            })?;
+        file.lock_exclusive()
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de verrouiller le dépôt Git : {error}"),
+            })?;
+        Ok(file)
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Le verrouillage du dépôt Git a échoué : {error}"),
+    })??;
+    Ok(GitRepositoryGuard {
+        _process_guard: process_guard,
+        file,
+    })
+}
+
+fn plan_lifecycle_lock_path(metadata_root: &Path, branch_name: &str, plan_id: &str) -> PathBuf {
+    let identity = format!(
+        "{}\0{}\0{}",
+        workspace_state_lock_key(metadata_root).to_string_lossy(),
+        branch_name.trim(),
+        plan_id.trim(),
+    );
+    let digest = Sha256::digest(identity.as_bytes());
+    std::env::temp_dir()
+        .join("macro")
+        .join("plan-lifecycle-locks")
+        .join(format!("{digest:x}.lock"))
+}
+
+pub async fn lock_plan_lifecycle(
+    metadata_root: &Path,
+    branch_name: &str,
+    plan_id: &str,
+) -> Result<PlanLifecycleGuard> {
+    if branch_name.trim().is_empty() || plan_id.trim().is_empty() {
+        return Err(BackendError::Validation(
+            "Le verrou du cycle de vie requiert une branche et un identifiant de plan.".to_string(),
+        ));
+    }
+    let lock_path = plan_lifecycle_lock_path(metadata_root, branch_name, plan_id);
+    let process_guard = {
+        let lock = {
+            let locks = PLAN_LIFECYCLE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+            let mut locks = locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            locks
+                .entry(lock_path.clone())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    };
+    let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de créer le dossier de verrouillage : {error}"),
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible d’ouvrir le verrou du plan : {error}"),
+            })?;
+        file.lock_exclusive()
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de verrouiller le cycle de vie du plan : {error}"),
+            })?;
+        Ok(file)
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Le verrouillage du cycle de vie du plan a échoué : {error}"),
+    })??;
+    Ok(PlanLifecycleGuard {
+        _process_guard: process_guard,
+        file,
+    })
+}
+
+impl Drop for ArchivedTaskCleanupGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
+
+fn archived_task_cleanup_lock_path(metadata_root: &Path, task_id: &str) -> PathBuf {
+    let identity = format!(
+        "{}\0{}",
+        workspace_state_lock_key(metadata_root).to_string_lossy(),
+        task_id.trim(),
+    );
+    let digest = Sha256::digest(identity.as_bytes());
+    std::env::temp_dir()
+        .join("macro")
+        .join("archived-task-cleanup-locks")
+        .join(format!("{digest:x}.lock"))
+}
+
+pub async fn lock_archived_task_cleanup(
+    metadata_root: &Path,
+    task_id: &str,
+) -> Result<ArchivedTaskCleanupGuard> {
+    let normalized_task_id = task_id.trim();
+    if normalized_task_id.is_empty() {
+        return Err(BackendError::Validation(
+            "Le verrou de nettoyage requiert un identifiant de tâche.".to_string(),
+        ));
+    }
+    let lock_path = archived_task_cleanup_lock_path(metadata_root, normalized_task_id);
+    let process_guard = lock_archived_task_cleanup_process(&lock_path).await;
+    let file = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de créer le dossier de verrouillage : {error}"),
+            })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible d’ouvrir le verrou de nettoyage : {error}"),
+            })?;
+        file.lock_exclusive()
+            .map_err(|error| BackendError::Filesystem {
+                message: format!("Impossible de verrouiller le nettoyage : {error}"),
+            })?;
+        Ok(file)
+    })
+    .await
+    .map_err(|error| BackendError::Internal {
+        message: format!("Le verrouillage du nettoyage a échoué : {error}"),
+    })??;
+    Ok(ArchivedTaskCleanupGuard {
+        _process_guard: process_guard,
+        file,
+    })
+}
+
+/// Acquire the durable lifecycle lock for a task.
+///
+/// This intentionally shares the same lock identity as archived cleanup. A
+/// task's draft-revert and archive-cleanup workflows must never mutate its
+/// worktrees concurrently, even when they run in different Macro processes.
+pub async fn lock_task_lifecycle(
+    metadata_root: &Path,
+    task_id: &str,
+) -> Result<ArchivedTaskCleanupGuard> {
+    lock_archived_task_cleanup(metadata_root, task_id).await
+}
+
+pub async fn validate_archived_task_cleanup_token(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    archive_token: &str,
+) -> Result<()> {
+    let normalized_task_id = task_id.trim();
+    let normalized_archive_token = archive_token.trim();
+    if normalized_archive_token.is_empty() {
+        return Err(BackendError::Validation(
+            "Le nettoyage requiert un jeton d’archive.".to_string(),
+        ));
+    }
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let state = load_or_create_state(workspace_path, metadata_root).await?;
+    let feature = state
+        .manual_features
+        .iter()
+        .find(|candidate| candidate.id == normalized_task_id)
+        .ok_or_else(|| {
+            BackendError::Validation(format!("Tâche manuelle inconnue : {normalized_task_id}"))
+        })?;
+    if feature.archived_at.as_deref() != Some(normalized_archive_token) {
+        return Err(BackendError::Validation(
+            "Le nettoyage a été interrompu car la tâche archivée a changé.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) struct WorkspaceFileLock {
+    file: std::fs::File,
 }
 
 impl Drop for WorkspaceFileLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.path);
+        let _ = FileExt::unlock(&self.file);
     }
 }
 
-fn lock_workspace_state_file(metadata_root: &Path) -> Result<WorkspaceFileLock> {
+pub(crate) fn lock_workspace_state_file(metadata_root: &Path) -> Result<WorkspaceFileLock> {
+    lock_workspace_state_file_with_retry(metadata_root, 100, Duration::from_millis(25))
+}
+
+fn lock_workspace_state_file_with_retry(
+    metadata_root: &Path,
+    attempts: usize,
+    retry_delay: Duration,
+) -> Result<WorkspaceFileLock> {
     std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
         message: format!("Failed to create workspace metadata directory: {error}"),
     })?;
     let lock_path = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
-    for _ in 0..100 {
-        match std::fs::create_dir(&lock_path) {
-            Ok(()) => return Ok(WorkspaceFileLock { path: lock_path }),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let stale = std::fs::metadata(&lock_path)
-                    .and_then(|metadata| metadata.modified())
-                    .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
-                    .map(|elapsed| elapsed > Duration::from_secs(30))
-                    .unwrap_or(false);
-                if stale {
-                    let _ = std::fs::remove_dir(&lock_path);
-                    continue;
-                }
-                std::thread::sleep(Duration::from_millis(25));
+    for _ in 0..attempts {
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
+                return Err(BackendError::Validation(
+                    "Un ancien verrou de workspace bloque les écritures. Fermez les autres instances de Macro, puis lancez la réparation explicite du verrou."
+                        .to_string(),
+                ));
+            }
+            Err(error) => {
+                return Err(BackendError::Filesystem {
+                    message: format!("Failed to open workspace state lock: {error}"),
+                })
+            }
+        };
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(WorkspaceFileLock { file }),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(retry_delay);
             }
             Err(error) => {
                 return Err(BackendError::Filesystem {
@@ -173,6 +498,49 @@ fn lock_workspace_state_file(metadata_root: &Path) -> Result<WorkspaceFileLock> 
     Err(BackendError::Validation(
         "Une autre instance modifie le workspace. Réessayez dans un instant.".to_string(),
     ))
+}
+
+pub(crate) fn quarantine_legacy_workspace_state_lock(metadata_root: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(metadata_root).map_err(|error| BackendError::Filesystem {
+        message: format!("Failed to create workspace metadata directory: {error}"),
+    })?;
+    let lock_path = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
+    let metadata = std::fs::symlink_metadata(&lock_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            BackendError::Validation(
+                "Aucun verrou de workspace hérité ne nécessite de réparation.".to_string(),
+            )
+        } else {
+            BackendError::Filesystem {
+                message: format!("Failed to inspect legacy workspace state lock: {error}"),
+            }
+        }
+    })?;
+    if !metadata.file_type().is_dir() {
+        return Err(BackendError::Validation(
+            "Le verrou de workspace actuel n’est pas un répertoire hérité.".to_string(),
+        ));
+    }
+
+    let quarantine_path = metadata_root.join(format!(
+        "{WORKSPACE_STATE_LEGACY_LOCK_QUARANTINE_PREFIX}{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::rename(&lock_path, &quarantine_path).map_err(|error| BackendError::Filesystem {
+        message: format!(
+            "Failed to quarantine legacy workspace state lock {} to {}: {}",
+            lock_path.display(),
+            quarantine_path.display(),
+            error
+        ),
+    })?;
+    tracing::warn!(
+        action = "workspace_legacy_state_lock_quarantined",
+        lock_path = %lock_path.display(),
+        quarantine_path = %quarantine_path.display(),
+        "Un verrou de workspace hérité a été mis en quarantaine après confirmation explicite"
+    );
+    Ok(quarantine_path)
 }
 const ACCESS_BLOCK_DIRTY_WORKTREE: &str = "dirty_worktree";
 const ACCESS_BLOCK_LIVE_TERMINAL: &str = "live_terminal";
@@ -650,6 +1018,7 @@ fn empty_git_flow_detection() -> ProjectGitFlowDetectionDto {
     }
 }
 
+#[cfg(test)]
 fn project_operation_cancelled_error() -> BackendError {
     BackendError::Validation("Project operation cancelled.".to_string())
 }
@@ -672,39 +1041,31 @@ fn wsl_git_unavailable_error(distro: &str, stderr: &str) -> BackendError {
 async fn wait_for_wsl_command(
     mut command: tokio::process::Command,
     timeout_duration: Duration,
-    mut cancel_rx: Option<watch::Receiver<bool>>,
+    cancel_rx: Option<watch::Receiver<bool>>,
 ) -> Result<std::process::Output> {
-    command.kill_on_drop(true);
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let child = command.spawn().map_err(|error| BackendError::Git {
         message: format!("Failed to start WSL command: {}", error),
     })?;
-
-    let wait_future = child.wait_with_output();
-    tokio::pin!(wait_future);
-
-    if let Some(cancel_rx) = cancel_rx.as_mut() {
-        tokio::select! {
-            result = timeout(timeout_duration, &mut wait_future) => {
-                result.map_err(|_| BackendError::Git {
-                    message: "Git detection timed out. Check WSL or add the project as read-only.".to_string(),
-                })?.map_err(|error| BackendError::Git {
-                    message: format!("Failed to run WSL command: {}", error),
-                })
-            }
-            _ = cancel_rx.changed() => {
-                Err(project_operation_cancelled_error())
-            }
-        }
-    } else {
-        timeout(timeout_duration, &mut wait_future)
-            .await
-            .map_err(|_| BackendError::Git {
+    match crate::project_path::wait_for_wsl_child_with_cancellation(
+        child,
+        None,
+        Duration::from_secs(30),
+        timeout_duration,
+        cancel_rx,
+    )
+    .await
+    {
+        Err(BackendError::Git { message }) if message.contains("timed out") => {
+            Err(BackendError::Git {
                 message: "Git detection timed out. Check WSL or add the project as read-only."
                     .to_string(),
-            })?
-            .map_err(|error| BackendError::Git {
-                message: format!("Failed to run WSL command: {}", error),
             })
+        }
+        result => result,
     }
 }
 
@@ -1531,6 +1892,8 @@ where
     );
 
     ensure_not_cancelled(cancel_rx.as_ref())?;
+    let resolved_project_path = resolve_project_path(workspace_path, project_path);
+    let _repo_guard = lock_git_repository(&resolved_project_path).await?;
     let detection = validate_project_git_setup_commit(
         workspace_path,
         project_path,
@@ -2198,11 +2561,12 @@ pub async fn finalize_manual_feature(
     feature_slug: &str,
     task_kind: &str,
 ) -> Result<ManualFeatureDto> {
+    let normalized_task_id = task_id.trim();
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let standalone_projects = state.standalone_projects.clone();
     let project_groups = state.project_groups.clone();
-    let normalized_task_id = task_id.trim();
     let feature_index = state
         .manual_features
         .iter()
@@ -2210,6 +2574,11 @@ pub async fn finalize_manual_feature(
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
         })?;
+    if state.manual_features[feature_index].archived_at.is_some() {
+        return Err(BackendError::Validation(
+            "Une tâche archivée doit être restaurée avant sa finalisation.".to_string(),
+        ));
+    }
     let existing_feature_slug = state.manual_features[feature_index].feature_slug.clone();
     let normalized_title = title.trim();
     let normalized_description = description.trim();
@@ -2350,9 +2719,35 @@ pub async fn revert_manual_feature_to_draft(
     title: Option<&str>,
     description: Option<&str>,
 ) -> Result<ManualFeatureDto> {
+    let normalized_task_id = task_id.trim();
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    revert_manual_feature_to_draft_with_existing_lifecycle_lock(
+        workspace_path,
+        metadata_root,
+        task_id,
+        conversation_id,
+        title,
+        description,
+    )
+    .await
+}
+
+/// Revert a feature when the caller already owns the task lifecycle lock.
+///
+/// The public operation acquires the archived-task cleanup lock itself. The
+/// lifecycle lease command deliberately calls this variant to avoid trying to
+/// acquire the same non-reentrant lock a second time in the same process.
+pub(crate) async fn revert_manual_feature_to_draft_with_existing_lifecycle_lock(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    conversation_id: Option<&str>,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<ManualFeatureDto> {
+    let normalized_task_id = task_id.trim();
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
-    let normalized_task_id = task_id.trim();
     let feature_index = state
         .manual_features
         .iter()
@@ -2360,6 +2755,12 @@ pub async fn revert_manual_feature_to_draft(
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown manual feature id: {}", task_id))
         })?;
+
+    if state.manual_features[feature_index].archived_at.is_some() {
+        return Err(BackendError::Validation(
+            "Une tâche archivée doit être restaurée avant son retour en brouillon.".to_string(),
+        ));
+    }
 
     let previous_feature_slug = state.manual_features[feature_index]
         .feature_slug
@@ -2431,7 +2832,19 @@ pub async fn delete_manual_feature_draft(
     workspace_path: &Path,
     metadata_root: &Path,
     task_id: &str,
-) -> Result<()> {
+) -> Result<bool> {
+    let normalized_task_id = task_id.trim();
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    delete_manual_feature_draft_with_existing_lifecycle_lock(workspace_path, metadata_root, task_id)
+        .await
+}
+
+/// Delete a draft when the caller already owns the task lifecycle lock.
+pub(crate) async fn delete_manual_feature_draft_with_existing_lifecycle_lock(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+) -> Result<bool> {
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
@@ -2439,10 +2852,10 @@ pub async fn delete_manual_feature_draft(
         .manual_features
         .retain(|feature| !(feature.id == task_id.trim() && feature.draft));
     if state.manual_features.len() == initial_len {
-        return Err(BackendError::Validation(format!(
-            "Unknown manual feature draft: {}",
-            task_id
-        )));
+        return Ok(!state
+            .manual_features
+            .iter()
+            .any(|feature| feature.id == task_id.trim()));
     }
     let normalized_task_id = task_id.trim().to_string();
     if !state
@@ -2452,14 +2865,17 @@ pub async fn delete_manual_feature_draft(
         state.deleted_manual_feature_ids.push(normalized_task_id);
     }
 
-    persist_sanitized_state(
+    let (persisted_state, _) = persist_sanitized_state(
         workspace_path,
         metadata_root,
         state,
         "delete_manual_feature_draft",
     )
     .await?;
-    Ok(())
+    Ok(!persisted_state
+        .manual_features
+        .iter()
+        .any(|feature| feature.id == task_id.trim()))
 }
 
 pub async fn rename_manual_feature(
@@ -2485,7 +2901,6 @@ pub async fn rename_manual_feature(
         .ok_or_else(|| {
             BackendError::Validation(format!("Unknown manual feature id: {}", normalized_task_id))
         })?;
-
     feature.title = normalized_title.to_string();
     feature.updated_at = Utc::now().to_rfc3339();
 
@@ -2514,14 +2929,15 @@ pub async fn archive_manual_feature(
     reason: Option<&str>,
     merged_at: Option<&str>,
 ) -> Result<ManualFeatureDto> {
-    let _state_guard = lock_workspace_state(metadata_root).await;
-    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     if normalized_task_id.is_empty() {
         return Err(BackendError::Validation(
             "Manual feature archive requires a task id".to_string(),
         ));
     }
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
 
     let feature = state
         .manual_features
@@ -2565,14 +2981,15 @@ pub async fn restore_manual_feature(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<ManualFeatureDto> {
-    let _state_guard = lock_workspace_state(metadata_root).await;
-    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let normalized_task_id = task_id.trim();
     if normalized_task_id.is_empty() {
         return Err(BackendError::Validation(
             "Manual feature restore requires a task id".to_string(),
         ));
     }
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    let _state_guard = lock_workspace_state(metadata_root).await;
+    let mut state = load_or_create_state(workspace_path, metadata_root).await?;
 
     let feature = state
         .manual_features
@@ -2612,10 +3029,21 @@ pub async fn delete_manual_feature(
     metadata_root: &Path,
     task_id: &str,
 ) -> Result<()> {
+    let normalized_task_id = task_id.trim();
+    let _cleanup_guard = lock_archived_task_cleanup(metadata_root, normalized_task_id).await?;
+    delete_manual_feature_with_existing_lifecycle_lock(workspace_path, metadata_root, task_id).await
+}
+
+/// Delete a feature when the caller already owns the task lifecycle lock.
+pub(crate) async fn delete_manual_feature_with_existing_lifecycle_lock(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+) -> Result<()> {
+    let normalized_task_id = task_id.trim();
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
     let initial_len = state.manual_features.len();
-    let normalized_task_id = task_id.trim();
     state
         .manual_features
         .retain(|feature| feature.id != normalized_task_id);
@@ -3182,6 +3610,12 @@ pub async fn create_new_project_repo_with_cancel(
         .to_string_lossy()
         .to_string()
     };
+    // The target may be a brand-new repository, so the repository lock falls
+    // back to the target path until Git metadata exists. This still fences
+    // concurrent Macro processes while the directory and initial commit are
+    // being created.
+    let target_path = PathBuf::from(&target);
+    let _repo_guard = lock_git_repository(&target_path).await?;
     let _target_guard = lock_new_repo_target(metadata_root, &target).await;
     create_new_project_repo_with_cancel_locked(workspace_path, metadata_root, request, cancel_rx)
         .await
@@ -4613,6 +5047,7 @@ pub async fn debug_reset_project(
     close_project(workspace_path, metadata_root, &project.id).await?;
     report.removed_registry_entry = true;
 
+    let _repo_guard = lock_git_repository(&project_path).await?;
     match git_state.debug_reset_macro_project_artifacts(&project_path) {
         Ok(reset) => {
             report.removed_task_worktrees = reset.removed_task_worktrees;
@@ -5990,9 +6425,18 @@ fn load_state_sync(workspace_path: &Path, metadata_root: &Path) -> Result<Option
 
 fn metadata_statuses(repo: &Repository) -> Result<(bool, bool)> {
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
-    let has_conflicts = statuses.iter().any(|entry| entry.status().is_conflicted())
+    let is_relevant_status = |entry: &git2::StatusEntry<'_>| {
+        entry
+            .path()
+            .map(|path| path.trim_start_matches("./") != WORKSPACE_STATE_FILE_LOCK)
+            .unwrap_or(true)
+    };
+    let has_conflicts = statuses
+        .iter()
+        .filter(is_relevant_status)
+        .any(|entry| entry.status().is_conflicted())
         || repo.path().join("MERGE_HEAD").exists();
-    let is_dirty = !statuses.is_empty();
+    let is_dirty = statuses.iter().any(|entry| is_relevant_status(&entry));
     Ok((is_dirty, has_conflicts))
 }
 
@@ -6233,32 +6677,10 @@ fn hint_project_id_is_recoverable(project_id: &str) -> bool {
 }
 
 fn project_macro_metadata_root_is_usable(project_path: &Path) -> bool {
-    if let Ok(repo) = Repository::open(project_path) {
-        if crate::git::repair_existing_macro_metadata_worktree(&repo)
-            .ok()
-            .flatten()
-            .is_some()
-        {
-            return true;
-        }
-    }
-    if crate::git::find_existing_macro_metadata_worktree_root(project_path).is_some() {
-        return true;
-    }
-
-    let legacy_root = project_path.join(LEGACY_WORKSPACE_META_DIR);
-    legacy_root.exists() && Repository::open(legacy_root).is_ok()
+    resolve_existing_macro_metadata_root(project_path).is_some()
 }
 
 fn resolve_existing_macro_metadata_root(project_path: &Path) -> Option<PathBuf> {
-    if let Ok(repo) = Repository::open(project_path) {
-        if let Some(result) = crate::git::repair_existing_macro_metadata_worktree(&repo)
-            .ok()
-            .flatten()
-        {
-            return Some(result.worktree_path);
-        }
-    }
     if let Some(worktree_path) =
         crate::git::find_existing_macro_metadata_worktree_root(project_path)
     {
@@ -6271,6 +6693,40 @@ fn resolve_existing_macro_metadata_root(project_path: &Path) -> Option<PathBuf> 
     }
 
     None
+}
+
+/// Repair metadata worktree pointers before taking the workspace-state lock.
+///
+/// Metadata discovery and state loading run while the state lock is held. They
+/// must remain read-only so they cannot introduce a `state -> repository`
+/// lock-order edge. Reconciliation is the one discovery path that is allowed
+/// to repair moved worktrees, so it performs that best-effort repair up front
+/// while holding the repository lock and before acquiring the state lock.
+async fn repair_macro_metadata_roots_from_hints(
+    workspace_path: &Path,
+    hints: &[WorkspaceMetadataRecoveryHintDto],
+) {
+    for hint in hints {
+        let raw_path = hint.path.trim();
+        if raw_path.is_empty() {
+            continue;
+        }
+        let project_path = resolve_project_path(workspace_path, raw_path);
+        if !project_path.is_dir() || Repository::open(&project_path).is_err() {
+            continue;
+        }
+
+        let Ok(_repo_guard) = lock_git_repository(&project_path).await else {
+            continue;
+        };
+        let _ = tokio::task::spawn_blocking(move || -> Result<()> {
+            let repo = Repository::open(&project_path).map_err(|error| BackendError::Git {
+                message: format!("Failed to open project repository for metadata repair: {error}"),
+            })?;
+            crate::git::repair_existing_macro_metadata_worktree(&repo).map(|_| ())
+        })
+        .await;
+    }
 }
 
 fn collect_project_registry_parent_dirs(
@@ -6521,6 +6977,7 @@ pub async fn reconcile_project_registry_from_hints(
     metadata_root: &Path,
     request: WorkspaceReconcileProjectRegistryFromHintsRequestDto,
 ) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
+    repair_macro_metadata_roots_from_hints(workspace_path, &request.projects).await;
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut report = WorkspaceProjectRegistryReconcileReportDto {
         status: "unchanged".to_string(),
@@ -6736,6 +7193,15 @@ pub(crate) fn recover_missing_metadata_sync(
     metadata_root: &Path,
     request: &WorkspaceRecoverMissingMetadataRequestDto,
 ) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    let _file_guard = lock_workspace_state_file(metadata_root)?;
+    recover_missing_metadata_sync_unlocked(workspace_path, metadata_root, request)
+}
+
+pub(crate) fn recover_missing_metadata_sync_unlocked(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    request: &WorkspaceRecoverMissingMetadataRequestDto,
+) -> Result<WorkspaceMetadataRecoveryReportDto> {
     let mut report = WorkspaceMetadataRecoveryReportDto {
         status: "none".to_string(),
         restored_commit: None,
@@ -6829,6 +7295,7 @@ pub async fn recover_missing_metadata(
     metadata_root: &Path,
     request: WorkspaceRecoverMissingMetadataRequestDto,
 ) -> Result<WorkspaceMetadataRecoveryReportDto> {
+    let _repo_guard = lock_git_repository(workspace_path).await?;
     let _state_guard = lock_workspace_state(metadata_root).await;
     recover_missing_metadata_sync(workspace_path, metadata_root, &request)
 }
@@ -8403,6 +8870,145 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    async fn plan_lifecycle_lock_holds_a_stable_file_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        stdfs::create_dir_all(&metadata_root).expect("metadata root");
+        let guard = lock_plan_lifecycle(&metadata_root, "develop", "plan-1")
+            .await
+            .expect("acquire plan lock");
+        let lock_path = plan_lifecycle_lock_path(&metadata_root, "develop", "plan-1");
+        let contender = stdfs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .expect("open stable lock file");
+
+        assert!(contender.try_lock_exclusive().is_err());
+        drop(guard);
+        contender
+            .try_lock_exclusive()
+            .expect("lock must become available after lease release");
+        FileExt::unlock(&contender).expect("unlock contender");
+    }
+
+    #[tokio::test]
+    async fn git_repository_lock_holds_a_stable_file_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("repository");
+        stdfs::create_dir_all(&repo_path).expect("repository path");
+        let guard = lock_git_repository(&repo_path)
+            .await
+            .expect("acquire repository lock");
+        let lock_path = git_repository_lock_path(&repo_path);
+        let contender = stdfs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .expect("open stable repository lock file");
+
+        assert!(contender.try_lock_exclusive().is_err());
+        drop(guard);
+        contender
+            .try_lock_exclusive()
+            .expect("repository lock must become available after lease release");
+        FileExt::unlock(&contender).expect("unlock contender");
+    }
+
+    #[tokio::test]
+    async fn git_repository_lock_stays_stable_when_repository_appears() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo_path = temp.path().join("repository");
+        stdfs::create_dir_all(&repo_path).expect("repository path");
+
+        let lock_path_before_init = git_repository_lock_path(&repo_path);
+        let guard = lock_git_repository(&repo_path)
+            .await
+            .expect("acquire pre-init repository lock");
+        Repository::init(&repo_path).expect("initialize repository while lock is held");
+
+        assert_eq!(git_repository_lock_path(&repo_path), lock_path_before_init);
+
+        let contender_path = repo_path.clone();
+        let mut contender = tokio::spawn(async move { lock_git_repository(&contender_path).await });
+        assert!(
+            timeout(Duration::from_millis(100), &mut contender)
+                .await
+                .is_err(),
+            "a contender arriving after .git appears must wait on the pre-init lock"
+        );
+
+        drop(guard);
+        let contender_guard = timeout(Duration::from_secs(2), contender)
+            .await
+            .expect("contender must resume after the pre-init owner releases")
+            .expect("contender task must finish")
+            .expect("contender must acquire the repository lock");
+        drop(contender_guard);
+    }
+
+    #[test]
+    fn workspace_state_lock_uses_a_live_file_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let guard = lock_workspace_state_file_with_retry(&metadata_root, 1, Duration::ZERO)
+            .expect("acquire workspace state lock");
+        let lock_path = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
+        let contender = stdfs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open workspace state lock file");
+
+        assert!(contender.try_lock_exclusive().is_err());
+        assert!(quarantine_legacy_workspace_state_lock(&metadata_root).is_err());
+        assert!(lock_path.is_file(), "a current lock file must not be moved");
+        drop(guard);
+        contender
+            .try_lock_exclusive()
+            .expect("workspace state lock must release with its owner");
+        FileExt::unlock(&contender).expect("unlock contender");
+        assert!(lock_path.is_file());
+    }
+
+    #[tokio::test]
+    async fn explicit_legacy_lock_repair_quarantines_the_directory_and_restores_writes() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let legacy_lock = metadata_root.join(WORKSPACE_STATE_FILE_LOCK);
+        stdfs::create_dir_all(&legacy_lock).expect("legacy lock directory");
+
+        let result = lock_workspace_state_file_with_retry(&metadata_root, 1, Duration::ZERO);
+
+        assert!(result.is_err(), "a legacy lock owner must fail closed");
+        assert!(legacy_lock.is_dir());
+        let quarantine_path = quarantine_legacy_workspace_state_lock(&metadata_root)
+            .expect("explicitly quarantine abandoned legacy lock");
+        assert!(!legacy_lock.exists());
+        assert!(quarantine_path.is_dir());
+        assert!(quarantine_path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.starts_with(WORKSPACE_STATE_LEGACY_LOCK_QUARANTINE_PREFIX)));
+
+        persist_sanitized_state(
+            temp.path(),
+            &metadata_root,
+            WorkspaceState::default(),
+            "legacy_lock_repair_test",
+        )
+        .await
+        .expect("workspace must be writable after explicit repair");
+        assert!(metadata_root.join(WORKSPACE_STATE_FILE).is_file());
+        assert!(legacy_lock.is_file());
+        assert!(
+            quarantine_path.is_dir(),
+            "quarantine must remain recoverable"
+        );
+    }
 
     #[test]
     fn manual_feature_projection_keeps_direct_checkpoint_identity() {
@@ -11068,6 +11674,369 @@ mod tests {
             .reserved_standalone_feature_slugs
             .iter()
             .any(|value| value == "quick-export"));
+    }
+
+    #[tokio::test]
+    async fn revert_with_existing_lifecycle_lock_does_not_reacquire_cleanup_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+        let state = WorkspaceState {
+            version: 1,
+            workspace_revision: 0,
+            standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: None,
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: vec![ManualFeatureDto {
+                id: "manual-task-lock".to_string(),
+                conversation_id: "manual-conv".to_string(),
+                draft: false,
+                title: "Finalized feature".to_string(),
+                description: "Description".to_string(),
+                status: "Pending".to_string(),
+                feature_slug: Some("finalized-feature".to_string()),
+                branch_name: None,
+                archived_at: None,
+                archive_reason: None,
+                merged_at: None,
+                base_branch: "develop".to_string(),
+                project_ids: vec!["project-web".to_string()],
+                context_project_ids: Vec::new(),
+                execution_targets: Vec::new(),
+                task_kind: Some("feature".to_string()),
+                merge_workflow: None,
+                created_at: "2026-08-30T00:00:00Z".to_string(),
+                updated_at: "2026-08-30T00:00:00Z".to_string(),
+            }],
+            deleted_manual_feature_ids: Vec::new(),
+            reserved_standalone_feature_slugs: vec!["finalized-feature".to_string()],
+        };
+        persist_state_sync(&metadata_root, &state).expect("seed workspace state");
+
+        let lifecycle_guard = lock_task_lifecycle(&metadata_root, "manual-task-lock")
+            .await
+            .expect("acquire lifecycle lock");
+        let reverted = timeout(
+            Duration::from_millis(250),
+            revert_manual_feature_to_draft_with_existing_lifecycle_lock(
+                temp.path(),
+                &metadata_root,
+                "manual-task-lock",
+                Some("manual-conv"),
+                Some("New feature"),
+                Some(""),
+            ),
+        )
+        .await
+        .expect("revert must not wait on its own lifecycle lock")
+        .expect("revert feature");
+        drop(lifecycle_guard);
+
+        assert!(reverted.draft);
+        assert_eq!(reverted.title, "New feature");
+        assert!(reverted.feature_slug.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restore_waits_for_archived_cleanup_guard_and_invalidates_its_token() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().to_path_buf();
+        let metadata_root = workspace_path.join(".macro");
+        let project_path = workspace_path.join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+        let state = WorkspaceState {
+            version: 1,
+            workspace_revision: 0,
+            standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: None,
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
+        };
+        persist_sanitized_state(
+            &workspace_path,
+            &metadata_root,
+            state,
+            "seed_archive_cleanup_race",
+        )
+        .await
+        .expect("seed workspace state");
+        create_manual_feature_draft(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            "manual-conversation-cleanup-race",
+            &["project-web".to_string()],
+            &[],
+            Some("develop"),
+            None,
+            None,
+            "feature",
+            Some("feature/cleanup-race"),
+            None,
+        )
+        .await
+        .expect("create feature draft");
+        finalize_manual_feature(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            Some("manual-conversation-cleanup-race"),
+            "Cleanup race",
+            "Verify archive cleanup serialization.",
+            "cleanup-race",
+            "feature",
+        )
+        .await
+        .expect("finalize feature");
+        let archived = archive_manual_feature(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            None,
+            None,
+        )
+        .await
+        .expect("archive feature");
+        let archive_token = archived.archived_at.expect("archive token");
+
+        let cleanup_guard = lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
+            .await
+            .expect("acquire cleanup guard");
+        validate_archived_task_cleanup_token(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            &archive_token,
+        )
+        .await
+        .expect("validate current archive token");
+        let finalize_workspace_path = workspace_path.clone();
+        let finalize_metadata_root = metadata_root.clone();
+        let mut finalize = tokio::spawn(async move {
+            finalize_manual_feature(
+                &finalize_workspace_path,
+                &finalize_metadata_root,
+                "manual-task-cleanup-race",
+                Some("manual-conversation-cleanup-race"),
+                "Stale finalization",
+                "This stale command must not reactivate the task.",
+                "cleanup-race",
+                "feature",
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut finalize)
+                .await
+                .is_err()
+        );
+        drop(cleanup_guard);
+        let finalize_error = finalize
+            .await
+            .expect("join stale finalization")
+            .expect_err("archived finalization must fail");
+        assert!(matches!(
+            finalize_error,
+            BackendError::Validation(message) if message.contains("doit être restaurée")
+        ));
+
+        let cleanup_guard = lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
+            .await
+            .expect("reacquire cleanup guard before stale revert");
+        let revert_workspace_path = workspace_path.clone();
+        let revert_metadata_root = metadata_root.clone();
+        let mut revert = tokio::spawn(async move {
+            revert_manual_feature_to_draft(
+                &revert_workspace_path,
+                &revert_metadata_root,
+                "manual-task-cleanup-race",
+                Some("manual-conversation-cleanup-race"),
+                Some("Stale draft"),
+                Some(""),
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut revert)
+                .await
+                .is_err()
+        );
+        drop(cleanup_guard);
+        let revert_error = revert
+            .await
+            .expect("join stale revert")
+            .expect_err("archived revert must fail");
+        assert!(matches!(
+            revert_error,
+            BackendError::Validation(message) if message.contains("doit être restaurée")
+        ));
+
+        let cleanup_guard = lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
+            .await
+            .expect("reacquire cleanup guard before restore");
+        let restore_workspace_path = workspace_path.clone();
+        let restore_metadata_root = metadata_root.clone();
+        let mut restore = tokio::spawn(async move {
+            restore_manual_feature(
+                &restore_workspace_path,
+                &restore_metadata_root,
+                "manual-task-cleanup-race",
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut restore)
+                .await
+                .is_err()
+        );
+
+        drop(cleanup_guard);
+        restore
+            .await
+            .expect("join restore")
+            .expect("restore feature");
+        let stale_cleanup_guard =
+            lock_archived_task_cleanup(&metadata_root, "manual-task-cleanup-race")
+                .await
+                .expect("reacquire cleanup guard");
+        let stale_result = validate_archived_task_cleanup_token(
+            &workspace_path,
+            &metadata_root,
+            "manual-task-cleanup-race",
+            &archive_token,
+        )
+        .await;
+        assert!(matches!(
+            stale_result,
+            Err(BackendError::Validation(message))
+                if message.contains("la tâche archivée a changé")
+        ));
+
+        let delete_workspace_path = workspace_path.clone();
+        let delete_metadata_root = metadata_root.clone();
+        let mut delete = tokio::spawn(async move {
+            delete_manual_feature(
+                &delete_workspace_path,
+                &delete_metadata_root,
+                "manual-task-cleanup-race",
+            )
+            .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut delete)
+                .await
+                .is_err()
+        );
+        drop(stale_cleanup_guard);
+        delete
+            .await
+            .expect("join delete")
+            .expect("delete after cleanup lock release");
+        let persisted = load_or_create_state(&workspace_path, &metadata_root)
+            .await
+            .expect("load state after delete");
+        assert!(!persisted
+            .manual_features
+            .iter()
+            .any(|feature| feature.id == "manual-task-cleanup-race"));
+    }
+
+    #[tokio::test]
+    async fn delete_manual_feature_draft_confirms_durable_absence_idempotently() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_path = temp.path().join("apps/web");
+        stdfs::create_dir_all(&project_path).expect("create project dir");
+        init_git_repo(&project_path, "main", &[]);
+        let state = WorkspaceState {
+            version: 1,
+            workspace_revision: 0,
+            standalone_projects: Vec::new(),
+            project_registry_explicitly_empty: false,
+            project_groups: vec![ProjectGroupDto {
+                id: "group-main".to_string(),
+                name: "Main".to_string(),
+                is_open: true,
+                projects: vec![make_project(
+                    "project-web",
+                    project_path.to_string_lossy().as_ref(),
+                )],
+            }],
+            current_plan: None,
+            plan_nodes: Vec::new(),
+            predicted_branches: Vec::new(),
+            manual_features: Vec::new(),
+            deleted_manual_feature_ids: Vec::new(),
+            reserved_standalone_feature_slugs: Vec::new(),
+        };
+        persist_sanitized_state(temp.path(), &metadata_root, state, "seed_workspace_state")
+            .await
+            .expect("seed workspace state");
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "manual-task-delete",
+            "manual-conversation-delete",
+            &["project-web".to_string()],
+            &[],
+            Some("main"),
+            None,
+            None,
+            "feature",
+            None,
+            None,
+        )
+        .await
+        .expect("create draft");
+
+        assert!(
+            delete_manual_feature_draft(temp.path(), &metadata_root, "manual-task-delete",)
+                .await
+                .expect("delete draft")
+        );
+        assert!(
+            delete_manual_feature_draft(temp.path(), &metadata_root, "manual-task-delete",)
+                .await
+                .expect("confirm already absent draft")
+        );
+
+        let persisted = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .expect("load persisted state");
+        assert!(!persisted
+            .manual_features
+            .iter()
+            .any(|feature| feature.id == "manual-task-delete"));
+        assert!(persisted
+            .deleted_manual_feature_ids
+            .contains(&"manual-task-delete".to_string()));
     }
 
     #[tokio::test]

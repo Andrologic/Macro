@@ -220,6 +220,27 @@ describe('runWorktreeSetupCommand', () => {
     expect(closeTab).not.toHaveBeenCalled();
   });
 
+  it('settles as failed when the user closes the setup tab', async () => {
+    const started = waitForNextStart();
+    const resultPromise = runWorktreeSetupCommand(commandParams('bun install'));
+    await started;
+
+    useTerminalStore.setState((state) => {
+      const tabs = { ...state.tabs };
+      delete tabs['setup-tab-1'];
+      return { tabs };
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      exitCode: null,
+      failed: true,
+      tabId: 'setup-tab-1',
+    });
+    expect(activateTab).not.toHaveBeenCalled();
+    expect(setPanelOpen).not.toHaveBeenCalled();
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
   it('deduplicates an in-flight command and permits a new run after it settles', async () => {
     const firstStarted = waitForNextStart();
     const firstResult = runWorktreeSetupCommand(commandParams(' bun install '));
