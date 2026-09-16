@@ -12,11 +12,7 @@ import { isAppShutdownGateActive } from '../services/appShutdownGate';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { isConversationRuntimeActive } from './chat/chatRuntimeState';
-import {
-  getPlanLifecycleSagaGeneration,
-  removePlanLifecycleSaga,
-  upsertPlanLifecycleSaga,
-} from '../services/planLifecycleSaga';
+import { loadPlanLifecycleSagas } from '../services/planLifecycleSaga';
 import { getTaskBusinessId, resolveTaskReference, toPlanLocatorKey } from '../services/durableIdentity';
 import { useGitStore } from './useGitStore';
 import { useTerminalStore } from './useTerminalStore';
@@ -57,7 +53,11 @@ import {
   resolvePreparedTaskWorktreePath,
   resolveTaskRepositoryPath as resolvePreparedTaskRepositoryPath,
 } from '../services/preparedTaskWorktrees';
-import { archivePlanAndCleanupBranches, resumePlanLifecycleSagas } from '../services/architectGitFlowService';
+import {
+  archivePlanAndCleanupBranches,
+  finalizePlanIntoBaseBranch,
+  resumePlanLifecycleSagas,
+} from '../services/architectGitFlowService';
 import { promoteArchitectTaskContextProjects } from '../services/architectScopePromotionService';
 import {
   resolveProjectGitFlowSettings,
@@ -111,6 +111,7 @@ import {
   resolveMergeWorkflowExecutionAction,
   resolveMergeWorkflowTaskStatus,
   resolveMergeWorkflowStrategy,
+  isMergeWorkflowMergeExecutionAction,
   isMergeWorkflowFileConflictRepository,
   isMergeWorkflowSourcePublished,
   isMergeWorkflowStagedResolutionRepository,
@@ -5695,6 +5696,22 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             message: refreshedRuntime.message || undefined,
           });
         }
+        if (kind === 'plan_finalization') {
+          const failureState = buildMergeWorkflowFailureState(repositoryError, {
+            taskId: task.id,
+            kind,
+          });
+          const nextRuntime = mergeMergeWorkflowRuntimeState(
+            currentRuntime,
+            {
+              taskId: task.id,
+              kind,
+              ...failureState.runtimePatch,
+            }
+          );
+          await persistRuntime(nextRuntime);
+          return nextRuntime;
+        }
         return refreshedRuntime;
       }
 
@@ -5741,136 +5758,109 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         });
         await persistRuntime(reviewRuntime);
 
-        if (reviewRuntime.blockedRepositories.length > 0) {
+        const preferredAction = options?.mergeStrategyAction;
+        const pendingFinalizationSaga = (await loadPlanLifecycleSagas()).some(
+          (saga) =>
+            saga.operation === 'finalize' &&
+            saga.planId === task.plan_id &&
+            saga.branchName === branchName
+        );
+        if (!pendingFinalizationSaga && isMergeWorkflowMergeExecutionAction(preferredAction)) {
+          for (const repository of reviewRuntime.repositories.filter(
+            (candidate) =>
+              candidate.progressState === 'pending' ||
+              candidate.progressState === 'blocked'
+          )) {
+            if (!repository.availableActions.includes(preferredAction)) {
+              continue;
+            }
+
+            try {
+              const mergeOutput = await runRepositoryMergeStrategy(
+                repository,
+                preferredAction
+              );
+              if (!mergeOutput) {
+                continue;
+              }
+              currentRuntime = evolveMergeWorkflowRuntimeRepository({
+                runtime: currentRuntime || reviewRuntime,
+                repositoryId: repository.id,
+                update: markMergeWorkflowRepositoryMerged,
+              });
+              await persistRuntime(currentRuntime);
+            } catch (error) {
+              await reloadAfterMergeFailure(error);
+              throw error;
+            }
+          }
+        }
+
+        const resolvedRuntime = currentRuntime || reviewRuntime;
+        if (resolvedRuntime.blockedRepositories.length > 0) {
           throw createMergeWorkflowBlockedError({
             taskId: task.id,
             kind,
-            repositories: reviewRuntime.repositories,
-            message: reviewRuntime.message || undefined,
+            repositories: resolvedRuntime.repositories,
+            message: resolvedRuntime.message || undefined,
           });
         }
 
         await persistRuntime({
-          ...reviewRuntime,
+          ...resolvedRuntime,
           phase: 'merging',
           taskStatus: 'InProgress',
           message: null,
         });
 
-        for (const repository of reviewRuntime.repositories.filter(
-          (candidate) =>
-            candidate.progressState === 'pending' ||
-            candidate.progressState === 'blocked'
-        )) {
-          if (!repository.hasChanges && !isCompletableMergeWorkflowRepository(repository)) {
-            currentRuntime = evolveMergeWorkflowRuntimeRepository({
-              runtime: currentRuntime || reviewRuntime,
-              repositoryId: repository.id,
-              update: (currentRepository) => ({
-                ...currentRepository,
-                progressState: 'no_changes',
-                hasChanges: false,
-                isClean: true,
-                mergeable: true,
-                conflictFiles: [],
-                mergeInProgress: false,
-                blockingKind: null,
-                nextAction: null,
-                blockingReason: null,
-                checkStatus: 'passed',
-                diff: '',
-              }),
-            });
-            await persistRuntime(currentRuntime);
-            continue;
-          }
-
-          try {
-            await runRepositoryMergeStrategy(
-              repository,
-              options?.mergeStrategyAction
-            );
-          } catch (error) {
-            await reloadAfterMergeFailure(error);
-            throw error;
-          }
-
-          currentRuntime = evolveMergeWorkflowRuntimeRepository({
-            runtime: currentRuntime || reviewRuntime,
-            repositoryId: repository.id,
-            update: (currentRepository) => ({
-              ...currentRepository,
-              progressState: 'merged',
-              mergeAppliedAt: new Date().toISOString(),
-              hasChanges: false,
-              isClean: true,
-              mergeable: true,
-              conflictFiles: [],
-              mergeInProgress: false,
-              blockingKind: null,
-              nextAction: null,
-              blockingReason: null,
-              checkStatus: 'passed',
-              diff: '',
-            }),
+        let finalizedPlan: Awaited<ReturnType<typeof finalizePlanIntoBaseBranch>>;
+        try {
+          finalizedPlan = await finalizePlanIntoBaseBranch({
+            branchName,
+            planId: task.plan_id,
           });
-          await persistRuntime(currentRuntime);
+        } catch (error) {
+          await reloadAfterMergeFailure(error);
+          throw error;
         }
 
+        const finalizedByRepository = new Map(
+          finalizedPlan.repositories.map((repository) => [
+            `${repository.projectId}::${repository.repoPath}`,
+            repository,
+          ])
+        );
+        const finalizedRuntime = (currentRuntime || reviewRuntime).repositories.reduce(
+          (runtime, repository) => {
+            const finalized = finalizedByRepository.get(repository.id);
+            if (!finalized) return runtime;
+            return evolveMergeWorkflowRuntimeRepository({
+              runtime,
+              repositoryId: repository.id,
+              update: (currentRepository) => {
+                const mergedRepository = markMergeWorkflowRepositoryMerged(currentRepository);
+                return finalized.mergeOutput
+                  ? mergedRepository
+                  : {
+                      ...mergedRepository,
+                      mergeAppliedAt: currentRepository.mergeAppliedAt,
+                    };
+              },
+            });
+          },
+          currentRuntime || reviewRuntime,
+        );
         await persistRuntime({
-          ...(currentRuntime || reviewRuntime),
+          ...finalizedRuntime,
           phase: 'archiving',
           taskStatus: 'InProgress',
           message: null,
         });
-
-        const plan = await getArchitectPlan(branchName, task.plan_id);
-        if (!plan || plan.status === 'deleted') {
-          throw new Error(
-            tTask(
-              'implement.errors.unknownTaskPlan',
-              'Cannot update plan metadata for task {{taskId}}.',
-              { taskId: task.plan_id }
-            )
-          );
-        }
-
-        await updateArchitectPlan({
-          branchName,
-          planId: plan.id,
-          status: 'completed',
-          setActive: false,
-        });
-        const {
-          plan: archivedPlan,
-          cleanup,
-          lifecycleSaga,
-        } = await archivePlanAndCleanupBranches({
-          branchName,
-          planId: plan.id,
-          requireMetadataCommit: true,
-        });
-        await commitArchitectPlanMetadata({
-          branchName,
-          planId: task.plan_id,
-          commitMessage: `chore(metadata): finalize architect plan ${task.plan_id}`,
-        });
-        await upsertPlanLifecycleSaga({
-          ...lifecycleSaga,
-          phase: 'metadata_committed',
-          updatedAt: new Date().toISOString(),
-        });
-        await removePlanLifecycleSaga(
-          plan.id,
-          'archive',
-          branchName,
-          getPlanLifecycleSagaGeneration(lifecycleSaga),
-        );
         await get().refreshFromPlan();
         await persistRuntime(null);
         get().clearPlanRuntimeState({
-          planId: archivedPlan.id,
-          deletedWorktreeKeys: cleanup.flatMap((repository) =>
+          planId: finalizedPlan.plan.id,
+          deletedWorktreeKeys: finalizedPlan.cleanup.flatMap((repository) =>
             repository.deletedWorktrees.map((worktree) => worktree.worktreeKey)
           ),
         });
@@ -6196,7 +6186,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     } catch (error) {
       const normalized = toServiceError(error);
 
-      if (!(error instanceof MissingTaskBaseBranchError)) {
+      if (
+        !(error instanceof MissingTaskBaseBranchError) &&
+        !(kind === 'plan_finalization' && currentRuntime?.phase === 'failed')
+      ) {
         try {
           const refreshedRuntime = await get().loadMergeWorkflowReview(task.id, { force: true });
           if (
