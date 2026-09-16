@@ -5118,7 +5118,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ? await useCitationsStore.getState().ensureCitationContentLoaded(match.id)
       : null;
     const matchForRead = hydratedMatch ?? match;
-    const matchedCitationHasContent = Boolean(matchForRead?.content);
+    const matchedCitationHasContent = typeof matchForRead?.content === "string";
     if (matchedFileRef && !matchedCitationHasContent) {
       return readWorkspaceFileRef(conversationId, matchedFileRef, args);
     }
@@ -5136,7 +5136,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? "Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text."
         : "";
 
-    if (!content) {
+    if (!content && !matchedCitationHasContent) {
       return `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ""}`;
     }
     return formatConversationFilePage({
