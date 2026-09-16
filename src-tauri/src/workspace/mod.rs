@@ -410,6 +410,21 @@ pub async fn lock_task_lifecycle(
     lock_archived_task_cleanup(metadata_root, task_id).await
 }
 
+/// Serialize direct startup across task IDs and workspace metadata roots.
+/// Canonical paths make aliases share one lock; sorting avoids multi-project deadlocks.
+pub async fn lock_direct_project_admission(paths: &[String]) -> Result<Vec<ArchivedTaskCleanupGuard>> {
+    let mut paths = paths.iter().map(|path| std::fs::canonicalize(path).map_err(|error|
+        BackendError::Filesystem { message: format!("Impossible de résoudre le projet : {error}") }
+    )).collect::<Result<Vec<_>>>()?;
+    paths.sort();
+    paths.dedup();
+    let mut guards = Vec::new();
+    for path in paths {
+        guards.push(lock_task_lifecycle(&path, "direct-project-admission").await?);
+    }
+    Ok(guards)
+}
+
 pub async fn validate_archived_task_cleanup_token(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -3185,7 +3200,7 @@ pub async fn update_standalone_task_status_with_revision(
         .iter_mut()
         .find(|candidate| candidate.id == normalized_task_id)
     {
-        if (expected_status.is_some() && feature.archived_at.is_some())
+        if (expected_status.is_some() && (feature.archived_at.is_some() || feature.draft))
             || expected_status.is_some_and(|status| status != feature.status)
         {
             return Ok(None);
@@ -9009,6 +9024,30 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
     use tokio::time::timeout;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_project_admission_serializes_distinct_task_ids() {
+        let temp = TempDir::new().expect("temporary projects");
+        let root_a = temp.path().join("metadata-a");
+        let root_b = temp.path().join("metadata-b");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let paths = vec![project.to_string_lossy().into_owned()];
+        let first_projects = lock_direct_project_admission(&paths).await.unwrap();
+        let first_task = lock_task_lifecycle(&root_a, "architect-task-a").await.unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let second = tokio::spawn(async move {
+            let _projects = lock_direct_project_admission(&paths).await.unwrap();
+            let _task = lock_task_lifecycle(&root_b, "architect-task-b").await.unwrap();
+            entered_tx.send(()).unwrap();
+        });
+        let mut entered_rx = entered_rx;
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), &mut entered_rx).await.is_err());
+        drop(first_task);
+        drop(first_projects);
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx).await.unwrap().unwrap();
+        second.await.unwrap();
+    }
 
     #[tokio::test]
     async fn plan_lifecycle_lock_holds_a_stable_file_lock() {

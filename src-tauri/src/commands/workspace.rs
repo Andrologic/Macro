@@ -50,6 +50,7 @@ struct TaskLifecycleLease {
     metadata_root: PathBuf,
     task_id: String,
     _guard: workspace::ArchivedTaskCleanupGuard,
+    _project_guards: Vec<workspace::ArchivedTaskCleanupGuard>,
 }
 
 static TASK_LIFECYCLE_LEASES: OnceLock<
@@ -226,9 +227,11 @@ pub async fn workspace_acquire_task_lifecycle_lock(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
     task_id: String,
+    direct_project_paths: Option<Vec<String>>,
 ) -> Result<String> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root = resolve_metadata_root(workspace_path, git_state.inner().clone()).await?;
+    let project_guards = workspace::lock_direct_project_admission(&direct_project_paths.unwrap_or_default()).await?;
     let guard = workspace::lock_task_lifecycle(&metadata_root, &task_id).await?;
     let lease_id = uuid::Uuid::new_v4().to_string();
     let task_id = task_id.trim().to_string();
@@ -244,6 +247,7 @@ pub async fn workspace_acquire_task_lifecycle_lock(
                     metadata_root: workspace::workspace_state_lock_key(&metadata_root),
                     task_id,
                     _guard: guard,
+                    _project_guards: project_guards,
                 },
             },
         );

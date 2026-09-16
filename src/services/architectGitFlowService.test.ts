@@ -1060,6 +1060,45 @@ describe('architectGitFlowService', () => {
     expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
   });
 
+  it.each(['empty', 'partial'])('completes the persisted plan before closing a %s provision journal', async (interruption) => {
+    currentPlan.status = 'validated';
+    const branches = new Map<string, string[]>([
+      ['/repos/web', ['develop', ...(interruption === 'partial' ? ['plan/checkout'] : [])]],
+      ['/repos/api', ['develop']],
+    ]);
+    const worktrees = new Map<string, string>();
+    persistLifecycleSaga({ operation: 'provision', cleanupResources: interruption === 'partial' ? [
+      { kind: 'branch', projectId: 'web', repoPath: '/repos/web', branchName: 'plan/checkout', expectedCommit: 'head' },
+    ] : [] });
+    gitBranchListMock.mockImplementation(async (repo) => createGitBranches(branches.get(repo) ?? []));
+    gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
+      expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
+      branches.get(repoPath)!.push(branchName);
+    });
+    gitWorktreeInspectMock.mockImplementation(async (params) => ({
+      taskId: params.taskId, worktreePath: `${params.repoPath}/worktree`,
+      branchName: worktrees.get(params.repoPath) ?? null,
+      status: worktrees.has(params.repoPath) ? 'ready' : 'absent', isDirty: false,
+    }));
+    let failApi = true;
+    gitWorktreeCreateMock.mockImplementation(async (params) => {
+      if (params.repoPath === '/repos/api' && failApi) throw new Error('interrupted API provisioning');
+      worktrees.set(params.repoPath, params.branchName);
+      return { taskId: params.taskId, worktreePath: `${params.repoPath}/worktree`,
+        branchName: params.branchName, status: 'created', createdByThisCall: true };
+    });
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    failApi = false;
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    expect(branches.get('/repos/web')).toEqual(['develop', 'plan/checkout', 'feature/checkout/checkout-web']);
+    expect(branches.get('/repos/api')).toEqual(['develop', 'plan/checkout', 'feature/checkout/checkout-api']);
+    expect([...worktrees.values()].sort()).toEqual(['feature/checkout/checkout-api', 'feature/checkout/checkout-web']);
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
+  });
+
   it('journals failed rollback resources and resumes only their guarded cleanup', async () => {
     currentPlan.status = 'draft';
     const created = new Map<string, string[]>();

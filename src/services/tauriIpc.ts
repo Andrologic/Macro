@@ -3545,8 +3545,8 @@ export async function workspaceReleasePlanLifecycleLock(leaseId: string): Promis
   return invoke<void>('workspace_release_plan_lifecycle_lock', { leaseId });
 }
 
-export async function workspaceAcquireTaskLifecycleLock(taskId: string): Promise<string> {
-  return invoke<string>('workspace_acquire_task_lifecycle_lock', { taskId });
+export async function workspaceAcquireTaskLifecycleLock(taskId: string, directProjectPaths?: string[]): Promise<string> {
+  return invoke<string>('workspace_acquire_task_lifecycle_lock', { taskId, ...(directProjectPaths?.length ? { directProjectPaths } : {}) });
 }
 
 export async function workspaceRenewTaskLifecycleLock(leaseId: string): Promise<void> {

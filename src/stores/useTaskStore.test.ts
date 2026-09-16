@@ -5063,6 +5063,38 @@ describe('useTaskStore task preparation safety', () => {
 
 
 describe('task startup lifecycle races', () => {
+  const originalListTasks = services.listTasks;
+  beforeEach(() => {
+    services.listTasks = mock(async () => ({ tasks: [], plans: [], hasStandaloneTasks: false, source: 'empty' as const }));
+  });
+  afterEach(() => { services.listTasks = originalListTasks; });
+  it('rechecks persisted Architect admission after waiting for another task on the same project', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    appStoreState.selectedTaskId = 'task-b';
+    appStoreState.getProjectById = () => ({ id: 'project-1', name: 'Project', path: '/repo', gitSetupState: 'ready' });
+    const target = { projectId: 'project-1', executionMode: 'git' as const, executionKind: 'repository_root' as const,
+      branchName: 'develop', worktreeKey: 'root', repoPath: '/repo' };
+    const tasks = ['task-a', 'task-b'].map((id) => buildTask({ id, task_source: 'architect', execution_targets: [target] }));
+    useTaskStore.setState({ tasks });
+    let release!: () => void;
+    workspaceAcquireTaskLifecycleLockMock.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve('second-task-lease');
+    }));
+    const readCatalog = mock(async () => ({ tasks: tasks.map((task) => task.id === 'task-a'
+      ? { ...task, status: 'InProgress' as const } : task), plans: [], hasStandaloneTasks: false, source: 'architect' as const }));
+    services.listTasks = readCatalog;
+    const prepare = mock(() => undefined);
+    const startup = useTaskStore.getState().startTask('task-b', { onWorkspacesPrepared: prepare });
+    for (let i = 0; i < 20 && !release; i++) await Promise.resolve();
+    expect(readCatalog).not.toHaveBeenCalled();
+    expect(workspaceAcquireTaskLifecycleLockMock).toHaveBeenCalledWith('task-b', ['/repo']);
+    release();
+    await startup;
+    expect(readCatalog).toHaveBeenCalledWith({ persistedOnly: true });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().lastError).toContain('Another direct-edit task');
+  });
+
   it.each([true, false])('does not publish a stale startup; task still exists: %s', async (taskExists) => {
     const { useTaskStore } = await loadIsolatedTaskStore();
     appStoreState.selectedTaskId = 'task-a';

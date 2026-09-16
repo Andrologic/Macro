@@ -1629,7 +1629,8 @@ export const createArchitectGitFlowService = (
 
   const provisionPlanBranchesUnlocked = async (
     plan: ArchitectPlanRecord,
-    explicitRepoPath?: string
+    explicitRepoPath?: string,
+    committedSaga?: PlanLifecycleSaga,
   ): Promise<ProvisionPlanBranchesResult> => {
     const featureBranchesByProject = new Map<string, string[]>(
       resolvePlanProjectRepoPathsWithDeps(plan, explicitRepoPath, {
@@ -1655,17 +1656,19 @@ export const createArchitectGitFlowService = (
     });
 
     const results: ProvisionedPlanRepositoryResult[] = [];
-    const previous = (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
+    const previous = !committedSaga && (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
       entry.planId === plan.id && entry.branchName === plan.targetBranch);
     if (previous) {
       const persistedPlan = await deps.getArchitectPlan(previous.branchName, previous.planId);
-      if (provisionMatchesPersistedPlan(previous, persistedPlan)) await finishProvision(persistedPlan!);
-      else await rollbackProvisionSaga(previous);
+      if (provisionMatchesPersistedPlan(previous, persistedPlan)) {
+        await provisionPlanBranchesUnlocked(persistedPlan!, explicitRepoPath, previous);
+        await finishProvision(persistedPlan!);
+      } else await rollbackProvisionSaga(previous);
     }
     const now = new Date().toISOString();
-    const saga: PlanLifecycleSaga = { planId: plan.id, branchName: plan.targetBranch,
+    const saga: PlanLifecycleSaga = committedSaga ?? { planId: plan.id, branchName: plan.targetBranch,
       operation: 'provision', phase: 'prepared', cleanupResources: [], createdAt: now, updatedAt: now };
-    await startPlanLifecycleSaga(saga);
+    if (!committedSaga) await startPlanLifecycleSaga(saga);
     const recordIntent = async (resource: PlanLifecycleCleanupResource) => {
       saga.cleanupResources!.push(resource);
       await upsertPlanLifecycleSaga(saga);
@@ -1739,7 +1742,7 @@ export const createArchitectGitFlowService = (
             taskId: worktreeKey,
             branchName: featureBranch,
           });
-          if (inspection.status === 'ready') {
+          if (inspection.status === 'ready' && inspection.branchName === featureBranch) {
             continue;
           }
 
@@ -1778,6 +1781,11 @@ export const createArchitectGitFlowService = (
         });
       }
     } catch (error) {
+      if (committedSaga) {
+        saga.lastError = toServiceError(error).message;
+        await upsertPlanLifecycleSaga(saga);
+        throw error;
+      }
       return rollbackPreservingError(rollbackCreatedGitResources, error);
     }
 
@@ -2903,7 +2911,10 @@ export const createArchitectGitFlowService = (
       const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
       if (saga.operation === 'provision') {
         if (provisionMatchesPersistedPlan(saga, plan)) {
-          await finishProvision(plan!);
+          // Re-enumerate every expected branch and worktree from the persisted plan.
+          // An empty or partial journal describes ownership, not completeness.
+          await provisionPlanBranchesUnlocked(plan!, undefined, saga);
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
         } else {
           await rollbackProvisionSaga(saga);
         }

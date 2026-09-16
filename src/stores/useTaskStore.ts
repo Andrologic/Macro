@@ -877,11 +877,12 @@ const resumeLinkedTaskGitCleanup = async (
 const withTaskLifecycleLock = async <T>(
   taskId: string,
   operation: (leaseId: string | null) => Promise<T>,
+  directProjectPaths?: string[],
 ): Promise<T> => {
   if (!tauriIpc.isTauriAvailable()) {
     return operation(null);
   }
-  const leaseId = await tauriIpc.workspaceAcquireTaskLifecycleLock(taskId);
+  const leaseId = await tauriIpc.workspaceAcquireTaskLifecycleLock(taskId, directProjectPaths);
   let renewalInFlight: Promise<void> | null = null;
   const renewLease = () => {
     if (renewalInFlight) return;
@@ -2434,7 +2435,8 @@ interface TaskStore {
 const persistTaskStatusToArchitectPlan = async (
   task: CatalogedImplementTask,
   status: TaskStatus,
-  setError: (message: string | null) => void
+  setError: (message: string | null) => void,
+  refreshCatalog = true,
 ): Promise<boolean> => {
   try {
     if (task.task_source !== 'architect' || !task.plan_id) {
@@ -2514,7 +2516,7 @@ const persistTaskStatusToArchitectPlan = async (
       }
     }
     try {
-      await useTaskStore.getState().refreshFromPlan();
+      if (refreshCatalog) await useTaskStore.getState().refreshFromPlan();
     } catch (error) {
       const normalized = toServiceError(error);
       setError(normalized.message);
@@ -4733,9 +4735,37 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({ lastError: getTaskCommandMutationBlockedMessage('complete') });
       return;
     }
+    const directProjectPaths = [...new Set(getExecutionTargets(task)
+      .filter((target) => isDirectEditTarget(target) || isRepositoryRootTarget(target))
+      .map((target) => resolveTaskRepositoryPath(target.projectId, target.repoPath))
+      .filter((path): path is string => Boolean(path)))];
     directProjectIds.forEach((id) => startingDirectProjects.add(id));
     try {
       await withTaskLifecycleLock(task.id, async () => {
+        if (directProjectIds.size > 0) {
+          // Read durable state only after acquiring the native project locks.
+          // Another window may have started a different task while we waited.
+          const catalog = await services.listTasks({ persistedOnly: true });
+          const conflict = catalog.tasks.find((candidate) => candidate.id !== task.id &&
+            !candidate.archived_at && ['InProgress', 'AwaitingResponse', 'InReview'].includes(candidate.status) &&
+            getExecutionTargets(candidate).some((target) =>
+              (isDirectEditTarget(target) || isRepositoryRootTarget(target)) &&
+              (directProjectIds.has(target.projectId) || directProjectPaths.includes(
+                resolveTaskRepositoryPath(target.projectId, target.repoPath) ?? '',
+              )),
+            ));
+          if (conflict) throw new Error(tTask(
+            'implement.errors.directProjectTaskAlreadyActive',
+            'Another direct-edit task is already active for this project: {{task}}',
+            { task: conflict.title },
+          ));
+          if (task.task_source === 'architect') {
+            const persisted = catalog.tasks.find((candidate) => candidate.id === task.id);
+            if (!persisted || persisted.archived_at || persisted.draft || persisted.status !== task.status) {
+              throw new Error('Task changed before startup admission.');
+            }
+          }
+        }
         const appState = useAppStore.getState();
         if (appState.selectedTaskId !== task.id) {
           appState.setSelectedTask(task.id);
@@ -4824,6 +4854,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             { onWorkspacesPrepared: options?.onWorkspacesPrepared },
           );
           if (!taskStillExists()) return;
+          const persistedArchitectAdmission = directProjectIds.size > 0 && task.task_source === 'architect';
+          if (persistedArchitectAdmission) {
+            let persistenceError: string | null = null;
+            const persisted = await persistTaskStatusToArchitectPlan(task, 'InProgress',
+              (message) => { persistenceError = message; }, false);
+            if (!persisted) throw new Error(persistenceError || 'Unable to persist startup admission.');
+            set((state) => ({ tasks: applyTaskStatusLocally(state.tasks, task, 'InProgress') }));
+          }
           const primaryTarget =
             preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
             preparedTargets[0];
@@ -4849,7 +4887,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             await syncManualFeatureTaskMetadata(get().getTaskById(task.id), (message) => {
               if (isCurrentStart()) set({ lastError: message });
             });
-          } else await get().setTaskStatus(task.id, 'InProgress');
+          } else if (!persistedArchitectAdmission) await get().setTaskStatus(task.id, 'InProgress');
         } catch (error) {
           let failure = error;
           if (reservedRevision !== null && taskStillExists()) {
@@ -4873,7 +4911,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           const normalized = toServiceError(failure);
           set({ lastError: normalized.message });
         }
-      });
+      }, directProjectPaths);
+    } catch (error) {
+      set({ lastError: toServiceError(error).message });
     } finally {
       directProjectIds.forEach((id) => startingDirectProjects.delete(id));
       releaseTaskOperation(task.id, 'start');
