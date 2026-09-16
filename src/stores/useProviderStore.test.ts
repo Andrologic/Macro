@@ -265,6 +265,10 @@ const loadProviderStore = async () => {
     aiCancelCopilotRuntimeDownload: aiCancelCopilotRuntimeDownloadMock,
     aiGetCopilotStatus: aiGetCopilotStatusMock,
     aiSyncProviderModels: aiSyncProviderModelsMock,
+    aiStartChatGptAuth: mock(async () => undefined),
+    aiCancelChatGptAuth: mock(async () => undefined),
+    aiStartCopilotAuth: mock(async () => undefined),
+    aiCancelCopilotAuth: mock(async () => undefined),
     aiDisconnectProviderAuth: aiDisconnectProviderAuthMock,
     aiProvisionMacroAi: aiProvisionMacroAiMock,
     getChatSnapshot: mock(async () => ({ conversations: [], messages: [] })),
@@ -639,6 +643,137 @@ describe('useProviderStore secret resolution', () => {
     expect(upsertProviderModelsMock).toHaveBeenLastCalledWith({ providerId: 'provider-openai', models: [], replaceDiscovered: true });
     await useProviderStore.getState().testConnection('provider-openai');
     expect(probeProviderReachabilityMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://actual.invalid/v1' }));
+  });
+
+  it('keeps successful ChatGPT authentication when an older hydration returns', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const base = (await listProviderConfigsMock())[0];
+    const linked = { ...base, id: 'chatgpt', provider_type: 'chatgpt', auth_status: 'authenticated' };
+    useProviderStore.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', authStatus: 'unauthenticated' }] });
+    let release!: () => void;
+    listProviderConfigsMock.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve([{ ...linked, auth_status: 'unauthenticated' }] as never[]);
+    }));
+    const oldLoad = useProviderStore.getState().loadProviderConfigs();
+    const auth = useProviderStore.getState().startChatGptAuth('chatgpt');
+    await flushAsyncWork();
+    listProviderConfigsMock.mockImplementationOnce(async () => [linked] as never[]);
+    emitTauriEvent('ai:auth-success', { request_id: useProviderStore.getState().authRequestIdsByProvider.chatgpt });
+    await auth;
+    release();
+    await oldLoad;
+    expect(useProviderStore.getState().providerConfigs.find((p: { id: string }) => p.id === 'chatgpt')?.authStatus).toBe('authenticated');
+    expect(useProviderStore.getState().authErrorsByProvider.chatgpt).toBeUndefined();
+  });
+
+  for (const failure of [false, true]) {
+    it(`ignores old Copilot status after authentication, failure=${failure}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      useProviderStore.setState({ providerConfigs: [copilotProviderConfig], providers: [copilotProvider] });
+      let release!: () => void;
+      aiGetCopilotStatusMock.mockImplementationOnce(() => new Promise((resolve, reject) => {
+        release = () => failure ? reject(new Error('old auth error')) : resolve(makeCopilotStatus({ auth_status: 'login_required' }));
+      }));
+      const oldCheck = useProviderStore.getState().testConnection('copilot');
+      const auth = useProviderStore.getState().startCopilotAuth('copilot');
+      await flushAsyncWork();
+      aiGetCopilotStatusMock.mockImplementationOnce(async () => makeCopilotStatus({ ok: true, runtime_status: 'ready', auth_status: 'connected', error_code: null, error_message: null }));
+      emitTauriEvent('ai:copilot-auth-complete', { request_id: useProviderStore.getState().copilotAuthStateByProvider.copilot?.requestId });
+      await auth;
+      release();
+      await oldCheck;
+      expect(useProviderStore.getState().providerConfigs[0].authStatus).toBe('connected');
+      expect(useProviderStore.getState().providerReachabilityById.copilot.status).toBe('reachable');
+      expect(useProviderStore.getState().authErrorsByProvider.copilot).toBeUndefined();
+    });
+  }
+
+  it('does not publish a late ChatGPT auth completion after cancellation', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', authStatus: 'unauthenticated' }] });
+    const auth = useProviderStore.getState().startChatGptAuth('chatgpt');
+    await flushAsyncWork();
+    const requestId = useProviderStore.getState().authRequestIdsByProvider.chatgpt;
+    await useProviderStore.getState().cancelChatGptAuth('chatgpt');
+    emitTauriEvent('ai:auth-success', { request_id: requestId });
+    await auth;
+    expect(useProviderStore.getState().providerConfigs[0].authStatus).toBe('unauthenticated');
+    expect(listProviderConfigsMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores a runtime download status captured before Copilot authentication', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({ providerConfigs: [copilotProviderConfig], providers: [copilotProvider] });
+    const download = useProviderStore.getState().startCopilotRuntimeDownload('copilot');
+    await flushAsyncWork();
+    const downloadId = useProviderStore.getState().copilotDownloadStateByProvider.copilot?.requestId;
+    const auth = useProviderStore.getState().startCopilotAuth('copilot');
+    await flushAsyncWork();
+    aiGetCopilotStatusMock.mockImplementationOnce(async () => makeCopilotStatus({ ok: true, runtime_status: 'ready', auth_status: 'connected', error_code: null, error_message: null }));
+    emitTauriEvent('ai:copilot-auth-complete', { request_id: useProviderStore.getState().copilotAuthStateByProvider.copilot?.requestId });
+    await auth;
+    emitTauriEvent('ai:copilot-download-complete', { request_id: downloadId, status: makeCopilotStatus({ auth_status: 'login_required' }) });
+    await download;
+    expect(useProviderStore.getState().providerConfigs[0].authStatus).toBe('connected');
+    expect(useProviderStore.getState().providerReachabilityById.copilot.status).toBe('reachable');
+  });
+
+  it('keeps the latest configuration hydration and connection check', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const base = (await listProviderConfigsMock())[0];
+    let releaseLoad!: () => void;
+    listProviderConfigsMock.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseLoad = () => resolve([{ ...base, name: 'Old' }]);
+    }));
+    const oldLoad = useProviderStore.getState().loadProviderConfigs();
+    listProviderConfigsMock.mockImplementationOnce(async () => [{ ...base, name: 'Current' }]);
+    await useProviderStore.getState().loadProviderConfigs();
+    releaseLoad();
+    await oldLoad;
+    expect(useProviderStore.getState().providerConfigs[0].name).toBe('Current');
+    useProviderStore.setState({ providerConfigs: [copilotProviderConfig], providers: [copilotProvider] });
+    let releaseCheck!: () => void;
+    aiGetCopilotStatusMock.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseCheck = () => resolve(makeCopilotStatus());
+    }));
+    const oldCheck = useProviderStore.getState().testConnection('copilot');
+    aiGetCopilotStatusMock.mockImplementationOnce(async () => makeCopilotStatus({ ok: true, runtime_status: 'ready', auth_status: 'connected', error_code: null, error_message: null }));
+    await useProviderStore.getState().testConnection('copilot');
+    releaseCheck();
+    await oldCheck;
+    expect(useProviderStore.getState().providerReachabilityById.copilot.status).toBe('reachable');
+  });
+
+  it('starts automatic refresh for a new transport and retains its in-flight ownership', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    const releases: (() => void)[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      probeModelsEndpointMock.mockImplementationOnce(() => new Promise((resolve) => {
+        releases.push(() => resolve({ success: true, status: 'reachable', source: 'models_endpoint', message: 'Synthetic', models: [] }));
+      }));
+    }
+    const oldRefresh = useProviderStore.getState().refreshModelsForProviderIfNeeded('provider-openai', 'provider_selection');
+    await flushAsyncWork();
+    let finishSave!: () => void;
+    updateProviderConfigMock.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSave = resolve; }));
+    const update = useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://new.invalid/v1' });
+    await flushAsyncWork();
+    await useProviderStore.getState().refreshModelsForProviderIfNeeded('provider-openai', 'pre_send');
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+    finishSave();
+    await update;
+    const currentRefresh = useProviderStore.getState().refreshModelsForProviderIfNeeded('provider-openai', 'provider_selection');
+    await flushAsyncWork();
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(2);
+    expect(probeModelsEndpointMock).toHaveBeenLastCalledWith(expect.objectContaining({ baseUrl: 'https://new.invalid/v1' }));
+    releases[0]();
+    await oldRefresh;
+    const sharedRefresh = useProviderStore.getState().refreshModelsForProviderIfNeeded('provider-openai', 'manual');
+    await flushAsyncWork();
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(2);
+    releases[1]();
+    await Promise.all([currentRefresh, sharedRefresh]);
   });
 
   it('uses a stored API key to scan models after a restart', async () => {
