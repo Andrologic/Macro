@@ -3302,43 +3302,37 @@ pub async fn bind_manual_feature_direct_checkpoint(
         })
 }
 
-async fn ensure_project_directory(project_path: &Path, operation: &str) -> Result<()> {
-    if project_path.exists() {
-        let metadata =
-            fs::metadata(project_path)
-                .await
-                .map_err(|error| BackendError::Filesystem {
-                    message: format!(
-                        "Failed to inspect project directory {} for {}: {}",
-                        project_path.display(),
-                        operation,
-                        error
-                    ),
-                })?;
-
-        if !metadata.is_dir() {
-            return Err(BackendError::FilesystemIsFile {
+async fn require_existing_project_directory(project_path: &Path, operation: &str) -> Result<()> {
+    let metadata = fs::metadata(project_path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            BackendError::FilesystemNotFound {
                 message: format!(
-                    "Project path {} for {} is not a directory",
+                    "Project path {} for {} was not found.",
                     project_path.display(),
                     operation
                 ),
-            });
+            }
+        } else {
+            BackendError::Filesystem {
+                message: format!(
+                    "Failed to inspect project directory {} for {}: {}",
+                    project_path.display(),
+                    operation,
+                    error
+                ),
+            }
         }
+    })?;
 
-        return Ok(());
-    }
-
-    fs::create_dir_all(project_path)
-        .await
-        .map_err(|error| BackendError::Filesystem {
+    if !metadata.is_dir() {
+        return Err(BackendError::FilesystemIsFile {
             message: format!(
-                "Failed to create project directory {} for {}: {}",
+                "Project path {} for {} is not a directory",
                 project_path.display(),
-                operation,
-                error
+                operation
             ),
-        })?;
+        });
+    }
 
     Ok(())
 }
@@ -3368,7 +3362,7 @@ async fn ensure_project_directory_for_add(
         });
     }
 
-    ensure_project_directory(
+    require_existing_project_directory(
         &resolve_project_path(workspace_path, project_path),
         operation,
     )
@@ -3985,7 +3979,8 @@ pub async fn import_git_repo(
 
     let project_path = resolve_project_path(workspace_path, &project.path);
     ensure_unique_project_path_in_state(&state, workspace_path, &project_path)?;
-    ensure_project_directory(&project_path, "import_git_repo").await?;
+    ensure_project_directory_for_add(workspace_path, &project.path, "import_git_repo", None)
+        .await?;
 
     insert_project_into_registry(
         &mut state,
@@ -8546,6 +8541,19 @@ fn ensure_unique_project_name_in_target(
 }
 
 fn normalized_path_key(path: &Path) -> String {
+    // WSL paths point into a case-sensitive Linux filesystem even when Macro
+    // runs on Windows. Keep their Linux path case intact before applying the
+    // Windows case-folding rule to native paths.
+    if let Some(wsl_path) = parse_wsl_unc_path(&path.to_string_lossy()) {
+        return format!(
+            "//wsl.localhost/{}/{}",
+            wsl_path.distro.to_lowercase(),
+            wsl_path.linux_path.trim_start_matches('/')
+        )
+        .trim_end_matches('/')
+        .to_string();
+    }
+
     let normalized = absolutize_path(path).to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
     {
@@ -9099,6 +9107,26 @@ mod tests {
     }
 
     #[test]
+    fn normalized_path_key_preserves_case_for_wsl_linux_paths() {
+        let upper_case_path = Path::new(r"\\wsl.localhost\Ubuntu\home\Sample\Repo");
+        let lower_case_path = Path::new(r"\\wsl.localhost\Ubuntu\home\sample\repo");
+        let aliased_path = Path::new(r"//WSL$/ubuntu/home/Sample/Repo");
+
+        assert_eq!(
+            normalized_path_key(upper_case_path),
+            "//wsl.localhost/ubuntu/home/Sample/Repo"
+        );
+        assert_eq!(
+            normalized_path_key(upper_case_path),
+            normalized_path_key(aliased_path)
+        );
+        assert_ne!(
+            normalized_path_key(upper_case_path),
+            normalized_path_key(lower_case_path)
+        );
+    }
+
+    #[test]
     fn wsl_develop_branch_source_is_passed_as_positional_argument() {
         let source_branch = r#"main$(touch /tmp/macro-pwned);`id`"#;
 
@@ -9380,6 +9408,7 @@ mod tests {
         let workspace_path = temp.path().join("app-data").join("workspace");
         let metadata_root = workspace_path.join(".macro");
         let project_path = temp.path().join("repos").join("web");
+        stdfs::create_dir_all(&project_path).expect("create project directory");
 
         let project = create_project(
             &workspace_path,
@@ -9434,6 +9463,75 @@ mod tests {
                 if message.contains(&project_path.to_string_lossy().to_string())
                     && message.contains("create_project")
         ));
+    }
+
+    #[tokio::test]
+    async fn create_project_rejects_missing_directory_without_creating_it() {
+        for direct_edit in [false, true] {
+            let temp = TempDir::new().expect("temp dir");
+            let workspace_path = temp.path().join("app-data").join("workspace");
+            let metadata_root = workspace_path.join(".macro");
+            let missing_path = temp.path().join("repos").join("missing");
+
+            let result = create_project(
+                &workspace_path,
+                &metadata_root,
+                CreateProjectRequest {
+                    name: "Missing".to_string(),
+                    description: String::new(),
+                    group_id: None,
+                    group_name: None,
+                    path: Some(missing_path.to_string_lossy().to_string()),
+                    direct_edit,
+                    git_flow_settings: None,
+                },
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                Err(BackendError::FilesystemNotFound { message })
+                    if message.contains("create_project")
+                        && message.contains(&missing_path.to_string_lossy().to_string())
+            ));
+            assert!(!missing_path.exists());
+            let state = load_or_create_state(&workspace_path, &metadata_root)
+                .await
+                .expect("load registry");
+            assert!(state.standalone_projects.is_empty());
+            assert!(state.project_groups.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn import_git_repo_rejects_missing_directory_without_creating_it() {
+        let temp = TempDir::new().expect("temp dir");
+        let workspace_path = temp.path().join("workspace");
+        let metadata_root = temp.path().join("metadata");
+        let missing_path = temp.path().join("repos").join("missing");
+
+        let result = import_git_repo(
+            &workspace_path,
+            &metadata_root,
+            ImportGitRepoRequest {
+                git_url: "https://example.invalid/repository.git".to_string(),
+                project_name: "Missing repository".to_string(),
+                branch: "main".to_string(),
+                group_id: None,
+                group_name: None,
+                path: Some(missing_path.to_string_lossy().to_string()),
+                git_flow_settings: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemNotFound { message })
+                if message.contains("import_git_repo")
+                    && message.contains(&missing_path.to_string_lossy().to_string())
+        ));
+        assert!(!missing_path.exists());
     }
 
     #[tokio::test]
@@ -9622,6 +9720,7 @@ mod tests {
         let parent_path = temp.path().join("repos");
         let project_path = parent_path.join("backend-api");
         stdfs::create_dir_all(&parent_path).expect("create parent");
+        stdfs::create_dir_all(&project_path).expect("create project directory");
 
         create_project(
             &workspace_path,
