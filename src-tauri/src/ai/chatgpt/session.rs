@@ -1,8 +1,8 @@
 use super::auth::build_oauth_form_body;
 use super::lock_auth_mutation;
 use super::types::{
-    db_error_to_string, extract_response_error, PersistChatGptSessionError, TokenClaims,
-    TokenResponse, CHATGPT_CLIENT_ID, CHATGPT_TOKEN_URL, TOKEN_REFRESH_LEEWAY_SECONDS,
+    build_http_client, db_error_to_string, extract_response_error, PersistChatGptSessionError,
+    TokenClaims, TokenResponse, CHATGPT_CLIENT_ID, CHATGPT_TOKEN_URL, TOKEN_REFRESH_LEEWAY_SECONDS,
 };
 use crate::db::models::{ProviderAuthMetadata, ProviderConfig};
 use crate::db::repository;
@@ -200,7 +200,7 @@ async fn refresh_secret(secret: &ChatGptSecret) -> Result<ChatGptSecret, String>
         return Err("Refresh token is missing. Reconnect with ChatGPT.".to_string());
     }
 
-    let client = reqwest::Client::new();
+    let client = build_http_client()?;
     debug!("sending ChatGPT token refresh request");
     let response = client
         .post(CHATGPT_TOKEN_URL)

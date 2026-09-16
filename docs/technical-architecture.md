@@ -615,7 +615,10 @@ demande active n'a pas ce champ. Les permissions de conversation restent en
 mémoire et ne sont jamais restaurées. Une réinitialisation retire les anciens
 resolvers et attend la fin des écritures déjà engagées dans leurs files avant
 l'hydratation. Une génération périmée ne peut plus autoriser l'outil ni clore
-une demande restaurée.
+une demande restaurée. Tant qu'une demande live reste visible pendant la
+revalidation ou la clôture durable, un refus révoque l'autorisation avant le
+dispatch. Les approbations MCP exposent l'identité protocolaire et un aperçu des
+arguments, avec champs sensibles masqués et troncature signalée.
 
 ### 10.2 Persistance locale frontend
 

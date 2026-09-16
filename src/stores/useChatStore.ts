@@ -5704,7 +5704,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const resolvedToolCallId =
         toolCallId ??
         `${normalizedToolName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const mcpApprovalTool = executionMcpServers.flatMap((server) => server.tools ?? [])
+        .find((tool) => tool.id === normalizedToolName);
       const pendingApproval: PendingToolApproval = {
+        ...(mcpApprovalTool ? { mcpIdentity: { serverId: mcpApprovalTool.serverId, toolName: mcpApprovalTool.name } } : {}),
         conversationId,
         assistantMessageId,
         toolCallId: resolvedToolCallId,
@@ -5756,10 +5759,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             return { kind: "deny" } as PendingToolApprovalResolution;
           }
           approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
+          let revoked: PendingToolApprovalResolution | null = null;
           return new Promise<PendingToolApprovalResolution>((resolve) => {
             pendingToolApprovalResolvers.set(
               getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
-              resolve,
+              (decision) => {
+                // A refusal offered while persistence is pending remains effective.
+                if (decision.kind === "deny" || decision.kind === "expired") revoked = decision;
+                resolve(decision);
+              },
             );
             set((state) => ({
               pendingToolApprovalByConversationId: {
@@ -5788,7 +5796,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const currentMcpRuntime = currentConfiguration
                       ? await resolveScopedMcpRuntime(currentConfiguration.mcpServers, toolsState.mcpServers ?? [], { projectIds: currentConfiguration.projectIds })
                       : { servers: toolsState.mcpServers ?? [], tools: toolsState.getEnabledMCPTools() };
-                    currentToolEnabled = currentToolEnabled && currentMcpRuntime.tools.some((tool) => tool.id === normalizedToolName);
+                    currentToolEnabled = currentToolEnabled && currentMcpRuntime.tools.some((tool) =>
+                      tool.id === normalizedToolName && tool.name === mcpApprovalTool?.name && tool.serverId === mcpApprovalTool?.serverId);
                     executionMcpServers = currentMcpRuntime.servers;
                     executionMcpProjectIds = currentConfiguration?.projectIds ?? currentExecutionContext.projectIds;
                   } else {
@@ -5817,7 +5826,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 delete next[conversationId];
                 return { pendingToolApprovalByConversationId: next };
               });
-              return result;
+              return revoked ?? result;
             } catch (error) {
               if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
               set((state) => state.pendingToolApprovalByConversationId[conversationId] !== pendingApproval ? state : ({ pendingToolApprovalByConversationId: {
@@ -14774,9 +14783,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       let appState = useAppStore.getState();
       if (appState.mode === "Implement") {
+        const contextBeforeRead = {
+          mode: appState.mode,
+          selectedGroupId: appState.selectedGroupId,
+          selectedProjectId: appState.selectedProjectId,
+          selectedTaskId: appState.selectedTaskId,
+        };
         const localContext = appState.selectedGroupId
           ? await getLocalProjectContextState(appState.selectedGroupId)
           : null;
+        const currentAppState = useAppStore.getState();
+        if (resolutionGeneration !== conversationResolutionGeneration ||
+          currentAppState.mode !== contextBeforeRead.mode ||
+          currentAppState.selectedGroupId !== contextBeforeRead.selectedGroupId ||
+          currentAppState.selectedProjectId !== contextBeforeRead.selectedProjectId ||
+          currentAppState.selectedTaskId !== contextBeforeRead.selectedTaskId) {
+          return get().selectedConversationId;
+        }
         const resolvedTask = resolveImplementTaskForContext({
           selectedTaskId: appState.selectedTaskId,
           tasks: useTaskStore.getState().tasks,

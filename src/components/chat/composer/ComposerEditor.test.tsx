@@ -29,6 +29,12 @@ let skills: SkillManifest[];
 let settingsBySkillId: Record<string, SkillSettings>;
 let fileSearchResults: WorkspaceFileReference[];
 let searchWorkspaceFilesMock: ReturnType<typeof mock>;
+let pendingFileSearches: Array<{
+  resolve: (results: WorkspaceFileReference[]) => void;
+}>;
+let activeProjectGroups: ProjectGroup[];
+let selectedGroupId: string | null;
+let selectedProjectId: string | null;
 
 const buildSkill = (
   id: string,
@@ -196,9 +202,15 @@ const installStoreMock = () => {
   openSettingsMock = mock((_tab?: string) => undefined);
   const appState = {
     mode: 'Implement',
-    projectGroups,
-    selectedGroupId: 'group-1',
-    selectedProjectId: 'project-1',
+    get projectGroups() {
+      return activeProjectGroups;
+    },
+    get selectedGroupId() {
+      return selectedGroupId;
+    },
+    get selectedProjectId() {
+      return selectedProjectId;
+    },
     selectedTaskId: null,
     get activeArchitectPlanId() {
       return activeArchitectPlanId;
@@ -248,6 +260,10 @@ describe('ComposerEditor context references', () => {
     skills = [];
     settingsBySkillId = {};
     fileSearchResults = [];
+    pendingFileSearches = [];
+    activeProjectGroups = projectGroups;
+    selectedGroupId = 'group-1';
+    selectedProjectId = 'project-1';
     installStoreMock();
 
     ({
@@ -1000,6 +1016,92 @@ describe('ComposerEditor context references', () => {
       subtitle: 'Web/src/App.tsx',
       data: file,
     });
+  });
+
+  it('clears old workspace files and ignores their response after the project scope changes', async () => {
+    const firstProject = projectGroups[0]?.projects[0];
+    if (!firstProject) throw new Error('Expected a fixture project.');
+    const secondProject = {
+      ...firstProject,
+      id: 'project-2',
+      name: 'Docs',
+      path: '/repo/docs',
+    };
+    activeProjectGroups = [{
+      ...projectGroups[0],
+      projects: [firstProject, secondProject],
+    }];
+    const firstFile = buildFile('src/App.tsx');
+    const secondFile = buildFile('src/Guide.tsx', {
+      id: 'file:project-2:src/Guide.tsx',
+      projectId: 'project-2',
+      projectName: 'Docs',
+    });
+    searchWorkspaceFilesMock.mockImplementation(() => new Promise<WorkspaceFileReference[]>((resolve) => {
+      pendingFileSearches.push({ resolve });
+    }));
+    const editorRef = React.createRef<ComposerEditorHandle>();
+
+    await act(async () => {
+      root.render(
+        <ComposerEditor
+          ref={editorRef}
+          editable
+          placeholder="Message"
+          onTextChange={() => undefined}
+          onSend={() => undefined}
+        />
+      );
+    });
+
+    await act(async () => {
+      editorRef.current?.setText('/src');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(pendingFileSearches).toHaveLength(1);
+
+    await act(async () => {
+      pendingFileSearches[0]?.resolve([firstFile]);
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).toContain('App.tsx');
+
+    await act(async () => {
+      editorRef.current?.setText('hello /src');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(pendingFileSearches).toHaveLength(2);
+
+    selectedGroupId = null;
+    selectedProjectId = 'project-2';
+    await act(async () => {
+      editorRef.current?.setText('/src');
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).not.toContain('App.tsx');
+
+    await act(async () => {
+      pendingFileSearches[1]?.resolve([firstFile]);
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).not.toContain('App.tsx');
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(pendingFileSearches).toHaveLength(3);
+    await act(async () => {
+      pendingFileSearches[2]?.resolve([secondFile]);
+      await Promise.resolve();
+    });
+    expect(document.body.textContent).toContain('Guide.tsx');
   });
 
   it('does not list workspace files for an empty slash query', async () => {

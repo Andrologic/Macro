@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{oneshot, Mutex};
 
 pub(super) const CHATGPT_BROWSER_SOURCE: &str = "browser";
@@ -18,8 +19,16 @@ pub(super) const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
 pub(super) const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.112.0";
 pub(super) const TOKEN_REFRESH_LEEWAY_SECONDS: i64 = 300;
 pub(super) const AUTH_TIMEOUT_SECONDS: u64 = 180;
+pub(super) const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 pub(super) const CALLBACK_BIND_RETRY_ATTEMPTS: u32 = 10;
 pub(super) const CALLBACK_BIND_RETRY_DELAY_MS: u64 = 200;
+
+pub(super) fn build_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|error| format!("Failed to build ChatGPT HTTP client: {error}"))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiChatRequest {

@@ -1,3 +1,4 @@
+import { isMCPToolId } from '../../services/mcpToolNames';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PendingToolApproval } from '../../types';
@@ -66,6 +67,11 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
   onDeny,
 }) => {
   const { t } = useTranslation();
+  const mcpArguments = isMCPToolId(pendingApproval.toolId)
+    ? JSON.stringify(pendingApproval.args ?? {}, (key, value) =>
+        /password|secret|token|authorization|api[_-]?key|credential/i.test(key)
+          ? '[REDACTED]' : value, 2)
+    : null;
   const interrupted = pendingApproval.recoveryState === 'interrupted';
   const [isDenying, setIsDenying] = useState(false);
   const [denyReason, setDenyReason] = useState('');
@@ -172,6 +178,18 @@ export const ToolApprovalFooter: React.FC<ToolApprovalFooterProps> = ({
                   {pendingApproval.detail}
                 </div>
               </div>
+            )}
+
+            {mcpArguments !== null && (
+              <details className="min-w-0 rounded-lg border border-border/70 bg-background/55 px-2.5 py-2 text-xs">
+                <summary className="cursor-pointer">{t('chat.mcpApprovalArguments', 'MCP operation and arguments')}</summary>
+                <p className="mt-2 break-all font-mono">{pendingApproval.mcpIdentity
+                  ? `${pendingApproval.mcpIdentity.serverId} / ${pendingApproval.mcpIdentity.toolName}`
+                  : pendingApproval.toolId}</p>
+                <p className="my-2 text-muted-foreground">{t('chat.mcpApprovalRedacted', 'Sensitive fields are masked.')}</p>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all">{mcpArguments.slice(0, 16000)}</pre>
+                {mcpArguments.length > 16000 && <p>{t('chat.mcpApprovalTruncated', 'Arguments truncated after 16,000 characters.')}</p>}
+              </details>
             )}
 
             {skillScriptApprovalDetails && (

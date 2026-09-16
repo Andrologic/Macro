@@ -11,12 +11,15 @@ use futures::StreamExt;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{Map, Value};
 use sqlx::SqlitePool;
+use std::future::Future;
 use std::str;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::time::{sleep, timeout};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const RESPONSE_HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
+const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_RETRY_ATTEMPTS: usize = 2;
 const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
@@ -139,7 +142,13 @@ async fn stream_chat_inner(
 
     if !response.status().is_success() {
         let status = response.status();
-        let error_body = response.text().await.unwrap_or_default();
+        let error_body = await_http_operation(
+            response.text(),
+            ERROR_BODY_TIMEOUT,
+            "Provider error response body",
+        )
+        .await
+        .map_err(|error| format!("Provider error {}: {}", status.as_u16(), error))?;
         return Err(extract_provider_error(status.as_u16(), &error_body));
     }
 
@@ -150,7 +159,7 @@ async fn stream_chat_inner(
     let mut emitted_first_token = false;
     let mut saw_completion = false;
 
-    loop {
+    'stream: loop {
         let chunk = match timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
@@ -162,36 +171,45 @@ async fn stream_chat_inner(
             }
         };
         let chunk = chunk.map_err(|error| format!("Failed to read provider stream: {}", error))?;
-        for event in parser.push(&chunk)? {
+        let is_terminal = process_sse_events_until_terminal(parser.push(&chunk)?, |event| {
             if !emitted_first_provider_event {
                 emitted_first_provider_event = true;
                 timeline.emit("first_provider_event");
             }
-            saw_completion |= process_sse_event(
+            process_sse_event(
                 &app_handle,
                 &request,
                 &provider_type,
                 started_at,
                 &mut emitted_first_token,
-                &event,
+                event,
                 &mut accumulator,
-            )?;
+            )
+        })?;
+        saw_completion |= is_terminal;
+        if is_terminal {
+            break 'stream;
         }
     }
+    drop(stream);
 
-    for event in parser.finish()? {
-        if !emitted_first_provider_event {
-            timeline.emit("first_provider_event");
-        }
-        saw_completion |= process_sse_event(
-            &app_handle,
-            &request,
-            &provider_type,
-            started_at,
-            &mut emitted_first_token,
-            &event,
-            &mut accumulator,
-        )?;
+    if !saw_completion {
+        let is_terminal = process_sse_events_until_terminal(parser.finish()?, |event| {
+            if !emitted_first_provider_event {
+                emitted_first_provider_event = true;
+                timeline.emit("first_provider_event");
+            }
+            process_sse_event(
+                &app_handle,
+                &request,
+                &provider_type,
+                started_at,
+                &mut emitted_first_token,
+                event,
+                &mut accumulator,
+            )
+        })?;
+        saw_completion |= is_terminal;
     }
 
     if !saw_completion {
@@ -298,8 +316,23 @@ fn build_chat_completions_request(
 }
 
 fn serialize_messages(request: &AiChatRequest) -> Result<Vec<Value>, String> {
+    let mut system_contents = Vec::new();
     let mut messages = Vec::new();
     for message in &request.messages {
+        if message.role == "system" {
+            let content = message_content_to_plain_text(&message.content);
+            let content = content.trim();
+            if !content.is_empty() {
+                system_contents.push(content.to_string());
+            }
+            continue;
+        }
+
+        if let Some(provider_items) = serialize_provider_input_items(message)? {
+            messages.extend(provider_items);
+            continue;
+        }
+
         let mut serialized = Map::new();
         serialized.insert("role".to_string(), Value::String(message.role.clone()));
         serialized.insert(
@@ -320,7 +353,198 @@ fn serialize_messages(request: &AiChatRequest) -> Result<Vec<Value>, String> {
         }
         messages.push(Value::Object(serialized));
     }
+
+    if !system_contents.is_empty() {
+        messages.insert(
+            0,
+            serde_json::json!({
+                "role": "system",
+                "content": system_contents.join("\n\n"),
+            }),
+        );
+    }
     Ok(messages)
+}
+
+fn message_content_to_plain_text(content: &AiChatMessageContent) -> String {
+    match content {
+        AiChatMessageContent::Text(text) => text.clone(),
+        AiChatMessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|part| part.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn serialize_provider_input_items(
+    message: &super::chatgpt::types::AiChatMessage,
+) -> Result<Option<Vec<Value>>, String> {
+    let Some(items) = message
+        .provider_input_items
+        .as_ref()
+        .filter(|items| !items.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let mut serialized = Vec::new();
+    for item in items {
+        match item.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "chat_completion_message" => {
+                if let Some(message) = serialize_chat_completion_provider_item(item) {
+                    serialized.push(message);
+                }
+            }
+            "message" => {
+                let role = item
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("assistant");
+                if role != "assistant" && role != "user" {
+                    continue;
+                }
+                serialized.push(serde_json::json!({
+                    "role": role,
+                    "content": responses_message_content_to_text(item.get("content")),
+                }));
+            }
+            "function_call" => append_responses_function_call(&mut serialized, item)?,
+            "function_call_output" => {
+                let Some(call_id) = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    continue;
+                };
+                serialized.push(serde_json::json!({
+                    "role": "tool",
+                    "content": item.get("output").cloned().unwrap_or(Value::String(String::new())),
+                    "tool_call_id": call_id,
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    Ok((!serialized.is_empty()).then_some(serialized))
+}
+
+fn serialize_chat_completion_provider_item(item: &Value) -> Option<Value> {
+    let role = item.get("role").and_then(Value::as_str)?;
+    if role != "assistant" && role != "tool" {
+        return None;
+    }
+
+    let mut output = Map::new();
+    output.insert("role".to_string(), Value::String(role.to_string()));
+    output.insert(
+        "content".to_string(),
+        item.get("content").cloned().unwrap_or(Value::Null),
+    );
+
+    if role == "assistant" {
+        for key in [
+            "tool_calls",
+            "reasoning_content",
+            "reasoning_details",
+            "reasoning",
+        ] {
+            if let Some(value) = item.get(key) {
+                output.insert(key.to_string(), value.clone());
+            }
+        }
+    } else {
+        let tool_call_id = item
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        output.insert(
+            "tool_call_id".to_string(),
+            Value::String(tool_call_id.to_string()),
+        );
+        if let Some(name) = item
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            output.insert("name".to_string(), Value::String(name.to_string()));
+        }
+    }
+
+    Some(Value::Object(output))
+}
+
+fn append_responses_function_call(messages: &mut Vec<Value>, item: &Value) -> Result<(), String> {
+    let call_id = item
+        .get("call_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Persisted function call is missing call_id.".to_string())?;
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Persisted function call is missing name.".to_string())?;
+    let tool_call = serde_json::json!({
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": item.get("arguments").and_then(Value::as_str).unwrap_or("{}"),
+        },
+    });
+
+    let can_append = messages
+        .last()
+        .and_then(Value::as_object)
+        .and_then(|message| message.get("role"))
+        .and_then(Value::as_str)
+        == Some("assistant");
+    if !can_append {
+        messages.push(serde_json::json!({ "role": "assistant", "content": null }));
+    }
+    let message = messages
+        .last_mut()
+        .and_then(Value::as_object_mut)
+        .expect("assistant message was just inserted");
+    let tool_calls = message
+        .entry("tool_calls".to_string())
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| "Persisted assistant tool_calls is not an array.".to_string())?;
+    tool_calls.push(tool_call);
+    Ok(())
+}
+
+fn responses_message_content_to_text(content: Option<&Value>) -> String {
+    let Some(content) = content else {
+        return String::new();
+    };
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| {
+            let kind = part.get("type").and_then(Value::as_str)?;
+            if kind != "output_text" && kind != "text" {
+                return None;
+            }
+            part.get("text")
+                .and_then(Value::as_str)
+                .or_else(|| part.get("value").and_then(Value::as_str))
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn serialize_message_content(content: &AiChatMessageContent) -> Result<Value, String> {
@@ -369,10 +593,16 @@ async fn send_chat_completions_request(
         let Some(cloned_builder) = builder.try_clone() else {
             break;
         };
-        match cloned_builder.send().await {
+        match await_http_operation(
+            cloned_builder.send(),
+            RESPONSE_HEADERS_TIMEOUT,
+            "Provider response headers",
+        )
+        .await
+        {
             Ok(response) => return Ok(response),
             Err(error) => {
-                last_error = Some(error.to_string());
+                last_error = Some(error);
                 if attempt + 1 < REQUEST_RETRY_ATTEMPTS {
                     sleep(Duration::from_millis(250)).await;
                 }
@@ -380,12 +610,37 @@ async fn send_chat_completions_request(
         }
     }
 
-    builder.send().await.map_err(|error| {
+    await_http_operation(
+        builder.send(),
+        RESPONSE_HEADERS_TIMEOUT,
+        "Provider response headers",
+    )
+    .await
+    .map_err(|error| {
         let previous = last_error
             .map(|message| format!(" Last retryable error: {}", message))
             .unwrap_or_default();
         format!("Failed to send provider request: {}{}", error, previous)
     })
+}
+
+async fn await_http_operation<T, F>(
+    future: F,
+    deadline: Duration,
+    operation: &str,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<T, reqwest::Error>>,
+{
+    match timeout(deadline, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(format!("{} failed: {}", operation, error)),
+        Err(_) => Err(format!(
+            "{} timed out after {} seconds.",
+            operation,
+            deadline.as_secs()
+        )),
+    }
 }
 
 fn process_sse_event(
@@ -414,6 +669,9 @@ fn process_sse_event(
 
     let value: Value = serde_json::from_str(data)
         .map_err(|error| format!("Invalid provider SSE payload: {}", error))?;
+    if let Some(error) = extract_sse_provider_error(&value) {
+        return Err(error);
+    }
     let Some(choice) = value
         .get("choices")
         .and_then(Value::as_array)
@@ -488,7 +746,49 @@ fn process_sse_event(
         accumulator.completion_reason = Some(normalize_finish_reason(finish_reason).to_string());
     }
 
-    Ok(accumulator.completion_reason.is_some() || is_terminal_sse_value(&value))
+    Ok(is_terminal_sse_value(&value))
+}
+
+fn process_sse_events_until_terminal<F>(events: Vec<String>, mut process: F) -> Result<bool, String>
+where
+    F: FnMut(&str) -> Result<bool, String>,
+{
+    for event in events {
+        if process(&event)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn extract_sse_provider_error(payload: &Value) -> Option<String> {
+    let error = payload.get("error")?;
+    if error.is_null() {
+        return None;
+    }
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| error.as_str())
+        .unwrap_or("Provider stream returned an unspecified error.");
+    let mut details = Vec::new();
+    for (label, key) in [("code", "code"), ("type", "type"), ("status", "status")] {
+        if let Some(value) = error.get(key).or_else(|| payload.get(key)) {
+            let rendered = value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string());
+            if !rendered.trim().is_empty() {
+                details.push(format!("{}: {}", label, rendered));
+            }
+        }
+    }
+    let suffix = if details.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", details.join(", "))
+    };
+    Some(format!("Provider stream error: {}{}", message, suffix))
 }
 
 fn normalize_finish_reason(finish_reason: &str) -> &str {
@@ -770,6 +1070,7 @@ fn supports_reasoning_effort(provider_type: &str) -> bool {
 mod tests {
     use super::super::chatgpt::types::AiChatMessage;
     use super::*;
+    use std::future::pending;
 
     fn request(reasoning_effort: Option<&str>) -> AiChatRequest {
         AiChatRequest {
@@ -804,7 +1105,7 @@ mod tests {
             id: "provider-1".to_string(),
             name: "Provider".to_string(),
             provider_type: provider_type.to_string(),
-            base_url: "https://example.test/v1".to_string(),
+            base_url: "https://provider.invalid/v1".to_string(),
             api_key: None,
             has_stored_api_key: false,
             is_enabled: true,
@@ -816,6 +1117,131 @@ mod tests {
             token_expires_at: None,
             created_at: String::new(),
             updated_at: String::new(),
+        }
+    }
+
+    fn message(role: &str, content: &str) -> AiChatMessage {
+        AiChatMessage {
+            role: role.to_string(),
+            content: AiChatMessageContent::Text(content.to_string()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            provider_input_items: None,
+            provider_turn_state: None,
+        }
+    }
+
+    #[test]
+    fn native_messages_merge_all_system_instructions_at_the_front() {
+        let mut request = request(None);
+        request.messages = vec![
+            message("system", "Initial policy"),
+            message("user", "Question"),
+            message("system", "Recovery policy"),
+            message("assistant", "Answer"),
+        ];
+
+        let messages = serialize_messages(&request).expect("messages");
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "Initial policy\n\nRecovery policy");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[2]["role"], "assistant");
+    }
+
+    #[test]
+    fn native_messages_restore_persisted_tool_calls_and_results_in_order() {
+        let mut historical = message("assistant", "Read complete.");
+        historical.provider_input_items = Some(vec![
+            serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": "Read complete." }]
+            }),
+            serde_json::json!({
+                "type": "function_call",
+                "call_id": "call_read_1",
+                "name": "read",
+                "arguments": "{\"path\":\"value.txt\"}"
+            }),
+            serde_json::json!({
+                "type": "function_call_output",
+                "call_id": "call_read_1",
+                "output": "314159"
+            }),
+        ]);
+        let mut request = request(None);
+        request.messages = vec![historical, message("user", "What was the value?")];
+
+        let messages = serialize_messages(&request).expect("messages");
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["tool_calls"][0]["id"], "call_read_1");
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[1]["tool_call_id"], "call_read_1");
+        assert_eq!(messages[1]["content"], "314159");
+        assert_eq!(messages[2]["role"], "user");
+    }
+
+    #[test]
+    fn structured_sse_errors_keep_provider_diagnostics() {
+        assert!(extract_sse_provider_error(&serde_json::json!({
+            "error": null,
+            "choices": [{ "delta": { "content": "still valid" } }]
+        }))
+        .is_none());
+
+        let error = extract_sse_provider_error(&serde_json::json!({
+            "error": {
+                "message": "upstream failure",
+                "code": "upstream_error",
+                "type": "provider_error",
+                "status": 503
+            }
+        }))
+        .expect("structured error");
+
+        assert!(error.contains("upstream failure"));
+        assert!(error.contains("code: upstream_error"));
+        assert!(error.contains("type: provider_error"));
+        assert!(error.contains("status: 503"));
+    }
+
+    #[test]
+    fn event_batch_stops_at_the_first_terminal_marker() {
+        let mut parser = SseParser::default();
+        let events = parser
+            .push(b"data: token\n\ndata: [DONE]\n\ndata: ignored\n\n")
+            .expect("SSE events");
+        let mut processed = Vec::new();
+        let terminal = process_sse_events_until_terminal(events, |event| {
+            let data = extract_sse_data(event).expect("data");
+            processed.push(data.clone());
+            Ok(data == "[DONE]")
+        })
+        .expect("event batch");
+
+        assert!(terminal);
+        assert_eq!(processed, vec!["token", "[DONE]"]);
+    }
+
+    #[tokio::test]
+    async fn http_operation_deadline_covers_pending_headers_and_error_body() {
+        for operation in [
+            "Synthetic .invalid response headers",
+            "Synthetic .invalid error body",
+        ] {
+            let error = await_http_operation(
+                pending::<Result<(), reqwest::Error>>(),
+                Duration::from_millis(1),
+                operation,
+            )
+            .await
+            .expect_err("deadline");
+
+            assert!(error.contains("timed out"));
+            assert!(error.contains(operation));
         }
     }
 
@@ -971,6 +1397,10 @@ mod tests {
         assert_eq!(normalize_finish_reason("max_output_tokens"), "length");
         assert_eq!(normalize_finish_reason("stop"), "completed");
         assert_eq!(normalize_finish_reason("content_filter"), "content_filter");
+        assert!(!is_terminal_sse_value(&serde_json::json!({
+            "choices": [{ "finish_reason": "stop" }]
+        })));
+        assert!(is_terminal_sse_value(&serde_json::json!({ "done": true })));
     }
 
     #[test]

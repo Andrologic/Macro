@@ -341,15 +341,14 @@ export const SlashContextMenuPlugin: React.FC<SlashContextMenuPluginProps> = ({
       Boolean(executionContext.workspacePath || executionContext.projectMounts.length > 0) &&
       (query.length >= 2 || hasFileQueryIntent(query));
 
+    const requestId = ++fileSearchRequestRef.current;
+    setFileResults((previous) => (previous.length === 0 ? previous : []));
+
     if (!shouldSearchFiles) {
-      fileSearchRequestRef.current += 1;
-      setFileResults((previous) => (previous.length === 0 ? previous : []));
       setIsSearchingFiles(false);
       return undefined;
     }
 
-    const requestId = fileSearchRequestRef.current + 1;
-    fileSearchRequestRef.current = requestId;
     setIsSearchingFiles(true);
 
     const timeoutId = window.setTimeout(() => {
@@ -377,7 +376,12 @@ export const SlashContextMenuPlugin: React.FC<SlashContextMenuPluginProps> = ({
         });
     }, 120);
 
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (fileSearchRequestRef.current === requestId) {
+        fileSearchRequestRef.current += 1;
+      }
+    };
   }, [executionContext, trigger]);
 
   const menuItems = useMemo<SlashContextMenuItem[]>(() => {
