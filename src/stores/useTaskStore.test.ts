@@ -4320,6 +4320,44 @@ describe('useTaskStore task command terminal lifecycle', () => {
     });
   });
 
+  it.each(['completed', 'failed'])('clears a command run when its terminal is already %s at creation', async (status) => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const tab = await startTaskCommandTabMock();
+    startTaskCommandTabMock.mockResolvedValueOnce({ ...tab, status, hasLiveSession: false });
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          id: 'task-1',
+          title: 'Run app',
+          status: 'InProgress',
+          draft: false,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              executionMode: 'git',
+              branchName: 'feature/run-app',
+              worktreeKey: 'project-1::feature/run-app',
+              repoPath: '/repos/web',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-1::feature/run-app': '/repos/web/.macro/worktrees/task-1',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    const result = await useTaskStore.getState().runTaskCommands('task-1');
+
+    expect(result).toMatchObject({ status: 'completed', completedCount: 1 });
+    expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
+  });
+
   it('uses the current registry repo path instead of stale task target snapshots when launching commands', async () => {
     appStoreState.selectedGroupId = null;
     appStoreState.selectedProjectId = 'project-lplr-app-1780329499166';
@@ -4532,7 +4570,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
     expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
   });
 
-  it('tracks and closes every terminal opened by a multi-project command batch', async () => {
+  it.each([false, true])('tracks live terminals when a previous project finishes during launch: %s', async (firstFinishesEarly) => {
     closeTabMock.mockClear();
     appStoreState.projectGroups = [
       {
@@ -4617,27 +4655,32 @@ describe('useTaskStore task command terminal lifecycle', () => {
         createdAt: '2026-06-03T10:00:00.000Z',
         updatedAt: '2026-06-03T10:00:00.000Z',
       }))
-      .mockImplementationOnce(async () => ({
-        id: 'terminal-tab-2',
-        kind: 'task' as const,
-        projectId: 'project-2',
-        taskId: 'task-1',
-        projectName: 'Project Two',
-        mountName: 'project-two',
-        workspacePath: '/repos/api/.macro/worktrees/task-1-api',
-        cwd: '/repos/api/.macro/worktrees/task-1-api',
-        title: 'Project Two - Task 1',
-        status: 'running' as const,
-        snapshot: 'npm test\r\n',
-        lastCommand: 'npm test',
-        lastExitCode: null,
-        hasLiveSession: true,
-        isRestored: false,
-        outputSequence: 1,
-        hasUnreadOutput: false,
-        createdAt: '2026-06-03T10:00:00.000Z',
-        updatedAt: '2026-06-03T10:00:00.000Z',
-      }));
+      .mockImplementationOnce(async () => {
+        if (firstFinishesEarly) {
+          useTaskStore.getState().handleTaskCommandTerminalClosed('terminal-tab-1');
+        }
+        return {
+          id: 'terminal-tab-2',
+          kind: 'task' as const,
+          projectId: 'project-2',
+          taskId: 'task-1',
+          projectName: 'Project Two',
+          mountName: 'project-two',
+          workspacePath: '/repos/api/.macro/worktrees/task-1-api',
+          cwd: '/repos/api/.macro/worktrees/task-1-api',
+          title: 'Project Two - Task 1',
+          status: 'running' as const,
+          snapshot: 'npm test\r\n',
+          lastCommand: 'npm test',
+          lastExitCode: null,
+          hasLiveSession: true,
+          isRestored: false,
+          outputSequence: 1,
+          hasUnreadOutput: false,
+          createdAt: '2026-06-03T10:00:00.000Z',
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        };
+      });
 
     const { useTaskStore } = await loadIsolatedTaskStore();
     useTaskStore.setState({
@@ -4676,15 +4719,17 @@ describe('useTaskStore task command terminal lifecycle', () => {
 
     expect(result).toMatchObject({ status: 'completed', completedCount: 2, totalCount: 2 });
     expect(useTaskStore.getState().taskCommandRuns['task-1']?.activeTabIds).toEqual([
-      'terminal-tab-1',
+      ...(firstFinishesEarly ? [] : ['terminal-tab-1']),
       'terminal-tab-2',
     ]);
 
     await useTaskStore.getState().cancelTaskCommands('task-1');
 
-    expect(closeTabMock).toHaveBeenCalledWith('terminal-tab-1');
+    if (!firstFinishesEarly) {
+      expect(closeTabMock).toHaveBeenCalledWith('terminal-tab-1');
+    }
     expect(closeTabMock).toHaveBeenCalledWith('terminal-tab-2');
-    expect(closeTabMock).toHaveBeenCalledTimes(2);
+    expect(closeTabMock).toHaveBeenCalledTimes(firstFinishesEarly ? 1 : 2);
     expect(useTaskStore.getState().taskCommandRuns['task-1']).toBeUndefined();
   });
 });

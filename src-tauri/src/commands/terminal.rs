@@ -152,8 +152,10 @@ impl Drop for LiveTerminalSession {
                     let _ = guard.kill();
                 }
             }
-            // Retain reap ownership without holding the shared mutex while waiting.
-            while poll_child_exit_code(&child, Duration::from_secs(5)).is_none() {}
+            // A failed termination must not retain one reaper thread per closed tab forever.
+            if poll_child_exit_code(&child, Duration::from_secs(5)).is_none() {
+                tracing::warn!(action = "terminal_child_reap_timed_out");
+            }
         });
     }
 }
@@ -1933,9 +1935,13 @@ async fn spawn_live_tab(
     #[cfg(not(windows))]
     let (mut shell_command, shell_kind) = build_shell_command(&record);
     #[cfg(unix)]
-    let mut process_tree = crate::core::process::TerminalProcessTree::new();
+    let mut process_tree = crate::core::process::TerminalProcessTree::new().map_err(|error| {
+        command_error(format!(
+            "Failed to create terminal ownership marker: {error}"
+        ))
+    })?;
     #[cfg(unix)]
-    shell_command.env("MACRO_PROCESS_CONTAINMENT_ID", &process_tree.containment_id);
+    process_tree.prepare_command(&mut shell_command);
     let mut child = pair
         .slave
         .spawn_command(shell_command)
@@ -2086,9 +2092,13 @@ async fn spawn_command_tab(
     #[cfg(not(windows))]
     let mut process_command = build_command_process(&record, &command_text);
     #[cfg(unix)]
-    let mut process_tree = crate::core::process::TerminalProcessTree::new();
+    let mut process_tree = crate::core::process::TerminalProcessTree::new().map_err(|error| {
+        command_error(format!(
+            "Failed to create terminal ownership marker: {error}"
+        ))
+    })?;
     #[cfg(unix)]
-    process_command.env("MACRO_PROCESS_CONTAINMENT_ID", &process_tree.containment_id);
+    process_tree.prepare_command(&mut process_command);
     let mut child = pair
         .slave
         .spawn_command(process_command)
@@ -3693,11 +3703,11 @@ mod tests {
         let pair = NativePtySystem::default()
             .openpty(pty_size(80, 24))
             .unwrap();
-        let mut tree = crate::core::process::TerminalProcessTree::new();
+        let mut tree = crate::core::process::TerminalProcessTree::new().unwrap();
         let mut command = CommandBuilder::new("/bin/sh");
         command.args(["-c", command_text]);
         command.cwd(cwd);
-        command.env("MACRO_PROCESS_CONTAINMENT_ID", &tree.containment_id);
+        tree.prepare_command(&mut command);
         let child = pair.slave.spawn_command(command).unwrap();
         tree.process_group_id = child.process_id();
         drop(pair.slave);
@@ -3754,6 +3764,14 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("owned background process survived terminal close");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_terminal_marker_survives_a_clean_environment() {
+        let temp = TempDir::new().unwrap();
+        let session = synthetic_live_session("env -i /bin/sh -c 'test -r /dev/fd/9'", temp.path());
+        assert_eq!(wait_for_child_exit_code(&session.child), 0);
     }
 
     #[cfg(unix)]
