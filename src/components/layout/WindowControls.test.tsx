@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import {
   getTitleBarLayout,
 } from './titleBarLayout';
@@ -11,6 +13,7 @@ type TauriWindowState = {
   minimize: () => void;
   maximize: () => void;
   unmaximize: () => void;
+  toggleMaximize: () => void;
   close: () => void;
 };
 
@@ -52,6 +55,7 @@ describe('WindowControls', () => {
       minimize: () => undefined,
       maximize: () => undefined,
       unmaximize: () => undefined,
+      toggleMaximize: () => undefined,
       close: () => undefined,
     };
     chromeState = {
@@ -67,6 +71,17 @@ describe('WindowControls', () => {
     const html = renderToStaticMarkup(<WindowControls />);
 
     expect(html).toContain('button');
+  });
+
+  it('uses the native toggle even when the rendered maximized state is stale', async () => {
+    const toggle = mock(() => undefined);
+    tauriWindowState.toggleMaximize = toggle;
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => root.render(<WindowControls />));
+    await act(async () => (container.querySelectorAll('button')[1] as HTMLButtonElement).click());
+    expect(toggle).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
   });
 
   it('hides custom controls on macOS', async () => {

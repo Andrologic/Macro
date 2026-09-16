@@ -37,6 +37,7 @@ export const PREF_KEYS = {
   WINDOW_X: "windowX",
   WINDOW_Y: "windowY",
   IS_MAXIMIZED: "isMaximized",
+  WINDOW_POSITION_VERSION: "windowPositionVersion",
   WINDOW_BOOTSTRAP_VERSION: "windowBootstrapVersion",
 
   // Panel state
@@ -281,6 +282,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.WINDOW_Y]: null,
   [PREF_KEYS.IS_MAXIMIZED]: false,
   [PREF_KEYS.WINDOW_BOOTSTRAP_VERSION]: 0,
+  [PREF_KEYS.WINDOW_POSITION_VERSION]: 0,
   [PREF_KEYS.LEFT_PANEL_WIDTH]: 280,
   [PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH]: 320,
   [PREF_KEYS.RIGHT_PANEL_WIDTH]: 320,

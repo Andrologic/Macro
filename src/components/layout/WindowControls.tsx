@@ -10,19 +10,12 @@ interface WindowControlsProps {
 export function WindowControls(
   { chromeState = getPlatformChromeState() }: WindowControlsProps = {}
 ) {
-  const { isAvailable, isMaximized, minimize, maximize, unmaximize, close } = useTauriWindow();
+  const { isAvailable, isMaximized, minimize, toggleMaximize, close } = useTauriWindow();
 
   if (!isAvailable || !chromeState.showCustomWindowControls) {
     return null;
   }
 
-  const handleMaximize = () => {
-    if (isMaximized) {
-      unmaximize();
-    } else {
-      maximize();
-    }
-  };
 
   return (
     <div className="flex items-center gap-0.5">
@@ -42,7 +35,7 @@ export function WindowControls(
 
       {/* Maximize Button */}
       <button
-        onClick={handleMaximize}
+        onClick={toggleMaximize}
         className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-accent transition-colors group active:scale-[0.98]"
         title={isMaximized ? i18n.t('window.restore', 'Restore') : i18n.t('window.maximize', 'Maximize')}
         data-tauri-drag-region="false"
