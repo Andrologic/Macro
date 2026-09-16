@@ -14774,9 +14774,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       let appState = useAppStore.getState();
       if (appState.mode === "Implement") {
+        const contextBeforeRead = {
+          mode: appState.mode,
+          selectedGroupId: appState.selectedGroupId,
+          selectedProjectId: appState.selectedProjectId,
+          selectedTaskId: appState.selectedTaskId,
+        };
         const localContext = appState.selectedGroupId
           ? await getLocalProjectContextState(appState.selectedGroupId)
           : null;
+        const currentAppState = useAppStore.getState();
+        if (resolutionGeneration !== conversationResolutionGeneration ||
+          currentAppState.mode !== contextBeforeRead.mode ||
+          currentAppState.selectedGroupId !== contextBeforeRead.selectedGroupId ||
+          currentAppState.selectedProjectId !== contextBeforeRead.selectedProjectId ||
+          currentAppState.selectedTaskId !== contextBeforeRead.selectedTaskId) {
+          return get().selectedConversationId;
+        }
         const resolvedTask = resolveImplementTaskForContext({
           selectedTaskId: appState.selectedTaskId,
           tasks: useTaskStore.getState().tasks,
