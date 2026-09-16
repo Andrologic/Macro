@@ -10,7 +10,7 @@ use crate::WorkspaceMetadataRoot;
 use chrono::Utc;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -131,8 +131,33 @@ struct LiveTerminalSession {
     writer: Arc<StdMutex<Box<dyn Write + Send>>>,
     master: Arc<StdMutex<Box<dyn MasterPty + Send>>>,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
+    #[cfg(unix)]
+    process_tree: StdMutex<crate::core::process::TerminalProcessTree>,
     #[cfg(windows)]
     windows_job: Arc<WindowsJob>,
+}
+
+impl Drop for LiveTerminalSession {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Ok(mut tree) = self.process_tree.lock() {
+            tree.terminate();
+        }
+        #[cfg(windows)]
+        let _ = self.windows_job.terminate();
+        let child = self.child.clone();
+        std::thread::spawn(move || {
+            if let Ok(mut guard) = child.lock() {
+                if !matches!(guard.try_wait(), Ok(Some(_))) {
+                    let _ = guard.kill();
+                }
+            }
+            // A failed termination must not retain one reaper thread per closed tab forever.
+            if poll_child_exit_code(&child, Duration::from_secs(5)).is_none() {
+                tracing::warn!(action = "terminal_child_reap_timed_out");
+            }
+        });
+    }
 }
 
 struct LiveTerminalRuntime {
@@ -218,7 +243,7 @@ struct LegacyTerminalSessionRecord {
     run_in_progress: bool,
     kill_requested: bool,
     active_execution_id: Option<String>,
-    pending_kill_execution_id: Option<String>,
+    pending_kill_execution_ids: HashSet<String>,
     execution_generation: u64,
     #[cfg(windows)]
     windows_job: Option<Arc<WindowsJob>>,
@@ -412,9 +437,13 @@ struct ProjectTerminalTarget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalPromptContext {
+    #[serde(alias = "project_label")]
     pub project_label: Option<String>,
+    #[serde(alias = "task_label")]
     pub task_label: Option<String>,
+    #[serde(alias = "branch_label")]
     pub branch_label: Option<String>,
 }
 
@@ -1074,14 +1103,18 @@ fn build_unix_shell_launch_config(shell: &UnixShellSpec, prompt: &str) -> UnixSh
         UnixShellKind::Bash => UnixShellLaunchConfig {
             args: shell_args(&["--noprofile", "--norc", "-i"]),
             env: shell_env(&[
-                ("PS1", prompt),
+                ("PS1", "${MACRO_TERMINAL_PROMPT}"),
+                ("MACRO_TERMINAL_PROMPT", prompt),
                 ("PROMPT_COMMAND", ""),
                 ("BASH_SILENCE_DEPRECATION_WARNING", "1"),
             ]),
         },
         UnixShellKind::Zsh => UnixShellLaunchConfig {
-            args: shell_args(&["-f", "-i"]),
-            env: shell_env(&[("PS1", prompt), ("PROMPT", prompt)]),
+            args: shell_args(&["-f", "-i", "-o", "NO_PROMPT_SUBST"]),
+            env: shell_env(&[
+                ("PS1", &prompt.replace('%', "%%")),
+                ("PROMPT", &prompt.replace('%', "%%")),
+            ]),
         },
         UnixShellKind::Fish => UnixShellLaunchConfig {
             args: vec![
@@ -1096,7 +1129,10 @@ fn build_unix_shell_launch_config(shell: &UnixShellSpec, prompt: &str) -> UnixSh
         },
         UnixShellKind::Posix | UnixShellKind::Other => UnixShellLaunchConfig {
             args: shell_args(&["-i"]),
-            env: shell_env(&[("PS1", prompt)]),
+            env: shell_env(&[
+                ("PS1", "${MACRO_TERMINAL_PROMPT}"),
+                ("MACRO_TERMINAL_PROMPT", prompt),
+            ]),
         },
     }
 }
@@ -1123,6 +1159,14 @@ fn gated_powershell_script(command: &str) -> String {
     )
 }
 
+#[cfg(any(windows, test))]
+fn wsl_interactive_shell_script(prompt: &str) -> String {
+    format!(
+        "export MACRO_TERMINAL_PROMPT={}; export PS1='${{MACRO_TERMINAL_PROMPT}}'; if [ -x /bin/bash ]; then exec /bin/bash --noprofile --norc -i; else exec /bin/sh -i; fi",
+        shell_single_quote(prompt)
+    )
+}
+
 #[cfg(windows)]
 fn build_shell_command(
     record: &TerminalTabRecord,
@@ -1144,7 +1188,7 @@ fn build_shell_command(
         command.env("MACRO_WSL_CWD", wsl_path.linux_path);
         command.env(
             "MACRO_WSL_COMMAND",
-            "if [ -x /bin/bash ]; then exec /bin/bash -i; else exec /bin/sh -i; fi",
+            wsl_interactive_shell_script(&render_terminal_prompt(record)),
         );
         gate.apply(&mut command);
         return Ok((command, ManagedShellKind::Posix, gate));
@@ -1349,7 +1393,12 @@ fn terminal_prompt_context_from_record(
 ) -> Option<TerminalPromptContext> {
     if let Some(serialized) = record.prompt_context_json.as_deref() {
         if let Ok(context) = serde_json::from_str::<TerminalPromptContext>(serialized) {
-            return Some(context);
+            if [&context.project_label, &context.task_label]
+                .into_iter()
+                .any(|label| label.as_deref().and_then(trim_prompt_label).is_some())
+            {
+                return Some(context);
+            }
         }
     }
 
@@ -1540,18 +1589,75 @@ fn schedule_live_output_flush(
     });
 }
 
-fn wait_for_child_exit_code(child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>) -> i32 {
-    let Ok(mut guard) = child.lock() else {
-        return 1;
-    };
+fn poll_child_exit_code(
+    child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>,
+    timeout: Duration,
+) -> Option<i32> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        {
+            let Ok(mut guard) = child.lock() else {
+                return Some(1);
+            };
+            match guard.try_wait() {
+                Ok(Some(status)) => return Some(status.exit_code() as i32),
+                Err(_) => return Some(1),
+                Ok(None) => {}
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
-    match guard.try_wait() {
-        Ok(Some(status)) => status.exit_code() as i32,
-        Ok(None) => guard
-            .wait()
-            .map(|status| status.exit_code() as i32)
-            .unwrap_or(1),
-        Err(_) => 1,
+fn wait_for_child_exit_code(child: &Arc<StdMutex<Box<dyn portable_pty::Child + Send>>>) -> i32 {
+    if let Some(code) = poll_child_exit_code(child, Duration::from_secs(2)) {
+        return code;
+    }
+    if let Ok(mut guard) = child.lock() {
+        let _ = guard.kill();
+    }
+    poll_child_exit_code(child, Duration::from_secs(5)).unwrap_or(1)
+}
+
+#[derive(Default)]
+struct TerminalUtf8Decoder {
+    pending: Vec<u8>,
+}
+
+impl TerminalUtf8Decoder {
+    fn decode(&mut self, bytes: &[u8], finish: bool) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut output = String::new();
+        let mut consumed = 0;
+        while consumed < self.pending.len() {
+            match std::str::from_utf8(&self.pending[consumed..]) {
+                Ok(valid) => {
+                    output.push_str(valid);
+                    consumed = self.pending.len();
+                }
+                Err(error) => {
+                    let end = consumed + error.valid_up_to();
+                    output.push_str(std::str::from_utf8(&self.pending[consumed..end]).unwrap());
+                    consumed = end;
+                    match error.error_len() {
+                        Some(length) => {
+                            output.push('�');
+                            consumed += length;
+                        }
+                        None if finish => {
+                            output.push('�');
+                            consumed = self.pending.len();
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        self.pending.drain(..consumed);
+        output
     }
 }
 
@@ -1565,10 +1671,20 @@ fn spawn_reader_task(
 ) {
     std::thread::spawn(move || {
         let mut buffer = [0u8; 8192];
+        let mut decoder = TerminalUtf8Decoder::default();
 
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => {
+                    let tail = decoder.decode(&[], true);
+                    if !tail.is_empty() {
+                        handle_live_output(
+                            app_handle.clone(),
+                            db_pool.clone(),
+                            runtime.clone(),
+                            tail,
+                        );
+                    }
                     handle_live_disconnect(
                         app_handle.clone(),
                         db_pool.clone(),
@@ -1579,14 +1695,24 @@ fn spawn_reader_task(
                     break;
                 }
                 Ok(read) => {
-                    let chunk = String::from_utf8_lossy(&buffer[..read]).to_string();
+                    let chunk = decoder.decode(&buffer[..read], false);
                     if chunk.is_empty() {
                         continue;
                     }
 
                     handle_live_output(app_handle.clone(), db_pool.clone(), runtime.clone(), chunk);
                 }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => {
+                    let tail = decoder.decode(&[], true);
+                    if !tail.is_empty() {
+                        handle_live_output(
+                            app_handle.clone(),
+                            db_pool.clone(),
+                            runtime.clone(),
+                            tail,
+                        );
+                    }
                     handle_live_disconnect(
                         app_handle.clone(),
                         db_pool.clone(),
@@ -1710,13 +1836,14 @@ fn handle_live_disconnect(
         runtime_guard.mode == LiveTerminalMode::CommandProcess
     };
 
-    let command_exit_code = if is_command_process {
-        live_session
-            .as_ref()
-            .map(|session| wait_for_child_exit_code(&session.child))
-    } else {
-        None
-    };
+    let session = live_session.as_ref().unwrap();
+    // EOF ends ownership of this PTY, including jobs left behind by its shell.
+    let exit_code = wait_for_child_exit_code(&session.child);
+    #[cfg(unix)]
+    if let Ok(mut tree) = session.process_tree.lock() {
+        tree.terminate();
+    }
+    let command_exit_code = is_command_process.then_some(exit_code);
 
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
     let (pending_output_batch, maybe_record, output_sequence) = {
@@ -1806,11 +1933,23 @@ async fn spawn_live_tab(
     #[cfg(windows)]
     let (shell_command, shell_kind, launch_gate) = build_shell_command(&record)?;
     #[cfg(not(windows))]
-    let (shell_command, shell_kind) = build_shell_command(&record);
+    let (mut shell_command, shell_kind) = build_shell_command(&record);
+    #[cfg(unix)]
+    let mut process_tree = crate::core::process::TerminalProcessTree::new().map_err(|error| {
+        command_error(format!(
+            "Failed to create terminal ownership marker: {error}"
+        ))
+    })?;
+    #[cfg(unix)]
+    process_tree.prepare_command(&mut shell_command);
     let mut child = pair
         .slave
         .spawn_command(shell_command)
         .map_err(|error| command_error(format!("Failed to launch terminal shell: {}", error)))?;
+    #[cfg(unix)]
+    {
+        process_tree.process_group_id = child.process_id();
+    }
     drop(pair.slave);
     #[cfg(windows)]
     let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
@@ -1866,6 +2005,8 @@ async fn spawn_live_tab(
         writer: Arc::new(StdMutex::new(writer)),
         master: Arc::new(StdMutex::new(pair.master)),
         runtime: runtime.clone(),
+        #[cfg(unix)]
+        process_tree: StdMutex::new(process_tree),
         #[cfg(windows)]
         windows_job,
     };
@@ -1949,11 +2090,23 @@ async fn spawn_command_tab(
     #[cfg(windows)]
     let (process_command, launch_gate) = build_command_process(&record, &command_text)?;
     #[cfg(not(windows))]
-    let process_command = build_command_process(&record, &command_text);
+    let mut process_command = build_command_process(&record, &command_text);
+    #[cfg(unix)]
+    let mut process_tree = crate::core::process::TerminalProcessTree::new().map_err(|error| {
+        command_error(format!(
+            "Failed to create terminal ownership marker: {error}"
+        ))
+    })?;
+    #[cfg(unix)]
+    process_tree.prepare_command(&mut process_command);
     let mut child = pair
         .slave
         .spawn_command(process_command)
         .map_err(|error| command_error(format!("Failed to launch terminal command: {}", error)))?;
+    #[cfg(unix)]
+    {
+        process_tree.process_group_id = child.process_id();
+    }
     drop(pair.slave);
     #[cfg(windows)]
     let windows_job = WindowsJob::assign_portable(child.as_ref()).map_err(|error| {
@@ -2009,6 +2162,8 @@ async fn spawn_command_tab(
         writer: Arc::new(StdMutex::new(writer)),
         master: Arc::new(StdMutex::new(pair.master)),
         runtime: runtime.clone(),
+        #[cfg(unix)]
+        process_tree: StdMutex::new(process_tree),
         #[cfg(windows)]
         windows_job,
     };
@@ -2636,22 +2791,32 @@ async fn terminate_live_terminal_process(
         tokio::time::sleep(Duration::from_millis(LIVE_TERMINAL_CLOSE_GRACE_MS)).await;
     }
 
+    #[cfg(unix)]
+    if let Ok(mut tree) = session.process_tree.lock() {
+        tree.terminate();
+    }
+
     let child = session.child.clone();
     let child_result = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::task::spawn_blocking(move || {
-            let mut guard = child
-                .lock()
-                .map_err(|_| command_error("Failed to lock terminal child during close"))?;
-            match guard.try_wait() {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) => guard.kill().map_err(|error| {
-                    command_error(format!("Failed to terminate terminal process: {error}"))
-                }),
-                Err(error) => Err(command_error(format!(
-                    "Failed to inspect terminal process: {error}"
-                ))),
+            {
+                let mut guard = child
+                    .lock()
+                    .map_err(|_| command_error("Failed to lock terminal child during close"))?;
+                if guard
+                    .try_wait()
+                    .map_err(|error| command_error(error.to_string()))?
+                    .is_none()
+                {
+                    guard.kill().map_err(|error| {
+                        command_error(format!("Failed to terminate terminal process: {error}"))
+                    })?;
+                }
             }
+            poll_child_exit_code(&child, Duration::from_secs(4))
+                .map(|_| ())
+                .ok_or_else(|| command_error("Terminal child did not exit after termination"))
         }),
     )
     .await
@@ -3146,7 +3311,7 @@ pub async fn create_legacy_session_internal(
         run_in_progress: false,
         kill_requested: false,
         active_execution_id: None,
-        pending_kill_execution_id: None,
+        pending_kill_execution_ids: HashSet::new(),
         execution_generation: 0,
         #[cfg(windows)]
         windows_job: None,
@@ -3179,10 +3344,15 @@ pub async fn run_legacy_session_internal(
             .get_mut(&session_id)
             .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
-        if execution_id.is_some()
-            && session.pending_kill_execution_id.as_ref() == execution_id.as_ref()
+        if session.run_in_progress || session.kill_requested {
+            return Err(command_error(
+                "A command is already running in this session",
+            ));
+        }
+        if execution_id
+            .as_ref()
+            .is_some_and(|id| session.pending_kill_execution_ids.remove(id))
         {
-            session.pending_kill_execution_id = None;
             session.status = "killed".to_string();
             session.last_command = Some(trimmed_command.to_string());
             session.output = "[terminal command cancelled before start]\n".to_string();
@@ -3191,13 +3361,6 @@ pub async fn run_legacy_session_internal(
             session.output_truncated = false;
             session.updated_at = current_timestamp();
             return Ok(session.to_dto());
-        }
-        session.pending_kill_execution_id = None;
-
-        if session.run_in_progress || session.kill_requested {
-            return Err(command_error(
-                "A command is already running in this session",
-            ));
         }
 
         session.status = "running".to_string();
@@ -3384,8 +3547,20 @@ pub async fn kill_legacy_session_internal(
             .ok_or_else(|| command_error(format!("Unknown terminal session id: {}", session_id)))?;
 
         if let Some(execution_id) = execution_id.as_ref() {
-            if !session.run_in_progress {
-                session.pending_kill_execution_id = Some(execution_id.clone());
+            if !session.run_in_progress
+                || session.active_execution_id.as_ref() != Some(execution_id)
+            {
+                if session.pending_kill_execution_ids.len() >= 4096
+                    && !session.pending_kill_execution_ids.contains(execution_id)
+                {
+                    return Err(command_error("Too many pending terminal cancellations"));
+                }
+                session
+                    .pending_kill_execution_ids
+                    .insert(execution_id.clone());
+                if session.run_in_progress {
+                    return Ok(session.to_dto());
+                }
                 session.status = "killed".to_string();
                 session.updated_at = current_timestamp();
                 return Ok(session.to_dto());
@@ -3510,6 +3685,200 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
+    fn synthetic_live_session(command_text: &str, cwd: &Path) -> LiveTerminalSession {
+        let record = build_terminal_record(
+            "task",
+            "fixture".into(),
+            None,
+            "fixture".into(),
+            None,
+            ProjectTerminalTarget {
+                project_name: "Fixture".into(),
+                mount_name: "fixture".into(),
+                workspace_path: cwd.to_path_buf(),
+            },
+            cwd.to_path_buf(),
+        );
+        let pair = NativePtySystem::default()
+            .openpty(pty_size(80, 24))
+            .unwrap();
+        let mut tree = crate::core::process::TerminalProcessTree::new().unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", command_text]);
+        command.cwd(cwd);
+        tree.prepare_command(&mut command);
+        let child = pair.slave.spawn_command(command).unwrap();
+        tree.process_group_id = child.process_id();
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut reader, &mut std::io::sink());
+        });
+        LiveTerminalSession {
+            child: Arc::new(StdMutex::new(child)),
+            writer: Arc::new(StdMutex::new(pair.master.take_writer().unwrap())),
+            master: Arc::new(StdMutex::new(pair.master)),
+            process_tree: StdMutex::new(tree),
+            runtime: Arc::new(Mutex::new(LiveTerminalRuntime {
+                record,
+                persistence_lock: Arc::new(Mutex::new(())),
+                scan_buffer: String::new(),
+                pending_command: None,
+                pending_output: String::new(),
+                output_flush_scheduled: false,
+                shell_kind: ManagedShellKind::Posix,
+                mode: LiveTerminalMode::InteractiveShell,
+                output_sequence: 0,
+            })),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn live_terminal_close_reaps_its_child_and_stops_background_work() {
+        let temp = TempDir::new().unwrap();
+        let session = synthetic_live_session(
+            "trap '' INT HUP; sleep 60 & echo $! > child.pid; wait",
+            temp.path(),
+        );
+        let mut descendant = None;
+        for _ in 0..100 {
+            descendant = fs::read_to_string(temp.path().join("child.pid"))
+                .ok()
+                .and_then(|value| value.trim().parse::<i32>().ok());
+            if descendant.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let descendant = descendant.expect("fixture published its background PID");
+        terminate_live_terminal_process(&session, "fixture")
+            .await
+            .unwrap();
+        assert!(session.child.lock().unwrap().try_wait().unwrap().is_some());
+        for _ in 0..100 {
+            if unsafe { libc::kill(descendant, 0) } == -1 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("owned background process survived terminal close");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_terminal_marker_survives_a_clean_environment() {
+        let temp = TempDir::new().unwrap();
+        let session = synthetic_live_session("env -i /bin/sh -c 'test -r /dev/fd/9'", temp.path());
+        assert_eq!(wait_for_child_exit_code(&session.child), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_terminal_wait_reaps_a_naturally_exited_shell() {
+        let temp = TempDir::new().unwrap();
+        let session = synthetic_live_session("exit 0", temp.path());
+        let pid = session.child.lock().unwrap().process_id().unwrap() as libc::pid_t;
+        assert_eq!(wait_for_child_exit_code(&session.child), 0);
+        assert_eq!(
+            unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn terminal_utf8_decoder_preserves_every_split_and_replaces_invalid_bytes() {
+        let text = "déjà 界 😀";
+        for split in 0..=text.len() {
+            let mut decoder = TerminalUtf8Decoder::default();
+            let mut output = decoder.decode(&text.as_bytes()[..split], false);
+            output.push_str(&decoder.decode(&text.as_bytes()[split..], true));
+            assert_eq!(output, text);
+        }
+        let mut decoder = TerminalUtf8Decoder::default();
+        assert_eq!(decoder.decode(&[0xff, b'a', 0xc3], false), "�a");
+        assert_eq!(decoder.decode(&[], true), "�");
+    }
+
+    #[test]
+    fn wsl_prompt_script_keeps_labels_in_a_literal_variable() {
+        let script = wsl_interactive_shell_script("L'été | Tâche > ");
+        assert!(script.starts_with("export MACRO_TERMINAL_PROMPT='L'\\''été | Tâche > ';"));
+        assert!(script.contains("export PS1='${MACRO_TERMINAL_PROMPT}'"));
+        assert!(script.contains("/bin/bash --noprofile --norc -i"));
+    }
+
+    #[test]
+    fn terminal_prompt_accepts_frontend_and_legacy_labels_and_empty_fallback() {
+        for json in [
+            r#"{"projectLabel":"Projet été","taskLabel":"Tâche","branchLabel":"feature/test"}"#,
+            r#"{"project_label":"Projet été","task_label":"Tâche","branch_label":"feature/test"}"#,
+        ] {
+            let context: TerminalPromptContext = serde_json::from_str(json).unwrap();
+            assert_eq!(context.branch_label.as_deref(), Some("feature/test"));
+            let mut record = build_terminal_record(
+                "manual",
+                "p".into(),
+                None,
+                "t".into(),
+                Some(context),
+                ProjectTerminalTarget {
+                    project_name: "Fallback".into(),
+                    mount_name: "fallback".into(),
+                    workspace_path: PathBuf::from("/synthetic"),
+                },
+                PathBuf::from("/synthetic"),
+            );
+            assert_eq!(render_terminal_prompt(&record), "Projet été | Tâche > ");
+            record.prompt_context_json = Some("{}".into());
+            assert_eq!(render_terminal_prompt(&record), "fallback > ");
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_cancellations_survive_unrelated_runs_and_other_cancellations() {
+        let temp = TempDir::new().unwrap();
+        let store = TerminalSessionStore::default();
+        store
+            .legacy_sessions
+            .lock()
+            .await
+            .insert("terminal-test".into(), legacy_test_session(temp.path()));
+        for id in ["A", "C"] {
+            kill_legacy_session_internal(store.clone(), "terminal-test".into(), Some(id.into()))
+                .await
+                .unwrap();
+        }
+        let result = run_legacy_session_internal(
+            store.clone(),
+            "terminal-test".into(),
+            "echo B".into(),
+            Some(5000),
+            Some("B".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status, "completed");
+        for id in ["A", "C"] {
+            let result = run_legacy_session_internal(
+                store.clone(),
+                "terminal-test".into(),
+                "echo should-not-run".into(),
+                Some(5000),
+                Some(id.into()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.status, "killed");
+            assert!(!result.output.contains("should-not-run"));
+        }
+    }
+
     #[test]
     fn legacy_timeout_uses_default_and_caps_explicit_values() {
         assert_eq!(
@@ -3584,7 +3953,7 @@ mod tests {
             run_in_progress: false,
             kill_requested: false,
             active_execution_id: None,
-            pending_kill_execution_id: None,
+            pending_kill_execution_ids: HashSet::new(),
             execution_generation: 0,
             #[cfg(windows)]
             windows_job: None,
@@ -4170,7 +4539,14 @@ mod tests {
 
         assert_eq!(config.args, ["--noprofile", "--norc", "-i"]);
         let env = config.env.into_iter().collect::<HashMap<_, _>>();
-        assert_eq!(env.get("PS1").map(String::as_str), Some("api > "));
+        assert_eq!(
+            env.get("PS1").map(String::as_str),
+            Some("${MACRO_TERMINAL_PROMPT}")
+        );
+        assert_eq!(
+            env.get("MACRO_TERMINAL_PROMPT").map(String::as_str),
+            Some("api > ")
+        );
         assert_eq!(env.get("PROMPT_COMMAND").map(String::as_str), Some(""));
         assert_eq!(
             env.get("BASH_SILENCE_DEPRECATION_WARNING")
@@ -4190,7 +4566,7 @@ mod tests {
             "api > ",
         );
 
-        assert_eq!(config.args, ["-f", "-i"]);
+        assert_eq!(config.args, ["-f", "-i", "-o", "NO_PROMPT_SUBST"]);
         let env = config.env.into_iter().collect::<HashMap<_, _>>();
         assert_eq!(env.get("PS1").map(String::as_str), Some("api > "));
         assert_eq!(env.get("PROMPT").map(String::as_str), Some("api > "));

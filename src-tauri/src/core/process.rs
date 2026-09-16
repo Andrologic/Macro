@@ -5,7 +5,7 @@ use std::time::Duration;
 
 #[cfg(unix)]
 use std::path::Path;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::path::PathBuf;
 
 #[cfg(unix)]
@@ -142,14 +142,14 @@ static NEXT_CONTAINMENT_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(windows)]
 type JobObjectHandle = OwnedHandle;
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[derive(Debug)]
 struct UnixContainmentMarker {
     file: std::fs::File,
     path: PathBuf,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 impl UnixContainmentMarker {
     fn create(containment_id: &str) -> io::Result<Self> {
         use std::os::fd::AsRawFd;
@@ -175,7 +175,7 @@ impl UnixContainmentMarker {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 impl Drop for UnixContainmentMarker {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -694,9 +694,43 @@ fn processes_with_containment_marker(marker_path: Option<&Path>) -> HashSet<u32>
         .collect()
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(target_os = "linux")]
+fn processes_with_containment_marker(marker_path: Option<&Path>) -> HashSet<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let Some(marker) = marker_path.and_then(|path| std::fs::metadata(path).ok()) else {
+        return HashSet::new();
+    };
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            if pid == std::process::id() {
+                return None;
+            }
+            let owns_marker = std::fs::read_dir(entry.path().join("fd"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|descriptor| {
+                    std::fs::metadata(descriptor.path()).is_ok_and(|metadata| {
+                        metadata.dev() == marker.dev() && metadata.ino() == marker.ino()
+                    })
+                });
+            owns_marker.then_some(pid)
+        })
+        .collect()
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
 fn processes_with_containment_marker(_marker_path: Option<&Path>) -> HashSet<u32> {
     HashSet::new()
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn has_containment_environment_field(process_description: &str, expected: &str) -> bool {
+    process_description.split_whitespace().any(|field| field == expected)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -718,10 +752,68 @@ fn processes_with_containment_id(containment_id: &str) -> HashSet<u32> {
             let line = line.trim_start();
             let split_at = line.find(char::is_whitespace)?;
             let process_id = line[..split_at].parse::<u32>().ok()?;
-            (process_id != own_process_id && line[split_at..].contains(&expected))
+            (process_id != own_process_id && has_containment_environment_field(&line[split_at..], &expected))
                 .then_some(process_id)
         })
         .collect()
+}
+
+/// Owns the process group and tagged descendants of a PTY child.
+#[cfg(unix)]
+pub(crate) struct TerminalProcessTree {
+    pub(crate) containment_id: String,
+    pub(crate) process_group_id: Option<u32>,
+    marker: UnixContainmentMarker,
+}
+
+#[cfg(unix)]
+impl TerminalProcessTree {
+    pub(crate) fn new() -> io::Result<Self> {
+        let containment_id = next_containment_id();
+        let marker = UnixContainmentMarker::create(&containment_id)?;
+        Ok(Self {
+            containment_id,
+            process_group_id: None,
+            marker,
+        })
+    }
+
+    pub(crate) fn prepare_command(&self, command: &mut portable_pty::CommandBuilder) {
+        command.env(CONTAINMENT_ID_ENV, &self.containment_id);
+        // portable-pty closes inherited descriptors before exec. Open the marker
+        // inside its child, then preserve the original command as separate argv.
+        let prefix: Vec<std::ffi::OsString> = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "exec 9<\"$1\"; shift; exec \"$@\"".into(),
+            "macro-pty".into(),
+            self.marker.path.as_os_str().to_owned(),
+        ];
+        command.get_argv_mut().splice(0..0, prefix);
+    }
+
+    pub(crate) fn terminate(&mut self) {
+        if self.process_group_id.is_none() {
+            return;
+        }
+        for process_id in suspend_unix_process_tree(
+            self.process_group_id,
+            &self.containment_id,
+            Some(&self.marker.path),
+        ) {
+            signal_process(process_id, libc::SIGKILL);
+        }
+        if let Some(id) = self.process_group_id.take() {
+            signal_process_group(id, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalProcessTree {
+    fn drop(&mut self) {
+        self.terminate();
+    }
 }
 
 #[cfg(unix)]
@@ -835,6 +927,16 @@ mod tests {
     };
     use std::fs;
     use std::path::Path;
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn containment_environment_matches_complete_fields_only() {
+        let expected = "MACRO_PROCESS_CONTAINMENT_ID=123-1";
+        assert!(super::has_containment_environment_field("shell MACRO_PROCESS_CONTAINMENT_ID=123-1", expected));
+        assert!(super::has_containment_environment_field("shell MACRO_PROCESS_CONTAINMENT_ID=123-1 PATH=/fixture", expected));
+        assert!(!super::has_containment_environment_field("shell MACRO_PROCESS_CONTAINMENT_ID=123-10", expected));
+        assert!(!super::has_containment_environment_field("shell OTHER_MACRO_PROCESS_CONTAINMENT_ID=123-1", expected));
+    }
 
     #[cfg(target_os = "macos")]
     const MACOS_DOUBLE_FORK_HELPER_ENV: &str = "MACRO_TEST_DOUBLE_FORK_MARKER";
