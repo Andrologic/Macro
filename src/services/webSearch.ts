@@ -41,6 +41,8 @@ const waitForSearchOrAbort = <T>(
   onAbort?: () => void,
 ): Promise<T> => {
   if (signal.aborted) {
+    // The native operation was already dispatched and may reject after cancellation.
+    void request.catch(() => undefined);
     onAbort?.();
     return Promise.reject(abortReason(signal));
   }

@@ -229,12 +229,13 @@ describe('webSearch provider contracts', () => {
     resolveNative([]);
   });
 
-  it('cancels a native operation when the signal aborts during dispatch', async () => {
+  it('cancels and observes the native rejection when the signal aborts during dispatch', async () => {
     const { webSearch } = await loadWebSearch({ tauriAvailable: true });
     const controller = new AbortController();
+    let rejectNative!: (reason: Error) => void;
     nativeWebSearchMock.mockImplementationOnce(() => {
       controller.abort();
-      return Promise.resolve([]);
+      return new Promise<never>((_resolve, reject) => { rejectNative = reject; });
     });
 
     await expect(webSearch('abort during dispatch', {
@@ -244,6 +245,9 @@ describe('webSearch provider contracts', () => {
     const executionId = nativeWebSearchMock.mock.calls[0]?.[0]?.executionId;
     expect(executionId).toEqual(expect.any(String));
     expect(nativeWebCancelMock).toHaveBeenCalledWith(executionId);
+    rejectNative(new Error('Synthetic native cancellation'));
+    // Bun reports an unhandled rejection as a test failure on the next event-loop turn.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   it('cancels native page fetches and does not swallow the abort in favicon fallback', async () => {
