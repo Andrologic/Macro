@@ -350,6 +350,39 @@ fn has_merge_conflicts(repo: &Repository) -> Result<bool> {
         })
 }
 
+fn require_clean_removal_path(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(BackendError::Git {
+                message: format!("Cannot inspect worktree {}: {error}", path.display()),
+            })
+        }
+        Ok(_) => {}
+    }
+    let repository =
+        Repository::open(path).map_err(|error| BackendError::GitRepositoryNotClean {
+            message: format!(
+                "Cannot establish cleanliness of {}: {error}",
+                path.display()
+            ),
+        })?;
+    if repository
+        .workdir()
+        .and_then(|root| root.canonicalize().ok())
+        != path.canonicalize().ok()
+        || repository.state() != git2::RepositoryState::Clean
+        || !repository
+            .statuses(Some(&mut get_status_options()))?
+            .is_empty()
+    {
+        return Err(BackendError::GitRepositoryNotClean {
+            message: format!("Worktree {} is not known to be clean", path.display()),
+        });
+    }
+    Ok(())
+}
+
 fn checkout_existing_local_branch(repo: &Repository, branch_name: &str) -> Result<()> {
     let ref_name = format!("refs/heads/{}", branch_name);
     let object = repo.revparse_single(&ref_name)?;
@@ -1885,14 +1918,31 @@ impl GitState {
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
         })?;
+        if !force {
+            require_clean_removal_path(&branch_worktree_path(repo, worktree_key)?)?;
+        }
         let inspection = self.inspect_branch_worktree(repo, worktree_key, branch_name)?;
-        if !force && inspection.is_dirty.unwrap_or(false) {
+        if !force
+            && inspection.is_dirty != Some(false)
+            && (inspection.worktree_path.try_exists().unwrap_or(true)
+                || inspection
+                    .registered_path
+                    .as_ref()
+                    .is_some_and(|path| path.try_exists().unwrap_or(true)))
+        {
             return Err(BackendError::GitRepositoryNotClean {
                 message: format!(
-                    "Worktree {} has uncommitted changes",
+                    "Worktree {} is dirty or its cleanliness could not be established",
                     inspection.worktree_path.display()
                 ),
             });
+        }
+
+        if !force {
+            require_clean_removal_path(&inspection.worktree_path)?;
+            if let Some(path) = inspection.registered_path.as_ref() {
+                require_clean_removal_path(path)?;
+            }
         }
 
         let mut removed_path = false;
@@ -1940,14 +1990,31 @@ impl GitState {
         let workdir = repo.workdir().ok_or_else(|| BackendError::Git {
             message: "Bare repositories are not supported for worktrees".to_string(),
         })?;
-        let inspection = self.inspect_task_worktree_internal(repo, task_id, branch_name, true)?;
-        if !force && inspection.is_dirty.unwrap_or(false) {
+        if !force {
+            require_clean_removal_path(&task_worktree_path(repo, task_id)?)?;
+        }
+        let inspection = self.inspect_task_worktree_internal(repo, task_id, branch_name, false)?;
+        if !force
+            && inspection.is_dirty != Some(false)
+            && (inspection.worktree_path.try_exists().unwrap_or(true)
+                || inspection
+                    .registered_path
+                    .as_ref()
+                    .is_some_and(|path| path.try_exists().unwrap_or(true)))
+        {
             return Err(BackendError::GitRepositoryNotClean {
                 message: format!(
-                    "Worktree {} has uncommitted changes",
+                    "Worktree {} is dirty or its cleanliness could not be established",
                     inspection.worktree_path.display()
                 ),
             });
+        }
+
+        if !force {
+            require_clean_removal_path(&inspection.worktree_path)?;
+            if let Some(path) = inspection.registered_path.as_ref() {
+                require_clean_removal_path(path)?;
+            }
         }
 
         let mut removed_path = false;

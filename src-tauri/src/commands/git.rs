@@ -4097,37 +4097,6 @@ fn to_repo_relative(repo_root: &Path, path: &Path) -> Result<PathBuf> {
         })
 }
 
-fn collect_files(path: &Path) -> Result<Vec<PathBuf>> {
-    if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-
-    if path.is_dir() {
-        let mut files = Vec::new();
-        for entry in walkdir::WalkDir::new(path) {
-            let entry = entry.map_err(|e| BackendError::Io {
-                message: e.to_string(),
-                source: std::io::Error::other(e),
-            })?;
-            if entry.file_type().is_file() {
-                let file_path = entry.path().to_path_buf();
-                if file_path
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::Normal(p) if p == ".git"))
-                {
-                    continue;
-                }
-                files.push(file_path);
-            }
-        }
-        return Ok(files);
-    }
-
-    Err(BackendError::FilesystemNotFound {
-        message: format!("Path not found: {}", path.display()),
-    })
-}
-
 fn expand_paths(repo_root: &Path, input: &str) -> Result<Vec<PathBuf>> {
     let input_path = Path::new(input);
     let absolute = if input_path.is_absolute() {
@@ -4161,29 +4130,99 @@ fn expand_paths(repo_root: &Path, input: &str) -> Result<Vec<PathBuf>> {
     Ok(vec![absolute])
 }
 
-pub(crate) fn add_paths(repo: &Repository, paths: &[String]) -> Result<()> {
-    let repo_root = repo_root(repo)?;
+// Expand only renames from the layer being changed. An index rename must not
+// cause staging an unrelated pending edit at its old path (and vice versa).
+fn mutation_paths(repo: &Repository, paths: &[String], staged: bool) -> Result<Vec<String>> {
+    let root = repo_root(repo)?;
     let mut index = repo.index()?;
-    let mut added = 0usize;
-
-    for path in paths {
-        for candidate in expand_paths(&repo_root, path)? {
-            for file in collect_files(&candidate)? {
-                let relative = to_repo_relative(&repo_root, &file)?;
-                index.add_path(&relative)?;
-                added += 1;
+    index.read(true)?;
+    let mut selected = Vec::new();
+    for input in paths {
+        let absolute = if Path::new(input).is_absolute() {
+            PathBuf::from(input)
+        } else {
+            root.join(input)
+        };
+        let relative = to_repo_relative(&root, &absolute)?;
+        let relative: PathBuf = relative
+            .components()
+            .filter(|component| !matches!(component, std::path::Component::CurDir))
+            .collect();
+        let relative = if relative.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            relative
+        };
+        // Review paths are literal, including deleted names containing glob
+        // characters. Retain wildcard expansion only for unmatched stage inputs.
+        if staged
+            || absolute.symlink_metadata().is_ok()
+            || index.get_path(&relative, 0).is_some()
+            || head_contains_path(repo, &relative)?
+        {
+            selected.push(relative);
+        } else {
+            for candidate in expand_paths(&root, input)? {
+                selected.push(to_repo_relative(&root, &candidate)?);
             }
         }
     }
+    let statuses = repo.statuses(Some(&mut get_status_options()))?;
+    let mut expanded = selected.clone();
+    for entry in statuses.iter() {
+        let delta = if staged {
+            entry.head_to_index()
+        } else {
+            entry.index_to_workdir()
+        };
+        if let Some(delta) = delta.filter(|delta| delta.status() == git2::Delta::Renamed) {
+            if let (Some(old), Some(new)) = (delta.old_file().path(), delta.new_file().path()) {
+                if selected
+                    .iter()
+                    .any(|path| old.starts_with(path) || new.starts_with(path))
+                {
+                    expanded.push(old.to_path_buf());
+                    expanded.push(new.to_path_buf());
+                }
+            }
+        }
+    }
+    expanded.sort();
+    expanded.dedup();
+    Ok(expanded
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
+}
 
-    if added == 0 {
+fn run_index_mutation(repo: &Repository, args: &[String]) -> Result<()> {
+    // Git acquires index.lock before reading the index and holds it through
+    // publication. Never write a cached libgit2 index over another tool's stage.
+    let output = run_git_command(&repo_root(repo)?, args)?;
+    if !output.success {
         return Err(BackendError::Git {
-            message: "No files were added to the index".to_string(),
+            message: command_output_text(&output),
         });
     }
-
-    index.write()?;
+    repo.index()?.read(true)?;
     Ok(())
+}
+
+pub(crate) fn add_paths(repo: &Repository, paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Err(BackendError::Git {
+            message: "No paths were provided to stage".to_string(),
+        });
+    }
+    let paths = mutation_paths(repo, paths, false)?;
+    let mut args = vec![
+        "--literal-pathspecs".into(),
+        "add".into(),
+        "-A".into(),
+        "--".into(),
+    ];
+    args.extend(paths);
+    run_index_mutation(repo, &args)
 }
 
 fn head_contains_path(repo: &Repository, path: &Path) -> Result<bool> {
@@ -4214,10 +4253,33 @@ pub(crate) fn restore_paths(
         });
     }
 
+    if matches!(target, RestoreTarget::Staged) {
+        let paths = mutation_paths(repo, paths, true)?;
+        let mut args: Vec<String> = if get_head_commit(repo)?.is_some() {
+            vec![
+                "--literal-pathspecs".into(),
+                "restore".into(),
+                "--staged".into(),
+                "--".into(),
+            ]
+        } else {
+            vec![
+                "--literal-pathspecs".into(),
+                "rm".into(),
+                "--cached".into(),
+                "-r".into(),
+                "-f".into(),
+                "--ignore-unmatch".into(),
+                "--".into(),
+            ]
+        };
+        args.extend(paths);
+        return run_index_mutation(repo, &args);
+    }
+
     let repo_root = repo_root(repo)?;
     let mut restore_from_head_paths = Vec::new();
     let mut restore_from_index_paths = Vec::new();
-    let mut restore_from_head_to_index_paths = Vec::new();
     let mut remove_new_paths = Vec::new();
     let mut remove_untracked_worktree_paths = Vec::new();
 
@@ -4239,11 +4301,7 @@ pub(crate) fn restore_paths(
                     remove_untracked_worktree_paths.push(relative);
                 }
             }
-            RestoreTarget::Staged => {
-                if in_index {
-                    restore_from_head_to_index_paths.push(relative);
-                }
-            }
+            RestoreTarget::Staged => unreachable!("handled before worktree restoration"),
             RestoreTarget::StagedAndWorktree => {
                 if in_head {
                     restore_from_head_paths.push(relative);
@@ -4251,30 +4309,6 @@ pub(crate) fn restore_paths(
                     remove_new_paths.push(relative);
                 }
             }
-        }
-    }
-
-    if !restore_from_head_to_index_paths.is_empty() {
-        let mut args = vec![
-            "restore".to_string(),
-            "--staged".to_string(),
-            "--".to_string(),
-        ];
-        args.extend(
-            restore_from_head_to_index_paths
-                .iter()
-                .map(|path| path.to_string_lossy().to_string()),
-        );
-        let output = run_git_command(&repo_root, &args)?;
-        if !output.success {
-            let details = command_output_text(&output);
-            return Err(BackendError::Git {
-                message: if details.is_empty() {
-                    "Failed to unstage paths".to_string()
-                } else {
-                    details
-                },
-            });
         }
     }
 
@@ -7030,59 +7064,32 @@ pub(crate) fn build_git_branches_tool_page(
 
 pub(crate) fn checkout_repo(repo: &Repository, branch_or_commit: &str, create: bool) -> Result<()> {
     ensure_clean(repo)?;
-
-    let mut checkout = git2::build::CheckoutBuilder::new();
-    checkout.safe();
-
+    validate_refspec(branch_or_commit)?;
+    let mut args = vec!["switch".to_string()];
     if create {
         validate_branch_name(branch_or_commit)?;
-        let head_commit = repo
-            .head()
-            .and_then(|head| head.peel_to_commit())
-            .map_err(|_| BackendError::Git {
+        if get_head_commit(repo)?.is_none() {
+            return Err(BackendError::Git {
                 message: "Cannot create branch without an initial commit".to_string(),
-            })?;
-        repo.branch(branch_or_commit, &head_commit, false)?;
-        let ref_name = format!("refs/heads/{}", branch_or_commit);
-        repo.set_head(&ref_name)?;
-    } else if repo
-        .find_reference(&format!("refs/heads/{}", branch_or_commit))
-        .is_ok()
-    {
-        let ref_name = format!("refs/heads/{}", branch_or_commit);
-        let object = repo.revparse_single(&ref_name)?;
-        repo.checkout_tree(&object, Some(&mut checkout))
-            .map_err(|e| BackendError::GitConflict {
-                message: e.to_string(),
-            })?;
-        repo.set_head(&ref_name)?;
-    } else {
-        validate_refspec(branch_or_commit)?;
-        let ref_name = format!("refs/heads/{}", branch_or_commit);
-        if git2::Reference::is_valid_name(&ref_name) {
-            return Err(BackendError::GitBranchNotFound {
-                message: format!("Branch not found: {}", branch_or_commit),
             });
         }
-
+        args.extend(["-c".into(), branch_or_commit.into()]);
+    } else if repo
+        .find_branch(branch_or_commit, BranchType::Local)
+        .is_ok()
+    {
+        args.extend(["--no-guess".into(), branch_or_commit.into()]);
+    } else {
         let commit =
             resolve_commit(repo, branch_or_commit).map_err(|_| BackendError::GitInvalidCommit {
                 message: format!("Commit not found: {}", branch_or_commit),
             })?;
-        repo.checkout_tree(commit.as_object(), Some(&mut checkout))
-            .map_err(|e| BackendError::GitConflict {
-                message: e.to_string(),
-            })?;
-        repo.set_head_detached(commit.id())?;
+        args.extend(["--detach".into(), commit.id().to_string()]);
     }
-
-    if repo.index().map(|idx| idx.has_conflicts()).unwrap_or(false) {
-        return Err(BackendError::GitMergeConflict {
-            message: "Checkout resulted in merge conflicts".to_string(),
-        });
-    }
-    Ok(())
+    // switch validates branch occupancy before changing HEAD, index or files.
+    run_index_mutation(repo, &args)
 }
+
 fn create_branch_from_ref(repo: &Repository, branch_name: &str, from_ref: &str) -> Result<()> {
     validate_branch_name(branch_name)?;
     validate_refspec(from_ref)?;
@@ -7113,6 +7120,12 @@ fn delete_local_branch(
 ) -> Result<()> {
     let current = get_branch_name(repo)?;
     if current.as_deref() == Some(branch_name) {
+        return Err(BackendError::Git {
+            message: format!("Cannot delete checked out branch: {}", branch_name),
+        });
+    }
+
+    if find_worktree_path_for_branch(&repo_root(repo)?, branch_name)?.is_some() {
         return Err(BackendError::Git {
             message: format!("Cannot delete checked out branch: {}", branch_name),
         });
@@ -7153,11 +7166,12 @@ fn delete_local_branch(
                 .map_err(|e| BackendError::Git {
                     message: e.to_string(),
                 })?;
-            let is_merged = repo
-                .graph_descendant_of(head_commit.id(), branch_commit.id())
-                .map_err(|e| BackendError::Git {
-                    message: e.to_string(),
-                })?;
+            let is_merged = head_commit.id() == branch_commit.id()
+                || repo
+                    .graph_descendant_of(head_commit.id(), branch_commit.id())
+                    .map_err(|e| BackendError::Git {
+                        message: e.to_string(),
+                    })?;
             if !is_merged {
                 return Err(BackendError::Git {
                     message: format!(
@@ -7411,21 +7425,6 @@ fn conflict_side_from_bytes(bytes: Option<&[u8]>) -> GitConflictFileSideDto {
     }
 }
 
-fn read_conflict_entry_bytes(
-    repo: &Repository,
-    entry: Option<&git2::IndexEntry>,
-) -> Result<Option<Vec<u8>>> {
-    let Some(entry) = entry else {
-        return Ok(None);
-    };
-
-    if entry.id == Oid::ZERO_SHA1 {
-        return Ok(None);
-    }
-
-    Ok(Some(repo.find_blob(entry.id)?.content().to_vec()))
-}
-
 fn read_conflict_entry_side(
     repo: &Repository,
     entry: Option<&git2::IndexEntry>,
@@ -7522,6 +7521,7 @@ fn stage_repo_relative_path(repo: &Repository, relative_path: &Path) -> Result<(
     let output = run_git_command(
         &root,
         &[
+            "--literal-pathspecs".to_string(),
             "add".to_string(),
             "--".to_string(),
             relative_path.to_string_lossy().to_string(),
@@ -8346,32 +8346,20 @@ pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> 
     validate_commit_message(message)?;
     ensure_safe_config(repo)?;
 
+    // Specialized operations own their parent lists and cleanup. A general
+    // commit must never turn a merge resolution into a single-parent commit.
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err(BackendError::Git {
+            message:
+                "Complete or abort the active Git operation before using the general commit command"
+                    .to_string(),
+        });
+    }
     if stage_all {
-        let mut index = repo.index()?;
-        let statuses = repo.statuses(Some(&mut get_status_options()))?;
-        for entry in statuses.iter() {
-            let status = entry.status();
-            let (old_path, path) = status_entry_paths(&entry);
-            if status.is_wt_deleted() || status.is_index_deleted() {
-                if let Some(path) = path {
-                    let _ = index.remove_path(Path::new(&path));
-                }
-                continue;
-            }
-
-            if let Some(path) = path {
-                index.add_path(Path::new(&path))?;
-            }
-
-            if status.is_index_renamed() {
-                if let Some(old_path) = old_path {
-                    let _ = index.remove_path(Path::new(&old_path));
-                }
-            }
-        }
-        index.write()?;
+        run_index_mutation(repo, &["add".into(), "-A".into()])?;
     }
 
+    repo.index()?.read(true)?;
     let statuses = repo.statuses(Some(&mut get_status_options()))?;
     if statuses.is_empty() {
         return Err(BackendError::Git {
@@ -8380,6 +8368,7 @@ pub(crate) fn commit_repo(repo: &Repository, message: &str, stage_all: bool) -> 
     }
 
     let mut index = repo.index()?;
+    index.read(true)?;
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
 
@@ -8759,7 +8748,7 @@ pub(crate) fn accept_git_conflict_side(
         } else {
             conflict.their.as_ref()
         };
-        selected = read_conflict_entry_bytes(repo, entry)?;
+        selected = entry.map(|entry| (entry.mode, entry.id));
         found = true;
         break;
     }
@@ -8773,8 +8762,38 @@ pub(crate) fn accept_git_conflict_side(
     }
     let absolute_path = repo_root.join(relative_path);
 
-    if let Some(content) = selected {
-        write_git_conflict_resolution_bytes(repo, repo_root, relative_path, &content, true)?;
+    if let Some((mode, oid)) = selected {
+        if !matches!(mode, 0o100644 | 0o100755 | 0o120000) {
+            return Err(BackendError::Git {
+                message: "Unsupported conflict entry mode".to_string(),
+            });
+        }
+        let output = run_git_command(
+            repo_root,
+            &[
+                "--literal-pathspecs".into(),
+                "checkout".into(),
+                format!("--{side}"),
+                "--".into(),
+                relative_path.to_string_lossy().into_owned(),
+            ],
+        )?;
+        if !output.success {
+            return Err(BackendError::Git {
+                message: command_output_text(&output),
+            });
+        }
+        // Stage the source entry itself: add could change the chosen mode when
+        // core.filemode is false, or re-encode the blob through clean filters.
+        run_index_mutation(
+            repo,
+            &[
+                "update-index".into(),
+                "--add".into(),
+                "--cacheinfo".into(),
+                format!("{mode:o},{oid},{}", relative_path.to_string_lossy()),
+            ],
+        )?;
     } else {
         match fs::remove_file(&absolute_path) {
             Ok(_) => {}
@@ -16794,6 +16813,7 @@ mod tests {
         let mut index = repo.index().expect("index");
         index.add_path(Path::new("README.md")).expect("add");
         let tree_id = index.write_tree().expect("write tree");
+        index.write().expect("persist initial index");
         {
             let tree = repo.find_tree(tree_id).expect("tree");
             let sig = git2::Signature::now("Tester", "tester@example.com").expect("sig");
@@ -21092,6 +21112,7 @@ mod tests {
         accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "ours").unwrap();
 
         assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), current);
+        assert_eq!(integrity_index_blob(&repo, "README.md"), current);
         assert!(build_git_status(&repo).unwrap().conflicted_files.is_empty());
     }
 
@@ -21122,6 +21143,7 @@ mod tests {
         accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
 
         assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), incoming);
+        assert_eq!(integrity_index_blob(&repo, "README.md"), incoming);
         assert!(build_git_status(&repo).unwrap().conflicted_files.is_empty());
     }
 
@@ -21197,6 +21219,297 @@ mod tests {
         assert!(check.mergeable);
         assert_eq!(check.ahead, 1);
         assert_eq!(check.behind, 0);
+    }
+
+    fn integrity_git(repo: &Repository, args: &[&str]) {
+        let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        let output = run_git_command(&repo_root(repo).unwrap(), &args).unwrap();
+        assert!(output.success, "{}", command_output_text(&output));
+    }
+
+    fn integrity_index_blob(repo: &Repository, path: &str) -> Vec<u8> {
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        let entry = index.get_path(Path::new(path), 0).unwrap();
+        repo.find_blob(entry.id).unwrap().content().to_vec()
+    }
+
+    #[test]
+    fn integrity_stage_preserves_external_stage_and_respects_lock() {
+        let (temp, repo) = init_repo();
+        let _cached = repo.index().unwrap();
+        fs::write(temp.path().join("external.txt"), "prepared only").unwrap();
+        integrity_git(&repo, &["add", "external.txt"]);
+        fs::write(temp.path().join("external.txt"), "later worktree").unwrap();
+        fs::write(temp.path().join("README.md"), "selected").unwrap();
+        fs::write(repo.path().join("index.lock"), "other writer").unwrap();
+        let before = fs::read(repo.path().join("index")).unwrap();
+        assert!(add_paths(&repo, &["README.md".into()]).is_err());
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), before);
+        fs::remove_file(repo.path().join("index.lock")).unwrap();
+        add_paths(&repo, &["README.md".into()]).unwrap();
+        assert_eq!(
+            integrity_index_blob(&repo, "external.txt"),
+            b"prepared only"
+        );
+        assert_eq!(integrity_index_blob(&repo, "README.md"), b"selected");
+        restore_paths(&repo, &["README.md".into()], RestoreTarget::Staged).unwrap();
+        assert_eq!(
+            integrity_index_blob(&repo, "external.txt"),
+            b"prepared only"
+        );
+        assert_eq!(
+            fs::read(temp.path().join("README.md")).unwrap(),
+            b"selected"
+        );
+    }
+
+    #[test]
+    fn integrity_commit_uses_only_prepared_index_content() {
+        let (temp, repo) = init_repo();
+        let original = repo.head().unwrap().target().unwrap();
+        fs::write(temp.path().join("README.md"), "prepared").unwrap();
+        add_paths(&repo, &["README.md".into()]).unwrap();
+        fs::write(temp.path().join("README.md"), "later worktree").unwrap();
+        commit_repo(&repo, "test: commit prepared index", false).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(commit.parent_id(0).unwrap(), original);
+        let tree = commit.tree().unwrap();
+        let entry = tree.get_path(Path::new("README.md")).unwrap();
+        assert_eq!(repo.find_blob(entry.id()).unwrap().content(), b"prepared");
+        assert_eq!(
+            fs::read(temp.path().join("README.md")).unwrap(),
+            b"later worktree"
+        );
+        assert!(commit_repo(&repo, "test: refuse unchanged index", false).is_err());
+        assert_eq!(repo.head().unwrap().target(), Some(commit.id()));
+    }
+
+    #[test]
+    fn integrity_stage_and_unstage_deletion_and_rename() {
+        let (temp, repo) = init_repo();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        fs::write(temp.path().join("extra.txt"), "extra").unwrap();
+        add_paths(&repo, &["README.md".into(), "extra.txt".into()]).unwrap();
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("README.md"), 0)
+            .is_none());
+        restore_paths(&repo, &["README.md".into()], RestoreTarget::Staged).unwrap();
+        assert_eq!(integrity_index_blob(&repo, "README.md"), b"hello");
+        assert!(!temp.path().join("README.md").exists());
+        assert_eq!(integrity_index_blob(&repo, "extra.txt"), b"extra");
+        fs::write(temp.path().join("renamed.md"), "hello").unwrap();
+        add_paths(&repo, &["renamed.md".into()]).unwrap();
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("README.md"), 0)
+            .is_none());
+        assert_eq!(integrity_index_blob(&repo, "renamed.md"), b"hello");
+        fs::write(temp.path().join("renamed.md"), "later worktree").unwrap();
+        restore_paths(&repo, &["renamed.md".into()], RestoreTarget::Staged).unwrap();
+        assert_eq!(integrity_index_blob(&repo, "README.md"), b"hello");
+        assert!(repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("renamed.md"), 0)
+            .is_none());
+        assert_eq!(
+            fs::read(temp.path().join("renamed.md")).unwrap(),
+            b"later worktree"
+        );
+    }
+
+    #[test]
+    fn integrity_unstage_unborn_repository_preserves_worktree() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        fs::write(temp.path().join("new.txt"), "staged").unwrap();
+        add_paths(&repo, &["new.txt".into()]).unwrap();
+        fs::write(temp.path().join("new.txt"), "later").unwrap();
+        restore_paths(&repo, &["new.txt".into()], RestoreTarget::Staged).unwrap();
+        assert!(repo.index().unwrap().is_empty());
+        assert_eq!(fs::read(temp.path().join("new.txt")).unwrap(), b"later");
+    }
+
+    #[test]
+    fn integrity_checkout_resolves_commits_and_tags_without_partial_mutation() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        let oid = repo.head().unwrap().target().unwrap();
+        integrity_git(&repo, &["tag", "light"]);
+        integrity_git(&repo, &["tag", "-a", "annotated", "-m", "tag"]);
+        for target in [
+            oid.to_string(),
+            oid.to_string()[..9].to_string(),
+            "light".into(),
+            "annotated".into(),
+        ] {
+            checkout_repo(&repo, &target, false).unwrap();
+            assert!(repo.head_detached().unwrap());
+            assert_eq!(repo.head().unwrap().target(), Some(oid));
+        }
+        checkout_repo(&repo, &branch, false).unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::write(temp.path().join("README.md"), "topic").unwrap();
+        commit_repo(&repo, "test: topic", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        let linked = temp.path().join("linked");
+        integrity_git(
+            &repo,
+            &["worktree", "add", linked.to_str().unwrap(), "topic"],
+        );
+        // Keep the synthetic linked checkout outside the visible worktree status.
+        fs::write(repo.path().join("info/exclude"), "/linked/\n").unwrap();
+        let before = repo.index().unwrap().write_tree().unwrap();
+        assert!(checkout_repo(&repo, "topic", false).is_err());
+        assert!(checkout_repo(&repo, "absent-ref", false).is_err());
+        assert_eq!(get_branch_name(&repo).unwrap(), Some(branch));
+        let mut refreshed_index = repo.index().unwrap();
+        refreshed_index.read(true).unwrap();
+        assert_eq!(refreshed_index.write_tree().unwrap(), before);
+        assert_eq!(fs::read(temp.path().join("README.md")).unwrap(), b"hello");
+        assert!(delete_local_branch(&repo, "topic", true, None).is_err());
+    }
+
+    #[test]
+    fn integrity_general_commit_refuses_merge_and_finalizer_preserves_parents() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::write(temp.path().join("README.md"), "topic").unwrap();
+        commit_repo(&repo, "test: topic", true).unwrap();
+        let theirs = repo.head().unwrap().target().unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "base").unwrap();
+        commit_repo(&repo, "test: base", true).unwrap();
+        let ours = repo.head().unwrap().target().unwrap();
+        start_merge_resolution_repo(&repo, "topic", &branch).unwrap();
+        assert!(commit_repo(&repo, "test: unresolved", true).is_err());
+        let mut unresolved_index = repo.index().unwrap();
+        unresolved_index.read(true).unwrap();
+        assert!(unresolved_index.has_conflicts());
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "ours").unwrap();
+        assert!(commit_repo(&repo, "test: resolved", false).is_err());
+        assert_eq!(repo.head().unwrap().target(), Some(ours));
+        complete_merge_repo(&repo).unwrap();
+        let commit = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(commit.parent_ids().collect::<Vec<_>>(), vec![ours, theirs]);
+        assert_eq!(repo.state(), git2::RepositoryState::Clean);
+    }
+
+    #[test]
+    fn integrity_delete_branch_accepts_equal_and_ancestor_but_refuses_divergent() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        integrity_git(&repo, &["branch", "equal"]);
+        delete_local_branch(&repo, "equal", false, None).unwrap();
+        assert!(repo.find_branch("equal", BranchType::Local).is_err());
+        integrity_git(&repo, &["branch", "ancestor"]);
+        fs::write(temp.path().join("README.md"), "advance").unwrap();
+        commit_repo(&repo, "test: advance", true).unwrap();
+        delete_local_branch(&repo, "ancestor", false, None).unwrap();
+        checkout_repo(&repo, "divergent", true).unwrap();
+        fs::write(temp.path().join("README.md"), "divergent").unwrap();
+        commit_repo(&repo, "test: divergent", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        assert!(delete_local_branch(&repo, "divergent", false, None).is_err());
+        assert!(delete_local_branch(&repo, &branch, true, None).is_err());
+    }
+
+    #[test]
+    fn integrity_accept_deleted_conflict_side_stages_deletion() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        commit_repo(&repo, "test: delete incoming file", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "ours").unwrap();
+        commit_repo(&repo, "test: modify current file", true).unwrap();
+        start_merge_resolution_repo(&repo, "topic", &branch).unwrap();
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        assert!(!index.has_conflicts());
+        assert!(index.get_path(Path::new("README.md"), 0).is_none());
+        assert!(!temp.path().join("README.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn integrity_accept_conflict_preserves_executable_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::write(temp.path().join("README.md"), "incoming executable").unwrap();
+        fs::set_permissions(
+            temp.path().join("README.md"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        commit_repo(&repo, "test: executable incoming", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        fs::write(temp.path().join("README.md"), "ours regular").unwrap();
+        commit_repo(&repo, "test: regular current", true).unwrap();
+        start_merge_resolution_repo(&repo, "topic", &branch).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.filemode", false)
+            .unwrap();
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        assert_eq!(
+            index.get_path(Path::new("README.md"), 0).unwrap().mode,
+            0o100755
+        );
+        assert_ne!(
+            fs::metadata(temp.path().join("README.md"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o111,
+            0
+        );
+        assert_eq!(
+            integrity_index_blob(&repo, "README.md"),
+            b"incoming executable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn integrity_accept_conflict_preserves_symlink_mode() {
+        let (temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        std::os::unix::fs::symlink("base-target", temp.path().join("README.md")).unwrap();
+        commit_repo(&repo, "test: base link", true).unwrap();
+        checkout_repo(&repo, "topic", true).unwrap();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        std::os::unix::fs::symlink("topic-target", temp.path().join("README.md")).unwrap();
+        commit_repo(&repo, "test: topic link", true).unwrap();
+        checkout_repo(&repo, &branch, false).unwrap();
+        fs::remove_file(temp.path().join("README.md")).unwrap();
+        std::os::unix::fs::symlink("ours-target", temp.path().join("README.md")).unwrap();
+        commit_repo(&repo, "test: ours link", true).unwrap();
+        start_merge_resolution_repo(&repo, "topic", &branch).unwrap();
+        accept_git_conflict_side(&repo, temp.path(), Path::new("README.md"), "theirs").unwrap();
+        assert_eq!(
+            fs::read_link(temp.path().join("README.md")).unwrap(),
+            Path::new("topic-target")
+        );
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
+        assert_eq!(
+            index.get_path(Path::new("README.md"), 0).unwrap().mode,
+            0o120000
+        );
+        assert_eq!(integrity_index_blob(&repo, "README.md"), b"topic-target");
     }
 
     #[test]
