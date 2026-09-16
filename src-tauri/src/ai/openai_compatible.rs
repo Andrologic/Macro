@@ -261,7 +261,23 @@ fn build_chat_completions_request(
         );
     }
 
-    if let Some(reasoning_effort) = request.reasoning_effort.as_deref().map(str::trim) {
+    if provider.id == super::macro_ai::PROVIDER_ID {
+        let effort = request
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("medium");
+        let thinking = match effort {
+            "none" => serde_json::json!({ "enable_thinking": false }),
+            "low" | "medium" | "xhigh" => serde_json::json!({
+                "enable_thinking": true,
+                "reasoning_effort": effort,
+            }),
+            _ => return Err(format!("Unsupported Macro AI reasoning effort: {effort}")),
+        };
+        body.insert("chat_template_kwargs".to_string(), thinking);
+    } else if let Some(reasoning_effort) = request.reasoning_effort.as_deref().map(str::trim) {
         if !reasoning_effort.is_empty() && supports_reasoning_effort(&provider.provider_type) {
             if provider.provider_type.eq_ignore_ascii_case("openrouter") {
                 body.insert(
@@ -801,6 +817,37 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         }
+    }
+
+    #[test]
+    fn macro_ai_reasoning_controls_reach_the_chat_template() {
+        let mut config = provider("openai");
+        config.id = super::super::macro_ai::PROVIDER_ID.into();
+        for effort in [
+            None,
+            Some("none"),
+            Some("low"),
+            Some("medium"),
+            Some("xhigh"),
+        ] {
+            let body = build_chat_completions_request(&request(effort), &config).unwrap();
+            assert_eq!(body.get("reasoning_effort"), None);
+            assert_eq!(
+                body["chat_template_kwargs"]["enable_thinking"],
+                effort != Some("none")
+            );
+            if effort != Some("none") {
+                assert_eq!(
+                    body["chat_template_kwargs"]["reasoning_effort"],
+                    effort.unwrap_or("medium")
+                );
+            } else {
+                assert!(body["chat_template_kwargs"]
+                    .get("reasoning_effort")
+                    .is_none());
+            }
+        }
+        assert!(build_chat_completions_request(&request(Some("high")), &config).is_err());
     }
 
     #[test]
