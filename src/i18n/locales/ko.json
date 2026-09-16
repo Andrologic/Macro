@@ -1016,7 +1016,8 @@
       "upToDate": "선택한 채널에서 Macro가 최신 상태입니다.",
       "stableConfirmationTitle": "Stable 채널로 전환할까요?",
       "stableConfirmationDescription": "최신 Stable 버전이 현재 Preview보다 이전 버전이면 Macro가 서명된 이전 버전 설치를 제안합니다.",
-      "switchToStable": "Stable로 전환"
+      "switchToStable": "Stable로 전환",
+      "refreshFailed": "업데이트 채널은 저장되었지만 업데이트 정보를 새로 고칠 수 없습니다."
     },
     "sound_effects": "음향 효과",
     "sound_effects_desc": "작업 완료 또는 오류 시 소리 재생",

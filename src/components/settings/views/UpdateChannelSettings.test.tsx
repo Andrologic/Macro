@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
+import { StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 const initializeMock = mock(async () => undefined);
@@ -9,6 +10,9 @@ const resetMock = mock(async () => undefined);
 const loadUpdateChannelMock = mock(async (): Promise<'stable' | 'preview'> => 'preview');
 const saveUpdateChannelMock = mock(async (_channel?: 'stable' | 'preview') => undefined);
 const notifyErrorMock = mock(() => undefined);
+const notifyActionRequiredMock = mock((
+  ..._args: [string, { actions?: Array<{ onClick?: () => void | Promise<void> }> }]
+) => undefined);
 
 let updateState: Record<string, unknown>;
 
@@ -73,7 +77,7 @@ mock.module('../../ui/ConfirmPromptModal', () => ({
 }));
 
 mock.module('../../ui/toastService', () => ({
-  notify: { error: notifyErrorMock },
+  notify: { error: notifyErrorMock, actionRequired: notifyActionRequiredMock },
 }));
 
 const { UpdateChannelSettings } = await import('./UpdateChannelSettings');
@@ -103,6 +107,7 @@ describe('UpdateChannelSettings', () => {
     loadUpdateChannelMock.mockClear();
     saveUpdateChannelMock.mockClear();
     notifyErrorMock.mockClear();
+    notifyActionRequiredMock.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -113,9 +118,9 @@ describe('UpdateChannelSettings', () => {
     container.remove();
   });
 
-  const renderSettings = async () => {
+  const renderSettings = async (strictMode = false) => {
     await act(async () => {
-      root.render(<UpdateChannelSettings />);
+      root.render(strictMode ? <StrictMode><UpdateChannelSettings /></StrictMode> : <UpdateChannelSettings />);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -195,5 +200,77 @@ describe('UpdateChannelSettings', () => {
 
     expect(saveUpdateChannelMock).toHaveBeenCalledWith('preview');
     expect(resetMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the saved channel visible and retries the updater refresh when reset fails', async () => {
+    loadUpdateChannelMock.mockImplementation(async () => 'stable');
+    resetMock.mockImplementationOnce(async () => {
+      throw new Error('cache reset denied');
+    });
+    await renderSettings(true);
+
+    const previewChoice = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .find((button) => button.textContent?.includes('Preview'));
+    await act(async () => {
+      previewChoice?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const choices = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+    expect(choices[0]?.getAttribute('aria-checked')).toBe('false');
+    expect(choices[1]?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      'Update channel saved, but update information could not be refreshed.',
+    );
+    expect(buttonByText('Retry')).toBeDefined();
+    expect(notifyActionRequiredMock).toHaveBeenCalledWith(
+      'Update channel saved, but update information could not be refreshed.',
+      expect.objectContaining({
+        description: 'cache reset denied',
+        notificationKey: 'update-channel-refresh',
+        tone: 'warning',
+        actions: [expect.objectContaining({ label: 'Retry', variant: 'primary' })],
+      }),
+    );
+
+    const notificationAction = notifyActionRequiredMock.mock.calls[0]?.[1]
+      ?.actions?.[0]?.onClick;
+    expect(notificationAction).toBeInstanceOf(Function);
+
+    await act(async () => {
+      await notificationAction?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(resetMock).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(choices[1]?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('restores the previous channel when saving the preference fails', async () => {
+    loadUpdateChannelMock.mockImplementationOnce(async () => 'stable');
+    saveUpdateChannelMock.mockImplementationOnce(async () => {
+      throw new Error('preference write denied');
+    });
+    await renderSettings();
+
+    const previewChoice = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .find((button) => button.textContent?.includes('Preview'));
+    await act(async () => {
+      previewChoice?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const choices = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+    expect(choices[0]?.getAttribute('aria-checked')).toBe('true');
+    expect(choices[1]?.getAttribute('aria-checked')).toBe('false');
+    expect(resetMock).not.toHaveBeenCalled();
+    expect(notifyErrorMock).toHaveBeenCalledWith(
+      'Could not save configuration',
+      { description: 'preference write denied' },
+    );
   });
 });

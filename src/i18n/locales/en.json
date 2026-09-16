@@ -1046,7 +1046,8 @@
       "upToDate": "Macro is up to date on the selected channel.",
       "stableConfirmationTitle": "Switch to Stable?",
       "stableConfirmationDescription": "If the latest Stable version is older than this Preview, Macro will offer to install that older signed version.",
-      "switchToStable": "Switch to Stable"
+      "switchToStable": "Switch to Stable",
+      "refreshFailed": "Update channel saved, but update information could not be refreshed."
     },
     "sound_effects": "Sound Effects",
     "sound_effects_desc": "Play sounds on task completion or errors",

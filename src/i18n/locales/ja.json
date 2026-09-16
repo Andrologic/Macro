@@ -1016,7 +1016,8 @@
       "upToDate": "選択したチャンネルでMacroは最新です。",
       "stableConfirmationTitle": "Stable チャンネルに切り替えますか？",
       "stableConfirmationDescription": "最新の Stable がこの Preview より古い場合、Macro はその署名済み旧バージョンのインストールを提案します。",
-      "switchToStable": "Stable に切り替える"
+      "switchToStable": "Stable に切り替える",
+      "refreshFailed": "更新チャンネルは保存されましたが、更新情報を再取得できませんでした。"
     },
     "sound_effects": "効果音",
     "sound_effects_desc": "タスクの完了またはエラー時にサウンドを再生する",
