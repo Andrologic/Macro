@@ -121,9 +121,9 @@ const createGitStatus = (overrides: Partial<MockGitStatus> = {}): MockGitStatus 
   });
 };
 
-const createGitBranches = (names: string[]): { current: string; local: MockGitBranch[]; remote: MockGitBranch[] } => ({
+const createGitBranches = (names: string[], repoPath?: string): { current: string; local: MockGitBranch[]; remote: MockGitBranch[] } => ({
   current: 'develop',
-  local: names.map((name) => ({ name, is_head: name === 'develop', commit: [...gitBranchCreateMock.mock.calls].reverse().find(([params]) => params.branchName === name)?.[0].fromRef ?? `${name}-sha` })),
+  local: names.map((name) => ({ name, is_head: name === 'develop', commit: [...gitBranchCreateMock.mock.calls].reverse().find(([params]) => params.branchName === name && (!repoPath || params.repoPath === repoPath))?.[0].fromRef ?? `${name}-sha` })),
   remote: [],
 });
 
@@ -1068,9 +1068,9 @@ describe('architectGitFlowService', () => {
     ]);
     const worktrees = new Map<string, string>();
     persistLifecycleSaga({ operation: 'provision', cleanupResources: interruption === 'partial' ? [
-      { kind: 'branch', projectId: 'web', repoPath: '/repos/web', branchName: 'plan/checkout', expectedCommit: 'head' },
+      { kind: 'branch', projectId: 'web', repoPath: '/repos/web', branchName: 'plan/checkout', expectedCommit: 'plan/checkout-sha' },
     ] : [] });
-    gitBranchListMock.mockImplementation(async (repo) => createGitBranches(branches.get(repo) ?? []));
+    gitBranchListMock.mockImplementation(async (repo) => createGitBranches(branches.get(repo) ?? [], repo));
     gitBranchCreateMock.mockImplementation(async ({ repoPath, branchName }) => {
       expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
       branches.get(repoPath)!.push(branchName);
@@ -1145,8 +1145,10 @@ describe('architectGitFlowService', () => {
     }));
   });
 
-  it.each(['commit', 'path', 'branch', 'dirty'] as const)('preserves an unconfirmed worktree with mismatched %s', async (mismatch) => {
-    currentPlan.status = 'draft';
+  it.each(['draft', 'validated', 'in_progress'] as const)('preserves divergent unconfirmed resources for a %s plan', async (status) => {
+    currentPlan.status = status;
+    for (const mismatch of ['commit', 'path', 'branch', 'dirty'] as const) {
+
     persistLifecycleSaga({ operation: 'provision', cleanupResources: [{
       kind: 'worktree', projectId: 'web', repoPath: '/repos/web', branchName: 'feature/checkout/checkout-web',
       expectedCommit: null, intendedCommit: 'creation-head', worktreeKey: 'interrupted',
@@ -1164,6 +1166,43 @@ describe('architectGitFlowService', () => {
     expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
     expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
     expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(gitBranchCreateMock).not.toHaveBeenCalled();
+    expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['validated', 'in_progress'] as const)('refuses an unconfirmed branch at a different commit for a %s plan', async (status) => {
+    currentPlan.status = status;
+    persistLifecycleSaga({ operation: 'provision', cleanupResources: [{
+      kind: 'branch', projectId: 'web', repoPath: '/repos/web', branchName: 'plan/checkout',
+      expectedCommit: null, intendedCommit: 'original-head',
+    }] });
+    await architectGitFlowService.resumePlanLifecycleSagas();
+    expect(JSON.parse(persistedPlanLifecycleSagas)).toHaveLength(1);
+    expect(gitBranchCreateMock).not.toHaveBeenCalled();
+    expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['validated', 'in_progress'] as const)('adopts matching unconfirmed resources for a %s plan', async (status) => {
+    currentPlan.status = status;
+    for (const kind of ['branch', 'worktree'] as const) {
+      const branchName = kind === 'branch' ? 'plan/checkout' : 'feature/checkout/checkout-web';
+      persistLifecycleSaga({ operation: 'provision', cleanupResources: [{
+        kind, projectId: 'web', repoPath: '/repos/web', branchName,
+        expectedCommit: null, intendedCommit: `${branchName}-sha`,
+        ...(kind === 'worktree' ? {
+          worktreeKey: toBranchWorktreeKey('web', branchName),
+          expectedWorktreePath: getExpectedWorktreePath('web', '/repos/web', branchName),
+        } : {}),
+      }] });
+      await architectGitFlowService.resumePlanLifecycleSagas();
+      expect(JSON.parse(persistedPlanLifecycleSagas)).toEqual([]);
+      expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+      expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+      expect(gitBranchCreateMock).not.toHaveBeenCalled();
+      expect(gitWorktreeCreateMock).not.toHaveBeenCalled();
+    }
   });
 
   it('journals failed rollback resources and resumes only their guarded cleanup', async () => {

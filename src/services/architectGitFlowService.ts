@@ -1687,6 +1687,17 @@ export const createArchitectGitFlowService = (
       operation: 'provision', phase: 'prepared', cleanupResources: [], createdAt: now, updatedAt: now };
     if (!committedSaga) await startPlanLifecycleSaga(saga);
     const recordIntent = async (resource: PlanLifecycleCleanupResource) => {
+      const previousIntent = saga.cleanupResources?.find((entry) => entry.kind === resource.kind &&
+        entry.repoPath === resource.repoPath && entry.branchName === resource.branchName &&
+        entry.worktreeKey === resource.worktreeKey);
+      if (previousIntent) {
+        // Recreate an absent resource at the original commit, not a source ref
+        // that might have advanced while the process was stopped.
+        previousIntent.intendedCommit = previousIntent.intendedCommit ?? previousIntent.expectedCommit ?? undefined;
+        previousIntent.expectedCommit = null;
+        await upsertPlanLifecycleSaga(saga);
+        return previousIntent;
+      }
       saga.cleanupResources!.push(resource);
       await upsertPlanLifecycleSaga(saga);
       return resource;
@@ -1703,6 +1714,31 @@ export const createArchitectGitFlowService = (
     };
     const rollbackCreatedGitResources = () => rollbackProvisionSaga(saga);
     try {
+      if (committedSaga) {
+        // Adoption has the same identity requirements as rollback. Complete the
+        // entire preflight before creating anything or discarding the journal.
+        for (const resource of saga.cleanupResources ?? []) {
+          const expectedCommit = resource.expectedCommit ?? resource.intendedCommit;
+          const branches = await deps.tauri.gitBranchList(resource.repoPath);
+          const actualCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit;
+          if (!expectedCommit || (actualCommit && actualCommit !== expectedCommit)) {
+            throw new Error('Provisioning resource does not match its durable commit identity.');
+          }
+          if (resource.kind === 'worktree') {
+            const inspection = await deps.tauri.gitWorktreeInspect({
+              repoPath: resource.repoPath, taskId: resource.worktreeKey!,
+              branchName: resource.branchName, readOnly: true,
+            });
+            if (inspection.status !== 'absent' && (
+              inspection.status !== 'ready' || inspection.branchName !== resource.branchName ||
+              inspection.worktreePath !== resource.expectedWorktreePath || inspection.isDirty !== false ||
+              actualCommit !== expectedCommit
+            )) {
+              throw new Error('Provisioning worktree does not match its durable identity.');
+            }
+          }
+        }
+      }
       for (const repository of repositories) {
         const branches = await deps.tauri.gitBranchList(repository.repoPath);
         const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
