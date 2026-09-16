@@ -36,6 +36,23 @@ pub(crate) fn validate_backup_state(raw: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+// Startup updater checks run before StateManager is initialized. Read the same
+// atomically published document without repairing or defaulting invalid data.
+pub(crate) fn read_persisted_value(
+    app_data_dir: &Path,
+    key: &str,
+) -> Result<Option<Value>, String> {
+    let raw = match fs::read(app_data_dir.join(STATE_FILE_NAME)) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    validate_backup_state(&raw)?;
+    let snapshot: StateSnapshot =
+        serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
+    Ok(snapshot.values.get(key).cloned())
+}
+
 #[derive(Clone)]
 pub struct StateManager {
     path: Arc<PathBuf>,

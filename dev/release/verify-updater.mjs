@@ -1,18 +1,22 @@
 #!/usr/bin/env bun
 
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { UPDATER_TARGETS } from './updater-manifest.mjs';
 
 const STABLE_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
-const SEMVER_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const PREVIEW_VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(?:nightly\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)|rc\.(0|[1-9][0-9]*))$/;
+const RELEASE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_TAURI_CONFIG = resolve(RELEASE_DIRECTORY, '../../src-tauri/tauri.conf.json');
+const MINISIGN_VERIFIER_MANIFEST = resolve(RELEASE_DIRECTORY, 'minisign-verifier/Cargo.toml');
 
 function normalizedVersion(version, channel) {
   const value = String(version ?? '').replace(/^v/, '');
   if (channel === 'preview') {
-    return SEMVER_VERSION.test(value) && value.includes('-') ? value : null;
+    return PREVIEW_VERSION.test(value) ? value : null;
   }
   return STABLE_VERSION.test(value) ? value : null;
 }
@@ -45,7 +49,7 @@ export function validateUpdaterManifest(
   const version = normalizedVersion(manifest.version, channel);
   if (!version) {
     const expected = channel === 'preview'
-      ? 'a semantic version with a prerelease identifier'
+      ? 'a nightly or rc semantic version'
       : 'a stable x.y.z version';
     errors.push(`Manifest version must be ${expected}; found "${manifest.version}".`);
   }
@@ -118,7 +122,47 @@ function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-export function verifyLocalUpdaterAssets(manifest, assetRoot, checksumsPath) {
+function configuredUpdaterPublicKey(tauriConfigPath) {
+  const config = JSON.parse(readFileSync(resolve(tauriConfigPath), 'utf8'));
+  const publicKey = config?.plugins?.updater?.pubkey;
+  if (typeof publicKey !== 'string' || publicKey.trim() === '') {
+    throw new Error('Configured updater public key is missing from tauri.conf.json.');
+  }
+  return publicKey.trim();
+}
+
+function verifyMinisignAssets(assetPairs, publicKey) {
+  const args = [
+    'run',
+    '--quiet',
+    '--locked',
+    '--manifest-path',
+    MINISIGN_VERIFIER_MANIFEST,
+    '--',
+    '--public-key-b64',
+    publicKey,
+  ];
+  for (const pair of assetPairs) {
+    args.push('--asset', pair.assetPath, '--signature', pair.signaturePath);
+  }
+
+  const result = spawnSync('cargo', args, { encoding: 'utf8' });
+  if (result.error) {
+    throw new Error(`Unable to run the standalone minisign verifier: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const details = (result.stderr || result.stdout || '').trim();
+    throw new Error(details || `Standalone minisign verifier exited with status ${result.status}.`);
+  }
+  return (result.stdout || '').trim();
+}
+
+export function verifyLocalUpdaterAssets(
+  manifest,
+  assetRoot,
+  checksumsPath,
+  { tauriConfigPath = DEFAULT_TAURI_CONFIG, publicKey } = {},
+) {
   const errors = [];
   const root = resolve(assetRoot);
   if (!existsSync(root) || !statSync(root).isDirectory()) {
@@ -126,6 +170,7 @@ export function verifyLocalUpdaterAssets(manifest, assetRoot, checksumsPath) {
   }
 
   const assets = new Map();
+  const assetPairs = [];
   for (const target of UPDATER_TARGETS) {
     const platform = manifest.platforms?.[target];
     const assetName = platform ? assetNameFromUrl(platform.url) : null;
@@ -144,6 +189,18 @@ export function verifyLocalUpdaterAssets(manifest, assetRoot, checksumsPath) {
       errors.push(`Missing downloaded updater signature for ${target}: ${assetName}.sig`);
     } else if (expectedSignature && readFileSync(signaturePath, 'utf8').trim() !== expectedSignature) {
       errors.push(`Updater signature content does not match latest.json for ${target}: ${assetName}.sig`);
+    }
+    if (existsSync(artifactPath) && statSync(artifactPath).isFile()
+      && existsSync(signaturePath) && statSync(signaturePath).isFile()) {
+      assetPairs.push({ assetPath: artifactPath, signaturePath });
+    }
+  }
+
+  if (assetPairs.length === UPDATER_TARGETS.length) {
+    try {
+      verifyMinisignAssets(assetPairs, publicKey ?? configuredUpdaterPublicKey(tauriConfigPath));
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -192,7 +249,7 @@ function argumentValue(args, name) {
 }
 
 function printUsage() {
-  console.log('Usage: bun dev/release/verify-updater.mjs --manifest <path-or-https-url> [--channel <stable|preview>] [--asset-root <path>] [--checksums <path>]');
+  console.log('Usage: bun dev/release/verify-updater.mjs --manifest <path-or-https-url> [--channel <stable|preview>] [--asset-root <path>] [--checksums <path>] [--tauri-config <path>]');
 }
 
 async function main() {
@@ -208,7 +265,9 @@ async function main() {
   const errors = validateUpdaterManifest(manifest, { channel });
   const assetRoot = argumentValue(args, '--asset-root');
   if (assetRoot) {
-    errors.push(...verifyLocalUpdaterAssets(manifest, assetRoot, argumentValue(args, '--checksums')));
+    errors.push(...verifyLocalUpdaterAssets(manifest, assetRoot, argumentValue(args, '--checksums'), {
+      tauriConfigPath: argumentValue(args, '--tauri-config') ?? DEFAULT_TAURI_CONFIG,
+    }));
   }
   if (errors.length > 0) {
     console.error('Updater release verification failed:');

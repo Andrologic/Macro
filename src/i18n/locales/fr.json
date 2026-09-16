@@ -1044,7 +1044,8 @@
       "upToDate": "Macro est à jour sur le canal sélectionné.",
       "stableConfirmationTitle": "Passer au canal Stable ?",
       "stableConfirmationDescription": "Si la dernière version Stable est antérieure à cette préversion, Macro proposera d’installer cette ancienne version signée.",
-      "switchToStable": "Passer au canal Stable"
+      "switchToStable": "Passer au canal Stable",
+      "refreshFailed": "Le canal de mise à jour est enregistré, mais les informations de mise à jour n’ont pas pu être actualisées."
     },
     "sound_effects": "Effets sonores",
     "sound_effects_desc": "Jouer des sons à la fin d'une tâche ou en cas d'erreur",

@@ -862,6 +862,7 @@ export const finalizePlanIntoBaseBranch = async (params: {
   branchName: string;
   planId: string;
   repoPath?: string;
+  completePendingMerges?: boolean;
 }): Promise<{
   plan: ArchitectPlanRecord;
   repositories: FinalizedPlanRepositoryResult[];
@@ -2702,6 +2703,7 @@ export const createArchitectGitFlowService = (
     branchName: string;
     planId: string;
     repoPath?: string;
+    completePendingMerges?: boolean;
   }): Promise<{
     plan: ArchitectPlanRecord;
     repositories: FinalizedPlanRepositoryResult[];
@@ -2734,6 +2736,27 @@ export const createArchitectGitFlowService = (
         updatedAt: now,
       };
       await startPlanLifecycleSaga(finalizationSaga);
+    }
+
+    if (params.completePendingMerges && finalizationSaga.phase === 'prepared') {
+      for (const repository of finalizationSaga.finalizationRepositories ?? []) {
+        const backmerge = repository.phase === 'backmerge_merge_pending';
+        if (!backmerge && repository.phase !== 'plan_merge_pending') continue;
+        const intoBranch = backmerge ? repository.backmergeBranchName : repository.baseBranchName;
+        const sourceCommit = backmerge ? repository.baseCommitAfterMerge : repository.expectedPlanCommit;
+        const targetCommit = backmerge ? repository.backmergeCommitAfterSync : repository.baseCommitAfterSync;
+        if (!intoBranch || !sourceCommit || !targetCommit) {
+          throw new Error('The pending merge is missing its durable identity.');
+        }
+        await deps.tauri.gitGuardedMergeState({
+          repoPath: repository.repoPath,
+          branchName: backmerge ? repository.baseBranchName : repository.planBranchName,
+          intoBranch,
+          expectedBranchCommit: sourceCommit,
+          expectedIntoCommit: targetCommit,
+          completeMerge: true,
+        });
+      }
     }
 
     if (finalizationSaga.phase === 'prepared') {

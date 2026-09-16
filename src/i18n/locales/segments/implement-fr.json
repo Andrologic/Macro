@@ -407,6 +407,7 @@
     "full": "Contexte complet du fichier"
   },
   "errors": {
+    "finalizationStrategyLocked": "La finalisation a déjà commencé. Terminez la fusion en attente ou reprenez sans changer sa stratégie.",
     "directTaskCompletionFailed": "La tâche en édition directe n’a pas pu être terminée.",
     "directTaskBranchChanged": "La branche courante est passée de {{expected}} à {{actual}}. Revenez sur la branche initiale avant de créer le commit de cette tâche Direct.",
     "directProjectTaskAlreadyActive": "Ce projet en édition directe possède déjà une tâche active.",

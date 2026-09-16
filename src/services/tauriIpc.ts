@@ -2409,6 +2409,7 @@ export async function gitGuardedMergeState(params: {
   intoBranch: string;
   expectedBranchCommit: string;
   expectedIntoCommit: string;
+  completeMerge?: boolean;
 }): Promise<GitGuardedMergeStateDto> {
   return invoke<GitGuardedMergeStateDto>("git_guarded_merge_state", {
     repoPath: params.repoPath,
@@ -2416,6 +2417,7 @@ export async function gitGuardedMergeState(params: {
     intoBranch: params.intoBranch,
     expectedBranchCommit: params.expectedBranchCommit,
     expectedIntoCommit: params.expectedIntoCommit,
+    ...(params.completeMerge ? { completeMerge: true } : {}),
   });
 }
 

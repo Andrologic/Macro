@@ -912,6 +912,22 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
     Ok(archive)
 }
 
+/// Updater activation must leave the application version unchanged until queued
+/// backup work and interrupted restoration recovery have run.
+pub(crate) fn has_pending_startup_work(data: &Path) -> Result<bool> {
+    let directory = data.join("local-backup");
+    for name in ["request.json", "restoring.json"] {
+        if directory
+            .join(name)
+            .try_exists()
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Called before any subsystem opens the profile. An interrupted mutation rolls back first.
 pub async fn process_startup(data: &Path, config: &Path) -> Result<()> {
     process_startup_with_preserver(data, config, preserve_raw).await
@@ -1717,6 +1733,56 @@ mod tests {
         )
         .unwrap();
     }
+    #[tokio::test]
+    async fn pending_restore_defers_updater_until_restored_channel_is_loaded() {
+        let (_temp, data, config) = profile().await;
+        fs::write(
+            data.join("state.json"),
+            br#"{"schemaVersion":1,"values":{"updateChannel":"preview"}}"#,
+        )
+        .unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        fs::write(
+            data.join("state.json"),
+            br#"{"schemaVersion":1,"values":{"updateChannel":"stable"}}"#,
+        )
+        .unwrap();
+        assert!(crate::app_updates::target_matches_persisted_channel(
+            &data,
+            "stable-windows-x86_64"
+        )
+        .unwrap());
+        queue_restore(&data, &archive);
+        // This is the updater gate called first at startup: the old Stable
+        // preference must not authorize activation before restore validation.
+        assert!(!crate::app_updates::target_matches_persisted_channel(
+            &data,
+            "stable-windows-x86_64"
+        )
+        .unwrap());
+        process_startup(&data, &config).await.unwrap();
+        assert!(!has_pending_startup_work(&data).unwrap());
+        assert!(!crate::app_updates::target_matches_persisted_channel(
+            &data,
+            "stable-windows-x86_64"
+        )
+        .unwrap());
+        assert!(crate::app_updates::target_matches_persisted_channel(
+            &data,
+            "preview-windows-x86_64"
+        )
+        .unwrap());
+        // An interrupted restoration also blocks even without a request file.
+        fs::write(data.join("local-backup/restoring.json"), b"interrupted").unwrap();
+        assert!(!crate::app_updates::target_matches_persisted_channel(
+            &data,
+            "preview-windows-x86_64"
+        )
+        .unwrap());
+    }
+
     #[tokio::test]
     async fn restores_valid_archive_over_corrupt_profile_and_preserves_exact_original_bytes() {
         let (_temp, data, config) = profile().await;

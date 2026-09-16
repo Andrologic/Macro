@@ -74,6 +74,12 @@ Review the draft release in GitHub before publishing it manually.
 
 ## Tauri updater
 
+A staged package is installed from its local bytes after size, SHA-256 and
+signature verification. Activation does not query the channel again, so a newer
+published version or an offline launch does not invalidate the prepared package.
+After successful replacement, cache cleanup failures are logged and retried on
+a later cache read; they do not prevent the application from restarting.
+
 Macro checks the selected update channel at startup. It downloads a signed
 update in the background, then waits for the user to restart the app. Tauri
 replaces `{{target}}` with the channel-prefixed native target, such as
@@ -265,6 +271,11 @@ Preview workflow with an `x.y.z-rc.n` version for a release candidate. Configure
 the `preview` GitHub environment with the same Tauri updater and Apple signing
 secrets as the `release` environment. No second repository or personal access
 token is involved.
+
+Preview versions advance monotonically. A nightly version is lower than an RC
+with the same `major.minor.patch`, so the workflow refuses to publish a nightly
+after that RC. This prevents the Preview updater from offering an older build
+after the release candidate has advanced the channel.
 
 Desktop builds compile the Macro AI runtime sidecar into `src-tauri/binaries/`
 before packaging. Universal macOS builds combine the Apple Silicon and Intel
