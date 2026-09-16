@@ -2187,6 +2187,18 @@ async fn write_file_internal_with_revision_impl(
     } else {
         None
     };
+    match tokio::fs::symlink_metadata(&validated_path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(BackendError::FilesystemInvalidPath {
+                message: "Writing a symbolic link is not supported; edit its target explicitly."
+                    .to_string(),
+            });
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(io_error_to_backend_error(error, &validated_path));
+        }
+        _ => {}
+    }
     if !allow_outside {
         return write_file_with_workspace_capability(
             workspace,
@@ -4241,6 +4253,35 @@ mod tests {
         assert!(!dto.skipped);
         let written = fs::read_to_string(workspace.path().join("file.txt")).unwrap();
         assert_eq!(written, "second");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_write_symbolic_link_refuses_without_replacing_link_or_target() {
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("target.txt");
+        let link = workspace.path().join("link.txt");
+        fs::write(&target, "original").unwrap();
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+        for allow_outside in [false, true] {
+            let error = write_file_internal_with_revision(
+                workspace.path(),
+                "link.txt".to_string(),
+                "draft".to_string(),
+                Some(true),
+                Some(allow_outside),
+                Some(&content_revision(b"original")),
+            )
+            .await
+            .expect_err("symbolic link must not be replaced");
+            assert!(error.to_string().contains("symbolic link"), "{error}");
+            assert!(fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("target.txt"));
+            assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        }
     }
 
     #[cfg(unix)]
