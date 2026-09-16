@@ -3557,6 +3557,37 @@ fn move_symlink_across_devices(
     dest: &Path,
     remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), BackendError> {
+    let identity = symlink_identity(src)?;
+    let parent = src.parent().ok_or_else(|| BackendError::FilesystemInvalidPath {
+        message: "Move source has no parent".to_string(),
+    })?;
+    let quarantine = tempfile::Builder::new().prefix(".macro-move-source-").tempdir_in(parent)
+        .map_err(|error| io_error_to_backend_error(error, parent))?;
+    let isolated = quarantine.path().join("entry");
+    std::fs::rename(src, &isolated)
+        .map_err(|error| io_error_to_backend_error(error, src))?;
+    let outcome = if symlink_identity(&isolated).ok() == Some(identity) {
+        move_isolated_symlink_across_devices(&isolated, dest, remove_source)
+    } else {
+        Err(BackendError::Filesystem { message: "Move source changed before isolation.".to_string() })
+    };
+    if let Err(error) = outcome {
+        if let Err(restore) = rename_without_replacement(&isolated, src) {
+            let recovery = quarantine.keep();
+            return Err(BackendError::Filesystem {
+                message: format!("{error} Source preserved at '{}' because restoration failed: {restore}", recovery.join("entry").display()),
+            });
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn move_isolated_symlink_across_devices(
+    src: &Path,
+    dest: &Path,
+    remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), BackendError> {
     let target = std::fs::read_link(src).map_err(|error| io_error_to_backend_error(error, src))?;
     let parent = dest.parent().ok_or_else(|| BackendError::FilesystemInvalidPath {
         message: "Move destination has no parent".to_string(),
@@ -3889,6 +3920,23 @@ mod tests {
             .contains("Destination changed"));
         assert_eq!(fs::read_to_string(&dest).unwrap(), "concurrent content");
         assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_files_cross_device_move_preserves_new_entry_at_original_source_path() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
+        let src = workspace.path().join("alias");
+        let dest = workspace.path().join("destination");
+        std::os::unix::fs::symlink("target.txt", &src).unwrap();
+        move_symlink_across_devices(&src, &dest, |isolated| {
+            fs::write(&src, "new source entry")?;
+            remove_symlink(isolated)
+        }).unwrap();
+        assert_eq!(fs::read_to_string(&src).unwrap(), "new source entry");
+        assert_eq!(fs::read_link(&dest).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(fs::read_to_string(workspace.path().join("target.txt")).unwrap(), "retained");
     }
 
     #[test]
