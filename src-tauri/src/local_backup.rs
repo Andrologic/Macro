@@ -369,6 +369,32 @@ fn strip_credentials(value: &mut serde_json::Value) {
         _ => {}
     }
 }
+fn make_config_files_portable(files: &mut BTreeMap<String, Entry>) -> Result<()> {
+    for file in CONFIG_FILES {
+        let active = format!("config/{file}");
+        let approved = format!("config/.runtime/approved/user/{file}");
+        let pending = format!("config/.runtime/pending/user/{file}");
+        files.remove(&pending);
+
+        if let Some(approved_entry) = files.get(&approved).cloned() {
+            files.insert(active.clone(), approved_entry);
+        }
+
+        for name in [&active, &approved] {
+            let Some(entry) = files.get_mut(name) else {
+                continue;
+            };
+            let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            strip_credentials(&mut json);
+            let bytes = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
+            entry.sha256 = hash(&bytes);
+            entry.data = STANDARD.encode(bytes);
+        }
+    }
+    Ok(())
+}
 async fn capture(
     data: &Path,
     config: &Path,
@@ -405,16 +431,16 @@ async fn capture(
                 config.join(&relative)
             };
             if path.exists() {
-                let mut bytes = read_bounded(&path)?;
-                if portable {
-                    let mut json: serde_json::Value =
-                        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-                    strip_credentials(&mut json);
-                    bytes = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
-                }
-                add_file(&mut files, format!("config/{relative}"), bytes)?;
+                add_file(
+                    &mut files,
+                    format!("config/{relative}"),
+                    read_bounded(&path)?,
+                )?;
             }
         }
+    }
+    if portable {
+        make_config_files_portable(&mut files)?;
     }
     Ok(Archive {
         format: "macro-local-profile".into(),
@@ -714,6 +740,7 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
             "data/macro.db".into(),
             read_bounded(&normalized)?,
         )?;
+        make_config_files_portable(&mut archive.files)?;
         archive.format = "macro-local-profile".into();
     }
     validate(&archive).await?;
@@ -1468,6 +1495,58 @@ mod tests {
         .unwrap();
         pool.close().await;
 
+        let provider_document = |base_url: &str, sentinel: &str| {
+            serde_json::json!({
+                "$schema": "providers.schema.json",
+                "schemaVersion": 1,
+                "providers": {
+                    "synthetic-provider": {
+                        "providerType": "openai",
+                        "name": "Synthetic provider",
+                        "enabled": false,
+                        "baseUrl": base_url,
+                        "isLocal": false,
+                        "options": {
+                            "apiKey": sentinel,
+                            "headers": { "Authorization": sentinel },
+                            "env": { "SYNTHETIC_TOKEN": sentinel }
+                        }
+                    }
+                }
+            })
+        };
+        let approved_dir = config.join(".runtime/approved/user");
+        let pending_dir = config.join(".runtime/pending/user");
+        fs::create_dir_all(&approved_dir).unwrap();
+        fs::create_dir_all(&pending_dir).unwrap();
+        fs::write(
+            config.join("providers.json"),
+            serde_json::to_vec(&provider_document(
+                "https://current.invalid/v1",
+                "active-secret-sentinel",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            approved_dir.join("providers.json"),
+            serde_json::to_vec(&provider_document(
+                "https://approved.invalid/v1",
+                "approved-secret-sentinel",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            pending_dir.join("providers.json"),
+            serde_json::to_vec(&provider_document(
+                "https://pending.invalid/v1",
+                "pending-secret-sentinel",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
         let raw = capture_raw(&data, &config, BTreeMap::new()).unwrap();
         let raw_path = temp.path().join("raw-profile.json");
         preserve_raw(&raw, &raw_path).unwrap();
@@ -1501,6 +1580,33 @@ mod tests {
         assert_eq!(portable_auth, (None, 0, None, None, None));
         portable_connection.close().await.unwrap();
 
+        assert!(!portable
+            .files
+            .contains_key("config/.runtime/pending/user/providers.json"));
+        for name in [
+            "config/providers.json",
+            "config/.runtime/approved/user/providers.json",
+        ] {
+            let bytes = STANDARD.decode(&portable.files[name].data).unwrap();
+            assert_eq!(portable.files[name].sha256, hash(&bytes));
+            let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/baseUrl"),
+                Some(&serde_json::json!("https://approved.invalid/v1"))
+            );
+            assert!(document
+                .pointer("/providers/synthetic-provider/options/apiKey")
+                .is_none());
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/headers"),
+                Some(&serde_json::json!({}))
+            );
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/env"),
+                Some(&serde_json::json!({}))
+            );
+        }
+
         let (_rollback_temp, rollback_data, rollback_config) = profile().await;
         apply_files(&raw, &rollback_data, &rollback_config, true).unwrap();
         let mut rollback_connection = connection(&rollback_data.join("macro.db")).await.unwrap();
@@ -1531,5 +1637,42 @@ mod tests {
             )
         );
         rollback_connection.close().await.unwrap();
+
+        for (path, expected_url, expected_secret) in [
+            (
+                rollback_config.join("providers.json"),
+                "https://current.invalid/v1",
+                "active-secret-sentinel",
+            ),
+            (
+                rollback_config.join(".runtime/approved/user/providers.json"),
+                "https://approved.invalid/v1",
+                "approved-secret-sentinel",
+            ),
+            (
+                rollback_config.join(".runtime/pending/user/providers.json"),
+                "https://pending.invalid/v1",
+                "pending-secret-sentinel",
+            ),
+        ] {
+            let document: serde_json::Value =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/baseUrl"),
+                Some(&serde_json::json!(expected_url))
+            );
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/apiKey"),
+                Some(&serde_json::json!(expected_secret))
+            );
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/headers/Authorization"),
+                Some(&serde_json::json!(expected_secret))
+            );
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/env/SYNTHETIC_TOKEN"),
+                Some(&serde_json::json!(expected_secret))
+            );
+        }
     }
 }

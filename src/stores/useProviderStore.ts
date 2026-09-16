@@ -91,6 +91,9 @@ let providerConfigMutationVersion = 0;
 const providerSettingsRequestVersionById = new Map<string, number>();
 const providerModelScanGenerationById = new Map<string, number>();
 const providerTransportMutations = new Set<string>();
+const providerConfigsNeedingReload = new Set<string>();
+const isProviderTransportUnavailable = (providerId: string): boolean =>
+  providerTransportMutations.has(providerId) || providerConfigsNeedingReload.has(providerId);
 const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
 const enqueueProviderMutation = createKeyedSerialQueue<string>();
 
@@ -125,7 +128,7 @@ const persistProviderModelsIfCurrent = async (
 ): Promise<boolean> => {
   const generation = providerModelScanGenerationById.get(providerId) ?? 0;
   return enqueueProviderModelPersistence(providerId, async () => {
-    if ((providerModelScanGenerationById.get(providerId) ?? 0) !== generation) {
+    if (isProviderTransportUnavailable(providerId) || (providerModelScanGenerationById.get(providerId) ?? 0) !== generation) {
       return false;
     }
     await tauriIpc.upsertProviderModels({ providerId, models });
@@ -755,7 +758,7 @@ interface ProviderStore {
 
   // Actions
   initialize: () => Promise<void>;
-  loadProviderConfigs: () => Promise<void>;
+  loadProviderConfigs: (options?: { throwOnError?: boolean }) => Promise<void>;
   fetchModelsForProvider: (providerId: string) => Promise<AIModel[]>;
   loadProviderModels: (providerId: string) => Promise<AIModel[]>;
   scanModelsForProvider: (providerId: string) => Promise<AIModel[]>;
@@ -1005,6 +1008,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const changedModelsByProvider: Record<string, AIModel[]> = {};
 
     for (const currentProviderId of providerIds) {
+      if (isProviderTransportUnavailable(currentProviderId)) continue;
       const models = state.modelsByProvider[currentProviderId] || [];
       if (models.length === 0) continue;
 
@@ -1116,8 +1120,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   resolveProviderApiKey: async (providerId: string, options?: { forceRefresh?: boolean }) => {
-    if (providerTransportMutations.has(providerId)) {
-      throw new Error('Provider configuration is being updated. Retry the request.');
+    if (isProviderTransportUnavailable(providerId)) {
+      throw new Error('Provider configuration is unavailable. Reload providers and retry.');
     }
     const config = get().providerConfigs.find((provider) => provider.id === providerId);
     if (!config) {
@@ -1169,7 +1173,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
-  loadProviderConfigs: async () => {
+  loadProviderConfigs: async (options) => {
     const hydrationVersion = providerConfigMutationVersion;
     set({ isLoading: true, lastError: null });
 
@@ -1191,6 +1195,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           mergedProviderConfigs,
           currentProviderConfigs
         );
+        // A failed catalog cleanup may have left rows belonging to the previous
+        // endpoint. Recover both the configuration and its cache before reuse.
+        const reloadedProviderIds = providerConfigs
+          .filter((provider) => providerConfigsNeedingReload.has(provider.id))
+          .map((provider) => provider.id);
+        for (const providerId of reloadedProviderIds) {
+          await tauriIpc.upsertProviderModels({ providerId, models: [], replaceDiscovered: true });
+        }
+        if (hydrationVersion !== providerConfigMutationVersion) {
+          set({ isLoading: false });
+          return;
+        }
+        for (const providerId of reloadedProviderIds) providerConfigsNeedingReload.delete(providerId);
         const currentSelectedProviderId = get().selectedProviderId;
         const currentSelectedModelId = get().selectedModelId;
         const currentSelectedProvider = providerConfigs.find(
@@ -1245,6 +1262,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load providers';
       set({ isLoading: false, lastError: message });
+      if (options?.throwOnError) throw error;
     }
   },
 
@@ -1254,14 +1272,25 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   loadProviderModels: async (providerId: string) => {
+    if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
+    const generation = providerModelScanGenerationById.get(providerId) ?? 0;
     const { modelsByProvider, providerConfigs } = get();
     const providerConfig = providerConfigs.find((provider) => provider.id === providerId);
+    const isCurrent = () => {
+      const current = get().providerConfigs.find((provider) => provider.id === providerId);
+      return !isProviderTransportUnavailable(providerId) &&
+        (providerModelScanGenerationById.get(providerId) ?? 0) === generation &&
+        current?.providerType === providerConfig?.providerType &&
+        current?.baseUrl === providerConfig?.baseUrl &&
+        current?.isLocal === providerConfig?.isLocal;
+    };
     const providerType = providerConfig?.providerType;
     if (ipcIsTauriAvailable()) {
       set({ isLoadingModels: true });
       try {
         void refreshModelContextCatalog();
         const models = await ipcListProviderModels(providerId);
+        if (!isCurrent()) return get().modelsByProvider[providerId] || [];
         const normalized = enrichModelsWithCatalogContextLimits(
           models.map((model) => normalizeDbModel(model, providerType)),
           {
@@ -1314,6 +1343,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         return normalized;
       } catch (error) {
+        if (!isCurrent()) return get().modelsByProvider[providerId] || [];
         const message = error instanceof Error ? error.message : 'Failed to load models';
         set({ isLoadingModels: false, lastError: message });
         return modelsByProvider[providerId] || [];
@@ -1324,7 +1354,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   scanModelsForProvider: async (providerId: string) => {
-    if (providerTransportMutations.has(providerId)) return get().modelsByProvider[providerId] || [];
+    if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
     const scanGeneration = providerModelScanGenerationById.get(providerId) ?? 0;
     const isCurrentScan = () =>
       (providerModelScanGenerationById.get(providerId) ?? 0) === scanGeneration;
@@ -2368,6 +2398,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   updateCopilotProvider: (providerId, updates, copilotSendTimeoutMs) =>
     enqueueProviderMutation(providerId, async () => {
       requireProviderConfigurationIpc();
+      if (providerConfigsNeedingReload.has(providerId)) {
+        throw new Error('Reload the provider configuration before changing it again.');
+      }
       providerConfigMutationVersion += 1;
       startProviderSettingsRequest(providerId);
       let persistedSettings: Awaited<ReturnType<typeof ipcGetProviderSettings>>;
@@ -2669,6 +2702,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     enqueueProviderMutation(id, async () => {
       try {
       requireProviderConfigurationIpc();
+      if (providerConfigsNeedingReload.has(id)) {
+        throw new Error('Reload the provider configuration before changing it again.');
+      }
       providerConfigMutationVersion += 1;
 
       const currentConfig = get().providerConfigs.find((provider) => provider.id === id);
@@ -2751,9 +2787,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
                   modelsByProvider: { ...state.modelsByProvider, [id]: [] },
                   ...(state.selectedProviderId === id ? { selectedModelId: null, selectedReasoningEffort: null } : {}),
                 }));
+                providerConfigsNeedingReload.add(id);
                 let reloadFailure = '';
                 try {
-                  await get().loadProviderConfigs();
+                  await get().loadProviderConfigs({ throwOnError: true });
                 } catch (reloadError) {
                   reloadFailure = ` Failed to reload provider configuration: ${getErrorMessage(reloadError, 'unknown error')}`;
                 }
@@ -3506,7 +3543,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
   testConnection: async (providerId: string) => {
     const generation = providerModelScanGenerationById.get(providerId) ?? 0;
-    const isCurrent = () => !providerTransportMutations.has(providerId) &&
+    const isCurrent = () => !isProviderTransportUnavailable(providerId) &&
       (providerModelScanGenerationById.get(providerId) ?? 0) === generation;
     const obsoleteResult = { success: false, message: 'Provider configuration changed. Retry the connection check.', status: 'unknown' as const };
     if (!isCurrent()) return obsoleteResult;

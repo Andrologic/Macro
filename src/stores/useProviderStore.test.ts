@@ -591,6 +591,56 @@ describe('useProviderStore secret resolution', () => {
     expect(useProviderStore.getState().providerReachabilityById.chatgpt?.status).not.toBe('reachable');
   });
 
+  for (const updates of [{ baseUrl: 'https://hydrated.invalid/v1' }, { providerType: 'custom' }, { apiKey: 'synthetic-new-key' }]) {
+    for (const failure of [false, true]) {
+      it(`discards stale model hydration after ${JSON.stringify(updates)}, failure=${failure}`, async () => {
+        const { useProviderStore } = await loadProviderStore();
+        await useProviderStore.getState().loadProviderConfigs();
+        let release!: () => void;
+        listProviderModelsMock.mockImplementationOnce(() => new Promise<never[]>((resolve, reject) => {
+          release = () => failure ? reject(new Error('old hydration error')) : resolve([dbModel('provider-openai', 'old-model')] as never[]);
+        }));
+        const pending = useProviderStore.getState().loadProviderModels('provider-openai');
+        await flushAsyncWork();
+        await useProviderStore.getState().updateProviderConfig('provider-openai', updates);
+        const writes = upsertProviderModelsMock.mock.calls.length;
+        const currentModels = useProviderStore.getState().modelsByProvider['provider-openai'];
+        release();
+        await pending;
+        await flushAsyncWork();
+        expect(useProviderStore.getState().modelsByProvider['provider-openai']).toEqual(currentModels);
+        expect(upsertProviderModelsMock).toHaveBeenCalledTimes(writes);
+        expect(useProviderStore.getState().lastError).not.toBe('old hydration error');
+      });
+    }
+  }
+
+  it('blocks uncertain provider operations until authoritative reload succeeds', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    const nativeConfig = (await listProviderConfigsMock())[0];
+    updateProviderConfigMock.mockImplementationOnce(async () => undefined);
+    updateProviderConfigMock.mockImplementationOnce(async () => { throw new Error('rollback failed'); });
+    upsertProviderModelsMock.mockImplementationOnce(async () => { throw new Error('catalog failed'); });
+    listProviderConfigsMock.mockImplementationOnce(async () => { throw new Error('reload failed'); });
+    await expect(useProviderStore.getState().updateProviderConfig('provider-openai', { baseUrl: 'https://actual.invalid/v1' })).rejects.toThrow('reload failed');
+    expect(await useProviderStore.getState().scanModelsForProvider('provider-openai')).toEqual([]);
+    expect((await useProviderStore.getState().testConnection('provider-openai')).success).toBe(false);
+    await expect(useProviderStore.getState().resolveProviderApiKey('provider-openai')).rejects.toThrow('configuration');
+    expect(probeModelsEndpointMock).not.toHaveBeenCalled();
+    expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+    await expect(useProviderStore.getState().updateProviderConfig('provider-openai', { name: 'Retry' })).rejects.toThrow('Reload');
+    listProviderConfigsMock.mockImplementationOnce(async () => [{ ...nativeConfig, base_url: 'https://actual.invalid/v1' }]);
+    upsertProviderModelsMock.mockImplementationOnce(async () => { throw new Error('recovery catalog failed'); });
+    await expect(useProviderStore.getState().loadProviderConfigs({ throwOnError: true })).rejects.toThrow('recovery catalog failed');
+    expect((await useProviderStore.getState().testConnection('provider-openai')).success).toBe(false);
+    listProviderConfigsMock.mockImplementationOnce(async () => [{ ...nativeConfig, base_url: 'https://actual.invalid/v1' }]);
+    await useProviderStore.getState().loadProviderConfigs({ throwOnError: true });
+    expect(upsertProviderModelsMock).toHaveBeenLastCalledWith({ providerId: 'provider-openai', models: [], replaceDiscovered: true });
+    await useProviderStore.getState().testConnection('provider-openai');
+    expect(probeProviderReachabilityMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://actual.invalid/v1' }));
+  });
+
   it('uses a stored API key to scan models after a restart', async () => {
     const providerStore = await loadProviderStore();
     await providerStore.useProviderStore.getState().loadProviderConfigs();
