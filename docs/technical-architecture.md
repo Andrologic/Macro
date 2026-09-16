@@ -498,9 +498,28 @@ messages. Trois triggers le synchronisent avec les insertions, modifications et
 suppressions. Le repository reçoit la liste des conversations admissibles et
 applique cette portée avant la pagination, puis expose une recherche bornée et
 paginée ainsi qu'une reconstruction déterministe de l'index depuis `messages`.
-La validation des sauvegardes compare les tables, les définitions des tables
-virtuelles, les index applicatifs, les vues et les triggers au schéma de
-référence produit par la version courante de Macro.
+La validation des sauvegardes compare les colonnes, les clés étrangères et leurs
+actions de cascade, les définitions des tables virtuelles, les index applicatifs,
+les vues et les triggers au schéma de référence de la version courante. Une clé
+étrangère absente est refusée même si `integrity_check` et `foreign_key_check` ne
+trouvent aucune erreur. La comparaison structurelle des tables ordinaires reste
+compatible avec les différences de texte SQL dues aux migrations historiques.
+
+Les archives locales restent hors des répertoires de données et de configuration,
+y compris lorsque leur chemin passe par un alias symbolique. La préparation
+publie un fichier complet, synchronisé, sans écraser une destination existante.
+Au démarrage, une demande illisible est isolée et signalée par un statut de
+récupération. Le bootstrap portable laisse `ConfigManager` choisir le runtime
+approuvé avant d'appliquer le workspace ; il ne parse pas le fichier brut.
+
+Avant la capture ou la restauration, les chemins gérés sont contrôlés même si
+l'archive omet leurs fichiers. Les checkpoints utilisent les mêmes limites de
+profondeur et de nombre de nœuds implicites lors de la validation et de la
+préservation. Le rollback retire les dossiers de checkpoints devenus vides pour
+rétablir une ancienne feuille fichier. La demande terminée est retirée avant le
+journal de restauration pour empêcher son rejeu après récupération. Les statuts
+natifs exposent un code et un chemin ; l'interface traduit le résumé et conserve
+les messages techniques dans les détails du diagnostic.
 
 ### 9.4 `fs`
 

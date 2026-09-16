@@ -238,6 +238,20 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
+    async fn invalid_state_survives_startup_and_every_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(STATE_FILE_NAME);
+        let original = b"{truncated state";
+        fs::write(&path, original).unwrap();
+        let manager = StateManager::initialize(temp.path()).unwrap();
+        assert!(manager.set("session".into(), json!("new")).await.is_err());
+        assert!(manager.delete("session").await.is_err());
+        assert!(manager.clear().await.is_err());
+        assert!(manager.snapshot().await.values.is_empty());
+        assert_eq!(fs::read(path).unwrap(), original);
+    }
+
+    #[tokio::test]
     async fn state_is_atomic_and_separate_from_configuration() {
         let temp = tempfile::tempdir().expect("tempdir");
         let manager = StateManager::initialize(temp.path()).expect("state manager");

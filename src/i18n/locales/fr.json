@@ -2535,6 +2535,15 @@
     "confirmRestore": "Au prochain démarrage, cette archive remplacera votre profil local. Macro la valide d’abord et conserve le profil précédent pour récupération. Arrêtez les tâches en cours et quittez immédiatement après confirmation. Restaurer ce fichier ?",
     "confirmExport": "Arrêtez les tâches en cours avant de continuer. Macro créera l’archive au prochain démarrage, avant l’ouverture de la base et de la configuration. Préparer cette sauvegarde ?",
     "confirm": "Confirmer",
-    "scheduled": "Opération préparée. Quittez complètement Macro, puis rouvrez-le. Ne modifiez plus cette session avant de quitter."
+    "scheduled": "Opération préparée. Quittez complètement Macro, puis rouvrez-le. Ne modifiez plus cette session avant de quitter.",
+    "resultExported": "Sauvegarde enregistrée.",
+    "resultRestored": "Profil restauré. Le profil précédent est conservé au chemin ci-dessous.",
+    "resultRolledBack": "La restauration interrompue a été annulée. Le profil précédent a été récupéré.",
+    "resultFailed": "L’opération de sauvegarde n’a pas pu se terminer. Consultez les détails du diagnostic.",
+    "resultInvalidRequest": "La demande en attente était invalide et a été isolée. Votre profil n’a pas été modifié.",
+    "resultLegacy": "Le résultat d’une version précédente est disponible dans les détails du diagnostic.",
+    "diagnostics": "Détails du diagnostic",
+    "startupTitle": "Récupération du profil nécessaire",
+    "startupRecovery": "La restauration des données du navigateur n’a pas pu se terminer. L’archive native de récupération est conservée. Consultez le diagnostic, libérez du stockage local si nécessaire, puis redémarrez Macro pour réessayer."
   }
 }
