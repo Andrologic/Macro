@@ -7,9 +7,7 @@ use crate::fs::dto::{
     DirEntryDto, FileContentDto, FileStatsDto, WorkspaceFileSearchResultDto,
     WorkspaceFileSearchRootDto, WriteResultDto,
 };
-use crate::fs::{
-    get_file_language, is_binary_file, normalize_path, validate_path, validate_path_for_write,
-};
+use crate::fs::{get_file_language, normalize_path, validate_path, validate_path_for_write};
 use crate::git::GitState;
 use crate::project_path::{
     join_wsl_path, normalize_linux_path, parse_wsl_unc_path, run_wsl_shell,
@@ -933,7 +931,7 @@ fn epoch_to_rfc3339(value: &str) -> Option<String> {
 }
 
 fn bytes_look_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|byte| *byte == 0)
+    bytes.contains(&0) || std::str::from_utf8(bytes).is_err()
 }
 
 pub(crate) fn content_revision(bytes: &[u8]) -> String {
@@ -1282,6 +1280,74 @@ async fn write_wsl_file_internal_with_revision(
     })
 }
 
+const WSL_LIST_SCRIPT: &str = r#"
+root=$1
+depth=$2
+include_hidden=$3
+limit=$4
+hidden_pattern='.*'
+if [ "$include_hidden" = "1" ]; then hidden_pattern=''; fi
+find "$root" -mindepth 1 -maxdepth "$depth" \
+  \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt \
+     -o -name dist -o -name build -o -name __pycache__ -o -name .cache \
+     -o -name .DS_Store -o -name Thumbs.db -o -name .idea -o -name "$hidden_pattern" \) -prune -o \
+  -printf '%p\0%P\0%f\0%y\0%s\0%T@\0%m\0' | head -z -n "$((limit * 7))"
+"#;
+
+fn wsl_mode_is_readonly(permissions: &str) -> bool {
+    // Match std::fs::Permissions::readonly on Unix: no write bit is set.
+    u32::from_str_radix(permissions.trim(), 8).map_or(true, |mode| mode & 0o222 == 0)
+}
+
+fn parse_wsl_directory_records(
+    bytes: &[u8],
+    distro: &str,
+    include_hidden: bool,
+) -> Result<Vec<DirEntryDto>, BackendError> {
+    let invalid = || BackendError::Filesystem {
+        message: "Invalid WSL directory records".to_string(),
+    };
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+    let text = text.strip_suffix('\0').ok_or_else(invalid)?;
+    let fields: Vec<_> = text.split('\0').collect();
+    if fields.len() % 7 != 0 {
+        return Err(invalid());
+    }
+    fields
+        .chunks_exact(7)
+        .filter(|parts| include_hidden || !parts[1].split('/').any(|part| part.starts_with('.')))
+        .map(|parts| {
+            let name = parts[2].to_string();
+            let kind = match parts[3] {
+                "d" => "directory",
+                "l" => "symlink",
+                _ => "file",
+            }
+            .to_string();
+            let size = if kind == "directory" {
+                None
+            } else {
+                Some(parts[4].parse::<u64>().map_err(|_| invalid())?)
+            };
+            Ok(DirEntryDto {
+                path: wsl_unc_path(distro, parts[0]),
+                relative_path: parts[1].to_string(),
+                name: name.clone(),
+                kind,
+                size,
+                modified: epoch_to_rfc3339(parts[5]),
+                created: None,
+                language: get_file_language(Path::new(&name)),
+                is_hidden: name.starts_with('.'),
+                is_readonly: wsl_mode_is_readonly(parts[6]),
+            })
+        })
+        .collect()
+}
+
 async fn list_wsl_dir_internal(
     workspace: &WslProjectPath,
     path: String,
@@ -1306,26 +1372,9 @@ async fn list_wsl_dir_internal(
         "0"
     }
     .to_string();
-    let script = r#"
-root=$1
-depth=$2
-include_hidden=$3
-limit=$4
-find "$root" -mindepth 1 -maxdepth "$depth" \
-  \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt \
-     -o -name dist -o -name build -o -name __pycache__ -o -name .cache \
-     -o -name .DS_Store -o -name Thumbs.db -o -name .idea \) -prune -o \
-  -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null |
-while IFS="$(printf '\t')" read -r full rel name type size mtime perm; do
-  if [ "$include_hidden" != "1" ]; then
-    case "$name" in .*) continue;; esac
-  fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$full" "$rel" "$name" "$type" "$size" "$mtime" "$perm"
-done | head -n "$limit"
-"#;
     let output = run_wsl_shell(
         &resolved,
-        script,
+        WSL_LIST_SCRIPT,
         &[
             resolved.linux_path.clone(),
             depth,
@@ -1336,44 +1385,11 @@ done | head -n "$limit"
     )
     .await?;
 
-    let mut entries = Vec::new();
-    for line in output.stdout_text().lines() {
-        let parts = line.splitn(7, '\t').collect::<Vec<_>>();
-        if parts.len() < 7 {
-            continue;
-        }
-        let full_linux_path = parts[0].to_string();
-        let relative_path = parts[1].replace('\\', "/");
-        let name = parts[2].to_string();
-        let kind = match parts[3] {
-            "d" => "directory",
-            "l" => "symlink",
-            _ => "file",
-        }
-        .to_string();
-        let size = if kind == "file" || kind == "symlink" {
-            Some(parts[4].trim().parse::<u64>().unwrap_or(0))
-        } else {
-            None
-        };
-        let modified = epoch_to_rfc3339(parts[5]);
-        let permissions = parts[6].trim();
-        entries.push(DirEntryDto {
-            path: wsl_unc_path(&resolved.distro, &full_linux_path),
-            relative_path,
-            name: name.clone(),
-            kind,
-            size,
-            modified,
-            created: None,
-            language: get_file_language(Path::new(&name)),
-            is_hidden: name.starts_with('.'),
-            is_readonly: !permissions.ends_with('2')
-                && !permissions.ends_with('3')
-                && !permissions.ends_with('6')
-                && !permissions.ends_with('7'),
-        });
-    }
+    let mut entries = parse_wsl_directory_records(
+        &output.stdout,
+        &resolved.distro,
+        include_hidden.unwrap_or(false),
+    )?;
 
     ensure_directory_list_within_limit(entries.len(), recursive.unwrap_or(false))?;
 
@@ -1418,10 +1434,7 @@ async fn stat_wsl_internal(
         } else {
             None
         },
-        is_readonly: !permissions.ends_with('2')
-            && !permissions.ends_with('3')
-            && !permissions.ends_with('6')
-            && !permissions.ends_with('7'),
+        is_readonly: wsl_mode_is_readonly(&permissions),
         is_hidden: name.starts_with('.'),
         is_symlink: kind == "symlink",
         symlink_target,
@@ -1606,6 +1619,39 @@ mv -f -- "$src" "$dest"
 }
 
 /// Internal function that reads file content. This is separated for testability.
+fn read_open_file(
+    mut file: std::fs::File,
+    path: &Path,
+) -> Result<(Vec<u8>, Option<u32>), BackendError> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| io_error_to_backend_error(error, path))?;
+    if !metadata.is_file() {
+        return Err(BackendError::FilesystemIsDirectory {
+            message: format!("The path '{}' is not a regular file.", path.display()),
+        });
+    }
+    let too_large = || BackendError::FilesystemFileTooLarge {
+        message: format!(
+            "The file '{}' exceeds the maximum allowed size of {} bytes.",
+            path.display(),
+            MAX_FILE_SIZE_BYTES
+        ),
+    };
+    if metadata.len() > MAX_FILE_SIZE_BYTES {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_FILE_SIZE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error_to_backend_error(error, path))?;
+    if bytes.len() as u64 > MAX_FILE_SIZE_BYTES {
+        return Err(too_large());
+    }
+    Ok((bytes, metadata_unix_mode(&metadata)))
+}
+
 pub async fn read_file_internal(
     workspace: &Path,
     path: String,
@@ -1627,44 +1673,48 @@ pub async fn read_file_internal(
     } else {
         validate_path(&path_buf, workspace)?
     };
-    let file_metadata = tokio::fs::metadata(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?; // Get file metadata
-    let unix_mode = metadata_unix_mode(&file_metadata);
-
-    // Check if it's a file
-    if !file_metadata.is_file() {
-        return Err(BackendError::FilesystemIsDirectory {
-            message: format!("The path '{}' is a directory, not a file.", path),
-        });
-    }
-    // Check file size
-    if file_metadata.len() > MAX_FILE_SIZE_BYTES {
-        return Err(BackendError::FilesystemFileTooLarge {
-            message: format!(
-                "The file '{}' exceeds the maximum allowed size of {} bytes.",
-                path, MAX_FILE_SIZE_BYTES
-            ),
-        });
-    }
-    // Verify if file is accessible
-    let _file = tokio::fs::File::open(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-
-    // Verify if binary or text file
-    let is_binary = is_binary_file(&validated_path)?;
-    let bytes = tokio::fs::read(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-    if bytes.len() as u64 > MAX_FILE_SIZE_BYTES {
-        return Err(BackendError::FilesystemFileTooLarge {
-            message: format!(
-                "The file '{}' exceeds the maximum allowed size of {} bytes.",
-                path, MAX_FILE_SIZE_BYTES
-            ),
-        });
-    }
+    let workspace = workspace.to_path_buf();
+    let expected_identity = if allow_outside {
+        None
+    } else {
+        Some(match expected_workspace_root_identity(&workspace) {
+            Some(identity) => identity,
+            None => workspace_root_identity(&workspace)?,
+        })
+    };
+    let read_path = validated_path.clone();
+    let (bytes, unix_mode) = tokio::task::spawn_blocking(move || {
+        let file = if allow_outside {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK);
+            }
+            options
+                .open(&read_path)
+                .map_err(|error| io_error_to_backend_error(error, &read_path))?
+        } else {
+            let (directory, relative_path) =
+                open_workspace_capability(&workspace, &read_path, expected_identity)?;
+            let mut options = CapabilityOpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK);
+            }
+            directory
+                .open_with(relative_path, &options)
+                .map_err(|error| io_error_to_backend_error(error, &read_path))?
+                .into_std()
+        };
+        read_open_file(file, &read_path)
+    })
+    .await
+    .map_err(capability_task_error)??;
+    let is_binary = bytes_look_binary(&bytes);
     let actual_size = bytes.len() as u64;
     let revision = content_revision(&bytes);
     if is_binary {
@@ -2566,13 +2616,15 @@ fn search_workspace_files_blocking(
     let mut candidates: Vec<(i32, WorkspaceFileSearchResultDto)> = Vec::new();
 
     for root in roots {
-        let root_candidate_start = candidates.len();
         let workspace = PathBuf::from(root.workspace_path.trim());
         if workspace.as_os_str().is_empty() || !workspace.is_dir() {
             continue;
         }
 
-        let mut walkdir = walkdir::WalkDir::new(&workspace).into_iter();
+        let mut scanned_entries = 0usize;
+        let mut walkdir = walkdir::WalkDir::new(&workspace)
+            .sort_by_file_name()
+            .into_iter();
         while let Some(entry_result) = walkdir.next() {
             let entry = entry_result.map_err(|error| BackendError::Filesystem {
                 message: format!("Failed to read directory entry: {}", error),
@@ -2590,6 +2642,11 @@ fn search_workspace_files_blocking(
                     walkdir.skip_current_dir();
                 }
                 continue;
+            }
+
+            if !relative_path_buf.as_os_str().is_empty() {
+                scanned_entries += 1;
+                ensure_directory_list_within_limit(scanned_entries, true)?;
             }
 
             if !entry.file_type().is_file() {
@@ -2644,8 +2701,9 @@ fn search_workspace_files_blocking(
                 },
             ));
 
-            if candidates.len() - root_candidate_start >= MAX_FILE_SEARCH_CANDIDATES {
-                break;
+            if candidates.len() > MAX_FILE_SEARCH_CANDIDATES {
+                sort_workspace_file_candidates(&mut candidates);
+                candidates.truncate(result_limit);
             }
         }
 
@@ -2668,39 +2726,21 @@ async fn search_wsl_workspace_files(
     let Some(wsl_root) = parse_wsl_unc_path(root.workspace_path.trim()) else {
         return Ok(Vec::new());
     };
-    let should_include_hidden = include_hidden.unwrap_or(false);
-    let include_hidden_flag = if should_include_hidden { "1" } else { "0" }.to_string();
-    let script = r#"
-root=$1
-include_hidden=$2
-limit=$3
-if [ "$include_hidden" = "1" ]; then
-  find "$root" -mindepth 1 -maxdepth 8 \( -type d \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt -o -name dist -o -name build -o -name __pycache__ -o -name .cache -o -name .idea \) -prune \) -o -type f -printf '%P\t%f\t%s\t%T@\n' 2>/dev/null | head -n "$limit"
-else
-  find "$root" -mindepth 1 -maxdepth 8 \( -type d \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt -o -name dist -o -name build -o -name __pycache__ -o -name .cache -o -name .idea -o -name '.*' \) -prune \) -o -type f ! -name '.*' -printf '%P\t%f\t%s\t%T@\n' 2>/dev/null | head -n "$limit"
-fi
-"#;
-    let output = run_wsl_shell(
+    let entries = list_wsl_dir_internal(
         &wsl_root,
-        script,
-        &[
-            wsl_root.linux_path.clone(),
-            include_hidden_flag,
-            MAX_FILE_SEARCH_CANDIDATES.to_string(),
-        ],
-        WSL_FS_TIMEOUT,
+        ".".to_string(),
+        Some(true),
+        include_hidden,
+        Some(8),
+        Some(false),
     )
     .await?;
     let normalized_query = normalize_search_text(query);
     let use_virtual_root = virtual_root_enabled.unwrap_or(false);
     let mut candidates = Vec::new();
-    for line in output.stdout_text().lines() {
-        let parts = line.splitn(4, '\t').collect::<Vec<_>>();
-        if parts.len() < 4 {
-            continue;
-        }
-        let relative_path = parts[0].replace('\\', "/");
-        let name = parts[1].to_string();
+    for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
+        let relative_path = entry.relative_path;
+        let name = entry.name;
         let score = workspace_file_match_score(&normalized_query, &relative_path, &name);
         if score <= 0 {
             continue;
@@ -2728,8 +2768,8 @@ fi
                 project_id: root.project_id.clone(),
                 project_name: root.project_name.clone(),
                 language: get_file_language(Path::new(&name)),
-                size_bytes: parts[2].trim().parse::<u64>().ok(),
-                modified: epoch_to_rfc3339(parts[3]),
+                size_bytes: entry.size,
+                modified: entry.modified,
                 is_focused: root.is_focused,
             },
         ));
@@ -2811,10 +2851,8 @@ async fn create_dir_entry_dto(
     workspace: &Path,
     base_path: &Path,
 ) -> Result<DirEntryDto, BackendError> {
-    let metadata = tokio::fs::metadata(entry_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, entry_path))?;
-    let symlink_metadata = tokio::fs::symlink_metadata(entry_path)
+    // Describe the directory entry itself, including dangling aliases.
+    let metadata = tokio::fs::symlink_metadata(entry_path)
         .await
         .map_err(|e| io_error_to_backend_error(e, entry_path))?;
 
@@ -2831,7 +2869,7 @@ async fn create_dir_entry_dto(
         .to_string_lossy()
         .to_string();
 
-    let kind = if symlink_metadata.is_symlink() {
+    let kind = if metadata.is_symlink() {
         "symlink".to_string()
     } else if metadata.is_dir() {
         "directory".to_string()
@@ -3419,10 +3457,39 @@ pub async fn fs_move(
     if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
         return move_wsl_path_internal(&wsl_workspace, src_effective, dest_effective).await;
     }
-    let src_path = PathBuf::from(&src_effective);
-    let dest_path = PathBuf::from(&dest_effective);
+    move_native_path_internal(&workspace, &src_effective, &dest_effective).await
+}
 
-    let validated_src = validate_path(&src_path, &workspace)?;
+async fn move_native_path_internal(
+    workspace: &Path,
+    src: &str,
+    dest: &str,
+) -> Result<(), BackendError> {
+    let src_path = PathBuf::from(src);
+    let dest_path = PathBuf::from(dest);
+
+    validate_path(&src_path, workspace)?;
+    let lexical_src = if src_path.is_absolute() {
+        src_path
+    } else {
+        workspace.join(src_path)
+    };
+    let parent = lexical_src
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move source has no parent".to_string(),
+        })?;
+    let validated_parent = validate_path(parent, workspace)?;
+    let name = lexical_src
+        .file_name()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move source has no filename".to_string(),
+        })?;
+    let validated_src = validated_parent.join(name);
+    let source_is_symlink = tokio::fs::symlink_metadata(&validated_src)
+        .await
+        .map_err(|error| io_error_to_backend_error(error, &validated_src))?
+        .is_symlink();
     let validated_dest = validate_path_for_write(&dest_path, &workspace)?;
 
     // Try atomic rename first
@@ -3438,6 +3505,10 @@ pub async fn fs_move(
             Ok(())
         }
         Err(rename_err) => {
+            // Copy follows symlinks. Preserve the alias and its target when rename is unavailable.
+            if source_is_symlink {
+                return Err(io_error_to_backend_error(rename_err, &validated_src));
+            }
             // Rename failed (likely cross-filesystem), fallback to copy + delete
             tracing::debug!("Rename failed, falling back to copy+delete: {}", rename_err);
 
@@ -3490,6 +3561,186 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn local_files_text_formats_and_unknown_binary() {
+        let workspace = setup_empty_workspace();
+        let text = "<svg><title>Échantillon</title></svg>";
+        for name in ["vector.svg", "same.xml"] {
+            fs::write(workspace.path().join(name), text).unwrap();
+            let content = read_file_internal(workspace.path(), name.into(), None)
+                .await
+                .unwrap();
+            assert!(!content.is_binary);
+            assert_eq!(content.content, text);
+            assert!(!crate::fs::is_binary_file(&workspace.path().join(name)).unwrap());
+        }
+        fs::write(workspace.path().join("sample.data"), [0xff, 0xfe, 0xfd]).unwrap();
+        let content = read_file_internal(workspace.path(), "sample.data".into(), None)
+            .await
+            .unwrap();
+        assert!(content.is_binary);
+        assert_eq!(content.size, 3);
+    }
+
+    #[test]
+    fn local_files_read_uses_open_handle() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("sample.txt");
+        fs::write(&path, "original").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        fs::rename(&path, workspace.path().join("renamed.txt")).unwrap();
+        fs::write(&path, "replacement").unwrap();
+        let (bytes, _) = read_open_file(file, &path).unwrap();
+        assert_eq!(bytes, b"original");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_files_dangling_alias_does_not_abort_listing() {
+        let workspace = setup_empty_workspace();
+        fs::write(
+            workspace.path().join("normal.ts"),
+            "export const value = 1;",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("missing.ts", workspace.path().join("alias.ts")).unwrap();
+        for recursive in [false, true] {
+            let entries = list_dir_internal(
+                workspace.path(),
+                ".".into(),
+                Some(recursive),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(
+                entries
+                    .iter()
+                    .find(|entry| entry.name == "alias.ts")
+                    .unwrap()
+                    .kind,
+                "symlink"
+            );
+            assert_eq!(
+                entries
+                    .iter()
+                    .find(|entry| entry.name == "normal.ts")
+                    .unwrap()
+                    .kind,
+                "file"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_files_move_preserves_alias_targets() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
+        fs::create_dir(workspace.path().join("folder")).unwrap();
+        for target in ["target.txt", "folder"] {
+            let alias = format!("{target}-alias");
+            let moved = format!("{target}-moved");
+            std::os::unix::fs::symlink(target, workspace.path().join(&alias)).unwrap();
+            move_native_path_internal(workspace.path(), &alias, &moved)
+                .await
+                .unwrap();
+            assert!(workspace.path().join(target).exists());
+            assert_eq!(
+                fs::read_link(workspace.path().join(moved)).unwrap(),
+                PathBuf::from(target)
+            );
+            assert!(fs::symlink_metadata(workspace.path().join(alias)).is_err());
+        }
+        move_native_path_internal(workspace.path(), "target.txt", "regular.txt")
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("regular.txt")).unwrap(),
+            "retained"
+        );
+    }
+
+    #[test]
+    fn local_files_wsl_records_preserve_names_and_modes() {
+        for name in ["a\tb.ts", "a\nb.ts"] {
+            let fields = [
+                format!("/workspace/src/{name}"),
+                format!("src/{name}"),
+                name.into(),
+                "f".into(),
+                "3".into(),
+                "1700000000".into(),
+                "644".into(),
+            ];
+            let bytes = format!("{}\0", fields.join("\0")).into_bytes();
+            let entries = parse_wsl_directory_records(&bytes, "Test", false).unwrap();
+            assert_eq!(entries[0].relative_path, fields[1]);
+            assert_eq!(entries[0].name, name);
+            assert!(!entries[0].is_readonly);
+        }
+        for mode in ["644", "755", "666", "020", "002"] {
+            assert!(!wsl_mode_is_readonly(mode));
+        }
+        for mode in ["444", "555", "000"] {
+            assert!(wsl_mode_is_readonly(mode));
+        }
+        assert!(parse_wsl_directory_records(b"incomplete\0", "Test", false).is_err());
+    }
+
+    #[test]
+    fn local_files_wsl_hidden_ancestors_are_filtered() {
+        let mut records = Vec::new();
+        for relative in [
+            "visible.ts",
+            ".hidden",
+            ".hidden/visible.ts",
+            "src/.nested/visible.ts",
+        ] {
+            let name = relative.rsplit('/').next().unwrap();
+            records.extend_from_slice(
+                format!("/workspace/{relative}\0{relative}\0{name}\0f\03\01700000000\0644\0")
+                    .as_bytes(),
+            );
+        }
+        let visible = parse_wsl_directory_records(&records, "Test", false).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].relative_path, "visible.ts");
+        assert_eq!(
+            parse_wsl_directory_records(&records, "Test", true)
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn local_files_search_ranks_late_candidates_within_one_root() {
+        let workspace = setup_empty_workspace();
+        for index in 0..MAX_FILE_SEARCH_CANDIDATES + 5 {
+            fs::write(
+                workspace.path().join(format!("needle-{index:04}")),
+                "candidate",
+            )
+            .unwrap();
+        }
+        fs::create_dir(workspace.path().join("zz-last")).unwrap();
+        fs::write(workspace.path().join("zz-last/needle"), "exact").unwrap();
+        let roots = vec![WorkspaceFileSearchRootDto {
+            project_id: None,
+            project_name: None,
+            workspace_path: workspace.path().to_string_lossy().into(),
+            mount_name: None,
+            is_focused: true,
+        }];
+        let results =
+            search_workspace_files_blocking(roots, "needle".into(), Some(1), None, None).unwrap();
+        assert_eq!(results[0].relative_path, "zz-last/needle");
+    }
 
     // Helper function to create a test workspace with sample files
     fn setup_test_workspace() -> TempDir {

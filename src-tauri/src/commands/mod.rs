@@ -3353,7 +3353,7 @@ async fn execute_workspace_tool_inner(
                 "query": query,
                 "total": results.len(),
                 "count": results.len(),
-                "total_count": (!truncated).then_some(page.offset + results.len()),
+                "total_count": (!truncated).then_some(seen_matches),
                 "total_is_exact": !truncated,
                 "results": results,
                 "limit": page.limit,
@@ -6991,6 +6991,58 @@ mod tests {
         assert!(error
             .message
             .contains("does not belong to this tool request"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_workspace_local_files_searches_keep_files_beside_dangling_alias() {
+        let workspace = TempDir::new().unwrap();
+        for name in ["a.ts", "z.ts"] {
+            fs::write(workspace.path().join(name), "console.log(value);").unwrap();
+        }
+        std::os::unix::fs::symlink("missing.ts", workspace.path().join("alias.ts")).unwrap();
+        for (tool, args) in [
+            ("glob", json!({"pattern": "**/*.ts"})),
+            ("grep", json!({"query": "console.log"})),
+            ("ast_grep", json!({"pattern": "console.log($ARG)"})),
+        ] {
+            let result = execute_readonly_workspace_tool(workspace.path(), tool, args).await;
+            let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(result["count"], 2, "{tool}: {result}");
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_workspace_grep_stale_offset_and_mixed_files() {
+        let workspace = TempDir::new().unwrap();
+        fs::write(workspace.path().join("good.txt"), "needle été\n".repeat(4)).unwrap();
+        fs::write(
+            workspace.path().join("vector.svg"),
+            "<svg><title>needle</title></svg>",
+        )
+        .unwrap();
+        fs::write(workspace.path().join("sample.data"), [0xff, 0xfe]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("missing", workspace.path().join("alias")).unwrap();
+        let first = execute_readonly_workspace_tool(
+            workspace.path(), "grep", json!({"query": "needle", "limit": 3}),
+        ).await;
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        let cursor = first["next_cursor"].as_str().unwrap();
+        fs::write(workspace.path().join("good.txt"), "needle été").unwrap();
+        let complete = execute_readonly_workspace_tool(
+            workspace.path(), "grep", json!({"query": "needle"}),
+        ).await;
+        let complete: serde_json::Value = serde_json::from_str(&complete).unwrap();
+        assert_eq!(complete["total_count"], 2);
+        assert_eq!(complete["skipped_files"]["binary"], 1);
+        let stale = execute_readonly_workspace_tool(
+            workspace.path(), "grep", json!({"query": "needle", "cursor": cursor}),
+        ).await;
+        let stale: serde_json::Value = serde_json::from_str(&stale).unwrap();
+        assert_eq!(stale["count"], 0);
+        assert_eq!(stale["total_count"], 2);
+        assert_eq!(stale["total_is_exact"], true);
     }
 
     #[tokio::test]

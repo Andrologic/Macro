@@ -393,11 +393,11 @@ pub fn is_binary_file(path: &Path) -> Result<bool> {
     ];
     let text_extensions = [
         "txt", "md", "rs", "py", "js", "ts", "java", "c", "cpp", "html", "css", "json", "xml",
-        "yaml", "yml", "toml", "sh", "go", "rb", "php",
+        "svg", "yaml", "yml", "toml", "sh", "go", "rb", "php",
     ];
     let binary_extensions = [
         // Images
-        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg", "tiff", // Audio/Video
+        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "tiff", // Audio/Video
         "mp3", "mp4", "wav", "avi", "mkv", "mov", "flac", "ogg", // Archives
         "zip", "tar", "gz", "rar", "7z", "bz2", "xz", // Executables
         "exe", "dll", "so", "dylib", "bin", "wasm", // Documents

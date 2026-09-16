@@ -1831,16 +1831,95 @@ const resolveDirectPath = (
   return resolvePathForMode(inputPath, mode);
 };
 
+// Match glob::Pattern::matches defaults: case-sensitive, with separators accepted by wildcards.
 export const globToRegex = (pattern: string): RegExp => {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*\//g, "__DOUBLE_STAR_SLASH__")
-    .replace(/\*\*/g, "__DOUBLE_STAR__")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\?/g, ".")
-    .replace(/__DOUBLE_STAR_SLASH__/g, "(?:.*/)?")
-    .replace(/__DOUBLE_STAR__/g, ".*");
-  return new RegExp(`^${escaped}$`, "i");
+  const chars = Array.from(pattern);
+  let source = "^";
+
+  const escapeLiteral = (value: string): string =>
+    value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  const escapeClassCharacter = (value: string): string =>
+    value.replace(/[\\\-\]^]/g, "\\$&");
+
+  for (let index = 0; index < chars.length; index += 1) {
+    const character = chars[index];
+
+    if (character === "*") {
+      const start = index;
+      while (index < chars.length && chars[index] === "*") index += 1;
+      const count = index - start;
+
+      if (count > 2) {
+        throw new Error("wildcards are either regular `*` or recursive `**`");
+      }
+      if (count === 1) {
+        source += "[\\s\\S]*";
+        index -= 1;
+        continue;
+      }
+
+      const isPathComponentStart =
+        start === 0 || chars[start - 1] === "/";
+      if (!isPathComponentStart) {
+        throw new Error("recursive wildcards must form a single path component");
+      }
+
+      const followedBySeparator = chars[index] === "/";
+      if (followedBySeparator) index += 1;
+      else if (index !== chars.length) {
+        throw new Error("recursive wildcards must form a single path component");
+      }
+
+      if (followedBySeparator && index < chars.length) {
+        source += "(?:[\\s\\S]*\\/)?";
+      } else {
+        source += "[\\s\\S]*";
+      }
+      index -= 1;
+      continue;
+    }
+
+    if (character === "?") {
+      source += "[\\s\\S]";
+      continue;
+    }
+
+    if (character === "[") {
+      const isNegated = chars[index + 1] === "!";
+      const contentStart = index + (isNegated ? 2 : 1);
+      const closingBracket =
+        chars[contentStart] === "]"
+          ? chars.indexOf("]", contentStart + 1)
+          : chars.indexOf("]", contentStart);
+      if (closingBracket < 0 || closingBracket <= contentStart) {
+        throw new Error("invalid range pattern");
+      }
+
+      const content = chars.slice(contentStart, closingBracket);
+      let classSource = "";
+      for (let classIndex = 0; classIndex < content.length; classIndex += 1) {
+        const classCharacter = content[classIndex];
+        if (
+          classIndex + 2 < content.length &&
+          content[classIndex + 1] === "-"
+        ) {
+          classSource += `${escapeClassCharacter(classCharacter)}-${escapeClassCharacter(
+            content[classIndex + 2],
+          )}`;
+          classIndex += 2;
+        } else {
+          classSource += escapeClassCharacter(classCharacter);
+        }
+      }
+      source += `[${isNegated ? "^" : ""}${classSource}]`;
+      index = closingBracket;
+      continue;
+    }
+
+    source += escapeLiteral(character);
+  }
+
+  return new RegExp(`${source}(?![\\s\\S])`, "u");
 };
 
 export const pathMatchesGlob = (path: string, pattern: string): boolean => {
@@ -3604,7 +3683,7 @@ export const executeWorkspaceTool = async (
             query,
             total: results.length,
             count: results.length,
-            total_count: page.offset + results.length,
+            total_count: seenMatches,
             total_is_exact: true,
             results,
             limit: page.limit,
@@ -4678,7 +4757,7 @@ export const executeWorkspaceTool = async (
           query,
           total: results.length,
           count: results.length,
-          total_count: page.offset + results.length,
+          total_count: seenMatches,
           total_is_exact: true,
           results,
           limit: page.limit,

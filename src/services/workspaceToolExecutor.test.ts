@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it, mock } from "bun:test";
+import { createToolCursor } from "../shared/toolOutputLimits";
 const actualTauriIpc = await import("./tauriIpc");
 
 type MockAppState = {
@@ -513,6 +514,17 @@ describe("workspaceToolExecutor helpers", () => {
     ).toBe(true);
     expect(pathMatchesGlob("src/App.ts", "src/**/*.ts")).toBe(true);
     expect(pathMatchesGlob("App.ts", "**/*.ts")).toBe(true);
+    expect(pathMatchesGlob("root.ts", "**/*.ts")).toBe(true);
+    expect(pathMatchesGlob("src/root.ts", "*.ts")).toBe(true);
+    expect(pathMatchesGlob("a1.ts", "a[0-9].ts")).toBe(true);
+    expect(pathMatchesGlob("a2.ts", "a[!a].ts")).toBe(true);
+    expect(pathMatchesGlob("aa.ts", "a[!a].ts")).toBe(false);
+    expect(pathMatchesGlob("]", "[]]")).toBe(true);
+    expect(pathMatchesGlob("]", "[!]]")).toBe(false);
+    expect(pathMatchesGlob("A.ts", "a.ts")).toBe(false);
+    expect(pathMatchesGlob("😀.ts", "?.ts")).toBe(true);
+    expect(pathMatchesGlob("😀😀.ts", "?.ts")).toBe(false);
+    expect(pathMatchesGlob("root.ts\n", "root.ts")).toBe(false);
     expect(pathMatchesGlob("src/components/App.tsx", "src/**/*.ts")).toBe(
       false,
     );
@@ -1472,6 +1484,79 @@ describe("workspaceToolExecutor helpers", () => {
 
     expect(result).toContain("JavaScript fallback refuses regex patterns");
     expect(fileReads).toBe(0);
+  });
+
+  it("keeps root files and character classes in fallback glob results", async () => {
+    const workspacePath = "C:/dev/macro-web";
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        fsListDir: async () => ["root.ts", "src/root.ts", "a1.ts", "a2.js"].map((path) => ({
+          path: `${workspacePath}/${path}`,
+          relative_path: path,
+          name: path.split("/").pop(),
+          kind: "file",
+          is_hidden: false,
+          is_readonly: false,
+        })),
+      },
+    } as Partial<MockAppState>);
+    for (const [pattern, paths] of [
+      ["**/*.ts", ["a1.ts", "root.ts", "src/root.ts"]],
+      ["a[0-9].ts", ["a1.ts"]],
+    ] as const) {
+      const result = await executeWorkspaceTool("glob", { pattern }, "Implement", { workspacePath });
+      expect(JSON.parse(result || "{}").paths).toEqual(paths);
+    }
+  });
+
+  it("reports the exact fallback grep total when a page starts past the matches", async () => {
+    const workspacePath = "C:/dev/macro-web";
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        validateToolExecution: async () => ({ allowed: true }),
+        executeWorkspaceTool: async () => "UNSUPPORTED_WORKSPACE_TOOL",
+        fsListDir: async () => [
+          {
+            path: `${workspacePath}/src/value.ts`,
+            relative_path: "src/value.ts",
+            name: "value.ts",
+            kind: "file",
+            is_hidden: false,
+            is_readonly: false,
+            size: 7,
+          },
+        ],
+        fsReadFileWithOptions: async () => ({
+          content: "needle\n",
+          language: "typescript",
+          is_binary: false,
+          size: 7,
+          encoding: "utf-8",
+          revision: "revision-a",
+        }),
+      },
+    } as Partial<MockAppState>);
+
+    const scope = "grep\0C:/dev/macro-web\0needle\0false\0\0false";
+    const result = await executeWorkspaceTool(
+      "grep",
+      {
+        query: "needle",
+        cursor: createToolCursor(scope, 10),
+      },
+      "Implement",
+      { workspacePath },
+    );
+
+    const parsed = JSON.parse(result || "{}");
+    expect(parsed.results).toEqual([]);
+    expect(parsed.offset).toBe(10);
+    expect(parsed.total_count).toBe(1);
+    expect(parsed.total_is_exact).toBe(true);
   });
 
   it("passes an explicit project selector to the backend after stripping routing arguments", async () => {
