@@ -3464,7 +3464,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_task_worktree_cleans_orphan_without_registration() {
+    fn test_remove_task_worktree_preserves_orphan_without_registration() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());
         let state = GitState::new();
@@ -3476,14 +3476,151 @@ mod tests {
         fs::create_dir_all(&orphan_path).expect("create orphan path");
         fs::write(orphan_path.join("README.md"), "orphan").expect("write orphan file");
 
-        let removed = state
+        state
             .remove_task_worktree(&repo, "orphan-remove", false, None)
-            .expect("remove orphan");
-
+            .expect_err("unknown state must block removal");
+        assert_eq!(fs::read(orphan_path.join("README.md")).unwrap(), b"orphan");
+        let removed = state
+            .remove_task_worktree(&repo, "orphan-remove", true, None)
+            .expect("explicit forced removal");
         assert!(removed.removed_path);
-        assert!(!removed.pruned_registration);
-        assert!(!removed.already_absent);
         assert!(!orphan_path.exists());
+    }
+
+    #[test]
+    fn integrity_worktree_removal_preserves_unknown_paths() {
+        for branch in [false, true] {
+            for state_kind in ["empty", "valuable", "invalid-pointer"] {
+                let temp = TempDir::new().unwrap();
+                let repo = init_repo(temp.path());
+                let state = GitState::new();
+                let name = if branch {
+                    "integration-unknown"
+                } else {
+                    "taskunknown"
+                };
+                let path = temp.path().join(".macro/worktrees").join(name);
+                fs::create_dir_all(&path).unwrap();
+                if state_kind != "empty" {
+                    fs::write(path.join("valuable.txt"), b"local work").unwrap();
+                }
+                if state_kind == "invalid-pointer" {
+                    fs::write(path.join(".git"), "gitdir: missing-administration\n").unwrap();
+                }
+                if branch {
+                    state
+                        .remove_branch_worktree(&repo, "unknown", "topic", false)
+                        .expect_err("unknown branch worktree");
+                } else {
+                    state
+                        .remove_task_worktree(&repo, "unknown", false, None)
+                        .expect_err("unknown task worktree");
+                }
+                assert!(path.is_dir());
+                if state_kind != "empty" {
+                    assert_eq!(fs::read(path.join("valuable.txt")).unwrap(), b"local work");
+                }
+                if state_kind == "invalid-pointer" {
+                    assert_eq!(
+                        fs::read_to_string(path.join(".git")).unwrap(),
+                        "gitdir: missing-administration\n"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn integrity_worktree_removal_preserves_registered_path_without_gitfile() {
+        for branch in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let repo = init_repo(temp.path());
+            let state = GitState::new();
+            let path = if branch {
+                state
+                    .ensure_branch_worktree(&repo, "missing", "topic", None, &["main".into()])
+                    .unwrap()
+                    .worktree_path
+            } else {
+                state
+                    .ensure_task_worktree(&repo, "missing", "topic", None, None, &[])
+                    .unwrap()
+                    .worktree_path
+            };
+            fs::write(path.join("valuable.txt"), "local work").unwrap();
+            fs::remove_file(path.join(".git")).unwrap();
+            if branch {
+                state
+                    .remove_branch_worktree(&repo, "missing", "topic", false)
+                    .expect_err("missing gitfile");
+            } else {
+                state
+                    .remove_task_worktree(&repo, "missing", false, None)
+                    .expect_err("missing gitfile");
+            }
+            assert_eq!(fs::read(path.join("valuable.txt")).unwrap(), b"local work");
+            assert!(!path.join(".git").exists());
+            assert!(repo
+                .find_worktree(if branch {
+                    "macro-integration-missing"
+                } else {
+                    "taskmissing"
+                })
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn integrity_worktree_removal_preserves_ignored_local_data() {
+        for branch in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let repo = init_repo(temp.path());
+            let state = GitState::new();
+            let path = if branch {
+                state
+                    .ensure_branch_worktree(&repo, "ignored", "topic", None, &["main".into()])
+                    .unwrap()
+                    .worktree_path
+            } else {
+                state
+                    .ensure_task_worktree(&repo, "ignored", "topic", None, None, &[])
+                    .unwrap()
+                    .worktree_path
+            };
+            let excludes_path = repo.path().join("info/exclude");
+            let excludes = fs::read_to_string(&excludes_path).unwrap_or_default();
+            fs::write(excludes_path, format!("{excludes}\n/local-cache/\n")).unwrap();
+            fs::create_dir_all(path.join("local-cache/nested")).unwrap();
+            let data_path = path.join("local-cache/nested/data.bin");
+            fs::write(&data_path, b"local ignored data").unwrap();
+            let linked_repo = Repository::open(&path).unwrap();
+            assert!(linked_repo
+                .statuses(Some(&mut repo::get_status_options()))
+                .unwrap()
+                .is_empty());
+            if branch {
+                state
+                    .remove_branch_worktree(&repo, "ignored", "topic", false)
+                    .expect_err("ignored data must survive");
+            } else {
+                state
+                    .remove_task_worktree(&repo, "ignored", false, None)
+                    .expect_err("ignored data must survive");
+            }
+            assert_eq!(fs::read(&data_path).unwrap(), b"local ignored data");
+            assert!(path.join(".git").exists());
+            drop(linked_repo);
+            if branch {
+                state
+                    .remove_branch_worktree(&repo, "ignored", "topic", true)
+                    .unwrap();
+            } else {
+                state
+                    .remove_task_worktree(&repo, "ignored", true, None)
+                    .unwrap();
+            }
+            assert!(!path.exists());
+        }
     }
 
     #[test]
