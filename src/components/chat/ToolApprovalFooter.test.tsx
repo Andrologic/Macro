@@ -97,6 +97,28 @@ describe('ToolApprovalFooter', () => {
     mock.restore();
   });
 
+  it('shows MCP identity and nested arguments, masks secrets and marks truncation', async () => {
+    const { ToolApprovalFooter } = await loadToolApprovalFooter();
+    await act(async () => {
+      root?.render(<ToolApprovalFooter pendingApproval={{
+        conversationId: 'c', assistantMessageId: 'm', toolCallId: 't',
+        toolId: 'mcp__docs__search', actionGroup: 'external', riskLevel: 'balanced',
+        summary: 'Search documents', rememberKey: 'mcp',
+        mcpIdentity: { serverId: 'docs', toolName: 'documents/search' },
+        args: { query: 'test query', target: { collection: 'synthetic' }, tags: ['one', 'two'],
+          nested: { api_key: 'private-sentinel' }, text: 'x'.repeat(17000) },
+      }} onAllowOnce={() => {}} onAllowForConversation={() => {}} onDeny={() => {}} />);
+    });
+    expect(container?.textContent).toContain('docs / documents/search');
+    expect(container?.textContent).toContain('test query');
+    expect(container?.textContent).toContain('synthetic');
+    expect(container?.textContent).toContain('two');
+    expect(container?.textContent).not.toContain('private-sentinel');
+    expect(container?.textContent).toContain('[REDACTED]');
+    expect(container?.textContent).toContain('truncated');
+    expect(container?.querySelector('details')).not.toBeNull();
+  });
+
   it('passes the optional denial reason to the caller', async () => {
     const onDeny = mock(() => undefined);
     const { ToolApprovalFooter } = await loadToolApprovalFooter();

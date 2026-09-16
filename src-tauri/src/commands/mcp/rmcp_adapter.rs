@@ -16,13 +16,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo,
-    ElicitationCreateRequestMethod, Implementation, ListRootsRequestMethod, PaginatedRequestParams,
-    ProtocolVersion,
+    CallToolRequest, CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo,
+    ClientRequest, ElicitationCreateRequestMethod, Implementation, ListRootsRequestMethod,
+    PaginatedRequestParams, ProtocolVersion, ServerResult,
 };
 use rmcp::service::{
-    ClientCacheConfig, ClientLifecycleMode, ClientServiceExt, MaybeSendFuture, RequestContext,
-    RoleClient, RunningService, RxJsonRpcMessage, ServiceError, TxJsonRpcMessage,
+    ClientCacheConfig, ClientLifecycleMode, ClientServiceExt, MaybeSendFuture, PeerRequestOptions,
+    RequestContext, RoleClient, RunningService, RxJsonRpcMessage, ServiceError, TxJsonRpcMessage,
 };
 use rmcp::transport::Transport;
 use rmcp::{ClientHandler, ErrorData as McpError};
@@ -34,6 +34,7 @@ use tokio::sync::Mutex;
 use super::env_secrets::sanitized_process_environment;
 use super::ids::build_mcp_tool_id;
 use super::result_format::format_tool_call_result;
+use super::runtime::McpOperationCancellation;
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
 use crate::core::process::{background_tokio_command, ContainedBackgroundProcess};
@@ -65,6 +66,7 @@ const TRANSPORT_VOLUNTARY_EXIT_GRACE: Duration = Duration::from_secs(3);
 /// Budget for `RunningService::close_with_timeout`; must exceed the transport
 /// close path (voluntary grace + SIGKILL + bounded reap) with margin.
 const SERVICE_CLOSE_BUDGET: Duration = Duration::from_secs(10);
+const CANCEL_NOTIFICATION_BUDGET: Duration = Duration::from_secs(1);
 const MAX_STDERR_BYTES: usize = 64 * 1024;
 const MAX_STDERR_EXCERPT_CHARS: usize = 2_000;
 const STDERR_DRAIN_BUDGET: Duration = Duration::from_secs(1);
@@ -549,6 +551,7 @@ impl RmcpLegacyStdioClient {
         &self,
         tool_name: &str,
         arguments: Value,
+        cancellation: Arc<McpOperationCancellation>,
     ) -> CommandResult<McpCallToolResponse> {
         let arguments = match arguments {
             Value::Null => None,
@@ -562,10 +565,84 @@ impl RmcpLegacyStdioClient {
         let mut params = CallToolRequestParams::new(tool_name.to_string());
         params.arguments = arguments;
 
-        let response = run_bounded(self, "tools/call", async move {
-            self.service.peer().call_tool_once(params).await
-        })
-        .await?;
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let operation_timeout = tokio::time::sleep(self.operation_timeout);
+        tokio::pin!(operation_timeout);
+        let mut handle = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(command_error("MCP tool call was cancelled."));
+            }
+            _ = &mut operation_timeout => {
+                return Err(command_error(format!(
+                    "MCP server '{}' timed out during tools/call after {:?}.",
+                    self.server_name, self.operation_timeout
+                )));
+            }
+            result = self.service.peer().send_cancellable_request(
+                request,
+                PeerRequestOptions::no_options(),
+            ) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error))?,
+        };
+        let response = tokio::select! {
+            response = &mut handle.rx => match response {
+                Ok(result) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error)),
+                Err(_) => Err(map_service_error(&self.server_name, "tools/call", ServiceError::TransportClosed)),
+            },
+            _ = cancellation.cancelled() => {
+                match tokio::time::timeout(
+                    CANCEL_NOTIFICATION_BUDGET,
+                    handle.cancel(Some("operation cancelled".to_string())),
+                ).await {
+                    Ok(result) => result.map_err(|error| map_service_error(
+                        &self.server_name,
+                        "tools/call cancellation",
+                        error,
+                    ))?,
+                    Err(_) => {
+                        self.service.cancellation_token().cancel();
+                        tracing::warn!(
+                            server = %self.server_name,
+                            "MCP cancellation notification exceeded its send budget; session closed"
+                        );
+                    }
+                }
+                return Err(command_error("MCP tool call was cancelled."));
+            }
+            _ = &mut operation_timeout => {
+                match tokio::time::timeout(
+                    CANCEL_NOTIFICATION_BUDGET,
+                    handle.cancel(Some("request timeout".to_string())),
+                ).await {
+                    Ok(result) => result.map_err(|error| map_service_error(
+                        &self.server_name,
+                        "tools/call timeout",
+                        error,
+                    ))?,
+                    Err(_) => {
+                        self.service.cancellation_token().cancel();
+                        tracing::warn!(
+                            server = %self.server_name,
+                            "MCP timeout notification exceeded its send budget; session closed"
+                        );
+                    }
+                }
+                return Err(command_error(format!(
+                    "MCP server '{}' timed out during tools/call after {:?}.",
+                    self.server_name, self.operation_timeout
+                )));
+            }
+        }?;
+        let response = match response {
+            ServerResult::CallToolResult(result) => CallToolResponse::Complete(result),
+            ServerResult::InputRequiredResult(result) => CallToolResponse::InputRequired(result),
+            ServerResult::CreateTaskResult(result) => CallToolResponse::Task(result),
+            _ => {
+                return Err(command_error(
+                    "MCP server returned an unexpected tools/call response.",
+                ))
+            }
+        };
 
         match response {
             CallToolResponse::Complete(result) => {
@@ -873,7 +950,11 @@ while True:
         assert!(page_two.next_cursor.is_none());
 
         let call = client
-            .call_tool("echo-value", serde_json::json!({ "value": "ok" }))
+            .call_tool(
+                "echo-value",
+                serde_json::json!({ "value": "ok" }),
+                Arc::new(McpOperationCancellation::default()),
+            )
             .await
             .expect("tool call");
         assert_eq!(call.content, "echo:ok");

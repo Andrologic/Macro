@@ -5,6 +5,17 @@ import {
 } from "./toolSecurityPolicy";
 
 describe("toolSecurityPolicy", () => {
+  it.each([
+    ['C:/Repo', 'c:/repo/src/a.ts'],
+    ['\\\\Server\\Share\\Repo', '//server/share/repo/src/a.ts'],
+    ['//?/UNC/Server/Share/Repo', '//server/share/repo/src/a.ts'],
+    ['//?/C:/Repo', 'c:/repo/src/a.ts'],
+  ])('shares Windows path identity for %s', (workspacePath, path) => {
+    const options = { mode: 'Implement' as const, riskLevel: 'balanced' as const, workspacePath };
+    expect(evaluateToolSecurity('read', { path }, options).decision).toBe('allow');
+    expect(evaluateToolSecurity('read', { path: path.replace('/repo/', '/repo-neighbor/') }, options).decision).toBe('deny');
+  });
+
   it("allows non-destructive apply_patch calls in balanced mode", () => {
     const result = evaluateToolSecurity(
       "apply_patch",

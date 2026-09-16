@@ -6,7 +6,7 @@ use super::types::{
 };
 use chrono::Utc;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -20,6 +20,8 @@ const CONNECTOR_UNAVAILABLE: &str = "MCP_RUNTIME_CONNECTOR_UNAVAILABLE";
 const STALE_GENERATION: &str = "MCP_RUNTIME_STALE_GENERATION";
 const NOT_CONNECTED: &str = "MCP_RUNTIME_NOT_CONNECTED";
 const OPERATION_CANCELLED: &str = "MCP_RUNTIME_OPERATION_CANCELLED";
+const PENDING_CANCELLATION_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_PENDING_CANCELLATIONS: usize = 1_024;
 
 pub(crate) type McpFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, McpRuntimeError>> + Send + 'a>>;
@@ -182,10 +184,15 @@ struct RuntimeEntry {
     session: Option<Arc<dyn McpSession>>,
     catalog: Option<McpCatalogDto>,
     concurrency: Arc<Semaphore>,
+    connect_attempt_id: Uuid,
 }
 
 impl RuntimeEntry {
-    fn connecting(key: McpRuntimeKey, config_fingerprint: String) -> Self {
+    fn connecting(
+        key: McpRuntimeKey,
+        config_fingerprint: String,
+        connect_attempt_id: Uuid,
+    ) -> Self {
         Self {
             snapshot: McpRuntimeServerSnapshot {
                 key,
@@ -202,6 +209,7 @@ impl RuntimeEntry {
             session: None,
             catalog: None,
             concurrency: Arc::new(Semaphore::new(1)),
+            connect_attempt_id,
         }
     }
 }
@@ -209,6 +217,56 @@ impl RuntimeEntry {
 struct ActiveOperation {
     key: McpRuntimeKey,
     cancellation: Arc<McpOperationCancellation>,
+}
+
+#[derive(Default)]
+struct OperationRegistry {
+    active: HashMap<String, ActiveOperation>,
+    pending_cancellations: VecDeque<(String, Instant)>,
+}
+
+impl OperationRegistry {
+    fn prune_pending(&mut self, now: Instant) {
+        while self
+            .pending_cancellations
+            .front()
+            .is_some_and(|(_, created_at)| {
+                now.duration_since(*created_at) >= PENDING_CANCELLATION_TTL
+            })
+        {
+            self.pending_cancellations.pop_front();
+        }
+    }
+
+    fn take_pending_cancellation(&mut self, operation_id: &str) -> bool {
+        self.prune_pending(Instant::now());
+        let Some(index) = self
+            .pending_cancellations
+            .iter()
+            .position(|(pending_id, _)| pending_id == operation_id)
+        else {
+            return false;
+        };
+        self.pending_cancellations.remove(index);
+        true
+    }
+
+    fn remember_pending_cancellation(&mut self, operation_id: &str) {
+        let now = Instant::now();
+        self.prune_pending(now);
+        if self
+            .pending_cancellations
+            .iter()
+            .any(|(pending_id, _)| pending_id == operation_id)
+        {
+            return;
+        }
+        while self.pending_cancellations.len() >= MAX_PENDING_CANCELLATIONS {
+            self.pending_cancellations.pop_front();
+        }
+        self.pending_cancellations
+            .push_back((operation_id.to_string(), now));
+    }
 }
 
 #[derive(Default)]
@@ -220,7 +278,7 @@ struct RuntimeState {
 pub struct McpRuntimeManager {
     connector: Arc<dyn McpConnector>,
     state: Arc<Mutex<RuntimeState>>,
-    operations: Arc<StdMutex<HashMap<String, ActiveOperation>>>,
+    operations: Arc<StdMutex<OperationRegistry>>,
     shutting_down: Arc<AtomicBool>,
 }
 
@@ -241,7 +299,7 @@ impl McpRuntimeManager {
         Self {
             connector,
             state: Arc::new(Mutex::new(RuntimeState::default())),
-            operations: Arc::new(StdMutex::new(HashMap::new())),
+            operations: Arc::new(StdMutex::new(OperationRegistry::default())),
             shutting_down: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -305,6 +363,7 @@ impl McpRuntimeManager {
             ));
         }
         let key;
+        let connect_attempt_id = Uuid::new_v4();
         let retired_session = {
             let mut state = self.state.lock().await;
             if self.shutting_down.load(Ordering::Acquire) {
@@ -364,7 +423,11 @@ impl McpRuntimeManager {
                 .and_then(|entry| entry.session);
             state.entries.insert(
                 logical_key.clone(),
-                RuntimeEntry::connecting(key.clone(), config_fingerprint.clone()),
+                RuntimeEntry::connecting(
+                    key.clone(),
+                    config_fingerprint.clone(),
+                    connect_attempt_id,
+                ),
             );
             retired
         };
@@ -386,7 +449,8 @@ impl McpRuntimeManager {
                 if let Ok(connection) = connection {
                     let _ = connection.session.close().await;
                 }
-                self.invalidate_if_current(&key, &error).await;
+                self.invalidate_connect_attempt_if_current(&key, connect_attempt_id, &error)
+                    .await;
                 return Err(error);
             }
         };
@@ -405,7 +469,8 @@ impl McpRuntimeManager {
             if let Ok(connection) = connection {
                 let _ = connection.session.close().await;
             }
-            self.invalidate_if_current(&key, &error).await;
+            self.invalidate_connect_attempt_if_current(&key, connect_attempt_id, &error)
+                .await;
             return Err(error);
         }
         let mut state = self.state.lock().await;
@@ -429,6 +494,17 @@ impl McpRuntimeManager {
                 "The runtime was disconnected while it was connecting.",
             ));
         };
+        if entry.connect_attempt_id != connect_attempt_id {
+            if let Ok(connection) = connection {
+                let session = connection.session;
+                drop(state);
+                let _ = session.close().await;
+            }
+            return Err(McpRuntimeError::new(
+                "MCP_RUNTIME_CONNECT_ABORTED",
+                format!("Connection to server '{}' was superseded.", key.server_id),
+            ));
+        }
         if entry.snapshot.key != key || entry.config_fingerprint != config_fingerprint {
             let current_generation = entry.snapshot.key.config_generation;
             if let Ok(connection) = connection {
@@ -559,6 +635,7 @@ impl McpRuntimeManager {
             self.operations
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active
                 .insert(
                     operation_id.clone(),
                     ActiveOperation {
@@ -640,8 +717,51 @@ impl McpRuntimeManager {
         operation_id: String,
     ) -> Result<McpCallToolResponse, McpRuntimeError> {
         validate_key(key)?;
-        let _authority = self.connector.acquire_authority().await?;
-        self.ensure_current_config(key).await?;
+        if operation_id.trim().is_empty() {
+            return Err(McpRuntimeError::new(
+                "MCP_RUNTIME_INVALID_OPERATION_ID",
+                "MCP operation id cannot be empty.",
+            ));
+        }
+        let cancellation = Arc::new(McpOperationCancellation::default());
+        {
+            let mut operations = self
+                .operations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if operations.active.contains_key(&operation_id) {
+                return Err(McpRuntimeError::new(
+                    "MCP_RUNTIME_DUPLICATE_OPERATION_ID",
+                    format!("MCP operation '{operation_id}' is already active."),
+                ));
+            }
+            if operations.take_pending_cancellation(&operation_id) {
+                cancellation.cancel();
+            }
+            operations.active.insert(
+                operation_id.clone(),
+                ActiveOperation {
+                    key: key.clone(),
+                    cancellation: cancellation.clone(),
+                },
+            );
+        }
+        let _operation_guard = ActiveOperationGuard {
+            operation_id,
+            operations: self.operations.clone(),
+        };
+
+        let _authority = tokio::select! {
+            authority = self.connector.acquire_authority() => authority,
+            _ = cancellation.cancelled() => Err(cancelled_error()),
+        }?;
+        tokio::select! {
+            result = self.ensure_current_config(key) => result,
+            _ = cancellation.cancelled() => Err(cancelled_error()),
+        }?;
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
         if tool_name.trim().is_empty() {
             return Err(McpRuntimeError::new(
                 "MCP_RUNTIME_INVALID_TOOL",
@@ -672,47 +792,18 @@ impl McpRuntimeManager {
             )
         };
 
-        if operation_id.trim().is_empty() {
-            return Err(McpRuntimeError::new(
-                "MCP_RUNTIME_INVALID_OPERATION_ID",
-                "MCP operation id cannot be empty.",
-            ));
-        }
-        let cancellation = Arc::new(McpOperationCancellation::default());
-        {
-            let mut operations = self
-                .operations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if operations.contains_key(&operation_id) {
-                return Err(McpRuntimeError::new(
-                    "MCP_RUNTIME_DUPLICATE_OPERATION_ID",
-                    format!("MCP operation '{operation_id}' is already active."),
-                ));
-            }
-            operations.insert(
-                operation_id.clone(),
-                ActiveOperation {
-                    key: key.clone(),
-                    cancellation: cancellation.clone(),
-                },
-            );
-        }
-        let _operation_guard = ActiveOperationGuard {
-            operation_id,
-            operations: self.operations.clone(),
-        };
-
         let permit = tokio::select! {
             permit = concurrency.acquire_owned() => permit.map_err(|_| {
                 McpRuntimeError::new(NOT_CONNECTED, "The MCP runtime is shutting down.")
             }),
             _ = cancellation.cancelled() => Err(cancelled_error()),
         }?;
-        let result = tokio::select! {
-            result = session.call_tool(tool_name, arguments, cancellation.clone()) => result,
-            _ = cancellation.cancelled() => Err(cancelled_error()),
-        };
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        let result = session
+            .call_tool(tool_name, arguments, cancellation.clone())
+            .await;
         drop(permit);
         if let Err(error) = &result {
             if error.code != OPERATION_CANCELLED && session.is_closed() {
@@ -951,14 +1042,15 @@ impl McpRuntimeManager {
     }
 
     pub async fn cancel_operation(&self, operation_id: &str) -> bool {
-        let operations = self
+        let mut operations = self
             .operations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(operation) = operations.get(operation_id) else {
-            return false;
-        };
-        operation.cancellation.cancel();
+        if let Some(operation) = operations.active.get(operation_id) {
+            operation.cancellation.cancel();
+        } else {
+            operations.remember_pending_cancellation(operation_id);
+        }
         true
     }
 
@@ -1023,6 +1115,25 @@ impl McpRuntimeManager {
     }
 
     async fn invalidate_if_current(&self, key: &McpRuntimeKey, error: &McpRuntimeError) {
+        self.invalidate_if_current_attempt(key, None, error).await;
+    }
+
+    async fn invalidate_connect_attempt_if_current(
+        &self,
+        key: &McpRuntimeKey,
+        connect_attempt_id: Uuid,
+        error: &McpRuntimeError,
+    ) {
+        self.invalidate_if_current_attempt(key, Some(connect_attempt_id), error)
+            .await;
+    }
+
+    async fn invalidate_if_current_attempt(
+        &self,
+        key: &McpRuntimeKey,
+        connect_attempt_id: Option<Uuid>,
+        error: &McpRuntimeError,
+    ) {
         let logical_key = LogicalRuntimeKey::from(key);
         let session = {
             let mut state = self.state.lock().await;
@@ -1030,6 +1141,9 @@ impl McpRuntimeManager {
                 return;
             };
             if entry.snapshot.key != *key {
+                return;
+            }
+            if connect_attempt_id.is_some_and(|attempt_id| entry.connect_attempt_id != attempt_id) {
                 return;
             }
             self.cancel_operations_for(&logical_key);
@@ -1074,6 +1188,7 @@ impl McpRuntimeManager {
         self.operations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active
             .keys()
             .cloned()
             .collect()
@@ -1084,7 +1199,7 @@ impl McpRuntimeManager {
             .operations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for operation in operations.values() {
+        for operation in operations.active.values() {
             if LogicalRuntimeKey::from(&operation.key) == *logical_key {
                 operation.cancellation.cancel();
             }
@@ -1094,7 +1209,7 @@ impl McpRuntimeManager {
 
 struct ActiveOperationGuard {
     operation_id: String,
-    operations: Arc<StdMutex<HashMap<String, ActiveOperation>>>,
+    operations: Arc<StdMutex<OperationRegistry>>,
 }
 
 impl Drop for ActiveOperationGuard {
@@ -1102,6 +1217,7 @@ impl Drop for ActiveOperationGuard {
         self.operations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active
             .remove(&self.operation_id);
     }
 }
@@ -1216,11 +1332,14 @@ mod tests {
     #[derive(Default)]
     struct FakeSession {
         list_calls: AtomicUsize,
+        call_count: AtomicUsize,
         close_calls: AtomicUsize,
         block_lists: AtomicBool,
+        block_calls: AtomicBool,
         fail_lists: AtomicBool,
         closed: AtomicBool,
         list_started: Notify,
+        call_started: Notify,
     }
 
     impl McpSession for FakeSession {
@@ -1260,9 +1379,15 @@ mod tests {
             &'a self,
             tool_name: &'a str,
             arguments: serde_json::Value,
-            _cancellation: Arc<McpOperationCancellation>,
+            cancellation: Arc<McpOperationCancellation>,
         ) -> McpFuture<'a, McpCallToolResponse> {
             Box::pin(async move {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                self.call_started.notify_one();
+                if self.block_calls.load(Ordering::SeqCst) {
+                    cancellation.cancelled().await;
+                    return Err(cancelled_error());
+                }
                 Ok(McpCallToolResponse {
                     content: format!("{tool_name}:{arguments}"),
                     is_error: false,
@@ -1290,6 +1415,56 @@ mod tests {
         block_connect: AtomicBool,
         connect_started: Notify,
         connect_release: Notify,
+    }
+
+    struct SequencedConnector {
+        sessions: Vec<Arc<FakeSession>>,
+        connect_calls: AtomicUsize,
+        fingerprint_calls: AtomicUsize,
+        fail_first_postconnect_fingerprint: AtomicBool,
+        connect_started: Vec<Notify>,
+        connect_release: Vec<Notify>,
+    }
+
+    impl McpConnector for SequencedConnector {
+        fn config_fingerprint<'a>(
+            &'a self,
+            _selector: &'a McpRuntimeSelector,
+        ) -> McpFuture<'a, String> {
+            let call = self.fingerprint_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if call == 2
+                    && self
+                        .fail_first_postconnect_fingerprint
+                        .load(Ordering::SeqCst)
+                {
+                    return Err(McpRuntimeError::new(
+                        "MCP_RUNTIME_CONFIG_INVALID",
+                        "the superseded connection observed an invalid configuration",
+                    ));
+                }
+                Ok("same-fingerprint".to_string())
+            })
+        }
+
+        fn connect<'a>(
+            &'a self,
+            _request: &'a McpConnectionRequest,
+        ) -> McpFuture<'a, McpConnectedSession> {
+            let attempt = self.connect_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                self.connect_started[attempt].notify_one();
+                self.connect_release[attempt].notified().await;
+                Ok(McpConnectedSession {
+                    session: self.sessions[attempt].clone(),
+                    requested_protocol_mode: Some(McpProtocolMode::Auto),
+                    negotiated_era: Some(McpProtocolEra::Legacy),
+                    negotiated_protocol_version: Some("2025-11-25".into()),
+                    protocol_decision_reason: Some("sequenced connector".into()),
+                    max_concurrent_operations: 1,
+                })
+            })
+        }
     }
 
     impl McpConnector for FakeConnector {
@@ -1451,6 +1626,185 @@ mod tests {
         assert_eq!(result.content, "echo:{\"value\":\"ok\"}");
         assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 1);
         assert!(manager.active_operation_ids().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_waiting_for_authority_prevents_tool_dispatch() {
+        let session = Arc::new(FakeSession::default());
+        let authority = Arc::new(tokio::sync::RwLock::new(()));
+        let connector = Arc::new(FakeConnector {
+            session: session.clone(),
+            authority: Some(authority.clone()),
+            connect_calls: AtomicUsize::new(0),
+            max_concurrent_operations: 1,
+            fingerprint: StdMutex::new("fingerprint-1".into()),
+            fingerprint_error: AtomicBool::new(false),
+            connect_failures: AtomicUsize::new(0),
+            block_connect: AtomicBool::new(false),
+            connect_started: Notify::new(),
+            connect_release: Notify::new(),
+        });
+        let manager = Arc::new(McpRuntimeManager::with_connector(connector));
+        let key = connected_key(&manager).await;
+        let authority_guard = authority.write_owned().await;
+        let call_manager = manager.clone();
+        let call_key = key.clone();
+        let call = tokio::spawn(async move {
+            call_manager
+                .call_tool(
+                    &call_key,
+                    "echo",
+                    serde_json::json!({}),
+                    "authority-wait-call".into(),
+                )
+                .await
+        });
+        while !manager
+            .active_operation_ids()
+            .await
+            .iter()
+            .any(|id| id == "authority-wait-call")
+        {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(manager.cancel_operation("authority-wait-call").await);
+        drop(authority_guard);
+
+        assert_eq!(call.await.unwrap().unwrap_err().code, OPERATION_CANCELLED);
+        assert_eq!(session.call_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn cancellation_received_before_call_is_consumed_by_that_operation_only() {
+        let session = Arc::new(FakeSession::default());
+        let (manager, _) = manager(session.clone());
+        let key = connected_key(&manager).await;
+
+        assert!(manager.cancel_operation("cancel-before-call").await);
+        let cancelled = manager
+            .call_tool(
+                &key,
+                "echo",
+                serde_json::json!({}),
+                "cancel-before-call".into(),
+            )
+            .await
+            .unwrap_err();
+        let other = manager
+            .call_tool(
+                &key,
+                "echo",
+                serde_json::json!({}),
+                "independent-call".into(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cancelled.code, OPERATION_CANCELLED);
+        assert_eq!(other.content, "echo:{}");
+        assert_eq!(session.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn superseded_same_configuration_connect_cannot_publish_its_session() {
+        let first_session = Arc::new(FakeSession::default());
+        let second_session = Arc::new(FakeSession::default());
+        let connector = Arc::new(SequencedConnector {
+            sessions: vec![first_session.clone(), second_session.clone()],
+            connect_calls: AtomicUsize::new(0),
+            fingerprint_calls: AtomicUsize::new(0),
+            fail_first_postconnect_fingerprint: AtomicBool::new(false),
+            connect_started: vec![Notify::new(), Notify::new()],
+            connect_release: vec![Notify::new(), Notify::new()],
+        });
+        let manager = Arc::new(McpRuntimeManager::with_connector(connector.clone()));
+        let first_manager = manager.clone();
+        let first = tokio::spawn(async move { first_manager.connect(selector()).await });
+        connector.connect_started[0].notified().await;
+        let key = McpRuntimeKey {
+            server_id: "test".into(),
+            project_id: None,
+            project_ids: vec!["project-1".into()],
+            config_generation: 1,
+        };
+        manager.disconnect(&key).await.unwrap();
+        let second_manager = manager.clone();
+        let second = tokio::spawn(async move { second_manager.connect(selector()).await });
+        connector.connect_started[1].notified().await;
+
+        connector.connect_release[0].notify_one();
+        assert_eq!(
+            first.await.unwrap().unwrap_err().code,
+            "MCP_RUNTIME_CONNECT_ABORTED"
+        );
+        connector.connect_release[1].notify_one();
+        let ready = second.await.unwrap().unwrap();
+        manager
+            .call_tool(
+                &ready.key,
+                "echo",
+                serde_json::json!({}),
+                "second-session-call".into(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(first_session.call_count.load(Ordering::SeqCst), 0);
+        assert_eq!(first_session.close_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second_session.call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn superseded_connect_error_cannot_invalidate_the_current_attempt() {
+        let first_session = Arc::new(FakeSession::default());
+        let second_session = Arc::new(FakeSession::default());
+        let connector = Arc::new(SequencedConnector {
+            sessions: vec![first_session.clone(), second_session.clone()],
+            connect_calls: AtomicUsize::new(0),
+            fingerprint_calls: AtomicUsize::new(0),
+            fail_first_postconnect_fingerprint: AtomicBool::new(true),
+            connect_started: vec![Notify::new(), Notify::new()],
+            connect_release: vec![Notify::new(), Notify::new()],
+        });
+        let manager = Arc::new(McpRuntimeManager::with_connector(connector.clone()));
+        let first_manager = manager.clone();
+        let first = tokio::spawn(async move { first_manager.connect(selector()).await });
+        connector.connect_started[0].notified().await;
+        let key = McpRuntimeKey {
+            server_id: "test".into(),
+            project_id: None,
+            project_ids: vec!["project-1".into()],
+            config_generation: 1,
+        };
+        manager.disconnect(&key).await.unwrap();
+        let second_manager = manager.clone();
+        let second = tokio::spawn(async move { second_manager.connect(selector()).await });
+        connector.connect_started[1].notified().await;
+
+        connector.connect_release[0].notify_one();
+        assert_eq!(
+            first.await.unwrap().unwrap_err().code,
+            "MCP_RUNTIME_CONFIG_INVALID"
+        );
+        let connecting = manager.snapshot().await.servers.remove(0);
+        assert_eq!(connecting.status, McpRuntimeStatus::Connecting);
+        assert_eq!(connecting.key, key);
+
+        connector.connect_release[1].notify_one();
+        let ready = second.await.unwrap().unwrap();
+        manager
+            .call_tool(
+                &ready.key,
+                "echo",
+                serde_json::json!({}),
+                "current-session-call".into(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(first_session.close_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second_session.call_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -1682,7 +2036,7 @@ mod tests {
         let operation_id = manager.active_operation_ids().await.pop().unwrap();
 
         assert!(manager.cancel_operation(&operation_id).await);
-        assert!(!manager.cancel_operation("missing").await);
+        assert!(manager.cancel_operation("missing").await);
         assert_eq!(
             refresh.await.unwrap().unwrap_err().code,
             OPERATION_CANCELLED

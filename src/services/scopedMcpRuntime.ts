@@ -1,3 +1,4 @@
+import { assertUniqueMCPToolIds } from './mcp/normalization';
 import type { MCPServer, MCPTool } from '../types';
 import type {
   MCPCatalogDto,
@@ -99,7 +100,7 @@ const normalizeProjectScope = (projectIds?: readonly string[]): string[] =>
   Array.from(new Set((projectIds ?? []).map((id) => id.trim()).filter(Boolean))).sort();
 
 const selectorCacheKey = (serverId: string, projectIds: readonly string[]): string =>
-  `${serverId}@${projectIds.join(',')}`;
+  JSON.stringify([serverId, projectIds]);
 
 const runtimeKey = Symbol('scopedMcpRuntimeKey');
 type RuntimeBoundMcpServer = MCPServer & { [runtimeKey]?: MCPRuntimeKey };
@@ -220,6 +221,7 @@ export const resolveScopedMcpRuntime = async (
     }> => {
       try {
         const catalog = await ensureScopedServerCatalog(server.id, projectIds, deps);
+        assertUniqueMCPToolIds(catalog.tools);
         const online = normalizeMCPServer({ ...server, status: 'online', tools: catalog.tools });
         return {
           server: bindRuntimeKey(
@@ -242,6 +244,7 @@ export const resolveScopedMcpRuntime = async (
     }),
   );
   const servers = settled.flatMap((result) => result.server ? [result.server] : []);
+  assertUniqueMCPToolIds(servers.flatMap((server) => normalizeMCPServerTools(server)));
   return {
     servers,
     tools: servers.flatMap((server) =>
@@ -258,6 +261,7 @@ export const callScopedMcpTool = async (
   options: CallScopedMcpToolOptions = {},
 ): Promise<string> => {
   assertCanonicalUniqueServerIds(servers.map((server) => server.id));
+  assertUniqueMCPToolIds(servers.flatMap((server) => normalizeMCPServerTools(server)));
   const deps = resolveDeps(options.deps);
   const projectIds = normalizeProjectScope(options.projectIds);
   for (const server of servers) {
@@ -269,7 +273,7 @@ export const callScopedMcpTool = async (
     let lease = (server as RuntimeBoundMcpServer)[runtimeKey];
     if (lease && options.projectIds !== undefined) {
       const leaseProjectIds = normalizeProjectScope(lease.projectIds);
-      if (leaseProjectIds.join('\0') !== projectIds.join('\0')) {
+      if (JSON.stringify(leaseProjectIds) !== JSON.stringify(projectIds)) {
         throw new Error(
           `MCP runtime scope changed for server ${server.id}; refusing to reuse its frozen key.`,
         );
@@ -277,6 +281,7 @@ export const callScopedMcpTool = async (
     }
     if (!lease || lease.serverId !== server.id) {
       const catalog = await ensureScopedServerCatalog(server.id, projectIds, deps);
+      assertUniqueMCPToolIds(catalog.tools);
       lease = catalog.key;
     }
 
