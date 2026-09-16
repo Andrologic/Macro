@@ -180,6 +180,11 @@ expected_revision=$3
 requested_mode=$4
 tmp=$5
 lock_path=$6
+if [ -L "$p" ]; then
+  cat > /dev/null
+  printf 'Writing a symbolic link is not supported; edit its target explicitly.\n' >&2
+  exit 5
+fi
 dir=$(dirname -- "$p")
 cleanup_tmp() { rm -f -- "$tmp"; }
 trap cleanup_tmp EXIT HUP INT TERM
@@ -3544,6 +3549,44 @@ mod tests {
             leftovers.is_empty(),
             "guarded write left temporary files behind: {leftovers:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wsl_write_script_refuses_symbolic_link_without_replacing_it() {
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("target.txt");
+        let link = workspace.path().join("link.txt");
+        let temp = workspace.path().join("write.tmp");
+        fs::write(&target, "original").unwrap();
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+        let mut child = crate::core::process::background_command("sh")
+            .arg("-c")
+            .arg(WSL_WRITE_FILE_SCRIPT)
+            .arg("macro-wsl-link-test")
+            .arg(&link)
+            .arg("1")
+            .arg(content_revision(b"original"))
+            .arg("")
+            .arg(&temp)
+            .arg(workspace.path().join("write.lock"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("execute WSL script with a synthetic symbolic link");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&vec![b'x'; 128 * 1024])
+            .expect("drain the rejected draft without a broken pipe");
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("symbolic link"));
+        assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        assert!(!temp.exists());
     }
 
     #[test]
