@@ -16,6 +16,7 @@ fn journal(session_id: &str, status: &str) -> GitWorkflowJournal {
         repo_path: "workflow-test".to_string(),
         common_dir: "workflow-test/.git".to_string(),
         pending_rebase: None,
+        pending_abort: false,
     }
 }
 

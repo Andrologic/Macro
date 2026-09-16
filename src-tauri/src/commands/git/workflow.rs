@@ -23,6 +23,8 @@ use super::{
 const WORKFLOW_SETTING_PREFIX: &str = "gitWorkflow:v1:";
 const PLAN_LIFECYCLE_SETTING_KEY: &str = "pendingPlanLifecycles:v1";
 
+#[path = "workflow_abort.rs"]
+mod abort;
 #[path = "workflow_cleanup.rs"]
 pub(crate) mod cleanup;
 #[path = "workflow_rebase.rs"]
@@ -63,6 +65,8 @@ pub(crate) struct GitWorkflowJournal {
     common_dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_rebase: Option<rebase::RebaseIntent>,
+    #[serde(default)]
+    pending_abort: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -221,11 +225,6 @@ fn replace_session(
     }
     if let Some(status) = status {
         next.session.status = status.as_str().to_string();
-        if status == WorkflowStatus::Aborted {
-            // Retire every request issued before the abort, including actions
-            // that can restart a workflow. A restart must observe this receipt.
-            next.session.session_id = Uuid::new_v4().to_string();
-        }
     }
     if let Some(integrated_commit) = integrated_commit {
         next.session.integrated_commit = integrated_commit;
@@ -283,7 +282,10 @@ pub(crate) async fn ensure_workflow_exclusive(
         let value: String = row.try_get("value_json").map_err(backend_database_error)?;
         let journal: GitWorkflowJournal = serde_json::from_str(&value)
             .map_err(|error| workflow_error(format!("Git workflow journal is corrupt: {error}")))?;
-        if journal.session.status != "prepared" && journal.session.status != "conflicted" {
+        if !journal.pending_abort
+            && journal.session.status != "prepared"
+            && journal.session.status != "conflicted"
+        {
             continue;
         }
         if !journal.common_dir.is_empty() && Path::new(&journal.common_dir) == common_dir {
@@ -566,6 +568,9 @@ fn verify_conflict_session(
     journal: &GitWorkflowJournal,
     identity: &GitWorkflowSessionIdentity,
 ) -> Result<()> {
+    if journal.pending_abort {
+        return Err(workflow_error("The Git workflow is being aborted."));
+    }
     validate_journal_repository(repo, journal)?;
     session_matches(
         &journal.session,
@@ -812,6 +817,7 @@ fn initial_session(
         repo_path: repo_path.to_string_lossy().to_string(),
         common_dir: repository_common_dir(repo)?.to_string_lossy().to_string(),
         pending_rebase: None,
+        pending_abort: false,
     })
 }
 
@@ -929,14 +935,46 @@ async fn dispatch_workflow(
     }
     ensure_workflow_exclusive(&pool, &common_dir, &key).await?;
 
+    if action == "abort" {
+        if let Some(journal) = existing.as_ref().filter(|journal| {
+            !journal.pending_abort
+                && matches!(journal.session.status.as_str(), "prepared" | "conflicted")
+        }) {
+            // Fence S1 durably before merge/rebase --abort (or any recovery)
+            // can change Git. The intent keeps ownership until confirmation.
+            let path = workflow_state_repo_path(journal, &validated);
+            let journal = journal.clone();
+            let pending = run_git_repo(git_state.clone(), path, move |repo| {
+                abort::prepare_abort(repo, &journal)
+            })
+            .await?;
+            save_journal(&pool, &key, &pending).await?;
+            if !pending.pending_abort {
+                return Ok(Some(journal_to_dto(&pending)));
+            }
+            existing = Some(pending);
+        }
+    }
+    if let Some(journal) = existing.as_ref().filter(|journal| journal.pending_abort) {
+        let path = workflow_state_repo_path(journal, &validated);
+        let pending = journal.clone();
+        let aborted = run_git_repo(git_state.clone(), path, move |repo| {
+            abort::recover_abort(repo, &pending)
+        })
+        .await?;
+        save_journal(&pool, &key, &aborted).await?;
+        // Recovery only finishes the pending abort. It never also restarts or
+        // integrates, even when the caller supplied a restartable action.
+        return Ok(Some(journal_to_dto(&aborted)));
+    }
+
     if let Some(journal) = existing
         .as_ref()
         .filter(|journal| journal.pending_rebase.is_some())
     {
         let pending = journal.clone();
-        let abort = action == "abort";
         let recovered = run_git_repo(git_state.clone(), validated.clone(), move |repo| {
-            rebase::recover_rebase(repo, &pending, abort)
+            rebase::recover_rebase(repo, &pending, false)
         })
         .await?;
         save_journal(&pool, &key, &recovered).await?;
@@ -1044,6 +1082,7 @@ async fn dispatch_workflow(
                 repo_path: validated.to_string_lossy().to_string(),
                 common_dir: common_dir.to_string_lossy().to_string(),
                 pending_rebase: None,
+                pending_abort: false,
             })
         })
         .await?;
@@ -1122,6 +1161,9 @@ async fn dispatch_workflow(
     }
 
     if journal.session.status == "aborted" {
+        if action == "abort" {
+            return Ok(Some(journal_to_dto(&journal)));
+        }
         return Err(workflow_error("The Git workflow session has been aborted."));
     }
     if journal.session.status == "integrated" {
@@ -1278,50 +1320,6 @@ async fn dispatch_workflow(
                     }
                     Err(workflow_error(
                         "Complete requires the exact journaled MERGE_HEAD.",
-                    ))
-                }
-            },
-        )
-        .await?;
-        journal = next;
-        save_journal(&pool, &key, &journal).await?;
-        return Ok(Some(journal_to_dto(&journal)));
-    }
-
-    if action == "abort" {
-        let next = run_git_repo(
-            git_state.clone(),
-            workflow_state_repo_path(&journal, &validated),
-            {
-                let journal = journal.clone();
-                move |repo| {
-                    if verify_exact_incomplete_merge(
-                        repo,
-                        &journal.session.target_branch,
-                        &journal.session.target_commit,
-                        &journal.session.source_commit,
-                    )? {
-                        validate_source_ref(repo, &journal)?;
-                        abort_exact_incomplete_merge(
-                            repo,
-                            &journal.session.target_branch,
-                            &journal.session.target_commit,
-                            &journal.session.source_commit,
-                        )?;
-                    } else {
-                        if repo.state() != RepositoryState::Clean {
-                            return Err(workflow_error(
-                                "Refusing to abort an unrelated Git operation.",
-                            ));
-                        }
-                        validate_expected_refs(repo, &journal)?;
-                    }
-                    Ok(replace_session(
-                        &journal,
-                        None,
-                        Some(WorkflowStatus::Aborted),
-                        Some(None),
-                        Some("Git workflow aborted.".to_string()),
                     ))
                 }
             },

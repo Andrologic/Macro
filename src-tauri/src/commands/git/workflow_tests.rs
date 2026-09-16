@@ -2,7 +2,7 @@ use super::*;
 use std::{fs, process::Command};
 use tempfile::TempDir;
 
-fn git(path: &Path, args: &[&str]) -> String {
+pub(super) fn git(path: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
         .arg(path)
@@ -17,7 +17,7 @@ fn git(path: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-fn fixture(diverged: bool) -> (TempDir, Repository, GitWorkflowJournal) {
+pub(super) fn fixture(diverged: bool) -> (TempDir, Repository, GitWorkflowJournal) {
     let temp = TempDir::new().unwrap();
     git(temp.path(), &["init", "-b", "main"]);
     git(temp.path(), &["config", "user.name", "Workflow test"]);
@@ -50,7 +50,7 @@ fn identity(journal: &GitWorkflowJournal) -> GitWorkflowSessionIdentity {
     }
 }
 
-async fn database() -> SqlitePool {
+pub(super) async fn database() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     sqlx::query("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
         .execute(&pool).await.unwrap();

@@ -49,9 +49,9 @@ fn verify_cleanup_session(
             "The supplied Git workflow session is not the journaled session.",
         ));
     }
-    if journal.pending_rebase.is_some() {
+    if journal.pending_abort || journal.pending_rebase.is_some() {
         return Err(workflow_error(
-            "Refusing workflow cleanup while the recorded rebase is unresolved.",
+            "Refusing workflow cleanup while a journaled Git operation is unresolved.",
         ));
     }
     if journal.session.status != WorkflowStatus::Integrated.as_str() {
