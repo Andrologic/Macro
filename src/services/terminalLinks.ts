@@ -1,7 +1,7 @@
-import type { ILink, ILinkProvider } from 'xterm';
+import type { IBufferLine, ILink, ILinkProvider } from 'xterm';
 
 const TERMINAL_URL_PATTERN =
-  /\b(?:https?:\/\/|www\.|(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d{2,5})[^\s<>"'`{}|\\^\]]*/gi;
+  /\b(?:https?:\/\/|www\.|(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d{2,5})[^\s<>"'`{}|\\^]*/gi;
 const SIMPLE_TRAILING_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?']);
 const BALANCED_CLOSERS: Record<string, string> = {
   ')': '(',
@@ -77,7 +77,8 @@ export const normalizeTerminalUrl = (rawToken: string): string | null => {
 export const detectTerminalLinksInLine = (
   lineText: string,
   bufferLineNumber: number,
-  openUrl: TerminalUrlOpener
+  openUrl: TerminalUrlOpener,
+  positions?: Array<{ x: number; y: number; endX: number }>
 ): ILink[] | undefined => {
   const links: ILink[] = [];
   const matcher = new RegExp(TERMINAL_URL_PATTERN);
@@ -101,12 +102,12 @@ export const detectTerminalLinksInLine = (
       text: linkText,
       range: {
         start: {
-          x: startIndex + 1,
-          y: bufferLineNumber,
+          x: positions?.[startIndex]?.x ?? startIndex + 1,
+          y: positions?.[startIndex]?.y ?? bufferLineNumber,
         },
         end: {
-          x: endIndexExclusive,
-          y: bufferLineNumber,
+          x: positions?.[endIndexExclusive - 1]?.endX ?? endIndexExclusive,
+          y: positions?.[endIndexExclusive - 1]?.y ?? bufferLineNumber,
         },
       },
       decorations: {
@@ -131,19 +132,56 @@ export const createTerminalUrlLinkProvider = (
   terminal: {
     buffer: {
       active: {
-        getLine: (index: number) => { translateToString(trimRight?: boolean): string } | undefined;
+        getLine: (index: number) => IBufferLine | undefined;
       };
     };
   },
   openUrl: TerminalUrlOpener
 ): ILinkProvider => ({
   provideLinks(bufferLineNumber, callback) {
-    const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
+    const buffer = terminal.buffer.active;
+    let first = bufferLineNumber - 1;
+    let line = buffer.getLine(first);
     if (!line) {
       callback(undefined);
       return;
     }
+    while (first > 0 && line.isWrapped) {
+      const previous = buffer.getLine(first - 1);
+      if (!previous) break;
+      line = previous;
+      first -= 1;
+    }
 
-    callback(detectTerminalLinksInLine(line.translateToString(true), bufferLineNumber, openUrl));
+    let text = '';
+    const positions: Array<{ x: number; y: number; endX: number }> = [];
+    for (let row = first; line; row += 1) {
+      const next = buffer.getLine(row + 1);
+      const wraps = next?.isWrapped === true;
+      // A wide cell wrapping from the last column leaves a null padding cell.
+      // It is not a space in the logical text.
+      const paddedWideWrap = wraps && next?.getCell(0)?.getWidth() === 2 &&
+        line.getCell(line.length - 1)?.getCode() === 0 &&
+        line.getCell(line.length - 1)?.getWidth() === 1;
+      const endColumn = line.length - (paddedWideWrap ? 1 : 0);
+      const rowText = line.translateToString(!wraps, 0, endColumn);
+      let offset = 0;
+      for (let column = 0; column < endColumn && offset < rowText.length; column += 1) {
+        const cell = line.getCell(column);
+        if (!cell || cell.getWidth() === 0) continue;
+        const chars = cell.getChars() || ' ';
+        for (let index = 0; index < chars.length; index += 1) {
+          positions.push({ x: column + 1, y: row + 1, endX: column + cell.getWidth() });
+        }
+        offset += chars.length;
+      }
+      text += rowText;
+      if (!wraps) break;
+      line = next;
+    }
+    const links = detectTerminalLinksInLine(text, first + 1, openUrl, positions)?.filter(
+      (link) => link.range.start.y <= bufferLineNumber && link.range.end.y >= bufferLineNumber
+    );
+    callback(links?.length ? links : undefined);
   },
 });

@@ -697,6 +697,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
   let eventUnlisteners: UnlistenFn[] = [];
   let pendingOutputEvents: Record<string, tauriIpc.TerminalOutputEvent> = {};
   let outputFlushTimer: number | null = null;
+  let manualSelectionRevision = 0;
 
   const computeCurrentHiddenCount = (state: TerminalVisibilityState): number =>
     computeHiddenCountForScope(state, resolveCurrentTerminalScope(state.lastManualProjectIdByTaskId));
@@ -708,6 +709,9 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
   const upsertTab = (nextTab: TerminalTab, options?: { activate?: boolean; openPanel?: boolean }) => {
     set((state) => {
       const existing = state.tabs[nextTab.id];
+      if (existing && (nextTab.generation ?? 0) < (existing.generation ?? 0)) {
+        nextTab = existing;
+      }
       const currentScope = resolveCurrentTerminalScope(state.lastManualProjectIdByTaskId);
       const activeVisibleTabId = getVisibleActiveTabIdFromState(state, currentScope);
       const panelOpen = options?.openPanel ?? state.panelOpen;
@@ -902,8 +906,16 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
 
     const queueOutputEvent = (payload: tauriIpc.TerminalOutputEvent) => {
       const existing = pendingOutputEvents[payload.tab_id];
-      if (!existing || (payload.sequence ?? 0) >= (existing.sequence ?? 0)) {
-        pendingOutputEvents[payload.tab_id] = payload;
+      const currentGeneration = get().tabs[payload.tab_id]?.generation ?? 0;
+      const generation = payload.generation ?? currentGeneration;
+      const queuedGeneration = existing?.generation ?? currentGeneration;
+      if (
+        !existing ||
+        generation > queuedGeneration ||
+        (generation === queuedGeneration && (payload.sequence ?? 0) >= (existing.sequence ?? 0))
+      ) {
+        // Legacy events inherit the generation at receipt, never at a later flush.
+        pendingOutputEvents[payload.tab_id] = { ...payload, generation };
       }
 
       if (outputFlushTimer !== null) {
@@ -920,7 +932,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       }, 16);
     };
 
-    eventUnlisteners = await Promise.all([
+    const registrations = await Promise.allSettled([
       listen<tauriIpc.TerminalOutputEvent>('terminal:output', (event) => {
         queueOutputEvent(event.payload);
       }),
@@ -937,6 +949,15 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         removeTabLocally(event.payload.tab_id);
       }),
     ]);
+    const successful = registrations.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : []
+    );
+    const failure = registrations.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') {
+      successful.forEach((unlisten) => unlisten());
+      throw failure.reason;
+    }
+    eventUnlisteners = successful;
   };
 
   const persistLastManualProjectSelection = (taskId: string, projectId: string) => {
@@ -1081,8 +1102,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           };
 
           set({
-            initialized: true,
-            initializing: false,
+            initialized: false,
             tabs,
             tabOrder,
             activeTabId,
@@ -1092,6 +1112,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
             hiddenTerminalTabCount: computeCurrentHiddenCount(nextState),
           });
           await registerListeners();
+          set({ initialized: true, initializing: false });
           await get().syncTerminalDisplayMetadata();
         } catch (error) {
           set({ initializing: false });
@@ -1254,10 +1275,12 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     rememberManualProjectForTask: (taskId, projectId) => {
+      manualSelectionRevision += 1;
       persistLastManualProjectSelection(taskId, projectId);
     },
 
     openManualTabForProject: async ({ projectId, groupId }) => {
+      const selectionRevision = ++manualSelectionRevision;
       await get().initialize();
       if (isManualDraftPendingInitialization(getCurrentSelectedTask())) {
         throw new Error(getManualTerminalUnavailableMessage());
@@ -1293,10 +1316,13 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         taskId: context.taskId,
         promptContext: displayMetadata.promptContext,
       });
-      const tab = mapTabDto(dto);
-      upsertTab(tab, { activate: true, openPanel: true });
-      persistLastManualProjectSelection(context.taskId, context.projectId);
-      set({ lastManualContext: context });
+      const tab = mapTabDto(dto, get().tabs[dto.id]);
+      const isLatestSelection = selectionRevision === manualSelectionRevision;
+      upsertTab(tab, { activate: isLatestSelection, openPanel: isLatestSelection ? true : undefined });
+      if (isLatestSelection) {
+        persistLastManualProjectSelection(context.taskId, context.projectId);
+        set({ lastManualContext: context });
+      }
       return tab;
     },
 
@@ -1342,7 +1368,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
             promptContext: promptContext ?? null,
           });
 
-      const tab = mapTabDto(dto, existing);
+      const tab = mapTabDto(dto, get().tabs[dto.id]);
       upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
       return tab;
     },
@@ -1360,7 +1386,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         promptContext: promptContext ?? null,
         command,
       });
-      const tab = mapTabDto(dto);
+      const tab = mapTabDto(dto, get().tabs[dto.id]);
       upsertTab(tab, { activate: reveal, openPanel: reveal ? true : undefined });
       return tab;
     },
@@ -1378,7 +1404,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
         promptContext: promptContext ?? null,
         command,
       });
-      const tab = mapTabDto(dto);
+      const tab = mapTabDto(dto, get().tabs[dto.id]);
       upsertTab(tab, {});
       return tab;
     },
@@ -1445,7 +1471,10 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
           title: nextTitle,
           promptContext: nextPromptContext,
         });
-        syncTabMetadataLocally(mapTabDto(dto, get().tabs[tab.id]));
+        const current = get().tabs[tab.id];
+        if (current) {
+          syncTabMetadataLocally(mapTabDto(dto, current));
+        }
       }
     },
 
