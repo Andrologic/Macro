@@ -57,6 +57,76 @@ async fn database() -> SqlitePool {
     pool
 }
 
+#[tokio::test]
+async fn abort_retires_prepared_session_before_any_stale_restart_or_merge() {
+    for action in [
+        "start",
+        "no_changes",
+        "merge_commit",
+        "fast_forward",
+        "prepare",
+    ] {
+        let (temp, repo, _) = fixture(false);
+        let pool = database().await;
+        let state = GitState::new();
+        let request = |action: &str, expected_session_id: Option<String>| {
+            dispatch_workflow(
+                temp.path(),
+                state.clone(),
+                pool.clone(),
+                temp.path().to_string_lossy().into_owned(),
+                "task-a".to_string(),
+                "feature".to_string(),
+                "main".to_string(),
+                action.to_string(),
+                None,
+                None,
+                expected_session_id,
+            )
+        };
+        let prepared = request("prepare", None).await.unwrap().unwrap();
+        let aborted = request("abort", Some(prepared.session_id.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(aborted.status, "aborted");
+        assert_ne!(aborted.session_id, prepared.session_id);
+        let index_before = fs::read(repo.path().join("index")).unwrap();
+        let file_before = fs::read(temp.path().join("file.txt")).unwrap();
+
+        let error = request(action, Some(prepared.session_id.clone()))
+            .await
+            .expect_err("a command captured before abort must remain stale");
+        assert!(error.to_string().contains("stale"), "{action}: {error}");
+        assert_eq!(request("inspect", None).await.unwrap().unwrap(), aborted);
+        assert_eq!(
+            local_branch_commit(&repo, "main").unwrap().to_string(),
+            prepared.target_commit
+        );
+        assert_eq!(
+            local_branch_commit(&repo, "feature").unwrap().to_string(),
+            prepared.source_commit
+        );
+        assert_eq!(repo.state(), RepositoryState::Clean);
+        assert_eq!(fs::read(repo.path().join("index")).unwrap(), index_before);
+        assert_eq!(fs::read(temp.path().join("file.txt")).unwrap(), file_before);
+
+        // A caller that has observed the post-abort receipt can deliberately
+        // prepare a new session and then integrate it using its new identity.
+        let restarted = request("prepare", Some(aborted.session_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(restarted.session_id, prepared.session_id);
+        assert_eq!(restarted.status, "prepared");
+        let integrated = request("fast_forward", Some(restarted.session_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(integrated.status, "integrated");
+    }
+}
+
 #[test]
 fn recovers_merge_and_fast_forward_before_checkpoint_then_accepts_partial_cleanup() {
     for merge_commit in [false, true] {

@@ -21,7 +21,6 @@ fn journal(session_id: &str, status: &str) -> GitWorkflowJournal {
 
 #[test]
 fn mutations_require_current_s2_identity_after_s1_was_abandoned() {
-    let s1 = journal("s1", WorkflowStatus::Aborted.as_str());
     let s2 = journal("s2", WorkflowStatus::Prepared.as_str());
     for action in [
         "prepare",
@@ -45,9 +44,6 @@ fn mutations_require_current_s2_identity_after_s1_was_abandoned() {
         );
         assert!(verify_requested_session(Some(&s2), Some("s2"), action).is_ok());
     }
-    // Restarting an aborted session needs the exact session being replaced.
-    assert!(verify_requested_session(Some(&s1), None, "start").is_err());
-    assert!(verify_requested_session(Some(&s1), Some("s1"), "start").is_ok());
 }
 
 #[test]

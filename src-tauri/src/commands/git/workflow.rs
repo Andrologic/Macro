@@ -221,6 +221,11 @@ fn replace_session(
     }
     if let Some(status) = status {
         next.session.status = status.as_str().to_string();
+        if status == WorkflowStatus::Aborted {
+            // Retire every request issued before the abort, including actions
+            // that can restart a workflow. A restart must observe this receipt.
+            next.session.session_id = Uuid::new_v4().to_string();
+        }
     }
     if let Some(integrated_commit) = integrated_commit {
         next.session.integrated_commit = integrated_commit;
@@ -836,6 +841,41 @@ pub async fn git_workflow(
     storage_branch: Option<String>,
     expected_session_id: Option<String>,
 ) -> Result<Option<GitWorkflowSessionDto>> {
+    let workspace = workspace_root.inner().read().await.clone();
+    let pool = get_pool(&pool)
+        .await
+        .map_err(|error| BackendError::Database {
+            message: error.message,
+        })?;
+    dispatch_workflow(
+        &workspace,
+        git_state.inner().clone(),
+        pool,
+        repo_path,
+        task_id,
+        source_branch,
+        target_branch,
+        action,
+        plan_id,
+        storage_branch,
+        expected_session_id,
+    )
+    .await
+}
+
+async fn dispatch_workflow(
+    workspace: &Path,
+    git_state: GitState,
+    pool: SqlitePool,
+    repo_path: String,
+    task_id: String,
+    source_branch: String,
+    target_branch: String,
+    action: String,
+    plan_id: Option<String>,
+    storage_branch: Option<String>,
+    expected_session_id: Option<String>,
+) -> Result<Option<GitWorkflowSessionDto>> {
     if super::parse_wsl_repo_path(&repo_path).is_some() {
         return Err(super::unsupported_wsl_git_operation("git_workflow"));
     }
@@ -860,15 +900,8 @@ pub async fn git_workflow(
         ensure_distinct_branches(&source_branch, &target_branch)?;
     }
 
-    let workspace = workspace_root.inner().read().await.clone();
-    let git_state = git_state.inner().clone();
-    let validated = validate_repo_path(&repo_path, &workspace)?;
+    let validated = validate_repo_path(&repo_path, workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
-    let pool = get_pool(&pool)
-        .await
-        .map_err(|error| BackendError::Database {
-            message: error.message,
-        })?;
     let request_repo = git_state.open_repo(&validated)?;
     let key = {
         let repo = request_repo.lock().map_err(|_| BackendError::Internal {
