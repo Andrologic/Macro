@@ -1,3 +1,94 @@
+// AppKit's standard Quit item and Dock Quit call terminate:, bypassing
+// Tauri CloseRequested. Cancel that termination and request the same guarded
+// window close as the title bar. Approved exits use AppHandle::exit directly.
+#[cfg(target_os = "macos")]
+mod native_quit_consent {
+    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+    use objc2::{msg_send, sel};
+    use objc2_app_kit::NSApplication;
+    use objc2_foundation::MainThreadMarker;
+    use std::sync::OnceLock;
+    use tauri::Manager;
+
+    static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+    extern "C" fn should_terminate(_: *mut AnyObject, _: Sel, _: *mut AnyObject) -> usize {
+        if let Some(app) = APP.get() {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(error) = window.close() {
+                    tracing::error!(%error, "Failed to request guarded application close");
+                }
+            }
+        }
+        0 // NSTerminateCancel: the frontend will explicitly exit after flushing.
+    }
+
+    pub fn install(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+        let mtm = MainThreadMarker::new().ok_or("Quit consent requires the main thread")?;
+        let application = NSApplication::sharedApplication(mtm);
+        let delegate: *mut AnyObject = unsafe { msg_send![&application, delegate] };
+        let delegate = unsafe { delegate.as_ref() }.ok_or("Missing application delegate")?;
+        APP.set(app.clone())
+            .map_err(|_| "Quit consent already installed")?;
+        install_on_delegate_class(delegate.class())
+    }
+
+    fn install_on_delegate_class(class: &AnyClass) -> Result<(), Box<dyn std::error::Error>> {
+        unsafe extern "C" {
+            fn class_addMethod(
+                cls: *const AnyClass,
+                name: Sel,
+                imp: Imp,
+                types: *const std::ffi::c_char,
+            ) -> bool;
+        }
+        // NSUInteger return and two Objective-C objects, on supported 64-bit macOS.
+        let implementation: Imp = unsafe {
+            std::mem::transmute(
+                should_terminate as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize,
+            )
+        };
+        let installed = unsafe {
+            class_addMethod(
+                class,
+                sel!(applicationShouldTerminate:),
+                implementation,
+                c"Q@:@".as_ptr(),
+            )
+        };
+        if !installed {
+            return Err("Could not install application quit consent".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use objc2::rc::Retained;
+        use objc2::runtime::ClassBuilder;
+        use objc2::ClassType;
+        use objc2_foundation::NSObject;
+
+        #[test]
+        fn synthetic_delegate_cancels_native_termination_and_rejects_duplicate_installation() {
+            let class = ClassBuilder::new(c"MacroSyntheticQuitDelegate", NSObject::class())
+                .unwrap()
+                .register();
+            install_on_delegate_class(class).unwrap();
+            let delegate: Retained<NSObject> = unsafe { msg_send![class, new] };
+            let response: usize = unsafe {
+                msg_send![&delegate, applicationShouldTerminate: std::ptr::null_mut::<AnyObject>()]
+            };
+            assert_eq!(
+                response, 0,
+                "native termination must wait for the frontend protocol"
+            );
+            assert!(install_on_delegate_class(class).is_err());
+        }
+    }
+}
+
 mod app_quit_state;
 mod app_updates;
 pub mod commands;
@@ -321,7 +412,7 @@ async fn window_set_size(
 #[tauri::command]
 async fn window_set_position(window: tauri::WebviewWindow, x: f64, y: f64) -> Result<(), String> {
     window
-        .set_position(tauri::LogicalPosition::new(x, y))
+        .set_position(tauri::PhysicalPosition::new(x, y))
         .map_err(|error| error.to_string())
 }
 
@@ -439,6 +530,7 @@ pub fn run() {
 
             #[cfg(target_os = "macos")]
             {
+                native_quit_consent::install(app.handle())?;
                 if let Some(window) = app.get_webview_window("main") {
                     window.set_decorations(true)?;
                     window.set_title_bar_style(TitleBarStyle::Overlay)?;
@@ -922,6 +1014,14 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
+            api.prevent_exit();
+            if let Some(window) = app_handle.get_webview_window("main") {
+                if let Err(error) = window.close() {
+                    tracing::error!(%error, "Failed to request guarded application close");
+                }
+            }
+        }
         tauri::RunEvent::ExitRequested { .. } => {
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit-requested");

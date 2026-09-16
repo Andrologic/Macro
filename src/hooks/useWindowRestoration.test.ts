@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import type { RestartSafetySelectorInput } from '../services/restartSafety';
 
+let activeSyntheticWork = false;
+let approveClose = false;
 let loadPreferencesMock: ReturnType<typeof mock>;
 let loadPersistedPreferenceMock: ReturnType<typeof mock>;
 let savePreferenceMock: ReturnType<typeof mock>;
@@ -38,9 +41,20 @@ let importCounter = 0;
 let pageShuttingDown = false;
 let closeRequestedListener: ((event: { preventDefault: () => void }) => void | Promise<void>) | null = null;
 let movedListener: (() => void) | null = null;
+let resizeRegistration: (() => Promise<() => void>) | null = null;
+let moveRegistration: (() => Promise<() => void>) | null = null;
 let resizedListener: (() => void) | null = null;
 
 const registerWindowRestorationMocks = async () => {
+  const safety = await import(`../services/restartSafety.ts?fixture=${importCounter + 1}`);
+  mock.module('../services/restartSafety', () => ({
+    ...safety,
+    selectRestartSafetySnapshot: (input: RestartSafetySelectorInput) => safety.selectRestartSafetySnapshot({
+      ...input,
+      taskCommandRuns: activeSyntheticWork ? { synthetic: { taskId: 'synthetic', status: 'running' } } : {},
+    }),
+  }));
+  mock.module('@tauri-apps/plugin-dialog', () => ({ ask: async () => approveClose }));
   const actualPreferences = await import(
     `../services/preferences.ts?window-restoration-preferences-test=${importCounter + 1}`
   );
@@ -73,6 +87,7 @@ const registerWindowRestorationMocks = async () => {
     windowSetTrafficLightPosition: async () => undefined,
     windowOnCloseRequested: (...args: unknown[]) => windowOnCloseRequestedMock(...args),
     windowOnMoved: async (listener: () => void) => {
+      if (moveRegistration) return moveRegistration();
       movedListener = listener;
       return () => {
         if (movedListener === listener) {
@@ -81,6 +96,7 @@ const registerWindowRestorationMocks = async () => {
       };
     },
     windowOnResized: async (listener: () => void) => {
+      if (resizeRegistration) return resizeRegistration();
       resizedListener = listener;
       return () => {
         if (resizedListener === listener) {
@@ -157,6 +173,10 @@ const renderWindowRestorationHook = async (
 describe('ensureWindowRestoredOnce', () => {
   beforeEach(() => {
     invocationOrder = [];
+    activeSyntheticWork = false;
+    approveClose = false;
+    resizeRegistration = null;
+    moveRegistration = null;
     pageShuttingDown = false;
     closeRequestedListener = null;
     movedListener = null;
@@ -191,7 +211,7 @@ describe('ensureWindowRestoredOnce', () => {
         keys.map((key) => [key, preferenceValues[key]])
       )
     );
-    loadPersistedPreferenceMock = mock(async (key: string) => persistedPreferenceValues[key]);
+    loadPersistedPreferenceMock = mock(async (key: string) => key === "windowPositionVersion" ? persistedPreferenceValues[key] ?? 1 : persistedPreferenceValues[key]);
     savePreferenceMock = mock(async () => undefined);
 
     showMainWindowMock = mock(async () => {
@@ -256,6 +276,98 @@ describe('ensureWindowRestoredOnce', () => {
     resizedListener = null;
     pageShuttingDown = false;
     mock.restore();
+  });
+
+  it('honors declined consent and waits for a geometry flush before an approved exit', async () => {
+    const { useWindowRestoration, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+    await ensureWindowRestoredOnce();
+    activeSyntheticWork = true;
+    windowOuterSizeMock = mock(async () => ({ width: 2000, height: 1400 }));
+    windowOuterPositionMock = mock(async () => ({ x: 2000, y: 100 }));
+    windowScaleFactorMock = mock(async () => 2);
+    await act(async () => { await closeRequestedListener?.(createCloseRequestedEvent()); });
+    expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+    expect(savePreferenceMock).not.toHaveBeenCalled();
+    approveClose = true;
+    let release!: () => void;
+    const flush = new Promise<void>((resolve) => { release = resolve; });
+    savePreferenceMock.mockImplementation(() => flush);
+    let close!: Promise<void>;
+    await act(async () => { close = Promise.resolve(closeRequestedListener?.(createCloseRequestedEvent())); });
+    expect(appUpdateExitAfterCleanShutdownMock).not.toHaveBeenCalled();
+    expect(savePreferenceMock).toHaveBeenCalledWith('windowX', 2000);
+    expect(savePreferenceMock).toHaveBeenCalledWith('windowWidth', 1000);
+    expect(savePreferenceMock).toHaveBeenCalledWith('windowPositionVersion', 1);
+    await act(async () => { release(); await close; });
+    expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it('restores physical coordinates on a denser secondary monitor before sizing', async () => {
+    const { ensureWindowRestoredOnce } = await loadWindowRestoration();
+    chromeState.platform = 'windows';
+    chromeState.usesNativeMacosTitlebar = false;
+    preferenceValues = { ...preferenceValues, windowWidth: 1000, windowHeight: 700, windowX: 2000, windowY: 100 };
+    windowAvailableMonitorBoundsMock = mock(async () => [
+      { position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 }, workArea: { position: { x: 0, y: 0 }, size: { width: 1920, height: 1040 } }, scaleFactor: 1 },
+      { position: { x: 1920, y: 0 }, size: { width: 3840, height: 2160 }, workArea: { position: { x: 1920, y: 0 }, size: { width: 3840, height: 2080 } }, scaleFactor: 2 },
+    ]);
+    await ensureWindowRestoredOnce();
+    expect(windowSetPositionMock.mock.calls).toEqual([[2000, 100]]);
+    expect(windowSetSizeMock.mock.calls).toEqual([[1000, 700]]);
+    expect(invocationOrder.indexOf('position')).toBeLessThan(invocationOrder.indexOf('size'));
+  });
+
+  it('centers legacy ambiguous coordinates while preserving logical dimensions', async () => {
+    const { ensureWindowRestoredOnce } = await loadWindowRestoration();
+    persistedPreferenceValues.windowPositionVersion = 0;
+    await ensureWindowRestoredOnce();
+    expect(windowSetSizeMock.mock.calls).toEqual([[1440, 900]]);
+    expect(windowSetPositionMock.mock.calls).toEqual([[144, 129]]);
+  });
+
+  it('still restores and shows the window if every monitor read fails', async () => {
+    const { ensureWindowRestoredOnce } = await loadWindowRestoration();
+    const reject = async () => { throw new Error('synthetic monitor failure'); };
+    windowAvailableMonitorBoundsMock = mock(reject);
+    windowCurrentMonitorWorkAreaMock = mock(reject);
+    windowPrimaryMonitorWorkAreaMock = mock(reject);
+    await ensureWindowRestoredOnce();
+    expect(windowSetPositionMock.mock.calls).toHaveLength(1);
+    expect(windowSetSizeMock.mock.calls).toHaveLength(1);
+    expect(showMainWindowMock.mock.calls).toHaveLength(1);
+  });
+
+  it('releases subscriptions that resolve after unmount', async () => {
+    const { useWindowRestoration, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    let resolveResize!: (cleanup: () => void) => void;
+    let resolveMove!: (cleanup: () => void) => void;
+    resizeRegistration = () => new Promise((resolve) => { resolveResize = resolve; });
+    moveRegistration = () => new Promise((resolve) => { resolveMove = resolve; });
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+    await act(async () => root.unmount());
+    const resizeCleanup = mock(() => undefined);
+    const moveCleanup = mock(() => undefined);
+    await act(async () => { resolveResize(resizeCleanup); resolveMove(moveCleanup); });
+    expect(resizeCleanup).toHaveBeenCalledTimes(1);
+    expect(moveCleanup).toHaveBeenCalledTimes(1);
+    container.remove();
+    await ensureWindowRestoredOnce();
+  });
+
+  it('releases a successful subscription when its companion fails', async () => {
+    const { useWindowRestoration, ensureWindowRestoredOnce } = await loadWindowRestoration();
+    const cleanup = mock(() => undefined);
+    resizeRegistration = async () => cleanup;
+    moveRegistration = async () => { throw new Error('synthetic registration failure'); };
+    const { root, container } = await renderWindowRestorationHook(useWindowRestoration);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    container.remove();
+    await ensureWindowRestoredOnce();
   });
 
   it('applies the native macOS theme snapshot before showing the window', async () => {
@@ -549,6 +661,7 @@ describe('ensureWindowRestoredOnce', () => {
       ['windowHeight', 958],
       ['windowX', 0],
       ['windowY', 24],
+      ['windowPositionVersion', 1],
       ['isMaximized', false],
       ['windowBootstrapVersion', 2],
     ]);
@@ -631,7 +744,7 @@ describe('ensureWindowRestoredOnce', () => {
     });
     await delay(650);
 
-    expect(savePreferenceMock.mock.calls).toHaveLength(5);
+    expect(savePreferenceMock.mock.calls).toHaveLength(6);
     expect(closeEvent.preventDefault).toHaveBeenCalledTimes(1);
     expect(appUpdateExitAfterCleanShutdownMock).toHaveBeenCalledTimes(1);
 

@@ -4,6 +4,7 @@ import { isTauriEnvironment, windowSetZoom } from '../services/tauriWindow';
 import { isPageShuttingDown } from '../utils/pageLifecycle';
 import { getEffectiveUiZoomScale } from '../utils/uiZoom';
 
+let originalFontSize: string | null = null;
 let lastAppliedBrowserZoom: number | null = null;
 let lastAppliedTauriZoom: number | null = null;
 let requestedTauriZoom: number | null = null;
@@ -14,7 +15,15 @@ function isTauri(): boolean {
 }
 
 function applyBrowserZoom(scale: number): void {
+  originalFontSize ??= document.documentElement.style.fontSize;
   document.documentElement.style.fontSize = `${16 * scale}px`;
+}
+
+function clearBrowserZoom(): void {
+  if (originalFontSize === null) return;
+  document.documentElement.style.fontSize = originalFontSize;
+  originalFontSize = null;
+  lastAppliedBrowserZoom = null;
 }
 
 async function applyLatestTauriZoom(scale: number): Promise<void> {
@@ -25,18 +34,20 @@ async function applyLatestTauriZoom(scale: number): Promise<void> {
     while (requestedTauriZoom !== null) {
       const nextScale = requestedTauriZoom;
       requestedTauriZoom = null;
-      if (lastAppliedTauriZoom === nextScale) continue;
+      if (lastAppliedTauriZoom === nextScale) {
+        clearBrowserZoom();
+        continue;
+      }
       try {
         await windowSetZoom(nextScale);
+        clearBrowserZoom();
       } catch (error) {
         if (requestedTauriZoom !== null) {
           continue;
         }
         throw error;
       }
-      if (requestedTauriZoom === null) {
-        lastAppliedTauriZoom = nextScale;
-      }
+      lastAppliedTauriZoom = nextScale;
     }
   })().finally(() => {
     tauriZoomDrain = null;
@@ -71,17 +82,13 @@ export function useUiZoom() {
           return;
         }
 
-        if (lastAppliedTauriZoom === effectiveScale) {
-          return;
-        }
-
         await applyLatestTauriZoom(effectiveScale);
       } catch (error) {
         if (cancelled || isPageShuttingDown()) {
           return;
         }
         console.error('Failed to apply UI zoom:', error);
-        applyBrowserZoom(effectiveScale);
+        applyBrowserZoom(effectiveScale / (lastAppliedTauriZoom ?? 1));
       }
     };
 
