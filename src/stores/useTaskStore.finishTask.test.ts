@@ -8,6 +8,7 @@ const actualServices = await import('../services');
 const actualTauriIpc = await import('../services/tauriIpc');
 type GitWorkflowRequest = Parameters<typeof actualTauriIpc.gitWorkflow>[0];
 type GitWorkflowSession = Awaited<ReturnType<typeof actualTauriIpc.gitWorkflow>>;
+type GitWorkflowCleanupRequest = Parameters<typeof actualTauriIpc.gitWorkflowCleanup>[0];
 type GitWorktreeInspectRequest = Parameters<typeof actualTauriIpc.gitWorktreeInspect>[0];
 type GitMergeCheckRequest = Parameters<typeof actualTauriIpc.gitMergeCheck>[0];
 type GitDiffRequest = Parameters<typeof actualTauriIpc.gitDiff>[0];
@@ -153,6 +154,7 @@ const gitRebaseBranchMock = mock(async (_params: {
 }) => 'Successfully rebased');
 const gitBranchDeleteMock = mock(async (_params?: GitBranchDeleteRequest) => undefined);
 const gitBranchDeleteRemoteMock = mock(async (_params?: GitBranchDeleteRemoteRequest) => undefined);
+const gitWorkflowCleanupMock = mock(async (_params?: GitWorkflowCleanupRequest) => undefined);
 const gitPullMock = mock(async () => undefined);
 const gitWorkflowSessions = new Map<string, GitWorkflowSession>();
 const worktreeInspectionOverrides = new Map<string, {
@@ -401,6 +403,7 @@ mock.module('../services/tauriIpc', () => ({
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
   gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
+  gitWorkflowCleanup: gitWorkflowCleanupMock,
   gitPull: gitPullMock,
   fsExists: fsExistsMock,
   fsReadFileWithOptions: fsReadFileWithOptionsMock,
@@ -432,6 +435,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
   gitBranchDeleteRemote: gitBranchDeleteRemoteMock,
+  gitWorkflowCleanup: gitWorkflowCleanupMock,
   gitPull: gitPullMock,
   fsExists: fsExistsMock,
   fsReadFileWithOptions: fsReadFileWithOptionsMock,
@@ -626,6 +630,8 @@ describe('useTaskStore.finishTask', () => {
     gitBranchDeleteMock.mockImplementation(async () => undefined);
     gitBranchDeleteRemoteMock.mockClear();
     gitBranchDeleteRemoteMock.mockImplementation(async () => undefined);
+    gitWorkflowCleanupMock.mockClear();
+    gitWorkflowCleanupMock.mockImplementation(async () => undefined);
     gitCheckoutMock.mockClear();
     gitMergeCheckMock.mockClear();
     gitMergeCheckMock.mockImplementation(async () => ({
@@ -767,7 +773,7 @@ describe('useTaskStore.finishTask', () => {
     await Promise.all([firstFinish, secondFinish]);
 
     expect(gitMergeMock).toHaveBeenCalledTimes(1);
-    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledTimes(1);
     expect(useTaskStore.getState().getTaskById('task-1')).toMatchObject({
       status: 'Completed',
     });
@@ -1065,19 +1071,17 @@ describe('useTaskStore.finishTask', () => {
       targetBranch: 'plan/checkout',
     });
     expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
-    expect(gitWorktreeRemoveMock).toHaveBeenCalledWith({
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledWith({
       repoPath: '/repos/web',
-      taskId: 'repo-1',
-      force: false,
-      branchName: 'feature/task-1',
-      expectedCommit: 'abc123',
+      identity: {
+        taskId: 'task-1',
+        sessionId: 'session-task-1-feature/task-1-plan/checkout',
+        sourceBranch: 'feature/task-1',
+        targetBranch: 'plan/checkout',
+      },
+      worktreeKey: 'repo-1',
+      removeRemote: false,
       expectedWorktreePath: '/worktrees/task-1',
-    });
-    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
-      repoPath: '/repos/web',
-      branchName: 'feature/task-1',
-      force: true,
-      expectedCommit: 'abc123',
     });
   });
 
@@ -1204,12 +1208,11 @@ describe('useTaskStore.finishTask', () => {
       targetBranch: 'plan/checkout',
     });
     expect(mergeFeatureBranchIntoPlanBranchMock).not.toHaveBeenCalled();
-    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledWith(expect.objectContaining({
       repoPath: '/repos/web',
-      branchName: 'feature/task-1',
-      force: true,
-      expectedCommit: 'abc123',
-    });
+      worktreeKey: 'repo-1',
+      removeRemote: false,
+    }));
   });
 
   it('keeps a completed merge blocked when branch cleanup fails after integration', async () => {
@@ -1225,10 +1228,7 @@ describe('useTaskStore.finishTask', () => {
       remote: [{ name: 'origin/feature/task-1', is_head: false, commit: 'abc123' }],
       current: 'develop',
     }));
-    gitBranchDeleteMock.mockImplementationOnce(async () => {
-      throw new Error('not merged into current HEAD');
-    });
-    gitBranchDeleteRemoteMock.mockImplementationOnce(async () => {
+    gitWorkflowCleanupMock.mockImplementationOnce(async () => {
       throw new Error('remote delete failed');
     });
 
@@ -1245,20 +1245,18 @@ describe('useTaskStore.finishTask', () => {
 
     await expect(useTaskStore.getState().finishTask('task-1', {
       mergeStrategyAction: 'fast_forward',
-    })).rejects.toThrow('not merged into current HEAD');
+    })).rejects.toThrow('remote delete failed');
 
     expect(gitFastForwardMock).toHaveBeenCalledWith({
       repoPath: expect.stringContaining('/repos/web/.macro/worktrees/integration-'),
       sourceBranch: 'feature/task-1',
       targetBranch: 'plan/checkout',
     });
-    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledWith(expect.objectContaining({
       repoPath: '/repos/web',
-      branchName: 'feature/task-1',
-      force: true,
-      expectedCommit: 'abc123',
-    });
-    expect(gitBranchDeleteRemoteMock).not.toHaveBeenCalled();
+      worktreeKey: 'repo-1',
+      removeRemote: true,
+    }));
     expect(useTaskStore.getState().getTaskById('task-1')).not.toMatchObject({
       status: 'Completed',
     });
@@ -1266,8 +1264,8 @@ describe('useTaskStore.finishTask', () => {
     const persistedTask = useTaskStore.getState().getTaskById('task-1');
     expect(persistedTask?.merge_workflow).toBeTruthy();
     const worktreeCreateCallsAfterFailure = gitWorktreeCreateMock.mock.calls.length;
-    gitBranchDeleteRemoteMock.mockReset();
-    gitBranchDeleteRemoteMock.mockImplementation(async () => undefined);
+    gitWorkflowCleanupMock.mockReset();
+    gitWorkflowCleanupMock.mockImplementation(async () => undefined);
     worktreeInspectionOverrides.set('/repos/web::repo-1', {
       status: 'absent',
       worktreePath: '/worktrees/task-1',
@@ -1287,12 +1285,11 @@ describe('useTaskStore.finishTask', () => {
     });
 
     expect(gitWorktreeCreateMock).toHaveBeenCalledTimes(worktreeCreateCallsAfterFailure);
-    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
-    expect(gitBranchDeleteRemoteMock).toHaveBeenCalledWith({
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledWith(expect.objectContaining({
       repoPath: '/repos/web',
-      branchName: 'feature/task-1',
-      expectedCommit: 'abc123',
-    });
+      worktreeKey: 'repo-1',
+      removeRemote: true,
+    }));
     expect(reloadedTaskStore.getState().getTaskById('task-1')).toMatchObject({
       status: 'Completed',
     });
@@ -1306,7 +1303,7 @@ describe('useTaskStore.finishTask', () => {
       ahead: 1,
       behind: 0,
     }));
-    gitWorktreeRemoveMock.mockImplementationOnce(async () => {
+    gitWorkflowCleanupMock.mockImplementationOnce(async () => {
       throw new Error('worktree still locked');
     });
 
@@ -1325,7 +1322,7 @@ describe('useTaskStore.finishTask', () => {
       mergeStrategyAction: 'fast_forward',
     })).rejects.toThrow('worktree still locked');
 
-    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledTimes(1);
   });
 
   it('resumes a no-changes completion after cleanup failure and an absent source worktree', async () => {
@@ -1337,7 +1334,7 @@ describe('useTaskStore.finishTask', () => {
       behind: 0,
     }));
     gitDiffMock.mockImplementation(async () => '');
-    gitBranchDeleteMock.mockImplementationOnce(async () => {
+    gitWorkflowCleanupMock.mockImplementationOnce(async () => {
       throw new Error('branch cleanup failed');
     });
 
@@ -1380,13 +1377,10 @@ describe('useTaskStore.finishTask', () => {
     });
 
     expect(gitWorktreeCreateMock).toHaveBeenCalledTimes(worktreeCreateCallsAfterFailure);
-    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(1);
-    expect(gitBranchDeleteMock).toHaveBeenLastCalledWith({
+    expect(gitWorkflowCleanupMock).toHaveBeenLastCalledWith(expect.objectContaining({
       repoPath: '/repos/web',
-      branchName: 'feature/task-1',
-      force: true,
-      expectedCommit: 'abc123',
-    });
+      worktreeKey: 'repo-1',
+    }));
     expect(reloadedTaskStore.getState().getTaskById('task-1')).toMatchObject({
       status: 'Completed',
     });
@@ -1402,8 +1396,7 @@ describe('useTaskStore.finishTask', () => {
       planBranchName: 'plan/checkout-api',
       targetBranchName: 'develop',
     };
-    const deletedBranches = new Set<string>();
-    let worktreeRemoveCalls = 0;
+    let cleanupCalls = 0;
 
     gitMergeCheckMock.mockImplementation(async (params) => ({
       mergeable: true,
@@ -1419,19 +1412,14 @@ describe('useTaskStore.finishTask', () => {
       const isApi = repoPath === '/repos/api';
       const branchName = isApi ? 'feature/task-1-api' : 'feature/task-1';
       return {
-        local: deletedBranches.has(`${repoPath}::${branchName}`)
-          ? []
-          : [{ name: branchName, is_head: false, commit: isApi ? 'def456' : 'abc123' }],
+        local: [{ name: branchName, is_head: false, commit: isApi ? 'def456' : 'abc123' }],
         remote: [],
         current: 'develop',
       };
     });
-    gitBranchDeleteMock.mockImplementation(async (params) => {
-      if (params) deletedBranches.add(`${params.repoPath}::${params.branchName}`);
-    });
-    gitWorktreeRemoveMock.mockImplementation(async (params) => {
-      worktreeRemoveCalls += 1;
-      if (worktreeRemoveCalls === 2) {
+    gitWorkflowCleanupMock.mockImplementation(async (params) => {
+      cleanupCalls += 1;
+      if (cleanupCalls === 2) {
         throw new Error('api cleanup failed');
       }
       if (params?.repoPath === '/repos/web') {
@@ -1440,12 +1428,6 @@ describe('useTaskStore.finishTask', () => {
           worktreePath: '/worktrees/task-1',
         });
       }
-      return {
-        removed: true,
-        removedPath: params?.repoPath === '/repos/api'
-          ? '/worktrees/task-1-api'
-          : '/worktrees/task-1',
-      };
     });
 
     const { useTaskStore } = await loadIsolatedTaskStore();
@@ -1471,18 +1453,16 @@ describe('useTaskStore.finishTask', () => {
     expect(persistedTask?.merge_workflow).toBeTruthy();
     const worktreeCreateCallsAfterFailure = gitWorktreeCreateMock.mock.calls.length;
 
-    expect(gitBranchDeleteMock).toHaveBeenCalledWith({
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledWith(expect.objectContaining({
       repoPath: '/repos/web',
-      branchName: 'feature/task-1',
-      force: true,
-      expectedCommit: 'abc123',
-    });
-    expect(gitBranchDeleteMock).not.toHaveBeenCalledWith({
+      worktreeKey: 'repo-1',
+      removeRemote: false,
+    }));
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledWith(expect.objectContaining({
       repoPath: '/repos/api',
-      branchName: 'feature/task-1-api',
-      force: true,
-      expectedCommit: 'def456',
-    });
+      worktreeKey: 'repo-2',
+      removeRemote: false,
+    }));
 
     const { useTaskStore: reloadedTaskStore } = await loadIsolatedTaskStore();
     reloadedTaskStore.setState({
@@ -1496,14 +1476,13 @@ describe('useTaskStore.finishTask', () => {
     await reloadedTaskStore.getState().finishTask('task-1');
 
     expect(gitWorktreeCreateMock).toHaveBeenCalledTimes(worktreeCreateCallsAfterFailure);
-    expect(gitWorktreeRemoveMock).toHaveBeenCalledTimes(3);
-    expect(gitBranchDeleteMock).toHaveBeenCalledTimes(2);
-    expect(gitBranchDeleteMock).toHaveBeenLastCalledWith({
-      repoPath: '/repos/api',
-      branchName: 'feature/task-1-api',
-      force: true,
-      expectedCommit: 'def456',
-    });
+    expect(gitWorkflowCleanupMock).toHaveBeenCalledTimes(4);
+    expect(gitWorkflowCleanupMock.mock.calls.map(([params]) => params?.repoPath)).toEqual([
+      '/repos/web',
+      '/repos/api',
+      '/repos/web',
+      '/repos/api',
+    ]);
     expect(reloadedTaskStore.getState().getTaskById('task-1')).toMatchObject({
       status: 'Completed',
     });

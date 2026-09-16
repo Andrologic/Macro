@@ -2902,9 +2902,6 @@ const cleanupTaskExecutionTargets = async (
 
   for (const target of executionTargets) {
     const branches = await tauriIpc.gitBranchList(target.repoPath);
-    const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
-    const remoteBranchNames = new Set((branches.remote || []).map((branch) => branch.name));
-
     const session = await tauriIpc.gitWorkflow({
       repoPath: target.repoPath, taskId: task.id, sourceBranch: target.branchName,
       targetBranch: getTaskIntegrationBranch(task, target)!,
@@ -2914,31 +2911,21 @@ const cleanupTaskExecutionTargets = async (
     const inspection = await tauriIpc.gitWorktreeInspect({
       repoPath: target.repoPath, taskId: target.worktreeKey, branchName: target.branchName, readOnly: true,
     });
-    if (inspection.status !== 'absent') {
-      await tauriIpc.gitWorktreeRemove({
-        repoPath: target.repoPath, taskId: target.worktreeKey, force: false,
-        branchName: target.branchName, expectedCommit: session.sourceCommit,
-        expectedWorktreePath: inspection.worktreePath,
-      });
-    }
+    await tauriIpc.gitWorkflowCleanup({
+      repoPath: target.repoPath,
+      identity: {
+        taskId: session.taskId,
+        sessionId: session.sessionId,
+        sourceBranch: session.sourceBranch,
+        targetBranch: session.targetBranch,
+      },
+      worktreeKey: target.worktreeKey,
+      removeRemote: (branches.remote || []).some(
+        (branch) => branch.name === `origin/${target.branchName}`,
+      ),
+      expectedWorktreePath: inspection.status === 'absent' ? null : inspection.worktreePath,
+    });
     removedWorktreeKeys.push(target.worktreeKey);
-
-    if (localBranchNames.has(target.branchName)) {
-      await tauriIpc.gitBranchDelete({
-        repoPath: target.repoPath,
-        branchName: target.branchName,
-        force: true,
-        expectedCommit: session.sourceCommit,
-      });
-    }
-
-    if (remoteBranchNames.has(`origin/${target.branchName}`)) {
-      await tauriIpc.gitBranchDeleteRemote({
-        repoPath: target.repoPath,
-        branchName: target.branchName,
-        expectedCommit: session.sourceCommit,
-      });
-    }
   }
 
   return removedWorktreeKeys;

@@ -627,6 +627,14 @@ struct GitCommandOutput {
 }
 
 fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
+    run_git_command_with_reflog_action(cwd, args, None)
+}
+
+fn run_git_command_with_reflog_action(
+    cwd: &Path,
+    args: &[String],
+    reflog_action: Option<&str>,
+) -> Result<GitCommandOutput> {
     let repo = Repository::discover(cwd)?;
     ensure_safe_config(&repo)?;
 
@@ -634,6 +642,9 @@ fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
     command
         .env_clear()
         .envs(std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())));
+    if let Some(action) = reflog_action {
+        command.env("GIT_REFLOG_ACTION", action);
+    }
     command.current_dir(cwd).args(args);
     let output = command.output().map_err(|e| BackendError::Git {
         message: format!("Failed to run git command '{}': {}", args.join(" "), e),
@@ -7827,6 +7838,16 @@ pub(crate) fn rebase_branch_repo(
     onto_branch: &str,
     confirm: Option<bool>,
 ) -> Result<String> {
+    rebase_branch_repo_with_reflog_action(repo, branch_name, onto_branch, confirm, None)
+}
+
+fn rebase_branch_repo_with_reflog_action(
+    repo: &Repository,
+    branch_name: &str,
+    onto_branch: &str,
+    confirm: Option<bool>,
+    reflog_action: Option<&str>,
+) -> Result<String> {
     if !confirm.unwrap_or(false) {
         return Err(BackendError::Git {
             message: "Rebase requires confirm=true".to_string(),
@@ -7859,10 +7880,18 @@ pub(crate) fn rebase_branch_repo(
         root.clone()
     };
 
-    let output = run_git_command(
-        &command_root,
-        &["rebase".to_string(), onto_branch.to_string()],
-    )?;
+    let rebase_args = if reflog_action.is_some() {
+        vec![
+            "-c".into(),
+            "core.logAllRefUpdates=true".into(),
+            "rebase".into(),
+            "--merge".into(),
+            onto_branch.to_string(),
+        ]
+    } else {
+        vec!["rebase".into(), onto_branch.to_string()]
+    };
+    let output = run_git_command_with_reflog_action(&command_root, &rebase_args, reflog_action)?;
 
     if !output.success {
         let conflict_files = collect_command_conflict_files(&command_root);
@@ -9585,6 +9614,7 @@ pub async fn git_merge_check(
 pub async fn git_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     into_branch: String,
@@ -9607,6 +9637,7 @@ pub async fn git_merge(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9632,6 +9663,7 @@ pub async fn git_merge(
 pub async fn git_guarded_merge_state(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     into_branch: String,
@@ -9648,6 +9680,7 @@ pub async fn git_guarded_merge_state(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9677,6 +9710,7 @@ pub async fn git_guarded_merge_state(
 pub async fn git_start_merge_resolution(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     into_branch: String,
@@ -9690,6 +9724,7 @@ pub async fn git_start_merge_resolution(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9708,6 +9743,7 @@ pub async fn git_start_merge_resolution(
 pub async fn git_fast_forward(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     source_branch: String,
     target_branch: String,
@@ -9721,6 +9757,7 @@ pub async fn git_fast_forward(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9771,6 +9808,7 @@ pub async fn git_rebase_check(
 pub async fn git_rebase_branch(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     onto_branch: String,
@@ -9785,6 +9823,7 @@ pub async fn git_rebase_branch(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -9952,6 +9991,7 @@ pub async fn git_reset(
 pub async fn git_abort_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     confirm: Option<bool>,
 ) -> Result<()> {
@@ -9970,6 +10010,7 @@ pub async fn git_abort_merge(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -14764,6 +14805,7 @@ pub async fn git_read_conflict_file(
         )?;
         Some((journal, identity, operation_path))
     } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
         None
     };
 
@@ -14839,6 +14881,7 @@ pub async fn git_write_conflict_resolution(
         )?;
         Some((journal, identity, operation_path))
     } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
         None
     };
 
@@ -14917,6 +14960,7 @@ pub async fn git_accept_conflict_side(
         )?;
         Some((journal, identity, operation_path))
     } else {
+        workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
         None
     };
     tokio::task::spawn_blocking(move || {
@@ -14944,6 +14988,7 @@ pub async fn git_accept_conflict_side(
 pub async fn git_complete_merge(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
 ) -> Result<String> {
     if parse_wsl_repo_path(&repo_path).is_some() {
@@ -14955,6 +15000,7 @@ pub async fn git_complete_merge(
 
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;
@@ -15605,6 +15651,7 @@ pub async fn git_prepare_guarded_branch_sync(
 pub async fn git_guarded_branch_sync(
     workspace_root: State<'_, WorkspaceRoot>,
     git_state: State<'_, GitState>,
+    pool: State<'_, DbPool>,
     repo_path: String,
     branch_name: String,
     expected_branch_commit: String,
@@ -15618,6 +15665,7 @@ pub async fn git_guarded_branch_sync(
     let git_state = git_state.inner().clone();
     let validated = validate_repo_path(&repo_path, &workspace)?;
     let _repo_guard = workspace::lock_git_repository(&validated).await?;
+    workflow::ensure_unowned_merge_access(&pool, &git_state, &validated).await?;
     tokio::task::spawn_blocking(move || {
         let validated = validate_repo_path(&repo_path, &workspace)?;
         let repo = git_state.open_repo(&validated)?;

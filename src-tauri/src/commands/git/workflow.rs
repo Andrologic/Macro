@@ -16,12 +16,19 @@ use crate::WorkspaceRoot;
 
 use super::{
     abort_exact_incomplete_merge, command_output_text, complete_merge_repo, ensure_clean,
-    fast_forward_repo, merge_repo, rebase_branch_repo, repo_root, start_merge_resolution_repo,
-    to_join_error, validate_branch_name, validate_repo_path, verify_exact_incomplete_merge,
+    fast_forward_repo, merge_repo, repo_root, start_merge_resolution_repo, to_join_error,
+    validate_branch_name, validate_repo_path, verify_exact_incomplete_merge,
 };
 
 const WORKFLOW_SETTING_PREFIX: &str = "gitWorkflow:v1:";
 const PLAN_LIFECYCLE_SETTING_KEY: &str = "pendingPlanLifecycles:v1";
+
+#[path = "workflow_cleanup.rs"]
+pub(crate) mod cleanup;
+#[path = "workflow_rebase.rs"]
+mod rebase;
+#[path = "workflow_session.rs"]
+mod session_guard;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +61,8 @@ pub(crate) struct GitWorkflowJournal {
     repo_path: String,
     #[serde(default)]
     common_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_rebase: Option<rebase::RebaseIntent>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,8 +155,16 @@ pub(crate) fn workflow_key(
 fn local_branch_commit(repo: &Repository, branch_name: &str) -> Result<Oid> {
     validate_branch_name(branch_name)?;
     repo.find_branch(branch_name, BranchType::Local)
-        .map_err(|_| BackendError::GitBranchNotFound {
-            message: format!("Local branch not found: {branch_name}"),
+        .map_err(|error| {
+            if error.code() == git2::ErrorCode::NotFound {
+                BackendError::GitBranchNotFound {
+                    message: format!("Local branch not found: {branch_name}"),
+                }
+            } else {
+                workflow_error(format!(
+                    "Failed to read local branch {branch_name}: {error}"
+                ))
+            }
         })?
         .get()
         .peel_to_commit()
@@ -272,6 +289,28 @@ pub(crate) async fn ensure_workflow_exclusive(
         }
     }
     Ok(())
+}
+
+/// Legacy merge commands may operate on ordinary Git merges, but must not
+/// bypass the owner of a prepared/conflicted workflow, even after a restart.
+pub(crate) async fn ensure_unowned_merge_access(
+    pool: &State<'_, DbPool>,
+    git_state: &GitState,
+    path: &Path,
+) -> Result<()> {
+    let pool = get_pool(pool)
+        .await
+        .map_err(|error| BackendError::Database {
+            message: error.message,
+        })?;
+    let common = {
+        let repository = git_state.open_repo(path)?;
+        let repository = repository
+            .lock()
+            .map_err(|_| workflow_error("Failed to lock repository"))?;
+        repository_common_dir(&repository)?
+    };
+    ensure_workflow_exclusive(&pool, &common, "").await
 }
 
 async fn save_journal(pool: &SqlitePool, key: &str, journal: &GitWorkflowJournal) -> Result<()> {
@@ -767,6 +806,7 @@ fn initial_session(
         },
         repo_path: repo_path.to_string_lossy().to_string(),
         common_dir: repository_common_dir(repo)?.to_string_lossy().to_string(),
+        pending_rebase: None,
     })
 }
 
@@ -843,12 +883,28 @@ pub async fn git_workflow(
         repository_common_dir(&repo)?
     };
     let mut existing = load_journal(&pool, &key).await?;
-
+    session_guard::verify_requested_session(existing.as_ref(), expected_session_id.as_deref())?;
+    if let Some(journal) = existing.as_ref() {
+        session_matches(&journal.session, &task_id, &source_branch, &target_branch)?;
+    }
     if action == "inspect" && existing.is_none() {
         return Ok(None);
     }
-
     ensure_workflow_exclusive(&pool, &common_dir, &key).await?;
+
+    if let Some(journal) = existing
+        .as_ref()
+        .filter(|journal| journal.pending_rebase.is_some())
+    {
+        let pending = journal.clone();
+        let abort = action == "abort";
+        let recovered = run_git_repo(git_state.clone(), validated.clone(), move |repo| {
+            rebase::recover_rebase(repo, &pending, abort)
+        })
+        .await?;
+        save_journal(&pool, &key, &recovered).await?;
+        existing = Some(recovered);
+    }
 
     if action == "prepare" {
         if let Some(existing) = existing.take() {
@@ -950,6 +1006,7 @@ pub async fn git_workflow(
                 },
                 repo_path: validated.to_string_lossy().to_string(),
                 common_dir: common_dir.to_string_lossy().to_string(),
+                pending_rebase: None,
             })
         })
         .await?;
@@ -990,26 +1047,11 @@ pub async fn git_workflow(
     };
     session_matches(&journal.session, &task_id, &source_branch, &target_branch)?;
 
-    if matches!(action.as_str(), "complete" | "abort") {
-        if let Some(expected_session_id) = expected_session_id.as_deref() {
-            if journal.session.session_id != expected_session_id {
-                return Err(workflow_error(
-                    "The supplied expected session id is stale for this workflow.",
-                ));
-            }
-        }
-    }
-
     let can_restart = matches!(
         action.as_str(),
         "start" | "merge_commit" | "fast_forward" | "rebase_then_continue" | "no_changes"
     );
     if journal.session.status == "aborted" && can_restart {
-        if expected_session_id.is_some() {
-            return Err(workflow_error(
-                "The supplied expected session id refers to an aborted workflow.",
-            ));
-        }
         let new_session = run_git_repo(git_state.clone(), validated.clone(), {
             let task_id = task_id.clone();
             let source_branch = source_branch.clone();
@@ -1113,26 +1155,21 @@ pub async fn git_workflow(
     }
 
     if action == "rebase_then_continue" {
-        let rebased = run_git_repo(git_state.clone(), validated.clone(), {
+        journal = run_git_repo(git_state.clone(), validated.clone(), {
             let journal = journal.clone();
-            let source_branch = source_branch.clone();
-            let target_branch = target_branch.clone();
+            move |repo| rebase::prepare_rebase(repo, &journal)
+        })
+        .await?;
+        // Persist the identity before Git can rewrite the source reference.
+        save_journal(&pool, &key, &journal).await?;
+        journal = run_git_repo(git_state.clone(), validated.clone(), {
+            let journal = journal.clone();
             move |repo| {
-                validate_expected_refs(repo, &journal)?;
-                let output = rebase_branch_repo(repo, &source_branch, &target_branch, Some(true))?;
-                let new_source_commit = local_branch_commit(repo, &source_branch)?.to_string();
-                Ok((new_source_commit, output))
+                rebase::execute_rebase(repo, &journal)?;
+                rebase::recover_rebase(repo, &journal, false)
             }
         })
         .await?;
-        journal = replace_session(
-            &journal,
-            Some(rebased.0),
-            Some(WorkflowStatus::Prepared),
-            Some(None),
-            Some(rebased.1),
-        );
-        journal.repo_path = validated.to_string_lossy().to_string();
         save_journal(&pool, &key, &journal).await?;
         let ff = run_git_repo(git_state.clone(), validated.clone(), {
             let journal = journal.clone();

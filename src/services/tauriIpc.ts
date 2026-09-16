@@ -2455,6 +2455,22 @@ export async function gitWorkflow(params: {
   return invoke<GitWorkflowSessionDto | null>('git_workflow', params);
 }
 
+export async function gitWorkflowCleanup(params: {
+  repoPath: string;
+  identity: GitWorkflowSessionIdentity;
+  worktreeKey: string;
+  removeRemote: boolean;
+  expectedWorktreePath?: string | null;
+}): Promise<void> {
+  return invoke('git_workflow_cleanup', {
+    repoPath: params.repoPath,
+    identity: params.identity,
+    worktreeKey: params.worktreeKey,
+    removeRemote: params.removeRemote,
+    expectedWorktreePath: params.expectedWorktreePath ?? null,
+  });
+}
+
 export async function gitStartMergeResolution(params: {
   repoPath: string;
   branchName: string;

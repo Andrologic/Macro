@@ -141,6 +141,9 @@ const gitBranchListMock = mock(async () => ({
 const gitBranchDeleteMock = mock(async (
   _params?: Parameters<typeof actualTauriIpc.gitBranchDelete>[0],
 ) => undefined);
+const gitWorkflowCleanupMock = mock(async (
+  _params?: Parameters<typeof actualTauriIpc.gitWorkflowCleanup>[0],
+) => undefined);
 const directCheckpointEnsureMock = mock(async () => 'checkpoint-head');
 const bindManualCheckpointMock = mock(async () => ({} as never));
 const setActiveRootMock = mock(async () => undefined);
@@ -354,6 +357,7 @@ mock.module('../services/tauriIpc', () => ({
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
+  gitWorkflowCleanup: gitWorkflowCleanupMock,
   directCheckpointResolveId: directCheckpointResolveIdMock,
   directCheckpointEnsure: directCheckpointEnsureMock,
   workspaceBindManualFeatureDirectCheckpoint: bindManualCheckpointMock,
@@ -396,6 +400,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitWorktreeRemove: gitWorktreeRemoveMock,
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
+  gitWorkflowCleanup: gitWorkflowCleanupMock,
   directCheckpointResolveId: directCheckpointResolveIdMock,
   directCheckpointEnsure: directCheckpointEnsureMock,
   workspaceBindManualFeatureDirectCheckpoint: bindManualCheckpointMock,
@@ -1097,6 +1102,8 @@ describe('useTaskStore merge workflow review loading', () => {
       current: 'develop',
     }));
     gitBranchDeleteMock.mockClear();
+    gitWorkflowCleanupMock.mockClear();
+    gitWorkflowCleanupMock.mockImplementation(async () => undefined);
     directCheckpointResolveIdMock.mockClear();
     directCheckpointResolveIdMock.mockImplementation(async () => 'task-checkpoint-0000000000000001');
     directCheckpointRemoveMock.mockClear();

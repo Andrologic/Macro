@@ -205,6 +205,9 @@ async fn durable_preparation_excludes_other_tasks_even_before_git_changes() {
     assert!(ensure_workflow_exclusive(&pool, &common, &key_b)
         .await
         .is_err());
+    // Legacy conflict/complete/abort entry points pass no owner key. They must
+    // refuse an owned merge instead of silently bypassing its session guard.
+    assert!(ensure_workflow_exclusive(&pool, &common, "").await.is_err());
     // A restarted caller reads the same durable owner.
     let recovered = load_journal(&pool, &key_a).await.unwrap().unwrap();
     assert_eq!(recovered.session.session_id, journal.session.session_id);
@@ -213,4 +216,5 @@ async fn durable_preparation_excludes_other_tasks_even_before_git_changes() {
     ensure_workflow_exclusive(&pool, &common, &key_b)
         .await
         .unwrap();
+    ensure_workflow_exclusive(&pool, &common, "").await.unwrap();
 }
