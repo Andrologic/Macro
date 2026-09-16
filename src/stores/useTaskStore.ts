@@ -5057,7 +5057,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               currentProjectName: target.projectName,
               activeTabIds: Array.from(new Set([
                 ...(state.taskCommandRuns[taskId]?.activeTabIds ?? []),
-                tab.id,
+                ...(tab.status === 'running' ? [tab.id] : []),
               ])),
             },
           },
@@ -5119,7 +5119,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
 
         if (
-          (keepCommandRunVisible && state.taskCommandRuns[taskId].status === 'running') ||
+          (keepCommandRunVisible &&
+            state.taskCommandRuns[taskId].status === 'running' &&
+            state.taskCommandRuns[taskId].activeTabIds.length > 0) ||
           state.taskCommandRuns[taskId].cancelFailed
         ) {
           return state;
@@ -5242,7 +5244,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
       const runState = state.taskCommandRuns[taskId];
       const activeTabIds = runState.activeTabIds.filter((candidate) => candidate !== tabId);
-      if (activeTabIds.length === 0) {
+      if (activeTabIds.length === 0 && !taskCommandRunCompletions.has(taskId)) {
         const nextRuns = { ...state.taskCommandRuns };
         delete nextRuns[taskId];
         return { taskCommandRuns: nextRuns };
