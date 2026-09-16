@@ -88,15 +88,29 @@ const MODEL_CONTEXT_METADATA_STALE_MS = 5 * 60 * 1000;
 const modelRefreshInFlightByProviderId = new Map<string, Promise<AIModel[]>>();
 const lastModelRefreshStartedAtByProviderId = new Map<string, number>();
 let providerConfigMutationVersion = 0;
+let providerConfigLoadVersion = 0;
+const providerConnectionRequestVersionById = new Map<string, number>();
 const providerSettingsRequestVersionById = new Map<string, number>();
 const providerModelScanGenerationById = new Map<string, number>();
+const providerTransportMutations = new Set<string>();
+const providerConfigsNeedingReload = new Set<string>();
+const isProviderTransportUnavailable = (providerId: string): boolean =>
+  providerTransportMutations.has(providerId) || providerConfigsNeedingReload.has(providerId);
 const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
 const enqueueProviderMutation = createKeyedSerialQueue<string>();
 
 const invalidateProviderModelScans = (providerId: string): number => {
   const nextGeneration = (providerModelScanGenerationById.get(providerId) ?? 0) + 1;
   providerModelScanGenerationById.set(providerId, nextGeneration);
+  modelRefreshInFlightByProviderId.delete(providerId);
+  lastModelRefreshStartedAtByProviderId.delete(providerId);
   return nextGeneration;
+};
+
+// Authentication changes invalidate reads started both before and during the transition.
+const beginProviderAuthTransition = (providerId: string): number => {
+  providerConfigMutationVersion += 1;
+  return invalidateProviderModelScans(providerId);
 };
 
 const enqueueProviderModelPersistence = <T>(
@@ -124,7 +138,7 @@ const persistProviderModelsIfCurrent = async (
 ): Promise<boolean> => {
   const generation = providerModelScanGenerationById.get(providerId) ?? 0;
   return enqueueProviderModelPersistence(providerId, async () => {
-    if ((providerModelScanGenerationById.get(providerId) ?? 0) !== generation) {
+    if (isProviderTransportUnavailable(providerId) || (providerModelScanGenerationById.get(providerId) ?? 0) !== generation) {
       return false;
     }
     await tauriIpc.upsertProviderModels({ providerId, models });
@@ -754,7 +768,7 @@ interface ProviderStore {
 
   // Actions
   initialize: () => Promise<void>;
-  loadProviderConfigs: () => Promise<void>;
+  loadProviderConfigs: (options?: { throwOnError?: boolean }) => Promise<void>;
   fetchModelsForProvider: (providerId: string) => Promise<AIModel[]>;
   loadProviderModels: (providerId: string) => Promise<AIModel[]>;
   scanModelsForProvider: (providerId: string) => Promise<AIModel[]>;
@@ -933,6 +947,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return get().modelsByProvider[providerId] || [];
     }
 
+    if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
     const inFlight = modelRefreshInFlightByProviderId.get(providerId);
     if (inFlight) {
       devLogger.debug('[providers] reusing in-flight model refresh', {
@@ -959,7 +974,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
     lastModelRefreshStartedAtByProviderId.set(providerId, now);
     devLogger.debug('[providers] refreshing models', { providerId, reason });
-    const refreshPromise = get()
+    const refreshPromise: Promise<AIModel[]> = get()
       .scanModelsForProvider(providerId)
       .catch((error) => {
         devLogger.warn('[providers] model refresh failed', {
@@ -970,7 +985,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         return get().modelsByProvider[providerId] || [];
       })
       .finally(() => {
-        modelRefreshInFlightByProviderId.delete(providerId);
+        if (modelRefreshInFlightByProviderId.get(providerId) === refreshPromise) {
+          modelRefreshInFlightByProviderId.delete(providerId);
+        }
       });
 
     modelRefreshInFlightByProviderId.set(providerId, refreshPromise);
@@ -1004,6 +1021,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const changedModelsByProvider: Record<string, AIModel[]> = {};
 
     for (const currentProviderId of providerIds) {
+      if (isProviderTransportUnavailable(currentProviderId)) continue;
       const models = state.modelsByProvider[currentProviderId] || [];
       if (models.length === 0) continue;
 
@@ -1115,6 +1133,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   resolveProviderApiKey: async (providerId: string, options?: { forceRefresh?: boolean }) => {
+    if (isProviderTransportUnavailable(providerId)) {
+      throw new Error('Provider configuration is unavailable. Reload providers and retry.');
+    }
     const config = get().providerConfigs.find((provider) => provider.id === providerId);
     if (!config) {
       throw new Error('Provider not found');
@@ -1132,8 +1153,19 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return config.apiKey?.trim() ? config.apiKey : undefined;
     }
 
+    const generation = providerModelScanGenerationById.get(providerId) ?? 0;
     try {
       const apiKey = (await ipcRevealProviderApiKey(providerId)) || undefined;
+      const currentConfig = get().providerConfigs.find((provider) => provider.id === providerId);
+      if (
+        (providerModelScanGenerationById.get(providerId) ?? 0) !== generation ||
+        !currentConfig ||
+        currentConfig.providerType !== config.providerType ||
+        currentConfig.baseUrl !== config.baseUrl ||
+        currentConfig.isLocal !== config.isLocal
+      ) {
+        throw new Error('Provider configuration changed while accessing its API key. Retry the request.');
+      }
       set((state) => ({
         providerConfigs: state.providerConfigs.map((provider) =>
           provider.id === providerId
@@ -1154,28 +1186,43 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
-  loadProviderConfigs: async () => {
+  loadProviderConfigs: async (options) => {
     const hydrationVersion = providerConfigMutationVersion;
+    const requestVersion = ++providerConfigLoadVersion;
+    const isCurrent = () => hydrationVersion === providerConfigMutationVersion && requestVersion === providerConfigLoadVersion;
     set({ isLoading: true, lastError: null });
 
     try {
       if (ipcIsTauriAvailable()) {
         const currentProviderConfigs = get().providerConfigs;
         const configs = await ipcListProviderConfigs();
-        if (hydrationVersion !== providerConfigMutationVersion) {
-          set({ isLoading: false });
+        if (!isCurrent()) {
+          if (requestVersion === providerConfigLoadVersion) set({ isLoading: false });
           return;
         }
         const normalizedConfigs: ProviderConfig[] = configs.map(normalizeDbProviderConfig);
         const mergedProviderConfigs = await mergeLocalProviderConfig(normalizedConfigs);
-        if (hydrationVersion !== providerConfigMutationVersion) {
-          set({ isLoading: false });
+        if (!isCurrent()) {
+          if (requestVersion === providerConfigLoadVersion) set({ isLoading: false });
           return;
         }
         const providerConfigs = mergeRuntimeProviderConfigState(
           mergedProviderConfigs,
           currentProviderConfigs
         );
+        // A failed catalog cleanup may have left rows belonging to the previous
+        // endpoint. Recover both the configuration and its cache before reuse.
+        const reloadedProviderIds = providerConfigs
+          .filter((provider) => providerConfigsNeedingReload.has(provider.id))
+          .map((provider) => provider.id);
+        for (const providerId of reloadedProviderIds) {
+          await tauriIpc.upsertProviderModels({ providerId, models: [], replaceDiscovered: true });
+        }
+        if (!isCurrent()) {
+          if (requestVersion === providerConfigLoadVersion) set({ isLoading: false });
+          return;
+        }
+        for (const providerId of reloadedProviderIds) providerConfigsNeedingReload.delete(providerId);
         const currentSelectedProviderId = get().selectedProviderId;
         const currentSelectedModelId = get().selectedModelId;
         const currentSelectedProvider = providerConfigs.find(
@@ -1228,8 +1275,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         throw new Error(PROVIDER_CONFIGURATION_REQUIRES_DESKTOP_IPC);
       }
     } catch (error) {
+      if (!isCurrent()) return;
       const message = error instanceof Error ? error.message : 'Failed to load providers';
       set({ isLoading: false, lastError: message });
+      if (options?.throwOnError) throw error;
     }
   },
 
@@ -1239,14 +1288,25 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   loadProviderModels: async (providerId: string) => {
+    if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
+    const generation = providerModelScanGenerationById.get(providerId) ?? 0;
     const { modelsByProvider, providerConfigs } = get();
     const providerConfig = providerConfigs.find((provider) => provider.id === providerId);
+    const isCurrent = () => {
+      const current = get().providerConfigs.find((provider) => provider.id === providerId);
+      return !isProviderTransportUnavailable(providerId) &&
+        (providerModelScanGenerationById.get(providerId) ?? 0) === generation &&
+        current?.providerType === providerConfig?.providerType &&
+        current?.baseUrl === providerConfig?.baseUrl &&
+        current?.isLocal === providerConfig?.isLocal;
+    };
     const providerType = providerConfig?.providerType;
     if (ipcIsTauriAvailable()) {
       set({ isLoadingModels: true });
       try {
         void refreshModelContextCatalog();
         const models = await ipcListProviderModels(providerId);
+        if (!isCurrent()) return get().modelsByProvider[providerId] || [];
         const normalized = enrichModelsWithCatalogContextLimits(
           models.map((model) => normalizeDbModel(model, providerType)),
           {
@@ -1299,6 +1359,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         return normalized;
       } catch (error) {
+        if (!isCurrent()) return get().modelsByProvider[providerId] || [];
         const message = error instanceof Error ? error.message : 'Failed to load models';
         set({ isLoadingModels: false, lastError: message });
         return modelsByProvider[providerId] || [];
@@ -1309,6 +1370,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   scanModelsForProvider: async (providerId: string) => {
+    if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
     const scanGeneration = providerModelScanGenerationById.get(providerId) ?? 0;
     const isCurrentScan = () =>
       (providerModelScanGenerationById.get(providerId) ?? 0) === scanGeneration;
@@ -1445,6 +1507,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             // Ignore provider metadata refresh failures after sync errors.
           }
         }
+
+        if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
 
         const providerLabel = config.providerType === 'copilot' ? 'GitHub Copilot' : 'ChatGPT';
         const message =
@@ -2350,6 +2414,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   updateCopilotProvider: (providerId, updates, copilotSendTimeoutMs) =>
     enqueueProviderMutation(providerId, async () => {
       requireProviderConfigurationIpc();
+      if (providerConfigsNeedingReload.has(providerId)) {
+        throw new Error('Reload the provider configuration before changing it again.');
+      }
       providerConfigMutationVersion += 1;
       startProviderSettingsRequest(providerId);
       let persistedSettings: Awaited<ReturnType<typeof ipcGetProviderSettings>>;
@@ -2651,6 +2718,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     enqueueProviderMutation(id, async () => {
       try {
       requireProviderConfigurationIpc();
+      if (providerConfigsNeedingReload.has(id)) {
+        throw new Error('Reload the provider configuration before changing it again.');
+      }
       providerConfigMutationVersion += 1;
 
       const currentConfig = get().providerConfigs.find((provider) => provider.id === id);
@@ -2693,18 +2763,61 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             isEnabled: nextIsEnabled,
           };
 
-      await ipcUpdateProviderConfig({
-        id,
-        name: persistedUpdates.name,
-        providerType: persistedUpdates.providerType,
-        baseUrl: persistedUpdates.baseUrl,
-        apiKey: persistedUpdates.apiKey,
-        isLocal: persistedUpdates.isLocal,
-        isEnabled: persistedUpdates.isEnabled,
-      });
-
-      if (apiKeyChanged) {
+      const endpointChanged = !!currentConfig && (
+        (persistedUpdates.baseUrl !== undefined && persistedUpdates.baseUrl !== currentConfig.baseUrl) ||
+        (persistedUpdates.providerType !== undefined && persistedUpdates.providerType !== currentConfig.providerType) ||
+        nextIsLocal !== currentConfig.isLocal
+      );
+      const transportChanged = shouldInvalidateReachability || apiKeyChanged || endpointChanged;
+      if (transportChanged) {
         invalidateProviderModelScans(id);
+        providerTransportMutations.add(id);
+        set((state) => ({ ...clearProviderReachability(state, id), isLoadingModels: false }));
+      }
+      try {
+        await enqueueProviderModelPersistence(id, async () => {
+          await ipcUpdateProviderConfig({
+            id,
+            name: persistedUpdates.name,
+            providerType: persistedUpdates.providerType,
+            baseUrl: persistedUpdates.baseUrl,
+            apiKey: persistedUpdates.apiKey,
+            isLocal: persistedUpdates.isLocal,
+            isEnabled: persistedUpdates.isEnabled,
+          });
+          if (endpointChanged && !apiKeyChanged && currentConfig) {
+            try {
+              await tauriIpc.upsertProviderModels({ providerId: id, models: [], replaceDiscovered: true });
+            } catch (catalogError) {
+              try {
+                await ipcUpdateProviderConfig({
+                  id,
+                  name: currentConfig.name,
+                  providerType: currentConfig.providerType,
+                  baseUrl: currentConfig.baseUrl,
+                  isLocal: currentConfig.isLocal,
+                  isEnabled: currentConfig.isEnabled,
+                });
+              } catch (rollbackError) {
+                set((state) => ({
+                  modelsByProvider: { ...state.modelsByProvider, [id]: [] },
+                  ...(state.selectedProviderId === id ? { selectedModelId: null, selectedReasoningEffort: null } : {}),
+                }));
+                providerConfigsNeedingReload.add(id);
+                let reloadFailure = '';
+                try {
+                  await get().loadProviderConfigs({ throwOnError: true });
+                } catch (reloadError) {
+                  reloadFailure = ` Failed to reload provider configuration: ${getErrorMessage(reloadError, 'unknown error')}`;
+                }
+                throw new Error(`${getErrorMessage(catalogError, 'Failed to clear the old catalog')}. Failed to restore the provider configuration: ${getErrorMessage(rollbackError, 'unknown error')}.${reloadFailure}`);
+              }
+              throw catalogError;
+            }
+          }
+        });
+      } finally {
+        providerTransportMutations.delete(id);
       }
 
       set((state) => {
@@ -2734,7 +2847,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             ) ?? null
           : null;
         const selectedProviderKeyChanged =
-          apiKeyChanged && !!nextApiKey && state.selectedProviderId === id;
+          (endpointChanged || (apiKeyChanged && !!nextApiKey)) && state.selectedProviderId === id;
         const nextSelectedProviderId = selectedProviderBecameUnavailable
           ? fallbackProvider?.id ?? null
           : state.selectedProviderId;
@@ -2747,7 +2860,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           : selectedProviderKeyChanged
             ? null
             : state.selectedModelId;
-        const modelsByProvider = apiKeyChanged
+        const modelsByProvider = apiKeyChanged || endpointChanged
           ? { ...state.modelsByProvider, [id]: [] }
           : state.modelsByProvider;
 
@@ -2782,7 +2895,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           ...(shouldInvalidateReachability
             ? clearProviderReachability(state, id)
             : {}),
-          ...(apiKeyChanged ? { isLoadingModels: false } : {}),
+          ...(transportChanged ? { isLoadingModels: false } : {}),
         };
       });
 
@@ -2956,6 +3069,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       throw new Error('ChatGPT login is already in progress for this provider.');
     }
     const requestId = createRequestId();
+    let authGeneration = beginProviderAuthTransition(providerId);
+    const isCurrent = () => (providerModelScanGenerationById.get(providerId) ?? 0) === authGeneration;
 
     set((state) => ({
       authRequestIdsByProvider: { ...state.authRequestIdsByProvider, [providerId]: requestId },
@@ -3008,6 +3123,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               }),
             ]);
 
+            if (!isCurrent()) {
+              finish(() => resolve(), unlisteners);
+              return;
+            }
             await tauriIpc.aiStartChatGptAuth({ requestId, providerId });
           } catch (error) {
             finish(
@@ -3018,10 +3137,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         })();
       });
 
+      if (!isCurrent()) return;
+      authGeneration = beginProviderAuthTransition(providerId);
       await get().loadProviderConfigs();
+      if (!isCurrent()) return;
       await get().loadProviderModels(providerId);
+      if (!isCurrent()) return;
       await get().scanModelsForProvider(providerId);
     } catch (error) {
+      if (!isCurrent()) return;
+      authGeneration = beginProviderAuthTransition(providerId);
       const message = getErrorMessage(error, 'Failed to connect with ChatGPT.');
       const code =
         error instanceof Error && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
@@ -3044,7 +3169,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       set((state) => ({
         authRequestIdsByProvider: {
           ...state.authRequestIdsByProvider,
-          [providerId]: undefined,
+          [providerId]: state.authRequestIdsByProvider[providerId] === requestId
+            ? undefined : state.authRequestIdsByProvider[providerId],
         },
       }));
     }
@@ -3056,7 +3182,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return;
     }
 
+    const authGeneration = beginProviderAuthTransition(providerId);
     await tauriIpc.aiCancelChatGptAuth(requestId);
+    if ((providerModelScanGenerationById.get(providerId) ?? 0) !== authGeneration) return;
+    beginProviderAuthTransition(providerId);
     set((state) => ({
       authRequestIdsByProvider: {
         ...state.authRequestIdsByProvider,
@@ -3081,6 +3210,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
 
     const requestId = createRequestId();
+    const generation = providerModelScanGenerationById.get(providerId) ?? 0;
+    const isCurrent = () => (providerModelScanGenerationById.get(providerId) ?? 0) === generation;
 
     set((state) => ({
       authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
@@ -3131,7 +3262,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               listen<tauriIpc.CopilotDownloadProgressEvent>(
                 'ai:copilot-download-progress',
                 (event) => {
-                  if (event.payload.request_id !== requestId) return;
+                  if (event.payload.request_id !== requestId || !isCurrent()) return;
                   set((state) => ({
                     copilotDownloadStateByProvider: {
                       ...state.copilotDownloadStateByProvider,
@@ -3151,7 +3282,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
                 (event) => {
                   if (event.payload.request_id !== requestId) return;
                   const status = event.payload.status ?? null;
-                  if (status) {
+                  if (status && isCurrent()) {
                     set((state) => ({
                       ...applyCopilotStatusPatch(state, providerId, status),
                       copilotDownloadStateByProvider: {
@@ -3189,6 +3320,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         })();
       });
     } catch (error) {
+      if (!isCurrent()) return;
       const message = getErrorMessage(error, 'Failed to download GitHub Copilot runtime.');
       const isCancelled = message === 'GitHub Copilot runtime download was cancelled.';
       set((state) => ({
@@ -3213,13 +3345,16 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
     }
 
+    if (!isCurrent()) return;
     const result = completedStatus
       ? {
           success: isCopilotConnected(completedStatus),
         }
       : await get().testConnection(providerId);
+    if (!isCurrent()) return;
     if (result.success) {
       await get().loadProviderModels(providerId);
+      if (!isCurrent()) return;
       await get().scanModelsForProvider(providerId);
     }
   },
@@ -3255,6 +3390,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
 
     const requestId = createRequestId();
+    let authGeneration = beginProviderAuthTransition(providerId);
+    const isCurrent = () => (providerModelScanGenerationById.get(providerId) ?? 0) === authGeneration;
 
     set((state) => ({
       authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
@@ -3297,7 +3434,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           try {
             unlisteners = await Promise.all([
               listen<tauriIpc.CopilotAuthProgressEvent>('ai:copilot-auth-progress', (event) => {
-                if (event.payload.request_id !== requestId) return;
+                if (event.payload.request_id !== requestId || !isCurrent()) return;
                 set((state) => ({
                   copilotAuthStateByProvider: {
                     ...state.copilotAuthStateByProvider,
@@ -3333,6 +3470,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               }),
             ]);
 
+            if (!isCurrent()) {
+              finish(() => resolve(), unlisteners);
+              return;
+            }
             await tauriIpc.aiStartCopilotAuth({ requestId, providerId });
           } catch (error) {
             finish(
@@ -3346,6 +3487,8 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         })();
       });
     } catch (error) {
+      if (!isCurrent()) return;
+      authGeneration = beginProviderAuthTransition(providerId);
       const message = getErrorMessage(error, 'Failed to connect with GitHub Copilot.');
       const isCancelled = message === 'GitHub Copilot login was cancelled.';
       const code =
@@ -3378,9 +3521,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
     }
 
+    if (!isCurrent()) return;
+    authGeneration = beginProviderAuthTransition(providerId);
     const result = await get().testConnection(providerId);
+    if (!isCurrent()) return;
     if (result.success) {
       await get().loadProviderModels(providerId);
+      if (!isCurrent()) return;
       await get().scanModelsForProvider(providerId);
     }
   },
@@ -3395,7 +3542,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return;
     }
 
+    const authGeneration = beginProviderAuthTransition(providerId);
     await tauriIpc.aiCancelCopilotAuth(requestId);
+    if ((providerModelScanGenerationById.get(providerId) ?? 0) !== authGeneration) return;
+    beginProviderAuthTransition(providerId);
     set((state) => ({
       copilotAuthStateByProvider: {
         ...state.copilotAuthStateByProvider,
@@ -3415,24 +3565,46 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       throw new Error('GitHub Copilot sign-out is managed in your terminal. Run `copilot logout` there.');
     }
 
-    try {
-      const updated = normalizeDbProviderConfig(await tauriIpc.aiDisconnectProviderAuth(providerId));
-      set((state) => ({
-        ...clearProviderReachability(state, providerId),
-        authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
-        modelsByProvider: {
-          ...state.modelsByProvider,
-          [providerId]: (state.modelsByProvider[providerId] || []).filter((model) => model.isManual),
-        },
-      }));
-      await get().loadProviderConfigs();
-      return updated;
-    } catch (error) {
-      throw new Error(getErrorMessage(error, 'Failed to disconnect provider auth.'));
-    }
+    let authGeneration = beginProviderAuthTransition(providerId);
+    return enqueueProviderMutation(providerId, async () => {
+      authGeneration = beginProviderAuthTransition(providerId);
+      providerTransportMutations.add(providerId);
+      set((state) => ({ ...clearProviderReachability(state, providerId), isLoadingModels: false }));
+      try {
+        const updated = normalizeDbProviderConfig(await enqueueProviderModelPersistence(
+          providerId,
+          () => tauriIpc.aiDisconnectProviderAuth(providerId),
+        ));
+        if ((providerModelScanGenerationById.get(providerId) ?? 0) !== authGeneration) return updated;
+        authGeneration = beginProviderAuthTransition(providerId);
+        set((state) => ({
+          providerConfigs: state.providerConfigs.map((entry) => entry.id === providerId ? updated : entry),
+          ...clearProviderReachability(state, providerId),
+          authErrorsByProvider: { ...state.authErrorsByProvider, [providerId]: undefined },
+          modelsByProvider: {
+            ...state.modelsByProvider,
+            [providerId]: (state.modelsByProvider[providerId] || []).filter((model) => model.isManual),
+          },
+        }));
+        await get().loadProviderConfigs();
+        return updated;
+      } catch (error) {
+        throw new Error(getErrorMessage(error, 'Failed to disconnect provider auth.'));
+      } finally {
+        providerTransportMutations.delete(providerId);
+      }
+    });
   },
 
   testConnection: async (providerId: string) => {
+    const requestVersion = (providerConnectionRequestVersionById.get(providerId) ?? 0) + 1;
+    providerConnectionRequestVersionById.set(providerId, requestVersion);
+    const generation = providerModelScanGenerationById.get(providerId) ?? 0;
+    const isCurrent = () => !isProviderTransportUnavailable(providerId) &&
+      providerConnectionRequestVersionById.get(providerId) === requestVersion &&
+      (providerModelScanGenerationById.get(providerId) ?? 0) === generation;
+    const obsoleteResult = { success: false, message: 'Provider configuration changed. Retry the connection check.', status: 'unknown' as const };
+    if (!isCurrent()) return obsoleteResult;
     const { providerConfigs, resolveProviderApiKey } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
 
@@ -3472,6 +3644,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         try {
           const status = await tauriIpc.aiGetCopilotStatus(providerId);
+          if (!isCurrent()) return obsoleteResult;
           const success = isCopilotConnected(status);
           const message = getCopilotStatusMessage(status);
 
@@ -3486,6 +3659,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             source: 'linked_auth',
           };
         } catch (error) {
+          if (!isCurrent()) return obsoleteResult;
           const message = getErrorMessage(error, 'Failed to check GitHub Copilot status.');
           set((state) => ({
             ...withReachabilityRecord(state, providerId, {
@@ -3535,6 +3709,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
 
     const apiKey = config.isLocal ? undefined : await resolveProviderApiKey(providerId);
+    if (!isCurrent()) return obsoleteResult;
     const { selectedProviderId, selectedModelId, modelsByProvider } = get();
     const probeModels = getReachabilityProbeModels({
       providerId,
@@ -3551,6 +3726,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       modelIds: probeModels.modelIds,
       timeout: 5000,
     });
+    if (!isCurrent()) return obsoleteResult;
 
     set((state) => ({
       ...withReachabilityRecord(state, providerId, {

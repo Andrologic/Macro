@@ -557,7 +557,7 @@ fn sync_parent_directory(_path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(unix)]
-fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut permissions = std::fs::metadata(path)?.permissions();
@@ -566,7 +566,7 @@ fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(windows)]
-fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_INSUFFICIENT_BUFFER};
@@ -661,7 +661,7 @@ fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(all(not(unix), not(windows)))]
-fn set_private_file_permissions(_path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn set_private_file_permissions(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 

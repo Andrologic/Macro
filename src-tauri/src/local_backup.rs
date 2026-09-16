@@ -12,6 +12,12 @@ use std::{
 use tauri::Manager;
 
 const LIMIT: u64 = 256 * 1024 * 1024;
+const PROVIDER_SECRETS_FILE: &str = "provider-secrets.json";
+const PROVIDER_SECRETS_RECOVERY_FILES: &[&str] = &[
+    PROVIDER_SECRETS_FILE,
+    "provider-secrets.migration-pending.json",
+    "provider-secrets.json.v1.bak",
+];
 const CONFIG_FILES: &[&str] = &[
     "settings.json",
     "agents.json",
@@ -363,6 +369,32 @@ fn strip_credentials(value: &mut serde_json::Value) {
         _ => {}
     }
 }
+fn make_config_files_portable(files: &mut BTreeMap<String, Entry>) -> Result<()> {
+    for file in CONFIG_FILES {
+        let active = format!("config/{file}");
+        let approved = format!("config/.runtime/approved/user/{file}");
+        let pending = format!("config/.runtime/pending/user/{file}");
+        files.remove(&pending);
+
+        if let Some(approved_entry) = files.get(&approved).cloned() {
+            files.insert(active.clone(), approved_entry);
+        }
+
+        for name in [&active, &approved] {
+            let Some(entry) = files.get_mut(name) else {
+                continue;
+            };
+            let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            strip_credentials(&mut json);
+            let bytes = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
+            entry.sha256 = hash(&bytes);
+            entry.data = STANDARD.encode(bytes);
+        }
+    }
+    Ok(())
+}
 async fn capture(
     data: &Path,
     config: &Path,
@@ -399,16 +431,16 @@ async fn capture(
                 config.join(&relative)
             };
             if path.exists() {
-                let mut bytes = read_bounded(&path)?;
-                if portable {
-                    let mut json: serde_json::Value =
-                        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-                    strip_credentials(&mut json);
-                    bytes = serde_json::to_vec(&json).map_err(|e| e.to_string())?;
-                }
-                add_file(&mut files, format!("config/{relative}"), bytes)?;
+                add_file(
+                    &mut files,
+                    format!("config/{relative}"),
+                    read_bounded(&path)?,
+                )?;
             }
         }
+    }
+    if portable {
+        make_config_files_portable(&mut files)?;
     }
     Ok(Archive {
         format: "macro-local-profile".into(),
@@ -480,7 +512,11 @@ async fn validate(archive: &Archive) -> Result<()> {
     check_database_startup(&database).await
 }
 fn raw_destination(name: &str, data: &Path, config: &Path) -> Result<PathBuf> {
-    if ["data/macro.db-wal", "data/macro.db-shm"].contains(&name) {
+    if ["data/macro.db-wal", "data/macro.db-shm"].contains(&name)
+        || name
+            .strip_prefix("data/")
+            .is_some_and(|name| PROVIDER_SECRETS_RECOVERY_FILES.contains(&name))
+    {
         return Ok(data.join(name.strip_prefix("data/").unwrap()));
     }
     destination(name, data, config)
@@ -496,6 +532,9 @@ fn capture_raw(data: &Path, config: &Path, browser: BTreeMap<String, String>) ->
     validate_browser(&browser)?;
     let mut files = BTreeMap::new();
     for file in ["macro.db", "macro.db-wal", "macro.db-shm", "state.json"] {
+        add_optional_raw(&mut files, format!("data/{file}"), &data.join(file))?;
+    }
+    for file in PROVIDER_SECRETS_RECOVERY_FILES {
         add_optional_raw(&mut files, format!("data/{file}"), &data.join(file))?;
     }
     let checkpoints = data.join("direct-checkpoints");
@@ -560,6 +599,7 @@ fn preserve_raw(archive: &Archive, path: &Path) -> Result<()> {
         return Err("Current profile exceeds preservation limit".into());
     }
     write_new(path, &bytes)?;
+    crate::secrets::harden_private_file(path).map_err(|error| error.to_string())?;
     #[cfg(unix)]
     fs::File::open(path.parent().ok_or("Missing preservation directory")?)
         .and_then(|file| file.sync_all())
@@ -655,6 +695,11 @@ fn apply_files(archive: &Archive, data: &Path, config: &Path, raw: bool) -> Resu
     if raw && !archive.files.contains_key("data/macro.db") && data.join("macro.db").exists() {
         fs::remove_file(data.join("macro.db")).map_err(|e| e.to_string())?;
     }
+    for file in PROVIDER_SECRETS_RECOVERY_FILES {
+        if !archive.files.contains_key(&format!("data/{file}")) && data.join(file).exists() {
+            fs::remove_file(data.join(file)).map_err(|e| e.to_string())?;
+        }
+    }
     for (name, entry) in &archive.files {
         let path = target(name)?;
         let bytes = STANDARD.decode(&entry.data).map_err(|e| e.to_string())?;
@@ -683,15 +728,19 @@ async fn load_restore_archive(path: &Path) -> Result<Archive> {
             }
         }
         let normalized = temp.path().join("normalized.db");
-        snapshot_database(&temp.path().join("macro.db"), &normalized, false).await?;
+        snapshot_database(&temp.path().join("macro.db"), &normalized, true).await?;
         archive.files.remove("data/macro.db-wal");
         archive.files.remove("data/macro.db-shm");
         archive.files.remove("data/macro.db");
+        for file in PROVIDER_SECRETS_RECOVERY_FILES {
+            archive.files.remove(&format!("data/{file}"));
+        }
         add_file(
             &mut archive.files,
             "data/macro.db".into(),
             read_bounded(&normalized)?,
         )?;
+        make_config_files_portable(&mut archive.files)?;
         archive.format = "macro-local-profile".into();
     }
     validate(&archive).await?;
@@ -1035,6 +1084,148 @@ mod tests {
         assert!(preserved.exists());
         assert!(!dir.join("restoring.json").exists());
     }
+    #[tokio::test]
+    async fn portable_restore_detaches_provider_secrets_and_keeps_them_in_rollback() {
+        let (_temp, data, config) = profile().await;
+        let provider_document = |base_url: &str| {
+            serde_json::json!({
+                "$schema": "providers.schema.json",
+                "schemaVersion": 1,
+                "providers": {
+                    "synthetic-provider": {
+                        "providerType": "openai",
+                        "name": "Synthetic provider",
+                        "enabled": false,
+                        "baseUrl": base_url,
+                        "isLocal": false
+                    }
+                }
+            })
+        };
+        fs::write(
+            config.join("providers.json"),
+            serde_json::to_vec(&provider_document("https://restored.invalid/v1")).unwrap(),
+        )
+        .unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+
+        fs::write(
+            config.join("providers.json"),
+            serde_json::to_vec(&provider_document("https://current.invalid/v1")).unwrap(),
+        )
+        .unwrap();
+        let secret_bytes = br#"{
+  "version": 2,
+  "namespaces": {
+    "providers": { "synthetic-provider": "synthetic-secret" }
+  },
+  "chatgpt_sessions": {}
+}"#;
+        fs::write(data.join(PROVIDER_SECRETS_FILE), secret_bytes).unwrap();
+        let migration_backup = br#"{
+  "version": 1,
+  "api_keys": { "synthetic-provider": "synthetic-secret" }
+}"#;
+        fs::write(data.join("provider-secrets.json.v1.bak"), migration_backup).unwrap();
+        let migration_journal = serde_json::json!({
+            "from_version": 1,
+            "source_sha256": hash(migration_backup),
+            "target_sha256": hash(secret_bytes),
+            "backup_file": "provider-secrets.json.v1.bak"
+        });
+        let migration_journal_bytes = serde_json::to_vec_pretty(&migration_journal).unwrap();
+        fs::write(
+            data.join("provider-secrets.migration-pending.json"),
+            &migration_journal_bytes,
+        )
+        .unwrap();
+
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                .unwrap();
+        assert!(
+            status.message.starts_with("Profile restored."),
+            "unexpected restore status: {}",
+            status.message
+        );
+
+        for file in PROVIDER_SECRETS_RECOVERY_FILES {
+            assert!(!data.join(file).exists(), "{file} must be detached");
+        }
+        let _secret_store_guard = crate::secrets::lock_test_store();
+        crate::secrets::init(&data).expect("initialize detached secret store");
+        assert!(crate::secrets::get_api_key("synthetic-provider")
+            .expect("read detached provider key")
+            .is_none());
+        let restored: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.join("providers.json")).unwrap()).unwrap();
+        assert_eq!(
+            restored.pointer("/providers/synthetic-provider/baseUrl"),
+            Some(&serde_json::json!("https://restored.invalid/v1"))
+        );
+
+        let dir = data.join("local-backup");
+        let preserved = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("preserved-")
+            })
+            .unwrap();
+        let rollback = load_archive(&preserved).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&preserved).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(
+            STANDARD
+                .decode(&rollback.files["data/provider-secrets.json"].data)
+                .unwrap(),
+            secret_bytes
+        );
+        assert_eq!(
+            STANDARD
+                .decode(&rollback.files["data/provider-secrets.json.v1.bak"].data)
+                .unwrap(),
+            migration_backup
+        );
+        assert_eq!(
+            STANDARD
+                .decode(&rollback.files["data/provider-secrets.migration-pending.json"].data)
+                .unwrap(),
+            migration_journal_bytes
+        );
+
+        apply_files(&rollback, &data, &config, true).unwrap();
+        assert_eq!(
+            fs::read(data.join(PROVIDER_SECRETS_FILE)).unwrap(),
+            secret_bytes
+        );
+        crate::secrets::init(&data).expect("initialize recovered secret store");
+        assert_eq!(
+            crate::secrets::get_api_key("synthetic-provider")
+                .expect("read recovered provider key")
+                .as_deref(),
+            Some("synthetic-secret")
+        );
+        let recovered: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.join("providers.json")).unwrap()).unwrap();
+        assert_eq!(
+            recovered.pointer("/providers/synthetic-provider/baseUrl"),
+            Some(&serde_json::json!("https://current.invalid/v1"))
+        );
+    }
     fn queue_restore(data: &Path, archive: &Archive) {
         let dir = data.join("local-backup");
         fs::create_dir_all(&dir).unwrap();
@@ -1270,5 +1461,218 @@ mod tests {
                 .unwrap();
         assert_eq!(title, "WAL committed");
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn user_raw_restore_scrubs_provider_auth_but_preserves_raw_rollback() {
+        let (temp, data, config) = profile().await;
+        let pool = crate::db::create_pool(&data.join("macro.db"))
+            .await
+            .unwrap();
+        crate::db::repository::upsert_provider_config_by_id(
+            &pool,
+            "synthetic-provider",
+            "Synthetic provider",
+            "openai",
+            "https://current.invalid/v1",
+            false,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            UPDATE provider_configs
+            SET api_key = 'portable-secret-sentinel',
+                has_stored_api_key = 1,
+                auth_status = 'authenticated',
+                auth_source = 'oauth',
+                token_expires_at = '2099-01-01T00:00:00Z'
+            WHERE id = 'synthetic-provider'
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let provider_document = |base_url: &str, sentinel: &str| {
+            serde_json::json!({
+                "$schema": "providers.schema.json",
+                "schemaVersion": 1,
+                "providers": {
+                    "synthetic-provider": {
+                        "providerType": "openai",
+                        "name": "Synthetic provider",
+                        "enabled": false,
+                        "baseUrl": base_url,
+                        "isLocal": false,
+                        "options": {
+                            "apiKey": sentinel,
+                            "headers": { "Authorization": sentinel },
+                            "env": { "SYNTHETIC_TOKEN": sentinel }
+                        }
+                    }
+                }
+            })
+        };
+        let approved_dir = config.join(".runtime/approved/user");
+        let pending_dir = config.join(".runtime/pending/user");
+        fs::create_dir_all(&approved_dir).unwrap();
+        fs::create_dir_all(&pending_dir).unwrap();
+        fs::write(
+            config.join("providers.json"),
+            serde_json::to_vec(&provider_document(
+                "https://current.invalid/v1",
+                "active-secret-sentinel",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            approved_dir.join("providers.json"),
+            serde_json::to_vec(&provider_document(
+                "https://approved.invalid/v1",
+                "approved-secret-sentinel",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            pending_dir.join("providers.json"),
+            serde_json::to_vec(&provider_document(
+                "https://pending.invalid/v1",
+                "pending-secret-sentinel",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let raw = capture_raw(&data, &config, BTreeMap::new()).unwrap();
+        let raw_path = temp.path().join("raw-profile.json");
+        preserve_raw(&raw, &raw_path).unwrap();
+
+        let portable = load_restore_archive(&raw_path).await.unwrap();
+        let portable_db = temp.path().join("portable.db");
+        fs::write(
+            &portable_db,
+            STANDARD
+                .decode(&portable.files["data/macro.db"].data)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut portable_connection = connection(&portable_db).await.unwrap();
+        let portable_auth: (
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            r#"
+                SELECT api_key, has_stored_api_key, auth_status, auth_source, token_expires_at
+                FROM provider_configs
+                WHERE id = 'synthetic-provider'
+                "#,
+        )
+        .fetch_one(&mut portable_connection)
+        .await
+        .unwrap();
+        assert_eq!(portable_auth, (None, 0, None, None, None));
+        portable_connection.close().await.unwrap();
+
+        assert!(!portable
+            .files
+            .contains_key("config/.runtime/pending/user/providers.json"));
+        for name in [
+            "config/providers.json",
+            "config/.runtime/approved/user/providers.json",
+        ] {
+            let bytes = STANDARD.decode(&portable.files[name].data).unwrap();
+            assert_eq!(portable.files[name].sha256, hash(&bytes));
+            let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/baseUrl"),
+                Some(&serde_json::json!("https://approved.invalid/v1"))
+            );
+            assert!(document
+                .pointer("/providers/synthetic-provider/options/apiKey")
+                .is_none());
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/headers"),
+                Some(&serde_json::json!({}))
+            );
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/env"),
+                Some(&serde_json::json!({}))
+            );
+        }
+
+        let (_rollback_temp, rollback_data, rollback_config) = profile().await;
+        apply_files(&raw, &rollback_data, &rollback_config, true).unwrap();
+        let mut rollback_connection = connection(&rollback_data.join("macro.db")).await.unwrap();
+        let rollback_auth: (
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            r#"
+                SELECT api_key, has_stored_api_key, auth_status, auth_source, token_expires_at
+                FROM provider_configs
+                WHERE id = 'synthetic-provider'
+                "#,
+        )
+        .fetch_one(&mut rollback_connection)
+        .await
+        .unwrap();
+        assert_eq!(
+            rollback_auth,
+            (
+                Some("portable-secret-sentinel".to_string()),
+                1,
+                Some("authenticated".to_string()),
+                Some("oauth".to_string()),
+                Some("2099-01-01T00:00:00Z".to_string())
+            )
+        );
+        rollback_connection.close().await.unwrap();
+
+        for (path, expected_url, expected_secret) in [
+            (
+                rollback_config.join("providers.json"),
+                "https://current.invalid/v1",
+                "active-secret-sentinel",
+            ),
+            (
+                rollback_config.join(".runtime/approved/user/providers.json"),
+                "https://approved.invalid/v1",
+                "approved-secret-sentinel",
+            ),
+            (
+                rollback_config.join(".runtime/pending/user/providers.json"),
+                "https://pending.invalid/v1",
+                "pending-secret-sentinel",
+            ),
+        ] {
+            let document: serde_json::Value =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/baseUrl"),
+                Some(&serde_json::json!(expected_url))
+            );
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/apiKey"),
+                Some(&serde_json::json!(expected_secret))
+            );
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/headers/Authorization"),
+                Some(&serde_json::json!(expected_secret))
+            );
+            assert_eq!(
+                document.pointer("/providers/synthetic-provider/options/env/SYNTHETIC_TOKEN"),
+                Some(&serde_json::json!(expected_secret))
+            );
+        }
     }
 }

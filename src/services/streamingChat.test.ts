@@ -437,6 +437,216 @@ describe('streamingChat SSE parsing', () => {
   });
 });
 
+describe('streamingChat SSE stream handling', () => {
+  beforeEach(() => {
+    mock.restore();
+  });
+
+  it('skips non-object SSE data and accepts a null error field', async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = mock(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: null\n\n'));
+          controller.enqueue(
+            encoder.encode(
+              'data: {"error":null,"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+            ),
+          );
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }),
+    }));
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onComplete = mock(() => undefined);
+    const onError = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://provider.invalid',
+      modelId: 'model',
+      messages: [{ role: 'user', content: 'Hello.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError,
+    });
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ completionReason: 'completed' }),
+    );
+  });
+
+  it('preserves a structured SSE error before any generated text', async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = mock(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"error":{"message":"Upstream failed","code":"upstream_error","type":"gateway","status":400}}\n\n',
+            ),
+          );
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }),
+    }));
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const onError = mock(() => undefined);
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://provider.invalid',
+      modelId: 'model',
+      messages: [{ role: 'user', content: 'Hello.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: () => undefined,
+      onComplete,
+      onError,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'ProviderRuntimeError',
+        status: 400,
+        providerMessage: 'Upstream failed',
+        providerCode: 'upstream_error',
+        providerType: 'gateway',
+        providerRawBodyExcerpt: expect.stringContaining('upstream_error'),
+      }),
+    );
+  });
+
+  it('keeps emitted text when a structured SSE error follows it', async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = mock(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode('data: {"choices":[{"delta":{"content":"Partial."}}]}\n\n'),
+          );
+          controller.enqueue(
+            encoder.encode(
+              'data: {"error":{"message":"Upstream failed","code":"upstream_error","type":"gateway","status":400}}\n\n',
+            ),
+          );
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      }),
+    }));
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const emitted: string[] = [];
+    const onError = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://provider.invalid',
+      modelId: 'model',
+      messages: [{ role: 'user', content: 'Hello.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: (token: string) => emitted.push(token),
+      onComplete: () => undefined,
+      onError,
+    });
+
+    expect(emitted.join('')).toBe('Partial.');
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'ProviderRuntimeError',
+        providerMessage: 'Upstream failed',
+        providerCode: 'upstream_error',
+      }),
+    );
+  });
+
+  it('rejects an idle stream before cancelling its reader', async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { __testables } = await loadStreamingChat();
+
+    await expect(
+      __testables.readStreamChunkWithIdleTimeout(stream.getReader(), 1),
+    ).rejects.toMatchObject({
+      name: 'ProviderRuntimeError',
+      kind: 'stream_idle_timeout',
+      retryable: true,
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('stops reading and cancels an open stream after [DONE]', async () => {
+    const encoder = new TextEncoder();
+    let cancelled = false;
+    let lateEventTimer: ReturnType<typeof setTimeout> | undefined;
+    const fetchMock = mock(async () => ({
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+            ),
+          );
+          lateEventTimer = setTimeout(() => {
+            controller.enqueue(
+              encoder.encode('data: {"choices":[{"delta":{"content":"late"}}]}\n\n'),
+            );
+            controller.close();
+          }, 0);
+        },
+        cancel() {
+          cancelled = true;
+          if (lateEventTimer !== undefined) {
+            clearTimeout(lateEventTimer);
+          }
+        },
+      }),
+    }));
+    const { streamChat } = await loadStreamingChat(fetchMock);
+    const emitted: string[] = [];
+    const onComplete = mock(() => undefined);
+
+    await streamChat({
+      providerId: 'provider-1',
+      providerType: 'openai',
+      baseUrl: 'https://provider.invalid',
+      modelId: 'model',
+      messages: [{ role: 'user', content: 'Hello.' }],
+      enableWebSearch: false,
+      enableWebFetch: false,
+      onToken: (token: string) => emitted.push(token),
+      onComplete,
+      onError: () => undefined,
+    });
+
+    expect(cancelled).toBe(true);
+    expect(emitted).toEqual([]);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ completionReason: 'completed' }),
+    );
+  });
+});
+
 describe('streamingChat tool rendering helpers', () => {
   beforeEach(() => {
     mock.restore();
