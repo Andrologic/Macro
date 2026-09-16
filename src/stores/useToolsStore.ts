@@ -422,7 +422,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
       && get().mcpServers.find((candidate) => candidate.id === serverId) === server;
     if (!server) {
       mcpRefreshTokens.delete(serverId);
-      set({ saving: false });
+      set({ saving: mcpRefreshTokens.size > 0 });
       return;
     }
 
@@ -449,7 +449,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
             }
           : s
       );
-      set({ mcpServers: nextServers, saving: false });
+      set({ mcpServers: nextServers });
     } catch (error) {
       if (!isCurrentRefresh()) return;
       const normalizedError = toServiceError(error);
@@ -464,7 +464,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
             }
           : s
       );
-      set({ mcpServers: nextServers, saving: false, lastError: message });
+      set({ mcpServers: nextServers, lastError: message });
       throw error;
     } finally {
       if (mcpRefreshTokens.get(serverId) === token) {

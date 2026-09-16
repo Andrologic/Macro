@@ -289,6 +289,23 @@ describe('useToolsStore chat toolbox policy', () => {
     expect(useToolsStore.getState().saving).toBe(false);
   });
 
+  it('keeps saving visible when an absent server is refreshed during another refresh', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = services.mcpRuntimeRefreshCatalog;
+    services.mcpRuntimeRefreshCatalog = mock(async (key) => { await gate; return original(key); });
+    const active = useToolsStore.getState().refreshMCPServerTools('github');
+    await Promise.resolve();
+    await useToolsStore.getState().refreshMCPServerTools('absent');
+    expect(useToolsStore.getState().saving).toBe(true);
+    release();
+    await active;
+    expect(useToolsStore.getState().saving).toBe(false);
+  });
+
   it('merges concurrent catalogs for different servers without saving configuration', async () => {
     const { useToolsStore } = await loadUseToolsStore();
     await useToolsStore.getState().loadSettings();
