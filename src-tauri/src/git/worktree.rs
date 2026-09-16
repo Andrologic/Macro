@@ -63,6 +63,7 @@ pub struct TaskWorktreeInspection {
 
 #[derive(Debug, Clone)]
 pub struct TaskWorktreeEnsureResult {
+    pub created_by_this_call: bool,
     pub task_id: String,
     pub worktree_path: PathBuf,
     pub branch_name: String,
@@ -1446,6 +1447,7 @@ impl GitState {
                 ensure_task_worktree_gitignore_rule(repo, workdir, preferred_commit_branch)?;
                 self.register_worktree(task_id, inspection.worktree_path.clone());
                 return Ok(TaskWorktreeEnsureResult {
+                    created_by_this_call: false,
                     task_id: task_id.to_string(),
                     worktree_path: inspection.worktree_path,
                     branch_name: inspection
@@ -1500,6 +1502,7 @@ impl GitState {
                 ensure_task_worktree_gitignore_rule(repo, workdir, preferred_commit_branch)?;
                 self.register_worktree(task_id, inspection.worktree_path.clone());
                 return Ok(TaskWorktreeEnsureResult {
+                    created_by_this_call: false,
                     task_id: task_id.to_string(),
                     worktree_path: inspection.worktree_path,
                     branch_name: inspection
@@ -1574,6 +1577,7 @@ impl GitState {
         self.register_worktree(task_id, worktree_path.clone());
 
         Ok(TaskWorktreeEnsureResult {
+            created_by_this_call: true,
             task_id: task_id.to_string(),
             worktree_path,
             branch_name: created_branch_name,

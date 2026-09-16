@@ -410,6 +410,21 @@ pub async fn lock_task_lifecycle(
     lock_archived_task_cleanup(metadata_root, task_id).await
 }
 
+/// Serialize direct startup across task IDs and workspace metadata roots.
+/// Canonical paths make aliases share one lock; sorting avoids multi-project deadlocks.
+pub async fn lock_direct_project_admission(paths: &[String]) -> Result<Vec<ArchivedTaskCleanupGuard>> {
+    let mut paths = paths.iter().map(|path| std::fs::canonicalize(path).map_err(|error|
+        BackendError::Filesystem { message: format!("Impossible de résoudre le projet : {error}") }
+    )).collect::<Result<Vec<_>>>()?;
+    paths.sort();
+    paths.dedup();
+    let mut guards = Vec::new();
+    for path in paths {
+        guards.push(lock_task_lifecycle(&path, "direct-project-admission").await?);
+    }
+    Ok(guards)
+}
+
 pub async fn validate_archived_task_cleanup_token(
     workspace_path: &Path,
     metadata_root: &Path,
@@ -2366,6 +2381,54 @@ fn is_active_direct_feature_for_projects(
         && overlaps_selected_projects
 }
 
+// Call while holding the workspace state lock so admission and persistence
+// cannot race between windows.
+fn assert_direct_feature_admission(state: &WorkspaceState, task_id: &str) -> Result<()> {
+    let Some(feature) = state
+        .manual_features
+        .iter()
+        .find(|feature| feature.id == task_id)
+    else {
+        return Ok(());
+    };
+    let direct_project_ids: HashSet<String> = feature
+        .execution_targets
+        .iter()
+        .filter(|target| {
+            target.execution_mode.as_deref() == Some("direct")
+                || target.execution_kind.as_deref() == Some("repository_root")
+        })
+        .map(|target| target.project_id.clone())
+        .chain(
+            feature
+                .project_ids
+                .iter()
+                .filter(|id| {
+                    feature.task_kind.as_deref() == Some("direct")
+                        || find_project_by_id_in_state(state, id).is_some_and(|project| {
+                            project.direct_edit
+                                && project.git_setup_state == PROJECT_GIT_SETUP_NOT_GIT
+                        })
+                })
+                .cloned(),
+        )
+        .collect();
+    if direct_project_ids.is_empty() {
+        return Ok(());
+    }
+    let project_ids = direct_project_ids.iter().cloned().collect::<Vec<_>>();
+    if let Some(other) = state.manual_features.iter().find(|other| {
+        other.id != task_id
+            && is_active_direct_feature_for_projects(other, &project_ids, &direct_project_ids)
+    }) {
+        return Err(BackendError::Validation(format!(
+            "Direct-edit project already has an active task: {}",
+            other.title
+        )));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn create_manual_feature_draft(
     workspace_path: &Path,
@@ -2608,6 +2671,7 @@ pub async fn finalize_manual_feature(
             .enumerate()
             .any(|(index, candidate)| {
                 index != feature_index
+                    && candidate.task_kind.as_deref() != Some("direct")
                     && candidate
                         .feature_slug
                         .as_ref()
@@ -2783,6 +2847,7 @@ pub(crate) async fn revert_manual_feature_to_draft_with_existing_lifecycle_lock(
     }
 
     let preserve_direct_target = feature.task_kind.as_deref() == Some("direct");
+    let was_draft = feature.draft;
     feature.draft = true;
     feature.title = title
         .map(str::trim)
@@ -2800,6 +2865,18 @@ pub(crate) async fn revert_manual_feature_to_draft_with_existing_lifecycle_lock(
     feature.merged_at = None;
     if !preserve_direct_target {
         feature.execution_targets = Vec::new();
+    } else if !was_draft {
+        // The old generation is removed by the durable cleanup saga. Keep its
+        // tombstone and give this retained draft a fresh checkpoint identity.
+        for target in &mut feature.execution_targets {
+            if target.execution_mode.as_deref() == Some("direct") {
+                target.checkpoint_id = Some(format!(
+                    "{}-{}",
+                    metadata::direct_checkpoint_task_segment(normalized_task_id),
+                    &uuid::Uuid::new_v4().simple().to_string()[..16]
+                ));
+            }
+        }
     }
     feature.merge_workflow = None;
     feature.updated_at = Utc::now().to_rfc3339();
@@ -2991,6 +3068,8 @@ pub async fn restore_manual_feature(
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
 
+    assert_direct_feature_admission(&state, normalized_task_id)?;
+
     let feature = state
         .manual_features
         .iter_mut()
@@ -3079,8 +3158,31 @@ pub async fn update_standalone_task_status(
     task_id: &str,
     status: &str,
 ) -> Result<()> {
+    update_standalone_task_status_with_revision(
+        workspace_path,
+        metadata_root,
+        task_id,
+        status,
+        None,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+pub async fn update_standalone_task_status_with_revision(
+    workspace_path: &Path,
+    metadata_root: &Path,
+    task_id: &str,
+    status: &str,
+    expected_revision: Option<u64>,
+    expected_status: Option<&str>,
+) -> Result<Option<u64>> {
     let _state_guard = lock_workspace_state(metadata_root).await;
     let mut state = load_or_create_state(workspace_path, metadata_root).await?;
+    if expected_revision.is_some_and(|revision| revision != state.workspace_revision) {
+        return Ok(None);
+    }
     let normalized_task_id = task_id.trim();
     let normalized_status = status.trim();
     if normalized_task_id.is_empty() || normalized_status.is_empty() {
@@ -3089,21 +3191,30 @@ pub async fn update_standalone_task_status(
         ));
     }
 
+    if normalized_status != "Completed" {
+        assert_direct_feature_admission(&state, normalized_task_id)?;
+    }
+
     if let Some(feature) = state
         .manual_features
         .iter_mut()
         .find(|candidate| candidate.id == normalized_task_id)
     {
+        if (expected_status.is_some() && (feature.archived_at.is_some() || feature.draft))
+            || expected_status.is_some_and(|status| status != feature.status)
+        {
+            return Ok(None);
+        }
         feature.status = normalized_status.to_string();
         feature.updated_at = Utc::now().to_rfc3339();
-        persist_sanitized_state(
+        let (persisted, _) = persist_sanitized_state(
             workspace_path,
             metadata_root,
             state,
             "update_manual_feature_status",
         )
         .await?;
-        return Ok(());
+        return Ok(Some(persisted.workspace_revision));
     }
 
     let Some(plan) = state.current_plan.as_mut() else {
@@ -3124,6 +3235,11 @@ pub async fn update_standalone_task_status(
             .map(|value| value == normalized_task_id)
             .unwrap_or(false)
         {
+            if expected_status.is_some_and(|status| {
+                task_object.get("status").and_then(Value::as_str) != Some(status)
+            }) {
+                return Ok(None);
+            }
             task_object.insert(
                 "status".to_string(),
                 Value::String(normalized_status.to_string()),
@@ -3141,14 +3257,14 @@ pub async fn update_standalone_task_status(
     }
 
     plan.updated_at = Utc::now().to_rfc3339();
-    persist_sanitized_state(
+    let (persisted, _) = persist_sanitized_state(
         workspace_path,
         metadata_root,
         state,
         "update_standalone_task_status",
     )
     .await?;
-    Ok(())
+    Ok(Some(persisted.workspace_revision))
 }
 
 pub async fn update_manual_feature_merge_workflow(
@@ -8909,6 +9025,30 @@ mod tests {
     use tempfile::TempDir;
     use tokio::time::timeout;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn direct_project_admission_serializes_distinct_task_ids() {
+        let temp = TempDir::new().expect("temporary projects");
+        let root_a = temp.path().join("metadata-a");
+        let root_b = temp.path().join("metadata-b");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let paths = vec![project.to_string_lossy().into_owned()];
+        let first_projects = lock_direct_project_admission(&paths).await.unwrap();
+        let first_task = lock_task_lifecycle(&root_a, "architect-task-a").await.unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let second = tokio::spawn(async move {
+            let _projects = lock_direct_project_admission(&paths).await.unwrap();
+            let _task = lock_task_lifecycle(&root_b, "architect-task-b").await.unwrap();
+            entered_tx.send(()).unwrap();
+        });
+        let mut entered_rx = entered_rx;
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), &mut entered_rx).await.is_err());
+        drop(first_task);
+        drop(first_projects);
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx).await.unwrap().unwrap();
+        second.await.unwrap();
+    }
+
     #[tokio::test]
     async fn plan_lifecycle_lock_holds_a_stable_file_lock() {
         let temp = TempDir::new().expect("temp dir");
@@ -11695,6 +11835,306 @@ mod tests {
 
         assert!(
             matches!(result, Err(BackendError::Validation(message)) if message.contains("Refresh and try again"))
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_task_lifecycle_retry_restore_and_slug_admission() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join("metadata");
+        let direct_path = temp.path().join("direct");
+        let git_path = temp.path().join("git");
+        stdfs::create_dir_all(&direct_path).unwrap();
+        stdfs::create_dir_all(&git_path).unwrap();
+        init_git_repo(&git_path, "main", &[]);
+        let mut direct = make_project("direct-project", direct_path.to_str().unwrap());
+        direct.direct_edit = true;
+        direct.git_setup_state = PROJECT_GIT_SETUP_NOT_GIT.to_string();
+        let state = WorkspaceState {
+            standalone_projects: vec![
+                direct,
+                make_project("git-project", git_path.to_str().unwrap()),
+            ],
+            ..WorkspaceState::default()
+        };
+        persist_sanitized_state(temp.path(), &metadata_root, state, "test")
+            .await
+            .unwrap();
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "conversation-a",
+            &["direct-project".to_string()],
+            &[],
+            None,
+            None,
+            None,
+            "direct",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let finalized = finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            None,
+            "Direct task",
+            "Description",
+            "shared-slug",
+            "direct",
+        )
+        .await
+        .unwrap();
+        let old_checkpoint = finalized.execution_targets[0]
+            .checkpoint_id
+            .clone()
+            .unwrap();
+        let reverted = revert_manual_feature_to_draft(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let new_checkpoint = reverted.execution_targets[0].checkpoint_id.clone().unwrap();
+        assert_ne!(old_checkpoint, new_checkpoint);
+        assert_eq!(new_checkpoint.rsplit_once('-').unwrap().1.len(), 16);
+        let repeated = revert_manual_feature_to_draft(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repeated.execution_targets[0].checkpoint_id.as_deref(),
+            Some(new_checkpoint.as_str())
+        );
+        let retried = finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            None,
+            "Direct task",
+            "Description",
+            "shared-slug",
+            "direct",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            retried.execution_targets[0].checkpoint_id.as_deref(),
+            Some(new_checkpoint.as_str())
+        );
+
+        let reservation = update_standalone_task_status_with_revision(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "InProgress",
+            None,
+            Some("Pending"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        update_standalone_task_status(temp.path(), &metadata_root, "direct-task", "InReview")
+            .await
+            .unwrap();
+        assert_eq!(
+            update_standalone_task_status_with_revision(
+                temp.path(),
+                &metadata_root,
+                "direct-task",
+                "Pending",
+                Some(reservation),
+                Some("InProgress")
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        let latest = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .unwrap();
+        assert_eq!(
+            latest
+                .manual_features
+                .iter()
+                .find(|feature| feature.id == "direct-task")
+                .unwrap()
+                .status,
+            "InReview"
+        );
+        // Returning to the same status does not make the old reservation current.
+        let next = update_standalone_task_status_with_revision(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "InProgress",
+            None,
+            Some("InReview"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            update_standalone_task_status_with_revision(
+                temp.path(),
+                &metadata_root,
+                "direct-task",
+                "Pending",
+                Some(reservation),
+                Some("InProgress")
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        assert!(update_standalone_task_status_with_revision(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "Pending",
+            Some(next),
+            Some("InProgress")
+        )
+        .await
+        .unwrap()
+        .is_some());
+
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "git-task",
+            "conversation-b",
+            &["git-project".to_string()],
+            &[],
+            Some("main"),
+            None,
+            None,
+            "feature",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "git-task",
+            None,
+            "Git task",
+            "Description",
+            "shared-slug",
+            "feature",
+        )
+        .await
+        .unwrap();
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "git-task-2",
+            "conversation-c",
+            &["git-project".to_string()],
+            &[],
+            Some("main"),
+            None,
+            None,
+            "feature",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(finalize_manual_feature(
+            temp.path(),
+            &metadata_root,
+            "git-task-2",
+            None,
+            "Git task 2",
+            "Description",
+            "shared-slug",
+            "feature"
+        )
+        .await
+        .is_err());
+
+        archive_manual_feature(temp.path(), &metadata_root, "direct-task", None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            update_standalone_task_status_with_revision(
+                temp.path(),
+                &metadata_root,
+                "direct-task",
+                "InProgress",
+                None,
+                Some("Pending")
+            )
+            .await
+            .unwrap(),
+            None
+        );
+        create_manual_feature_draft(
+            temp.path(),
+            &metadata_root,
+            "direct-task-2",
+            "conversation-d",
+            &["direct-project".to_string()],
+            &[],
+            None,
+            None,
+            None,
+            "direct",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            restore_manual_feature(temp.path(), &metadata_root, "direct-task")
+                .await
+                .is_err()
+        );
+        assert!(update_standalone_task_status(
+            temp.path(),
+            &metadata_root,
+            "direct-task",
+            "InProgress"
+        )
+        .await
+        .is_err());
+        let state = load_or_create_state(temp.path(), &metadata_root)
+            .await
+            .unwrap();
+        assert!(state
+            .manual_features
+            .iter()
+            .find(|feature| feature.id == "direct-task")
+            .unwrap()
+            .archived_at
+            .is_some());
+        archive_manual_feature(temp.path(), &metadata_root, "direct-task-2", None, None)
+            .await
+            .unwrap();
+        let (first, second) = tokio::join!(
+            restore_manual_feature(temp.path(), &metadata_root, "direct-task"),
+            restore_manual_feature(temp.path(), &metadata_root, "direct-task-2")
+        );
+        assert_ne!(
+            first.is_ok(),
+            second.is_ok(),
+            "only one concurrent admission may succeed"
         );
     }
 

@@ -1169,6 +1169,7 @@ describe('architectPlanService', () => {
     await service.createArchitectPlan({
       branchName,
       planId: 'direct-plan',
+      status: 'validated',
       projectIds: ['docs'],
       nodes: [{
         id: 'edit-docs',
@@ -1188,11 +1189,30 @@ describe('architectPlanService', () => {
       .toContain('"docs": "direct"');
     expect(macroBranchCommitIfDirty).not.toHaveBeenCalled();
 
+    await service.updateArchitectPlan({
+      branchName, planId: 'direct-plan', setActive: false,
+      directCheckpointBinding: { taskId: 'edit-docs', projectId: 'docs', checkpointId: 'owner-0000000000000001' },
+    });
+    await expect(service.updateArchitectPlan({
+      branchName, planId: 'direct-plan', setActive: false,
+      directCheckpointBinding: { taskId: 'missing-task', projectId: 'docs', checkpointId: 'owner-0000000000000001' },
+    })).rejects.toThrow('does not belong');
+    await expect(service.updateArchitectPlan({
+      branchName, planId: 'direct-plan', setActive: false,
+      directCheckpointBinding: { taskId: 'edit-docs', projectId: 'docs', checkpointId: 'other-0000000000000002' },
+    })).rejects.toThrow('already bound');
+
     storage.clear();
     const reloaded = await service.getArchitectPlan(branchName, 'direct-plan');
 
     expect(reloaded?.projectIds).toEqual(['docs']);
     expect(reloaded?.nodes[0]?.executionModesByProjectId).toEqual({ docs: 'direct' });
+    expect(reloaded?.nodes[0]?.directCheckpointIdsByProjectId).toEqual({ docs: 'owner-0000000000000001' });
+    const { deriveImplementTasksFromStrategy } = await import('./implementTaskDerivation');
+    const derived = deriveImplementTasksFromStrategy({ planId: reloaded!.id, planSlug: reloaded!.slug,
+      nodes: reloaded!.nodes, predictedBranches: reloaded!.predictedBranches });
+    expect(derived.tasks[0].execution_targets?.[0].checkpointId).toBe('owner-0000000000000001');
+
 
     macroBranchCommitIfDirty.mockClear();
     await service.commitArchitectPlanMetadata({

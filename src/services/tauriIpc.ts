@@ -325,6 +325,7 @@ export interface GitTaskStartPointsDto {
 }
 
 export interface GitWorktreeEnsureDto {
+  createdByThisCall?: boolean;
   taskId: string;
   worktreePath: string;
   branchName: string;
@@ -3544,8 +3545,8 @@ export async function workspaceReleasePlanLifecycleLock(leaseId: string): Promis
   return invoke<void>('workspace_release_plan_lifecycle_lock', { leaseId });
 }
 
-export async function workspaceAcquireTaskLifecycleLock(taskId: string): Promise<string> {
-  return invoke<string>('workspace_acquire_task_lifecycle_lock', { taskId });
+export async function workspaceAcquireTaskLifecycleLock(taskId: string, directProjectPaths?: string[]): Promise<string> {
+  return invoke<string>('workspace_acquire_task_lifecycle_lock', { taskId, ...(directProjectPaths?.length ? { directProjectPaths } : {}) });
 }
 
 export async function workspaceRenewTaskLifecycleLock(leaseId: string): Promise<void> {
@@ -3599,10 +3600,14 @@ export async function workspaceDeleteManualFeature(params: {
 export async function workspaceUpdateStandaloneTaskStatus(params: {
   taskId: string;
   status: string;
-}): Promise<void> {
+  expectedRevision?: number;
+  expectedStatus?: string;
+}): Promise<number | null> {
   return invoke("workspace_update_standalone_task_status", {
     taskId: params.taskId,
     status: params.status,
+    ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}),
+    ...(params.expectedStatus !== undefined ? { expectedStatus: params.expectedStatus } : {}),
   });
 }
 

@@ -23,7 +23,7 @@ export class StalePlanLifecycleSagaError extends Error {
   }
 }
 
-export type PlanLifecycleOperation = 'archive' | 'delete' | 'finalize';
+export type PlanLifecycleOperation = 'archive' | 'delete' | 'finalize' | 'provision';
 export type PlanLifecyclePhase = 'prepared' | 'git_merges_complete' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
 
 export type PlanFinalizationRepositoryPhase =
@@ -64,6 +64,7 @@ export interface PlanLifecycleCleanupResource {
   repoPath: string;
   branchName: string;
   expectedCommit: string | null;
+  intendedCommit?: string;
   worktreeKey?: string;
   expectedWorktreePath?: string;
 }
@@ -123,6 +124,7 @@ const isCleanupResource = (value: unknown): value is PlanLifecycleCleanupResourc
     typeof resource.repoPath === 'string' &&
     typeof resource.branchName === 'string' &&
     (typeof resource.expectedCommit === 'string' || resource.expectedCommit === null) &&
+    (resource.intendedCommit === undefined || (typeof resource.intendedCommit === 'string' && resource.intendedCommit.length > 0)) &&
     (resource.worktreeKey === undefined || typeof resource.worktreeKey === 'string') &&
     (resource.expectedWorktreePath === undefined || typeof resource.expectedWorktreePath === 'string');
 };
@@ -200,10 +202,11 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
     archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
     delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
     finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
+    provision: ['prepared', 'metadata_written'],
   };
   if (
     !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
-    (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize') ||
+    (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize' && saga.operation !== 'provision') ||
     !allowedPhases[saga.operation as PlanLifecycleOperation]?.includes(saga.phase as PlanLifecyclePhase) ||
     typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
   ) throw new PlanLifecycleSagaCorruptionError();
@@ -224,7 +227,7 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   )) throw new PlanLifecycleSagaCorruptionError();
   const cleanupMayStillRun =
     (saga.operation === 'archive' && (saga.phase === 'prepared' || saga.phase === 'metadata_written')) ||
-    (saga.operation === 'delete' && saga.phase === 'prepared');
+    ((saga.operation === 'delete' || saga.operation === 'provision') && saga.phase === 'prepared');
   if (cleanupMayStillRun && !Array.isArray(saga.cleanupResources)) {
     throw new PlanLifecycleSagaCorruptionError();
   }
@@ -307,10 +310,11 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
         archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
         delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
         finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
+        provision: ['prepared', 'metadata_written'],
       };
       if (
         !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
-        (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize') ||
+        (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize' && saga.operation !== 'provision') ||
         !allowedPhases[saga.operation as PlanLifecycleOperation]?.includes(saga.phase as PlanLifecyclePhase) ||
         typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
       ) throw new PlanLifecycleSagaCorruptionError();
@@ -331,7 +335,7 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
       )) throw new PlanLifecycleSagaCorruptionError();
       const cleanupMayStillRun =
         (saga.operation === 'archive' && (saga.phase === 'prepared' || saga.phase === 'metadata_written')) ||
-        (saga.operation === 'delete' && saga.phase === 'prepared');
+        ((saga.operation === 'delete' || saga.operation === 'provision') && saga.phase === 'prepared');
       if (cleanupMayStillRun && !Array.isArray(saga.cleanupResources)) {
         throw new PlanLifecycleSagaCorruptionError();
       }
@@ -629,6 +633,7 @@ const persistPlanLifecycleSaga = async (
     archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
     delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
     finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
+    provision: ['prepared', 'metadata_written'],
   };
   await updateSetting(
     SAGA_KEY,
@@ -666,7 +671,7 @@ const persistPlanLifecycleSaga = async (
             ...saga,
             legacyCreatedAt: existing.legacyCreatedAt ?? saga.legacyCreatedAt,
           };
-          if (existing.cleanupResources && saga.cleanupResources &&
+          if (saga.operation !== 'provision' && existing.cleanupResources && saga.cleanupResources &&
             JSON.stringify(existing.cleanupResources) !== JSON.stringify(saga.cleanupResources)) {
             throw new PlanLifecycleSagaCorruptionError();
           }
@@ -680,7 +685,7 @@ const persistPlanLifecycleSaga = async (
                 saga.finalizationRepositories,
               ),
             };
-          } else if (existing.cleanupResources) {
+          } else if (existing.cleanupResources && saga.operation !== 'provision') {
             nextSaga = { ...nextSaga, cleanupResources: existing.cleanupResources };
           }
         }

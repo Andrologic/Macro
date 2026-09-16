@@ -581,6 +581,7 @@ const buildExecutionTargets = (
         ? undefined
         : targetBranchesByProjectId?.[projectId],
       executionMode,
+      checkpointId: executionMode === 'direct' ? node.directCheckpointIdsByProjectId?.[projectId] : undefined,
       executionKind: executionMode === 'direct' ? 'repository_root' : 'worktree',
       worktreeKey: executionMode === 'direct'
         ? `direct:${projectId}:${node.id}`

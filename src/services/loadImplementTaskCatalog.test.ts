@@ -57,6 +57,33 @@ const makeTask = (overrides: Partial<Task> & Pick<Task, 'id' | 'title'>): Task =
 });
 
 describe('createLoadImplementTaskCatalog', () => {
+  it('uses persisted plan status for admission and rejects partial catalog reads', async () => {
+    const plan = makePlan({ id: 'plan-direct', title: 'Direct', status: 'in_progress', targetBranch: 'develop',
+      executionModesByProjectId: { web: 'direct' },
+      nodes: [{ id: 'task-direct', title: 'Active task', type: 'task', status: 'in-progress',
+        projectId: 'web', projectIds: ['web'], dependencies: [], executionModesByProjectId: { web: 'direct' } }] });
+    let failRead = false;
+    const load = createLoadImplementTaskCatalog({
+      getAppState: () => ({
+        selectedGroupId: null, selectedProjectId: 'web', projectGroups: [],
+        standaloneProjects: [{ id: 'web', name: 'Web', path: '/repos/web', directEdit: true }],
+        activeArchitectPlanId: plan.id, activePlanContext: plan,
+        planNodes: plan.nodes.map((node) => ({ ...node, status: 'pending' })),
+        predictedBranches: [],
+      } as never),
+      listArchitectPlans: async () => ({ activePlanId: plan.id, plans: [toSummary(plan)] }),
+      listArchitectPlanTargetBranches: async () => ['develop'],
+      getArchitectPlan: async () => { if (failRead) throw new Error('unreadable plan'); return plan; },
+      getGitFlowBaseBranch: () => 'develop',
+      resolveTargetBranch: (value: unknown) => String(value || 'develop'),
+      buildImplementTaskCatalog,
+    });
+    const catalog = await load([], { persistedOnly: true });
+    expect(catalog.tasks.find((task) => task.id.includes('task-direct'))?.status).toBe('InProgress');
+    failRead = true;
+    await expect(load([], { persistedOnly: true })).rejects.toThrow('unreadable plan');
+  });
+
   it('persists a Git mode snapshot for legacy plan targets only when the project is confirmed ready', async () => {
     const legacyPlan = makePlan({
       id: 'plan-legacy-git',

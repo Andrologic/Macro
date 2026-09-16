@@ -7,6 +7,7 @@ interface GitWorktreeEnsureResult {
   taskId: string;
   worktreePath: string;
   branchName: string;
+  createdByThisCall?: boolean;
   status: 'created' | 'reused' | 'repaired';
 }
 

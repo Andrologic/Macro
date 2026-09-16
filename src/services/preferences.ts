@@ -874,6 +874,42 @@ export async function savePreferences(
   }
 }
 
+/** Persist a set of preferences in one configuration-document transaction. */
+export async function saveConfigPreferencesAtomically(
+  preferences: Partial<Record<PrefKey, unknown>>,
+): Promise<void> {
+  const entries = Object.entries(preferences).map(([key, value]) => {
+    const prefKey = key as PrefKey;
+    const target = CONFIG_PREFERENCE_TARGETS[prefKey];
+    if (!target || !isValidPreferenceValue(prefKey, value)) throw new Error(`Invalid configuration preference: ${key}`);
+    return { key: prefKey, value, target };
+  });
+  if (!entries.length) return;
+  const kind = entries[0].target.document;
+  if (entries.some(({ target }) => target.document !== kind)) {
+    throw new Error('Atomic preferences must belong to the same configuration document.');
+  }
+  entries.forEach(({ key }) => cancelDebouncedSave(key));
+  await mutateConfigDocument(kind, { type: 'user' }, async (document) => {
+    const original = isRecord(document.value) ? document.value : {};
+    const next = structuredClone(original);
+    for (const { key, value, target } of entries) {
+      const persisted = serializeConfigPreference(key, value);
+      if (jsonEqual(persisted, PREF_DEFAULTS[key])) deleteNestedValue(next, target.path);
+      else writeNestedValue(next, target.path, persisted);
+    }
+    const keys = [...new Set(entries.map(({ target }) => target.path[0]))];
+    const patch = keys.filter((key) => !jsonEqual(original[key], next[key])).map((key) => ({
+      op: key in next ? 'add' as const : 'remove' as const,
+      path: `/${escapeJsonPointer(key)}`,
+      value: key in next ? next[key] : null,
+      from: null,
+    }));
+    if (patch.length) await useConfigStore.getState().patch({ kind, expectedEtag: document.etag, patch });
+  });
+  for (const { key, value } of entries) emitPreferenceChange(key, value);
+}
+
 /**
  * Clear all preferences (reset to defaults)
  */

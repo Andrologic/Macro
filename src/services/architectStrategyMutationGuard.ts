@@ -869,11 +869,7 @@ export const applyStrategyMutationPreview = async (
     predictedBranches: params.preview.predictedBranches,
   };
 
-  if (params.preview.autoProvisionBranches) {
-    await deps.provisionPlanBranches(nextPlan);
-  }
-
-  const updatedPlan = await deps.updateArchitectPlan({
+  const persistPlan = () => deps.updateArchitectPlan({
     branchName: params.preview.targetBranch,
     planId: params.preview.planId,
     description: params.preview.metadataUpdate.description,
@@ -894,6 +890,18 @@ export const applyStrategyMutationPreview = async (
     targetBranchesByProjectId: params.preview.targetBranchesByProjectId,
     setActive: params.setActive !== false,
   });
+
+  let updatedPlan: ArchitectPlanRecord;
+  if (params.preview.autoProvisionBranches) {
+    let persisted: ArchitectPlanRecord | undefined;
+    await deps.provisionPlanBranches(nextPlan, undefined, async () => {
+      persisted = await persistPlan();
+    });
+    if (!persisted) throw new Error('Plan provisioning did not confirm metadata persistence.');
+    updatedPlan = persisted;
+  } else {
+    updatedPlan = await persistPlan();
+  }
 
   return {
     ...updatedPlan,

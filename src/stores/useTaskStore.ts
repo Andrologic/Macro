@@ -877,11 +877,12 @@ const resumeLinkedTaskGitCleanup = async (
 const withTaskLifecycleLock = async <T>(
   taskId: string,
   operation: (leaseId: string | null) => Promise<T>,
+  directProjectPaths?: string[],
 ): Promise<T> => {
   if (!tauriIpc.isTauriAvailable()) {
     return operation(null);
   }
-  const leaseId = await tauriIpc.workspaceAcquireTaskLifecycleLock(taskId);
+  const leaseId = await tauriIpc.workspaceAcquireTaskLifecycleLock(taskId, directProjectPaths);
   let renewalInFlight: Promise<void> | null = null;
   const renewLease = () => {
     if (renewalInFlight) return;
@@ -1607,20 +1608,29 @@ const inspectTargetWorktreePath = async (
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>
 ): Promise<string | null> => {
-  return resolvePreparedTaskWorktreePath({
+  const preparedPath = await resolvePreparedTaskWorktreePath({
     taskId: task.id,
     target,
     branchWorktrees,
     getProjectById: useAppStore.getState().getProjectById,
     tauri: tauriIpc,
   });
+  if (!preparedPath && isGitExecutionTarget(target) && !isRepositoryRootTarget(target)) {
+    const keys = new Set([target.worktreeKey, `${target.projectId}::${target.branchName}`, target.branchName]);
+    useTaskStore.setState((state) => ({
+      branchWorktrees: Object.fromEntries(Object.entries(state.branchWorktrees).filter(([key, path]) =>
+        !keys.has(key) || path !== branchWorktrees[key],
+      )),
+    }));
+  }
+  return preparedPath;
 };
 
 const ensureTargetWorktreePath = async (
   task: CatalogedImplementTask,
   target: TaskExecutionTarget,
   branchWorktrees: Record<string, string>,
-  onGitEnsureResult?: (status: 'created' | 'reused' | 'repaired') => void,
+  onGitEnsureResult?: (createdByThisCall: boolean) => void,
 ): Promise<string> => {
   const directProject = useAppStore.getState().getProjectById(target.projectId);
   const targetMode = resolveExecutionTargetMode(target);
@@ -1633,19 +1643,25 @@ const ensureTargetWorktreePath = async (
         })
       );
     }
-    await tauriIpc.workspaceSetActiveRoot(projectPath);
     if (!target.checkpointId) {
-      const preparedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
-      if (!preparedPath) {
-        throw toServiceError(
-          tTask(
-            'implement.errors.cannotResolveTaskProject',
-            'Cannot resolve project for task {{taskId}}',
-            { taskId: task.id }
-          )
-        );
+      const checkpointId = await tauriIpc.directCheckpointResolveId({ taskId: task.id, projectPath });
+      // Persist ownership before creating the checkpoint. An interrupted ensure
+      // can then be retried through the task's durable identity.
+      if (task.task_source === 'architect' && task.plan_id) {
+        await updateArchitectPlan({
+          branchName: getTaskPlanStorageBranch(task), planId: task.plan_id,
+          directCheckpointBinding: { taskId: getTaskBusinessId(task), projectId: target.projectId, checkpointId },
+          setActive: false,
+        });
+      } else if (isManualStandaloneTask(task)) {
+        await tauriIpc.workspaceBindManualFeatureDirectCheckpoint({
+          taskId: task.id, projectId: target.projectId, checkpointId,
+        });
+      } else {
+        throw new Error('Direct checkpoint binding requires a durable task.');
       }
-      return preparedPath;
+      target.executionMode = 'direct';
+      target.checkpointId = checkpointId;
     }
     await tauriIpc.directCheckpointEnsure({
       taskId: task.id,
@@ -1729,7 +1745,7 @@ const ensureTargetWorktreePath = async (
     );
   }
 
-  onGitEnsureResult?.(ensured.status);
+  onGitEnsureResult?.(ensured.createdByThisCall ?? ensured.status === 'created');
   return ensured.worktreePath;
 };
 
@@ -2100,7 +2116,7 @@ interface TaskCommandRunState {
   startedAt: string;
 }
 
-type TaskOperationKind = 'commands' | 'archive' | 'cleanup' | 'restore' | 'delete' | 'merge';
+type TaskOperationKind = 'start' | 'revert' | 'commands' | 'archive' | 'cleanup' | 'restore' | 'delete' | 'merge';
 
 interface TaskCommandRunCompletion {
   promise: Promise<void>;
@@ -2186,8 +2202,8 @@ const ensureTaskExecutionTargetsReady = async (
         executionTask,
         target,
         branchWorktrees,
-        (status) => {
-          createdByThisAttempt = status === 'created';
+        (created) => {
+          createdByThisAttempt = created;
         },
       );
 
@@ -2425,7 +2441,8 @@ interface TaskStore {
 const persistTaskStatusToArchitectPlan = async (
   task: CatalogedImplementTask,
   status: TaskStatus,
-  setError: (message: string | null) => void
+  setError: (message: string | null) => void,
+  refreshCatalog = true,
 ): Promise<boolean> => {
   try {
     if (task.task_source !== 'architect' || !task.plan_id) {
@@ -2505,7 +2522,7 @@ const persistTaskStatusToArchitectPlan = async (
       }
     }
     try {
-      await useTaskStore.getState().refreshFromPlan();
+      if (refreshCatalog) await useTaskStore.getState().refreshFromPlan();
     } catch (error) {
       const normalized = toServiceError(error);
       setError(normalized.message);
@@ -2919,6 +2936,7 @@ const cleanupTaskExecutionTargets = async (
 export const useTaskStore = create<TaskStore>((set, get) => {
   const activeMergeWorkflowRuns = new Map<string, Promise<void>>();
   const activeTaskOperations = new Map<string, TaskOperationKind>();
+  const startingDirectProjects = new Set<string>();
   const taskStatusMutationGenerations = new Map<string, number>();
   const activePlanWorktreeMutations = new Set<string>();
   let activeManualFeatureCreationId: string | null = null;
@@ -3514,7 +3532,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     const selectionContextKey = `${appStateAfterSelection.selectedGroupId ?? ''}::${appStateAfterSelection.selectedProjectId ?? ''}`;
     const isCurrentTaskActivation = (): boolean => {
       const currentAppState = useAppStore.getState();
-      return requestId === taskActivationRequestId &&
+      const currentTask = task ? get().getTaskById(task.id) : undefined;
+      return Boolean(currentTask && task &&
+        getTaskStatusMutationIdentity(currentTask) === getTaskStatusMutationIdentity(task)) &&
+        requestId === taskActivationRequestId &&
         currentAppState.selectedTaskId === selectedTaskIdAtActivation &&
         `${currentAppState.selectedGroupId ?? ''}::${currentAppState.selectedProjectId ?? ''}` === selectionContextKey;
     };
@@ -3604,7 +3625,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     let knownWorktree = primaryTarget
       ? await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
       : null;
-    if (!knownWorktree && primaryTarget && shouldRestoreExecutionWorkspace) {
+    if (!isCurrentTaskActivation()) return;
+    if (!knownWorktree && primaryTarget && targetMode?.mode !== 'direct' && shouldRestoreExecutionWorkspace) {
       knownWorktree = await ensureTargetWorktreePath(
         executionTask,
         primaryTarget,
@@ -3755,6 +3777,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    if (!acquireTaskOperation(existingTask.id, 'revert')) {
+      throw new Error(getTaskCommandMutationBlockedMessage('complete'));
+    }
+
     try {
       if (!tauriIpc.isTauriAvailable()) {
         throw new Error('Manual features require the desktop runtime.');
@@ -3900,6 +3926,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
       throw normalized;
+    } finally {
+      releaseTaskOperation(existingTask.id, 'revert');
     }
   },
 
@@ -4653,6 +4681,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    if (task.archived_at || task.draft) return;
+
     if (task.status === 'Completed') {
       set({ lastError: tTask('implement.errors.taskAlreadyCompleted', 'Task is already completed.') });
       return;
@@ -4688,14 +4718,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
 
     const directProjectIds = new Set(
-      getExecutionTargets(task).filter(isDirectEditTarget).map((target) => target.projectId),
+      getExecutionTargets(task).filter((target) => isDirectEditTarget(target) || isRepositoryRootTarget(target)).map((target) => target.projectId),
     );
     const conflictingDirectTask = directProjectIds.size > 0
       ? get().tasks.find((candidate) =>
           candidate.id !== task.id &&
           ['InProgress', 'AwaitingResponse', 'InReview'].includes(candidate.status) &&
           getExecutionTargets(candidate).some(
-            (target) => directProjectIds.has(target.projectId) && isDirectEditTarget(target),
+            (target) => directProjectIds.has(target.projectId) && (isDirectEditTarget(target) || isRepositoryRootTarget(target)),
           ),
         )
       : null;
@@ -4710,96 +4740,193 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
-    const appState = useAppStore.getState();
-    if (appState.selectedTaskId !== task.id) {
-      appState.setSelectedTask(task.id);
+    if ([...directProjectIds].some((id) => startingDirectProjects.has(id)) ||
+      !acquireTaskOperation(task.id, 'start')) {
+      set({ lastError: getTaskCommandMutationBlockedMessage('complete') });
+      return;
     }
-
-    const mergeRuntime = get().mergeWorkflowRuntimeByTaskId[task.id] ?? null;
-    if (isPlanFinalizationRuntimeTask(task) || mergeRuntime) {
-      try {
-        const runtime = await get().loadMergeWorkflowReview(task.id, {
-          force: task.status === 'Failed',
-        });
-        const { repoPath, branchName } = resolveMergeWorkflowActivationContext({
-          task,
-          runtime,
-          preferredProjectId: appState.selectedProjectId,
-          resolveRepoPath: resolveTaskRepositoryPath,
-        });
-        const mergeWorkspaceContext = buildMergeWorkflowWorkspaceContext(
-          runtime,
-          appState.selectedProjectId
-        );
-
-        set({
-          activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
-          activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
-          activeWorkspacePathOverridesByProjectId:
-            mergeWorkspaceContext.activeWorkspacePathOverridesByProjectId,
-          missingBaseBranchIssue: null,
-          lastError: null,
-        });
-
-        await syncWorkspaceRoot(mergeWorkspaceContext.activeRepositoryPath || repoPath);
-        return;
-      } catch (error) {
-        const failureState = buildMergeWorkflowFailureState(error, {
-          taskId: task.id,
-          kind: isPlanFinalizationRuntimeTask(task)
-            ? 'plan_finalization'
-            : 'task_completion',
-        });
-        set((state) => ({
-          ...applyMergeWorkflowRuntimePatch(state, task.id, {
-            taskId: task.id,
-            kind: isPlanFinalizationRuntimeTask(task)
-              ? 'plan_finalization'
-              : 'task_completion',
-            ...failureState.runtimePatch,
-          }),
-          lastError: failureState.lastError,
-        }));
-        return;
-      }
-    }
-
+    const directProjectPaths = [...new Set(getExecutionTargets(task)
+      .filter((target) => isDirectEditTarget(target) || isRepositoryRootTarget(target))
+      .map((target) => resolveTaskRepositoryPath(target.projectId, target.repoPath))
+      .filter((path): path is string => Boolean(path)))];
+    directProjectIds.forEach((id) => startingDirectProjects.add(id));
     try {
-      const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
-        task,
-        get().branchWorktrees,
-        undefined,
-        { onWorkspacesPrepared: options?.onWorkspacesPrepared },
-      );
-      const primaryTarget =
-        preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
-        preparedTargets[0];
-      const primaryWorktree = primaryTarget?.worktreePath || null;
+      await withTaskLifecycleLock(task.id, async () => {
+        if (directProjectIds.size > 0) {
+          // Read durable state only after acquiring the native project locks.
+          // Another window may have started a different task while we waited.
+          const catalog = await services.listTasks({ persistedOnly: true });
+          const conflict = catalog.tasks.find((candidate) => candidate.id !== task.id &&
+            !candidate.archived_at && ['InProgress', 'AwaitingResponse', 'InReview'].includes(candidate.status) &&
+            getExecutionTargets(candidate).some((target) =>
+              (isDirectEditTarget(target) || isRepositoryRootTarget(target)) &&
+              (directProjectIds.has(target.projectId) || directProjectPaths.includes(
+                resolveTaskRepositoryPath(target.projectId, target.repoPath) ?? '',
+              )),
+            ));
+          if (conflict) throw new Error(tTask(
+            'implement.errors.directProjectTaskAlreadyActive',
+            'Another direct-edit task is already active for this project: {{task}}',
+            { task: conflict.title },
+          ));
+          if (task.task_source === 'architect') {
+            const persisted = catalog.tasks.find((candidate) => candidate.id === task.id);
+            if (!persisted || persisted.archived_at || persisted.draft || persisted.status !== task.status) {
+              throw new Error('Task changed before startup admission.');
+            }
+          }
+        }
+        const appState = useAppStore.getState();
+        if (appState.selectedTaskId !== task.id) {
+          appState.setSelectedTask(task.id);
+        }
 
-      set((state) => ({
-        branchWorktrees: {
-          ...state.branchWorktrees,
-          ...createdWorktrees,
-        },
-        activeBranchName: task.assigned_branch,
-        activeRepositoryPath: primaryWorktree,
-        activeWorkspacePathOverridesByProjectId: {},
-        missingBaseBranchIssue: null,
-        lastError: null,
-      }));
+        const requestId = ++taskActivationRequestId;
+        const selection = useAppStore.getState();
+        const selectionContextKey = `${selection.selectedGroupId ?? ''}::${selection.selectedProjectId ?? ''}`;
+        const taskStillExists = () => {
+          const current = get().getTaskById(task.id);
+          return current && !current.archived_at && !current.draft &&
+            getTaskStatusMutationIdentity(current) === getTaskStatusMutationIdentity(task);
+        };
+        const isCurrentStart = () => {
+          const current = useAppStore.getState();
+          return taskStillExists() && requestId === taskActivationRequestId &&
+            current.selectedTaskId === task.id &&
+            `${current.selectedGroupId ?? ''}::${current.selectedProjectId ?? ''}` === selectionContextKey;
+        };
 
-      await syncWorkspaceRoot(primaryWorktree);
-      await get().setTaskStatus(task.id, 'InProgress');
+        const mergeRuntime = get().mergeWorkflowRuntimeByTaskId[task.id] ?? null;
+        if (isPlanFinalizationRuntimeTask(task) || mergeRuntime) {
+          try {
+            const runtime = await get().loadMergeWorkflowReview(task.id, {
+              force: task.status === 'Failed',
+            });
+            const { repoPath, branchName } = resolveMergeWorkflowActivationContext({
+              task,
+              runtime,
+              preferredProjectId: appState.selectedProjectId,
+              resolveRepoPath: resolveTaskRepositoryPath,
+            });
+            const mergeWorkspaceContext = buildMergeWorkflowWorkspaceContext(
+              runtime,
+              appState.selectedProjectId
+            );
+
+            if (!isCurrentStart()) return;
+            set({
+              activeBranchName: mergeWorkspaceContext.activeBranchName || branchName,
+              activeRepositoryPath: mergeWorkspaceContext.activeRepositoryPath || repoPath,
+              activeWorkspacePathOverridesByProjectId:
+                mergeWorkspaceContext.activeWorkspacePathOverridesByProjectId,
+              missingBaseBranchIssue: null,
+              lastError: null,
+            });
+
+            await syncWorkspaceRoot(mergeWorkspaceContext.activeRepositoryPath || repoPath);
+            return;
+          } catch (error) {
+            if (!isCurrentStart()) return;
+            const failureState = buildMergeWorkflowFailureState(error, {
+              taskId: task.id,
+              kind: isPlanFinalizationRuntimeTask(task)
+                ? 'plan_finalization'
+                : 'task_completion',
+            });
+            set((state) => ({
+              ...applyMergeWorkflowRuntimePatch(state, task.id, {
+                taskId: task.id,
+                kind: isPlanFinalizationRuntimeTask(task)
+                  ? 'plan_finalization'
+                  : 'task_completion',
+                ...failureState.runtimePatch,
+              }),
+              lastError: failureState.lastError,
+            }));
+            return;
+          }
+        }
+
+        let reservedRevision: number | null = null;
+        try {
+          if (isManualStandaloneTask(task)) {
+            const revision = await tauriIpc.workspaceUpdateStandaloneTaskStatus({
+              taskId: task.id, status: 'InProgress', expectedStatus: task.status,
+            });
+            if (revision === null) throw new Error('Task changed before startup admission.');
+            reservedRevision = revision;
+
+          }
+          const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
+            task,
+            get().branchWorktrees,
+            undefined,
+            { onWorkspacesPrepared: options?.onWorkspacesPrepared },
+          );
+          if (!taskStillExists()) return;
+          const persistedArchitectAdmission = directProjectIds.size > 0 && task.task_source === 'architect';
+          if (persistedArchitectAdmission) {
+            let persistenceError: string | null = null;
+            const persisted = await persistTaskStatusToArchitectPlan(task, 'InProgress',
+              (message) => { persistenceError = message; }, false);
+            if (!persisted) throw new Error(persistenceError || 'Unable to persist startup admission.');
+            set((state) => ({ tasks: applyTaskStatusLocally(state.tasks, task, 'InProgress') }));
+          }
+          const primaryTarget =
+            preparedTargets.find((target) => target.projectId === appState.selectedProjectId) ||
+            preparedTargets[0];
+          const primaryWorktree = primaryTarget?.worktreePath || null;
+
+          set((state) => ({
+            branchWorktrees: {
+              ...state.branchWorktrees,
+              ...createdWorktrees,
+            },
+            ...(isCurrentStart() ? {
+              activeBranchName: task.assigned_branch,
+              activeRepositoryPath: primaryWorktree,
+              activeWorkspacePathOverridesByProjectId: {},
+              missingBaseBranchIssue: null,
+              lastError: null,
+            } : {}),
+          }));
+
+          if (isCurrentStart()) await syncWorkspaceRoot(primaryWorktree);
+          if (reservedRevision !== null) {
+            await get().refreshFromPlan();
+            await syncManualFeatureTaskMetadata(get().getTaskById(task.id), (message) => {
+              if (isCurrentStart()) set({ lastError: message });
+            });
+          } else if (!persistedArchitectAdmission) await get().setTaskStatus(task.id, 'InProgress');
+        } catch (error) {
+          let failure = error;
+          if (reservedRevision !== null && taskStillExists()) {
+            try {
+              await tauriIpc.workspaceUpdateStandaloneTaskStatus({
+                taskId: task.id, status: task.status, expectedRevision: reservedRevision, expectedStatus: 'InProgress',
+              });
+              await get().refreshFromPlan();
+            } catch (rollbackError) {
+              failure = new Error(`${toServiceError(error).message}\n${toServiceError(rollbackError).message}`);
+            }
+          }
+          if (!isCurrentStart()) return;
+          if (error instanceof MissingTaskBaseBranchError) {
+            set({
+              missingBaseBranchIssue: error.issue,
+              lastError: error.issue.message,
+            });
+            return;
+          }
+          const normalized = toServiceError(failure);
+          set({ lastError: normalized.message });
+        }
+      }, directProjectPaths);
     } catch (error) {
-      if (error instanceof MissingTaskBaseBranchError) {
-        set({
-          missingBaseBranchIssue: error.issue,
-          lastError: error.issue.message,
-        });
-        return;
-      }
-      const normalized = toServiceError(error);
-      set({ lastError: normalized.message });
+      set({ lastError: toServiceError(error).message });
+    } finally {
+      directProjectIds.forEach((id) => startingDirectProjects.delete(id));
+      releaseTaskOperation(task.id, 'start');
     }
   },
 

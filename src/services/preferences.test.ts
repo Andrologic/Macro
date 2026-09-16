@@ -95,6 +95,56 @@ describe('preferences JSON configuration adapter', () => {
     removeTauriRuntimeMock();
   });
 
+  it('keeps the whole Git document unchanged when an intermediate atomic patch operation fails', async () => {
+    let document = { kind: 'git', scope: { type: 'user' }, value: {
+      schemaVersion: 1, metadataAutoPush: false,
+    } as Record<string, unknown>, etag: 'git-0', readOnly: false, invalid: false,
+      filePath: 'git.json', diagnostics: [] };
+    let fail = true;
+    const requests: Array<{ patch: Array<{ op: string; path: string; value: unknown }> }> = [];
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      if (command === 'config_get_document') return structuredClone(document);
+      if (command === 'config_apply_patch') {
+        const request = payload?.request as typeof requests[number];
+        requests.push(request);
+        const candidate = structuredClone(document.value);
+        for (const [index, operation] of request.patch.entries()) {
+          if (fail && index === 3) throw new Error('injected fourth-operation failure');
+          if (operation.op === 'remove') delete candidate[operation.path.slice(1)];
+          else candidate[operation.path.slice(1)] = operation.value;
+        }
+        document = { ...document, value: candidate, etag: 'git-1' };
+        return { status: 'applied', document: structuredClone(document), pendingChange: null, restartRequired: false };
+      }
+      if (command === 'config_get_snapshot') return { schemaVersion: 1, effective: { git: document.value },
+        projectEffective: {}, documents: [document], provenance: [], diagnostics: [], pendingRestartPaths: [] };
+      if (command === 'config_list_pending_changes') return [];
+      return undefined;
+    }));
+    const { saveConfigPreferencesAtomically, PREF_KEYS } = await loadPreferencesModule();
+    const values = {
+      [PREF_KEYS.ARCHITECT_GIT_MAIN_BRANCH]: 'trunk',
+      [PREF_KEYS.ARCHITECT_GIT_BASE_BRANCH]: 'develop',
+      [PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY]: 'fast_forward',
+      [PREF_KEYS.ARCHITECT_PLAN_BRANCH_TEMPLATE]: 'roadmap/{planSlug}',
+      [PREF_KEYS.ARCHITECT_FEATURE_BRANCH_TEMPLATE]: 'work/{planSlug}/{featureSlug}',
+      [PREF_KEYS.ARCHITECT_STANDALONE_FEATURE_BRANCH_TEMPLATE]: 'work/{featureSlug}',
+      [PREF_KEYS.ARCHITECT_RELEASE_BRANCH_TEMPLATE]: 'ship/{releaseSlug}',
+      [PREF_KEYS.ARCHITECT_HOTFIX_BRANCH_TEMPLATE]: 'patch/{hotfixSlug}',
+      [PREF_KEYS.ARCHITECT_BUGFIX_BRANCH_TEMPLATE]: 'fix/{bugfixSlug}',
+      [PREF_KEYS.ARCHITECT_SYNC_TARGET_BEFORE_FINISH]: false,
+    };
+    await expect(saveConfigPreferencesAtomically(values)).rejects.toThrow('fourth-operation');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].patch.length).toBeGreaterThan(3);
+    expect(document.value).toEqual({ schemaVersion: 1, metadataAutoPush: false });
+    fail = false;
+    await saveConfigPreferencesAtomically(values);
+    expect(requests).toHaveLength(2);
+    expect(document.value).toMatchObject({ mainBranch: 'trunk', baseBranch: 'develop', completionMergePolicy: 'fast_forward',
+      branchTemplates: { plan: 'roadmap/{planSlug}', bugfix: 'fix/{bugfixSlug}' }, syncTargetBeforeFinish: false, metadataAutoPush: false });
+  });
+
   it('rejects native write failures without publishing a cache value or change', async () => {
     installTauriRuntimeMock(mock(async (command) => {
       if (command === 'state_get_snapshot') return { schemaVersion: 1, values: { windowWidth: 1250 } };
