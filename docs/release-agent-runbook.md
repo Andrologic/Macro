@@ -37,8 +37,6 @@ Release preparation starts only when all of these conditions hold:
 - The user has fixed the intended version and release scope.
 - Every included task has reached its required review state and has been merged
   into `develop`.
-- Required product checks that cannot be automated, such as a native ARM test,
-  have an explicit result.
 - `develop` is clean, fetched, and aligned with `origin/develop`.
 - No active task is editing the same version manifests, release notes, workflow,
   installer, or updater files.
@@ -155,8 +153,8 @@ trigger `Publish update channel` automatically.
 3. Read all five `channels/stable-*.json` files on the `updates` branch. Each
    must contain the released version, one matching target, an embedded
    signature, and a URL pinned to the published tag.
-4. Perform any release-specific native or updater smoke test required by
-   `RELEASES.md` or the user. Record the exact platform and result.
+4. Record the validation results according to the release validation policy in
+   `RELEASES.md`, including any additional checks explicitly requested by the user.
 5. Remove the clean release worktree and release branch created for this
    version. Delete the remote release branch after the tag and public release
    are verified. Keep the reusable clean `main` release checkout and its ignored
