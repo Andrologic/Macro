@@ -27,6 +27,12 @@ mock.module('react-i18next', () => ({
   }),
 }));
 
+// The lazy Markdown renderer imports notifications, which otherwise initialize
+// the real i18n and preference stores behind this modal's test doubles.
+mock.module('../ui/toastService', () => ({
+  notify: { success: mock(() => undefined), error: mock(() => undefined) },
+}));
+
 mock.module('../../services/preferences', () => ({
   PREF_KEYS: preferenceKeys,
   loadPreference: async (key: string) =>
