@@ -3726,10 +3726,12 @@ mod tests {
             "---\nname: runner\ndescription: Runs local scripts\n---\n",
         )
         .expect("write skill");
+        // Cargo can expand PATH beyond cmd.exe's limit; use system executables
+        // explicitly so these fixtures exercise timeouts rather than PATH lookup.
         #[cfg(windows)]
         let (slow_script_path, slow_script_content) = (
             "scripts/slow.cmd",
-            "@echo off\r\npowershell -NoProfile -Command \"Start-Sleep -Seconds 2\"\r\n",
+            "@echo off\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command \"Start-Sleep -Seconds 2\"\r\n",
         );
         #[cfg(not(windows))]
         let (slow_script_path, slow_script_content) = ("scripts/slow.sh", "sleep 2\n");
@@ -3746,7 +3748,7 @@ mod tests {
         #[cfg(windows)]
         let (noisy_timeout_script_path, noisy_timeout_script_content) = (
             "scripts/noisy-timeout.cmd",
-            "@echo off\r\ntype \"%~dp0noisy-payload.txt\"\r\nping -n 6 127.0.0.1 >nul\r\n",
+            "@echo off\r\ntype \"%~dp0noisy-payload.txt\"\r\n\"%SystemRoot%\\System32\\ping.exe\" -n 6 127.0.0.1 >nul\r\n",
         );
         #[cfg(not(windows))]
         let (noisy_timeout_script_path, noisy_timeout_script_content) = (
@@ -3756,7 +3758,7 @@ mod tests {
         #[cfg(windows)]
         let (descendant_script_path, descendant_script_content) = (
             "scripts/descendant.cmd",
-            "@echo off\r\nstart \"\" /B powershell.exe -NoProfile -Command \"Start-Sleep -Milliseconds 1500; Set-Content -LiteralPath '%~1' -Value survived\"\r\npowershell.exe -NoProfile -Command \"Start-Sleep -Seconds 10\"\r\n",
+            "@echo off\r\nstart \"\" /B \"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command \"Start-Sleep -Milliseconds 1500; Set-Content -LiteralPath '%~1' -Value survived\"\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -Command \"Start-Sleep -Seconds 10\"\r\n",
         );
         #[cfg(not(windows))]
         let (descendant_script_path, descendant_script_content) = (
