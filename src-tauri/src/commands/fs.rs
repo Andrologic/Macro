@@ -1692,6 +1692,14 @@ pub async fn read_file_internal(
                 use std::os::unix::fs::OpenOptionsExt;
                 options.custom_flags(libc::O_NONBLOCK);
             }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // Open directories so read_open_file can report their type.
+                options.custom_flags(
+                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+                );
+            }
             options
                 .open(&read_path)
                 .map_err(|error| io_error_to_backend_error(error, &read_path))?
@@ -1704,6 +1712,13 @@ pub async fn read_file_internal(
             {
                 use cap_std::fs::OpenOptionsExt;
                 options.custom_flags(libc::O_NONBLOCK);
+            }
+            #[cfg(windows)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                options.custom_flags(
+                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+                );
             }
             directory
                 .open_with(relative_path, &options)
@@ -4774,12 +4789,14 @@ mod tests {
         let workspace = setup_test_workspace();
         let workspace_path = workspace.path().to_path_buf();
 
-        let result = read_file_internal(&workspace_path, "subdir".to_string(), None).await;
-
-        assert!(matches!(
-            result,
-            Err(BackendError::FilesystemIsDirectory { .. })
-        ));
+        for allow_outside in [None, Some(true)] {
+            let result =
+                read_file_internal(&workspace_path, "subdir".to_string(), allow_outside).await;
+            assert!(
+                matches!(result, Err(BackendError::FilesystemIsDirectory { .. })),
+                "unexpected directory read result: {result:?}"
+            );
+        }
     }
 
     #[tokio::test]

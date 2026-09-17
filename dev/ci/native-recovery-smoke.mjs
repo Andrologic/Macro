@@ -9,6 +9,10 @@ export const NATIVE_RECOVERY_TESTS = Object.freeze([
   'app_updates::tests::atomic_write_preserves_previous_file_on_native_replacement_failure',
   'db::tests::create_pool_applies_agent_run_migration_to_existing_baseline',
   'local_backup::tests::startup_recovers_interrupted_restore_and_preserves_rollback_archive',
+  'commands::fs::tests::test_read_directory_returns_error',
+  'commands::skills::tests::script_runs_are_timed_out_and_truncated',
+  'workspace::tests::create_project_rejects_missing_directory_without_creating_it',
+  'workspace::tests::import_git_repo_rejects_missing_directory_without_creating_it',
 ]);
 
 function rustHost() {

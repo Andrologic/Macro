@@ -232,7 +232,8 @@ mod windows_tests {
 
     async fn spawn_cmd_with_descendant() -> ContainedBackgroundProcess {
         let mut command = background_contained_tokio_command("cmd");
-        command.args(["/C", "ping -n 300 127.0.0.1"]);
+        command.args(["/D", "/S", "/C"]);
+        command.raw_arg(r#"""%SystemRoot%\System32\ping.exe" -n 300 127.0.0.1""#);
         let contained = ContainedBackgroundProcess::spawn(command).expect("spawn contained cmd");
         assert!(
             poll_until(|| image_running("ping.exe"), Duration::from_secs(10)).await,

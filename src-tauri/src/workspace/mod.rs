@@ -9650,7 +9650,7 @@ mod tests {
                 result,
                 Err(BackendError::FilesystemNotFound { message })
                     if message.contains("create_project")
-                        && message.contains(&missing_path.to_string_lossy().to_string())
+                        && message.replace('\\', "/").contains(&missing_path.to_string_lossy().replace('\\', "/"))
             ));
             assert!(!missing_path.exists());
             let state = load_or_create_state(&workspace_path, &metadata_root)
@@ -9687,7 +9687,7 @@ mod tests {
             result,
             Err(BackendError::FilesystemNotFound { message })
                 if message.contains("import_git_repo")
-                    && message.contains(&missing_path.to_string_lossy().to_string())
+                    && message.replace('\\', "/").contains(&missing_path.to_string_lossy().replace('\\', "/"))
         ));
         assert!(!missing_path.exists());
     }
