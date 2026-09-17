@@ -1,9 +1,10 @@
 use super::*;
-use std::{fs, process::Command};
+use crate::core::process::background_command;
+use std::fs;
 use tempfile::TempDir;
 
 fn git(path: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = background_command("git")
         .arg("-C")
         .arg(path)
         .args(args)
@@ -130,7 +131,7 @@ fn interrupted_owned_rebase_can_be_aborted_but_foreign_rebase_is_preserved() {
         let journal = initial_session(&repo, temp.path(), "task", "feature", "main").unwrap();
         let pending = prepare_rebase(&repo, &journal).unwrap();
         git(temp.path(), &["checkout", "feature"]);
-        let mut command = Command::new("git");
+        let mut command = background_command("git");
         command
             .arg("-C")
             .arg(temp.path())

@@ -168,14 +168,17 @@ const flushRender = async () => {
 };
 
 const waitForCreateDialog = async () => {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  // The first lazy dialog can still be suspended after ten animation frames.
+  // Wait for the rendered dialog, with a bounded timeout that diagnoses failure.
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
     if (dialog) return dialog;
     await act(async () => {
       await flushRender();
     });
   }
-  return null;
+  throw new Error('Task dialog did not render within 2 seconds');
 };
 
 const makeGitFlowSettings = (
