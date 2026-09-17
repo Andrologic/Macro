@@ -3011,7 +3011,7 @@ dependencies = [
 
 [[package]]
 name = "macro"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ast-grep-core",
  "ast-grep-language",
