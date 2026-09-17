@@ -1001,7 +1001,7 @@ describe('useFileChangesStore', () => {
     expect(reviewSummary.repositoryCount).toBe(2);
     expect(reviewSummary.nextAction).toBe('validate_repository');
     expect(reviewSummary.nextRepositoryId).toBe(repositoryIdA);
-    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(gitWorktreeInspectMock).toHaveBeenCalledTimes(2);
   });
 
   it('blocks checkpoint mutations after a conflict until the expired review refresh finishes', async () => {
@@ -1587,7 +1587,7 @@ describe('useFileChangesStore', () => {
       [worktreeKeyA]: worktreeAPath,
       [worktreeKeyB]: worktreeBPath,
     });
-    expect(gitWorktreeInspectMock).not.toHaveBeenCalled();
+    expect(gitWorktreeInspectMock).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to legacy Git review loading only when the Rust command is unsupported', async () => {

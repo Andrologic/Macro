@@ -2118,6 +2118,7 @@ const createPlan = (overrides: Partial<ArchitectPlanRecord> = {}): ArchitectPlan
   projectIds: ['project-1'],
   createdAt: '2026-03-19T00:00:00.000Z',
   updatedAt: '2026-03-19T00:00:00.000Z',
+  revision: 1,
   nodes: [],
   predictedBranches: [],
   ...overrides,
