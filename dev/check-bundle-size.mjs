@@ -6,16 +6,16 @@ const ASSETS_DIR = fileURLToPath(new URL('../dist/assets/', import.meta.url));
 
 const BUDGETS = [
   // Application code follows Rollup's dependency graph; vendor libraries keep stable manual chunks.
-  // Reconciled durability and recovery flows measure 1,417,453 B for entry,
-  // 117,321 B for ChatZone, and 60,630 B for TaskQueue on Linux and Windows.
-  // Keep 0.5-1.5% headroom; vendor and locale budgets remain unchanged.
-  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_425_000 },
+  // Integrated merge recovery and lifecycle fixes measure 1,452,987 B for entry.
+  // Completed translations measure about 132,900 B for the largest shared locale
+  // and 146,950 B for Japanese. Keep about 1% headroom and retain vendor limits.
+  { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_465_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 118_500 },
   { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 61_500 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
-  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 132_000 },
-  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 146_000 },
+  { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 134_000 },
+  { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 148_000 },
 ];
 
 const formatKiB = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
