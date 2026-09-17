@@ -7025,20 +7025,26 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink("missing", workspace.path().join("alias")).unwrap();
         let first = execute_readonly_workspace_tool(
-            workspace.path(), "grep", json!({"query": "needle", "limit": 3}),
-        ).await;
+            workspace.path(),
+            "grep",
+            json!({"query": "needle", "limit": 3}),
+        )
+        .await;
         let first: serde_json::Value = serde_json::from_str(&first).unwrap();
         let cursor = first["next_cursor"].as_str().unwrap();
         fs::write(workspace.path().join("good.txt"), "needle été").unwrap();
-        let complete = execute_readonly_workspace_tool(
-            workspace.path(), "grep", json!({"query": "needle"}),
-        ).await;
+        let complete =
+            execute_readonly_workspace_tool(workspace.path(), "grep", json!({"query": "needle"}))
+                .await;
         let complete: serde_json::Value = serde_json::from_str(&complete).unwrap();
         assert_eq!(complete["total_count"], 2);
         assert_eq!(complete["skipped_files"]["binary"], 1);
         let stale = execute_readonly_workspace_tool(
-            workspace.path(), "grep", json!({"query": "needle", "cursor": cursor}),
-        ).await;
+            workspace.path(),
+            "grep",
+            json!({"query": "needle", "cursor": cursor}),
+        )
+        .await;
         let stale: serde_json::Value = serde_json::from_str(&stale).unwrap();
         assert_eq!(stale["count"], 0);
         assert_eq!(stale["total_count"], 2);

@@ -2660,7 +2660,9 @@ mod tests {
             .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None, &[])
             .expect("worktree");
         assert!(ensured.created_by_this_call);
-        let reused = state.ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None, &[]).unwrap();
+        let reused = state
+            .ensure_task_worktree(&repo, "stale-cache", "task-stale-cache", None, None, &[])
+            .unwrap();
         assert!(!reused.created_by_this_call);
         let worktree_path = ensured.worktree_path.clone();
         fs::remove_dir_all(&worktree_path).expect("remove worktree path");

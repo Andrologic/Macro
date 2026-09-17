@@ -730,7 +730,9 @@ fn processes_with_containment_marker(_marker_path: Option<&Path>) -> HashSet<u32
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn has_containment_environment_field(process_description: &str, expected: &str) -> bool {
-    process_description.split_whitespace().any(|field| field == expected)
+    process_description
+        .split_whitespace()
+        .any(|field| field == expected)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -752,8 +754,9 @@ fn processes_with_containment_id(containment_id: &str) -> HashSet<u32> {
             let line = line.trim_start();
             let split_at = line.find(char::is_whitespace)?;
             let process_id = line[..split_at].parse::<u32>().ok()?;
-            (process_id != own_process_id && has_containment_environment_field(&line[split_at..], &expected))
-                .then_some(process_id)
+            (process_id != own_process_id
+                && has_containment_environment_field(&line[split_at..], &expected))
+            .then_some(process_id)
         })
         .collect()
 }
@@ -932,10 +935,22 @@ mod tests {
     #[test]
     fn containment_environment_matches_complete_fields_only() {
         let expected = "MACRO_PROCESS_CONTAINMENT_ID=123-1";
-        assert!(super::has_containment_environment_field("shell MACRO_PROCESS_CONTAINMENT_ID=123-1", expected));
-        assert!(super::has_containment_environment_field("shell MACRO_PROCESS_CONTAINMENT_ID=123-1 PATH=/fixture", expected));
-        assert!(!super::has_containment_environment_field("shell MACRO_PROCESS_CONTAINMENT_ID=123-10", expected));
-        assert!(!super::has_containment_environment_field("shell OTHER_MACRO_PROCESS_CONTAINMENT_ID=123-1", expected));
+        assert!(super::has_containment_environment_field(
+            "shell MACRO_PROCESS_CONTAINMENT_ID=123-1",
+            expected
+        ));
+        assert!(super::has_containment_environment_field(
+            "shell MACRO_PROCESS_CONTAINMENT_ID=123-1 PATH=/fixture",
+            expected
+        ));
+        assert!(!super::has_containment_environment_field(
+            "shell MACRO_PROCESS_CONTAINMENT_ID=123-10",
+            expected
+        ));
+        assert!(!super::has_containment_environment_field(
+            "shell OTHER_MACRO_PROCESS_CONTAINMENT_ID=123-1",
+            expected
+        ));
     }
 
     #[cfg(target_os = "macos")]

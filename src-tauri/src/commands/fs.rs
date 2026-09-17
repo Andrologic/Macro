@@ -3509,10 +3509,21 @@ fn rename_without_replacement(source: &Path, destination: &Path) -> std::io::Res
         let destination = CString::new(destination.as_os_str().as_bytes())
             .map_err(|_| std::io::ErrorKind::InvalidInput)?;
         #[cfg(any(target_os = "macos", target_os = "ios"))]
-        let result = unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+        let result =
+            unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        let result = unsafe { libc::renameat2(libc::AT_FDCWD, source.as_ptr(), libc::AT_FDCWD, destination.as_ptr(), libc::RENAME_NOREPLACE) };
-        if result != 0 { return Err(std::io::Error::last_os_error()); }
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
         Ok(())
     }
     #[cfg(windows)]
@@ -3520,26 +3531,44 @@ fn rename_without_replacement(source: &Path, destination: &Path) -> std::io::Res
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
         let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-        let destination: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
-        if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+        let destination: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
     }
 }
 
-fn rollback_published_symlink(dest: &Path, identity: WorkspaceRootIdentity) -> Result<(), BackendError> {
-    let parent = dest.parent().ok_or_else(|| BackendError::FilesystemInvalidPath {
-        message: "Move destination has no parent".to_string(),
-    })?;
-    let quarantine = tempfile::Builder::new().prefix(".macro-move-rollback-").tempdir_in(parent)
+fn rollback_published_symlink(
+    dest: &Path,
+    identity: WorkspaceRootIdentity,
+) -> Result<(), BackendError> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move destination has no parent".to_string(),
+        })?;
+    let quarantine = tempfile::Builder::new()
+        .prefix(".macro-move-rollback-")
+        .tempdir_in(parent)
         .map_err(|error| io_error_to_backend_error(error, parent))?;
     let isolated = quarantine.path().join("entry");
     // Take ownership of one directory entry atomically before inspecting it.
-    std::fs::rename(dest, &isolated)
-        .map_err(|error| io_error_to_backend_error(error, dest))?;
+    std::fs::rename(dest, &isolated).map_err(|error| io_error_to_backend_error(error, dest))?;
     if symlink_identity(&isolated).ok() == Some(identity) {
-        return remove_symlink(&isolated).map_err(|error| io_error_to_backend_error(error, &isolated));
+        return remove_symlink(&isolated)
+            .map_err(|error| io_error_to_backend_error(error, &isolated));
     }
     if let Err(error) = rename_without_replacement(&isolated, dest) {
         let recovery = quarantine.keep();
@@ -3548,7 +3577,8 @@ fn rollback_published_symlink(dest: &Path, identity: WorkspaceRootIdentity) -> R
         });
     }
     Err(BackendError::Filesystem {
-        message: "Destination changed; rollback restored it without deleting its contents.".to_string(),
+        message: "Destination changed; rollback restored it without deleting its contents."
+            .to_string(),
     })
 }
 
@@ -3558,24 +3588,32 @@ fn move_symlink_across_devices(
     remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), BackendError> {
     let identity = symlink_identity(src)?;
-    let parent = src.parent().ok_or_else(|| BackendError::FilesystemInvalidPath {
-        message: "Move source has no parent".to_string(),
-    })?;
-    let quarantine = tempfile::Builder::new().prefix(".macro-move-source-").tempdir_in(parent)
+    let parent = src
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move source has no parent".to_string(),
+        })?;
+    let quarantine = tempfile::Builder::new()
+        .prefix(".macro-move-source-")
+        .tempdir_in(parent)
         .map_err(|error| io_error_to_backend_error(error, parent))?;
     let isolated = quarantine.path().join("entry");
-    std::fs::rename(src, &isolated)
-        .map_err(|error| io_error_to_backend_error(error, src))?;
+    std::fs::rename(src, &isolated).map_err(|error| io_error_to_backend_error(error, src))?;
     let outcome = if symlink_identity(&isolated).ok() == Some(identity) {
         move_isolated_symlink_across_devices(&isolated, dest, remove_source)
     } else {
-        Err(BackendError::Filesystem { message: "Move source changed before isolation.".to_string() })
+        Err(BackendError::Filesystem {
+            message: "Move source changed before isolation.".to_string(),
+        })
     };
     if let Err(error) = outcome {
         if let Err(restore) = rename_without_replacement(&isolated, src) {
             let recovery = quarantine.keep();
             return Err(BackendError::Filesystem {
-                message: format!("{error} Source preserved at '{}' because restoration failed: {restore}", recovery.join("entry").display()),
+                message: format!(
+                    "{error} Source preserved at '{}' because restoration failed: {restore}",
+                    recovery.join("entry").display()
+                ),
             });
         }
         return Err(error);
@@ -3589,10 +3627,14 @@ fn move_isolated_symlink_across_devices(
     remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), BackendError> {
     let target = std::fs::read_link(src).map_err(|error| io_error_to_backend_error(error, src))?;
-    let parent = dest.parent().ok_or_else(|| BackendError::FilesystemInvalidPath {
-        message: "Move destination has no parent".to_string(),
-    })?;
-    let staging = tempfile::Builder::new().prefix(".macro-move-").tempdir_in(parent)
+    let parent = dest
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move destination has no parent".to_string(),
+        })?;
+    let staging = tempfile::Builder::new()
+        .prefix(".macro-move-")
+        .tempdir_in(parent)
         .map_err(|error| io_error_to_backend_error(error, parent))?;
     let staged = staging.path().join("link");
     // Creation is exclusive: never overwrite a destination we could not restore.
@@ -3617,8 +3659,10 @@ fn move_isolated_symlink_across_devices(
     rename_without_replacement(&staged, dest)
         .map_err(|error| io_error_to_backend_error(error, dest))?;
     if let Err(error) = remove_source(src) {
-        rollback_published_symlink(dest, published_identity).map_err(|rollback| BackendError::Filesystem {
-            message: format!("Move source removal failed: {error}. {rollback}"),
+        rollback_published_symlink(dest, published_identity).map_err(|rollback| {
+            BackendError::Filesystem {
+                message: format!("Move source removal failed: {error}. {rollback}"),
+            }
         })?;
         return Err(io_error_to_backend_error(error, src));
     }
@@ -3933,10 +3977,14 @@ mod tests {
         move_symlink_across_devices(&src, &dest, |isolated| {
             fs::write(&src, "new source entry")?;
             remove_symlink(isolated)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(fs::read_to_string(&src).unwrap(), "new source entry");
         assert_eq!(fs::read_link(&dest).unwrap(), PathBuf::from("target.txt"));
-        assert_eq!(fs::read_to_string(workspace.path().join("target.txt")).unwrap(), "retained");
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
+            "retained"
+        );
     }
 
     #[test]

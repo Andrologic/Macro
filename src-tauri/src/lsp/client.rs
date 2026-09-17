@@ -1320,9 +1320,8 @@ fn start_server_request(inner: Arc<Inner>, id: JsonRpcId, method: String, params
             cancellation: cancellation.clone(),
         };
         let outcome = if let Some(handler) = inner.server_request_handler.clone() {
-            let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                handler.handle(request)
-            }));
+            let future =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler.handle(request)));
             match future {
                 Err(_) => ServerRequestResult::Error(JsonRpcErrorObject::internal_error(
                     "Server request handler panicked",
@@ -1457,8 +1456,8 @@ fn timeout_error(method: String, duration: Duration) -> LspError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::protocol::ServerRequestFuture;
+    use super::*;
     use serde_json::json;
     use tokio::sync::mpsc;
 
@@ -1469,9 +1468,7 @@ mod tests {
 
     impl ServerRequestHandler for PanicHandler {
         fn handle(&self, _request: ServerRequest) -> ServerRequestFuture {
-            if self.calls.fetch_add(1, Ordering::Relaxed) == 0
-                && self.panic_while_building_future
-            {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 && self.panic_while_building_future {
                 panic!("panic while building server request future");
             }
             if self.calls.load(Ordering::Relaxed) == 1 {
@@ -1494,12 +1491,17 @@ mod tests {
             .expect("server request response channel closed");
         let mut framer = LspFramer::new(DEFAULT_MAX_MESSAGE_BYTES, DEFAULT_MAX_HEADER_BYTES)
             .expect("create response framer");
-        let messages = framer.push(&outbound.bytes).expect("decode server response");
+        let messages = framer
+            .push(&outbound.bytes)
+            .expect("decode server response");
         outbound
             .acknowledgement
             .send(Ok(()))
             .expect("acknowledge server response");
-        messages.into_iter().next().expect("server response message")
+        messages
+            .into_iter()
+            .next()
+            .expect("server response message")
     }
 
     #[tokio::test]

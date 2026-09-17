@@ -231,7 +231,8 @@ pub async fn workspace_acquire_task_lifecycle_lock(
 ) -> Result<String> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root = resolve_metadata_root(workspace_path, git_state.inner().clone()).await?;
-    let project_guards = workspace::lock_direct_project_admission(&direct_project_paths.unwrap_or_default()).await?;
+    let project_guards =
+        workspace::lock_direct_project_admission(&direct_project_paths.unwrap_or_default()).await?;
     let guard = workspace::lock_task_lifecycle(&metadata_root, &task_id).await?;
     let lease_id = uuid::Uuid::new_v4().to_string();
     let task_id = task_id.trim().to_string();
