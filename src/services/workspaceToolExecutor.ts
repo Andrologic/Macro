@@ -1,3 +1,4 @@
+import { canonicalizeWorkspacePath, relativePathWithinRoot } from "./workspacePathIdentity";
 import * as tauriIpc from "./tauriIpc";
 import type { AppMode } from "../types";
 import type {
@@ -219,71 +220,6 @@ type PatchWriteRollbackSnapshot = {
   content: string | null;
   unixMode?: number | null;
   postMutationExpectedRevision?: string;
-};
-
-type CanonicalWorkspacePath = {
-  normalized: string;
-  comparisonKey: string;
-  prefixKey: string;
-  segments: string[];
-  escapedAboveRoot: boolean;
-};
-
-const canonicalizeWorkspacePath = (value: string): CanonicalWorkspacePath => {
-  let input = value.trim().replace(/\\/g, "/");
-  if (/^\/\/\?\/UNC\//i.test(input)) {
-    input = `//${input.slice(8)}`;
-  } else if (/^\/\/\?\/[a-z]:\//i.test(input)) {
-    input = input.slice(4);
-  }
-
-  const isUnc = input.startsWith("//");
-  const driveMatch = input.match(/^([a-z]:)(?:\/|$)/i);
-  const isAbsolutePosix = !isUnc && !driveMatch && input.startsWith("/");
-  const rawSegments = input.split("/").filter(Boolean);
-  let prefix = "";
-  let pathSegments = rawSegments;
-
-  if (isUnc) {
-    const server = rawSegments[0] ?? "";
-    const share = rawSegments[1] ?? "";
-    prefix = `//${server}/${share}`;
-    pathSegments = rawSegments.slice(2);
-  } else if (driveMatch) {
-    prefix = driveMatch[1];
-    pathSegments = rawSegments.slice(1);
-  } else if (isAbsolutePosix) {
-    prefix = "/";
-  }
-
-  const segments: string[] = [];
-  let escapedAboveRoot = false;
-  for (const segment of pathSegments) {
-    if (segment === ".") {
-      continue;
-    }
-    if (segment === "..") {
-      if (segments.length > 0 && segments[segments.length - 1] !== "..") {
-        segments.pop();
-      } else if (prefix) {
-        escapedAboveRoot = true;
-      } else {
-        segments.push(segment);
-      }
-      continue;
-    }
-    segments.push(segment);
-  }
-
-  const normalized = prefix === "/"
-    ? `/${segments.join("/")}`
-    : prefix
-      ? `${prefix}${segments.length > 0 ? `/${segments.join("/")}` : ""}`
-      : segments.join("/") || ".";
-  const caseInsensitive = Boolean(driveMatch || isUnc);
-  const comparisonKey = caseInsensitive ? normalized.toLowerCase() : normalized;
-  const prefixKey = caseInsensitive ? prefix.toLowerCase() : prefix;
-  return { normalized, comparisonKey, prefixKey, segments, escapedAboveRoot };
 };
 
 const assertDistinctPatchTargets = (
@@ -1149,32 +1085,6 @@ const normalizeWorkspacePath = (value?: string | null): string | null => {
   return trimmed;
 };
 
-const relativePathWithinRoot = (path: string, root: string): string | null => {
-  const normalizedPath = canonicalizeWorkspacePath(path);
-  const normalizedRoot = canonicalizeWorkspacePath(root);
-  if (
-    normalizedPath.escapedAboveRoot ||
-    normalizedRoot.escapedAboveRoot ||
-    normalizedPath.prefixKey !== normalizedRoot.prefixKey
-  ) {
-    return null;
-  }
-  const caseInsensitive = Boolean(normalizedRoot.prefixKey.match(/^(?:[a-z]:|\/\/)/i));
-  const pathSegments = caseInsensitive
-    ? normalizedPath.segments.map((segment) => segment.toLowerCase())
-    : normalizedPath.segments;
-  const rootSegments = caseInsensitive
-    ? normalizedRoot.segments.map((segment) => segment.toLowerCase())
-    : normalizedRoot.segments;
-  if (
-    rootSegments.length > pathSegments.length ||
-    rootSegments.some((segment, index) => pathSegments[index] !== segment)
-  ) {
-    return null;
-  }
-  return normalizedPath.segments.slice(rootSegments.length).join("/") || ".";
-};
-
 interface ProjectWorkspaceCandidate {
   id: string;
   name: string;
@@ -1831,14 +1741,95 @@ const resolveDirectPath = (
   return resolvePathForMode(inputPath, mode);
 };
 
+// Match glob::Pattern::matches defaults: case-sensitive, with separators accepted by wildcards.
 export const globToRegex = (pattern: string): RegExp => {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "__DOUBLE_STAR__")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\?/g, ".")
-    .replace(/__DOUBLE_STAR__/g, ".*");
-  return new RegExp(`^${escaped}$`, "i");
+  const chars = Array.from(pattern);
+  let source = "^";
+
+  const escapeLiteral = (value: string): string =>
+    value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  const escapeClassCharacter = (value: string): string =>
+    value.replace(/[\\\-\]^]/g, "\\$&");
+
+  for (let index = 0; index < chars.length; index += 1) {
+    const character = chars[index];
+
+    if (character === "*") {
+      const start = index;
+      while (index < chars.length && chars[index] === "*") index += 1;
+      const count = index - start;
+
+      if (count > 2) {
+        throw new Error("wildcards are either regular `*` or recursive `**`");
+      }
+      if (count === 1) {
+        source += "[\\s\\S]*";
+        index -= 1;
+        continue;
+      }
+
+      const isPathComponentStart =
+        start === 0 || chars[start - 1] === "/";
+      if (!isPathComponentStart) {
+        throw new Error("recursive wildcards must form a single path component");
+      }
+
+      const followedBySeparator = chars[index] === "/";
+      if (followedBySeparator) index += 1;
+      else if (index !== chars.length) {
+        throw new Error("recursive wildcards must form a single path component");
+      }
+
+      if (followedBySeparator && index < chars.length) {
+        source += "(?:[\\s\\S]*\\/)?";
+      } else {
+        source += "[\\s\\S]*";
+      }
+      index -= 1;
+      continue;
+    }
+
+    if (character === "?") {
+      source += "[\\s\\S]";
+      continue;
+    }
+
+    if (character === "[") {
+      const isNegated = chars[index + 1] === "!";
+      const contentStart = index + (isNegated ? 2 : 1);
+      const closingBracket =
+        chars[contentStart] === "]"
+          ? chars.indexOf("]", contentStart + 1)
+          : chars.indexOf("]", contentStart);
+      if (closingBracket < 0 || closingBracket <= contentStart) {
+        throw new Error("invalid range pattern");
+      }
+
+      const content = chars.slice(contentStart, closingBracket);
+      let classSource = "";
+      for (let classIndex = 0; classIndex < content.length; classIndex += 1) {
+        const classCharacter = content[classIndex];
+        if (
+          classIndex + 2 < content.length &&
+          content[classIndex + 1] === "-"
+        ) {
+          classSource += `${escapeClassCharacter(classCharacter)}-${escapeClassCharacter(
+            content[classIndex + 2],
+          )}`;
+          classIndex += 2;
+        } else {
+          classSource += escapeClassCharacter(classCharacter);
+        }
+      }
+      source += `[${isNegated ? "^" : ""}${classSource}]`;
+      index = closingBracket;
+      continue;
+    }
+
+    source += escapeLiteral(character);
+  }
+
+  return new RegExp(`${source}(?![\\s\\S])`, "u");
 };
 
 export const pathMatchesGlob = (path: string, pattern: string): boolean => {
@@ -3602,7 +3593,7 @@ export const executeWorkspaceTool = async (
             query,
             total: results.length,
             count: results.length,
-            total_count: page.offset + results.length,
+            total_count: seenMatches,
             total_is_exact: true,
             results,
             limit: page.limit,
@@ -4676,7 +4667,7 @@ export const executeWorkspaceTool = async (
           query,
           total: results.length,
           count: results.length,
-          total_count: page.offset + results.length,
+          total_count: seenMatches,
           total_is_exact: true,
           results,
           limit: page.limit,

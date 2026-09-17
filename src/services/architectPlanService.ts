@@ -308,6 +308,8 @@ export interface ArchitectPlanActivationPayload {
   chatMessagesLoaded?: boolean;
   chatTranscriptRevision?: string | null;
   chatMessageCount?: number;
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
   conversationId: string | null;
   sharedConversation: boolean;
   targetBranch: string;
@@ -2949,6 +2951,7 @@ const writePlanAtScope = async (
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
   options?: {
     chatMessages?: ArchitectPlanChatMessage[];
+    skipManifest?: boolean;
   }
 ): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
@@ -2982,13 +2985,15 @@ const writePlanAtScope = async (
   await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), normalizedPlan);
   await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(normalizedPlan, registrySnapshot));
   await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan);
-  const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
-  const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
-    plan: normalizedPlan,
-    chatMessages,
-    registrySnapshot,
-  }));
-  await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
+  if (!options?.skipManifest) {
+    const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
+    const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
+      plan: normalizedPlan,
+      chatMessages,
+      registrySnapshot,
+    }));
+    await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
+  }
 };
 
 const writePlanChatAtScope = async (
@@ -2997,9 +3002,6 @@ const writePlanChatAtScope = async (
   planId: string,
   messages: ArchitectPlanChatMessage[],
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
-  options?: {
-    skipManifest?: boolean;
-  }
 ): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
   const safeId = sanitizeId(planId);
@@ -3009,9 +3011,6 @@ const writePlanChatAtScope = async (
   }
 
   await writeTextFileAtScope(scope, getPlanChatPath(normalized, safeId), toJsonLines(messages));
-  if (options?.skipManifest) {
-    return;
-  }
   const planResult = await readPlanAtScopeWithDiagnostics(scope, normalized, safeId, registrySnapshot);
   if (planResult.plan) {
     const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
@@ -3241,6 +3240,7 @@ const applyArchitectPlanReplicaMutation = async (
       }
       await writePlanAtScope(target.scope, entry.branchName, target.plan, registrySnapshot, {
         chatMessages: target.chatMessages,
+        skipManifest: target.chatMessages !== undefined,
       });
       if (target.chatMessages) {
         await writePlanChatAtScope(
@@ -3249,7 +3249,6 @@ const applyArchitectPlanReplicaMutation = async (
           entry.planId,
           target.chatMessages,
           registrySnapshot,
-          { skipManifest: true },
         );
       }
       if (target.extraFiles && target.scope.source !== 'local') {
@@ -4134,23 +4133,44 @@ const loadArchitectPlanActivationPayloadFromRuntime = async (
     return null;
   }
 
+  const resolutionMode =
+    head.resolutionMode === 'blank_fast_path' && head.chatMessageCount === 0
+      ? 'blank_fast_path'
+      : 'full';
+  const replicaScopeKey = head.replicaScopeKey?.trim() || null;
+  const replicaProjectId = head.replicaProjectId?.trim() || null;
+  if (resolutionMode === 'full' && !replicaScopeKey) {
+    throw new Error(
+      `Architect runtime returned an incomplete transcript replica identity for branch ${branchName} and plan ${planId}.`,
+    );
+  }
+
   return {
     plan: mapRuntimeArchitectPlanRecord(branchName, head.plan),
     chatMessages: [],
-    chatMessagesLoaded: false,
+    chatMessagesLoaded: resolutionMode === 'blank_fast_path',
     chatTranscriptRevision: head.chatTranscriptRevision,
     chatMessageCount: head.chatMessageCount,
+    replicaScopeKey,
+    replicaProjectId,
     conversationId: head.conversationId,
     sharedConversation: head.sharedConversation,
     targetBranch: normalizeBranchName(head.targetBranch || branchName),
-    resolutionMode:
-      head.resolutionMode === 'blank_fast_path' ? 'blank_fast_path' : 'full',
+    resolutionMode,
   };
 };
+
+export interface ArchitectPlanChatTranscriptOptions {
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
+  expectedTranscriptRevision?: string | null;
+  expectedMessageCount?: number | null;
+}
 
 export const getArchitectPlanChatTranscript = async (
   branchName: string,
   planId: string,
+  options: ArchitectPlanChatTranscriptOptions = {},
   deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()
 ): Promise<{
   messages: ArchitectPlanChatMessage[];
@@ -4160,23 +4180,64 @@ export const getArchitectPlanChatTranscript = async (
   const normalizedBranch = normalizeBranchName(branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(planId);
-  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
-  const persistedDirectPlan = await discoverPersistedDirectPlan({
-    branchName: normalizedBranch,
-    planId: safeId,
-    registrySnapshot,
-    deps,
-  });
+  const replicaScopeKey = options.replicaScopeKey?.trim() || null;
+  const replicaProjectId = options.replicaProjectId?.trim() || null;
+  const hasHeadIdentityWithoutScope = Boolean(
+    replicaProjectId ||
+    options.expectedTranscriptRevision ||
+    typeof options.expectedMessageCount === 'number'
+  );
+  if (!replicaScopeKey && hasHeadIdentityWithoutScope) {
+    throw new Error(
+      `Architect transcript replica identity is incomplete for branch ${normalizedBranch} and plan ${safeId}.`,
+    );
+  }
+  const exactReplicaRequested = Boolean(replicaScopeKey);
+  const runtimeAvailable = isWorkspaceArchitectRuntimeAvailable(deps);
+  if (exactReplicaRequested && !runtimeAvailable) {
+    throw new Error(
+      `Architect runtime is unavailable for exact transcript replica ${replicaScopeKey}.`,
+    );
+  }
 
-  if (!persistedDirectPlan &&
-      isWorkspaceArchitectRuntimeAvailable(deps) &&
-      canUseWorkspaceArchitectRuntimeForScope(registrySnapshot)) {
+  const registrySnapshot = exactReplicaRequested
+    ? null
+    : await loadArchitectPlanRegistrySnapshot(deps);
+  const persistedDirectPlan = exactReplicaRequested
+    ? null
+    : await discoverPersistedDirectPlan({
+        branchName: normalizedBranch,
+        planId: safeId,
+        registrySnapshot,
+        deps,
+      });
+
+  if (runtimeAvailable && (
+    exactReplicaRequested ||
+    (!persistedDirectPlan && canUseWorkspaceArchitectRuntimeForScope(registrySnapshot))
+  )) {
     const transcript = await deps.tauri.workspaceArchitectActivatePlanChat({
       branchName: normalizedBranch,
       planId: safeId,
+      replicaScopeKey,
+      replicaProjectId,
+      expectedTranscriptRevision: options.expectedTranscriptRevision,
+      expectedMessageCount: options.expectedMessageCount,
     });
     if (!transcript) {
       return null;
+    }
+    if (
+      (replicaScopeKey && transcript.replicaScopeKey !== replicaScopeKey) ||
+      (replicaProjectId && transcript.replicaProjectId !== replicaProjectId) ||
+      (options.expectedTranscriptRevision &&
+        transcript.transcriptRevision !== options.expectedTranscriptRevision) ||
+      (typeof options.expectedMessageCount === 'number' &&
+        transcript.messageCount !== options.expectedMessageCount)
+    ) {
+      throw new Error(
+        `Architect transcript identity changed for branch ${normalizedBranch} and plan ${safeId}.`,
+      );
     }
     return {
       messages: mapRuntimeArchitectChatMessages(transcript.messages),
@@ -4354,38 +4415,30 @@ const loadArchitectPlanActivationPayloadImpl = async (
       }
     : null;
 
-  if (!persistedDirectPlan && canUseWorkspaceArchitectRuntimeForScope(
-    registrySnapshot,
-    options.scopedProjectIdsHint,
-  )) {
-    try {
-      const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
-        normalizedBranch,
-        safeId,
-        options,
-        deps
-      );
-      if (runtimePayload) {
-        logArchitectPlanActivationLoad({
-          branchName: normalizedBranch,
-          planId: safeId,
-          resolutionMode: runtimePayload.resolutionMode,
-          sharedConversation: runtimePayload.sharedConversation,
-          durationMs: Date.now() - startedAt,
-        });
-        return runtimePayload;
-      }
-    } catch (error) {
-      devLogger.warn(
-        JSON.stringify({
-          event: 'architect_plan_runtime_activation_fallback',
-          at: new Date().toISOString(),
-          branchName: normalizedBranch,
-          planId: safeId,
-          error: toErrorMessage(error),
-        })
-      );
+  if (
+    !persistedDirectPlan &&
+    isWorkspaceArchitectRuntimeAvailable(deps) &&
+    canUseWorkspaceArchitectRuntimeForScope(
+      registrySnapshot,
+      options.scopedProjectIdsHint,
+    )
+  ) {
+    const runtimePayload = await loadArchitectPlanActivationPayloadFromRuntime(
+      normalizedBranch,
+      safeId,
+      options,
+      deps,
+    );
+    if (runtimePayload) {
+      logArchitectPlanActivationLoad({
+        branchName: normalizedBranch,
+        planId: safeId,
+        resolutionMode: runtimePayload.resolutionMode,
+        sharedConversation: runtimePayload.sharedConversation,
+        durationMs: Date.now() - startedAt,
+      });
     }
+    return runtimePayload;
   }
 
   let index: ArchitectPlanIndex | null = null;
@@ -5104,6 +5157,7 @@ export const createArchitectPlan = async (
 export const updateArchitectPlan = async (input: {
   branchName: string;
   planId: string;
+  expectedRevision?: number;
   title?: string;
   label?: string;
   slug?: string;
@@ -5117,6 +5171,7 @@ export const updateArchitectPlan = async (input: {
   contextProjectIds?: string[];
   targetBranchesByProjectId?: Record<string, string>;
   expectedProjectIds?: string[];
+  directCheckpointBinding?: { taskId: string; projectId: string; checkpointId: string };
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
@@ -5133,7 +5188,23 @@ export const updateArchitectPlan = async (input: {
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const existing = replicaSet.canonical.plan;
-  const inputKeys = Object.keys(input).filter((key) => key !== 'branchName' && key !== 'planId');
+  if (
+    input.expectedRevision !== undefined &&
+    (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1)
+  ) {
+    throw new Error('Expected architect plan revision must be a positive integer.');
+  }
+  if (
+    input.expectedRevision !== undefined &&
+    existing.revision !== input.expectedRevision
+  ) {
+    throw new Error(
+      `Architect plan revision changed before mutation: expected ${input.expectedRevision}, found ${existing.revision ?? 'unavailable'}.`,
+    );
+  }
+  const inputKeys = Object.keys(input).filter(
+    (key) => key !== 'branchName' && key !== 'planId' && key !== 'expectedRevision',
+  );
   const isRestoringArchivedPlan =
     existing.status === 'archived' &&
     isArchitectPlanRestorableStatus(input.status) &&
@@ -5179,7 +5250,31 @@ export const updateArchitectPlan = async (input: {
 
   const requestedLabel = normalizePlanLabel(input.label ?? input.title);
 
-  const nextNodes = input.nodes !== undefined ? normalizePlanNodes(input.nodes) : existing.nodes;
+  if (input.directCheckpointBinding) {
+    const binding = input.directCheckpointBinding;
+    const node = existing.nodes.find((candidate) => candidate.id === binding.taskId);
+    if (!node || node.type !== 'task' || node.executionModesByProjectId?.[binding.projectId] !== 'direct' ||
+        !normalizeProjectIds(node.projectIds, node.projectId).includes(binding.projectId)) {
+      throw new Error('Direct checkpoint target does not belong to this Architect task.');
+    }
+    if (!binding.checkpointId.trim()) throw new Error('A direct checkpoint identity is required.');
+    const previous = node.directCheckpointIdsByProjectId?.[binding.projectId];
+    if (previous && previous !== binding.checkpointId) {
+      throw new Error('Direct checkpoint identity is already bound to another value.');
+    }
+    input = { ...input, nodes: existing.nodes.map((candidate) => candidate.id === binding.taskId
+      ? { ...candidate, directCheckpointIdsByProjectId: {
+          ...candidate.directCheckpointIdsByProjectId, [binding.projectId]: binding.checkpointId,
+        } }
+      : candidate) };
+  }
+  const nextNodes = input.nodes !== undefined ? normalizePlanNodes(input.nodes).map((node) => {
+    const previous = existing.nodes.find((candidate) => candidate.id === node.id);
+    const binding = input.directCheckpointBinding?.taskId === node.id ? input.directCheckpointBinding : undefined;
+    return { ...node, directCheckpointIdsByProjectId: binding
+      ? { ...previous?.directCheckpointIdsByProjectId, [binding.projectId]: binding.checkpointId }
+      : previous?.directCheckpointIdsByProjectId };
+  }) : existing.nodes;
   const nextPredictedBranches =
     input.predictedBranches !== undefined
       ? normalizePlanPredictedBranches(input.predictedBranches)
@@ -5901,6 +5996,9 @@ export const syncArchitectPlanChatFromConversation = async (params: {
     }
     assertPlanReplicaSetWritable(replicaSet, 'sync chat transcript');
 
+    if (params.conversationId && replicaSet.canonical.plan.conversationId !== params.conversationId) {
+      throw new Error('La conversation ne correspond plus au plan Architect.');
+    }
     const conversationId = params.conversationId ?? replicaSet.canonical.plan.conversationId ?? null;
     if (!conversationId) {
       await saveArchitectPlanChatMessagesWithReplicaSet({
@@ -6305,8 +6403,8 @@ export const createArchitectPlanService = (
     archiveArchitectPlan: (branchName, planId) => archiveArchitectPlan(branchName, planId, deps),
     getArchitectPlanChatMessages: (branchName, planId) =>
       getArchitectPlanChatMessages(branchName, planId, deps),
-    getArchitectPlanChatTranscript: (branchName, planId) =>
-      getArchitectPlanChatTranscript(branchName, planId, deps),
+    getArchitectPlanChatTranscript: (branchName, planId, options) =>
+      getArchitectPlanChatTranscript(branchName, planId, options, deps),
     saveArchitectPlanChatMessages: (branchName, planId, messages) =>
       saveArchitectPlanChatMessages(branchName, planId, messages, deps),
     syncArchitectPlanChatFromConversation: (params) => syncArchitectPlanChatFromConversation(params, deps),

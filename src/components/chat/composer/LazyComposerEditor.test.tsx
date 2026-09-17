@@ -150,6 +150,59 @@ describe('LazyComposerEditor', () => {
     }
   });
 
+  it('does not send from the textarea fallback while an IME composition is active', async () => {
+    const importError = new Error('composer chunk unavailable');
+    mock.module('./ComposerEditor', () => Promise.reject(importError));
+    const failedModule = await import(
+      `./LazyComposerEditor.tsx?lazy-composer-ime-fallback=${Date.now()}`
+    );
+    const onSend = mock(() => undefined);
+    const originalError = console.error;
+    console.error = mock(() => undefined) as never;
+
+    try {
+      await act(async () => {
+        flushSync(() => {
+          root.render(
+            <failedModule.LazyComposerEditor
+              editable
+              placeholder="Message"
+              onTextChange={() => undefined}
+              onSend={onSend}
+            />
+          );
+        });
+      });
+
+      const textarea = container.querySelector('textarea');
+      expect(textarea).not.toBeNull();
+
+      await act(async () => {
+        textarea?.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+        textarea?.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+        }));
+      });
+
+      expect(onSend).not.toHaveBeenCalled();
+
+      await act(async () => {
+        textarea?.dispatchEvent(new Event('compositionend', { bubbles: true }));
+        textarea?.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+        }));
+      });
+
+      expect(onSend).toHaveBeenCalledTimes(1);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   it('emits one text change for fallback setText and clear calls', async () => {
     const onTextChange = mock((_text: string) => undefined);
     const editorRef = React.createRef<TestComposerEditorHandle>();

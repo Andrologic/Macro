@@ -114,7 +114,7 @@ export const ProvidersSettings: React.FC = () => {
     copilotAuthStateByProvider,
     providerSettingsById,
     updateProviderConfig,
-    updateProviderSettings,
+    updateCopilotProvider,
     createProviderConfig,
     deleteProviderConfig,
     startChatGptAuth,
@@ -561,20 +561,24 @@ export const ProvidersSettings: React.FC = () => {
           editingProvider.apiKeyTouched
             ? editingProvider.apiKey
             : undefined;
-        await updateProviderConfig(editingProvider.id, {
+        const configUpdates = {
           name: editingProvider.name,
           baseUrl: editingProvider.baseUrl,
           apiKey: apiKeyUpdate,
           isLocal: editingProvider.isLocal,
           providerType: editingProvider.providerType,
-        });
+        };
         if (editingProvider.providerType === 'copilot') {
           const timeoutMinutes = normalizeTimeoutMinutesInput(
             editingProvider.copilotSendTimeoutMinutes
           );
-          await updateProviderSettings(editingProvider.id, {
-            copilotSendTimeoutMs: timeoutMinutes * 60_000,
-          });
+          await updateCopilotProvider(
+            editingProvider.id,
+            configUpdates,
+            timeoutMinutes * 60_000,
+          );
+        } else {
+          await updateProviderConfig(editingProvider.id, configUpdates);
         }
         notify.success(t('providers.updated', 'Provider updated'));
       }

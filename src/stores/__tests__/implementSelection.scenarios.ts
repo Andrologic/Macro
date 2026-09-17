@@ -25,6 +25,31 @@ export const registerImplementSelectionScenarios = (
   } = context;
 
   describe('useChatStore Implement selection and manual features', () => {
+    it('ignores a delayed Implement context read after group navigation', async () => {
+      appState.mode = 'Implement';
+      appState.selectedGroupId = 'group-old';
+      appState.selectedTaskId = null;
+      taskStoreState.tasks = [createImplementTask()];
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({ conversations: [], selectedConversationId: null });
+      const started = createDeferred<void>();
+      const pending = createDeferred<{ architectConversationId: null; implementConversationId: null; lastTaskId: string }>();
+      getLocalProjectContextStateMock.mockImplementationOnce(async () => {
+        started.resolve();
+        return pending.promise;
+      });
+      const operation = useChatStore.getState().ensureConversationForCurrentMode();
+      await started.promise;
+      appState.selectedGroupId = 'group-new';
+      appState.selectedProjectId = 'project-new';
+      appState.selectedTaskId = 'task-new';
+      pending.resolve({ architectConversationId: null, implementConversationId: null, lastTaskId: 'task-1' });
+      await operation;
+      expect(appState.selectedTaskId).toBe('task-new');
+      expect(useChatStore.getState().selectedConversationId).toBeNull();
+      expect(useChatStore.getState().conversations).toEqual([]);
+    });
+
     it('reuses the same implement conversation for the selected task', async () => {
       appState.mode = 'Implement';
       appState.selectedTaskId = 'task-1';

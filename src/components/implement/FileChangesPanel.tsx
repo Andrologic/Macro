@@ -119,6 +119,17 @@ interface ArtifactReviewPanelState {
 
 const ARTIFACT_REPOSITORY_ID = '__task-artifacts__';
 
+const createLatestRequestGate = () => {
+  let latestRequestId = 0;
+  return {
+    begin: () => ++latestRequestId,
+    isCurrent: (requestId: number) => latestRequestId === requestId,
+    invalidate: () => {
+      latestRequestId += 1;
+    },
+  };
+};
+
 const PASSIVE_WORKTREE_WAITING_STATUSES = new Set([
   'Pending',
   'Blocked',
@@ -753,6 +764,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   const [dedicatedCommitModelId, setDedicatedCommitModelId] = useState('');
   const [dedicatedCommitReasoningEffort, setDedicatedCommitReasoningEffort] = useState<ReasoningEffort | null>(null);
   const [postAssistantRefreshToken, setPostAssistantRefreshToken] = useState(0);
+  const [artifactReviewRequestGate] = useState(createLatestRequestGate);
   const assistantRefreshTaskIdRef = useRef<string | null>(null);
   const assistantWasActiveForTaskRef = useRef(false);
   const postAssistantRefreshPendingRef = useRef(false);
@@ -928,19 +940,26 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
     selectedTaskAssistantRuntimeSignature.includes(':streaming:');
 
   const loadArtifactReviewState = useCallback(async () => {
+    const requestId = artifactReviewRequestGate.begin();
+    const taskId = currentTask?.id ?? null;
+    const isCurrentRequest = () =>
+      artifactReviewRequestGate.isCurrent(requestId) &&
+      useAppStore.getState().selectedTaskId === taskId;
     if (!canShowTaskArtifacts(currentTask)) {
       setArtifactPanelState(null);
       setSelectedArtifactId(null);
-      return;
+      setIsLoadingArtifacts(false);
+      return true;
     }
     setIsLoadingArtifacts(true);
     try {
       const branchName = getTaskArtifactBranchName(currentTask);
       const plan = await getArchitectPlan(branchName, currentTask.plan_id);
+      if (!isCurrentRequest()) return false;
       if (!plan || plan.status === 'deleted') {
         setArtifactPanelState(null);
         setSelectedArtifactId(null);
-        return;
+        return true;
       }
       const entries = await listVisibleTaskArtifactReviewEntries({
         branchName,
@@ -949,6 +968,7 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
         includeInherited: true,
         includeOwn: true,
       });
+      if (!isCurrentRequest()) return false;
       const node = plan.nodes.find((candidate) => candidate.id === currentTask.id);
       setArtifactPanelState({
         branchName,
@@ -962,7 +982,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           ? current
           : null
       );
+      return true;
     } catch (error) {
+      if (!isCurrentRequest()) return false;
       const message = toServiceError(error).message || t('common.error', 'An error occurred');
       setArtifactPanelState((current) =>
         current
@@ -970,10 +992,17 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
           : null
       );
       notify.error(message);
+      return false;
     } finally {
-      setIsLoadingArtifacts(false);
+      if (isCurrentRequest()) {
+        setIsLoadingArtifacts(false);
+      }
     }
-  }, [currentTask, t]);
+  }, [artifactReviewRequestGate, currentTask, t]);
+
+  useEffect(() => () => {
+    artifactReviewRequestGate.invalidate();
+  }, [artifactReviewRequestGate]);
 
   useEffect(() => {
     let disposed = false;
@@ -1777,8 +1806,9 @@ const FileChangesPanelBase: React.FC<FileChangesPanelProps> = ({ className }) =>
   };
 
   const handleArtifactSaved = async (artifactId: string) => {
-    await loadArtifactReviewState();
-    setSelectedArtifactId(artifactId);
+    if (await loadArtifactReviewState()) {
+      setSelectedArtifactId(artifactId);
+    }
   };
 
   const handleValidateChanges = async () => {

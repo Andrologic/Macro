@@ -39,9 +39,15 @@ import {
 } from './architectPlanKinds';
 import { toServiceError } from './contracts/errors';
 import {
+  StalePlanLifecycleSagaError,
+  PlanLifecycleSagaCorruptionError,
+  getPlanLifecycleSagaGeneration,
   loadPlanLifecycleSagas,
   removePlanLifecycleSaga,
+  startPlanLifecycleSaga,
   upsertPlanLifecycleSaga,
+  type PlanLifecycleCleanupResource,
+  type PlanFinalizationRepositoryCheckpoint,
   type PlanLifecycleSaga,
 } from './planLifecycleSaga';
 import { getPlanNodeBranchIntent, type WorkBranchIntent } from './gitFlowBranchIntents';
@@ -395,6 +401,7 @@ interface ArchitectGitFlowGitStatus {
 
 interface ArchitectGitFlowGitBranchRef {
   name: string;
+  commit?: string;
 }
 
 interface ArchitectGitFlowGitBranches {
@@ -410,6 +417,9 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'isTauriAvailable'
   | 'gitDiff'
   | 'gitMerge'
+  | 'gitGuardedMergeState'
+  | 'gitPrepareGuardedBranchSync'
+  | 'gitGuardedBranchSync'
   | 'gitBranchDelete'
   | 'gitBranchDeleteRemote'
   | 'gitCheckout'
@@ -422,6 +432,8 @@ type ArchitectGitFlowTauriDeps = Pick<
   | 'gitBranchWorktreeRemove'
   | 'gitPull'
   | 'gitRebaseCheck'
+  | 'workspaceAcquirePlanLifecycleLock'
+  | 'workspaceReleasePlanLifecycleLock'
 > & {
   gitStatus: (repoPath: string) => Promise<ArchitectGitFlowGitStatus>;
   gitMergeCheck: (params: {
@@ -430,6 +442,7 @@ type ArchitectGitFlowTauriDeps = Pick<
     intoBranch: string;
   }) => Promise<ArchitectGitFlowMergeCheck>;
   gitBranchList: (repoPath: string) => Promise<ArchitectGitFlowGitBranches>;
+  workspaceRenewPlanLifecycleLock?: (leaseId: string) => Promise<void>;
 };
 
 interface ArchitectGitFlowAppState {
@@ -468,6 +481,45 @@ const getDefaultArchitectGitFlowDependencies = (): ArchitectGitFlowDependencies 
   commitArchitectPlanMetadata,
   getGitFlowBaseBranch,
 });
+
+const withPlanLifecycleLock = async <T>(
+  deps: ArchitectGitFlowDependencies,
+  branchName: string,
+  planId: string,
+  operation: () => Promise<T>,
+): Promise<T> => {
+  if (!deps.tauri.isTauriAvailable()) return operation();
+  const leaseId = await deps.tauri.workspaceAcquirePlanLifecycleLock({ branchName, planId });
+  let renewalInFlight: Promise<void> | null = null;
+  const renewLease = () => {
+    if (!deps.tauri.workspaceRenewPlanLifecycleLock || renewalInFlight) return;
+    renewalInFlight = deps.tauri.workspaceRenewPlanLifecycleLock(leaseId)
+      .catch((error) => {
+        devLogger.warn('[architectGitFlow] Could not renew the plan lifecycle lease.', {
+          branchName,
+          planId,
+          error: toServiceError(error).message,
+        });
+      })
+      .finally(() => {
+        renewalInFlight = null;
+      });
+  };
+  const heartbeat = globalThis.setInterval(renewLease, 30_000);
+  try {
+    return await operation();
+  } finally {
+    globalThis.clearInterval(heartbeat);
+    await renewalInFlight;
+    await deps.tauri.workspaceReleasePlanLifecycleLock(leaseId).catch((error) => {
+      devLogger.warn('[architectGitFlow] Could not release the plan lifecycle lease.', {
+        branchName,
+        planId,
+        error: toServiceError(error).message,
+      });
+    });
+  }
+};
 
 const joinRepoPath = (repoPath: string, ...segments: string[]): string =>
   [repoPath.replace(/[\\/]+$/, ''), ...segments.map((segment) => segment.replace(/^[\\/]+|[\\/]+$/g, ''))]
@@ -779,9 +831,10 @@ const assertPlanReadyForFinalization = (plan: ArchitectPlanRecord): void => {
 
 export const provisionPlanBranches = async (
   plan: ArchitectPlanRecord,
-  explicitRepoPath?: string
+  explicitRepoPath?: string,
+  persistPlan?: () => Promise<void>,
 ): Promise<ProvisionPlanBranchesResult> =>
-  getDefaultArchitectGitFlowService().provisionPlanBranches(plan, explicitRepoPath);
+  getDefaultArchitectGitFlowService().provisionPlanBranches(plan, explicitRepoPath, persistPlan);
 
 export const validatePlanAndProvisionBranches = async (params: {
   branchName: string;
@@ -809,6 +862,7 @@ export const finalizePlanIntoBaseBranch = async (params: {
   branchName: string;
   planId: string;
   repoPath?: string;
+  completePendingMerges?: boolean;
 }): Promise<{
   plan: ArchitectPlanRecord;
   repositories: FinalizedPlanRepositoryResult[];
@@ -830,7 +884,11 @@ export const archivePlanAndCleanupBranches = async (params: {
   repoPath?: string;
   keepSaga?: boolean;
   requireMetadataCommit?: boolean;
-}): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> =>
+}): Promise<{
+  plan: ArchitectPlanRecord;
+  cleanup: CleanupPlanRepositoryResult[];
+  lifecycleSaga: PlanLifecycleSaga;
+}> =>
   getDefaultArchitectGitFlowService().archivePlanAndCleanupBranches(params);
 
 export const restorePlanAndProvisionBranches = async (params: {
@@ -878,6 +936,91 @@ export const createArchitectGitFlowService = (
       ...(overrides.tauri || {}),
     },
   };
+  const provisionMatchesPersistedPlan = (saga: PlanLifecycleSaga, plan: ArchitectPlanRecord | null): boolean => {
+    if (!plan || !['validated', 'in_progress'].includes(plan.status)) return false;
+    const repositories = resolvePlanProjectRepoPathsWithDeps(plan);
+    return (saga.cleanupResources ?? []).every((resource) => repositories.some((repository) =>
+      repository.repoPath === resource.repoPath && [
+        renderPlanBranchNameForProject({ plan, projectId: repository.projectId, getProjectById: deps.getAppState().getProjectById }),
+        ...listPlanBranchNamesForProject({ plan, projectId: repository.projectId, getProjectById: deps.getAppState().getProjectById }),
+      ].includes(resource.branchName),
+    ));
+  };
+
+  const finishProvision = async (plan: ArchitectPlanRecord): Promise<void> => {
+    const saga = (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
+      entry.planId === plan.id && entry.branchName === plan.targetBranch);
+    if (saga) await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+  };
+
+  const rollbackProvisionSaga = async (saga: PlanLifecycleSaga): Promise<void> => {
+    const errors: string[] = [];
+    // Worktrees must be removed before their branches. Each successful removal
+    // is durable; an interrupted rollback can resume without claiming new work.
+    const resources = [...(saga.cleanupResources ?? [])].reverse().sort((a, b) =>
+      Number(b.kind === 'worktree') - Number(a.kind === 'worktree'));
+    for (const resource of resources) {
+      try {
+        if (resource.kind === 'worktree') {
+          const inspection = await deps.tauri.gitWorktreeInspect({ repoPath: resource.repoPath,
+            taskId: resource.worktreeKey!, branchName: resource.branchName, readOnly: true });
+          if (inspection.status !== 'absent') {
+            if (!resource.expectedCommit) {
+              const branches = await deps.tauri.gitBranchList(resource.repoPath);
+              const actualCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit;
+              if (!resource.intendedCommit || actualCommit !== resource.intendedCommit ||
+                  inspection.status !== 'ready' || inspection.branchName !== resource.branchName ||
+                  inspection.worktreePath !== resource.expectedWorktreePath || inspection.isDirty !== false) {
+                throw new Error('Creation outcome does not match the recorded intent; inspect this resource before cleanup.');
+              }
+              resource.expectedCommit = resource.intendedCommit;
+              await upsertPlanLifecycleSaga(saga);
+            }
+            await deps.tauri.gitWorktreeRemove({ repoPath: resource.repoPath, taskId: resource.worktreeKey!,
+            branchName: resource.branchName, force: false, expectedCommit: resource.expectedCommit,
+            expectedWorktreePath: resource.expectedWorktreePath });
+          }
+        } else {
+          if (saga.cleanupResources?.some((other) => other.kind === 'worktree' &&
+            other.repoPath === resource.repoPath && other.branchName === resource.branchName)) {
+            throw new Error('The worktree still requires cleanup.');
+          }
+          const branches = await deps.tauri.gitBranchList(resource.repoPath);
+          if (branches.local.some((branch) => branch.name === resource.branchName)) {
+            if (!resource.expectedCommit) {
+              const actualCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit;
+              if (!resource.intendedCommit || actualCommit !== resource.intendedCommit) {
+                throw new Error('Creation outcome does not match the recorded intent; inspect this resource before cleanup.');
+              }
+              resource.expectedCommit = resource.intendedCommit;
+              await upsertPlanLifecycleSaga(saga);
+            }
+            await deps.tauri.gitBranchDelete({ repoPath: resource.repoPath, branchName: resource.branchName,
+              force: true, expectedCommit: resource.expectedCommit });
+          }
+        }
+        saga.cleanupResources = saga.cleanupResources?.filter((entry) => entry !== resource);
+        saga.updatedAt = new Date().toISOString();
+        await upsertPlanLifecycleSaga(saga);
+      } catch (error) {
+        errors.push(`${resource.kind} ${resource.branchName} (${resource.repoPath}): ${toServiceError(error).message}`);
+      }
+    }
+    if (errors.length) {
+      saga.lastError = errors.join('\n');
+      await upsertPlanLifecycleSaga(saga);
+      throw new Error(`Git provisioning cleanup remains pending:\n${saga.lastError}`);
+    }
+    await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+  };
+
+  const rollbackPreservingError = async (rollback: () => Promise<void>, error: unknown): Promise<never> => {
+    try { await rollback(); } catch (cleanupError) {
+      throw new Error(`${toServiceError(error).message}\n${toServiceError(cleanupError).message}`, { cause: error });
+    }
+    throw error;
+  };
+
   const provisionRollbacks = new WeakMap<ProvisionPlanBranchesResult, () => Promise<void>>();
   const rollbackProvisionResultWithDeps = async (
     provision: ProvisionPlanBranchesResult,
@@ -1077,11 +1220,130 @@ export const createArchitectGitFlowService = (
     }
   };
 
+  const capturePlanCleanupResourcesWithDeps = async (
+    targets: CleanupPlanRepositoryTarget[],
+  ): Promise<PlanLifecycleCleanupResource[]> => {
+    const resources: PlanLifecycleCleanupResource[] = [];
+    for (const target of targets) {
+      const branches = await deps.tauri.gitBranchList(target.repoPath);
+      const localBranches = new Map(
+        (branches.local || []).map((branch) => [branch.name, branch.commit ?? null] as const),
+      );
+      for (const branchName of [...target.featureBranchNames, target.planBranchName]) {
+        if (!localBranches.has(branchName)) continue;
+        resources.push({
+          kind: 'branch',
+          projectId: target.projectId,
+          repoPath: target.repoPath,
+          branchName,
+          expectedCommit: localBranches.get(branchName) ?? null,
+        });
+      }
+      for (const worktree of target.worktrees) {
+        let inspection: tauriIpc.GitWorktreeInspectionDto;
+        try {
+          inspection = await deps.tauri.gitWorktreeInspect({
+            repoPath: target.repoPath,
+            taskId: worktree.worktreeKey,
+            branchName: worktree.branchName,
+          });
+        } catch (error) {
+          if (isMissingGitTargetError(error)) continue;
+          throw error;
+        }
+        if (inspection.status === 'absent') continue;
+        resources.push({
+          kind: 'worktree',
+          projectId: target.projectId,
+          repoPath: target.repoPath,
+          branchName: worktree.branchName,
+          expectedCommit: localBranches.get(worktree.branchName) ?? null,
+          worktreeKey: worktree.worktreeKey,
+          expectedWorktreePath: inspection.worktreePath,
+        });
+      }
+      let integrationInspection: tauriIpc.GitBranchWorktreeInspectionDto;
+      try {
+        integrationInspection = await deps.tauri.gitBranchWorktreeInspect({
+          repoPath: target.repoPath,
+          worktreeKey: target.integrationWorktree.worktreeKey,
+          branchName: target.integrationWorktree.branchName,
+        });
+      } catch (error) {
+        if (isMissingGitTargetError(error)) continue;
+        throw error;
+      }
+      if (integrationInspection.status !== 'absent') {
+        resources.push({
+          kind: 'worktree',
+          projectId: target.projectId,
+          repoPath: target.repoPath,
+          branchName: target.integrationWorktree.branchName,
+          expectedCommit: localBranches.get(target.integrationWorktree.branchName) ?? null,
+          worktreeKey: target.integrationWorktree.worktreeKey,
+          expectedWorktreePath: integrationInspection.worktreePath,
+        });
+      }
+    }
+    return resources;
+  };
+
+  const assertPlanWorktreeIdentityWithDeps = async (params: {
+    target: CleanupPlanRepositoryTarget;
+    worktree: CleanupPlanWorktreeTarget;
+    inspection: tauriIpc.GitWorktreeInspectionDto | tauriIpc.GitBranchWorktreeInspectionDto;
+    resources: PlanLifecycleCleanupResource[];
+  }): Promise<PlanLifecycleCleanupResource> => {
+    const expected = params.resources.find((resource) =>
+      resource.kind === 'worktree' &&
+      resource.repoPath === params.target.repoPath &&
+      resource.worktreeKey === params.worktree.worktreeKey
+    );
+    const branches = await deps.tauri.gitBranchList(params.target.repoPath);
+    const currentCommit = (branches.local || []).find(
+      (branch) => branch.name === params.worktree.branchName,
+    )?.commit ?? null;
+    if (
+      !expected ||
+      expected.branchName !== params.worktree.branchName ||
+      expected.expectedWorktreePath !== params.inspection.worktreePath ||
+      expected.expectedCommit !== currentCommit
+    ) {
+      throw new Error(
+        `Refusing to remove worktree ${params.worktree.worktreeKey} because its durable identity changed.`,
+      );
+    }
+    return expected;
+  };
+
+  const assertPlanBranchIdentityWithDeps = async (params: {
+    repoPath: string;
+    branchName: string;
+    resources: PlanLifecycleCleanupResource[];
+  }): Promise<void> => {
+    const expected = params.resources.find((resource) =>
+      resource.kind === 'branch' &&
+      resource.repoPath === params.repoPath &&
+      resource.branchName === params.branchName
+    );
+    const branches = await deps.tauri.gitBranchList(params.repoPath);
+    const currentCommit = (branches.local || []).find(
+      (branch) => branch.name === params.branchName,
+    )?.commit ?? null;
+    if (!expected || expected.expectedCommit !== currentCommit) {
+      throw new Error(
+        `Refusing to remove branch ${params.branchName} because its durable identity changed.`,
+      );
+    }
+  };
+
   const cleanupPlanBranchesInternalWithDeps = async (
     plan: ArchitectPlanRecord,
     explicitRepoPath?: string,
     options?: {
       allowRetained?: boolean;
+      expectedResources?: PlanLifecycleCleanupResource[];
+      onResourcesCaptured?: (resources: PlanLifecycleCleanupResource[]) => Promise<void>;
     }
   ): Promise<CleanupPlanRepositoryResult[]> => {
     const targets = buildCleanupPlanTargetsWithDeps(plan, explicitRepoPath);
@@ -1099,6 +1361,11 @@ export const createArchitectGitFlowService = (
     }
 
     await preflightPlanCleanupWithDeps(targets);
+    const cleanupResources = options?.expectedResources ??
+      await capturePlanCleanupResourcesWithDeps(targets);
+    if (!options?.expectedResources) {
+      await options?.onResourcesCaptured?.(cleanupResources);
+    }
 
     const allowRetained = options?.allowRetained === true;
     const results: CleanupPlanRepositoryResult[] = [];
@@ -1138,10 +1405,19 @@ export const createArchitectGitFlowService = (
             continue;
           }
 
+          const expectedResource = await assertPlanWorktreeIdentityWithDeps({
+            target,
+            worktree,
+            inspection,
+            resources: cleanupResources,
+          });
+
           const removed = await deps.tauri.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: worktree.worktreeKey,
             branchName: worktree.branchName,
+            expectedCommit: expectedResource.expectedCommit,
+            expectedWorktreePath: expectedResource.expectedWorktreePath,
           });
           if (!removed.alreadyAbsent) {
             deletedWorktrees.push({
@@ -1168,10 +1444,18 @@ export const createArchitectGitFlowService = (
           branchName: target.integrationWorktree.branchName,
         });
         if (inspection.status !== 'absent') {
+          const expectedResource = await assertPlanWorktreeIdentityWithDeps({
+            target,
+            worktree: target.integrationWorktree,
+            inspection,
+            resources: cleanupResources,
+          });
           const removed = await deps.tauri.gitBranchWorktreeRemove({
             repoPath: target.repoPath,
             worktreeKey: target.integrationWorktree.worktreeKey,
             branchName: target.integrationWorktree.branchName,
+            expectedCommit: expectedResource.expectedCommit,
+            expectedWorktreePath: expectedResource.expectedWorktreePath,
           });
           if (!removed.alreadyAbsent) {
             deletedWorktrees.push({
@@ -1193,10 +1477,20 @@ export const createArchitectGitFlowService = (
 
       for (const branchName of branchCandidates) {
         try {
+          await assertPlanBranchIdentityWithDeps({
+            repoPath: target.repoPath,
+            branchName,
+            resources: cleanupResources,
+          });
           await deps.tauri.gitBranchDelete({
             repoPath: target.repoPath,
             branchName,
             force: false,
+            expectedCommit: cleanupResources.find((resource) =>
+              resource.kind === 'branch' &&
+              resource.repoPath === target.repoPath &&
+              resource.branchName === branchName
+            )?.expectedCommit,
           });
           deletedBranches.push(branchName);
         } catch (error) {
@@ -1351,9 +1645,10 @@ export const createArchitectGitFlowService = (
     return repositories;
   };
 
-  const provisionPlanBranchesWithDeps = async (
+  const provisionPlanBranchesUnlocked = async (
     plan: ArchitectPlanRecord,
-    explicitRepoPath?: string
+    explicitRepoPath?: string,
+    committedSaga?: PlanLifecycleSaga,
   ): Promise<ProvisionPlanBranchesResult> => {
     const featureBranchesByProject = new Map<string, string[]>(
       resolvePlanProjectRepoPathsWithDeps(plan, explicitRepoPath, {
@@ -1379,24 +1674,81 @@ export const createArchitectGitFlowService = (
     });
 
     const results: ProvisionedPlanRepositoryResult[] = [];
-    const createdBranches: Array<{ repoPath: string; branchName: string }> = [];
-    const createdWorktrees: Array<{ repoPath: string; taskId: string; branchName: string }> = [];
-    const rollbackCreatedGitResources = async (): Promise<void> => {
-      await Promise.allSettled(
-        [...createdWorktrees].reverse().map(({ repoPath, taskId, branchName }) =>
-          deps.tauri.gitWorktreeRemove({ repoPath, taskId, branchName, force: true })
-        )
-      );
-      await Promise.allSettled(
-        [...createdBranches].reverse().map(({ repoPath, branchName }) =>
-          deps.tauri.gitBranchDelete({ repoPath, branchName, force: true })
-        )
-      );
+    const previous = !committedSaga && (await loadPlanLifecycleSagas()).find((entry) => entry.operation === 'provision' &&
+      entry.planId === plan.id && entry.branchName === plan.targetBranch);
+    if (previous) {
+      const persistedPlan = await deps.getArchitectPlan(previous.branchName, previous.planId);
+      if (provisionMatchesPersistedPlan(previous, persistedPlan)) {
+        await provisionPlanBranchesUnlocked(persistedPlan!, explicitRepoPath, previous);
+        await finishProvision(persistedPlan!);
+      } else await rollbackProvisionSaga(previous);
+    }
+    const now = new Date().toISOString();
+    const saga: PlanLifecycleSaga = committedSaga ?? { planId: plan.id, branchName: plan.targetBranch,
+      operation: 'provision', phase: 'prepared', cleanupResources: [], createdAt: now, updatedAt: now };
+    if (!committedSaga) await startPlanLifecycleSaga(saga);
+    const recordIntent = async (resource: PlanLifecycleCleanupResource) => {
+      const previousIntent = saga.cleanupResources?.find((entry) => entry.kind === resource.kind &&
+        entry.repoPath === resource.repoPath && entry.branchName === resource.branchName &&
+        entry.worktreeKey === resource.worktreeKey);
+      if (previousIntent) {
+        // Recreate an absent resource at the original commit, not a source ref
+        // that might have advanced while the process was stopped.
+        previousIntent.intendedCommit = previousIntent.intendedCommit ?? previousIntent.expectedCommit ?? undefined;
+        previousIntent.expectedCommit = null;
+        await upsertPlanLifecycleSaga(saga);
+        return previousIntent;
+      }
+      saga.cleanupResources!.push(resource);
+      await upsertPlanLifecycleSaga(saga);
+      return resource;
     };
+    const confirmResource = async (resource: PlanLifecycleCleanupResource, worktreePath?: string) => {
+      const branches = await deps.tauri.gitBranchList(resource.repoPath);
+      const actualCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit;
+      if (actualCommit && resource.intendedCommit && actualCommit !== resource.intendedCommit) {
+        throw new Error('Created resource moved away from its recorded provisioning commit.');
+      }
+      resource.expectedCommit = actualCommit ?? null;
+      if (worktreePath) resource.expectedWorktreePath = worktreePath;
+      await upsertPlanLifecycleSaga(saga);
+    };
+    const rollbackCreatedGitResources = () => rollbackProvisionSaga(saga);
     try {
+      if (committedSaga) {
+        // Adoption has the same identity requirements as rollback. Complete the
+        // entire preflight before creating anything or discarding the journal.
+        for (const resource of saga.cleanupResources ?? []) {
+          const expectedCommit = resource.expectedCommit ?? resource.intendedCommit;
+          const branches = await deps.tauri.gitBranchList(resource.repoPath);
+          const actualCommit = branches.local.find((branch) => branch.name === resource.branchName)?.commit;
+          if (!expectedCommit || (actualCommit && actualCommit !== expectedCommit)) {
+            throw new Error('Provisioning resource does not match its durable commit identity.');
+          }
+          if (resource.kind === 'worktree') {
+            const inspection = await deps.tauri.gitWorktreeInspect({
+              repoPath: resource.repoPath, taskId: resource.worktreeKey!,
+              branchName: resource.branchName, readOnly: true,
+            });
+            if (inspection.status !== 'absent' && (
+              inspection.status !== 'ready' || inspection.branchName !== resource.branchName ||
+              inspection.worktreePath !== resource.expectedWorktreePath || inspection.isDirty !== false ||
+              actualCommit !== expectedCommit
+            )) {
+              throw new Error('Provisioning worktree does not match its durable identity.');
+            }
+          }
+        }
+      }
       for (const repository of repositories) {
         const branches = await deps.tauri.gitBranchList(repository.repoPath);
         const localBranchNames = new Set((branches.local || []).map((branch) => branch.name));
+        const commits = new Map([...branches.local, ...branches.remote].map((branch) => [branch.name, branch.commit]));
+        const requireCommit = (ref: string): string => {
+          const commit = commits.get(ref);
+          if (!commit) throw new Error(`Unable to resolve provisioning source ${ref}.`);
+          return commit;
+        };
         const createdFeatureBranches: string[] = [];
         const existingFeatureBranches: string[] = [];
         const repositoryPlanBranchName = renderPlanBranchNameForProject({
@@ -1417,12 +1769,16 @@ export const createArchitectGitFlowService = (
             repositorySourceBranchName,
             deps.getAppState().getProjectById(repository.projectId)?.path || repository.projectId
           );
+          const intent = await recordIntent({ kind: 'branch', projectId: repository.projectId,
+            repoPath: repository.repoPath, branchName: repositoryPlanBranchName, expectedCommit: null,
+            intendedCommit: requireCommit(fromRef) });
           await deps.tauri.gitBranchCreate({
             repoPath: repository.repoPath,
             branchName: repositoryPlanBranchName,
-            fromRef,
+            fromRef: intent.intendedCommit!,
           });
-          createdBranches.push({ repoPath: repository.repoPath, branchName: repositoryPlanBranchName });
+          await confirmResource(intent);
+          commits.set(repositoryPlanBranchName, intent.expectedCommit || intent.intendedCommit!);
           localBranchNames.add(repositoryPlanBranchName);
           createdPlanBranch = true;
         }
@@ -1433,12 +1789,16 @@ export const createArchitectGitFlowService = (
             continue;
           }
 
+          const intent = await recordIntent({ kind: 'branch', projectId: repository.projectId,
+            repoPath: repository.repoPath, branchName: featureBranch, expectedCommit: null,
+            intendedCommit: requireCommit(repositoryPlanBranchName) });
           await deps.tauri.gitBranchCreate({
             repoPath: repository.repoPath,
             branchName: featureBranch,
-            fromRef: repositoryPlanBranchName,
+            fromRef: intent.intendedCommit!,
           });
-          createdBranches.push({ repoPath: repository.repoPath, branchName: featureBranch });
+          await confirmResource(intent);
+          commits.set(featureBranch, intent.expectedCommit || intent.intendedCommit!);
           localBranchNames.add(featureBranch);
           createdFeatureBranches.push(featureBranch);
         }
@@ -1450,10 +1810,13 @@ export const createArchitectGitFlowService = (
             taskId: worktreeKey,
             branchName: featureBranch,
           });
-          if (inspection.status === 'ready') {
+          if (inspection.status === 'ready' && inspection.branchName === featureBranch) {
             continue;
           }
 
+          const intent = await recordIntent({ kind: 'worktree', projectId: repository.projectId,
+            repoPath: repository.repoPath, branchName: featureBranch, worktreeKey,
+            expectedCommit: null, intendedCommit: requireCommit(featureBranch), expectedWorktreePath: inspection.worktreePath });
           const ensuredWorktree = await deps.tauri.gitWorktreeCreate({
             repoPath: repository.repoPath,
             taskId: worktreeKey,
@@ -1467,12 +1830,12 @@ export const createArchitectGitFlowService = (
               extraBranches: [repositoryPlanBranchName],
             }),
           });
-          if (ensuredWorktree.status === 'created' || ensuredWorktree.status === 'repaired') {
-            createdWorktrees.push({
-              repoPath: repository.repoPath,
-              taskId: worktreeKey,
-              branchName: featureBranch,
-            });
+          if (ensuredWorktree.createdByThisCall ?? ensuredWorktree.status === 'created') {
+            await confirmResource(intent, ensuredWorktree.worktreePath);
+          } else {
+            // Link repairs and concurrently reused worktrees did not originate here.
+            saga.cleanupResources = saga.cleanupResources!.filter((resource) => resource !== intent);
+            await upsertPlanLifecycleSaga(saga);
           }
         }
 
@@ -1486,8 +1849,12 @@ export const createArchitectGitFlowService = (
         });
       }
     } catch (error) {
-      await rollbackCreatedGitResources();
-      throw error;
+      if (committedSaga) {
+        saga.lastError = toServiceError(error).message;
+        await upsertPlanLifecycleSaga(saga);
+        throw error;
+      }
+      return rollbackPreservingError(rollbackCreatedGitResources, error);
     }
 
     const result: ProvisionPlanBranchesResult = {
@@ -1505,7 +1872,23 @@ export const createArchitectGitFlowService = (
     return result;
   };
 
-  const validatePlanAndProvisionBranchesWithDeps = async (params: {
+  const provisionPlanBranchesWithDeps = async (
+    plan: ArchitectPlanRecord,
+    explicitRepoPath?: string,
+    persistPlan?: () => Promise<void>,
+  ): Promise<ProvisionPlanBranchesResult> =>
+    withPlanLifecycleLock(deps, plan.targetBranch, plan.id, async () => {
+      const result = await provisionPlanBranchesUnlocked(plan, explicitRepoPath);
+      try {
+        await persistPlan?.();
+      } catch (error) {
+        return rollbackPreservingError(() => rollbackProvisionResultWithDeps(result), error);
+      }
+      await finishProvision(plan);
+      return result;
+    });
+
+  const validatePlanAndProvisionBranchesUnlocked = async (params: {
     branchName: string;
     planId: string;
     repoPath?: string;
@@ -1548,7 +1931,7 @@ export const createArchitectGitFlowService = (
       predictedBranches: normalizedStrategy.predictedBranches,
     };
 
-    const provision = await provisionPlanBranchesWithDeps(normalizedPlan, params.repoPath);
+    const provision = await provisionPlanBranchesUnlocked(normalizedPlan, params.repoPath);
 
     let validatedPlan: ArchitectPlanRecord;
     try {
@@ -1563,10 +1946,10 @@ export const createArchitectGitFlowService = (
         setActive: params.setActive !== false,
       });
     } catch (error) {
-      await rollbackProvisionResultWithDeps(provision);
-      throw error;
+      return rollbackPreservingError(() => rollbackProvisionResultWithDeps(provision), error);
     }
 
+    await finishProvision(normalizedPlan);
     return {
       plan: {
         ...validatedPlan,
@@ -1578,6 +1961,13 @@ export const createArchitectGitFlowService = (
       provision,
     };
   };
+
+  const validatePlanAndProvisionBranchesWithDeps = async (
+    params: Parameters<typeof validatePlanAndProvisionBranchesUnlocked>[0],
+  ): ReturnType<typeof validatePlanAndProvisionBranchesUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      validatePlanAndProvisionBranchesUnlocked(params)
+    );
 
   const mergeFeatureBranchIntoPlanBranchWithDeps = async (params: {
     projectId: string;
@@ -1645,35 +2035,67 @@ export const createArchitectGitFlowService = (
     return cleanupPlanBranchesInternalWithDeps(plan, explicitRepoPath, options);
   };
 
-  const archivePlanAndCleanupBranchesWithDeps = async (params: {
+  const archivePlanAndCleanupBranchesUnlocked = async (params: {
     branchName: string;
     planId: string;
     repoPath?: string;
     keepSaga?: boolean;
     requireMetadataCommit?: boolean;
-  }): Promise<{ plan: ArchitectPlanRecord; cleanup: CleanupPlanRepositoryResult[] }> => {
+  }): Promise<{
+    plan: ArchitectPlanRecord;
+    cleanup: CleanupPlanRepositoryResult[];
+    lifecycleSaga: PlanLifecycleSaga;
+  }> => {
     const plan = await deps.getArchitectPlan(params.branchName, params.planId);
     if (!plan || !getArchitectPlanCrudCapabilities(plan).canArchive) {
       throw new Error(`Plan ${params.planId} cannot be archived.`);
     }
+    const cleanupTargets = buildCleanupPlanTargetsWithDeps(plan, params.repoPath);
+    const cleanupResources = deps.tauri.isTauriAvailable()
+      ? await (async () => {
+          await preflightPlanCleanupWithDeps(cleanupTargets);
+          return capturePlanCleanupResourcesWithDeps(cleanupTargets);
+        })()
+      : [];
     const now = new Date().toISOString();
-    const saga: PlanLifecycleSaga = {
+    let saga: PlanLifecycleSaga = {
       planId: plan.id, branchName: params.branchName, operation: 'archive', phase: 'prepared',
-      conversationId: plan.conversationId ?? null, requiresMetadataCommit: params.requireMetadataCommit === true, createdAt: now, updatedAt: now,
+      conversationId: plan.conversationId ?? null, requiresMetadataCommit: params.requireMetadataCommit === true,
+      cleanupResources, createdAt: now, updatedAt: now,
     };
-    await upsertPlanLifecycleSaga(saga);
+    await startPlanLifecycleSaga(saga);
     const archived = plan.status === 'archived' ? plan : await deps.archiveArchitectPlan(params.branchName, plan.id);
-    await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
-    const cleanup = await cleanupPlanBranchesWithDeps(archived, params.repoPath);
+    saga = { ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() };
+    await upsertPlanLifecycleSaga(saga);
+    const cleanup = await cleanupPlanBranchesInternalWithDeps(archived, params.repoPath, {
+      expectedResources: saga.cleanupResources,
+    });
     const cleanedSaga = { ...saga, phase: 'git_cleanup_complete' as const, updatedAt: new Date().toISOString() };
     await upsertPlanLifecycleSaga(cleanedSaga);
+    const lifecycleSaga: PlanLifecycleSaga = params.requireMetadataCommit
+      ? { ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() }
+      : cleanedSaga;
     if (params.requireMetadataCommit) {
-      await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
-    } else if (!params.keepSaga) await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
-    return { plan: archived, cleanup };
+      await upsertPlanLifecycleSaga(lifecycleSaga);
+    } else if (!params.keepSaga) {
+      await removePlanLifecycleSaga(
+        plan.id,
+        'archive',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(lifecycleSaga),
+      );
+    }
+    return { plan: archived, cleanup, lifecycleSaga };
   };
 
-  const restorePlanAndProvisionBranchesWithDeps = async (params: {
+  const archivePlanAndCleanupBranchesWithDeps = async (
+    params: Parameters<typeof archivePlanAndCleanupBranchesUnlocked>[0],
+  ): ReturnType<typeof archivePlanAndCleanupBranchesUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      archivePlanAndCleanupBranchesUnlocked(params)
+    );
+
+  const restorePlanAndProvisionBranchesUnlocked = async (params: {
     branchName: string;
     planId: string;
     repoPath?: string;
@@ -1682,132 +2104,766 @@ export const createArchitectGitFlowService = (
     if (!plan || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
+    const pendingArchiveSaga = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === plan.id && saga.branchName === params.branchName && saga.operation === 'archive',
+    );
     if (plan.status !== 'archived') {
-      await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+      if (pendingArchiveSaga) {
+        await removePlanLifecycleSaga(
+          plan.id,
+          'archive',
+          params.branchName,
+          getPlanLifecycleSagaGeneration(pendingArchiveSaga),
+        );
+      }
       return plan;
     }
 
     if (plan.archivedFromStatus === 'validated' || plan.archivedFromStatus === 'in_progress') {
-      const provision = await provisionPlanBranchesWithDeps(plan, params.repoPath);
+      const provision = await provisionPlanBranchesUnlocked(plan, params.repoPath);
       let restored: ArchitectPlanRecord;
       try {
         restored = await deps.restoreArchitectPlan(params.branchName, params.planId);
       } catch (error) {
-        await rollbackProvisionResultWithDeps(provision).catch(() => undefined);
-        throw error;
+        return rollbackPreservingError(() => rollbackProvisionResultWithDeps(provision), error);
       }
-      await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+      if (pendingArchiveSaga) {
+        await removePlanLifecycleSaga(
+          plan.id,
+          'archive',
+          params.branchName,
+          getPlanLifecycleSagaGeneration(pendingArchiveSaga),
+        );
+      }
+      await finishProvision(plan);
       return restored;
     }
     const restored = await deps.restoreArchitectPlan(params.branchName, params.planId);
-    await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+    if (pendingArchiveSaga) {
+      await removePlanLifecycleSaga(
+        plan.id,
+        'archive',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(pendingArchiveSaga),
+      );
+    }
     return restored;
   };
 
-  const finalizePlanIntoBaseBranchWithDeps = async (params: {
+  const restorePlanAndProvisionBranchesWithDeps = async (
+    params: Parameters<typeof restorePlanAndProvisionBranchesUnlocked>[0],
+  ): ReturnType<typeof restorePlanAndProvisionBranchesUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      restorePlanAndProvisionBranchesUnlocked(params)
+    );
+
+  const requireLocalBranchCommit = (
+    branches: ArchitectGitFlowGitBranches,
+    branchName: string,
+    repoPath: string,
+  ): string => {
+    const commit = branches.local.find((branch) => branch.name === branchName)?.commit?.trim();
+    if (!commit) {
+      throw new Error(
+        `Cannot finalize the plan because ${branchName} has no verifiable local commit in ${repoPath}.`,
+      );
+    }
+    return commit;
+  };
+
+  const assertFinalizationBranchCommit = (
+    branches: ArchitectGitFlowGitBranches,
+    branchName: string,
+    expectedCommit: string,
+    repoPath: string,
+  ): void => {
+    const actualCommit = requireLocalBranchCommit(branches, branchName, repoPath);
+    if (actualCommit !== expectedCommit) {
+      throw new Error(
+        `Plan finalization stopped because ${branchName} changed in ${repoPath}. Expected ${expectedCommit}, found ${actualCommit}.`,
+      );
+    }
+  };
+
+  const capturePlanFinalizationRepositoriesWithDeps = async (
+    plan: ArchitectPlanRecord,
+    explicitRepoPath?: string,
+  ): Promise<PlanFinalizationRepositoryCheckpoint[]> => {
+    const repositories = resolvePlanProjectRepoPathsWithDeps(plan, explicitRepoPath, {
+      logContext: 'finalize_intent',
+    });
+    return Promise.all(repositories.map(async (repository) => {
+      const planBranchName = renderPlanBranchNameForProject({
+        plan,
+        projectId: repository.projectId,
+        getProjectById: deps.getAppState().getProjectById,
+      });
+      const baseBranchName = resolvePlanProjectBaseBranchName(
+        plan,
+        repository.projectId,
+        deps.getAppState().getProjectById,
+      );
+      const backmergeBranchName = resolvePlanProjectBackmergeBranchName(
+        plan,
+        repository.projectId,
+        deps.getAppState().getProjectById,
+      );
+      const branches = await deps.tauri.gitBranchList(repository.repoPath);
+      return {
+        projectId: repository.projectId,
+        repoPath: repository.repoPath,
+        planBranchName,
+        baseBranchName,
+        backmergeBranchName,
+        expectedPlanCommit: requireLocalBranchCommit(branches, planBranchName, repository.repoPath),
+        expectedBaseCommit: requireLocalBranchCommit(branches, baseBranchName, repository.repoPath),
+        expectedBackmergeCommit: backmergeBranchName
+          ? requireLocalBranchCommit(branches, backmergeBranchName, repository.repoPath)
+          : null,
+        phase: 'prepared' as const,
+      };
+    }));
+  };
+
+  const runPlanFinalizationGitWithDeps = async (
+    plan: ArchitectPlanRecord,
+    initialSaga: PlanLifecycleSaga,
+    explicitRepoPath?: string,
+  ): Promise<PlanLifecycleSaga> => {
+    if (!initialSaga.finalizationRepositories) {
+      throw new Error('The plan finalization journal does not contain repository identities.');
+    }
+    let saga = initialSaga;
+    const persistSaga = async (nextSaga: PlanLifecycleSaga): Promise<void> => {
+      await upsertPlanLifecycleSaga(nextSaga);
+      saga = nextSaga;
+    };
+    const persistRepository = async (
+      projectId: string,
+      repoPath: string,
+      update: (repository: PlanFinalizationRepositoryCheckpoint) => PlanFinalizationRepositoryCheckpoint,
+    ): Promise<void> => {
+      const nextSaga: PlanLifecycleSaga = {
+        ...saga,
+        finalizationRepositories: saga.finalizationRepositories!.map((repository) =>
+          repository.projectId === projectId && repository.repoPath === repoPath
+            ? update(repository)
+            : repository
+        ),
+        updatedAt: new Date().toISOString(),
+        lastError: undefined,
+      };
+      await persistSaga(nextSaga);
+    };
+
+    for (const repositorySnapshot of saga.finalizationRepositories!) {
+      let repository = saga.finalizationRepositories!.find((candidate) =>
+        candidate.projectId === repositorySnapshot.projectId &&
+        candidate.repoPath === repositorySnapshot.repoPath
+      )!;
+      if (repository.phase === 'prepared') {
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.expectedBaseCommit,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branches,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        const preparedSync = await deps.tauri.gitPrepareGuardedBranchSync({
+          repoPath: repository.repoPath,
+          branchName: repository.baseBranchName,
+          expectedBranchCommit: repository.expectedBaseCommit,
+        });
+        const branchesAfterPrepare = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branchesAfterPrepare,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branchesAfterPrepare,
+          repository.baseBranchName,
+          repository.expectedBaseCommit,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branchesAfterPrepare,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'base_sync_pending',
+          baseSyncTargetCommit: preparedSync.targetCommit,
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'base_sync_pending') {
+        if (!repository.baseSyncTargetCommit) {
+          throw new Error(`Plan finalization is missing the prepared base sync for ${repository.repoPath}.`);
+        }
+        const sync = await deps.tauri.gitGuardedBranchSync({
+          repoPath: repository.repoPath,
+          branchName: repository.baseBranchName,
+          expectedBranchCommit: repository.expectedBaseCommit,
+          syncTargetCommit: repository.baseSyncTargetCommit,
+        });
+        if (sync.status !== 'integrated') {
+          throw new Error(`Plan finalization did not reconcile the base sync for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          sync.targetCommit,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branches,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'base_synced',
+          baseCommitAfterSync: sync.targetCommit,
+        }));
+      }
+    }
+
+    const resolvedRepositories = saga.finalizationRepositories!.map((repository) => ({
+      projectId: repository.projectId,
+      repoPath: repository.repoPath,
+    }));
+    const preflightRepositories = await preflightPlanRepositoriesWithDeps({
+      plan,
+      explicitRepoPath,
+      repositories: resolvedRepositories,
+    });
+    if (preflightRepositories.some((repository) => repository.blockingReason)) {
+      throw createPlanFinalizationBlockedError({
+        planId: plan.id,
+        branchName: saga.branchName,
+        repositories: preflightRepositories,
+      });
+    }
+    await preflightPlanCleanupWithDeps(buildCleanupPlanTargetsWithDeps(plan, explicitRepoPath));
+    const preflightByRepository = new Map(preflightRepositories.map((repository) => [
+      `${repository.projectId}:${repository.repoPath}`,
+      repository,
+    ]));
+    for (const repository of saga.finalizationRepositories!) {
+      if (repository.phase !== 'base_synced' || repository.mergeRequired !== undefined) continue;
+      const preflight = preflightByRepository.get(`${repository.projectId}:${repository.repoPath}`);
+      if (!preflight) {
+        throw new Error(`Plan finalization lost repository ${repository.repoPath} during preflight.`);
+      }
+      await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+        ...current,
+        mergeRequired: preflight.hasChanges,
+      }));
+    }
+
+    for (const repositorySnapshot of saga.finalizationRepositories!) {
+      let repository = saga.finalizationRepositories!.find((candidate) =>
+        candidate.projectId === repositorySnapshot.projectId &&
+        candidate.repoPath === repositorySnapshot.repoPath
+      )!;
+      if (repository.phase === 'base_synced') {
+        if (typeof repository.mergeRequired !== 'boolean' || !repository.baseCommitAfterSync) {
+          throw new Error(`Plan finalization is missing the merge decision for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterSync,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branches,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'plan_merge_pending',
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'plan_merge_pending') {
+        if (typeof repository.mergeRequired !== 'boolean' || !repository.baseCommitAfterSync) {
+          throw new Error(`Plan finalization is missing the merge intent for ${repository.repoPath}.`);
+        }
+        let mergeOutput = repository.mergeOutput;
+        let baseCommitAfterMerge = repository.baseCommitAfterSync;
+        if (repository.mergeRequired) {
+          const mergeParams = {
+            repoPath: repository.repoPath,
+            branchName: repository.planBranchName,
+            intoBranch: repository.baseBranchName,
+            expectedBranchCommit: repository.expectedPlanCommit,
+            expectedIntoCommit: repository.baseCommitAfterSync,
+          };
+          let mergeState = await deps.tauri.gitGuardedMergeState(mergeParams);
+          if (mergeState.status === 'pending') {
+            mergeOutput = await deps.tauri.gitMerge(mergeParams);
+            mergeState = await deps.tauri.gitGuardedMergeState(mergeParams);
+          }
+          if (mergeState.status !== 'integrated') {
+            throw new Error(`Plan finalization did not reconcile the plan merge for ${repository.repoPath}.`);
+          }
+          baseCommitAfterMerge = mergeState.targetCommit;
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.planBranchName,
+          repository.expectedPlanCommit,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        if (repository.backmergeBranchName && repository.expectedBackmergeCommit) {
+          assertFinalizationBranchCommit(
+            branches,
+            repository.backmergeBranchName,
+            repository.expectedBackmergeCommit,
+            repository.repoPath,
+          );
+        }
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'plan_merged',
+          baseCommitAfterMerge,
+          mergeOutput,
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'plan_merged' && repository.backmergeBranchName) {
+        if (!repository.baseCommitAfterMerge || !repository.expectedBackmergeCommit) {
+          throw new Error(`Plan finalization is missing backmerge identities for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.expectedBackmergeCommit,
+          repository.repoPath,
+        );
+        const preparedSync = await deps.tauri.gitPrepareGuardedBranchSync({
+          repoPath: repository.repoPath,
+          branchName: repository.backmergeBranchName,
+          expectedBranchCommit: repository.expectedBackmergeCommit,
+        });
+        const branchesAfterPrepare = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branchesAfterPrepare,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branchesAfterPrepare,
+          repository.backmergeBranchName,
+          repository.expectedBackmergeCommit,
+          repository.repoPath,
+        );
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'backmerge_sync_pending',
+          backmergeSyncTargetCommit: preparedSync.targetCommit,
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'backmerge_sync_pending') {
+        if (
+          !repository.backmergeBranchName || !repository.expectedBackmergeCommit ||
+          !repository.baseCommitAfterMerge || !repository.backmergeSyncTargetCommit
+        ) {
+          throw new Error(`Plan finalization is missing the prepared backmerge sync for ${repository.repoPath}.`);
+        }
+        const sync = await deps.tauri.gitGuardedBranchSync({
+          repoPath: repository.repoPath,
+          branchName: repository.backmergeBranchName,
+          expectedBranchCommit: repository.expectedBackmergeCommit,
+          syncTargetCommit: repository.backmergeSyncTargetCommit,
+        });
+        if (sync.status !== 'integrated') {
+          throw new Error(`Plan finalization did not reconcile the backmerge sync for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          sync.targetCommit,
+          repository.repoPath,
+        );
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'backmerge_synced',
+          backmergeCommitAfterSync: sync.targetCommit,
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'backmerge_synced') {
+        if (
+          !repository.backmergeBranchName || !repository.baseCommitAfterMerge ||
+          !repository.backmergeCommitAfterSync
+        ) {
+          throw new Error(`Plan finalization is missing backmerge progress for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.backmergeCommitAfterSync,
+          repository.repoPath,
+        );
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'backmerge_merge_pending',
+        }));
+        repository = saga.finalizationRepositories!.find((candidate) =>
+          candidate.projectId === repositorySnapshot.projectId &&
+          candidate.repoPath === repositorySnapshot.repoPath
+        )!;
+      }
+
+      if (repository.phase === 'backmerge_merge_pending') {
+        if (
+          !repository.backmergeBranchName || !repository.baseCommitAfterMerge ||
+          !repository.backmergeCommitAfterSync
+        ) {
+          throw new Error(`Plan finalization is missing the backmerge intent for ${repository.repoPath}.`);
+        }
+        const mergeParams = {
+          repoPath: repository.repoPath,
+          branchName: repository.baseBranchName,
+          intoBranch: repository.backmergeBranchName,
+          expectedBranchCommit: repository.baseCommitAfterMerge,
+          expectedIntoCommit: repository.backmergeCommitAfterSync,
+        };
+        let backmergeOutput = repository.backmergeOutput;
+        let mergeState = await deps.tauri.gitGuardedMergeState(mergeParams);
+        if (mergeState.status === 'pending') {
+          backmergeOutput = await deps.tauri.gitMerge(mergeParams);
+          mergeState = await deps.tauri.gitGuardedMergeState(mergeParams);
+        }
+        if (mergeState.status !== 'integrated') {
+          throw new Error(`Plan finalization did not reconcile the backmerge for ${repository.repoPath}.`);
+        }
+        const branches = await deps.tauri.gitBranchList(repository.repoPath);
+        assertFinalizationBranchCommit(
+          branches,
+          repository.baseBranchName,
+          repository.baseCommitAfterMerge,
+          repository.repoPath,
+        );
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          mergeState.targetCommit,
+          repository.repoPath,
+        );
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'complete',
+          backmergeCommitAfterMerge: mergeState.targetCommit,
+          backmergeOutput,
+        }));
+      } else if (repository.phase === 'plan_merged' && !repository.backmergeBranchName) {
+        await persistRepository(repository.projectId, repository.repoPath, (current) => ({
+          ...current,
+          phase: 'complete',
+        }));
+      }
+    }
+
+    if (!saga.finalizationRepositories!.every((repository) => repository.phase === 'complete')) {
+      throw new Error('Plan finalization did not checkpoint every repository merge.');
+    }
+    for (const repository of saga.finalizationRepositories!) {
+      if (!repository.baseCommitAfterMerge) {
+        throw new Error(`Plan finalization is missing its final base identity for ${repository.repoPath}.`);
+      }
+      const branches = await deps.tauri.gitBranchList(repository.repoPath);
+      assertFinalizationBranchCommit(
+        branches,
+        repository.planBranchName,
+        repository.expectedPlanCommit,
+        repository.repoPath,
+      );
+      assertFinalizationBranchCommit(
+        branches,
+        repository.baseBranchName,
+        repository.baseCommitAfterMerge,
+        repository.repoPath,
+      );
+      if (repository.backmergeBranchName) {
+        if (!repository.backmergeCommitAfterMerge) {
+          throw new Error(`Plan finalization is missing its final backmerge identity for ${repository.repoPath}.`);
+        }
+        assertFinalizationBranchCommit(
+          branches,
+          repository.backmergeBranchName,
+          repository.backmergeCommitAfterMerge,
+          repository.repoPath,
+        );
+      }
+    }
+    await persistSaga({
+      ...saga,
+      phase: 'git_merges_complete',
+      updatedAt: new Date().toISOString(),
+      lastError: undefined,
+    });
+    return saga;
+  };
+
+  const finalizePlanIntoBaseBranchUnlocked = async (params: {
     branchName: string;
     planId: string;
     repoPath?: string;
+    completePendingMerges?: boolean;
   }): Promise<{
     plan: ArchitectPlanRecord;
     repositories: FinalizedPlanRepositoryResult[];
     cleanup: CleanupPlanRepositoryResult[];
   }> => {
-    const plan = await deps.getArchitectPlan(params.branchName, params.planId);
+    let plan = await deps.getArchitectPlan(params.branchName, params.planId);
     if (!plan || plan.status === 'deleted') {
       throw new Error(`Plan ${params.planId} is unavailable.`);
     }
-    assertPlanReadyForFinalization(plan);
-    const repositories = await syncPlanRepositoriesToBaseBranchesWithDeps({
-      plan,
-      explicitRepoPath: params.repoPath,
-    });
-
-    const preflightRepositories = await preflightPlanRepositoriesWithDeps({
-      plan,
-      explicitRepoPath: params.repoPath,
-      repositories,
-    });
-
-    if (preflightRepositories.some((repository) => repository.blockingReason)) {
-      throw createPlanFinalizationBlockedError({
+    const pendingFinalization = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === plan!.id && saga.branchName === params.branchName &&
+        saga.operation === 'finalize',
+    );
+    let finalizationSaga: PlanLifecycleSaga;
+    if (pendingFinalization) {
+      finalizationSaga = pendingFinalization;
+    } else {
+      assertPlanReadyForFinalization(plan);
+      const now = new Date().toISOString();
+      finalizationSaga = {
         planId: plan.id,
         branchName: params.branchName,
-        repositories: preflightRepositories,
-      });
+        operation: 'finalize',
+        phase: 'prepared',
+        finalizationRepositories: await capturePlanFinalizationRepositoriesWithDeps(
+          plan,
+          params.repoPath,
+        ),
+        createdAt: now,
+        updatedAt: now,
+      };
+      await startPlanLifecycleSaga(finalizationSaga);
     }
 
-    await preflightPlanCleanupWithDeps(buildCleanupPlanTargetsWithDeps(plan, params.repoPath));
-
-    const finalizedRepositories: FinalizedPlanRepositoryResult[] = [];
-    for (const repository of preflightRepositories) {
-      const mergeOutput = repository.hasChanges
-        ? await deps.tauri.gitMerge({
+    if (params.completePendingMerges && finalizationSaga.phase === 'prepared') {
+      for (const repository of finalizationSaga.finalizationRepositories ?? []) {
+        const backmerge = repository.phase === 'backmerge_merge_pending';
+        if (!backmerge && repository.phase !== 'plan_merge_pending') continue;
+        const intoBranch = backmerge ? repository.backmergeBranchName : repository.baseBranchName;
+        const sourceCommit = backmerge ? repository.baseCommitAfterMerge : repository.expectedPlanCommit;
+        const targetCommit = backmerge ? repository.backmergeCommitAfterSync : repository.baseCommitAfterSync;
+        if (!intoBranch || !sourceCommit || !targetCommit) {
+          throw new Error('The pending merge is missing its durable identity.');
+        }
+        await deps.tauri.gitGuardedMergeState({
           repoPath: repository.repoPath,
-          branchName: repository.planBranchName,
-          intoBranch: repository.baseBranchName,
-        })
-        : undefined;
-      const backmergeBranchName = resolvePlanProjectBackmergeBranchName(
-        plan,
-        repository.projectId,
-        deps.getAppState().getProjectById
-      );
-      let backmergeOutput: string | undefined;
-      if (backmergeBranchName) {
-        await deps.tauri.gitCheckout({
-          repoPath: repository.repoPath,
-          branchOrCommit: backmergeBranchName,
-          create: false,
-        });
-        await deps.tauri.gitPull({
-          repoPath: repository.repoPath,
-        });
-        backmergeOutput = await deps.tauri.gitMerge({
-          repoPath: repository.repoPath,
-          branchName: repository.baseBranchName,
-          intoBranch: backmergeBranchName,
+          branchName: backmerge ? repository.baseBranchName : repository.planBranchName,
+          intoBranch,
+          expectedBranchCommit: sourceCommit,
+          expectedIntoCommit: targetCommit,
+          completeMerge: true,
         });
       }
-
-      finalizedRepositories.push({
-        projectId: repository.projectId,
-        repoPath: repository.repoPath,
-        planBranchName: repository.planBranchName,
-        baseBranchName: repository.baseBranchName,
-        mergeOutput,
-        ...(backmergeBranchName
-          ? {
-              backmergeBranchName,
-              backmergeOutput,
-            }
-          : {}),
-      });
     }
 
-    await deps.updateArchitectPlan({
-      branchName: params.branchName,
-      planId: plan.id,
-      status: 'completed',
-      setActive: false,
-    });
-    const { plan: archivedPlan, cleanup } = await archivePlanAndCleanupBranchesWithDeps({
+    if (finalizationSaga.phase === 'prepared') {
+      assertPlanReadyForFinalization(plan);
+      finalizationSaga = await runPlanFinalizationGitWithDeps(
+        plan,
+        finalizationSaga,
+        params.repoPath,
+      );
+    }
+    if (finalizationSaga.phase === 'git_merges_complete') {
+      if (plan.status !== 'completed' && plan.status !== 'archived') {
+        plan = await deps.updateArchitectPlan({
+          branchName: params.branchName,
+          planId: plan.id,
+          status: 'completed',
+          setActive: false,
+        });
+      }
+      const metadataWrittenSaga: PlanLifecycleSaga = {
+        ...finalizationSaga,
+        phase: 'metadata_written',
+        updatedAt: new Date().toISOString(),
+        lastError: undefined,
+      };
+      await upsertPlanLifecycleSaga(metadataWrittenSaga);
+      finalizationSaga = metadataWrittenSaga;
+    }
+
+    const finalizedRepositories: FinalizedPlanRepositoryResult[] = (
+      finalizationSaga.finalizationRepositories ?? []
+    ).map((repository) => ({
+      projectId: repository.projectId,
+      repoPath: repository.repoPath,
+      planBranchName: repository.planBranchName,
+      baseBranchName: repository.baseBranchName,
+      mergeOutput: repository.mergeOutput,
+      ...(repository.backmergeBranchName
+        ? {
+            backmergeBranchName: repository.backmergeBranchName,
+            backmergeOutput: repository.backmergeOutput,
+          }
+        : {}),
+    }));
+
+    const pendingArchive = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === plan!.id && saga.branchName === params.branchName &&
+        saga.operation === 'archive',
+    );
+    if (pendingArchive) {
+      await resumePlanLifecycleSagaWithDeps(pendingArchive);
+      const remainingArchive = (await loadPlanLifecycleSagas()).find(
+        (saga) => saga.planId === plan!.id && saga.branchName === params.branchName &&
+          saga.operation === 'archive',
+      );
+      if (remainingArchive) {
+        throw new Error(
+          remainingArchive.lastError || 'The archived plan cleanup remains pending.',
+        );
+      }
+      await removePlanLifecycleSaga(
+        plan.id,
+        'finalize',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(finalizationSaga),
+      );
+      plan = await deps.getArchitectPlan(params.branchName, params.planId) ?? plan;
+      return { plan, repositories: finalizedRepositories, cleanup: [] };
+    }
+    if (plan.status === 'archived') {
+      await removePlanLifecycleSaga(
+        plan.id,
+        'finalize',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(finalizationSaga),
+      );
+      return { plan, repositories: finalizedRepositories, cleanup: [] };
+    }
+
+    const { plan: archivedPlan, cleanup, lifecycleSaga } = await archivePlanAndCleanupBranchesUnlocked({
       branchName: params.branchName,
       planId: plan.id,
       repoPath: params.repoPath,
       requireMetadataCommit: true,
     });
+    await removePlanLifecycleSaga(
+      plan.id,
+      'finalize',
+      params.branchName,
+      getPlanLifecycleSagaGeneration(finalizationSaga),
+    );
     await deps.commitArchitectPlanMetadata({
       branchName: params.branchName,
       planId: plan.id,
       commitMessage: `chore(metadata): finalize architect plan ${plan.id}`,
     });
     await upsertPlanLifecycleSaga({
-      planId: plan.id, branchName: params.branchName, operation: 'archive', phase: 'metadata_committed',
-      conversationId: plan.conversationId ?? null, requiresMetadataCommit: true,
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      ...lifecycleSaga,
+      phase: 'metadata_committed',
+      updatedAt: new Date().toISOString(),
     });
-    await removePlanLifecycleSaga(plan.id, 'archive', params.branchName);
+    await removePlanLifecycleSaga(
+      plan.id,
+      'archive',
+      params.branchName,
+      getPlanLifecycleSagaGeneration(lifecycleSaga),
+    );
 
     return {
       plan: archivedPlan,
@@ -1816,7 +2872,14 @@ export const createArchitectGitFlowService = (
     };
   };
 
-  const deletePlanAndCleanupBranchesWithDeps = async (params: {
+  const finalizePlanIntoBaseBranchWithDeps = async (
+    params: Parameters<typeof finalizePlanIntoBaseBranchUnlocked>[0],
+  ): ReturnType<typeof finalizePlanIntoBaseBranchUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      finalizePlanIntoBaseBranchUnlocked(params)
+    );
+
+  const deletePlanAndCleanupBranchesUnlocked = async (params: {
     branchName: string;
     planId: string;
     hardDelete?: boolean;
@@ -1832,6 +2895,9 @@ export const createArchitectGitFlowService = (
     }
 
     const crudCapabilities = getArchitectPlanCrudCapabilities(plan);
+    const pendingDeleteSaga = (await loadPlanLifecycleSagas()).find(
+      (saga) => saga.planId === params.planId && saga.branchName === params.branchName && saga.operation === 'delete',
+    );
 
     if (plan.status === 'deleted') {
       await deps.deleteArchitectPlan({
@@ -1840,7 +2906,14 @@ export const createArchitectGitFlowService = (
         hardDelete: params.hardDelete !== false,
       });
 
-      await removePlanLifecycleSaga(params.planId, 'delete', params.branchName);
+      if (pendingDeleteSaga) {
+        await removePlanLifecycleSaga(
+          params.planId,
+          'delete',
+          params.branchName,
+          getPlanLifecycleSagaGeneration(pendingDeleteSaga),
+        );
+      }
       return {
         deletedBranches: [],
         deletedWorktreeKeys: [],
@@ -1852,12 +2925,19 @@ export const createArchitectGitFlowService = (
       throw new Error('Archive the plan before deleting it.');
     }
 
+    const cleanupResources = crudCapabilities.deleteRequiresCleanup && deps.tauri.isTauriAvailable()
+      ? await (async () => {
+          const cleanupTargets = buildCleanupPlanTargetsWithDeps(plan, params.repoPath);
+          await preflightPlanCleanupWithDeps(cleanupTargets);
+          return capturePlanCleanupResourcesWithDeps(cleanupTargets);
+        })()
+      : [];
     const now = new Date().toISOString();
-    const saga: PlanLifecycleSaga = {
+    let saga: PlanLifecycleSaga = {
       planId: params.planId, branchName: params.branchName, operation: 'delete', phase: 'prepared',
-      conversationId: plan.conversationId ?? null, createdAt: now, updatedAt: now,
+      conversationId: plan.conversationId ?? null, cleanupResources, createdAt: now, updatedAt: now,
     };
-    await upsertPlanLifecycleSaga(saga);
+    await startPlanLifecycleSaga(saga);
 
     if (!crudCapabilities.deleteRequiresCleanup) {
       await deps.deleteArchitectPlan({
@@ -1866,7 +2946,12 @@ export const createArchitectGitFlowService = (
         hardDelete: params.hardDelete !== false,
       });
 
-      await removePlanLifecycleSaga(params.planId, 'delete', params.branchName);
+      await removePlanLifecycleSaga(
+        params.planId,
+        'delete',
+        params.branchName,
+        getPlanLifecycleSagaGeneration(saga),
+      );
       return {
         deletedBranches: [],
         deletedWorktreeKeys: [],
@@ -1874,16 +2959,25 @@ export const createArchitectGitFlowService = (
       };
     }
 
-    const repositories = await cleanupPlanBranchesWithDeps(plan, params.repoPath);
-    await upsertPlanLifecycleSaga({ ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() });
+    const repositories = await cleanupPlanBranchesInternalWithDeps(plan, params.repoPath, {
+      expectedResources: saga.cleanupResources,
+    });
+    saga = { ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
+    await upsertPlanLifecycleSaga(saga);
 
     await deps.deleteArchitectPlan({
       branchName: params.branchName,
       planId: params.planId,
       hardDelete: params.hardDelete ?? true,
     });
-    await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_deleted', updatedAt: new Date().toISOString() });
-    await removePlanLifecycleSaga(params.planId, 'delete', params.branchName);
+    saga = { ...saga, phase: 'metadata_deleted', updatedAt: new Date().toISOString() };
+    await upsertPlanLifecycleSaga(saga);
+    await removePlanLifecycleSaga(
+      params.planId,
+      'delete',
+      params.branchName,
+      getPlanLifecycleSagaGeneration(saga),
+    );
 
     return {
       deletedBranches: repositories.flatMap((repository) => repository.deletedBranches),
@@ -1894,63 +2988,141 @@ export const createArchitectGitFlowService = (
     };
   };
 
+  const deletePlanAndCleanupBranchesWithDeps = async (
+    params: Parameters<typeof deletePlanAndCleanupBranchesUnlocked>[0],
+  ): ReturnType<typeof deletePlanAndCleanupBranchesUnlocked> =>
+    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
+      deletePlanAndCleanupBranchesUnlocked(params)
+    );
+
+  const resumePlanLifecycleSagaWithDeps = async (saga: PlanLifecycleSaga): Promise<void> => {
+    let currentSaga = saga;
+    try {
+      const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
+      if (saga.operation === 'provision') {
+        if (provisionMatchesPersistedPlan(saga, plan)) {
+          // Re-enumerate every expected branch and worktree from the persisted plan.
+          // An empty or partial journal describes ownership, not completeness.
+          await provisionPlanBranchesUnlocked(plan!, undefined, saga);
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+        } else {
+          await rollbackProvisionSaga(saga);
+        }
+        return;
+      }
+      if (saga.operation === 'finalize') {
+        await finalizePlanIntoBaseBranchUnlocked({
+          branchName: saga.branchName,
+          planId: saga.planId,
+        });
+        return;
+      }
+      if (saga.operation === 'archive') {
+        if (saga.phase === 'metadata_commit_pending') {
+          await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+          currentSaga = { ...saga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
+          return;
+        }
+        if (saga.phase === 'metadata_committed' || !plan) {
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(saga));
+          return;
+        }
+        if (saga.phase === 'git_cleanup_complete') {
+          if (saga.requiresMetadataCommit) {
+            currentSaga = { ...saga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
+            await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+            currentSaga = { ...currentSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
+            await upsertPlanLifecycleSaga(currentSaga);
+          }
+          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
+          return;
+        }
+        if (!saga.cleanupResources) {
+          throw new PlanLifecycleSagaCorruptionError();
+        }
+        const archived = plan.status === 'archived'
+          ? plan
+          : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
+        currentSaga = { ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() };
+        await upsertPlanLifecycleSaga(currentSaga);
+        await cleanupPlanBranchesInternalWithDeps(archived, undefined, {
+          expectedResources: currentSaga.cleanupResources,
+        });
+        currentSaga = { ...currentSaga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
+        await upsertPlanLifecycleSaga(currentSaga);
+        if (saga.requiresMetadataCommit) {
+          currentSaga = { ...currentSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
+          await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
+          currentSaga = { ...currentSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() };
+          await upsertPlanLifecycleSaga(currentSaga);
+        }
+        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
+        return;
+      }
+      if (!plan) {
+        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
+        return;
+      }
+      if (plan.status === 'deleted' || saga.phase === 'metadata_deleted') {
+        await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
+        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
+        return;
+      }
+      const capabilities = getArchitectPlanCrudCapabilities(plan);
+      if (!capabilities.canDelete) {
+        throw new Error('Archive the plan before deleting it.');
+      }
+      if (capabilities.deleteRequiresCleanup && saga.phase === 'prepared') {
+        if (!currentSaga.cleanupResources) {
+          throw new PlanLifecycleSagaCorruptionError();
+        }
+        await cleanupPlanBranchesInternalWithDeps(plan, undefined, {
+          expectedResources: currentSaga.cleanupResources,
+        });
+        currentSaga = { ...currentSaga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() };
+        await upsertPlanLifecycleSaga(currentSaga);
+      }
+      await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
+      currentSaga = { ...currentSaga, phase: 'metadata_deleted', updatedAt: new Date().toISOString() };
+      await upsertPlanLifecycleSaga(currentSaga);
+      await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName, getPlanLifecycleSagaGeneration(currentSaga));
+    } catch (error) {
+      if (error instanceof StalePlanLifecycleSagaError) return;
+      try {
+        if (saga.operation === 'finalize') {
+          currentSaga = (await loadPlanLifecycleSagas()).find(
+            (candidate) => candidate.planId === saga.planId &&
+              candidate.branchName === saga.branchName && candidate.operation === saga.operation,
+          ) ?? currentSaga;
+        }
+        await upsertPlanLifecycleSaga({
+          ...currentSaga,
+          updatedAt: new Date().toISOString(),
+          lastError: toServiceError(error).message,
+        });
+      } catch (journalError) {
+        if (!(journalError instanceof StalePlanLifecycleSagaError)) throw journalError;
+      }
+    }
+  };
+
   const resumePlanLifecycleSagasWithDeps = async (): Promise<void> => {
     const pending = await loadPlanLifecycleSagas();
     for (const saga of pending) {
-      try {
-        const plan = await deps.getArchitectPlan(saga.branchName, saga.planId);
-        if (saga.operation === 'archive') {
-          if (saga.phase === 'metadata_commit_pending') {
-            await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
-            await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_committed', updatedAt: new Date().toISOString() });
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
-            continue;
-          }
-          if (saga.phase === 'metadata_committed') {
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
-            continue;
-          }
-          if (!plan) {
-            await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
-            continue;
-          }
-          const archived = plan.status === 'archived'
-            ? plan
-            : await deps.archiveArchitectPlan(saga.branchName, saga.planId);
-          await upsertPlanLifecycleSaga({ ...saga, phase: 'metadata_written', updatedAt: new Date().toISOString() });
-          await cleanupPlanBranchesWithDeps(archived);
-          const cleanedSaga = { ...saga, phase: 'git_cleanup_complete' as const, updatedAt: new Date().toISOString() };
-          await upsertPlanLifecycleSaga(cleanedSaga);
-          if (saga.requiresMetadataCommit) {
-            await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_commit_pending', updatedAt: new Date().toISOString() });
-            await deps.commitArchitectPlanMetadata({ branchName: saga.branchName, planId: saga.planId, commitMessage: `chore(metadata): finalize architect plan ${saga.planId}` });
-            await upsertPlanLifecycleSaga({ ...cleanedSaga, phase: 'metadata_committed', updatedAt: new Date().toISOString() });
-          }
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
-          continue;
-        }
-        if (!plan) {
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
-          continue;
-        }
-        if (plan.status === 'deleted') {
-          await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
-          await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
-          continue;
-        }
-        const capabilities = getArchitectPlanCrudCapabilities(plan);
-        if (!capabilities.canDelete) {
-          throw new Error('Archive the plan before deleting it.');
-        }
-        if (capabilities.deleteRequiresCleanup) {
-          await cleanupPlanBranchesWithDeps(plan);
-          await upsertPlanLifecycleSaga({ ...saga, phase: 'git_cleanup_complete', updatedAt: new Date().toISOString() });
-        }
-        await deps.deleteArchitectPlan({ branchName: saga.branchName, planId: saga.planId, hardDelete: true });
-        await removePlanLifecycleSaga(saga.planId, saga.operation, saga.branchName);
-      } catch (error) {
-        await upsertPlanLifecycleSaga({ ...saga, updatedAt: new Date().toISOString(), lastError: toServiceError(error).message });
-      }
+      await withPlanLifecycleLock(deps, saga.branchName, saga.planId, async () => {
+        const expectedGeneration = getPlanLifecycleSagaGeneration(saga);
+        const activeSaga = (await loadPlanLifecycleSagas()).find((candidate) =>
+          candidate.planId === saga.planId && candidate.branchName === saga.branchName &&
+          candidate.operation === saga.operation &&
+          getPlanLifecycleSagaGeneration(candidate) === expectedGeneration
+        );
+        if (!activeSaga) return;
+        await resumePlanLifecycleSagaWithDeps(activeSaga);
+      });
     }
   };
 

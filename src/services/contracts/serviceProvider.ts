@@ -113,7 +113,7 @@ export interface ServiceProvider {
   getAppBootstrap: () => Promise<AppBootstrapDto>;
   listConversations: () => Promise<ConversationsDto>;
   listMessages: (conversationId?: string) => Promise<MessagesDto>;
-  listTasks: () => Promise<TaskCatalogDto>;
+  listTasks: (options?: { persistedOnly?: boolean }) => Promise<TaskCatalogDto>;
   getGitTreeForProject: (projectId: string) => Promise<GitTreeDto>;
   gitWorktreeCreate: (
     projectId: string,
@@ -126,6 +126,7 @@ export interface ServiceProvider {
     taskId: string;
     worktreePath: string;
     branchName: string;
+    createdByThisCall?: boolean;
     status: 'created' | 'reused' | 'repaired';
   }>;
   gitWorktreeRemove: (

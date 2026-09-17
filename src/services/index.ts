@@ -74,7 +74,7 @@ export const services = {
   },
   listConversations: () => callProviderMethod('listConversations'),
   listMessages: (conversationId?: string) => callProviderMethod('listMessages', conversationId),
-  listTasks: () => callProviderMethod('listTasks'),
+  listTasks: (options?: { persistedOnly?: boolean }) => callProviderMethod('listTasks', options),
   getGitTreeForProject: (projectId: string) => callProviderMethod('getGitTreeForProject', projectId),
   gitWorktreeCreate: (
     projectId: string,

@@ -5,7 +5,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{
+    filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+};
 
 static FILE_LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 const MAX_DAILY_LOG_BYTES: u64 = 20 * 1024 * 1024;
@@ -119,19 +121,10 @@ fn is_isolated_browser_log_dir(candidate: &Path, temporary_root: &Path) -> bool 
 pub fn init_logging() {
     // Default log level can be controlled via RUST_LOG environment variable
     // e.g., RUST_LOG=debug,sqlx=warn
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        // Tao can emit noisy event-loop ordering warnings during heavy webview redraws
-        // such as opening/closing CodeMirror diff modals. Keep real app warnings visible.
-        EnvFilter::new("info,tao::platform_impl::platform::event_loop::runner=error")
-    });
-    // rmcp's OAuth implementation emits authorization codes at debug level.
-    // Keep that module at info even when a broad RUST_LOG=debug/trace is set.
-    let env_filter = env_filter.add_directive(
-        "rmcp::transport::auth=info"
-            .parse()
-            .expect("static tracing directive must parse"),
-    );
-    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let env_filter = logging_filter(std::env::var("RUST_LOG").ok().as_deref());
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(filter_fn(excludes_rmcp_events));
 
     if let Some(log_dir) = platform_log_dir() {
         if fs::create_dir_all(&log_dir).is_ok() {
@@ -159,7 +152,8 @@ pub fn init_logging() {
                         tracing_subscriber::fmt::layer()
                             .with_ansi(false)
                             .json()
-                            .with_writer(non_blocking),
+                            .with_writer(non_blocking)
+                            .with_filter(filter_fn(excludes_rmcp_events)),
                     )
                     .init();
                 return;
@@ -173,9 +167,97 @@ pub fn init_logging() {
         .init();
 }
 
+fn logging_filter(configured: Option<&str>) -> EnvFilter {
+    let filter = configured
+        .and_then(|directives| EnvFilter::try_new(directives).ok())
+        .unwrap_or_else(|| {
+            // Tao can emit noisy event-loop ordering warnings during heavy webview redraws
+            // such as opening/closing CodeMirror diff modals. Keep real app warnings visible.
+            EnvFilter::new("info,tao::platform_impl::platform::event_loop::runner=error")
+        });
+    filter
+}
+
+fn excludes_rmcp_events(metadata: &tracing::Metadata<'_>) -> bool {
+    let target = metadata.target();
+    target != "rmcp" && !target.starts_with("rmcp::")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
+
+    struct CapturedGuard(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedGuard {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for CapturedWriter {
+        type Writer = CapturedGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            CapturedGuard(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn rmcp_payloads_are_suppressed_for_all_supported_log_levels() {
+        for level in ["info", "debug", "trace", "trace,rmcp::service=trace"] {
+            let writer = CapturedWriter::default();
+            let subscriber = tracing_subscriber::registry()
+                .with(logging_filter(Some(level)))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_ansi(false)
+                        .json()
+                        .with_writer(writer.clone())
+                        .with_filter(filter_fn(excludes_rmcp_events)),
+                );
+
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::event!(
+                    target: "rmcp::service",
+                    tracing::Level::ERROR,
+                    payload = "synthetic-private-payload",
+                    "SDK protocol event"
+                );
+                tracing::event!(
+                    target: "macro::commands::mcp",
+                    tracing::Level::ERROR,
+                    category = "mcp.lifecycle",
+                    "MCP lifecycle event"
+                );
+            });
+
+            let bytes = writer
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let output = String::from_utf8(bytes).expect("captured logs are UTF-8");
+            assert!(
+                !output.contains("synthetic-private-payload"),
+                "level={level}"
+            );
+            assert!(output.contains("mcp.lifecycle"), "level={level}");
+        }
+    }
 
     #[test]
     fn daily_size_limited_writer_discards_bytes_after_the_limit() {

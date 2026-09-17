@@ -42,7 +42,17 @@
     "interrupted": "Start unterbrochen",
     "failedTitle": "Macro konnte den Start nicht abschließen.",
     "failedDescription": "Macro konnte die lokalen Daten nicht initialisieren. Sie können den Vorgang sicher wiederholen.",
-    "failedSteps": "Fehlgeschlagene Schritte"
+    "failedSteps": "Fehlgeschlagene Schritte",
+    "metadataRecovery": {
+      "restoredWithCommit": "@macro-Metadaten aus dem Verlauf wiederhergestellt ({{commit}})",
+      "restored": "@macro-Metadaten aus dem Verlauf wiederhergestellt",
+      "restoredDescription": "Macro hat den letzten gültigen Metadaten-Snapshot wiederhergestellt, bevor der Arbeitsbereich geladen wurde.",
+      "reconstructed": "@macro-Metadaten aus lokalen Projekten neu erstellt",
+      "reconstructedDescription": "Macro hat aus den bekannten lokalen Projekten einen minimalen Metadatenzustand neu erstellt.",
+      "skipped": "Automatische @macro-Wiederherstellung übersprungen",
+      "blockedConflictDescription": "Macro hat ungelöste Konflikte im Metadaten-Arbeitsverzeichnis gefunden und die Wiederherstellung nicht automatisch angewendet.",
+      "blockedDirtyDescription": "Macro hat lokale Änderungen im Metadaten-Arbeitsverzeichnis gefunden und die Wiederherstellung nicht automatisch angewendet."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "Eine Aufgabe läuft noch. Beim Schließen von Macro wird sie unterbrochen.",
@@ -451,6 +461,11 @@
     "imageImportFailed": "Keine Bilder hinzugefügt. PNG, JPEG, GIF oder WebP verwenden: maximal 2 MB je Bild, 8 MB insgesamt und 10 Bilder.",
     "newChat": "Neuer Chat",
     "newConversation": "Neues Gespräch",
+    "unsavedAssistant": {
+      "label": "Nicht gespeichert",
+      "saving": "Antwort wird gespeichert...",
+      "description": "Macro konnte diese Antwort nicht speichern. Versuche es erneut oder lösche sie, bevor du eine weitere Nachricht sendest."
+    },
     "loadingConversation": "Konversation wird wiederhergestellt...",
     "showHistory": "Geschichte anzeigen",
     "hideHistory": "Geschichte ausblenden",
@@ -537,6 +552,8 @@
     "toolTurnLimitNoticeDescription": "Macro hat die Agent-Schleife nach dem konfigurierten Turn-Limit gestoppt. Ändere oder deaktiviere es unter Einstellungen > Allgemein > Maximale Agent-Turns und sende dann eine neue Nachricht, um fortzufahren.",
     "toolTurnLimitFallbackTitle": "Tool-Turn-Limit erreicht",
     "toolTurnLimitFallbackDescription": "Der letzte Durchlauf ohne Tools hat keine verwendbare Antwort erzeugt, daher zeigt Macro eine Ersatz-Zusammenfassung.",
+    "providerCompletionNoticeTitle": "Antwort unterbrochen",
+    "providerCompletionNoticeDescription": "Der Anbieter hat diese Antwort aus folgendem Grund beendet: {{reason}}. Sie können Ihre Anfrage überarbeiten und es erneut versuchen.",
     "thinking": "Denken...",
     "tool": "Werkzeug",
     "runningTools": "Laufende Tools",
@@ -558,6 +575,9 @@
     "toolApprovalReasonPlaceholder": "Add a short reason if you want Macro to know why.",
     "toolApprovalConfirmDeny": "Confirm denial",
     "toolApprovalDeny": "Refuse",
+    "mcpApprovalArguments": "MCP-Vorgang und Argumente",
+    "mcpApprovalRedacted": "Vertrauliche Felder werden maskiert.",
+    "mcpApprovalTruncated": "Argumente nach 16.000 Zeichen gekürzt.",
     "toolApprovalAllowOnce": "Allow once",
     "toolApprovalAllowConversation": "Allow for this conversation",
     "toolApprovalAllowOnceHint": "Approve only this exact request.",
@@ -999,7 +1019,8 @@
       "upToDate": "Macro ist im ausgewählten Kanal auf dem neuesten Stand.",
       "stableConfirmationTitle": "Zum Stable-Kanal wechseln?",
       "stableConfirmationDescription": "Wenn die neueste Stable-Version älter als diese Preview ist, bietet Macro die Installation dieser älteren signierten Version an.",
-      "switchToStable": "Zu Stable wechseln"
+      "switchToStable": "Zu Stable wechseln",
+      "refreshFailed": "Der Update-Kanal wurde gespeichert, aber die Update-Informationen konnten nicht aktualisiert werden."
     },
     "sound_effects": "Soundeffekte",
     "sound_effects_desc": "Spielen Sie bei Abschluss der Aufgabe oder bei Fehlern Töne ab",
@@ -1532,6 +1553,7 @@
       "collapseProject": "Projekt reduzieren",
       "noProjects": "Noch keine Projekte.",
       "loadError": "Pläne konnten nicht geladen werden.",
+      "preferenceLoadError": "Die Navigator-Einstellungen konnten nicht geladen werden.",
       "activateError": "Dieser Plan ist nicht mehr verfügbar.",
       "createError": "Der Plan konnte nicht erstellt werden.",
       "readOnlyScope": "Dieses Projekt ist schreibgeschützt.",
@@ -1719,6 +1741,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "Die Strategievorschau konnte nicht verworfen werden.",
+    "strategyPreviewApplyError": "Die Strategievorschau konnte nicht angewendet werden.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Wähle oder erstelle einen Plan, um mit der Architektur zu beginnen.",
     "createFirstPlanToStart": "Erstelle deinen ersten Plan, um mit der Architektur zu beginnen.",
@@ -2095,6 +2119,7 @@
   },
   "notifications": {
     "centerTitle": "Benachrichtigungen",
+    "mcpServersUnavailable": "Einige MCP-Server sind nicht verfügbar",
     "openCenter": "Benachrichtigungen öffnen",
     "closeCenter": "Benachrichtigungen schließen",
     "clearAll": "Alles löschen",
@@ -2477,6 +2502,15 @@
   },
   "backup": {
     "scheduled": "Der Vorgang ist vorbereitet. Beenden Sie Macro vollständig und öffnen Sie es erneut. Ändern Sie diese Sitzung bis dahin nicht.",
+    "resultExported": "Sicherung gespeichert.",
+    "resultRestored": "Profil wiederhergestellt. Das vorherige Profil bleibt unter dem unten angegebenen Pfad erhalten.",
+    "resultRolledBack": "Die unterbrochene Wiederherstellung wurde rückgängig gemacht. Das vorherige Profil wurde wiederhergestellt.",
+    "resultFailed": "Der Sicherungsvorgang konnte nicht abgeschlossen werden. Prüfen Sie die Diagnosedetails.",
+    "resultInvalidRequest": "Die ausstehende Anfrage war ungültig und wurde isoliert. Ihr Profil wurde nicht verändert.",
+    "resultLegacy": "Ein Ergebnis einer früheren Version ist in den Diagnosedetails verfügbar.",
+    "diagnostics": "Diagnosedetails",
+    "startupTitle": "Profilwiederherstellung erforderlich",
+    "startupRecovery": "Die Wiederherstellung der Browserdaten konnte nicht abgeschlossen werden. Das native Wiederherstellungsarchiv bleibt erhalten. Prüfen Sie die Diagnose, geben Sie bei Bedarf lokalen Speicher frei und starten Sie Macro erneut.",
     "title": "Sicherung und Wiederherstellung",
     "scope": "Lokales Profil: Gespräche, gespeicherte Anhänge, Code-Checkpoints, Entwürfe und globale Einstellungen. Projektordner und Git-Metadaten sind ausgeschlossen. Sichern Sie Ihre Projekte separat. Maximal 256 MiB; Wiederherstellung mit derselben Macro-Version.",
     "secrets": "Zugangsdaten der Anbieter, MCP-Umgebungsvariablen und Header sind von portablen Exporten ausgeschlossen. Verbinden Sie Anbieter nach der Wiederherstellung erneut. Gespräche und Dateien bleiben private Daten; bewahren Sie das Archiv sicher auf.",

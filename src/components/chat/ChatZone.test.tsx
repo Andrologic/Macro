@@ -63,7 +63,9 @@ export type MockMessage = {
       free_text_placeholder?: string;
     }>;
   };
-  completion_reason?: 'completed' | 'tool_turn_limit' | 'post_tool_empty_fallback';
+  completion_reason?: import('../../types').ChatCompletionReason;
+  persistence_state?: 'failed' | 'retrying';
+  persistence_error?: string;
 };
 
 export type MockChatState = {
@@ -156,6 +158,8 @@ export type MockChatState = {
   submitDuringActiveTurn: ReturnType<typeof mock>;
   clearLastError: ReturnType<typeof mock>;
   clearConversationRuntimeError: ReturnType<typeof mock>;
+  retryAssistantPersistence: ReturnType<typeof mock>;
+  deleteUnsavedAssistantResponse: ReturnType<typeof mock>;
   editMessage: ReturnType<typeof mock>;
   getAgentCodeReplayPreview: ReturnType<typeof mock>;
   restoreAgentCodeForReplay: ReturnType<typeof mock>;
@@ -811,6 +815,8 @@ const resetState = () => {
     submitDuringActiveTurn: mock(async () => 'steered'),
     clearLastError: mock(() => undefined),
     clearConversationRuntimeError: mock(() => undefined),
+    retryAssistantPersistence: mock(async () => undefined),
+    deleteUnsavedAssistantResponse: mock(async () => undefined),
     editMessage: mock(async () => undefined),
     getAgentCodeReplayPreview: mock(async () => null),
     restoreAgentCodeForReplay: mock(async () => undefined),
@@ -945,7 +951,14 @@ describe('ChatZone', () => {
     return editor;
   };
 
-  const pasteComposerImage = async (attach?: (file: File) => Promise<void>): Promise<void> => {
+  const pasteComposerImage = async (optionsOrAttach: {
+    text?: string;
+    html?: string;
+    imageSource?: 'items' | 'files' | 'both';
+    fileReaderFails?: boolean;
+  } | ((file: File) => Promise<void>) = {}): Promise<Event> => {
+    const attach = typeof optionsOrAttach === 'function' ? optionsOrAttach : undefined;
+    const options = typeof optionsOrAttach === 'function' ? {} : optionsOrAttach;
     const initialFileReader = globalThis.FileReader;
     const initialImage = globalThis.Image;
     class TestFileReader {
@@ -955,6 +968,11 @@ describe('ChatZone', () => {
       onerror: ((event: ProgressEvent<FileReader>) => void) | null = null;
 
       readAsDataURL(): void {
+        if (options.fileReaderFails) {
+          this.error = new window.DOMException('Unreadable clipboard image');
+          this.onerror?.(new Event('error') as unknown as ProgressEvent<FileReader>);
+          return;
+        }
         this.result = 'data:image/png;base64,ZHJhZnQtaW1hZ2U=';
         this.onload?.(new Event('load') as unknown as ProgressEvent<FileReader>);
       }
@@ -973,20 +991,39 @@ describe('ChatZone', () => {
     globalThis.FileReader = TestFileReader as unknown as typeof FileReader;
     globalThis.Image = TestImage as unknown as typeof Image;
     const file = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'draft.png', { type: 'image/png' });
+    const imageSource = options.imageSource ?? 'both';
     const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+    const clipboardTextItems = [
+      options.text === undefined ? null : {
+        type: 'text/plain',
+        getAsFile: () => null,
+      },
+      options.html === undefined ? null : {
+        type: 'text/html',
+        getAsFile: () => null,
+      },
+    ].filter(Boolean);
     Object.defineProperty(pasteEvent, 'clipboardData', {
       value: {
-        items: [{
-          type: 'image/png',
-          getAsFile: () => file,
-        }],
+        items: [
+          ...(imageSource === 'items' || imageSource === 'both'
+            ? [{ type: 'image/png', getAsFile: () => file }]
+            : []),
+          ...clipboardTextItems,
+        ],
+        files: imageSource === 'files' || imageSource === 'both' ? [file] : [],
+        getData: (type: string) => {
+          if (type === 'text/plain') return options.text ?? '';
+          if (type === 'text/html') return options.html ?? '';
+          return '';
+        },
       },
     });
 
     try {
       if (attach) {
         await attach(file);
-        return;
+        return pasteEvent;
       }
       await act(async () => {
         getComposerEditor().dispatchEvent(pasteEvent);
@@ -996,6 +1033,42 @@ describe('ChatZone', () => {
       globalThis.FileReader = initialFileReader;
       globalThis.Image = initialImage;
     }
+
+    return pasteEvent;
+  };
+
+  const pasteComposerText = async (
+    text: string,
+    options: { includeUnusableImage?: boolean } = {},
+  ): Promise<Event> => {
+    const pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, 'clipboardData', {
+      value: {
+        items: [
+          ...(options.includeUnusableImage
+            ? [{ type: 'image/png', getAsFile: () => null }]
+            : []),
+          { type: 'text/plain', getAsFile: () => null },
+        ],
+        files: [],
+        getData: (type: string) => type === 'text/plain' ? text : '',
+      },
+    });
+
+    await act(async () => {
+      const editor = getComposerEditor();
+      editor.dispatchEvent(pasteEvent);
+      if (!pasteEvent.defaultPrevented) {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
+          editor,
+          `${editor.value}${text}`,
+        );
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
+
+    return pasteEvent;
   };
 
   const clickSendButton = async () => {
@@ -1023,7 +1096,7 @@ describe('ChatZone', () => {
   };
 
   const clickButtonWithText = async (label: string) => {
-    const button = Array.from(requireContainer().querySelectorAll('button')).find(
+    const button = Array.from(document.body.querySelectorAll('button')).find(
       (candidate) => candidate.textContent?.trim() === label
     );
     if (!button) {
@@ -1309,6 +1382,76 @@ describe('ChatZone', () => {
     expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
   });
 
+  it('inserts only the image when a paste contains image, text, and HTML', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Texte déjà présent.');
+
+    const pasteEvent = await pasteComposerImage({
+      text: 'Texte provenant du presse-papiers.',
+      html: '<p>Texte provenant du presse-papiers.</p>',
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(pasteEvent.cancelBubble).toBe(true);
+    expect(getComposerEditor().value).toBe('Texte déjà présent.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+  });
+
+  it('reads a pasted image from the clipboard files list when items has none', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const pasteEvent = await pasteComposerImage({ imageSource: 'files' });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+  });
+
+  it('handles an asynchronous pasted image read failure without inserting clipboard text', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Texte existant.');
+    const pasteEvent = await pasteComposerImage({
+      text: 'Texte qui accompagne une image illisible.',
+      fileReaderFails: true,
+    });
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(getComposerEditor().value).toBe('Texte existant.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+    expect(notifyErrorMock).toHaveBeenCalled();
+  });
+
+  it('keeps normal text paste behavior when the clipboard has no image', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Avant ');
+
+    const pasteEvent = await pasteComposerText('le collage.');
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(getComposerEditor().value).toBe('Avant le collage.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+  });
+
+  it('keeps text paste behavior when an advertised image cannot be read', async () => {
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const pasteEvent = await pasteComposerText('Image indisponible, texte conservé.', {
+      includeUnusableImage: true,
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(getComposerEditor().value).toBe('Image indisponible, texte conservé.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).toBeNull();
+  });
+
   it('keeps the composer draft when an Implement kickoff is cancelled', async () => {
     appState = {
       ...appState,
@@ -1361,6 +1504,57 @@ describe('ChatZone', () => {
     expect(composerDraftsByContextKey['conversation:conv-1']?.text).toBe(
       'Conserver ces notes si le démarrage est annulé.',
     );
+  });
+
+  it('starts an Implement execution when the optional kickoff note is empty', async () => {
+    appState = {
+      ...appState,
+      mode: 'Implement',
+      selectedTaskId: 'task-1',
+    };
+    taskState = {
+      ...taskState,
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Start without notes',
+          draft: false,
+          task_source: 'architect',
+          is_blocked: false,
+          status: 'Running',
+          execution_targets: [{ projectId: 'project-1' }],
+          project_ids: ['project-1'],
+          project_id: 'project-1',
+          plan_id: 'plan-1',
+          branch_name: 'feature/start-without-notes',
+          dependencies: [],
+          estimated_changes: [],
+          description: 'Start the task with its existing briefing.',
+        },
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    expect(getComposerEditor().value).toBe('');
+    const kickoffButton = requireContainer().querySelector(
+      '[data-tour-id="implement-start-execution"]',
+    );
+    expect(kickoffButton).not.toBeNull();
+
+    await act(async () => {
+      kickoffButton?.dispatchEvent(new window.Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(chatState.sendMessage).toHaveBeenCalledTimes(1);
+    expect(chatState.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'conv-1',
+      taskId: 'task-1',
+      content: expect.stringContaining('Start without notes'),
+    }));
   });
 
   it('restores the composer when a send fails before Macro accepts it', async () => {
@@ -2515,13 +2709,13 @@ describe('ChatZone', () => {
       await previewDeferred.promise;
     });
 
-    expect(requireContainer().textContent).toContain('Revenir au point de contrôle du code ?');
-    expect(requireContainer().textContent).toContain('src/new-file.ts');
+    expect(document.body.textContent).toContain('Revenir au point de contrôle du code ?');
+    expect(document.body.textContent).toContain('src/new-file.ts');
     expect(chatState.editMessage).not.toHaveBeenCalled();
 
     await clickButtonWithText('Annuler');
 
-    expect(requireContainer().textContent).not.toContain('Revenir au point de contrôle du code ?');
+    expect(document.body.textContent).not.toContain('Revenir au point de contrôle du code ?');
     expect(requireContainer().querySelector('[data-chat-composer-editing="true"]')).not.toBeNull();
     expect(getComposerEditor().value).toBe('Edited message');
     expect(chatState.editMessage).not.toHaveBeenCalled();
@@ -2709,8 +2903,8 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    expect(requireContainer().textContent).toContain('Revenir au point de contrôle du code ?');
-    expect(requireContainer().textContent).toContain('src/new-file.ts');
+    expect(document.body.textContent).toContain('Revenir au point de contrôle du code ?');
+    expect(document.body.textContent).toContain('src/new-file.ts');
     expect(chatState.editMessage).not.toHaveBeenCalled();
     expect(chatState.restoreAgentCodeForReplay).not.toHaveBeenCalled();
   });
@@ -2749,7 +2943,7 @@ describe('ChatZone', () => {
       await Promise.resolve();
     });
 
-    const confirmButton = Array.from(requireContainer().querySelectorAll('button')).find(
+    const confirmButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent?.trim() === 'Restaurer et relancer'
     );
     expect(confirmButton).not.toBeNull();
@@ -2927,6 +3121,57 @@ describe('ChatZone', () => {
     expect(requireContainer().textContent).toContain('Stop');
     expect(requireContainer().querySelector('[data-tour-id="chat-send-button"]')).not.toBeNull();
     expect(getComposerEditor().hasAttribute('disabled')).toBe(false);
+  });
+
+  it('shows recovery actions and disables the composer for an unsaved assistant response', async () => {
+    chatState = {
+      ...chatState,
+      messages: [
+        buildMessage({ id: 'msg-user-1', role: 'user', content: 'Bonjour Macro' }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Réponse conservée localement',
+          persistence_state: 'failed',
+          persistence_error: 'SQLite indisponible',
+        }),
+      ],
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+
+    const recoveryCard = requireContainer().querySelector(
+      '[data-chat-unsaved-assistant-response="failed"]',
+    );
+    expect(recoveryCard).not.toBeNull();
+    expect(recoveryCard?.textContent).toContain('Not saved');
+    expect(recoveryCard?.textContent).toContain('SQLite indisponible');
+    expect(recoveryCard?.textContent).toContain('Retry');
+    expect(recoveryCard?.textContent).toContain('Copy');
+    expect(recoveryCard?.textContent).toContain('Delete');
+    expect(getComposerEditor().hasAttribute('disabled')).toBe(true);
+
+    const retryButton = Array.from(recoveryCard?.querySelectorAll('button') ?? [])
+      .find((button) => button.textContent?.includes('Retry'));
+    await act(async () => {
+      retryButton?.click();
+      await Promise.resolve();
+    });
+    expect(chatState.retryAssistantPersistence).toHaveBeenCalledWith(
+      'msg-assistant-1',
+    );
+
+    const deleteButton = Array.from(recoveryCard?.querySelectorAll('button') ?? [])
+      .find((button) => button.textContent?.includes('Delete'));
+    await act(async () => {
+      deleteButton?.click();
+      await Promise.resolve();
+    });
+    expect(chatState.deleteUnsavedAssistantResponse).toHaveBeenCalledWith(
+      'msg-assistant-1',
+    );
   });
 
   it('renders live context diagnostics while a visible conversation is streaming', async () => {
@@ -3118,6 +3363,16 @@ describe('ChatZone', () => {
       resolveRefresh?.();
       await Promise.resolve();
     });
+  });
+
+  it.each(['content_filter', 'safety', 'unknown_terminal'])('renders a persisted provider termination notice for %s', async (reason) => {
+    chatState = { ...chatState, messages: [buildMessage({
+      id: 'assistant-filtered', role: 'assistant', content: 'Partial response', completion_reason: reason,
+    })] };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const notice = requireContainer().querySelector(`[data-chat-completion-notice="${reason}"]`);
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain('Response interrupted');
   });
 
   it('renders a dedicated notice when the assistant hit the tool turn limit', async () => {

@@ -29,16 +29,30 @@ describe('ConversationArchive', () => {
   const initialChatState = useChatStore.getState();
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
+  let stateValues: Record<string, unknown> = {};
   let invokeMock = mock(async (
     _command?: string,
     _payload?: Record<string, unknown>,
   ): Promise<unknown> => undefined);
 
   beforeEach(() => {
+    stateValues = {};
     invokeMock = mock(async (
-      _command?: string,
-      _payload?: Record<string, unknown>,
-    ): Promise<unknown> => undefined);
+      command?: string,
+      payload?: Record<string, unknown>,
+    ): Promise<unknown> => {
+      if (command === 'state_get_snapshot') {
+        return { schemaVersion: 1, values: structuredClone(stateValues) };
+      }
+      if (command === 'state_set_value') {
+        stateValues[String(payload?.key)] = structuredClone(payload?.value);
+        return {
+          schemaVersion: 1,
+          values: structuredClone(stateValues),
+        };
+      }
+      return undefined;
+    });
     installTauriRuntimeMock(invokeMock as never);
     useViewFilterStore.setState({
       chat: { ...DEFAULT_CHAT_VIEW_FILTERS },
@@ -291,8 +305,18 @@ describe('ConversationArchive', () => {
   it('opens an indexed message result and focuses the message after loading its conversation', async () => {
     invokeMock = mock(async (
       command?: string,
-      _payload?: Record<string, unknown>,
+      payload?: Record<string, unknown>,
     ): Promise<unknown> => {
+      if (command === 'state_get_snapshot') {
+        return { schemaVersion: 1, values: structuredClone(stateValues) };
+      }
+      if (command === 'state_set_value') {
+        stateValues[String(payload?.key)] = structuredClone(payload?.value);
+        return {
+          schemaVersion: 1,
+          values: structuredClone(stateValues),
+        };
+      }
       if (command === 'db_search_messages') {
         return {
           results: [{

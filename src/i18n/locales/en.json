@@ -70,7 +70,17 @@
     "interrupted": "Startup interrupted",
     "failedTitle": "Macro could not finish booting.",
     "failedDescription": "Macro could not initialize its local data. You can retry safely.",
-    "failedSteps": "Failed steps"
+    "failedSteps": "Failed steps",
+    "metadataRecovery": {
+      "restoredWithCommit": "Metadata @macro restored from history ({{commit}})",
+      "restored": "Metadata @macro restored from history",
+      "restoredDescription": "Macro restored the latest valid metadata snapshot before loading the workspace.",
+      "reconstructed": "Metadata @macro reconfigured from local projects",
+      "reconstructedDescription": "Macro rebuilt a minimal metadata state from locally known projects.",
+      "skipped": "Automatic @macro recovery skipped",
+      "blockedConflictDescription": "Macro found unresolved conflicts in the metadata worktree and did not apply recovery automatically.",
+      "blockedDirtyDescription": "Macro found local changes in the metadata worktree and did not apply recovery automatically."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "A task is still running. Closing Macro will interrupt it.",
@@ -479,6 +489,11 @@
     "imageImportFailed": "No images added. Use valid PNG, JPEG, GIF or WebP images, up to 2 MB each, 8 MB total and 10 images.",
     "newChat": "New Chat",
     "newConversation": "New Conversation",
+    "unsavedAssistant": {
+      "label": "Not saved",
+      "saving": "Saving response...",
+      "description": "Macro could not save this response. Retry or remove it before sending another message."
+    },
     "loadingConversation": "Restoring conversation...",
     "showHistory": "Show history",
     "hideHistory": "Hide history",
@@ -565,6 +580,8 @@
     "toolTurnLimitNoticeDescription": "Macro stopped the agent loop after the configured turn limit. Change or disable it in Settings > General > Max agent turns, then send a new message to continue.",
     "toolTurnLimitFallbackTitle": "Tool turn limit reached",
     "toolTurnLimitFallbackDescription": "The final no-tool pass did not produce a usable answer, so Macro showed a fallback summary.",
+    "providerCompletionNoticeTitle": "Response interrupted",
+    "providerCompletionNoticeDescription": "The provider ended this response with reason: {{reason}}. You can revise your request and try again.",
     "thinking": "Thinking...",
     "tool": "Tool",
     "runningTools": "Running tools",
@@ -586,6 +603,9 @@
     "toolApprovalReasonPlaceholder": "Add a short reason if you want Macro to know why.",
     "toolApprovalConfirmDeny": "Confirm denial",
     "toolApprovalDeny": "Refuse",
+    "mcpApprovalArguments": "MCP operation and arguments",
+    "mcpApprovalRedacted": "Sensitive fields are masked.",
+    "mcpApprovalTruncated": "Arguments truncated after 16,000 characters.",
     "toolApprovalAllowOnce": "Allow once",
     "toolApprovalAllowConversation": "Allow for this conversation",
     "toolApprovalAllowOnceHint": "Approve only this exact request.",
@@ -1028,7 +1048,8 @@
       "upToDate": "Macro is up to date on the selected channel.",
       "stableConfirmationTitle": "Switch to Stable?",
       "stableConfirmationDescription": "If the latest Stable version is older than this Preview, Macro will offer to install that older signed version.",
-      "switchToStable": "Switch to Stable"
+      "switchToStable": "Switch to Stable",
+      "refreshFailed": "Update channel saved, but update information could not be refreshed."
     },
     "sound_effects": "Sound Effects",
     "sound_effects_desc": "Play sounds on task completion or errors",
@@ -1560,6 +1581,7 @@
       "collapseProject": "Collapse project",
       "noProjects": "No projects yet.",
       "loadError": "Unable to load plans.",
+      "preferenceLoadError": "Unable to load navigator preferences.",
       "activateError": "This plan is no longer available.",
       "createError": "Unable to create the plan.",
       "readOnlyScope": "This project is read-only.",
@@ -1747,6 +1769,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "Failed to discard strategy preview.",
+    "strategyPreviewApplyError": "Failed to apply strategy preview.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Select or create a plan to start architecting.",
     "createFirstPlanToStart": "Create your first plan to start architecting.",
@@ -2168,6 +2192,7 @@
   },
   "notifications": {
     "centerTitle": "Notifications",
+    "mcpServersUnavailable": "Some MCP servers are unavailable",
     "openCenter": "Open notifications",
     "closeCenter": "Close notifications",
     "clearAll": "Clear all",
@@ -2550,6 +2575,15 @@
   },
   "backup": {
     "scheduled": "Operation prepared. Quit Macro completely, then reopen it. Keep this session unchanged until you quit.",
+    "resultExported": "Backup saved.",
+    "resultRestored": "Profile restored. The previous profile is retained at the path below.",
+    "resultRolledBack": "Interrupted restoration rolled back. The previous profile was recovered.",
+    "resultFailed": "The backup operation could not finish. See the diagnostic details.",
+    "resultInvalidRequest": "The pending request was invalid and has been set aside. Your profile was not changed.",
+    "resultLegacy": "A result from an earlier version is available in the diagnostic details.",
+    "diagnostics": "Diagnostic details",
+    "startupTitle": "Profile recovery required",
+    "startupRecovery": "Browser data restoration could not finish. The native recovery archive is retained. Check the diagnostic details, free local storage if necessary, then restart Macro to retry.",
     "title": "Backup and restore",
     "scope": "Local profile: conversations, stored attachments, code checkpoints, drafts and global preferences. Project folders and their Git metadata are excluded. Keep a separate copy of your projects. Maximum archive size: 256 MiB; restore with the same Macro version.",
     "secrets": "Provider credentials, MCP environment variables and headers are excluded from portable exports. Reconnect providers after restoring. Conversation and file contents remain private data; store the archive securely.",

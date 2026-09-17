@@ -633,6 +633,17 @@ describe('architectPlanService replicas', () => {
     expect(webChat).toContain('Persist this before delete.');
   });
 
+  it('rejects a transcript from a different conversation before replacing metadata', async () => {
+    const plan = buildPlan({ projectIds: ['web'], conversationId: 'conversation-owned', nodes: [], predictedBranches: [] });
+    seedReplica('/repos/web', plan);
+    const original = readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/chat.jsonl`);
+    const { service } = await loadArchitectPlanService();
+    await expect(service.syncArchitectPlanChatFromConversation({
+      branchName: 'develop', planId: plan.id, conversationId: 'conversation-other',
+    })).rejects.toThrow('La conversation ne correspond plus');
+    expect(readWorkspaceFile('/repos/web', `branches/develop/plans/${plan.id}/chat.jsonl`)).toBe(original);
+  });
+
   it('syncs chat from a fresh replica snapshot after queued chat mutations', async () => {
     const plan = buildPlan({
       projectIds: ['web', 'api'],

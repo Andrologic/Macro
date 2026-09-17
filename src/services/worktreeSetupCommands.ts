@@ -42,7 +42,7 @@ const isFailedTerminalTab = (tab: TerminalTab): boolean =>
   tab.status === 'error' ||
   (typeof tab.lastExitCode === 'number' && tab.lastExitCode !== 0);
 
-const waitForSetupTab = (tabId: string): Promise<TerminalTab> =>
+const waitForSetupTab = (tabId: string): Promise<TerminalTab | null> =>
   new Promise((resolve) => {
     const readCurrent = () => useTerminalStore.getState().tabs[tabId] ?? null;
     const current = readCurrent();
@@ -53,7 +53,12 @@ const waitForSetupTab = (tabId: string): Promise<TerminalTab> =>
 
     const unsubscribe = useTerminalStore.subscribe((state) => {
       const tab = state.tabs[tabId];
-      if (!tab || !isFinalTerminalTab(tab)) {
+      if (!tab) {
+        unsubscribe();
+        resolve(null);
+        return;
+      }
+      if (!isFinalTerminalTab(tab)) {
         return;
       }
       unsubscribe();
@@ -61,7 +66,10 @@ const waitForSetupTab = (tabId: string): Promise<TerminalTab> =>
     });
 
     const nextCurrent = readCurrent();
-    if (nextCurrent && isFinalTerminalTab(nextCurrent)) {
+    if (!nextCurrent) {
+      unsubscribe();
+      resolve(null);
+    } else if (isFinalTerminalTab(nextCurrent)) {
       unsubscribe();
       resolve(nextCurrent);
     }
@@ -101,6 +109,13 @@ export const runWorktreeSetupCommand = async (
     });
 
     const finalTab = await waitForSetupTab(tab.id);
+    if (!finalTab) {
+      return {
+        exitCode: null,
+        failed: true,
+        tabId: tab.id,
+      };
+    }
     const failed = isFailedTerminalTab(finalTab);
 
     if (failed) {

@@ -6,10 +6,23 @@ import type { MergeWorkflowRepositoryResult } from '../../services/mergeWorkflow
 import type { GitConflictFileDto } from '../../services/tauriIpc';
 import type { MergeWorkflowConflictResolverModal as MergeWorkflowConflictResolverModalComponent } from './MergeWorkflowConflictResolverModal';
 
+const workflowSession = {
+  taskId: 'task-1',
+  sessionId: 'session-1',
+  sourceBranch: 'feature/task',
+  targetBranch: 'develop',
+  sourceCommit: 'source-commit',
+  targetCommit: 'target-commit',
+  integratedCommit: null,
+  status: 'conflicted' as const,
+  output: 'Automatic merge failed',
+};
+
 const startManualResolutionMock = mock(async () => ({
   status: 'conflicted',
   conflictFiles: ['src/conflict.ts'],
   output: 'Automatic merge failed',
+  workflowSession,
 }));
 const completeManualResolutionMock = mock(async () => 'Merge completed');
 const abortManualResolutionMock = mock(async () => undefined);
@@ -24,10 +37,16 @@ const gitStatusMock = mock(async () => ({
 }));
 const conflictFile: GitConflictFileDto = {
   path: 'src/conflict.ts',
-  base: { exists: true, content: 'base' },
-  ours: { exists: true, content: 'ours' },
-  theirs: { exists: true, content: 'theirs' },
-  worktree: { exists: true, content: '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>>' },
+  base: { exists: true, content: 'base', sizeBytes: 4, isBinary: false, tooLarge: false },
+  ours: { exists: true, content: 'ours', sizeBytes: 4, isBinary: false, tooLarge: false },
+  theirs: { exists: true, content: 'theirs', sizeBytes: 6, isBinary: false, tooLarge: false },
+  worktree: {
+    exists: true,
+    content: '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>>',
+    sizeBytes: 43,
+    isBinary: false,
+    tooLarge: false,
+  },
   isBinary: false,
   tooLarge: false,
 };
@@ -129,9 +148,20 @@ const flushRender = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+const createDeferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
+
 const buildRepository = (
   overrides: Partial<MergeWorkflowRepositoryResult> = {}
 ): MergeWorkflowRepositoryResult => ({
+  workflowSession,
   id: 'repo-1',
   projectId: 'project-1',
   repoPath: '/repos/project',
@@ -210,9 +240,80 @@ describe('MergeWorkflowConflictResolverModal', () => {
     expect(startManualResolutionMock).not.toHaveBeenCalled();
     expect(gitReadConflictFileMock).toHaveBeenCalledWith({
       repoPath: '/repos/project',
+      workflowSession: {
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        sourceBranch: 'feature/task',
+        targetBranch: 'develop',
+      },
       path: 'src/conflict.ts',
     });
     expect(document.body.querySelector('[data-diff-merge-view="true"]')).not.toBeNull();
+  });
+
+  it('waits for a native session before reading files and uses the returned identity', async () => {
+    const preparation = createDeferred<{
+      status: string;
+      conflictFiles: string[];
+      output: string;
+      workflowSession: typeof workflowSession;
+    }>();
+    startManualResolutionMock.mockImplementationOnce(async () => preparation.promise);
+
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository({ workflowSession: undefined })}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(startManualResolutionMock).toHaveBeenCalledTimes(1);
+    expect(gitReadConflictFileMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      preparation.resolve({
+        status: 'conflicted',
+        conflictFiles: ['src/conflict.ts'],
+        output: 'Automatic merge failed',
+        workflowSession,
+      });
+      await flushRender();
+    });
+
+    expect(startManualResolutionMock).toHaveBeenCalledTimes(1);
+    expect(gitReadConflictFileMock).toHaveBeenCalledWith({
+      repoPath: '/repos/project',
+      workflowSession: {
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        sourceBranch: 'feature/task',
+        targetBranch: 'develop',
+      },
+      path: 'src/conflict.ts',
+    });
+  });
+
+  it('refuses a conflict session owned by another task', async () => {
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository({
+            workflowSession: { ...workflowSession, taskId: 'task-2' },
+          })}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(startManualResolutionMock).not.toHaveBeenCalled();
+    expect(gitReadConflictFileMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain('belongs to another task');
   });
 
   it('starts the resolution draft from current when the worktree still has Git conflict markers', async () => {
@@ -237,7 +338,7 @@ describe('MergeWorkflowConflictResolverModal', () => {
   it('preserves a clean worktree draft when one already exists', async () => {
     gitReadConflictFileMock.mockImplementation(async () => ({
       ...conflictFile,
-      worktree: { exists: true, content: 'manual clean resolution' },
+      worktree: { ...conflictFile.worktree, content: 'manual clean resolution', sizeBytes: 23 },
     }));
 
     await act(async () => {
@@ -369,7 +470,7 @@ describe('MergeWorkflowConflictResolverModal', () => {
   it('uses all current as a text draft change without staging immediately', async () => {
     gitReadConflictFileMock.mockImplementation(async () => ({
       ...conflictFile,
-      worktree: { exists: true, content: 'manual clean resolution' },
+      worktree: { ...conflictFile.worktree, content: 'manual clean resolution', sizeBytes: 23 },
     }));
 
     await act(async () => {
@@ -454,10 +555,47 @@ describe('MergeWorkflowConflictResolverModal', () => {
     expect(diffMergeViewProps.at(-1)?.presentationMode).toBe('full');
   });
 
-  it('keeps direct side acceptance for non-renderable files', async () => {
+  it('preserves a dirty draft when the published repository object is equivalent', async () => {
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository()}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    const editButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Edit draft'));
+    await act(async () => {
+      editButton?.click();
+      await flushRender();
+    });
+    const readCount = gitReadConflictFileMock.mock.calls.length;
+
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository({ workflowSession: { ...workflowSession } })}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(gitReadConflictFileMock).toHaveBeenCalledTimes(readCount);
+    expect(diffMergeViewProps.at(-1)?.modified).toBe('edited resolution');
+    expect(document.body.textContent).toContain('Unsaved draft');
+  });
+
+  it('defers deletion of either absent text side until Save', async () => {
     gitReadConflictFileMock.mockImplementation(async () => ({
       ...conflictFile,
-      isBinary: true,
+      ours: { ...conflictFile.ours, exists: false, content: 'stale content', sizeBytes: 0 },
+      theirs: { ...conflictFile.theirs, exists: false, content: 'stale content', sizeBytes: 0 },
     }));
 
     await act(async () => {
@@ -471,8 +609,126 @@ describe('MergeWorkflowConflictResolverModal', () => {
       await flushRender();
     });
 
+    const useCurrentButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Use all current'));
+    const saveButton = () => Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Save resolution'));
+
+    await act(async () => {
+      useCurrentButton?.click();
+      await flushRender();
+    });
+    expect(gitAcceptConflictSideMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      saveButton()?.click();
+      await flushRender();
+    });
+
+    await act(async () => {
+      const useIncomingButton = Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Use all incoming'));
+      useIncomingButton?.click();
+      await flushRender();
+    });
+    await act(async () => {
+      saveButton()?.click();
+      await flushRender();
+    });
+
+    expect(gitWriteConflictResolutionMock).not.toHaveBeenCalled();
+    expect(gitAcceptConflictSideMock).toHaveBeenNthCalledWith(1, {
+      repoPath: '/repos/project',
+      workflowSession: {
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        sourceBranch: 'feature/task',
+        targetBranch: 'develop',
+      },
+      path: 'src/conflict.ts',
+      side: 'ours',
+    });
+    expect(gitAcceptConflictSideMock).toHaveBeenNthCalledWith(2, {
+      repoPath: '/repos/project',
+      workflowSession: {
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        sourceBranch: 'feature/task',
+        targetBranch: 'develop',
+      },
+      path: 'src/conflict.ts',
+      side: 'theirs',
+    });
+  });
+
+  it('writes an existing empty text file instead of treating it as deletion', async () => {
+    gitReadConflictFileMock.mockImplementation(async () => ({
+      ...conflictFile,
+      ours: { ...conflictFile.ours, content: '', sizeBytes: 0 },
+      worktree: { ...conflictFile.worktree, content: '<<<<<<< HEAD\n\n=======\ntheirs\n>>>>>>>' },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository()}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    const saveButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Save resolution'));
+    await act(async () => {
+      saveButton?.click();
+      await flushRender();
+    });
+
+    expect(gitWriteConflictResolutionMock).toHaveBeenCalledWith({
+      repoPath: '/repos/project',
+      workflowSession: {
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        sourceBranch: 'feature/task',
+        targetBranch: 'develop',
+      },
+      path: 'src/conflict.ts',
+      content: '',
+      stage: true,
+    });
+    expect(gitAcceptConflictSideMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps direct side acceptance for non-renderable files', async () => {
+    gitReadConflictFileMock.mockImplementation(async () => ({
+      ...conflictFile,
+      isBinary: true,
+      ours: { ...conflictFile.ours, content: '', sizeBytes: 3_145_728, isBinary: true },
+      theirs: { ...conflictFile.theirs, content: '', sizeBytes: 4_194_304, isBinary: true },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository()}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-diff-merge-view="true"]')).toBeNull();
+    expect(document.body.textContent).toContain('This is a binary conflict.');
+    expect(document.body.textContent).toContain('Current');
+    expect(document.body.textContent).toContain('Binary · 3 MB');
+    expect(document.body.textContent).toContain('Incoming');
+    expect(document.body.textContent).toContain('Binary · 4 MB');
+
     const useIncomingButton = Array.from(document.body.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Use all incoming'));
+      .find((button) => button.textContent?.includes('Choose incoming version'));
     await act(async () => {
       useIncomingButton?.click();
       await flushRender();
@@ -480,8 +736,68 @@ describe('MergeWorkflowConflictResolverModal', () => {
 
     expect(gitAcceptConflictSideMock).toHaveBeenCalledWith({
       repoPath: '/repos/project',
+      workflowSession: {
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        sourceBranch: 'feature/task',
+        targetBranch: 'develop',
+      },
       path: 'src/conflict.ts',
       side: 'theirs',
+    });
+  });
+
+  it('presents an oversized text conflict without rendering empty file content', async () => {
+    gitReadConflictFileMock.mockImplementation(async () => ({
+      ...conflictFile,
+      tooLarge: true,
+      ours: {
+        ...conflictFile.ours,
+        content: '',
+        sizeBytes: 1_500_000,
+        tooLarge: true,
+      },
+      theirs: {
+        ...conflictFile.theirs,
+        content: '',
+        sizeBytes: 1_700_000,
+        tooLarge: true,
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository()}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(document.body.querySelector('[data-diff-merge-view="true"]')).toBeNull();
+    expect(document.body.textContent).toContain('This file is too large to edit here.');
+    expect(document.body.textContent).toContain('Text');
+    expect(document.body.textContent).toContain('over editor limit');
+
+    const chooseCurrentButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Choose current version'));
+    await act(async () => {
+      chooseCurrentButton?.click();
+      await flushRender();
+    });
+
+    expect(gitAcceptConflictSideMock).toHaveBeenCalledWith({
+      repoPath: '/repos/project',
+      workflowSession: {
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        sourceBranch: 'feature/task',
+        targetBranch: 'develop',
+      },
+      path: 'src/conflict.ts',
+      side: 'ours',
     });
   });
 
@@ -513,6 +829,12 @@ describe('MergeWorkflowConflictResolverModal', () => {
 
     expect(gitWriteConflictResolutionMock).toHaveBeenCalledWith({
       repoPath: '/repos/project',
+      workflowSession: {
+        taskId: 'task-1',
+        sessionId: 'session-1',
+        sourceBranch: 'feature/task',
+        targetBranch: 'develop',
+      },
       path: 'src/conflict.ts',
       content: 'edited resolution',
       stage: true,
@@ -546,5 +868,64 @@ describe('MergeWorkflowConflictResolverModal', () => {
 
     expect(gitReadConflictFileMock).toHaveBeenCalledTimes(2);
     expect(document.body.querySelector('[data-diff-merge-view="true"]')).not.toBeNull();
+  });
+
+  it('confirms abandoning a dirty draft when status removes the selected file after save failure', async () => {
+    gitWriteConflictResolutionMock.mockImplementationOnce(async () => {
+      throw new Error('save failed');
+    });
+
+    await act(async () => {
+      root.render(
+        <MergeWorkflowConflictResolverModal
+          taskId="task-1"
+          repository={buildRepository()}
+          onClose={mock(() => undefined)}
+        />
+      );
+      await flushRender();
+    });
+
+    const editButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Edit draft'));
+    await act(async () => {
+      editButton?.click();
+      await flushRender();
+    });
+    const saveButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Save resolution'));
+    await act(async () => {
+      saveButton?.click();
+      await flushRender();
+    });
+    expect(document.body.textContent).toContain('save failed');
+
+    gitStatusMock.mockImplementationOnce(async () => ({
+      branch: 'develop',
+      is_clean: true,
+      conflicted_files: [],
+      conflictedFiles: [],
+      merge_in_progress: true,
+      mergeInProgress: true,
+    }));
+    const refreshButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Refresh conflicts'));
+    await act(async () => {
+      refreshButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Discard unsaved changes?');
+    expect(document.body.textContent).toContain('Unsaved draft');
+
+    const discardButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Discard changes'));
+    await act(async () => {
+      discardButton?.click();
+      await flushRender();
+    });
+
+    expect(document.body.textContent).not.toContain('Unsaved draft');
+    expect(document.body.querySelector('[data-diff-merge-view="true"]')).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import { BackupStartupRecovery } from './components/settings/views/BackupRecoveryStatus';
 import { PersistenceHealthNotifications } from "./components/notifications/PersistenceHealthNotifications";
 import { restoreBackupBrowserState } from "./services/localBackup";
 import React from "react";
@@ -115,7 +116,11 @@ void restoreBackupBrowserState()
       .catch((error) => { console.error("Failed to initialize Macro runtime:", error); })
       .finally(renderApp);
   })
-  .catch((error) => {
+  .catch(async (error) => {
     // Do not hydrate Chat against a partially restored profile.
-    rootElement.textContent = `Profile restoration could not finish: ${String(error)}. Original browser data and native rollback archive are preserved. Free local storage and restart Macro to retry.`;
+    await initializeI18n().catch((languageError) => console.error('Recovery language initialization failed:', languageError));
+    const macroWindow = window as MacroRootWindow;
+    const root = macroWindow.__MACRO_REACT_ROOT__ ?? ReactDOM.createRoot(rootElement);
+    macroWindow.__MACRO_REACT_ROOT__ = root;
+    root.render(<BackupStartupRecovery error={error} />);
   });

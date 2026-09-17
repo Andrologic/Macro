@@ -6,7 +6,12 @@
 
 import { tauriFetch } from './tauriHttp';
 import { WebSearchResult } from '../stores/useCitationsStore';
-import { isTauriAvailable, webFetchExecute, webSearchExecute } from './tauriIpc';
+import {
+  cancelWebSearchExecution,
+  isTauriAvailable,
+  webFetchExecute,
+  webSearchExecute,
+} from './tauriIpc';
 
 export type SearchProvider = 'tavily' | 'brave';
 
@@ -30,14 +35,42 @@ const abortReason = (signal: AbortSignal): Error => {
   return new DOMException('Web search cancelled.', 'AbortError');
 };
 
-const waitForSearchOrAbort = <T>(request: Promise<T>, signal?: AbortSignal): Promise<T> => {
-  if (!signal) return request;
-  if (signal.aborted) return Promise.reject(abortReason(signal));
+const waitForSearchOrAbort = <T>(
+  request: Promise<T>,
+  signal: AbortSignal,
+  onAbort?: () => void,
+): Promise<T> => {
+  if (signal.aborted) {
+    // The native operation was already dispatched and may reject after cancellation.
+    void request.catch(() => undefined);
+    onAbort?.();
+    return Promise.reject(abortReason(signal));
+  }
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(abortReason(signal));
-    signal.addEventListener('abort', onAbort, { once: true });
-    request.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    const handleAbort = () => {
+      onAbort?.();
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', handleAbort, { once: true });
+    request.then(resolve, reject).finally(() => signal.removeEventListener('abort', handleAbort));
   });
+};
+
+const createWebSearchExecutionId = (): string => globalThis.crypto.randomUUID();
+
+const executeNativeWebOperation = <T>(
+  request: (executionId?: string) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> => {
+  if (!signal) return request();
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+
+  const executionId = createWebSearchExecutionId();
+  const nativeRequest = request(executionId);
+  const cancel = () => {
+    void cancelWebSearchExecution(executionId).catch(() => undefined);
+  };
+  return waitForSearchOrAbort(nativeRequest, signal, cancel);
 };
 
 export interface WebFetchResult {
@@ -108,6 +141,7 @@ export async function webSearch(
     try {
       return await searchWithTavily(query, tavilyApiKey, resultCount, includeRawContent, signal);
     } catch (error) {
+      if (signal?.aborted) throw error;
       console.warn('Tavily search failed, trying Brave:', error);
       if (braveApiKey) {
         return searchWithBrave(query, braveApiKey, resultCount, signal);
@@ -121,8 +155,14 @@ export async function webSearch(
   }
 
   if (options.configured && isTauriAvailable()) {
-    if (signal?.aborted) throw abortReason(signal);
-    return waitForSearchOrAbort(webSearchExecute({ query, includeRawContent }), signal);
+    return executeNativeWebOperation(
+      (executionId) => webSearchExecute({
+        query,
+        includeRawContent,
+        ...(executionId ? { executionId } : {}),
+      }),
+      signal,
+    );
   }
 
   throw new Error('No search API key configured. Please add a Tavily or Brave Search API key in settings.');
@@ -439,19 +479,29 @@ function base64ToBytes(value: string): Uint8Array {
   return bytes;
 }
 
-async function fetchFaviconDataUrl(pageUrl: string, html: string): Promise<string | undefined> {
+async function fetchFaviconDataUrl(
+  pageUrl: string,
+  html: string,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
   for (const faviconUrl of getFaviconCandidates(html, pageUrl)) {
+    if (signal?.aborted) throw abortReason(signal);
     try {
-      const resource = await webFetchExecute({
-        url: faviconUrl,
-        resourceKind: 'favicon',
-      });
+      const resource = await executeNativeWebOperation(
+        (executionId) => webFetchExecute({
+          url: faviconUrl,
+          resourceKind: 'favicon',
+          ...(executionId ? { executionId } : {}),
+        }),
+        signal,
+      );
       const bytes = base64ToBytes(resource.bodyBase64);
       if (bytes.byteLength === 0 || bytes.byteLength > MAX_FAVICON_BYTES) continue;
       const mimeType = normalizeFaviconMimeType(resource.contentType, resource.url);
       if (!mimeType) continue;
       return `data:${mimeType};base64,${resource.bodyBase64}`;
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw error;
       // Favicons are decorative. Page fetching should still succeed without one.
     }
   }
@@ -493,7 +543,11 @@ function htmlToText(html: string): { title: string; content: string } {
   return { title, content };
 }
 
-export async function fetchWebPage(inputUrl: string): Promise<WebFetchResult> {
+export async function fetchWebPage(
+  inputUrl: string,
+  signal?: AbortSignal,
+): Promise<WebFetchResult> {
+  if (signal?.aborted) throw abortReason(signal);
   const normalizedUrl = normalizeUrl(inputUrl);
   if (!normalizedUrl) {
     throw new Error('URL vide');
@@ -514,15 +568,21 @@ export async function fetchWebPage(inputUrl: string): Promise<WebFetchResult> {
       'web_fetch nécessite le transport desktop sécurisé pour vérifier la destination réseau',
     );
   }
-  const resource = await webFetchExecute({
-    url: normalizedUrl,
-    resourceKind: 'page',
-  });
+  const resource = await executeNativeWebOperation(
+    (executionId) => webFetchExecute({
+      url: normalizedUrl,
+      resourceKind: 'page',
+      ...(executionId ? { executionId } : {}),
+    }),
+    signal,
+  );
+  if (signal?.aborted) throw abortReason(signal);
   const fetchedUrl = resource.url;
   const html = new TextDecoder().decode(base64ToBytes(resource.bodyBase64));
   const { title, content } = htmlToText(html);
   const snippet = content.slice(0, 350);
-  const favicon = await fetchFaviconDataUrl(fetchedUrl, html);
+  const favicon = await fetchFaviconDataUrl(fetchedUrl, html, signal);
+  if (signal?.aborted) throw abortReason(signal);
 
   return {
     url: fetchedUrl,

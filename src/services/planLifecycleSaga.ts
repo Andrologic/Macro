@@ -1,11 +1,73 @@
 import * as tauriIpc from './tauriIpc';
 import { toPlanLocatorKey } from './durableIdentity';
+import { allocateDurableGeneration, isDurableGeneration } from './durableGeneration';
 
 const SAGA_KEY = 'pendingPlanLifecycles:v1';
 const SAGA_QUARANTINE_KEY = 'pendingPlanLifecyclesQuarantine:v1';
+const COMPLETED_SAGA_KEY = 'completedPlanLifecycles:v1';
+const GENERATION_COUNTER_KEY = 'planLifecycleGenerationCounters:v1';
+const MAX_CAS_ATTEMPTS = 32;
 
-export type PlanLifecycleOperation = 'archive' | 'delete';
-export type PlanLifecyclePhase = 'prepared' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
+export interface PlanLifecycleSagaTransport {
+  isTauriAvailable: () => boolean;
+  dbGetAppSetting: typeof tauriIpc.dbGetAppSetting;
+  dbCompareAndSwapAppSetting: typeof tauriIpc.dbCompareAndSwapAppSetting;
+}
+
+const defaultTransport: PlanLifecycleSagaTransport = tauriIpc;
+
+export class StalePlanLifecycleSagaError extends Error {
+  constructor() {
+    super('Cette génération du cycle de vie du plan n’est plus active.');
+    this.name = 'StalePlanLifecycleSagaError';
+  }
+}
+
+export type PlanLifecycleOperation = 'archive' | 'delete' | 'finalize' | 'provision';
+export type PlanLifecyclePhase = 'prepared' | 'git_merges_complete' | 'metadata_written' | 'git_cleanup_complete' | 'metadata_commit_pending' | 'metadata_committed' | 'metadata_deleted';
+
+export type PlanFinalizationRepositoryPhase =
+  | 'prepared'
+  | 'base_sync_pending'
+  | 'base_synced'
+  | 'plan_merge_pending'
+  | 'plan_merged'
+  | 'backmerge_sync_pending'
+  | 'backmerge_synced'
+  | 'backmerge_merge_pending'
+  | 'complete';
+
+export interface PlanFinalizationRepositoryCheckpoint {
+  projectId: string;
+  repoPath: string;
+  planBranchName: string;
+  baseBranchName: string;
+  backmergeBranchName: string | null;
+  expectedPlanCommit: string;
+  expectedBaseCommit: string;
+  expectedBackmergeCommit: string | null;
+  phase: PlanFinalizationRepositoryPhase;
+  mergeRequired?: boolean;
+  baseSyncTargetCommit?: string;
+  baseCommitAfterSync?: string;
+  baseCommitAfterMerge?: string;
+  backmergeSyncTargetCommit?: string;
+  backmergeCommitAfterSync?: string;
+  backmergeCommitAfterMerge?: string;
+  mergeOutput?: string;
+  backmergeOutput?: string;
+}
+
+export interface PlanLifecycleCleanupResource {
+  kind: 'branch' | 'worktree';
+  projectId: string;
+  repoPath: string;
+  branchName: string;
+  expectedCommit: string | null;
+  intendedCommit?: string;
+  worktreeKey?: string;
+  expectedWorktreePath?: string;
+}
 
 export interface PlanLifecycleSaga {
   planId: string;
@@ -14,6 +76,10 @@ export interface PlanLifecycleSaga {
   phase: PlanLifecyclePhase;
   conversationId?: string | null;
   requiresMetadataCommit?: boolean;
+  cleanupResources?: PlanLifecycleCleanupResource[];
+  finalizationRepositories?: PlanFinalizationRepositoryCheckpoint[];
+  generation?: number;
+  legacyCreatedAt?: string;
   createdAt: string;
   updatedAt: string;
   lastError?: string;
@@ -22,6 +88,12 @@ export interface PlanLifecycleSaga {
 export const getPlanLifecycleSagaKey = (
   saga: Pick<PlanLifecycleSaga, 'branchName' | 'planId' | 'operation'>,
 ): string => `${toPlanLocatorKey(saga)}:${saga.operation}`;
+
+export const getPlanLifecycleSagaGeneration = (
+  saga: Pick<PlanLifecycleSaga, 'branchName' | 'planId' | 'operation' | 'createdAt' | 'generation'>,
+): string => `${getPlanLifecycleSagaKey(saga)}:${isDurableGeneration(saga.generation)
+  ? `g${saga.generation}`
+  : saga.createdAt}`;
 
 export class PlanLifecycleSagaCorruptionError extends Error {
   constructor() {
@@ -34,6 +106,9 @@ export interface PlanLifecycleSagaQuarantineEntry {
   entry: unknown;
   reason: string;
   quarantinedAt: string;
+  sourceKey: string;
+  sourceRevision: string;
+  sourceIndex: number | 'root';
 }
 
 export interface PlanLifecycleSagaJournal {
@@ -41,19 +116,128 @@ export interface PlanLifecycleSagaJournal {
   quarantined: PlanLifecycleSagaQuarantineEntry[];
 }
 
+const isCleanupResource = (value: unknown): value is PlanLifecycleCleanupResource => {
+  if (!value || typeof value !== 'object') return false;
+  const resource = value as Partial<PlanLifecycleCleanupResource>;
+  return (resource.kind === 'branch' || resource.kind === 'worktree') &&
+    typeof resource.projectId === 'string' &&
+    typeof resource.repoPath === 'string' &&
+    typeof resource.branchName === 'string' &&
+    (typeof resource.expectedCommit === 'string' || resource.expectedCommit === null) &&
+    (resource.intendedCommit === undefined || (typeof resource.intendedCommit === 'string' && resource.intendedCommit.length > 0)) &&
+    (resource.worktreeKey === undefined || typeof resource.worktreeKey === 'string') &&
+    (resource.expectedWorktreePath === undefined || typeof resource.expectedWorktreePath === 'string');
+};
+
+const isFinalizationRepository = (
+  value: unknown,
+): value is PlanFinalizationRepositoryCheckpoint => {
+  if (!value || typeof value !== 'object') return false;
+  const repository = value as Partial<PlanFinalizationRepositoryCheckpoint>;
+  const validPhase = repository.phase === 'prepared' || repository.phase === 'base_sync_pending' ||
+    repository.phase === 'base_synced' || repository.phase === 'plan_merge_pending' ||
+    repository.phase === 'plan_merged' || repository.phase === 'backmerge_sync_pending' ||
+    repository.phase === 'backmerge_synced' || repository.phase === 'backmerge_merge_pending' ||
+    repository.phase === 'complete';
+  const validOptionalString = (candidate: unknown): boolean =>
+    candidate === undefined || typeof candidate === 'string';
+  if (
+    typeof repository.projectId !== 'string' || typeof repository.repoPath !== 'string' ||
+    typeof repository.planBranchName !== 'string' || typeof repository.baseBranchName !== 'string' ||
+    (typeof repository.backmergeBranchName !== 'string' && repository.backmergeBranchName !== null) ||
+    typeof repository.expectedPlanCommit !== 'string' ||
+    typeof repository.expectedBaseCommit !== 'string' ||
+    (typeof repository.expectedBackmergeCommit !== 'string' && repository.expectedBackmergeCommit !== null) ||
+    !validPhase ||
+    (repository.mergeRequired !== undefined && typeof repository.mergeRequired !== 'boolean') ||
+    !validOptionalString(repository.baseSyncTargetCommit) ||
+    !validOptionalString(repository.baseCommitAfterSync) ||
+    !validOptionalString(repository.baseCommitAfterMerge) ||
+    !validOptionalString(repository.backmergeSyncTargetCommit) ||
+    !validOptionalString(repository.backmergeCommitAfterSync) ||
+    !validOptionalString(repository.backmergeCommitAfterMerge) ||
+    !validOptionalString(repository.mergeOutput) ||
+    !validOptionalString(repository.backmergeOutput)
+  ) return false;
+  if (
+    repository.phase === 'base_sync_pending' && typeof repository.baseSyncTargetCommit !== 'string'
+  ) return false;
+  if (
+    repository.phase !== 'prepared' && repository.phase !== 'base_sync_pending' &&
+    typeof repository.baseCommitAfterSync !== 'string'
+  ) {
+    return false;
+  }
+  if (repository.phase === 'plan_merge_pending' && typeof repository.mergeRequired !== 'boolean') {
+    return false;
+  }
+  if (
+    (
+      repository.phase === 'plan_merged' || repository.phase === 'backmerge_sync_pending' ||
+      repository.phase === 'backmerge_synced' || repository.phase === 'backmerge_merge_pending' ||
+      repository.phase === 'complete'
+    ) &&
+    (typeof repository.mergeRequired !== 'boolean' || typeof repository.baseCommitAfterMerge !== 'string')
+  ) return false;
+  if (
+    (repository.phase === 'backmerge_sync_pending' || repository.phase === 'backmerge_synced' ||
+      repository.phase === 'backmerge_merge_pending') && !repository.backmergeBranchName
+  ) return false;
+  if (
+    repository.phase === 'backmerge_sync_pending' &&
+    typeof repository.backmergeSyncTargetCommit !== 'string'
+  ) return false;
+  if (
+    (repository.phase === 'backmerge_synced' || repository.phase === 'backmerge_merge_pending') &&
+    typeof repository.backmergeCommitAfterSync !== 'string'
+  ) return false;
+  if (repository.phase === 'complete' && repository.backmergeBranchName &&
+    typeof repository.backmergeCommitAfterMerge !== 'string') return false;
+  return true;
+};
+
 const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   const saga = entry as Partial<PlanLifecycleSaga>;
   const allowedPhases: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
     archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
     delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
+    finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
+    provision: ['prepared', 'metadata_written'],
   };
   if (
     !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
-    (saga.operation !== 'archive' && saga.operation !== 'delete') ||
+    (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize' && saga.operation !== 'provision') ||
     !allowedPhases[saga.operation as PlanLifecycleOperation]?.includes(saga.phase as PlanLifecyclePhase) ||
     typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
   ) throw new PlanLifecycleSagaCorruptionError();
+  if (saga.generation !== undefined && !isDurableGeneration(saga.generation)) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
+  if (
+    saga.legacyCreatedAt !== undefined &&
+    (!isDurableGeneration(saga.generation) || saga.legacyCreatedAt !== saga.createdAt)
+  ) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
   if (saga.requiresMetadataCommit !== undefined && (saga.operation !== 'archive' || typeof saga.requiresMetadataCommit !== 'boolean')) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
+  if (saga.cleanupResources !== undefined && (
+    !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
+  )) throw new PlanLifecycleSagaCorruptionError();
+  const cleanupMayStillRun =
+    (saga.operation === 'archive' && (saga.phase === 'prepared' || saga.phase === 'metadata_written')) ||
+    ((saga.operation === 'delete' || saga.operation === 'provision') && saga.phase === 'prepared');
+  if (cleanupMayStillRun && !Array.isArray(saga.cleanupResources)) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
+  if (
+    saga.operation === 'finalize' && (
+      !Array.isArray(saga.finalizationRepositories) ||
+      !saga.finalizationRepositories.every(isFinalizationRepository)
+    )
+  ) throw new PlanLifecycleSagaCorruptionError();
+  if (saga.operation !== 'finalize' && saga.finalizationRepositories !== undefined) {
     throw new PlanLifecycleSagaCorruptionError();
   }
   if (saga.operation === 'archive' && saga.requiresMetadataCommit === false &&
@@ -63,7 +247,10 @@ const parseSagaEntry = (entry: unknown): PlanLifecycleSaga => {
   return saga as PlanLifecycleSaga;
 };
 
-export const parsePlanLifecycleSagaJournal = (value: string | null | undefined): PlanLifecycleSagaJournal => {
+export const parsePlanLifecycleSagaJournal = (
+  value: string | null | undefined,
+  sourceRevision = 'inline',
+): PlanLifecycleSagaJournal => {
   if (!value) return { sagas: [], quarantined: [] };
   let parsed: unknown;
   try {
@@ -75,6 +262,9 @@ export const parsePlanLifecycleSagaJournal = (value: string | null | undefined):
         entry: value,
         reason: 'Journal de saga JSON illisible : valeur brute conservée, aucune reprise automatique exécutée.',
         quarantinedAt: new Date().toISOString(),
+        sourceKey: SAGA_KEY,
+        sourceRevision,
+        sourceIndex: 'root',
       }],
     };
   }
@@ -85,11 +275,14 @@ export const parsePlanLifecycleSagaJournal = (value: string | null | undefined):
         entry: parsed,
         reason: 'Racine du journal de saga invalide : un tableau était attendu, aucune reprise automatique exécutée.',
         quarantinedAt: new Date().toISOString(),
+        sourceKey: SAGA_KEY,
+        sourceRevision,
+        sourceIndex: 'root',
       }],
     };
   }
   const journal: PlanLifecycleSagaJournal = { sagas: [], quarantined: [] };
-  for (const entry of parsed) {
+  for (const [sourceIndex, entry] of parsed.entries()) {
     try {
       journal.sagas.push(parseSagaEntry(entry));
     } catch {
@@ -97,6 +290,9 @@ export const parsePlanLifecycleSagaJournal = (value: string | null | undefined):
         entry,
         reason: 'Entrée de saga invalide : reprise automatique ignorée pour cette entrée uniquement.',
         quarantinedAt: new Date().toISOString(),
+        sourceKey: SAGA_KEY,
+        sourceRevision,
+        sourceIndex,
       });
     }
   }
@@ -113,14 +309,43 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
       const allowedPhases: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
         archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
         delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
+        finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
+        provision: ['prepared', 'metadata_written'],
       };
       if (
         !saga || typeof saga.planId !== 'string' || typeof saga.branchName !== 'string' ||
-        (saga.operation !== 'archive' && saga.operation !== 'delete') ||
+        (saga.operation !== 'archive' && saga.operation !== 'delete' && saga.operation !== 'finalize' && saga.operation !== 'provision') ||
         !allowedPhases[saga.operation as PlanLifecycleOperation]?.includes(saga.phase as PlanLifecyclePhase) ||
         typeof saga.createdAt !== 'string' || typeof saga.updatedAt !== 'string'
       ) throw new PlanLifecycleSagaCorruptionError();
+      if (saga.generation !== undefined && !isDurableGeneration(saga.generation)) {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
+      if (
+        saga.legacyCreatedAt !== undefined &&
+        (!isDurableGeneration(saga.generation) || saga.legacyCreatedAt !== saga.createdAt)
+      ) {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
       if (saga.requiresMetadataCommit !== undefined && (saga.operation !== 'archive' || typeof saga.requiresMetadataCommit !== 'boolean')) {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
+      if (saga.cleanupResources !== undefined && (
+        !Array.isArray(saga.cleanupResources) || !saga.cleanupResources.every(isCleanupResource)
+      )) throw new PlanLifecycleSagaCorruptionError();
+      const cleanupMayStillRun =
+        (saga.operation === 'archive' && (saga.phase === 'prepared' || saga.phase === 'metadata_written')) ||
+        ((saga.operation === 'delete' || saga.operation === 'provision') && saga.phase === 'prepared');
+      if (cleanupMayStillRun && !Array.isArray(saga.cleanupResources)) {
+        throw new PlanLifecycleSagaCorruptionError();
+      }
+      if (
+        saga.operation === 'finalize' && (
+          !Array.isArray(saga.finalizationRepositories) ||
+          !saga.finalizationRepositories.every(isFinalizationRepository)
+        )
+      ) throw new PlanLifecycleSagaCorruptionError();
+      if (saga.operation !== 'finalize' && saga.finalizationRepositories !== undefined) {
         throw new PlanLifecycleSagaCorruptionError();
       }
       if (
@@ -138,50 +363,428 @@ export const parsePlanLifecycleSagas = (value: string | null | undefined): PlanL
   }
 };
 
-let tail = Promise.resolve();
-const mutate = async <T>(operation: () => Promise<T>): Promise<T> => {
-  const previous = tail;
-  let release!: () => void;
-  tail = new Promise<void>((resolve) => { release = resolve; });
-  await previous.catch(() => undefined);
-  try { return await operation(); } finally { release(); }
-};
-
-export const loadPlanLifecycleSagas = async (): Promise<PlanLifecycleSaga[]> => {
-  if (!tauriIpc.isTauriAvailable()) return [];
-  const journal = parsePlanLifecycleSagaJournal((await tauriIpc.dbGetAppSetting(SAGA_KEY))?.value_json);
-  if (journal.quarantined.length > 0) {
-    await tauriIpc.dbSetAppSetting({
-      key: SAGA_QUARANTINE_KEY,
-      valueJson: JSON.stringify(journal.quarantined),
-    });
+const parseUnknownArray = (value: string | null): unknown[] => {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [value];
   }
-  return journal.sagas;
 };
 
-const save = async (sagas: PlanLifecycleSaga[]): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable()) return;
-  await tauriIpc.dbSetAppSetting({ key: SAGA_KEY, valueJson: JSON.stringify(sagas) });
-};
+interface CompletedPlanLifecycleRegistry {
+  version: 3;
+  highWatermarks: Record<string, number>;
+  legacyHighWatermarks: Record<string, string>;
+  legacyGenerations: string[];
+}
 
-export const upsertPlanLifecycleSaga = async (saga: PlanLifecycleSaga): Promise<void> => mutate(async () => {
-  const current = await loadPlanLifecycleSagas();
-  const sagaKey = getPlanLifecycleSagaKey(saga);
-  await save([...current.filter((entry) =>
-    getPlanLifecycleSagaKey(entry) !== sagaKey
-  ), saga]);
+const emptyCompletedRegistry = (): CompletedPlanLifecycleRegistry => ({
+  version: 3,
+  highWatermarks: {},
+  legacyHighWatermarks: {},
+  legacyGenerations: [],
 });
+
+const parseCompletedRegistry = (value: string | null | undefined): CompletedPlanLifecycleRegistry => {
+  if (!value) return emptyCompletedRegistry();
+  const parsed: unknown = JSON.parse(value);
+  if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string')) {
+    return { ...emptyCompletedRegistry(), legacyGenerations: parsed };
+  }
+  if (!parsed || typeof parsed !== 'object') throw new PlanLifecycleSagaCorruptionError();
+  const legacyRegistry = parsed as {
+    version?: unknown;
+    highWatermarks?: unknown;
+    legacyGenerations?: unknown;
+  };
+  if (
+    legacyRegistry.version === 2 && legacyRegistry.highWatermarks &&
+    typeof legacyRegistry.highWatermarks === 'object' &&
+    Object.values(legacyRegistry.highWatermarks).every((entry) => typeof entry === 'string') &&
+    Array.isArray(legacyRegistry.legacyGenerations) &&
+    legacyRegistry.legacyGenerations.every((entry) => typeof entry === 'string')
+  ) {
+    return {
+      ...emptyCompletedRegistry(),
+      legacyHighWatermarks: legacyRegistry.highWatermarks as Record<string, string>,
+      legacyGenerations: legacyRegistry.legacyGenerations,
+    };
+  }
+  const registry = parsed as Partial<CompletedPlanLifecycleRegistry>;
+  if (
+    registry.version !== 3 || !registry.highWatermarks || typeof registry.highWatermarks !== 'object' ||
+    !Object.values(registry.highWatermarks).every(isDurableGeneration) ||
+    !registry.legacyHighWatermarks || typeof registry.legacyHighWatermarks !== 'object' ||
+    !Object.values(registry.legacyHighWatermarks).every((entry) => typeof entry === 'string') ||
+    !Array.isArray(registry.legacyGenerations) ||
+    !registry.legacyGenerations.every((entry) => typeof entry === 'string')
+  ) throw new PlanLifecycleSagaCorruptionError();
+  return registry as CompletedPlanLifecycleRegistry;
+};
+
+const loadCompletedRegistry = async (
+  transport: PlanLifecycleSagaTransport,
+): Promise<CompletedPlanLifecycleRegistry> => parseCompletedRegistry(
+  (await transport.dbGetAppSetting(COMPLETED_SAGA_KEY))?.value_json,
+);
+
+const registryCompletesSaga = (
+  registry: CompletedPlanLifecycleRegistry,
+  saga: PlanLifecycleSaga,
+): boolean => {
+  const sagaKey = getPlanLifecycleSagaKey(saga);
+  if (!isDurableGeneration(saga.generation)) {
+    return registry.legacyGenerations.includes(getPlanLifecycleSagaGeneration(saga)) ||
+      (registry.legacyHighWatermarks[sagaKey] ?? '') >= saga.createdAt;
+  }
+  if ((registry.highWatermarks[sagaKey] ?? 0) >= saga.generation) return true;
+  if (!saga.legacyCreatedAt) return false;
+  return registry.legacyGenerations.includes(`${sagaKey}:${saga.legacyCreatedAt}`) ||
+    (registry.legacyHighWatermarks[sagaKey] ?? '') >= saga.legacyCreatedAt;
+};
+
+const updateSetting = async (
+  key: string,
+  mutation: (value: string | null) => string,
+  transport: PlanLifecycleSagaTransport,
+): Promise<void> => {
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const expectedValueJson = (await transport.dbGetAppSetting(key))?.value_json ?? null;
+    const valueJson = mutation(expectedValueJson);
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key,
+      expectedValueJson,
+      valueJson,
+    });
+    if (result.applied) return;
+  }
+  throw new Error(`Conflit persistant pendant la mise à jour du réglage ${key}.`);
+};
+
+const appendQuarantine = async (
+  entries: PlanLifecycleSagaQuarantineEntry[],
+  transport: PlanLifecycleSagaTransport,
+): Promise<void> => {
+  if (entries.length === 0) return;
+  await updateSetting(
+    SAGA_QUARANTINE_KEY,
+    (current) => {
+      const currentEntries = parseUnknownArray(current);
+      const identities = new Set(currentEntries.flatMap((candidate) => {
+        if (!candidate || typeof candidate !== 'object') return [];
+        const entry = candidate as Partial<PlanLifecycleSagaQuarantineEntry>;
+        if (
+          typeof entry.sourceKey !== 'string' || typeof entry.reason !== 'string'
+        ) return [];
+        return [JSON.stringify([
+          entry.sourceKey,
+          entry.reason,
+          entry.entry,
+        ])];
+      }));
+      const additions = entries.filter((entry) => {
+        const identity = JSON.stringify([
+          entry.sourceKey,
+          entry.reason,
+          entry.entry,
+        ]);
+        if (identities.has(identity)) return false;
+        identities.add(identity);
+        return true;
+      });
+      return JSON.stringify([...currentEntries, ...additions]);
+    },
+    transport,
+  );
+};
+
+export const loadPlanLifecycleSagas = async (
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<PlanLifecycleSaga[]> => {
+  if (!transport.isTauriAvailable()) return [];
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+    const setting = await transport.dbGetAppSetting(SAGA_KEY);
+    const expectedValueJson = setting?.value_json ?? null;
+    const journal = parsePlanLifecycleSagaJournal(
+      expectedValueJson,
+      setting?.updated_at ?? 'absent',
+    );
+    if (journal.quarantined.length === 0) {
+      const completed = await loadCompletedRegistry(transport);
+      return journal.sagas.filter((saga) => !registryCompletesSaga(completed, saga));
+    }
+
+    await appendQuarantine(journal.quarantined, transport);
+    const result = await transport.dbCompareAndSwapAppSetting({
+      key: SAGA_KEY,
+      expectedValueJson,
+      valueJson: JSON.stringify(journal.sagas),
+    });
+    if (result.applied) {
+      const completed = await loadCompletedRegistry(transport);
+      return journal.sagas.filter((saga) => !registryCompletesSaga(completed, saga));
+    }
+  }
+  throw new Error('Conflit persistant pendant la normalisation du journal du cycle de vie des plans.');
+};
+
+const finalizationRepositoryPhaseRank = (phase: PlanFinalizationRepositoryPhase): number => [
+  'prepared',
+  'base_sync_pending',
+  'base_synced',
+  'plan_merge_pending',
+  'plan_merged',
+  'backmerge_sync_pending',
+  'backmerge_synced',
+  'backmerge_merge_pending',
+  'complete',
+].indexOf(phase);
+
+const getFinalizationRepositoryKey = (
+  repository: Pick<PlanFinalizationRepositoryCheckpoint, 'projectId' | 'repoPath'>,
+): string => `${repository.projectId}:${repository.repoPath}`;
+
+const mergeFinalizationRepositoryProgress = (
+  persisted: PlanFinalizationRepositoryCheckpoint[],
+  incoming: PlanFinalizationRepositoryCheckpoint[],
+): PlanFinalizationRepositoryCheckpoint[] => {
+  if (persisted.length !== incoming.length) throw new PlanLifecycleSagaCorruptionError();
+  const incomingByKey = new Map(incoming.map((repository) => [
+    getFinalizationRepositoryKey(repository),
+    repository,
+  ]));
+  return persisted.map((current) => {
+    const next = incomingByKey.get(getFinalizationRepositoryKey(current));
+    if (!next) throw new PlanLifecycleSagaCorruptionError();
+    const immutableCurrent = {
+      projectId: current.projectId,
+      repoPath: current.repoPath,
+      planBranchName: current.planBranchName,
+      baseBranchName: current.baseBranchName,
+      backmergeBranchName: current.backmergeBranchName,
+      expectedPlanCommit: current.expectedPlanCommit,
+      expectedBaseCommit: current.expectedBaseCommit,
+      expectedBackmergeCommit: current.expectedBackmergeCommit,
+    };
+    const immutableNext = {
+      projectId: next.projectId,
+      repoPath: next.repoPath,
+      planBranchName: next.planBranchName,
+      baseBranchName: next.baseBranchName,
+      backmergeBranchName: next.backmergeBranchName,
+      expectedPlanCommit: next.expectedPlanCommit,
+      expectedBaseCommit: next.expectedBaseCommit,
+      expectedBackmergeCommit: next.expectedBackmergeCommit,
+    };
+    if (JSON.stringify(immutableCurrent) !== JSON.stringify(immutableNext)) {
+      throw new PlanLifecycleSagaCorruptionError();
+    }
+    if (finalizationRepositoryPhaseRank(next.phase) < finalizationRepositoryPhaseRank(current.phase)) {
+      throw new StalePlanLifecycleSagaError();
+    }
+    return { ...current, ...next };
+  });
+};
+
+const persistPlanLifecycleSaga = async (
+  saga: PlanLifecycleSaga,
+  transport: PlanLifecycleSagaTransport,
+  startNewGeneration: boolean,
+): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  if (
+    saga.legacyCreatedAt !== undefined &&
+    (!isDurableGeneration(saga.generation) || saga.legacyCreatedAt !== saga.createdAt)
+  ) {
+    throw new PlanLifecycleSagaCorruptionError();
+  }
+  if (startNewGeneration && (saga.generation !== undefined || saga.legacyCreatedAt !== undefined)) {
+    throw new StalePlanLifecycleSagaError();
+  }
+  const completionIdentity = { ...saga };
+  if (
+    !startNewGeneration &&
+    registryCompletesSaga(await loadCompletedRegistry(transport), completionIdentity)
+  ) {
+    throw new StalePlanLifecycleSagaError();
+  }
+  const convertsLegacyGeneration = !startNewGeneration && !isDurableGeneration(saga.generation);
+  if (!isDurableGeneration(saga.generation)) {
+    saga.generation = await allocateDurableGeneration({
+      settingKey: GENERATION_COUNTER_KEY,
+      identityKey: getPlanLifecycleSagaKey(saga),
+      transport,
+    });
+    if (convertsLegacyGeneration) saga.legacyCreatedAt = saga.createdAt;
+  }
+  const generation = getPlanLifecycleSagaGeneration(saga);
+  const completedAfterAllocation = await loadCompletedRegistry(transport);
+  if (
+    (!startNewGeneration && registryCompletesSaga(completedAfterAllocation, completionIdentity)) ||
+    registryCompletesSaga(completedAfterAllocation, saga)
+  ) {
+    throw new StalePlanLifecycleSagaError();
+  }
+  await loadPlanLifecycleSagas(transport);
+  const sagaKey = getPlanLifecycleSagaKey(saga);
+  const phaseOrder: Record<PlanLifecycleOperation, readonly PlanLifecyclePhase[]> = {
+    archive: ['prepared', 'metadata_written', 'git_cleanup_complete', 'metadata_commit_pending', 'metadata_committed'],
+    delete: ['prepared', 'git_cleanup_complete', 'metadata_deleted'],
+    finalize: ['prepared', 'git_merges_complete', 'metadata_written'],
+    provision: ['prepared', 'metadata_written'],
+  };
+  await updateSetting(
+    SAGA_KEY,
+    (current) => {
+      const sagas = parsePlanLifecycleSagas(current);
+      const existing = sagas.find((entry) => getPlanLifecycleSagaKey(entry) === sagaKey);
+      let nextSaga = saga;
+      if (existing) {
+        if (startNewGeneration) throw new StalePlanLifecycleSagaError();
+        const existingGeneration = getPlanLifecycleSagaGeneration(existing);
+        if (existingGeneration !== generation) {
+          if (
+            isDurableGeneration(existing.generation) &&
+            existing.generation >= saga.generation!
+          ) throw new StalePlanLifecycleSagaError();
+          if (!isDurableGeneration(existing.generation) && !isDurableGeneration(saga.generation) &&
+            existing.createdAt >= saga.createdAt) throw new StalePlanLifecycleSagaError();
+          if (isDurableGeneration(existing.generation) && !isDurableGeneration(saga.generation)) {
+            throw new StalePlanLifecycleSagaError();
+          }
+        } else if (phaseOrder[saga.operation].indexOf(existing.phase) > phaseOrder[saga.operation].indexOf(saga.phase)) {
+          throw new StalePlanLifecycleSagaError();
+        } else {
+          if (
+            existing.createdAt !== saga.createdAt ||
+            (
+              existing.legacyCreatedAt !== undefined &&
+              saga.legacyCreatedAt !== undefined &&
+              existing.legacyCreatedAt !== saga.legacyCreatedAt
+            )
+          ) {
+            throw new PlanLifecycleSagaCorruptionError();
+          }
+          nextSaga = {
+            ...saga,
+            legacyCreatedAt: existing.legacyCreatedAt ?? saga.legacyCreatedAt,
+          };
+          if (saga.operation !== 'provision' && existing.cleanupResources && saga.cleanupResources &&
+            JSON.stringify(existing.cleanupResources) !== JSON.stringify(saga.cleanupResources)) {
+            throw new PlanLifecycleSagaCorruptionError();
+          }
+          if (existing.finalizationRepositories) {
+            if (!saga.finalizationRepositories) throw new PlanLifecycleSagaCorruptionError();
+            nextSaga = {
+              ...nextSaga,
+              cleanupResources: existing.cleanupResources ?? saga.cleanupResources,
+              finalizationRepositories: mergeFinalizationRepositoryProgress(
+                existing.finalizationRepositories,
+                saga.finalizationRepositories,
+              ),
+            };
+          } else if (existing.cleanupResources && saga.operation !== 'provision') {
+            nextSaga = { ...nextSaga, cleanupResources: existing.cleanupResources };
+          }
+        }
+      }
+      return JSON.stringify([
+        ...sagas.filter((entry) => getPlanLifecycleSagaKey(entry) !== sagaKey),
+        nextSaga,
+      ]);
+    },
+    transport,
+  );
+  const completedAfterUpsert = await loadCompletedRegistry(transport);
+  if (
+    (!startNewGeneration && registryCompletesSaga(completedAfterUpsert, completionIdentity)) ||
+    registryCompletesSaga(completedAfterUpsert, saga)
+  ) {
+    await updateSetting(
+      SAGA_KEY,
+      (current) => JSON.stringify(parsePlanLifecycleSagas(current).filter(
+        (entry) => getPlanLifecycleSagaGeneration(entry) !== generation,
+      )),
+      transport,
+    );
+    throw new StalePlanLifecycleSagaError();
+  }
+};
+
+export const startPlanLifecycleSaga = async (
+  saga: PlanLifecycleSaga,
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<void> => persistPlanLifecycleSaga(saga, transport, true);
+
+export const upsertPlanLifecycleSaga = async (
+  saga: PlanLifecycleSaga,
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<void> => persistPlanLifecycleSaga(saga, transport, false);
 
 export const removePlanLifecycleSaga = async (
   planId: string,
   operation: PlanLifecycleOperation,
   branchName?: string,
-): Promise<void> => mutate(async () => {
-  const current = await loadPlanLifecycleSagas();
-  const matches = current.filter((entry) => entry.planId === planId && entry.operation === operation);
-  if (!branchName && matches.length > 1) return;
-  await save(current.filter((entry) =>
-    entry.planId !== planId || entry.operation !== operation ||
-    (branchName !== undefined && entry.branchName !== branchName)
-  ));
-});
+  generation?: string,
+  transport: PlanLifecycleSagaTransport = defaultTransport,
+): Promise<void> => {
+  if (!transport.isTauriAvailable()) return;
+  if (!generation) throw new Error('La génération du cycle de vie du plan est requise.');
+  const sagaKey = getPlanLifecycleSagaKey({ planId, operation, branchName: branchName ?? '' });
+  const generationPrefix = `${sagaKey}:`;
+  if (!generation.startsWith(generationPrefix) || generation.length === generationPrefix.length) {
+    throw new Error('La génération du cycle de vie du plan ne correspond pas à son identité.');
+  }
+  const generationValue = generation.slice(generationPrefix.length);
+  const durableGeneration = /^g[1-9]\d*$/.test(generationValue)
+    ? Number(generationValue.slice(1))
+    : null;
+  if (durableGeneration !== null && !isDurableGeneration(durableGeneration)) {
+    throw new Error('La génération durable du cycle de vie du plan est invalide.');
+  }
+  await loadPlanLifecycleSagas(transport);
+  await updateSetting(
+    COMPLETED_SAGA_KEY,
+    (value) => {
+      const registry = parseCompletedRegistry(value);
+      if (durableGeneration !== null) {
+        return JSON.stringify({
+          ...registry,
+          highWatermarks: {
+            ...registry.highWatermarks,
+            [sagaKey]: Math.max(registry.highWatermarks[sagaKey] ?? 0, durableGeneration),
+          },
+        });
+      }
+      return JSON.stringify({
+        ...registry,
+        legacyHighWatermarks: {
+          ...registry.legacyHighWatermarks,
+          [sagaKey]: (registry.legacyHighWatermarks[sagaKey] ?? '') > generationValue
+            ? registry.legacyHighWatermarks[sagaKey]
+            : generationValue,
+        },
+      });
+    },
+    transport,
+  );
+  await updateSetting(
+    SAGA_KEY,
+    (value) => {
+      const current = parsePlanLifecycleSagas(value);
+      const matches = current.filter((entry) => entry.planId === planId && entry.operation === operation);
+      if (!branchName && matches.length > 1) return JSON.stringify(current);
+      return JSON.stringify(current.filter((entry) =>
+        entry.planId !== planId || entry.operation !== operation ||
+        (branchName !== undefined && entry.branchName !== branchName) ||
+        (
+          getPlanLifecycleSagaGeneration(entry) !== generation &&
+          (durableGeneration !== null || entry.legacyCreatedAt !== generationValue)
+        )
+      ));
+    },
+    transport,
+  );
+};

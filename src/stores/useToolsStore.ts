@@ -1,3 +1,4 @@
+import { assertUniqueMCPToolIds } from '../services/mcp/normalization';
 import { create } from 'zustand';
 import { services } from '../services';
 import type { Tool, MCPServer, MCPTool } from '../types';
@@ -8,6 +9,7 @@ import { getToolModePolicy } from '../services/toolModePolicy';
 import { getEffectiveConfigDocument, patchUserConfigTopLevel } from '../services/configDocuments';
 import { isConfigurationClientAvailable } from '../services/configurationClient';
 import { callScopedMcpTool } from '../services/scopedMcpRuntime';
+import { createSerialQueue } from '../services/serialQueue';
 import {
   isMCPServerEnabled,
   isMCPToolId,
@@ -107,6 +109,9 @@ const persistChatModeToolSettings = (settings: Record<string, boolean>): void =>
 };
 
 let settingsMutationVersion = 0;
+const mcpRefreshTokens = new Map<string, symbol>();
+const enqueueToolSettingsMutation = createSerialQueue();
+let pendingToolSettingsMutations = 0;
 
 const runtimeStatusToServerStatus = (
   snapshot: MCPRuntimeServerSnapshot,
@@ -294,31 +299,26 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
 
   toggleTool: async (toolId: string) => {
     settingsMutationVersion += 1;
+    pendingToolSettingsMutations += 1;
     set({ saving: true, lastError: null });
     try {
-      const currentTools = get().internalTools;
-      const tool = currentTools[toolId];
-
-      if (tool) {
-        if (tool.config?.locked === true) {
-          set({ saving: false });
-          return;
-        }
+      await enqueueToolSettingsMutation(async () => {
+        const currentTools = get().internalTools;
+        const tool = currentTools[toolId];
+        if (!tool || tool.config?.locked === true) return;
 
         const nextEnabled = !isToolEnabledState(tool);
-        const newSettings: Record<string, boolean> = {
-          ...Object.fromEntries(
-            Object.entries(currentTools).map(([id, t]) => [
-              id,
-              id === toolId ? nextEnabled : isToolEnabledState(t),
-            ])
-          ),
-        };
+        const newSettings = Object.fromEntries(
+          Object.entries(currentTools).map(([id, t]) => [
+            id,
+            id === toolId ? nextEnabled : isToolEnabledState(t),
+          ])
+        );
 
         await services.updateToolSettings({ tools: newSettings });
-        set({
+        set((state) => ({
           internalTools: {
-            ...currentTools,
+            ...state.internalTools,
             [toolId]: {
               ...tool,
               status: nextEnabled ? 'enabled' : 'disabled',
@@ -328,15 +328,15 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
               },
             },
           },
-        });
-      }
-
-      set({ saving: false });
+        }));
+      });
     } catch (error) {
       set({
-        saving: false,
         lastError: toServiceError(error).message,
       });
+    } finally {
+      pendingToolSettingsMutations -= 1;
+      set({ saving: pendingToolSettingsMutations > 0 });
     }
   },
 
@@ -411,24 +411,33 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   refreshMCPServerTools: async (serverId: string) => {
-    settingsMutationVersion += 1;
+    const refreshVersion = settingsMutationVersion;
+    const token = Symbol();
+    mcpRefreshTokens.set(serverId, token);
     set({ saving: true, lastError: null });
     const currentServers = get().mcpServers;
     const server = currentServers.find((s) => s.id === serverId);
+    const isCurrentRefresh = () => refreshVersion === settingsMutationVersion
+      && mcpRefreshTokens.get(serverId) === token
+      && get().mcpServers.find((candidate) => candidate.id === serverId) === server;
     if (!server) {
-      set({ saving: false });
+      mcpRefreshTokens.delete(serverId);
+      set({ saving: mcpRefreshTokens.size > 0 });
       return;
     }
 
     try {
       const snapshot = await services.mcpRuntimeConnect({ serverId, projectIds: [] });
+      if (!isCurrentRefresh()) return;
       const response = await services.mcpRuntimeRefreshCatalog(snapshot.key);
+      if (!isCurrentRefresh()) return;
+      assertUniqueMCPToolIds(response.tools);
       const discoveredAt = new Date().toISOString();
       const tools = normalizeMCPServerTools(server, response.tools).map((tool) => ({
         ...tool,
         discoveredAt,
       }));
-      const nextServers = currentServers.map((s) =>
+      const nextServers = get().mcpServers.map((s) =>
         s.id === serverId
           ? {
               ...s,
@@ -440,12 +449,12 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
             }
           : s
       );
-      await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) });
-      set({ mcpServers: nextServers, saving: false });
+      set({ mcpServers: nextServers });
     } catch (error) {
+      if (!isCurrentRefresh()) return;
       const normalizedError = toServiceError(error);
       const message = normalizedError.message;
-      const nextServers = currentServers.map((s) =>
+      const nextServers = get().mcpServers.map((s) =>
         s.id === serverId
           ? {
               ...s,
@@ -455,11 +464,13 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
             }
           : s
       );
-      await services.updateMCPServerSettings({ servers: toMCPServerSettingsMap(nextServers) }).catch(
-        () => undefined
-      );
-      set({ mcpServers: nextServers, saving: false, lastError: message });
+      set({ mcpServers: nextServers, lastError: message });
       throw error;
+    } finally {
+      if (mcpRefreshTokens.get(serverId) === token) {
+        mcpRefreshTokens.delete(serverId);
+        if (refreshVersion === settingsMutationVersion) set({ saving: mcpRefreshTokens.size > 0 });
+      }
     }
   },
 
@@ -621,12 +632,14 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   },
 
   getEnabledMCPTools: () => {
-    return get().mcpServers.flatMap((server) => {
+    const tools = get().mcpServers.flatMap((server) => {
       if (!isMCPServerEnabled(server) || server.status !== 'online') {
         return [];
       }
       return normalizeMCPServerTools(server).filter((tool) => tool.enabled !== false);
     });
+    assertUniqueMCPToolIds(tools);
+    return tools;
   },
 
   getEnabledMCPToolIds: () => {
@@ -635,6 +648,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
 
   getMCPToolById: (toolId: string) => {
     if (!isMCPToolId(toolId)) return null;
+    assertUniqueMCPToolIds(get().mcpServers.flatMap((server) => normalizeMCPServerTools(server)));
     for (const server of get().mcpServers) {
       const tool = normalizeMCPServerTools(server).find((candidate) => candidate.id === toolId);
       if (tool) {

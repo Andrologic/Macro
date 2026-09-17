@@ -96,6 +96,13 @@ const createPayload: PendingProjectCreation = {
 };
 
 describe('ProjectModal helpers', () => {
+  it('preserves Unix and WSL Linux path case while matching Windows path case', () => {
+    expect(normalizeProjectPath('/synthetic/App')).not.toBe(normalizeProjectPath('/synthetic/app'));
+    expect(normalizeProjectPath('//wsl$/Ubuntu/home/App')).not.toBe(normalizeProjectPath('//wsl$/Ubuntu/home/app'));
+    expect(normalizeProjectPath('//wsl$/Ubuntu/home/App')).toBe(normalizeProjectPath('//WSL.LOCALHOST/ubuntu/home/App'));
+    expect(normalizeProjectPath('C:/App')).toBe(normalizeProjectPath('c:/app'));
+  });
+
   it('normalizes paths and infers names from Windows or POSIX paths', () => {
     expect(normalizeProjectPath(' C:\\Work\\App\\\\ ')).toBe('c:/work/app');
     expect(inferProjectNameFromPath('C:\\Work\\App\\')).toBe('App');

@@ -392,6 +392,9 @@ enum ReviewDiffOp<'a> {
 }
 
 fn build_review_diff_ops<'a>(left: &'a [&'a str], right: &'a [&'a str]) -> Vec<ReviewDiffOp<'a>> {
+    if left == right {
+        return left.iter().map(|line| ReviewDiffOp::Equal(line)).collect();
+    }
     let cell_count = left
         .len()
         .saturating_add(1)
@@ -1381,6 +1384,23 @@ mod tests {
         assert_eq!(diff.additions, 2);
         assert_eq!(diff.deletions, 1);
         assert_eq!(diff.hunks.len(), 1);
+    }
+
+    #[test]
+    fn review_diff_large_identical_content_has_no_validated_changes() {
+        let content = (0..1100)
+            .map(|n| format!("line-{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let diff = build_review_diff(&content, &content);
+        assert_eq!(diff.additions, 0);
+        assert_eq!(diff.deletions, 0);
+        assert!(diff.hunks.is_empty());
+        let (has_stage, removed, added) =
+            super::build_review_validated_stage_decorations(&content, &content, &content);
+        assert!(!has_stage);
+        assert!(removed.is_empty());
+        assert!(added.is_empty());
     }
 
     #[test]

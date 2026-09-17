@@ -325,6 +325,7 @@ export interface GitTaskStartPointsDto {
 }
 
 export interface GitWorktreeEnsureDto {
+  createdByThisCall?: boolean;
   taskId: string;
   worktreePath: string;
   branchName: string;
@@ -368,6 +369,10 @@ export interface GitSyncDto {
   output: string;
 }
 
+export interface GitPreparedBranchSyncDto {
+  targetCommit: string;
+}
+
 export interface GitRemoteDto {
   remote: string;
   url: string;
@@ -379,6 +384,11 @@ export interface GitMergeCheckDto {
   hasChanges: boolean;
   ahead?: number;
   behind?: number;
+}
+
+export interface GitGuardedMergeStateDto {
+  status: "pending" | "integrated";
+  targetCommit: string;
 }
 
 export interface GitRebaseCheckDto {
@@ -484,6 +494,9 @@ export interface GitStartMergeResolutionDto {
 export interface GitConflictFileSideDto {
   exists: boolean;
   content: string;
+  sizeBytes: number;
+  isBinary: boolean;
+  tooLarge: boolean;
 }
 
 export interface GitConflictFileDto {
@@ -1172,6 +1185,8 @@ export interface WorkspaceArchitectPlanActivationHeadDto {
   conversationId: string | null;
   sharedConversation: boolean;
   targetBranch: string;
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
   resolutionMode: string;
   chatTranscriptRevision: string | null;
   chatMessageCount: number;
@@ -1187,6 +1202,8 @@ export interface WorkspaceArchitectChatMessageDto {
 export interface WorkspaceArchitectPlanTranscriptDto {
   planId: string;
   targetBranch: string;
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
   transcriptRevision: string | null;
   messageCount: number;
   messages: WorkspaceArchitectChatMessageDto[];
@@ -1211,6 +1228,10 @@ export interface WorkspaceManualFeatureExecutionTargetDto {
 }
 
 export interface WorkspaceManualFeatureMergeWorkflowRepositoryDto {
+  workflowSession?: GitWorkflowSessionDto;
+  repositoryRootPath?: string | null;
+  integrationWorktreePath?: string | null;
+  mergeInProgress?: boolean;
   id: string;
   projectId: string;
   repoPath: string;
@@ -1759,6 +1780,13 @@ export async function deleteMessagesAfter(
   afterMessageId: string,
 ): Promise<void> {
   return invoke("db_delete_messages_after", { conversationId, afterMessageId });
+}
+
+export async function deleteConversationTurn(
+  conversationId: string,
+  turnId: string,
+): Promise<void> {
+  return invoke("db_delete_conversation_turn", { conversationId, turnId });
 }
 
 export async function dbTrimConversationReplay(params: {
@@ -2325,11 +2353,17 @@ export async function gitBranchDelete(params: {
   repoPath: string;
   branchName: string;
   force?: boolean;
+  archiveTaskId?: string | null;
+  archiveToken?: string | null;
+  expectedCommit?: string | null;
 }): Promise<void> {
   return invoke("git_branch_delete", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     force: params.force ?? null,
+    archiveTaskId: params.archiveTaskId ?? null,
+    archiveToken: params.archiveToken ?? null,
+    expectedCommit: params.expectedCommit ?? null,
   });
 }
 
@@ -2337,11 +2371,13 @@ export async function gitBranchDeleteRemote(params: {
   repoPath: string;
   branchName: string;
   remote?: string;
+  expectedCommit?: string;
 }): Promise<void> {
   return invoke("git_branch_delete_remote", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     remote: params.remote ?? null,
+    expectedCommit: params.expectedCommit ?? null,
   });
 }
 
@@ -2361,11 +2397,77 @@ export async function gitMerge(params: {
   repoPath: string;
   branchName: string;
   intoBranch: string;
+  expectedBranchCommit?: string | null;
+  expectedIntoCommit?: string | null;
 }): Promise<string> {
   return invoke<string>("git_merge", {
     repoPath: params.repoPath,
     branchName: params.branchName,
     intoBranch: params.intoBranch,
+    expectedBranchCommit: params.expectedBranchCommit ?? null,
+    expectedIntoCommit: params.expectedIntoCommit ?? null,
+  });
+}
+
+export async function gitGuardedMergeState(params: {
+  repoPath: string;
+  branchName: string;
+  intoBranch: string;
+  expectedBranchCommit: string;
+  expectedIntoCommit: string;
+  completeMerge?: boolean;
+}): Promise<GitGuardedMergeStateDto> {
+  return invoke<GitGuardedMergeStateDto>("git_guarded_merge_state", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    intoBranch: params.intoBranch,
+    expectedBranchCommit: params.expectedBranchCommit,
+    expectedIntoCommit: params.expectedIntoCommit,
+    ...(params.completeMerge ? { completeMerge: true } : {}),
+  });
+}
+
+export interface GitWorkflowSessionIdentity {
+  taskId: string;
+  sessionId: string;
+  sourceBranch: string;
+  targetBranch: string;
+}
+
+export interface GitWorkflowSessionDto extends GitWorkflowSessionIdentity {
+  sourceCommit: string;
+  targetCommit: string;
+  integratedCommit: string | null;
+  status: 'prepared' | 'conflicted' | 'integrated' | 'aborted';
+  output: string;
+}
+
+export async function gitWorkflow(params: {
+  repoPath: string;
+  taskId: string;
+  sourceBranch: string;
+  targetBranch: string;
+  expectedSessionId?: string;
+  action: 'inspect' | 'prepare' | 'start' | 'merge_commit' | 'fast_forward' | 'rebase_then_continue' | 'complete' | 'abort' | 'adopt_plan' | 'no_changes';
+  planId?: string;
+  storageBranch?: string;
+}): Promise<GitWorkflowSessionDto | null> {
+  return invoke<GitWorkflowSessionDto | null>('git_workflow', params);
+}
+
+export async function gitWorkflowCleanup(params: {
+  repoPath: string;
+  identity: GitWorkflowSessionIdentity;
+  worktreeKey: string;
+  removeRemote: boolean;
+  expectedWorktreePath?: string | null;
+}): Promise<void> {
+  return invoke('git_workflow_cleanup', {
+    repoPath: params.repoPath,
+    identity: params.identity,
+    worktreeKey: params.worktreeKey,
+    removeRemote: params.removeRemote,
+    expectedWorktreePath: params.expectedWorktreePath ?? null,
   });
 }
 
@@ -2636,22 +2738,26 @@ export async function gitReviewFile(params: {
 
 export async function gitReadConflictFile(params: {
   repoPath: string;
+  workflowSession?: GitWorkflowSessionIdentity;
   path: string;
 }): Promise<GitConflictFileDto> {
   return invoke<GitConflictFileDto>("git_read_conflict_file", {
     repoPath: params.repoPath,
+    ...(params.workflowSession ? { workflowSession: params.workflowSession } : {}),
     path: params.path,
   });
 }
 
 export async function gitWriteConflictResolution(params: {
   repoPath: string;
+  workflowSession?: GitWorkflowSessionIdentity;
   path: string;
   content: string;
   stage?: boolean;
 }): Promise<void> {
   return invoke("git_write_conflict_resolution", {
     repoPath: params.repoPath,
+    ...(params.workflowSession ? { workflowSession: params.workflowSession } : {}),
     path: params.path,
     content: params.content,
     stage: params.stage ?? true,
@@ -2660,11 +2766,13 @@ export async function gitWriteConflictResolution(params: {
 
 export async function gitAcceptConflictSide(params: {
   repoPath: string;
+  workflowSession?: GitWorkflowSessionIdentity;
   path: string;
   side: "ours" | "theirs";
 }): Promise<void> {
   return invoke("git_accept_conflict_side", {
     repoPath: params.repoPath,
+    ...(params.workflowSession ? { workflowSession: params.workflowSession } : {}),
     path: params.path,
     side: params.side,
   });
@@ -2733,12 +2841,20 @@ export async function gitWorktreeRemove(params: {
   taskId: string;
   force?: boolean;
   branchName?: string | null;
+  archiveTaskId?: string | null;
+  archiveToken?: string | null;
+  expectedCommit?: string | null;
+  expectedWorktreePath?: string | null;
 }): Promise<GitWorktreeRemoveDto> {
   return invoke<GitWorktreeRemoveDto>("git_worktree_remove", {
     repoPath: params.repoPath,
     taskId: params.taskId,
     force: params.force ?? null,
     branchName: params.branchName ?? null,
+    archiveTaskId: params.archiveTaskId ?? null,
+    archiveToken: params.archiveToken ?? null,
+    expectedCommit: params.expectedCommit ?? null,
+    expectedWorktreePath: params.expectedWorktreePath ?? null,
   });
 }
 
@@ -2775,12 +2891,16 @@ export async function gitBranchWorktreeRemove(params: {
   worktreeKey: string;
   branchName: string;
   force?: boolean;
+  expectedCommit?: string | null;
+  expectedWorktreePath?: string | null;
 }): Promise<GitBranchWorktreeRemoveDto> {
   return invoke<GitBranchWorktreeRemoveDto>("git_branch_worktree_remove", {
     repoPath: params.repoPath,
     worktreeKey: params.worktreeKey,
     branchName: params.branchName,
     force: params.force ?? null,
+    expectedCommit: params.expectedCommit ?? null,
+    expectedWorktreePath: params.expectedWorktreePath ?? null,
   });
 }
 
@@ -2827,6 +2947,32 @@ export async function gitPull(params: {
     repoPath: params.repoPath,
     remote: params.remote ?? null,
     branch: params.branch ?? null,
+  });
+}
+
+export async function gitPrepareGuardedBranchSync(params: {
+  repoPath: string;
+  branchName: string;
+  expectedBranchCommit: string;
+}): Promise<GitPreparedBranchSyncDto> {
+  return invoke<GitPreparedBranchSyncDto>("git_prepare_guarded_branch_sync", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    expectedBranchCommit: params.expectedBranchCommit,
+  });
+}
+
+export async function gitGuardedBranchSync(params: {
+  repoPath: string;
+  branchName: string;
+  expectedBranchCommit: string;
+  syncTargetCommit: string;
+}): Promise<GitGuardedMergeStateDto> {
+  return invoke<GitGuardedMergeStateDto>("git_guarded_branch_sync", {
+    repoPath: params.repoPath,
+    branchName: params.branchName,
+    expectedBranchCommit: params.expectedBranchCommit,
+    syncTargetCommit: params.syncTargetCommit,
   });
 }
 
@@ -2898,6 +3044,10 @@ export async function workspaceGetActiveRoot(): Promise<string> {
   return invoke<string>("workspace_get_active_root");
 }
 
+export async function workspaceQuarantineLegacyStateLock(): Promise<string> {
+  return invoke<string>('workspace_quarantine_legacy_state_lock');
+}
+
 export async function workspaceArchitectListPlans(params: {
   branchName: string;
   includeDeleted?: boolean;
@@ -2964,7 +3114,19 @@ export async function workspaceArchitectActivatePlanHead(params: {
 export async function workspaceArchitectActivatePlanChat(params: {
   branchName: string;
   planId: string;
+  replicaScopeKey?: string | null;
+  replicaProjectId?: string | null;
+  expectedTranscriptRevision?: string | null;
+  expectedMessageCount?: number | null;
 }): Promise<WorkspaceArchitectPlanTranscriptDto | null> {
+  const request = {
+    branchName: params.branchName,
+    planId: params.planId,
+    replicaScopeKey: params.replicaScopeKey ?? null,
+    replicaProjectId: params.replicaProjectId ?? null,
+    expectedTranscriptRevision: params.expectedTranscriptRevision ?? null,
+    expectedMessageCount: params.expectedMessageCount ?? null,
+  };
   if (!isTauriAvailable() && isRemoteBackendAvailable()) {
     const config = resolveRemoteConfig();
     if (config) {
@@ -2972,7 +3134,7 @@ export async function workspaceArchitectActivatePlanChat(params: {
         `${getWorkspaceBasePath(config)}/architect/plans/activate-chat`,
         {
           method: "POST",
-          body: JSON.stringify(params),
+          body: JSON.stringify(request),
         },
       );
     }
@@ -2980,7 +3142,7 @@ export async function workspaceArchitectActivatePlanChat(params: {
   return invoke<WorkspaceArchitectPlanTranscriptDto | null>(
     "workspace_architect_activate_plan_chat",
     {
-      request: params,
+      request,
     },
   );
 }
@@ -3402,6 +3564,7 @@ export async function workspaceRevertManualFeatureToDraft(params: {
   conversationId?: string | null;
   title?: string | null;
   description?: string | null;
+  taskLifecycleLeaseId?: string | null;
 }): Promise<WorkspaceManualFeatureDto> {
   return invoke<WorkspaceManualFeatureDto>(
     "workspace_revert_manual_feature_to_draft",
@@ -3410,14 +3573,46 @@ export async function workspaceRevertManualFeatureToDraft(params: {
       conversationId: params.conversationId ?? null,
       title: params.title ?? null,
       description: params.description ?? null,
+      taskLifecycleLeaseId: params.taskLifecycleLeaseId ?? null,
     },
   );
 }
 
-export async function workspaceDeleteManualFeatureDraft(
-  taskId: string,
-): Promise<void> {
-  return invoke("workspace_delete_manual_feature_draft", { taskId });
+export async function workspaceDeleteManualFeatureDraft(params: {
+  taskId: string;
+  taskLifecycleLeaseId?: string | null;
+}): Promise<boolean> {
+  return invoke<boolean>("workspace_delete_manual_feature_draft", {
+    taskId: params.taskId,
+    taskLifecycleLeaseId: params.taskLifecycleLeaseId ?? null,
+  });
+}
+
+export async function workspaceAcquirePlanLifecycleLock(params: {
+  branchName: string;
+  planId: string;
+}): Promise<string> {
+  return invoke<string>('workspace_acquire_plan_lifecycle_lock', params);
+}
+
+export async function workspaceRenewPlanLifecycleLock(leaseId: string): Promise<void> {
+  return invoke<void>('workspace_renew_plan_lifecycle_lock', { leaseId });
+}
+
+export async function workspaceReleasePlanLifecycleLock(leaseId: string): Promise<void> {
+  return invoke<void>('workspace_release_plan_lifecycle_lock', { leaseId });
+}
+
+export async function workspaceAcquireTaskLifecycleLock(taskId: string, directProjectPaths?: string[]): Promise<string> {
+  return invoke<string>('workspace_acquire_task_lifecycle_lock', { taskId, ...(directProjectPaths?.length ? { directProjectPaths } : {}) });
+}
+
+export async function workspaceRenewTaskLifecycleLock(leaseId: string): Promise<void> {
+  return invoke<void>('workspace_renew_task_lifecycle_lock', { leaseId });
+}
+
+export async function workspaceReleaseTaskLifecycleLock(leaseId: string): Promise<void> {
+  return invoke<void>('workspace_release_task_lifecycle_lock', { leaseId });
 }
 
 export async function workspaceRenameManualFeature(params: {
@@ -3450,19 +3645,27 @@ export async function workspaceRestoreManualFeature(
   });
 }
 
-export async function workspaceDeleteManualFeature(
-  taskId: string,
-): Promise<void> {
-  return invoke("workspace_delete_manual_feature", { taskId });
+export async function workspaceDeleteManualFeature(params: {
+  taskId: string;
+  taskLifecycleLeaseId?: string | null;
+}): Promise<void> {
+  return invoke("workspace_delete_manual_feature", {
+    taskId: params.taskId,
+    taskLifecycleLeaseId: params.taskLifecycleLeaseId ?? null,
+  });
 }
 
 export async function workspaceUpdateStandaloneTaskStatus(params: {
   taskId: string;
   status: string;
-}): Promise<void> {
+  expectedRevision?: number;
+  expectedStatus?: string;
+}): Promise<number | null> {
   return invoke("workspace_update_standalone_task_status", {
     taskId: params.taskId,
     status: params.status,
+    ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}),
+    ...(params.expectedStatus !== undefined ? { expectedStatus: params.expectedStatus } : {}),
   });
 }
 
@@ -4309,21 +4512,29 @@ export async function webSearchSetSecret(input: {
 export async function webSearchExecute(input: {
   query: string;
   includeRawContent?: boolean;
+  executionId?: string | null;
 }): Promise<NativeWebSearchResult[]> {
   return invoke<NativeWebSearchResult[]>('web_search_execute', {
     query: input.query,
     includeRawContent: input.includeRawContent ?? false,
+    executionId: input.executionId ?? null,
   });
 }
 
 export async function webFetchExecute(input: {
   url: string;
   resourceKind: "page" | "favicon";
+  executionId?: string | null;
 }): Promise<NativeWebFetchResource> {
   return invoke<NativeWebFetchResource>("web_fetch_execute", {
     url: input.url,
     resourceKind: input.resourceKind,
+    executionId: input.executionId ?? null,
   });
+}
+
+export async function cancelWebSearchExecution(executionId: string): Promise<boolean> {
+  return invoke<boolean>("web_search_cancel_execution", { executionId });
 }
 
 export interface StateSnapshotDto {
@@ -4471,6 +4682,9 @@ export async function safeInvoke<T>(
 }
 
 export interface LocalBackupStatus {
+  code?: 'exported' | 'restored' | 'rolledBack' | 'failed' | 'invalidRequest' | null;
+  path?: string | null;
+  /** Raw diagnostic, including messages written by earlier versions. */
   message: string;
   browser: Record<string, string> | null;
 }

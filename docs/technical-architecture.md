@@ -127,6 +127,11 @@ complétés par un verrou de fichier interprocessus ; l’ETag est relu sous ce
 verrou avant toute écriture. Le watcher desktop coalesce les événements puis
 rescane les documents chargés et les nouveaux documents projet.
 
+Une acceptation sensible est engagée dès que la baseline approuvée est écrite.
+Si le nettoyage de la proposition échoue ensuite, le résultat reste appliqué,
+avec un diagnostic de nettoyage différé. Le chargement suivant reprend ce
+nettoyage sans présenter une nouvelle demande de consentement.
+
 Chaque tour agent charge un snapshot correspondant à ses identifiants de projet
 et à son projet de focus. Le modèle, le niveau de risque, les outils autorisés
 et les limites issus de ce snapshot sont figés pour toute la durée du tour,
@@ -493,9 +498,28 @@ messages. Trois triggers le synchronisent avec les insertions, modifications et
 suppressions. Le repository reçoit la liste des conversations admissibles et
 applique cette portée avant la pagination, puis expose une recherche bornée et
 paginée ainsi qu'une reconstruction déterministe de l'index depuis `messages`.
-La validation des sauvegardes compare les tables, les définitions des tables
-virtuelles, les index applicatifs, les vues et les triggers au schéma de
-référence produit par la version courante de Macro.
+La validation des sauvegardes compare les colonnes, les clés étrangères et leurs
+actions de cascade, les définitions des tables virtuelles, les index applicatifs,
+les vues et les triggers au schéma de référence de la version courante. Une clé
+étrangère absente est refusée même si `integrity_check` et `foreign_key_check` ne
+trouvent aucune erreur. La comparaison structurelle des tables ordinaires reste
+compatible avec les différences de texte SQL dues aux migrations historiques.
+
+Les archives locales restent hors des répertoires de données et de configuration,
+y compris lorsque leur chemin passe par un alias symbolique. La préparation
+publie un fichier complet, synchronisé, sans écraser une destination existante.
+Au démarrage, une demande illisible est isolée et signalée par un statut de
+récupération. Le bootstrap portable laisse `ConfigManager` choisir le runtime
+approuvé avant d'appliquer le workspace ; il ne parse pas le fichier brut.
+
+Avant la capture ou la restauration, les chemins gérés sont contrôlés même si
+l'archive omet leurs fichiers. Les checkpoints utilisent les mêmes limites de
+profondeur et de nombre de nœuds implicites lors de la validation et de la
+préservation. Le rollback retire les dossiers de checkpoints devenus vides pour
+rétablir une ancienne feuille fichier. La demande terminée est retirée avant le
+journal de restauration pour empêcher son rejeu après récupération. Les statuts
+natifs exposent un code et un chemin ; l'interface traduit le résumé et conserve
+les messages techniques dans les détails du diagnostic.
 
 ### 9.4 `fs`
 
@@ -610,7 +634,10 @@ demande active n'a pas ce champ. Les permissions de conversation restent en
 mémoire et ne sont jamais restaurées. Une réinitialisation retire les anciens
 resolvers et attend la fin des écritures déjà engagées dans leurs files avant
 l'hydratation. Une génération périmée ne peut plus autoriser l'outil ni clore
-une demande restaurée.
+une demande restaurée. Tant qu'une demande live reste visible pendant la
+revalidation ou la clôture durable, un refus révoque l'autorisation avant le
+dispatch. Les approbations MCP exposent l'identité protocolaire et un aperçu des
+arguments, avec champs sensibles masqués et troncature signalée.
 
 ### 10.2 Persistance locale frontend
 
@@ -641,8 +668,11 @@ ni résumé de review supplémentaire n'est persisté.
 
 Ces filtres de liste utilisent des objets versionnés dans `state.json`. Le
 frontend normalise chaque valeur hydratée et revient aux valeurs par défaut
-pour une version inconnue. Les recherches textuelles, les sélections multiples
-et les filtres propres aux boîtes de dialogue ou au terminal restent des états
+pour une version inconnue. Une erreur de lecture native laisse le store non
+hydraté et autorise une nouvelle tentative. Les modifications locales restent
+prioritaires champ par champ lors de cette tentative ; aucune écriture issue
+des valeurs par défaut ne part avant une lecture réussie. Les recherches
+textuelles, les sélections multiples et les filtres propres aux boîtes de dialogue ou au terminal restent des états
 de session non persistés.
 
 ### 10.3 Metadata dans la branche `@macro`
@@ -766,6 +796,16 @@ La réparation des worktrees refuse les chemins non vides et les branches inatte
 
 Le diagnostic de tâche utilise `git_worktree_inspect` avec `readOnly: true` : les inspections n'y réparent pas les liens Git. L'action explicite utilise la création protégée existante puis inspecte de nouveau. Les capacités de projet sont centralisées dans `projectCapabilities` : les refus WSL de métadonnées, worktrees, revue et parcours de fusion ne retirent pas les opérations Git disposant d'une implémentation Linux.
 
+Le démarrage d'une tâche réserve son opération locale et acquiert le verrou natif de cycle de vie avant la préparation. Pour les cibles directes, le bail conserve aussi des verrous par chemin canonique de projet, acquis dans un ordre stable. Ils sérialisent les démarrages de tâches différentes entre fenêtres et processus. Sous ces verrous, l'admission relit le catalogue persisté sans superposer le plan actif en mémoire et refuse les lectures incomplètes. Une tâche Architect écrit son statut avant de libérer les verrous. Les tâches autonomes réservent leur statut natif avant de préparer leurs ressources. La réservation renvoie la révision durable du workspace ; un rollback compare cette révision et le statut attendu sous le verrou d'état avant d'écrire. Une mutation ultérieure, même suivie d'un retour au même statut, invalide ce rollback. Un retour tardif peut enregistrer les worktrees préparés pour une tâche encore présente, mais ne publie le workspace actif que si la génération d'activation et la sélection sont toujours valides. Le résolveur inspecte les worktrees Git même lorsqu'un chemin est en cache. Pour une cible directe, l'activation ne fait que résoudre le chemin : elle ne crée ni ne lie de checkpoint et ne remplace pas la racine native. Le démarrage persiste d'abord l'identité du checkpoint dans la tâche autonome ou dans le nœud Architect via directCheckpointIdsByProjectId, puis initialise le checkpoint. Les mises à jour des nœuds conservent cette identité.
+
+Le provisionnement d'un plan inscrit chaque intention de création dans le journal de cycle de vie avant la mutation Git. Il confirme ensuite le commit et le chemin obtenus. Lors d'une mutation de stratégie, l'appel public garde le journal et le verrou jusqu'au retour du callback de persistance du plan. Un échec de ce callback déclenche le rollback ; une reprise recalcule toutes les branches et tous les worktrees attendus depuis le plan persisté, vérifie les ressources existantes et complète les ressources manquantes avant de fermer le journal. Un journal vide ou partiel ne prouve jamais que le provisionnement est terminé. Si cette reprise échoue, elle conserve le journal et les ressources déjà adoptées pour la tentative suivante. Un rollback conserve les erreurs et les ressources restantes dans ce journal ; sa reprise retire les worktrees avant les branches, avec les identités attendues et sans forcer le retrait des fichiers de travail. L'intention enregistre aussi le commit source avant la création. Après une interruption avant confirmation, la reprise ne confirme une branche qu'au commit attendu ; pour un worktree, elle vérifie aussi sa branche, son chemin et sa propreté. Ces contrôles s'appliquent aussi avant l'adoption des ressources d'un plan déjà validé ou en cours. Toute différence, ou une ancienne intention dépourvue de commit attendu, bloque la reprise avant toute création, suppression ou fermeture du journal. Le backend indique si l'appel a créé un worktree, y compris pendant une réparation. Les simples réparations de liens et les ressources réutilisées restent exclues du rollback. La reprise constate les ressources déjà absentes avant de rejouer une suppression.
+
+Les fusions de tâches passent par `git_workflow`. Le journal SQLite enregistre la tâche, la session, le dépôt Git commun, les branches et leurs commits avant la mutation. Les accès aux fichiers en conflit transportent cette identité et vérifient `HEAD` et `MERGE_HEAD` sous le verrou du dépôt. Une finalisation de plan ne peut adopter un conflit que si son journal de cycle de vie contient le checkpoint correspondant. Après intégration, la reprise vérifie le résultat avant de préparer les worktrees. Le nettoyage accepte une ressource déjà absente, refuse une branche source modifiée et garde les erreurs de suppression bloquantes. Une suppression distante utilise le commit attendu comme condition Git.
+
+Le nettoyage natif garde les références source et cible verrouillées pendant la vérification de l'intégration et la suppression. Les commandes de fusion ordinaires refusent les dépôts possédés par un workflow actif. Toute mutation d'une session existante exige son identifiant observé ; seule la création initiale atomique peut s'en passer. L'abandon persiste d'abord un nouvel identifiant et une intention durable avant toute mutation Git. Cette intention conserve la propriété du dépôt et refuse les anciennes commandes. Après une interruption, la reprise termine uniquement l'abandon enregistré, puis le confirme en SQLite. Une nouvelle tentative doit observer le reçu d'abandon. La reprise conserve les commits enregistrés sans synchroniser la cible, et les commandes de pull ordinaires refusent un dépôt possédé par un workflow actif. Les opérations réseau du nettoyage sont non interactives et bornées à trente secondes par commande ; un échec libère les verrous. Avant un rebase, le journal conserve une intention et une marque unique de reflog ; après une interruption, seule la réécriture correspondant à cette marque peut être récupérée. Un rebase interrompu pendant un conflit peut être abandonné après vérification de son origine, de sa cible et de sa branche.
+
+Le runtime des plans lit toutes ses répliques et distingue une absence de fichier des erreurs de lecture, de parsing ou de schéma. Chaque mutation réserve une génération dans SQLite par comparaison conditionnelle, puis écrit les fichiers avec leur révision attendue. Une intention interrompue est récupérée avant la mutation suivante. Une divergence sans intention correspondante bloque les écritures. Les previews transmettent leur révision de base jusqu'à la mutation sérialisée du plan, qui vérifie cette précondition sur la version canonique avant tout changement.
+
 ### 12.5 Branche `@macro`
 
 La branche `@macro` sert de branche metadata dédiée.
@@ -809,7 +849,11 @@ La review conserve libgit2 pour les opérations locales courantes. Si une lectur
 
 Dans un clone partiel déclaré par `extensions.partialClone`, `remote.*.promisor` ou `remote.*.partialCloneFilter`, Macro demande uniquement l’objet connu à Git officiel avec une commande bornée et non interactive. Il actualise ensuite libgit2 avant la relance. Une absence persistante utilise le code stable `GIT_OBJECT_MISSING` et fournit le SHA, l’opération et une sortie Git bornée. Le chemin absolu du profil ou du dépôt n’est pas transmis dans les détails affichés. Ce chemin ne modifie ni le worktree ni l’index et ne lance aucune réparation globale.
 
+Le hard reset natif et WSL refuse toute collision avec un chemin non suivi. Avant de remplacer un fichier suivi, Macro le renomme sans copie dans `<git-common-dir>/macro-hard-reset-recovery/<transaction>/original` et exige que cette récupération soit sur le même système de fichiers que le worktree. Les fichiers créés par le reset puis retirés pendant un rollback vont dans `rollback-target`. Macro conserve une transaction dès qu’elle contient un inode déplacé. Un éditeur qui avait déjà ouvert le fichier peut donc continuer à écrire dans cet inode sans que le reset supprime ces nouvelles données. Le répertoire Git commun conserve cette récupération après la suppression d’un worktree lié. La transaction contient aussi le `HEAD` et l’index d’origine. La publication finale compare l’index brut sous son verrou et avance `HEAD` par comparaison atomique avec sa valeur initiale.
+
 Les projets déclarés `not_git` ne passent jamais par les commandes Git du projet. Le panneau utilise leur checkpoint privé sous `direct-checkpoints`. `ensure` initialise le checkpoint avant la première review. Les rafraîchissements suivants ouvrent directement l'identifiant persisté et vérifient le commit `HEAD`, les arbres, les blobs et l'index dans le snapshot. Cette vérification partage un budget de 256 Mio et de 100 000 objets entre l'historique et l'index. Une cible héritée sans identifiant retrouve d'abord un checkpoint existant lié à la tâche et au chemin, puis persiste cet identifiant avant les rafraîchissements suivants. Si le projet a été déplacé, Macro refuse de dériver une nouvelle base tant que l'identité précédente existe. Les identifiants déjà initialisés gardent aussi un marqueur hors du dépôt interne. Ce marqueur empêche une activation tardive de recréer une base après la suppression du checkpoint. La review actualise puis rouvre ce dépôt interne une seule fois. Une absence persistante devient `DIRECT_CHECKPOINT_MISSING`, `DIRECT_CHECKPOINT_PROJECT_MISMATCH` ou `DIRECT_CHECKPOINT_CORRUPT`, sans hydratation réseau. Macro conserve le checkpoint endommagé. Il ne crée une base que pour un identifiant neuf et sans historique. La capture initiale parcourt au plus 4 096 entrées du système de fichiers. Chaque snapshot direct reçoit aussi un identifiant opaque, conservé dix minutes dans un registre backend borné à 256 entrées. Le registre lie les révisions à la tâche, au chemin canonique du projet, au checkpoint et à une empreinte de son `HEAD` et de son index. Une validation ou une restauration ne peut donc pas ajouter un chemin, réutiliser un snapshot après une mutation du checkpoint ou fournir une empreinte calculée par le frontend. Les commandes refusent plus de 4 096 chemins avant de cloner ou de développer la liste IPC. Le calcul des révisions du worktree lit au plus 256 Mio au total, avec une vérification d'annulation entre les blocs de 64 Kio. Le nettoyage d'une restauration vérifie l'empreinte des sauvegardes et des fichiers publiés. Il ne supprime jamais récursivement une entrée remplacée pendant l'opération.
+
+La vérification recalcule les empreintes des commits, des arbres et des blobs du checkpoint. Les trois types d'objets consomment le même budget de lecture avant leur utilisation par la revue. Les arbres acceptent les répertoires, fichiers ordinaires, exécutables et liens symboliques. L'index complet accepte ces trois types de fichiers. Les modes inconnus sont refusés explicitement ; les sous-modules gardent leur diagnostic de dépôt imbriqué non pris en charge.
 
 `resolveProjectExecutionMode` centralise la décision du panneau droit. Un mode `direct` ou un `checkpointId` persisté reste direct. `gitSetupState: not_git` interdit le chemin Git. Une configuration sans Git qui n’autorise pas l’édition directe bloque la review avec `DIRECT_MODE_CONFIGURATION_REQUIRED`. Les anciens projets chargés sans `gitSetupState` conservent le chemin Git pour compatibilité.
 
@@ -885,7 +929,9 @@ L'annulation active reste volontairement limitée aux outils de lecture `list`, 
 
 `web_fetch` suit la même frontière frontend afin que la politique de sécurité Macro décide avant toute requête. Sur desktop, la récupération passe ensuite par une commande Rust dédiée : chaque hôte est résolu avant connexion, toutes ses adresses doivent être publiques, l'adresse retenue est épinglée dans le client HTTP, les redirections automatiques sont désactivées et chaque destination est résolue puis revalidée. Les hôtes locaux, privés, réservés et link-local, les URL avec identifiants, les types de contenu inattendus, les réponses trop volumineuses et plus de cinq redirections sont refusés. Le service échoue fermé hors du transport desktop sécurisé au lieu d'utiliser un fetch direct incapable de garantir ces propriétés. Les favicons traversent la même commande avec une limite plus faible.
 
-Sous WSL, l'énumération récursive utilise une profondeur de 8 par défaut, borne toute profondeur explicite à 32 et s'arrête avant d'accumuler plus de 20 000 entrées. Si une arborescence dépasse cette limite de sécurité, l'opération échoue explicitement et demande de réduire le chemin ou la profondeur au lieu d'annoncer un total ou un scan complet erroné.
+Sous WSL, l'énumération récursive utilise une profondeur de 8 par défaut, borne toute profondeur explicite à 32 et s'arrête avant d'accumuler plus de 20 000 entrées. Si une arborescence dépasse cette limite de sécurité, l'opération échoue explicitement et demande de réduire le chemin ou la profondeur au lieu d'annoncer un total ou un scan complet erroné. Les enregistrements utilisent des champs séparés par NUL pour conserver les tabulations et retours à la ligne des noms. Le filtrage des fichiers cachés exclut aussi leurs descendants. Le champ `is_readonly` suit le contrat des permissions Unix natives : il vaut vrai lorsqu'aucun bit d'écriture propriétaire, groupe ou autres n'est présent ; il ne représente pas une évaluation des ACL.
+
+La recherche de noms classe les candidats de chaque montage avant de limiter les résultats. Le parcours natif refuse explicitement un montage dépassant 20 000 entrées inspectées ; WSL utilise l'énumération bornée commune. La lecture native confinée ouvre le fichier via une capacité du workspace et utilise ce même descripteur pour les métadonnées et le flux borné. La classification repose sur les octets lus : les sources SVG UTF-8 restent textuelles et les contenus non UTF-8 sont omis comme binaires par la recherche.
 
 Le curseur opaque suit actuellement le format interne `v1:<empreinte>:<offset>`. L'empreinte FNV-1a lie le curseur aux paramètres sémantiques de la requête ; elle sert à détecter une réutilisation accidentelle et n'est pas une primitive de sécurité. Un curseur de `read` inclut aussi la révision SHA-256 du fichier, celui de `git_status` une révision de l'ensemble ordonné des changements, celui de `git_log` le commit de tête résolu avec les indicateurs staged/unstaged qui déterminent ses pseudo-commits, et celui de `git_branch_list` une empreinte stable des références locales et distantes ainsi que de la branche courante. Si l'une de ces sources change entre deux pages, la reprise échoue et l'agent doit recommencer sans curseur. Les arbres de fichiers peuvent encore changer entre deux pages de `list`, `glob` ou `grep`; leur pagination reste déterministe pour un instantané logique inchangé, sans verrouiller le système de fichiers ni le dépôt.
 
@@ -1057,13 +1103,30 @@ seule continuation dans la session et le tour courants. Cette requête ne publie
 aucun outil, demande uniquement le suffixe manquant et retire un éventuel
 chevauchement textuel. Une seconde réponse incomplète reste persistée comme
 telle et place le tour en erreur au lieu de déclencher les effets d'une fin
-normale.
+normale. Les motifs de filtrage et les motifs inconnus restent explicites dans
+le transcript, y compris après rechargement, et ne déclenchent pas les effets
+d’une fin normale.
+
+L’arrêt d’un tour transmet son signal aux outils `web_search` et `web_fetch`,
+y compris les lectures de favicon. Chaque appel natif annulable porte un
+identifiant d’exécution ; la commande d’annulation interrompt l’attente réseau
+et la lecture du corps. Le registre conserve temporairement les annulations
+reçues avant le démarrage de la commande.
 
 ### 15.2 Couplage avec les plans
 
-En mode Architect, certaines actions conversationnelles déclenchent une sync metadata à la fin du stream.
+En mode Architect, la synchronisation de fin de tour attend la réussite de
+l’écriture finale du message. Elle conserve le plan, la branche et la
+conversation capturés à l’envoi ou au rejeu. Le service vérifie encore
+l’association plan/conversation avant de remplacer le transcript. Un changement
+de sélection ne redirige pas cette écriture vers un autre plan.
 
-L'objectif est d'ancrer les changements de plan dans la branche metadata de façon régulière.
+La scission d’une conversation partagée attribue de nouveaux identifiants aux
+messages copiés et vérifie leurs rôles et contenus avant d’associer la copie au
+plan. La réconciliation compare aussi les contenus lorsque les identifiants
+sont inchangés ; elle n’enregistre pas de stamp après un échec de synchronisation.
+Les validations de plan et restaurations de sélection IA vérifient leur contexte
+avant d’appliquer un résultat asynchrone à la sélection visible.
 
 ### 15.3 Couplage avec le mode Implement
 
@@ -1104,6 +1167,8 @@ Trois surfaces doivent rester distinguées :
 
 Le tool host et le kernel headless partagent le contrat de validation du bearer token afin d'éviter une dérive de leur authentification, mais restent deux serveurs, deux cycles de vie et deux surfaces HTTP distincts.
 
+Les builds de débogage peuvent aussi démarrer le bridge navigateur vendored `tauri-remote-ui`. Ce bridge reste local et interne. Son arrêt signale les connexions déjà acceptées, envoie une fermeture WebSocket, puis attend leurs tâches dans un délai borné. Un démarrage qui échoue après l'ouverture du listener compense les ressources déjà créées avant de renvoyer l'erreur.
+
 ### 16.1 Rôle du kernel headless
 
 Le prototype de kernel headless est une version sans GUI du backend Macro.
@@ -1139,6 +1204,8 @@ Cette API couvre au minimum :
 - `POST /api/v1/workspaces/{workspace_id}/skills/get`
 - `POST /api/v1/workspaces/{workspace_id}/skills/read-resource`
 - `POST /api/v1/workspaces/{workspace_id}/skills/run-script`
+
+Pour les routes préfixées par `/workspaces/{workspace_id}`, `workspace_id` désigne un identifiant de projet enregistré dans les métadonnées du workspace principal. Le kernel résout cet identifiant dans son registre autoritaire, puis exécute la commande avec le chemin canonique correspondant. Un identifiant vide ou inconnu est refusé sans fallback vers le workspace principal.
 
 Cette surface HTTP est une fondation expérimentale incomplète. Elle ne fait pas partie de la surface produit 0.1 et ne remplace aucune commande IPC desktop.
 

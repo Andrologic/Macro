@@ -165,6 +165,7 @@ const createAppState = (overrides?: {
 });
 
 const loadMacroSyncService = (overrides?: {
+  activeArchitectPlanId?: string;
   metadataAutoPush?: boolean;
   metadataMissingUpstreamPolicy?: 'ask' | 'ignore';
   directEditProjectId?: string | null;
@@ -183,6 +184,7 @@ const loadMacroSyncService = (overrides?: {
     metadataMissingUpstreamPolicy: overrides?.metadataMissingUpstreamPolicy,
     directEditProjectId: overrides?.directEditProjectId,
     planNodes: overrides?.planNodes,
+    activeArchitectPlanId: overrides?.activeArchitectPlanId,
   }),
   resolveTargets: async () => metadataTargets,
   syncArchitectPlanChat: syncArchitectPlanChatMock,
@@ -477,6 +479,26 @@ describe('macroSyncService', () => {
     expect(macroBranchPushMock).not.toHaveBeenCalled();
   });
 
+  it('syncs the captured plan after the visible plan changes', async () => {
+    const service = loadMacroSyncService({ activeArchitectPlanId: 'plan-B' });
+    await service.syncMacroMetadataAfterStream({
+      mode: 'Architect', conversationId: 'conv-A', trigger: 'send',
+      architectPlan: { planId: 'plan-A', targetBranch: 'develop' },
+    });
+    expect(syncArchitectPlanChatMock).toHaveBeenCalledWith({
+      branchName: 'develop', planId: 'plan-A', conversationId: 'conv-A',
+    });
+    expect(macroBranchStatusMock).not.toHaveBeenCalled();
+  });
+
+  it('does not infer a destination from the current selection', async () => {
+    const service = loadMacroSyncService();
+    await service.syncMacroMetadataAfterStream({
+      mode: 'Architect', conversationId: 'conv-A', trigger: 'send',
+    });
+    expect(syncArchitectPlanChatMock).not.toHaveBeenCalled();
+  });
+
   it('records stream metadata without committing or pushing even when auto-push is enabled', async () => {
     const service = loadMacroSyncService({ metadataAutoPush: true });
 
@@ -484,6 +506,7 @@ describe('macroSyncService', () => {
       mode: 'Architect',
       conversationId: 'conv-1',
       trigger: 'send',
+      architectPlan: { planId: 'plan-1', targetBranch: 'develop' },
     });
 
     expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
@@ -510,6 +533,7 @@ describe('macroSyncService', () => {
       mode: 'Architect',
       conversationId: 'conv-direct',
       trigger: 'send',
+      architectPlan: { planId: 'plan-1', targetBranch: 'develop' },
     });
 
     expect(syncArchitectPlanChatMock).toHaveBeenCalledTimes(1);
@@ -535,6 +559,7 @@ describe('macroSyncService', () => {
       mode: 'Architect',
       conversationId: 'conv-mixed',
       trigger: 'send',
+      architectPlan: { planId: 'plan-1', targetBranch: 'develop' },
     });
 
     expect(syncArchitectPlanChatMock).toHaveBeenCalledTimes(1);
@@ -563,6 +588,7 @@ describe('macroSyncService', () => {
       mode: 'Architect',
       conversationId: 'conv-1',
       trigger: 'send',
+      architectPlan: { planId: 'plan-1', targetBranch: 'develop' },
     });
 
     expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();

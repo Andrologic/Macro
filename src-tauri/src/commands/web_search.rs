@@ -5,9 +5,14 @@ use base64::Engine;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::State;
+use tokio::sync::Notify;
 
 const TAVILY_PROVIDER: &str = "tavily";
 const BRAVE_PROVIDER: &str = "brave";
@@ -21,6 +26,162 @@ const WEB_SEARCH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WEB_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const WEB_SEARCH_RESPONSE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const WEB_SEARCH_ERROR_MAX_BYTES: usize = 64 * 1024;
+const WEB_OPERATION_PRE_CANCEL_TTL: Duration = Duration::from_secs(60);
+const MAX_WEB_OPERATION_PRE_CANCELLED: usize = 256;
+
+#[derive(Default)]
+struct WebOperationCancellationRegistry {
+    active: HashMap<String, Arc<WebOperationCancellation>>,
+    pre_cancelled: HashMap<String, Instant>,
+}
+
+static WEB_OPERATION_CANCELLATIONS: OnceLock<Mutex<WebOperationCancellationRegistry>> =
+    OnceLock::new();
+
+struct WebOperationCancellation {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+impl WebOperationCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    async fn cancelled(&self) {
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct WebOperationCancellationGuard {
+    execution_id: String,
+    cancellation: Arc<WebOperationCancellation>,
+}
+
+impl Drop for WebOperationCancellationGuard {
+    fn drop(&mut self) {
+        if let Some(registry) = WEB_OPERATION_CANCELLATIONS.get() {
+            if let Ok(mut registry) = registry.lock() {
+                if registry
+                    .active
+                    .get(&self.execution_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
+                {
+                    registry.active.remove(&self.execution_id);
+                }
+            }
+        }
+    }
+}
+
+fn validate_web_operation_id(execution_id: &str) -> CommandResult<()> {
+    if execution_id.is_empty()
+        || execution_id.len() > 128
+        || !execution_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(command_error("L’identifiant d’exécution web est invalide."));
+    }
+    Ok(())
+}
+
+fn register_web_operation_cancellation(
+    execution_id: Option<&str>,
+) -> CommandResult<(
+    Option<Arc<WebOperationCancellation>>,
+    Option<WebOperationCancellationGuard>,
+)> {
+    let Some(execution_id) = execution_id else {
+        return Ok((None, None));
+    };
+    let execution_id = execution_id.trim();
+    validate_web_operation_id(execution_id)?;
+
+    let cancellation = Arc::new(WebOperationCancellation::new());
+    let registry = WEB_OPERATION_CANCELLATIONS
+        .get_or_init(|| Mutex::new(WebOperationCancellationRegistry::default()));
+    let mut registry = registry
+        .lock()
+        .map_err(|_| command_error("Le registre d’annulation web est indisponible."))?;
+    let now = Instant::now();
+    registry
+        .pre_cancelled
+        .retain(|_, cancelled_at| now.duration_since(*cancelled_at) < WEB_OPERATION_PRE_CANCEL_TTL);
+    if registry.active.contains_key(execution_id) {
+        return Err(command_error(
+            "Cet identifiant d’exécution web est déjà actif.",
+        ));
+    }
+    if registry.pre_cancelled.remove(execution_id).is_some() {
+        cancellation.cancel();
+    }
+    registry
+        .active
+        .insert(execution_id.to_string(), cancellation.clone());
+    Ok((
+        Some(cancellation.clone()),
+        Some(WebOperationCancellationGuard {
+            execution_id: execution_id.to_string(),
+            cancellation,
+        }),
+    ))
+}
+
+fn web_operation_cancelled_error() -> crate::commands::CommandError {
+    command_error("La recherche ou la lecture web a été annulée.")
+}
+
+fn ensure_web_operation_active(
+    cancellation: Option<&WebOperationCancellation>,
+) -> CommandResult<()> {
+    if cancellation.is_some_and(WebOperationCancellation::is_cancelled) {
+        return Err(web_operation_cancelled_error());
+    }
+    Ok(())
+}
+
+async fn await_web_operation<T, F>(
+    cancellation: Option<&WebOperationCancellation>,
+    future: F,
+) -> CommandResult<T>
+where
+    F: Future<Output = T>,
+{
+    let Some(cancellation) = cancellation else {
+        return Ok(future.await);
+    };
+
+    tokio::pin!(future);
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => Err(web_operation_cancelled_error()),
+        value = &mut future => {
+            ensure_web_operation_active(Some(cancellation))?;
+            Ok(value)
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -180,8 +341,10 @@ fn validate_web_fetch_url(url: &reqwest::Url) -> CommandResult<()> {
 
 async fn resolve_public_web_fetch_target(
     url: &reqwest::Url,
+    cancellation: Option<&WebOperationCancellation>,
 ) -> CommandResult<(String, SocketAddr)> {
     validate_web_fetch_url(url)?;
+    ensure_web_operation_active(cancellation)?;
     let host = url
         .host_str()
         .ok_or_else(|| command_error("L’URL web_fetch ne contient aucun hôte."))?
@@ -189,12 +352,13 @@ async fn resolve_public_web_fetch_target(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| command_error("Le port de l’URL web_fetch est invalide."))?;
-    let addresses = tokio::net::lookup_host((host.as_str(), port))
-        .await
-        .map_err(|error| {
-            command_error(format!("Impossible de résoudre l’hôte web_fetch : {error}"))
-        })?
-        .collect::<Vec<_>>();
+    let addresses =
+        await_web_operation(cancellation, tokio::net::lookup_host((host.as_str(), port)))
+            .await?
+            .map_err(|error| {
+                command_error(format!("Impossible de résoudre l’hôte web_fetch : {error}"))
+            })?
+            .collect::<Vec<_>>();
     if addresses.is_empty() {
         return Err(command_error("L’hôte web_fetch ne possède aucune adresse."));
     }
@@ -209,10 +373,12 @@ async fn resolve_public_web_fetch_target(
 async fn fetch_public_web_resource(
     initial_url: reqwest::Url,
     kind: WebFetchResourceKind,
+    cancellation: Option<&WebOperationCancellation>,
 ) -> CommandResult<WebFetchResourceDto> {
     let mut url = initial_url;
     for redirect_count in 0..=WEB_FETCH_MAX_REDIRECTS {
-        let (host, address) = resolve_public_web_fetch_target(&url).await?;
+        ensure_web_operation_active(cancellation)?;
+        let (host, address) = resolve_public_web_fetch_target(&url, cancellation).await?;
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -222,16 +388,19 @@ async fn fetch_public_web_resource(
             .map_err(|error| {
                 command_error(format!("Impossible de préparer web_fetch : {error}"))
             })?;
-        let response = client
-            .get(url.clone())
-            .header(reqwest::header::ACCEPT, kind.accept())
-            .header(
-                reqwest::header::USER_AGENT,
-                "Macro/1.0 (+https://macro.app)",
-            )
-            .send()
-            .await
-            .map_err(|error| command_error(format!("web_fetch a échoué : {error}")))?;
+        let response = await_web_operation(
+            cancellation,
+            client
+                .get(url.clone())
+                .header(reqwest::header::ACCEPT, kind.accept())
+                .header(
+                    reqwest::header::USER_AGENT,
+                    "Macro/1.0 (+https://macro.app)",
+                )
+                .send(),
+        )
+        .await?
+        .map_err(|error| command_error(format!("web_fetch a échoué : {error}")))?;
 
         if response.status().is_redirection() {
             if redirect_count == WEB_FETCH_MAX_REDIRECTS {
@@ -280,7 +449,7 @@ async fn fetch_public_web_resource(
         let final_url = response.url().to_string();
         let mut body = Vec::new();
         let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
+        while let Some(chunk) = await_web_operation(cancellation, stream.next()).await? {
             let chunk = chunk.map_err(|error| {
                 command_error(format!("Impossible de lire la réponse web_fetch : {error}"))
             })?;
@@ -291,6 +460,7 @@ async fn fetch_public_web_resource(
             }
             body.extend_from_slice(&chunk);
         }
+        ensure_web_operation_active(cancellation)?;
         return Ok(WebFetchResourceDto {
             url: final_url,
             content_type,
@@ -352,15 +522,22 @@ pub async fn web_search_execute(
     manager: State<'_, ConfigManager>,
     query: String,
     include_raw_content: Option<bool>,
+    execution_id: Option<String>,
 ) -> CommandResult<Vec<WebSearchResultDto>> {
+    let (cancellation, _cancellation_guard) =
+        register_web_operation_cancellation(execution_id.as_deref())?;
+    ensure_web_operation_active(cancellation.as_deref())?;
+
     let query = query.trim();
     if query.is_empty() {
         return Err(command_error("La requête de recherche est vide."));
     }
 
-    let tools = manager
-        .effective_user_document(ConfigDocumentKind::Tools)
-        .await;
+    let tools = await_web_operation(
+        cancellation.as_deref(),
+        manager.effective_user_document(ConfigDocumentKind::Tools),
+    )
+    .await?;
     let settings = tools.get("webSearch").and_then(Value::as_object);
     let enabled = settings
         .and_then(|value| value.get("enabled"))
@@ -388,6 +565,7 @@ pub async fn web_search_execute(
         .map_err(|error| command_error(format!("Impossible de lire le secret : {error}")))?
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| command_error("Aucune clé API de recherche web n’est configurée."))?;
+    ensure_web_operation_active(cancellation.as_deref())?;
 
     match provider {
         TAVILY_PROVIDER => {
@@ -396,10 +574,11 @@ pub async fn web_search_execute(
                 &api_key,
                 max_results,
                 include_raw_content.unwrap_or(false),
+                cancellation.as_deref(),
             )
             .await
         }
-        BRAVE_PROVIDER => search_brave(query, &api_key, max_results).await,
+        BRAVE_PROVIDER => search_brave(query, &api_key, max_results, cancellation.as_deref()).await,
         _ => unreachable!(),
     }
 }
@@ -408,14 +587,56 @@ pub async fn web_search_execute(
 pub async fn web_fetch_execute(
     url: String,
     resource_kind: String,
+    execution_id: Option<String>,
 ) -> CommandResult<WebFetchResourceDto> {
+    let (cancellation, _cancellation_guard) =
+        register_web_operation_cancellation(execution_id.as_deref())?;
+    ensure_web_operation_active(cancellation.as_deref())?;
+
     let normalized = url.trim();
     if normalized.is_empty() {
         return Err(command_error("L’URL web_fetch est vide."));
     }
     let parsed = reqwest::Url::parse(normalized)
         .map_err(|error| command_error(format!("L’URL web_fetch est invalide : {error}")))?;
-    fetch_public_web_resource(parsed, WebFetchResourceKind::parse(&resource_kind)?).await
+    fetch_public_web_resource(
+        parsed,
+        WebFetchResourceKind::parse(&resource_kind)?,
+        cancellation.as_deref(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn web_search_cancel_execution(execution_id: String) -> CommandResult<bool> {
+    let execution_id = execution_id.trim();
+    validate_web_operation_id(execution_id)?;
+
+    let registry = WEB_OPERATION_CANCELLATIONS
+        .get_or_init(|| Mutex::new(WebOperationCancellationRegistry::default()));
+    let mut registry = registry
+        .lock()
+        .map_err(|_| command_error("Le registre d’annulation web est indisponible."))?;
+    let now = Instant::now();
+    registry
+        .pre_cancelled
+        .retain(|_, cancelled_at| now.duration_since(*cancelled_at) < WEB_OPERATION_PRE_CANCEL_TTL);
+    if let Some(cancellation) = registry.active.get(execution_id).cloned() {
+        cancellation.cancel();
+        return Ok(true);
+    }
+    if registry.pre_cancelled.len() >= MAX_WEB_OPERATION_PRE_CANCELLED {
+        if let Some(oldest_id) = registry
+            .pre_cancelled
+            .iter()
+            .min_by_key(|(_, cancelled_at)| **cancelled_at)
+            .map(|(id, _)| id.clone())
+        {
+            registry.pre_cancelled.remove(&oldest_id);
+        }
+    }
+    registry.pre_cancelled.insert(execution_id.to_string(), now);
+    Ok(false)
 }
 
 async fn search_tavily(
@@ -423,31 +644,45 @@ async fn search_tavily(
     api_key: &str,
     max_results: u32,
     include_raw_content: bool,
+    cancellation: Option<&WebOperationCancellation>,
 ) -> CommandResult<Vec<WebSearchResultDto>> {
+    ensure_web_operation_active(cancellation)?;
     let client = web_search_client()?;
-    let response = client
-        .post("https://api.tavily.com/search")
-        .bearer_auth(api_key)
-        .json(&json!({
-            "query": query,
-            "max_results": max_results,
-            "include_raw_content": if include_raw_content { Value::String("markdown".to_string()) } else { Value::Bool(false) },
-            "include_answer": "basic",
-            "include_favicon": false,
-            "search_depth": "basic"
-        }))
-        .send()
-        .await
-        .map_err(|error| command_error(format!("La recherche Tavily a échoué : {error}")))?;
+    let response = await_web_operation(
+        cancellation,
+        client
+            .post("https://api.tavily.com/search")
+            .bearer_auth(api_key)
+            .json(&json!({
+                "query": query,
+                "max_results": max_results,
+                "include_raw_content": if include_raw_content { Value::String("markdown".to_string()) } else { Value::Bool(false) },
+                "include_answer": "basic",
+                "include_favicon": false,
+                "search_depth": "basic"
+            }))
+            .send(),
+    )
+    .await?
+    .map_err(|error| command_error(format!("La recherche Tavily a échoué : {error}")))?;
     let status = response.status();
     if !status.is_success() {
-        let detail = read_bounded_response(response, WEB_SEARCH_ERROR_MAX_BYTES, "Tavily").await?;
+        let detail =
+            read_bounded_response(response, WEB_SEARCH_ERROR_MAX_BYTES, "Tavily", cancellation)
+                .await?;
         return Err(command_error(format!(
             "Tavily a refusé la requête ({status}){}.",
             format_http_error_detail(&detail),
         )));
     }
-    let body = read_bounded_response(response, WEB_SEARCH_RESPONSE_MAX_BYTES, "Tavily").await?;
+    let body = read_bounded_response(
+        response,
+        WEB_SEARCH_RESPONSE_MAX_BYTES,
+        "Tavily",
+        cancellation,
+    )
+    .await?;
+    ensure_web_operation_active(cancellation)?;
     let payload = serde_json::from_slice::<Value>(&body)
         .map_err(|error| command_error(format!("Réponse Tavily invalide : {error}")))?;
     Ok(payload
@@ -482,7 +717,9 @@ async fn search_brave(
     query: &str,
     api_key: &str,
     max_results: u32,
+    cancellation: Option<&WebOperationCancellation>,
 ) -> CommandResult<Vec<WebSearchResultDto>> {
+    ensure_web_operation_active(cancellation)?;
     let mut url = reqwest::Url::parse("https://api.search.brave.com/res/v1/web/search")
         .map_err(|error| command_error(format!("URL Brave invalide : {error}")))?;
     url.query_pairs_mut()
@@ -490,24 +727,38 @@ async fn search_brave(
         .append_pair("count", &max_results.to_string())
         .append_pair("extra_snippets", "true");
     let client = web_search_client()?;
-    let response = client
-        .get(url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header("X-Subscription-Token", api_key)
-        .send()
-        .await
-        .map_err(|error| command_error(format!("La recherche Brave a échoué : {error}")))?;
+    let response = await_web_operation(
+        cancellation,
+        client
+            .get(url)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header("X-Subscription-Token", api_key)
+            .send(),
+    )
+    .await?
+    .map_err(|error| command_error(format!("La recherche Brave a échoué : {error}")))?;
     let status = response.status();
     if !status.is_success() {
-        let detail =
-            read_bounded_response(response, WEB_SEARCH_ERROR_MAX_BYTES, "Brave Search").await?;
+        let detail = read_bounded_response(
+            response,
+            WEB_SEARCH_ERROR_MAX_BYTES,
+            "Brave Search",
+            cancellation,
+        )
+        .await?;
         return Err(command_error(format!(
             "Brave Search a refusé la requête ({status}){}.",
             format_http_error_detail(&detail),
         )));
     }
-    let body =
-        read_bounded_response(response, WEB_SEARCH_RESPONSE_MAX_BYTES, "Brave Search").await?;
+    let body = read_bounded_response(
+        response,
+        WEB_SEARCH_RESPONSE_MAX_BYTES,
+        "Brave Search",
+        cancellation,
+    )
+    .await?;
+    ensure_web_operation_active(cancellation)?;
     let payload = serde_json::from_slice::<Value>(&body)
         .map_err(|error| command_error(format!("Réponse Brave invalide : {error}")))?;
     Ok(payload
@@ -581,6 +832,7 @@ async fn read_bounded_response(
     response: reqwest::Response,
     max_bytes: usize,
     provider: &str,
+    cancellation: Option<&WebOperationCancellation>,
 ) -> CommandResult<Vec<u8>> {
     if response
         .content_length()
@@ -598,7 +850,7 @@ async fn read_bounded_response(
             .min(max_bytes as u64) as usize,
     );
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = await_web_operation(cancellation, stream.next()).await? {
         let chunk = chunk.map_err(|error| {
             command_error(format!(
                 "Lecture de la réponse {provider} interrompue : {error}"
@@ -606,6 +858,7 @@ async fn read_bounded_response(
         })?;
         append_bounded_chunk(&mut body, &chunk, max_bytes, provider)?;
     }
+    ensure_web_operation_active(cancellation)?;
     Ok(body)
 }
 
@@ -651,6 +904,101 @@ mod tests {
             format_http_error_detail(b"quota exceeded"),
             " : quota exceeded"
         );
+    }
+
+    #[test]
+    fn web_operation_ids_reject_empty_path_and_oversized_values() {
+        assert!(validate_web_operation_id("web-search-123").is_ok());
+        assert!(validate_web_operation_id("").is_err());
+        assert!(validate_web_operation_id("nested/request").is_err());
+        assert!(validate_web_operation_id(&"x".repeat(129)).is_err());
+    }
+
+    #[tokio::test]
+    async fn web_operation_cancellation_reaches_an_active_operation() {
+        let execution_id = format!("web-search-active-{}", std::process::id());
+        let (cancellation, guard) = register_web_operation_cancellation(Some(&execution_id))
+            .expect("register web cancellation");
+        let cancellation = cancellation.expect("registered cancellation");
+        assert!(web_search_cancel_execution(execution_id.clone()).expect("cancel active"));
+        tokio::time::timeout(Duration::from_millis(100), cancellation.cancelled())
+            .await
+            .expect("cancellation notification");
+        drop(guard);
+        assert!(!WEB_OPERATION_CANCELLATIONS
+            .get()
+            .expect("web cancellation registry")
+            .lock()
+            .expect("web cancellation registry lock")
+            .active
+            .contains_key(&execution_id));
+    }
+
+    #[tokio::test]
+    async fn web_operation_cancellation_before_registration_is_not_lost() {
+        let execution_id = format!("web-search-before-register-{}", std::process::id());
+        assert!(!web_search_cancel_execution(execution_id.clone()).expect("record cancellation"));
+
+        let (cancellation, guard) = register_web_operation_cancellation(Some(&execution_id))
+            .expect("register pre-cancelled web operation");
+        let cancellation = cancellation.expect("registered cancellation");
+        assert!(cancellation.is_cancelled());
+        drop(guard);
+    }
+
+    struct PendingDropFuture {
+        polled: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Future for PendingDropFuture {
+        type Output = ();
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            self.polled.store(true, Ordering::Release);
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for PendingDropFuture {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn web_operation_cancellation_drops_a_pending_future_after_it_starts() {
+        let cancellation = Arc::new(WebOperationCancellation::new());
+        let polled = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_cancellation = cancellation.clone();
+        let pending = PendingDropFuture {
+            polled: polled.clone(),
+            dropped: dropped.clone(),
+        };
+        let task = tokio::spawn(async move {
+            await_web_operation(Some(task_cancellation.as_ref()), pending).await
+        });
+
+        tokio::time::timeout(Duration::from_millis(100), async {
+            while !polled.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the pending future must start before cancellation");
+
+        cancellation.cancel();
+        let result = tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .expect("cancellation must return promptly")
+            .expect("cancellation task must not panic");
+        let error = result.expect_err("cancellation must return an error");
+        assert!(error.message.contains("a été annulée"));
+        assert!(dropped.load(Ordering::Acquire));
     }
 
     #[test]

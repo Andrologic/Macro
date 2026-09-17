@@ -1,4 +1,6 @@
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,9 +10,23 @@ use tracing::warn;
 
 const SECRET_FILE_NAME: &str = "provider-secrets.json";
 const SECRET_FILE_VERSION: u8 = 2;
+const SECRET_MIGRATION_FILE_NAME: &str = "provider-secrets.migration-pending.json";
+const SECRET_LOCK_FILE_NAME: &str = "provider-secrets.lock";
 
 static SECRET_STORE_PATH: LazyLock<Mutex<Option<PathBuf>>> = LazyLock::new(|| Mutex::new(None));
 static STORE_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+#[cfg(test)]
+static FAIL_MIGRATION_AFTER_REPLACE: LazyLock<Mutex<Option<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SecretMigrationJournal {
+    from_version: u8,
+    source_sha256: String,
+    target_sha256: String,
+    backup_file: String,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
@@ -131,25 +147,8 @@ impl LocalSecretStore {
     }
 
     pub(super) fn write_file(&self, data: &ProviderSecretsFile) -> Result<(), SecretError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let mut persisted = data.clone();
-        persisted.version = SECRET_FILE_VERSION;
-        persisted.namespaces = SecretNamespaces::from_flat(&persisted.api_keys);
-        let serialized = serde_json::to_string_pretty(&persisted)?;
-        let tmp_path = self.path.with_file_name(format!(
-            "{}.tmp-{}",
-            SECRET_FILE_NAME,
-            uuid::Uuid::new_v4().simple()
-        ));
-
-        write_private_file(&tmp_path, serialized.as_bytes())?;
-        set_private_file_permissions(&tmp_path)?;
-        replace_file(&tmp_path, &self.path)?;
-        set_private_file_permissions(&self.path)?;
-        sync_parent_directory(&self.path)?;
+        let serialized = serialize_provider_secrets(data)?;
+        write_private_file_atomically(&self.path, &serialized, || Ok(()))?;
         Ok(())
     }
 
@@ -179,19 +178,232 @@ impl LocalSecretStore {
         Ok(())
     }
 
-    fn backup_before_version_change(&self, from_version: u8) -> Result<(), SecretError> {
-        if from_version >= SECRET_FILE_VERSION || !self.path.exists() {
-            return Ok(());
-        }
+    fn backup_before_version_change(
+        &self,
+        from_version: u8,
+        source: &[u8],
+    ) -> Result<PathBuf, SecretError> {
         let backup = self
             .path
             .with_file_name(format!("{SECRET_FILE_NAME}.v{from_version}.bak"));
-        if !backup.exists() {
-            std::fs::copy(&self.path, &backup)?;
-            set_private_file_permissions(&backup)?;
+        if backup.exists() {
+            let existing = std::fs::read(&backup)?;
+            if secret_digest(&existing) != secret_digest(source) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "existing secret migration backup does not match the migration source",
+                )
+                .into());
+            }
+        } else {
+            write_private_file_atomically(&backup, source, || Ok(()))?;
+        }
+        Ok(backup)
+    }
+
+    fn migration_journal_path(&self) -> PathBuf {
+        self.path.with_file_name(SECRET_MIGRATION_FILE_NAME)
+    }
+
+    fn remove_migration_journal(&self) -> Result<(), SecretError> {
+        let journal_path = self.migration_journal_path();
+        if journal_path.exists() {
+            std::fs::remove_file(&journal_path)?;
+            sync_parent_directory(&journal_path)?;
         }
         Ok(())
     }
+
+    fn quarantine_migration_journal(&self) -> Result<PathBuf, SecretError> {
+        let journal_path = self.migration_journal_path();
+        let quarantined_path = journal_path.with_file_name(format!(
+            "{SECRET_MIGRATION_FILE_NAME}.conflict-{}-{}",
+            unix_timestamp_millis(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::rename(&journal_path, &quarantined_path)?;
+        sync_parent_directory(&journal_path)?;
+        warn!(
+            canonical_path = %self.path.display(),
+            journal_path = %journal_path.display(),
+            quarantined_path = %quarantined_path.display(),
+            "quarantined a secret migration journal after the canonical store diverged"
+        );
+        Ok(quarantined_path)
+    }
+
+    fn recover_pending_migration(&self) -> Result<(), SecretError> {
+        let journal_path = self.migration_journal_path();
+        if !journal_path.exists() {
+            return Ok(());
+        }
+        let journal =
+            serde_json::from_slice::<SecretMigrationJournal>(&std::fs::read(&journal_path)?)?;
+        let canonical = std::fs::read(&self.path).unwrap_or_default();
+        let canonical_digest = secret_digest(&canonical);
+
+        if canonical_digest == journal.target_sha256 {
+            set_private_file_permissions(&self.path)?;
+            sync_parent_directory(&self.path)?;
+            self.remove_migration_journal()?;
+            return Ok(());
+        }
+
+        let parent = self.path.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "secret migration path has no parent directory",
+            )
+        })?;
+        let backup_path = parent.join(&journal.backup_file);
+        let backup = std::fs::read(&backup_path)?;
+        if secret_digest(&backup) != journal.source_sha256 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "secret migration backup does not match its durable journal",
+            )
+            .into());
+        }
+        if canonical_digest == journal.source_sha256 {
+            self.remove_migration_journal()?;
+        } else {
+            self.quarantine_migration_journal()?;
+        }
+        Ok(())
+    }
+
+    fn migrate_versioned_file(&self, data: &ProviderSecretsFile) -> Result<(), SecretError> {
+        let source = std::fs::read(&self.path)?;
+        let target = serialize_provider_secrets(data)?;
+        let backup = self.backup_before_version_change(data.version, &source)?;
+        let backup_file = backup
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "secret migration backup name is invalid",
+                )
+            })?
+            .to_string();
+        let journal = SecretMigrationJournal {
+            from_version: data.version,
+            source_sha256: secret_digest(&source),
+            target_sha256: secret_digest(&target),
+            backup_file,
+        };
+        let journal_bytes = serde_json::to_vec_pretty(&journal)?;
+        write_private_file_atomically(&self.migration_journal_path(), &journal_bytes, || Ok(()))?;
+        write_private_file_atomically(&self.path, &target, || {
+            fail_migration_after_replace(&self.path)
+        })?;
+        self.remove_migration_journal()?;
+        Ok(())
+    }
+}
+
+fn lock_store_file(store: &LocalSecretStore) -> Result<std::fs::File, SecretError> {
+    let parent = store.path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "secret store path has no parent directory",
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let lock_path = parent.join(SECRET_LOCK_FILE_NAME);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)?;
+    set_private_file_permissions(&lock_path)?;
+    file.lock_exclusive()?;
+    Ok(file)
+}
+
+#[cfg(test)]
+pub(super) fn with_test_store_file_lock<T>(
+    store: &LocalSecretStore,
+    operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
+) -> Result<T, SecretError> {
+    let file = lock_store_file(store)?;
+    let result = operation(store);
+    let unlock_result = FileExt::unlock(&file);
+    result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from))
+}
+
+fn serialize_provider_secrets(data: &ProviderSecretsFile) -> Result<Vec<u8>, SecretError> {
+    let mut persisted = data.clone();
+    persisted.version = SECRET_FILE_VERSION;
+    persisted.namespaces = SecretNamespaces::from_flat(&persisted.api_keys);
+    Ok(serde_json::to_vec_pretty(&persisted)?)
+}
+
+fn secret_digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn write_private_file_atomically(
+    path: &Path,
+    contents: &[u8],
+    after_replace: impl FnOnce() -> Result<(), std::io::Error>,
+) -> Result<(), std::io::Error> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "secret file path has no parent directory",
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(SECRET_FILE_NAME);
+    let temporary = parent.join(format!(
+        ".{file_name}.tmp-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let result = (|| {
+        write_private_file(&temporary, contents)?;
+        set_private_file_permissions(&temporary)?;
+        replace_file(&temporary, path)?;
+        after_replace()?;
+        set_private_file_permissions(path)?;
+        sync_parent_directory(path)
+    })();
+    if temporary.exists() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(test)]
+pub(super) fn install_migration_failure_after_replace(path: PathBuf) {
+    *FAIL_MIGRATION_AFTER_REPLACE
+        .lock()
+        .expect("secret migration failure hook mutex") = Some(path);
+}
+
+#[cfg(test)]
+fn fail_migration_after_replace(path: &Path) -> Result<(), std::io::Error> {
+    let should_fail = {
+        let mut hook = FAIL_MIGRATION_AFTER_REPLACE
+            .lock()
+            .expect("secret migration failure hook mutex");
+        hook.as_deref() == Some(path) && hook.take().is_some()
+    };
+    if should_fail {
+        Err(std::io::Error::other(
+            "injected secret migration failure after canonical replacement",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(test))]
+fn fail_migration_after_replace(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 impl SecretNamespaces {
@@ -345,7 +557,7 @@ fn sync_parent_directory(_path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(unix)]
-fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
     use std::os::unix::fs::PermissionsExt;
 
     let mut permissions = std::fs::metadata(path)?.permissions();
@@ -354,7 +566,7 @@ fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(windows)]
-fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_INSUFFICIENT_BUFFER};
@@ -449,7 +661,7 @@ fn set_private_file_permissions(path: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(all(not(unix), not(windows)))]
-fn set_private_file_permissions(_path: &Path) -> Result<(), std::io::Error> {
+pub(crate) fn set_private_file_permissions(_path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
@@ -459,9 +671,15 @@ pub(super) fn init_store(app_data_dir: &Path) -> Result<(), SecretError> {
     *SECRET_STORE_PATH.lock().expect("secret store path lock") = Some(path.clone());
     let store = LocalSecretStore::new(path);
     let _guard = STORE_MUTEX.lock().expect("secret store lock");
+    let file_guard = lock_store_file(&store)?;
+    store.recover_pending_migration()?;
     let data = store.read_file()?;
-    store.backup_before_version_change(data.version)?;
-    store.write_file(&data)?;
+    if data.version < SECRET_FILE_VERSION && store.path.exists() {
+        store.migrate_versioned_file(&data)?;
+    } else if !store.path.exists() {
+        store.write_file(&data)?;
+    }
+    FileExt::unlock(&file_guard)?;
     Ok(())
 }
 
@@ -475,12 +693,26 @@ pub(super) fn default_store() -> Result<LocalSecretStore, SecretError> {
         .ok_or(SecretError::StoreUnavailable)
 }
 
+pub(super) fn chatgpt_auth_lock_path(provider_id: &str) -> Result<PathBuf, SecretError> {
+    let store = default_store()?;
+    let parent = store.path.parent().ok_or_else(|| {
+        SecretError::Io(std::io::Error::other(
+            "secret store path has no parent directory",
+        ))
+    })?;
+    let digest = format!("{:x}", Sha256::digest(provider_id.as_bytes()));
+    Ok(parent.join(format!("chatgpt-auth-{}.lock", &digest[..24])))
+}
+
 pub(super) fn with_store_lock<T>(
     operation: impl FnOnce(&LocalSecretStore) -> Result<T, SecretError>,
 ) -> Result<T, SecretError> {
     let store = default_store()?;
     let _guard = STORE_MUTEX.lock().expect("secret store lock");
-    operation(&store)
+    let file_guard = lock_store_file(&store)?;
+    let result = operation(&store);
+    let unlock_result = FileExt::unlock(&file_guard);
+    result.and_then(|value| unlock_result.map(|()| value).map_err(SecretError::from))
 }
 
 pub(super) fn read_provider_secret(provider_id: &str) -> Result<Option<String>, SecretError> {

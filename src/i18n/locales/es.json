@@ -46,7 +46,17 @@
     "interrupted": "Inicio interrumpido",
     "failedTitle": "Macro no pudo completar el inicio.",
     "failedDescription": "Macro no pudo inicializar los datos locales. Puedes volver a intentarlo de forma segura.",
-    "failedSteps": "Pasos fallidos"
+    "failedSteps": "Pasos fallidos",
+    "metadataRecovery": {
+      "restoredWithCommit": "Metadatos de @macro restaurados desde el historial ({{commit}})",
+      "restored": "Metadatos de @macro restaurados desde el historial",
+      "restoredDescription": "Macro restauró la última instantánea válida de los metadatos antes de cargar el espacio de trabajo.",
+      "reconstructed": "Metadatos de @macro reconfigurados desde los proyectos locales",
+      "reconstructedDescription": "Macro reconstruyó un estado mínimo de los metadatos a partir de los proyectos locales conocidos.",
+      "skipped": "Se omitió la recuperación automática de @macro",
+      "blockedConflictDescription": "Macro encontró conflictos sin resolver en el espacio de trabajo de metadatos y no aplicó la recuperación automática.",
+      "blockedDirtyDescription": "Macro encontró cambios locales en el espacio de trabajo de metadatos y no aplicó la recuperación automática."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "Hay una tarea en curso. Cerrar Macro la interrumpirá.",
@@ -455,6 +465,11 @@
     "imageImportFailed": "No se añadieron imágenes. Usa PNG, JPEG, GIF o WebP válidos: máximo 2 MB por imagen, 8 MB en total y 10 imágenes.",
     "newChat": "Nuevo chat",
     "newConversation": "Nueva conversación",
+    "unsavedAssistant": {
+      "label": "Sin guardar",
+      "saving": "Guardando respuesta...",
+      "description": "Macro no pudo guardar esta respuesta. Vuelve a intentarlo o elimínala antes de enviar otro mensaje."
+    },
     "loadingConversation": "Restaurando la conversación...",
     "showHistory": "Mostrar historial",
     "hideHistory": "Ocultar historial",
@@ -541,6 +556,8 @@
     "toolTurnLimitNoticeDescription": "Macro detuvo el bucle del agente tras alcanzar el límite de turnos configurado. Cámbialo o desactívalo en Ajustes > General > Turnos máximos del agente y luego envía un nuevo mensaje para continuar.",
     "toolTurnLimitFallbackTitle": "Límite de turnos de herramientas alcanzado",
     "toolTurnLimitFallbackDescription": "El último paso sin herramientas no produjo una respuesta utilizable, así que Macro mostró un resumen de respaldo.",
+    "providerCompletionNoticeTitle": "Respuesta interrumpida",
+    "providerCompletionNoticeDescription": "El proveedor finalizó esta respuesta por el motivo: {{reason}}. Puedes reformular tu solicitud e intentarlo de nuevo.",
     "thinking": "Pensando...",
     "tool": "Herramienta",
     "runningTools": "Herramientas en curso",
@@ -562,6 +579,9 @@
     "toolApprovalReasonPlaceholder": "Add a short reason if you want Macro to know why.",
     "toolApprovalConfirmDeny": "Confirm denial",
     "toolApprovalDeny": "Refuse",
+    "mcpApprovalArguments": "Operación MCP y argumentos",
+    "mcpApprovalRedacted": "Los campos sensibles están ocultos.",
+    "mcpApprovalTruncated": "Argumentos truncados después de 16.000 caracteres.",
     "toolApprovalAllowOnce": "Allow once",
     "toolApprovalAllowConversation": "Allow for this conversation",
     "toolApprovalAllowOnceHint": "Approve only this exact request.",
@@ -1003,7 +1023,8 @@
       "upToDate": "Macro está actualizado en el canal seleccionado.",
       "stableConfirmationTitle": "¿Cambiar al canal Stable?",
       "stableConfirmationDescription": "Si la última versión Stable es anterior a esta Preview, Macro ofrecerá instalar esa versión firmada anterior.",
-      "switchToStable": "Cambiar a Stable"
+      "switchToStable": "Cambiar a Stable",
+      "refreshFailed": "El canal de actualizaciones se guardó, pero no se pudo actualizar la información de actualizaciones."
     },
     "sound_effects": "Efectos de sonido",
     "sound_effects_desc": "Reproducir sonidos al completar tareas o errores",
@@ -1536,6 +1557,7 @@
       "collapseProject": "Contraer proyecto",
       "noProjects": "Todavía no hay proyectos.",
       "loadError": "No se pudieron cargar los planes.",
+      "preferenceLoadError": "No se pudieron cargar las preferencias del navegador.",
       "activateError": "Este plan ya no está disponible.",
       "createError": "No se pudo crear el plan.",
       "readOnlyScope": "Este proyecto es de solo lectura.",
@@ -1723,6 +1745,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "No se pudo descartar la vista previa de la estrategia.",
+    "strategyPreviewApplyError": "No se pudo aplicar la vista previa de la estrategia.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "Selecciona o crea un plan para empezar a diseñar.",
     "createFirstPlanToStart": "Crea tu primer plan para empezar a diseñar.",
@@ -2099,6 +2123,7 @@
   },
   "notifications": {
     "centerTitle": "Notificaciones",
+    "mcpServersUnavailable": "Algunos servidores MCP no están disponibles",
     "openCenter": "Abrir notificaciones",
     "closeCenter": "Cerrar notificaciones",
     "clearAll": "Borrar todo",
@@ -2481,6 +2506,15 @@
   },
   "backup": {
     "scheduled": "Operación preparada. Cierra Macro por completo y vuelve a abrirlo. No cambies esta sesión antes de salir.",
+    "resultExported": "Copia de seguridad guardada.",
+    "resultRestored": "Perfil restaurado. El perfil anterior se conserva en la ruta indicada abajo.",
+    "resultRolledBack": "Se revirtió la restauración interrumpida. Se recuperó el perfil anterior.",
+    "resultFailed": "La operación de copia de seguridad no pudo finalizar. Consulte los detalles del diagnóstico.",
+    "resultInvalidRequest": "La solicitud pendiente no era válida y se ha apartado. Su perfil no se ha modificado.",
+    "resultLegacy": "Hay un resultado de una versión anterior en los detalles del diagnóstico.",
+    "diagnostics": "Detalles del diagnóstico",
+    "startupTitle": "Es necesario recuperar el perfil",
+    "startupRecovery": "No se pudo completar la restauración de los datos del navegador. Se conserva el archivo nativo de recuperación. Consulte el diagnóstico, libere almacenamiento local si es necesario y reinicie Macro para reintentar.",
     "title": "Copia de seguridad y restauración",
     "scope": "Perfil local: conversaciones, adjuntos guardados, puntos de control del código, borradores y preferencias globales. Se excluyen las carpetas de proyectos y sus metadatos Git. Guarda una copia separada de los proyectos. Máximo 256 MiB; restaura con la misma versión de Macro.",
     "secrets": "Las credenciales de proveedores, variables de entorno y cabeceras MCP se excluyen de las exportaciones portátiles. Vuelve a conectar los proveedores tras restaurar. Las conversaciones y archivos siguen siendo datos privados; guarda el archivo en un lugar seguro.",

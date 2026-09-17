@@ -202,6 +202,127 @@ describe('useToolsStore chat toolbox policy', () => {
     }
   });
 
+  it('serializes rapid built-in tool toggles and persists both changes', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    const updateToolSettings = services.updateToolSettings as typeof services.updateToolSettings & {
+      mockImplementationOnce: (implementation: typeof services.updateToolSettings) => void;
+      mock: { calls: Array<[{ tools: Record<string, boolean> }]> };
+    };
+    let releaseFirstWrite: (() => void) | undefined;
+    const firstWrite = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    updateToolSettings.mockImplementationOnce(async () => firstWrite);
+
+    const firstToggle = useToolsStore.getState().toggleTool('web_search');
+    const secondToggle = useToolsStore.getState().toggleTool('question');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(updateToolSettings.mock.calls).toHaveLength(1);
+    releaseFirstWrite?.();
+    await Promise.all([firstToggle, secondToggle]);
+
+    expect(updateToolSettings.mock.calls).toHaveLength(2);
+    expect(updateToolSettings.mock.calls[1]?.[0].tools).toMatchObject({
+      web_search: false,
+      question: false,
+    });
+    expect(useToolsStore.getState().isToolEnabled('web_search')).toBe(false);
+    expect(useToolsStore.getState().isToolEnabled('question')).toBe(false);
+  });
+
+  it.each(['remove-success', 'remove-failure', 'disable-success', 'disable-failure', 'edit-success', 'edit-failure', 'other-success', 'other-failure'])('ignores a stale catalog after %s', async (scenario) => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const original = services.mcpRuntimeRefreshCatalog;
+    services.mcpRuntimeRefreshCatalog = mock(async (key) => {
+      await gate;
+      if (scenario.endsWith('failure')) throw new Error('Catalog unavailable');
+      return original(key);
+    });
+    const refresh = useToolsStore.getState().refreshMCPServerTools('github');
+    await Promise.resolve();
+    const current = useToolsStore.getState().mcpServers[0]!;
+    if (scenario.startsWith('remove')) await useToolsStore.getState().removeMCPServer('github');
+    else if (scenario.startsWith('disable')) await useToolsStore.getState().toggleMCPServer('github');
+    else await useToolsStore.getState().upsertMCPServer({ ...current,
+      id: scenario.startsWith('other') ? 'other' : current.id,
+      transport: { type: 'stdio', command: 'new-synthetic-command' },
+    });
+    const expectedServers = useToolsStore.getState().mcpServers;
+    const saves = (services.updateMCPServerSettings as ReturnType<typeof mock>).mock.calls.length;
+    finish();
+    await refresh;
+    expect(useToolsStore.getState().mcpServers).toEqual(expectedServers);
+    expect((services.updateMCPServerSettings as ReturnType<typeof mock>).mock.calls.length).toBe(saves);
+    expect(useToolsStore.getState().lastError).toBeNull();
+    expect(useToolsStore.getState().saving).toBe(false);
+  });
+
+  it('keeps the latest catalog when two refreshes finish in reverse order', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    services.mcpRuntimeRefreshCatalog = mock(async (key) => {
+      const index = ++calls;
+      if (index === 1) await gate;
+      return { key, refreshedAt: 'synthetic', tools: [{
+        id: `mcp__github__read_${index}`, serverId: 'github', name: `read_${index}`,
+      }] };
+    });
+    const first = useToolsStore.getState().refreshMCPServerTools('github');
+    await Promise.resolve();
+    await useToolsStore.getState().refreshMCPServerTools('github');
+    release();
+    await first;
+    expect(useToolsStore.getState().getEnabledMCPToolIds()).toEqual(['mcp__github__read_2']);
+    expect(services.updateMCPServerSettings).not.toHaveBeenCalled();
+    expect(useToolsStore.getState().saving).toBe(false);
+  });
+
+  it('keeps saving visible when an absent server is refreshed during another refresh', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const { services } = await import('../services');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = services.mcpRuntimeRefreshCatalog;
+    services.mcpRuntimeRefreshCatalog = mock(async (key) => { await gate; return original(key); });
+    const active = useToolsStore.getState().refreshMCPServerTools('github');
+    await Promise.resolve();
+    await useToolsStore.getState().refreshMCPServerTools('absent');
+    expect(useToolsStore.getState().saving).toBe(true);
+    release();
+    await active;
+    expect(useToolsStore.getState().saving).toBe(false);
+  });
+
+  it('merges concurrent catalogs for different servers without saving configuration', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    await useToolsStore.getState().loadSettings();
+    const github = useToolsStore.getState().mcpServers[0]!;
+    useToolsStore.setState({ mcpServers: [github, { ...github, id: 'other' }] });
+    const { services } = await import('../services');
+    services.mcpRuntimeConnect = mock(async ({ serverId }) => ({ key: {
+      serverId, projectId: null, projectIds: [], configGeneration: 1,
+    }, status: 'ready' as const, updatedAt: 'synthetic' }));
+    services.mcpRuntimeRefreshCatalog = mock(async (key) => ({ key, tools: [{
+      id: `mcp__${key.serverId}__read`, serverId: key.serverId, name: 'read',
+    }], refreshedAt: 'synthetic' }));
+    await Promise.all(['github', 'other'].map((id) => useToolsStore.getState().refreshMCPServerTools(id)));
+    expect(useToolsStore.getState().getEnabledMCPToolIds()).toEqual(['mcp__github__read', 'mcp__other__read']);
+    expect(services.updateMCPServerSettings).not.toHaveBeenCalled();
+  });
+
   it('discovers and exposes enabled MCP tools by namespaced id', async () => {
     const { useToolsStore } = await loadUseToolsStore();
 

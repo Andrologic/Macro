@@ -661,6 +661,40 @@ export const registerChatToolsAndSourcesScenarios = (
       expect(streamOptions.guidedToolRetry).toBeUndefined();
     });
 
+    it('reads empty and whitespace attachments as exact raw pages instead of a homonymous workspace file', async () => {
+      const { useChatStore, onToolCall } = await context.startImplementToolConversation();
+      useChatStore.setState({ composerContextRefs: [{
+        id: 'file:project-1:notes.txt',
+        kind: 'file',
+        title: 'notes.txt',
+        data: {
+          id: 'file:project-1:notes.txt',
+          path: 'notes.txt',
+          relativePath: 'notes.txt',
+          projectId: 'project-1',
+          projectName: 'Test',
+          language: 'text',
+          sizeBytes: 20,
+          modified: '2026-09-16T00:00:00Z',
+          isFocused: true,
+        },
+      }] });
+      fsReadFileWithOptionsMock.mockClear();
+      for (const content of ['', '  first line\n\n', ' \n\t  \n']) {
+        context.citationRecords = [{
+          id: 'attachment-test', type: 'file', scope: 'context',
+          source: 'notes.txt', title: 'notes.txt', path: 'attachment://test/notes.txt',
+          content, snippet: 'fallback preview', messageId: 'attachment-message',
+          conversationId: 'implement-conv', timestamp: '2026-09-16T00:00:00Z',
+        }];
+        const page = String(await onToolCall('read_file', { file: 'notes.txt', raw: true }, 'read-attachment'));
+        expect(page).toContain('MODE: RAW_UTF8');
+        expect(page).toContain(`TOTAL_BYTES: ${new TextEncoder().encode(content).byteLength}`);
+        expect(page.match(/---BEGIN RAW CONTENT---\n([\s\S]*)\n---END RAW CONTENT---/)?.[1]).toBe(content);
+      }
+      expect(fsReadFileWithOptionsMock).not.toHaveBeenCalled();
+    });
+
     it('reads the full attached file content through the chat read_file tool', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
       appState.mode = 'Chat';
@@ -710,7 +744,7 @@ export const registerChatToolsAndSourcesScenarios = (
 
       await useChatStore.getState().sendMessage({
         conversationId: 'chat-conv',
-        content: 'Lis le fichier attache.',
+        content: 'Lis le fichier attaché.',
       });
 
       const streamOptions = ((streamChatMock as unknown as {
@@ -1826,6 +1860,84 @@ export const registerChatToolsAndSourcesScenarios = (
       expect(String(readResult)).not.toContain('source-old');
     });
 
+    it.each(['web_search', 'web_fetch'])('aborts a pending %s operation when the conversation stops', async (tool) => {
+      providerState.selectedSupportsNativeToolCalling = () => true;
+      appState.mode = 'Chat';
+      appState.selectedGroupId = null;
+      appState.selectedProjectId = null;
+      await savePreferenceForTest('toolRiskLevel', 'yolo');
+      context.streamingWebSearchConfig = {
+        enableWebSearch: true,
+        enableWebFetch: true,
+        webSearchOptions: {
+          provider: 'tavily',
+          tavilyApiKey: 'tvly-test',
+          braveApiKey: '',
+          maxResults: 5,
+        },
+      };
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [
+          {
+            id: 'chat-conv',
+            title: 'Conversation chat-conv',
+            description: '',
+            scope_mode: 'Chat',
+            task_id: null,
+            group_id: null,
+            project_id: null,
+            last_message: '',
+            message_count: 0,
+            updated_at: '2026-03-19T00:00:00.000Z',
+            is_unread: false,
+          },
+        ],
+        messages: [],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        isLoading: false,
+        isStreaming: false,
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Cherche puis ouvre une page.',
+      });
+
+      const streamOptions = ((streamChatMock as unknown as {
+        mock: { calls: Array<Array<unknown>> };
+      }).mock.calls[0]?.[0] ?? null) as {
+        signal: AbortSignal;
+        onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
+      };
+
+      let receivedSignal: AbortSignal | undefined;
+      const pending = (signal: AbortSignal | undefined) => new Promise<never>((_resolve, reject) => {
+        receivedSignal = signal;
+        signal?.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')), { once: true });
+      });
+      if (tool === 'web_search') {
+        webSearchMock.mockImplementationOnce((_query, options) => pending(options?.signal));
+      } else {
+        fetchWebPageMock.mockImplementationOnce((_url, signal) => pending(signal));
+      }
+      const operation = streamOptions.onToolCall!(tool, { query: 'Synthetic query', url: 'https://example.com/synthetic' }, 'pending-web');
+      const settled = operation.catch(() => undefined);
+      await flushAsyncWork();
+      expect(receivedSignal).toBe(streamOptions.signal);
+      expect(receivedSignal?.aborted).toBe(false);
+      useChatStore.getState().stopConversationStream('chat-conv');
+      await settled;
+      expect(receivedSignal?.aborted).toBe(true);
+      expect(context.citationRecords).toHaveLength(0);
+    });
+
     it('executes chat web search and fetch tools through the app handler', async () => {
       providerState.selectedSupportsNativeToolCalling = () => true;
       appState.mode = 'Chat';
@@ -1879,6 +1991,7 @@ export const registerChatToolsAndSourcesScenarios = (
       const streamOptions = ((streamChatMock as unknown as {
         mock: { calls: Array<Array<unknown>> };
       }).mock.calls[0]?.[0] ?? null) as {
+        signal: AbortSignal;
         onToolCall?: (toolName: string, args: Record<string, unknown>, toolCallId?: string) => Promise<unknown>;
       };
 
@@ -1889,7 +2002,7 @@ export const registerChatToolsAndSourcesScenarios = (
       );
       expect(webSearchMock).toHaveBeenCalledWith(
         'Macro chat sources',
-        context.streamingWebSearchConfig.webSearchOptions,
+        { ...context.streamingWebSearchConfig.webSearchOptions, signal: streamOptions.signal },
       );
       expect(String(searchResult)).toContain('Search Result');
       expect(context.citationRecords.some((citation) => citation.url === 'https://example.com/search-result')).toBe(true);
@@ -1899,7 +2012,7 @@ export const registerChatToolsAndSourcesScenarios = (
         { url: 'https://example.com/page' },
         'call-web-fetch',
       );
-      expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/page');
+      expect(fetchWebPageMock).toHaveBeenCalledWith('https://example.com/page', streamOptions.signal);
       expect(String(fetchResult)).toContain('Fetched full page content');
       expect(context.citationRecords.some((citation) => citation.content === 'Fetched full page content.')).toBe(true);
 

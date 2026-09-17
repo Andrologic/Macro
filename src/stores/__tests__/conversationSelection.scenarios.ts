@@ -442,6 +442,35 @@ export const registerConversationSelectionScenarios = (
       expect(useChatStore.getState().composerContextRefs).toEqual([]);
     });
 
+    it.each(['conversation', 'mode'])('ignores delayed AI restoration after a newer %s selection', async (change) => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      providerState.modelsByProvider = { 'provider-1': [
+        { id: 'model-a', name: 'A', isEnabled: true },
+        { id: 'model-b', name: 'B', isEnabled: true },
+      ] };
+      const { useChatStore } = await loadChatStore();
+      const gate = createDeferred<null>();
+      getConversationToolboxStateMock.mockImplementation(async (id: string) => id === 'conv-a' ? gate.promise : null);
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [
+          { ...createConversation('conv-a', ''), scope_mode: 'Chat', provider_id: 'provider-1', model_id: 'model-a' },
+          { ...createConversation('conv-b', ''), scope_mode: 'Chat', provider_id: 'provider-1', model_id: 'model-b' },
+        ],
+        selectedConversationId: null,
+      }));
+      const pending = useChatStore.getState().selectConversation('conv-a');
+      await flushAsyncWork();
+      await useChatStore.getState().selectConversation('conv-b');
+      const selection = { provider: providerState.selectedProviderId, model: providerState.selectedModelId };
+      if (change === 'mode') appState.mode = 'Architect';
+      gate.resolve(null);
+      expect(await pending).toBe(false);
+      expect(useChatStore.getState().selectedConversationId).toBe('conv-b');
+      expect({ provider: providerState.selectedProviderId, model: providerState.selectedModelId }).toEqual(selection);
+      expect(selection.model).toBe('model-b');
+    });
+
     it('ignores stale toolbox hydration after a newer conversation switch wins', async () => {
       context.tauriAvailable = true;
       context.citationRecords = [
@@ -583,7 +612,60 @@ export const registerConversationSelectionScenarios = (
       expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('conv-a');
     });
 
+    it('waits for an older toolbox upsert before deleting removed composer refs', async () => {
+      context.tauriAvailable = true;
+      const pendingUpsert = createDeferred<void>();
+      upsertConversationToolboxStateMock.mockImplementationOnce(async (input) => {
+        await pendingUpsert.promise;
+        const timestamp = input.timestamp ?? '2026-03-19T00:00:00.000Z';
+        const record = {
+          conversation_id: input.conversation_id,
+          composer_context_refs_json: input.composer_context_refs_json,
+          created_at: timestamp,
+          updated_at: timestamp,
+        };
+        toolboxStateByConversationId.set(input.conversation_id, record);
+        return record;
+      });
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(
+        createArchitectStoreState({
+          conversations: [createConversation('conv-a')],
+          selectedConversationId: 'conv-a',
+          selectedConversationIdsByMode: { Architect: 'conv-a' },
+        }),
+      );
+      useChatStore.setState({ composerContextRefs: [] });
+
+      useChatStore.getState().addComposerContextRef({
+        id: 'file-1',
+        kind: 'file',
+        title: 'README.md',
+        subtitle: 'project-1',
+        data: {
+          id: 'file-1',
+          path: 'README.md',
+          relativePath: 'README.md',
+          projectId: 'project-1',
+          projectName: 'Project 1',
+        },
+      });
+      await Promise.resolve();
+      useChatStore.getState().removeComposerContextRef('file-1', 'file');
+      await waitForToolboxPersistence();
+
+      expect(deleteConversationToolboxStateMock).not.toHaveBeenCalled();
+
+      pendingUpsert.resolve();
+      await flushAsyncWork();
+
+      expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('conv-a');
+      expect(toolboxStateByConversationId.has('conv-a')).toBe(false);
+      expect(useChatStore.getState().composerContextRefs).toEqual([]);
+    });
+
     it('restores the conversation model from the database when preferences are empty', async () => {
+      context.tauriAvailable = true;
       providerState.modelsByProvider = {
         'provider-1': [
           { id: 'model-1a', name: 'Model 1A', isEnabled: true },
@@ -599,7 +681,6 @@ export const registerConversationSelectionScenarios = (
         providerSelectionsByMode: {},
       });
 
-      context.tauriAvailable = true;
       context.chatSnapshotConversations = [
         createChatSnapshotConversation('conv-a', {
           provider_id: 'provider-1',
@@ -631,6 +712,7 @@ export const registerConversationSelectionScenarios = (
     });
 
     it('prefers the database conversation model over a stale preference entry', async () => {
+      context.tauriAvailable = true;
       providerState.modelsByProvider = {
         'provider-1': [
           { id: 'model-1a', name: 'Model 1A', isEnabled: true },
@@ -653,7 +735,6 @@ export const registerConversationSelectionScenarios = (
         providerSelectionsByMode: {},
       });
 
-      context.tauriAvailable = true;
       context.chatSnapshotConversations = [
         createChatSnapshotConversation('conv-a', {
           provider_id: 'provider-1',
@@ -1213,6 +1294,7 @@ export const registerConversationSelectionScenarios = (
     });
 
     it('migrates legacy AI context selections to version 2 and preserves the restored selection', async () => {
+      context.tauriAvailable = true;
       providerState.modelsByProvider = {
         'provider-1': [{ id: 'model-1a', name: 'Model 1A', isEnabled: true }],
       };
@@ -1237,7 +1319,6 @@ export const registerConversationSelectionScenarios = (
         },
       });
 
-      context.tauriAvailable = true;
       context.chatSnapshotConversations = [
         createChatSnapshotConversation('conv-a'),
       ];

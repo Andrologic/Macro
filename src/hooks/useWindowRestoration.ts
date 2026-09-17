@@ -125,15 +125,16 @@ const LEGACY_MACOS_DEFAULT_WINDOW_SIZE = {
 } as const;
 
 const monitorBoundsFromWorkArea = (
-  workArea: { width: number; height: number; x: number; y: number } | null
+  workArea: { width: number; height: number; x: number; y: number; scaleFactor?: number } | null
 ): MonitorBounds | null =>
   workArea
     ? {
+        scaleFactor: workArea.scaleFactor,
         position: { x: workArea.x, y: workArea.y },
-        size: { width: workArea.width, height: workArea.height },
+        size: { width: workArea.width * (workArea.scaleFactor ?? 1), height: workArea.height * (workArea.scaleFactor ?? 1) },
         workArea: {
           position: { x: workArea.x, y: workArea.y },
-          size: { width: workArea.width, height: workArea.height },
+          size: { width: workArea.width * (workArea.scaleFactor ?? 1), height: workArea.height * (workArea.scaleFactor ?? 1) },
         },
       }
     : null;
@@ -234,6 +235,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
         persistedX,
         persistedY,
         persistedBootstrapVersion,
+        positionVersion,
       ] = await Promise.all([
         loadPreferences<Record<string, unknown>>([
           PREF_KEYS.WINDOW_WIDTH,
@@ -249,6 +251,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
         loadPersistedPreference<number | null>(PREF_KEYS.WINDOW_X),
         loadPersistedPreference<number | null>(PREF_KEYS.WINDOW_Y),
         loadPersistedPreference<number>(PREF_KEYS.WINDOW_BOOTSTRAP_VERSION),
+        loadPersistedPreference<number>(PREF_KEYS.WINDOW_POSITION_VERSION),
       ]);
 
       if (shouldAbortRestore()) return;
@@ -313,9 +316,9 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
             (await windowPrimaryMonitorWorkArea());
           if (monitorWorkArea) {
             restoredMacosWorkArea = monitorWorkArea;
-            await api.setSize(monitorWorkArea.width, monitorWorkArea.height);
-            if (shouldAbortRestore()) return;
             await api.setPosition(monitorWorkArea.x, monitorWorkArea.y);
+            if (shouldAbortRestore()) return;
+            await api.setSize(monitorWorkArea.width, monitorWorkArea.height);
             if (shouldAbortRestore()) return;
             restoredWithMacosWorkArea = true;
           }
@@ -336,6 +339,7 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
           savePreference(PREF_KEYS.WINDOW_HEIGHT, restoredMacosWorkArea.height),
           savePreference(PREF_KEYS.WINDOW_X, restoredMacosWorkArea.x),
           savePreference(PREF_KEYS.WINDOW_Y, restoredMacosWorkArea.y),
+          savePreference(PREF_KEYS.WINDOW_POSITION_VERSION, 1),
           savePreference(PREF_KEYS.IS_MAXIMIZED, false),
           savePreference(
             PREF_KEYS.WINDOW_BOOTSTRAP_VERSION,
@@ -363,16 +367,18 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
 
         let fallbackMonitor: MonitorBounds | null = monitors[0] ?? null;
         if (!fallbackMonitor) {
-          const currentWorkArea = await windowCurrentMonitorWorkArea();
+          const currentWorkArea = await windowCurrentMonitorWorkArea().catch(() => null);
           fallbackMonitor = monitorBoundsFromWorkArea(currentWorkArea);
         }
         if (!fallbackMonitor) {
-          const primaryWorkArea = await windowPrimaryMonitorWorkArea();
+          const primaryWorkArea = await windowPrimaryMonitorWorkArea().catch(() => null);
           fallbackMonitor = monitorBoundsFromWorkArea(primaryWorkArea);
         }
 
         const restoredBounds = sanitizeWindowBounds({
-          requestedBounds: { width, height, x: x ?? undefined, y: y ?? undefined },
+          // Legacy positions used an ambiguous per-monitor logical origin.
+          // Keep their dimensions but center them once on the fallback monitor.
+          requestedBounds: { width, height, x: positionVersion === 1 ? x ?? undefined : undefined, y: positionVersion === 1 ? y ?? undefined : undefined },
           monitors,
           fallbackMonitor,
           defaultSize: LEGACY_MACOS_DEFAULT_WINDOW_SIZE,
@@ -381,13 +387,13 @@ export async function ensureWindowRestoredOnce(): Promise<void> {
         });
 
         await retryWindowOperation(
-          () => api.setSize(restoredBounds.width, restoredBounds.height),
-          'window size restoration'
+          () => api.setPosition(restoredBounds.x, restoredBounds.y),
+          'window position restoration'
         );
         if (shouldAbortRestore()) return;
         await retryWindowOperation(
-          () => api.setPosition(restoredBounds.x, restoredBounds.y),
-          'window position restoration'
+          () => api.setSize(restoredBounds.width, restoredBounds.height),
+          'window size restoration'
         );
         if (shouldAbortRestore()) return;
       }
@@ -461,13 +467,13 @@ export function useWindowRestoration() {
 
         const logicalWidth = Math.round(size.width / scaleFactor);
         const logicalHeight = Math.round(size.height / scaleFactor);
-        const logicalX = Math.round(pos.x / scaleFactor);
-        const logicalY = Math.round(pos.y / scaleFactor);
+        const physicalX = pos.x;
+        const physicalY = pos.y;
         if (isPageShuttingDown()) return;
         nextState.width = logicalWidth;
         nextState.height = logicalHeight;
-        nextState.x = logicalX;
-        nextState.y = logicalY;
+        nextState.x = physicalX;
+        nextState.y = physicalY;
 
         serializedState = JSON.stringify(nextState);
         if (lastSavedState === serializedState) {
@@ -476,8 +482,9 @@ export function useWindowRestoration() {
         await Promise.all([
           savePreference(PREF_KEYS.WINDOW_WIDTH, logicalWidth),
           savePreference(PREF_KEYS.WINDOW_HEIGHT, logicalHeight),
-          savePreference(PREF_KEYS.WINDOW_X, logicalX),
-          savePreference(PREF_KEYS.WINDOW_Y, logicalY),
+          savePreference(PREF_KEYS.WINDOW_X, physicalX),
+          savePreference(PREF_KEYS.WINDOW_Y, physicalY),
+          savePreference(PREF_KEYS.WINDOW_POSITION_VERSION, 1),
         ]);
       } else {
         serializedState = JSON.stringify(nextState);
@@ -614,22 +621,24 @@ export function useWindowRestoration() {
     let cancelled = false;
 
     const registerWindowListeners = async () => {
-      try {
-        [unlistenResize, unlistenMove] = await Promise.all([
-          windowOnResized(() => debouncedSave()),
-          windowOnMoved(() => debouncedSave()),
-        ]);
-        return;
-      } catch (error) {
-        if (!cancelled) {
-          devLogger.log(`Window listener registration failed, falling back to polling: ${String(error)}`);
-        }
-      }
-
+      const retain = (set: (cleanup: () => void) => void) => (cleanup: () => void) => {
+        if (cancelled) cleanup();
+        else set(cleanup);
+      };
+      const results = await Promise.allSettled([
+        windowOnResized(() => { if (!cancelled) debouncedSave(); })
+          .then(retain((cleanup) => { unlistenResize = cleanup; })),
+        windowOnMoved(() => { if (!cancelled) debouncedSave(); })
+          .then(retain((cleanup) => { unlistenMove = cleanup; })),
+      ]);
+      if (cancelled || results.every((result) => result.status === 'fulfilled')) return;
+      unlistenResize?.();
+      unlistenMove?.();
+      unlistenResize = null;
+      unlistenMove = null;
+      devLogger.log('Window listener registration failed, falling back to polling.');
       intervalId = setInterval(() => {
-        if (document.visibilityState === 'visible') {
-          debouncedSave();
-        }
+        if (document.visibilityState === 'visible') debouncedSave();
       }, 4000);
     };
 

@@ -3,7 +3,7 @@ import type { MonitorBounds } from './windowBounds';
 
 type WindowSize = { width: number; height: number };
 type WindowPosition = { x: number; y: number };
-export type WindowWorkArea = WindowSize & WindowPosition;
+export type WindowWorkArea = WindowSize & WindowPosition & { scaleFactor?: number };
 export type WindowCloseRequestedEvent = {
   preventDefault: () => void;
 };
@@ -37,14 +37,15 @@ async function getLogicalMonitorWorkArea(
 
   const scaleFactor = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
   return {
-    x: Math.round(monitor.workArea.position.x / scaleFactor),
-    y: Math.round(monitor.workArea.position.y / scaleFactor),
+    scaleFactor,
+    x: monitor.workArea.position.x,
+    y: monitor.workArea.position.y,
     width: Math.round(monitor.workArea.size.width / scaleFactor),
     height: Math.round(monitor.workArea.size.height / scaleFactor),
   };
 }
 
-async function getLogicalMonitorBounds(
+async function getPhysicalMonitorBounds(
   readMonitors: () => Promise<Array<{
     position: { x: number; y: number };
     size: { width: number; height: number };
@@ -57,31 +58,12 @@ async function getLogicalMonitorBounds(
 ): Promise<MonitorBounds[]> {
   const monitors = await readMonitors();
 
-  return monitors.map((monitor) => {
-    const scaleFactor = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
-    const toLogical = (value: number) => Math.round(value / scaleFactor);
-
-    return {
-      position: {
-        x: toLogical(monitor.position.x),
-        y: toLogical(monitor.position.y),
-      },
-      size: {
-        width: toLogical(monitor.size.width),
-        height: toLogical(monitor.size.height),
-      },
-      workArea: {
-        position: {
-          x: toLogical(monitor.workArea.position.x),
-          y: toLogical(monitor.workArea.position.y),
-        },
-        size: {
-          width: toLogical(monitor.workArea.size.width),
-          height: toLogical(monitor.workArea.size.height),
-        },
-      },
-    };
-  });
+  return monitors.map((monitor) => ({
+    position: monitor.position,
+    size: monitor.size,
+    workArea: monitor.workArea,
+    scaleFactor: monitor.scaleFactor > 0 ? monitor.scaleFactor : 1,
+  }));
 }
 
 const backgroundColorPermissionFailures = new Set<string>();
@@ -175,7 +157,7 @@ export async function windowPrimaryMonitorWorkArea(): Promise<WindowWorkArea | n
 
 export async function windowAvailableMonitorBounds(): Promise<MonitorBounds[]> {
   const { availableMonitors } = await import('@tauri-apps/api/window');
-  return getLogicalMonitorBounds(() => availableMonitors());
+  return getPhysicalMonitorBounds(() => availableMonitors());
 }
 
 export async function windowSetZoom(scale: number): Promise<void> {

@@ -7,9 +7,7 @@ use crate::fs::dto::{
     DirEntryDto, FileContentDto, FileStatsDto, WorkspaceFileSearchResultDto,
     WorkspaceFileSearchRootDto, WriteResultDto,
 };
-use crate::fs::{
-    get_file_language, is_binary_file, normalize_path, validate_path, validate_path_for_write,
-};
+use crate::fs::{get_file_language, normalize_path, validate_path, validate_path_for_write};
 use crate::git::GitState;
 use crate::project_path::{
     join_wsl_path, normalize_linux_path, parse_wsl_unc_path, run_wsl_shell,
@@ -18,6 +16,7 @@ use crate::project_path::{
 use crate::WorkspaceRoot;
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir as CapabilityDir, OpenOptions as CapabilityOpenOptions};
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -171,6 +170,129 @@ const MAX_FILE_SEARCH_RESULTS: usize = 100;
 const MAX_FILE_SEARCH_CANDIDATES: usize = 600;
 const WSL_FS_TIMEOUT: Duration = Duration::from_secs(5);
 const WSL_FS_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+const WSL_WRITE_FILE_SCRIPT: &str = r#"
+p=$1
+create_dirs=$2
+expected_revision=$3
+requested_mode=$4
+tmp=$5
+lock_path=$6
+if [ -L "$p" ]; then
+  cat > /dev/null
+  printf 'Writing a symbolic link is not supported; edit its target explicitly.\n' >&2
+  exit 5
+fi
+dir=$(dirname -- "$p")
+cleanup_tmp() { rm -f -- "$tmp"; }
+trap cleanup_tmp EXIT HUP INT TERM
+lock_dir=$(dirname -- "$lock_path")
+mkdir -p -- "$lock_dir" || exit 10
+exec 9>"$lock_path" || exit 10
+flock -x 9 || exit 10
+if [ "$create_dirs" = "1" ]; then
+  mkdir -p -- "$dir"
+elif [ ! -d "$dir" ]; then
+  printf 'Parent directory not found: %s\n' "$dir" >&2
+  exit 4
+fi
+if [ -d "$p" ]; then
+  printf 'Path is a directory: %s\n' "$p" >&2
+  exit 5
+fi
+created=0
+if [ ! -e "$p" ]; then created=1; fi
+current_mode=''
+if [ "$created" = "0" ]; then current_mode=$(stat -c '%a' -- "$p") || exit 7; fi
+(umask 077; set -C; : > "$tmp") || exit 6
+cat > "$tmp" || { rm -f -- "$tmp"; exit 7; }
+if [ -n "$requested_mode" ]; then
+  chmod "$requested_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+elif [ -n "$current_mode" ]; then
+  chmod "$current_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+fi
+if [ -z "$requested_mode" ] && [ "$(head -c 2 -- "$tmp")" = '#!' ]; then
+  chmod a+x -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
+fi
+tmp_mode=$(stat -c '%a' -- "$tmp") || { rm -f -- "$tmp"; exit 8; }
+if [ -n "$expected_revision" ]; then
+  actual_revision=unavailable
+  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+    actual_revision=absent
+  elif [ -f "$p" ]; then
+    actual_line=$(sha256sum -- "$p") || { rm -f -- "$tmp"; exit 7; }
+    actual_revision=${actual_line%% *}
+  fi
+  if [ "$expected_revision" = "absent" ]; then
+    revision_matches=$([ "$actual_revision" = "absent" ] && printf '1' || printf '0')
+  else
+    revision_matches=$([ "$actual_revision" = "$expected_revision" ] && printf '1' || printf '0')
+  fi
+  if [ "$revision_matches" != "1" ]; then
+    rm -f -- "$tmp"
+    printf 'revision_conflict actual=%s\n' "$actual_revision"
+    exit 0
+  fi
+fi
+if [ "$created" = "0" ] && [ "$current_mode" = "$tmp_mode" ] && cmp -s "$tmp" "$p"; then
+  rm -f -- "$tmp"
+  printf 'created=0 skipped=1 mode=%s\n' "$current_mode"
+  exit 0
+fi
+if [ "$expected_revision" = "absent" ]; then
+  if ! ln -- "$tmp" "$p"; then
+    rm -f -- "$tmp"
+    if [ -e "$p" ] || [ -L "$p" ]; then
+      actual_revision=unavailable
+      if [ -f "$p" ]; then
+        actual_line=$(sha256sum -- "$p") || exit 7
+        actual_revision=${actual_line%% *}
+      fi
+      printf 'revision_conflict actual=%s\n' "$actual_revision"
+      exit 0
+    fi
+    exit 9
+  fi
+  rm -f -- "$tmp" || exit 9
+else
+  mv -fT -- "$tmp" "$p" || { rm -f -- "$tmp"; exit 9; }
+fi
+printf 'created=%s skipped=0 mode=%s\n' "$created" "$tmp_mode"
+"#;
+const WSL_DELETE_PATH_SCRIPT: &str = r#"
+p=$1
+recursive=$2
+expected_revision=$3
+lock_path=$4
+lock_dir=$(dirname -- "$lock_path")
+mkdir -p -- "$lock_dir" || exit 10
+exec 9>"$lock_path" || exit 10
+flock -x 9 || exit 10
+if [ ! -e "$p" ] && [ ! -L "$p" ]; then
+  if [ -n "$expected_revision" ]; then
+    printf 'revision_conflict actual=absent\n'
+    exit 0
+  fi
+  printf 'Path not found: %s\n' "$p" >&2
+  exit 4
+fi
+if [ -n "$expected_revision" ]; then
+  actual_revision=unavailable
+  if [ -f "$p" ]; then
+    actual_line=$(sha256sum -- "$p") || exit 7
+    actual_revision=${actual_line%% *}
+  fi
+  if [ "$expected_revision" = "absent" ] || [ "$actual_revision" != "$expected_revision" ]; then
+    printf 'revision_conflict actual=%s\n' "$actual_revision"
+    exit 0
+  fi
+fi
+if [ -d "$p" ] && [ ! -L "$p" ]; then
+  if [ "$recursive" = "1" ]; then rm -rf -- "$p"; else rmdir -- "$p"; fi
+else
+  rm -f -- "$p"
+fi
+"#;
 const DIRECTORY_LIST_LIMIT: usize = 20_000;
 const WSL_DEFAULT_RECURSIVE_DEPTH: u32 = 8;
 const WSL_MAX_RECURSIVE_DEPTH: u32 = 32;
@@ -181,12 +303,33 @@ static WRITE_BEFORE_REVALIDATION_HOOKS: LazyLock<
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static WRITE_AFTER_REVALIDATION_HOOKS: LazyLock<
+    Mutex<HashMap<PathBuf, (Arc<Barrier>, Arc<Barrier>)>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static WSL_WRITE_TEMP_CLEANUP_HOOK: LazyLock<Mutex<Option<std::sync::mpsc::Sender<String>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
 pub(crate) fn install_write_before_revalidation_hook(
     path: PathBuf,
     reached: Arc<Barrier>,
     release: Arc<Barrier>,
 ) {
     WRITE_BEFORE_REVALIDATION_HOOKS
+        .lock()
+        .expect("write hook mutex")
+        .insert(path, (reached, release));
+}
+
+#[cfg(test)]
+pub(crate) fn install_write_after_revalidation_hook(
+    path: PathBuf,
+    reached: Arc<Barrier>,
+    release: Arc<Barrier>,
+) {
+    WRITE_AFTER_REVALIDATION_HOOKS
         .lock()
         .expect("write hook mutex")
         .insert(path, (reached, release));
@@ -206,6 +349,109 @@ async fn pause_before_write_revalidation(path: &Path) {
 
 #[cfg(not(test))]
 async fn pause_before_write_revalidation(_path: &Path) {}
+
+#[cfg(test)]
+async fn pause_after_write_revalidation(path: &Path) {
+    let hook = WRITE_AFTER_REVALIDATION_HOOKS
+        .lock()
+        .expect("write hook mutex")
+        .remove(path);
+    if let Some((reached, release)) = hook {
+        reached.wait().await;
+        release.wait().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_after_write_revalidation(_path: &Path) {}
+
+fn wsl_write_temp_path(target_path: &str) -> Result<String, BackendError> {
+    let separator = target_path.rfind('/').ok_or_else(|| {
+        BackendError::Validation(format!("Invalid WSL write target: {target_path}"))
+    })?;
+    let parent = if separator == 0 {
+        "/"
+    } else {
+        &target_path[..separator]
+    };
+    let joiner = if parent.ends_with('/') { "" } else { "/" };
+    Ok(format!(
+        "{parent}{joiner}.macro-write-{}.tmp",
+        uuid::Uuid::new_v4()
+    ))
+}
+
+fn wsl_write_lock_path(target_path: &str) -> String {
+    let digest = Sha256::digest(target_path.as_bytes());
+    format!("/tmp/macro-write-locks/{digest:x}.lock")
+}
+
+#[cfg(test)]
+fn install_wsl_write_temp_cleanup_hook(sender: std::sync::mpsc::Sender<String>) {
+    *WSL_WRITE_TEMP_CLEANUP_HOOK
+        .lock()
+        .expect("WSL write cleanup hook mutex") = Some(sender);
+}
+
+async fn cleanup_wsl_write_temp(
+    target: &WslProjectPath,
+    temp_path: &str,
+) -> Result<(), BackendError> {
+    #[cfg(test)]
+    if let Some(sender) = WSL_WRITE_TEMP_CLEANUP_HOOK
+        .lock()
+        .expect("WSL write cleanup hook mutex")
+        .take()
+    {
+        let _ = sender.send(temp_path.to_string());
+        return Ok(());
+    }
+    run_wsl_shell(
+        target,
+        "rm -f -- \"$1\"",
+        &[temp_path.to_string()],
+        WSL_FS_TIMEOUT,
+    )
+    .await
+    .map(|_| ())
+}
+
+struct WslWriteTempGuard {
+    target: WslProjectPath,
+    temp_path: String,
+    armed: bool,
+}
+
+impl WslWriteTempGuard {
+    fn new(target: WslProjectPath, temp_path: String) -> Self {
+        Self {
+            target,
+            temp_path,
+            armed: true,
+        }
+    }
+
+    async fn cleanup(&mut self) -> Result<(), BackendError> {
+        let result = cleanup_wsl_write_temp(&self.target, &self.temp_path).await;
+        if result.is_ok() {
+            self.armed = false;
+        }
+        result
+    }
+}
+
+impl Drop for WslWriteTempGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let target = self.target.clone();
+        let temp_path = self.temp_path.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = cleanup_wsl_write_temp(&target, &temp_path).await;
+        });
+    }
+}
 
 fn validate_unix_mode(mode: Option<u32>) -> Result<Option<u32>, BackendError> {
     match mode {
@@ -283,6 +529,26 @@ pub(crate) struct WorkspaceCapabilityTarget {
     directory: Arc<CapabilityDir>,
     relative_path: PathBuf,
     validated_path: PathBuf,
+}
+
+struct CapabilityTempFileGuard {
+    directory: Arc<CapabilityDir>,
+    relative_path: PathBuf,
+}
+
+impl CapabilityTempFileGuard {
+    fn new(directory: Arc<CapabilityDir>, relative_path: PathBuf) -> Self {
+        Self {
+            directory,
+            relative_path,
+        }
+    }
+}
+
+impl Drop for CapabilityTempFileGuard {
+    fn drop(&mut self) {
+        let _ = self.directory.remove_file(&self.relative_path);
+    }
 }
 
 pub(crate) async fn open_workspace_capability_target_internal(
@@ -491,6 +757,7 @@ async fn resolve_workspace_for_path(
     }
 
     let base_workspace_for_fallback = base_workspace.clone();
+    let _repo_guard = crate::workspace::lock_git_repository(&base_workspace).await?;
     let resolved =
         tokio::task::spawn_blocking(move || git_state.resolve_macro_metadata_root(&base_workspace))
             .await
@@ -664,11 +931,38 @@ fn epoch_to_rfc3339(value: &str) -> Option<String> {
 }
 
 fn bytes_look_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|byte| *byte == 0)
+    bytes.contains(&0) || std::str::from_utf8(bytes).is_err()
 }
 
 pub(crate) fn content_revision(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn guarded_write_lock_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let path_key = path.to_string_lossy().to_lowercase();
+    #[cfg(not(windows))]
+    let path_key = path.to_string_lossy();
+
+    let digest = content_revision(path_key.as_bytes());
+    std::env::temp_dir()
+        .join("macro-guarded-write-locks")
+        .join(format!("{digest}.lock"))
+}
+
+fn acquire_guarded_write_lock(path: &Path) -> std::io::Result<std::fs::File> {
+    let lock_path = guarded_write_lock_path(path);
+    let parent = lock_path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("guarded write lock has no parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    lock.lock_exclusive()?;
+    Ok(lock)
 }
 
 pub(crate) async fn file_content_revision_internal(
@@ -904,67 +1198,12 @@ async fn write_wsl_file_internal_with_revision(
         "0"
     }
     .to_string();
-    let script = r#"
-p=$1
-create_dirs=$2
-expected_revision=$3
-requested_mode=$4
-dir=$(dirname -- "$p")
-if [ "$create_dirs" = "1" ]; then
-  mkdir -p -- "$dir"
-elif [ ! -d "$dir" ]; then
-  printf 'Parent directory not found: %s\n' "$dir" >&2
-  exit 4
-fi
-if [ -d "$p" ]; then
-  printf 'Path is a directory: %s\n' "$p" >&2
-  exit 5
-fi
-created=0
-if [ ! -e "$p" ]; then created=1; fi
-current_mode=''
-if [ "$created" = "0" ]; then current_mode=$(stat -c '%a' -- "$p") || exit 7; fi
-tmp=$(mktemp "$dir/.macro-write.XXXXXX") || exit 6
-cat > "$tmp"
-if [ -n "$requested_mode" ]; then
-  chmod "$requested_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
-elif [ -n "$current_mode" ]; then
-  chmod "$current_mode" -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
-fi
-if [ -z "$requested_mode" ] && [ "$(head -c 2 -- "$tmp")" = '#!' ]; then
-  chmod a+x -- "$tmp" || { rm -f -- "$tmp"; exit 8; }
-fi
-tmp_mode=$(stat -c '%a' -- "$tmp") || { rm -f -- "$tmp"; exit 8; }
-if [ -n "$expected_revision" ]; then
-  actual_revision=unavailable
-  if [ ! -e "$p" ] && [ ! -L "$p" ]; then
-    actual_revision=absent
-  elif [ -f "$p" ]; then
-    actual_line=$(sha256sum -- "$p") || { rm -f -- "$tmp"; exit 7; }
-    actual_revision=${actual_line%% *}
-  fi
-  if [ "$expected_revision" = "absent" ]; then
-    revision_matches=$([ "$actual_revision" = "absent" ] && printf '1' || printf '0')
-  else
-    revision_matches=$([ "$actual_revision" = "$expected_revision" ] && printf '1' || printf '0')
-  fi
-  if [ "$revision_matches" != "1" ]; then
-    rm -f -- "$tmp"
-    printf 'revision_conflict actual=%s\n' "$actual_revision"
-    exit 0
-  fi
-fi
-if [ "$created" = "0" ] && [ "$current_mode" = "$tmp_mode" ] && cmp -s "$tmp" "$p"; then
-  rm -f -- "$tmp"
-  printf 'created=0 skipped=1 mode=%s\n' "$current_mode"
-  exit 0
-fi
-mv -f -- "$tmp" "$p"
-printf 'created=%s skipped=0 mode=%s\n' "$created" "$tmp_mode"
-"#;
-    let output = run_wsl_shell_with_stdin(
+    let temp_path = wsl_write_temp_path(&canonical_target.linux_path)?;
+    let lock_path = wsl_write_lock_path(&canonical_target.linux_path);
+    let mut temp_guard = WslWriteTempGuard::new(canonical_target.clone(), temp_path.clone());
+    let output_result = run_wsl_shell_with_stdin(
         &canonical_target,
-        script,
+        WSL_WRITE_FILE_SCRIPT,
         &[
             canonical_target.linux_path.clone(),
             create_dirs_flag,
@@ -982,11 +1221,30 @@ printf 'created=%s skipped=0 mode=%s\n' "$created" "$tmp_mode"
             unix_mode
                 .map(|mode| format!("{:o}", mode))
                 .unwrap_or_default(),
+            temp_path,
+            lock_path,
         ],
         content_bytes.clone(),
         WSL_FS_WRITE_TIMEOUT,
     )
-    .await?;
+    .await;
+    let cleanup_result = temp_guard.cleanup().await;
+    let output = match output_result {
+        Ok(output) => {
+            cleanup_result?;
+            output
+        }
+        Err(error) => {
+            if let Err(cleanup_error) = cleanup_result {
+                tracing::warn!(
+                    temp_path = %temp_guard.temp_path,
+                    %cleanup_error,
+                    "Impossible de nettoyer le fichier temporaire WSL après un échec d’écriture"
+                );
+            }
+            return Err(error);
+        }
+    };
     let stdout = output.stdout_text();
     if let Some(actual) = stdout
         .lines()
@@ -1022,6 +1280,74 @@ printf 'created=%s skipped=0 mode=%s\n' "$created" "$tmp_mode"
     })
 }
 
+const WSL_LIST_SCRIPT: &str = r#"
+root=$1
+depth=$2
+include_hidden=$3
+limit=$4
+hidden_pattern='.*'
+if [ "$include_hidden" = "1" ]; then hidden_pattern=''; fi
+find "$root" -mindepth 1 -maxdepth "$depth" \
+  \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt \
+     -o -name dist -o -name build -o -name __pycache__ -o -name .cache \
+     -o -name .DS_Store -o -name Thumbs.db -o -name .idea -o -name "$hidden_pattern" \) -prune -o \
+  -printf '%p\0%P\0%f\0%y\0%s\0%T@\0%m\0' | head -z -n "$((limit * 7))"
+"#;
+
+fn wsl_mode_is_readonly(permissions: &str) -> bool {
+    // Match std::fs::Permissions::readonly on Unix: no write bit is set.
+    u32::from_str_radix(permissions.trim(), 8).map_or(true, |mode| mode & 0o222 == 0)
+}
+
+fn parse_wsl_directory_records(
+    bytes: &[u8],
+    distro: &str,
+    include_hidden: bool,
+) -> Result<Vec<DirEntryDto>, BackendError> {
+    let invalid = || BackendError::Filesystem {
+        message: "Invalid WSL directory records".to_string(),
+    };
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+    let text = text.strip_suffix('\0').ok_or_else(invalid)?;
+    let fields: Vec<_> = text.split('\0').collect();
+    if fields.len() % 7 != 0 {
+        return Err(invalid());
+    }
+    fields
+        .chunks_exact(7)
+        .filter(|parts| include_hidden || !parts[1].split('/').any(|part| part.starts_with('.')))
+        .map(|parts| {
+            let name = parts[2].to_string();
+            let kind = match parts[3] {
+                "d" => "directory",
+                "l" => "symlink",
+                _ => "file",
+            }
+            .to_string();
+            let size = if kind == "directory" {
+                None
+            } else {
+                Some(parts[4].parse::<u64>().map_err(|_| invalid())?)
+            };
+            Ok(DirEntryDto {
+                path: wsl_unc_path(distro, parts[0]),
+                relative_path: parts[1].to_string(),
+                name: name.clone(),
+                kind,
+                size,
+                modified: epoch_to_rfc3339(parts[5]),
+                created: None,
+                language: get_file_language(Path::new(&name)),
+                is_hidden: name.starts_with('.'),
+                is_readonly: wsl_mode_is_readonly(parts[6]),
+            })
+        })
+        .collect()
+}
+
 async fn list_wsl_dir_internal(
     workspace: &WslProjectPath,
     path: String,
@@ -1046,26 +1372,9 @@ async fn list_wsl_dir_internal(
         "0"
     }
     .to_string();
-    let script = r#"
-root=$1
-depth=$2
-include_hidden=$3
-limit=$4
-find "$root" -mindepth 1 -maxdepth "$depth" \
-  \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt \
-     -o -name dist -o -name build -o -name __pycache__ -o -name .cache \
-     -o -name .DS_Store -o -name Thumbs.db -o -name .idea \) -prune -o \
-  -printf '%p\t%P\t%f\t%y\t%s\t%T@\t%m\n' 2>/dev/null |
-while IFS="$(printf '\t')" read -r full rel name type size mtime perm; do
-  if [ "$include_hidden" != "1" ]; then
-    case "$name" in .*) continue;; esac
-  fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$full" "$rel" "$name" "$type" "$size" "$mtime" "$perm"
-done | head -n "$limit"
-"#;
     let output = run_wsl_shell(
         &resolved,
-        script,
+        WSL_LIST_SCRIPT,
         &[
             resolved.linux_path.clone(),
             depth,
@@ -1076,44 +1385,11 @@ done | head -n "$limit"
     )
     .await?;
 
-    let mut entries = Vec::new();
-    for line in output.stdout_text().lines() {
-        let parts = line.splitn(7, '\t').collect::<Vec<_>>();
-        if parts.len() < 7 {
-            continue;
-        }
-        let full_linux_path = parts[0].to_string();
-        let relative_path = parts[1].replace('\\', "/");
-        let name = parts[2].to_string();
-        let kind = match parts[3] {
-            "d" => "directory",
-            "l" => "symlink",
-            _ => "file",
-        }
-        .to_string();
-        let size = if kind == "file" || kind == "symlink" {
-            Some(parts[4].trim().parse::<u64>().unwrap_or(0))
-        } else {
-            None
-        };
-        let modified = epoch_to_rfc3339(parts[5]);
-        let permissions = parts[6].trim();
-        entries.push(DirEntryDto {
-            path: wsl_unc_path(&resolved.distro, &full_linux_path),
-            relative_path,
-            name: name.clone(),
-            kind,
-            size,
-            modified,
-            created: None,
-            language: get_file_language(Path::new(&name)),
-            is_hidden: name.starts_with('.'),
-            is_readonly: !permissions.ends_with('2')
-                && !permissions.ends_with('3')
-                && !permissions.ends_with('6')
-                && !permissions.ends_with('7'),
-        });
-    }
+    let mut entries = parse_wsl_directory_records(
+        &output.stdout,
+        &resolved.distro,
+        include_hidden.unwrap_or(false),
+    )?;
 
     ensure_directory_list_within_limit(entries.len(), recursive.unwrap_or(false))?;
 
@@ -1158,10 +1434,7 @@ async fn stat_wsl_internal(
         } else {
             None
         },
-        is_readonly: !permissions.ends_with('2')
-            && !permissions.ends_with('3')
-            && !permissions.ends_with('6')
-            && !permissions.ends_with('7'),
+        is_readonly: wsl_mode_is_readonly(&permissions),
         is_hidden: name.starts_with('.'),
         is_symlink: kind == "symlink",
         symlink_target,
@@ -1218,38 +1491,10 @@ async fn delete_wsl_path_internal_with_revision(
         None
     };
     let recursive_flag = if recursive.unwrap_or(false) { "1" } else { "0" }.to_string();
-    let script = r#"
-p=$1
-recursive=$2
-expected_revision=$3
-if [ ! -e "$p" ] && [ ! -L "$p" ]; then
-  if [ -n "$expected_revision" ]; then
-    printf 'revision_conflict actual=absent\n'
-    exit 0
-  fi
-  printf 'Path not found: %s\n' "$p" >&2
-  exit 4
-fi
-if [ -n "$expected_revision" ]; then
-  actual_revision=unavailable
-  if [ -f "$p" ]; then
-    actual_line=$(sha256sum -- "$p") || exit 7
-    actual_revision=${actual_line%% *}
-  fi
-  if [ "$expected_revision" = "absent" ] || [ "$actual_revision" != "$expected_revision" ]; then
-    printf 'revision_conflict actual=%s\n' "$actual_revision"
-    exit 0
-  fi
-fi
-if [ -d "$p" ] && [ ! -L "$p" ]; then
-  if [ "$recursive" = "1" ]; then rm -rf -- "$p"; else rmdir -- "$p"; fi
-else
-  rm -f -- "$p"
-fi
-"#;
+    let lock_path = wsl_write_lock_path(&canonical_target.linux_path);
     let output = run_wsl_shell(
         &canonical_target,
-        script,
+        WSL_DELETE_PATH_SCRIPT,
         &[
             resolved.linux_path.clone(),
             recursive_flag,
@@ -1264,6 +1509,7 @@ fi
                 })
                 .unwrap_or_default()
                 .to_string(),
+            lock_path,
         ],
         WSL_FS_WRITE_TIMEOUT,
     )
@@ -1373,6 +1619,39 @@ mv -f -- "$src" "$dest"
 }
 
 /// Internal function that reads file content. This is separated for testability.
+fn read_open_file(
+    mut file: std::fs::File,
+    path: &Path,
+) -> Result<(Vec<u8>, Option<u32>), BackendError> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| io_error_to_backend_error(error, path))?;
+    if !metadata.is_file() {
+        return Err(BackendError::FilesystemIsDirectory {
+            message: format!("The path '{}' is not a regular file.", path.display()),
+        });
+    }
+    let too_large = || BackendError::FilesystemFileTooLarge {
+        message: format!(
+            "The file '{}' exceeds the maximum allowed size of {} bytes.",
+            path.display(),
+            MAX_FILE_SIZE_BYTES
+        ),
+    };
+    if metadata.len() > MAX_FILE_SIZE_BYTES {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_FILE_SIZE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error_to_backend_error(error, path))?;
+    if bytes.len() as u64 > MAX_FILE_SIZE_BYTES {
+        return Err(too_large());
+    }
+    Ok((bytes, metadata_unix_mode(&metadata)))
+}
+
 pub async fn read_file_internal(
     workspace: &Path,
     path: String,
@@ -1394,44 +1673,48 @@ pub async fn read_file_internal(
     } else {
         validate_path(&path_buf, workspace)?
     };
-    let file_metadata = tokio::fs::metadata(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?; // Get file metadata
-    let unix_mode = metadata_unix_mode(&file_metadata);
-
-    // Check if it's a file
-    if !file_metadata.is_file() {
-        return Err(BackendError::FilesystemIsDirectory {
-            message: format!("The path '{}' is a directory, not a file.", path),
-        });
-    }
-    // Check file size
-    if file_metadata.len() > MAX_FILE_SIZE_BYTES {
-        return Err(BackendError::FilesystemFileTooLarge {
-            message: format!(
-                "The file '{}' exceeds the maximum allowed size of {} bytes.",
-                path, MAX_FILE_SIZE_BYTES
-            ),
-        });
-    }
-    // Verify if file is accessible
-    let _file = tokio::fs::File::open(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-
-    // Verify if binary or text file
-    let is_binary = is_binary_file(&validated_path)?;
-    let bytes = tokio::fs::read(&validated_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, &validated_path))?;
-    if bytes.len() as u64 > MAX_FILE_SIZE_BYTES {
-        return Err(BackendError::FilesystemFileTooLarge {
-            message: format!(
-                "The file '{}' exceeds the maximum allowed size of {} bytes.",
-                path, MAX_FILE_SIZE_BYTES
-            ),
-        });
-    }
+    let workspace = workspace.to_path_buf();
+    let expected_identity = if allow_outside {
+        None
+    } else {
+        Some(match expected_workspace_root_identity(&workspace) {
+            Some(identity) => identity,
+            None => workspace_root_identity(&workspace)?,
+        })
+    };
+    let read_path = validated_path.clone();
+    let (bytes, unix_mode) = tokio::task::spawn_blocking(move || {
+        let file = if allow_outside {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK);
+            }
+            options
+                .open(&read_path)
+                .map_err(|error| io_error_to_backend_error(error, &read_path))?
+        } else {
+            let (directory, relative_path) =
+                open_workspace_capability(&workspace, &read_path, expected_identity)?;
+            let mut options = CapabilityOpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK);
+            }
+            directory
+                .open_with(relative_path, &options)
+                .map_err(|error| io_error_to_backend_error(error, &read_path))?
+                .into_std()
+        };
+        read_open_file(file, &read_path)
+    })
+    .await
+    .map_err(capability_task_error)??;
+    let is_binary = bytes_look_binary(&bytes);
     let actual_size = bytes.len() as u64;
     let revision = content_revision(&bytes);
     if is_binary {
@@ -1548,6 +1831,22 @@ async fn write_file_with_capability_target(
     let display_path = display_path.to_string();
     let content = content_bytes.to_vec();
 
+    // Lock a stable file derived from the target path before reading the target. Locking the
+    // target inode alone is insufficient because the atomic replacement changes that inode.
+    let _guarded_write_lock = if expected_revision.is_some() {
+        Some(
+            tokio::task::spawn_blocking({
+                let validated_path = validated_path.clone();
+                move || acquire_guarded_write_lock(&validated_path)
+            })
+            .await
+            .map_err(capability_task_error)?
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?,
+        )
+    } else {
+        None
+    };
+
     let existing = tokio::task::spawn_blocking({
         let directory = directory.clone();
         let relative_path = relative_path.clone();
@@ -1631,6 +1930,7 @@ async fn write_file_with_capability_target(
 
     let temp_suffix = format!("tmp.{}", uuid::Uuid::new_v4());
     let temp_path = relative_path.with_extension(temp_suffix);
+    let _temp_guard = CapabilityTempFileGuard::new(directory.clone(), temp_path.clone());
     let resulting_mode = tokio::task::spawn_blocking({
         let directory = directory.clone();
         let temp_path = temp_path.clone();
@@ -1651,40 +1951,71 @@ async fn write_file_with_capability_target(
     .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
 
     pause_before_write_revalidation(&validated_path).await;
+    let (revision_lock, locked_revision) =
+        if expected_revision.is_some() && expected_revision != Some(EXPECTED_REVISION_ABSENT) {
+            let (file, revision) = tokio::task::spawn_blocking({
+                let validated_path = validated_path.clone();
+                move || -> std::io::Result<(std::fs::File, String)> {
+                    let mut file = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&validated_path)?;
+                    file.lock_exclusive()?;
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes)?;
+                    Ok((file, content_revision(&bytes)))
+                }
+            })
+            .await
+            .map_err(capability_task_error)?
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+            (Some(file), Some(revision))
+        } else {
+            (None, None)
+        };
     if expected_revision.is_some() {
-        let latest_revision = tokio::task::spawn_blocking({
-            let directory = directory.clone();
-            let relative_path = relative_path.clone();
-            move || {
-                read_capability_file(&directory, &relative_path)
-                    .map(|current| current.map(|(bytes, _)| content_revision(&bytes)))
-            }
-        })
-        .await
-        .map_err(capability_task_error)?
-        .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+        let latest_revision = if let Some(revision) = locked_revision {
+            Some(revision)
+        } else {
+            tokio::task::spawn_blocking({
+                let directory = directory.clone();
+                let relative_path = relative_path.clone();
+                move || {
+                    read_capability_file(&directory, &relative_path)
+                        .map(|current| current.map(|(bytes, _)| content_revision(&bytes)))
+                }
+            })
+            .await
+            .map_err(capability_task_error)?
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?
+        };
         if let Err(error) =
             validate_expected_revision(&display_path, expected_revision, latest_revision.as_deref())
         {
-            let _ = tokio::task::spawn_blocking({
-                let directory = directory.clone();
-                let temp_path = temp_path.clone();
-                move || directory.remove_file(&temp_path)
-            })
-            .await;
             return Err(error);
         }
     }
+
+    pause_after_write_revalidation(&validated_path).await;
 
     tokio::task::spawn_blocking({
         let directory = directory.clone();
         let temp_path = temp_path.clone();
         let relative_path = relative_path.clone();
-        move || directory.rename(&temp_path, &directory, &relative_path)
+        let create_only = expected_revision == Some(EXPECTED_REVISION_ABSENT);
+        move || {
+            if create_only {
+                directory.hard_link(&temp_path, &directory, &relative_path)?;
+                Ok(())
+            } else {
+                directory.rename(&temp_path, &directory, &relative_path)
+            }
+        }
     })
     .await
     .map_err(capability_task_error)?
     .map_err(|error| io_error_to_backend_error(error, &validated_path))?;
+    drop(revision_lock);
 
     tracing::info!(
         operation = "fs_write_file",
@@ -1911,6 +2242,18 @@ async fn write_file_internal_with_revision_impl(
     } else {
         None
     };
+    match tokio::fs::symlink_metadata(&validated_path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(BackendError::FilesystemInvalidPath {
+                message: "Writing a symbolic link is not supported; edit its target explicitly."
+                    .to_string(),
+            });
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(io_error_to_backend_error(error, &validated_path));
+        }
+        _ => {}
+    }
     if !allow_outside {
         return write_file_with_workspace_capability(
             workspace,
@@ -2244,6 +2587,14 @@ fn to_slash_path(value: &Path) -> String {
     value.to_string_lossy().replace('\\', "/")
 }
 
+fn sort_workspace_file_candidates(candidates: &mut [(i32, WorkspaceFileSearchResultDto)]) {
+    candidates.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.path.to_lowercase().cmp(&right.path.to_lowercase()))
+    });
+}
+
 fn search_workspace_files_blocking(
     roots: Vec<WorkspaceFileSearchRootDto>,
     query: String,
@@ -2270,7 +2621,10 @@ fn search_workspace_files_blocking(
             continue;
         }
 
-        let mut walkdir = walkdir::WalkDir::new(&workspace).into_iter();
+        let mut scanned_entries = 0usize;
+        let mut walkdir = walkdir::WalkDir::new(&workspace)
+            .sort_by_file_name()
+            .into_iter();
         while let Some(entry_result) = walkdir.next() {
             let entry = entry_result.map_err(|error| BackendError::Filesystem {
                 message: format!("Failed to read directory entry: {}", error),
@@ -2288,6 +2642,11 @@ fn search_workspace_files_blocking(
                     walkdir.skip_current_dir();
                 }
                 continue;
+            }
+
+            if !relative_path_buf.as_os_str().is_empty() {
+                scanned_entries += 1;
+                ensure_directory_list_within_limit(scanned_entries, true)?;
             }
 
             if !entry.file_type().is_file() {
@@ -2342,21 +2701,17 @@ fn search_workspace_files_blocking(
                 },
             ));
 
-            if candidates.len() >= MAX_FILE_SEARCH_CANDIDATES {
-                break;
+            if candidates.len() > MAX_FILE_SEARCH_CANDIDATES {
+                sort_workspace_file_candidates(&mut candidates);
+                candidates.truncate(result_limit);
             }
         }
 
-        if candidates.len() >= MAX_FILE_SEARCH_CANDIDATES {
-            break;
-        }
+        sort_workspace_file_candidates(&mut candidates);
+        candidates.truncate(MAX_FILE_SEARCH_CANDIDATES);
     }
 
-    candidates.sort_by(|(left_score, left), (right_score, right)| {
-        right_score
-            .cmp(left_score)
-            .then_with(|| left.path.to_lowercase().cmp(&right.path.to_lowercase()))
-    });
+    sort_workspace_file_candidates(&mut candidates);
     candidates.truncate(result_limit);
     Ok(candidates.into_iter().map(|(_, result)| result).collect())
 }
@@ -2371,39 +2726,21 @@ async fn search_wsl_workspace_files(
     let Some(wsl_root) = parse_wsl_unc_path(root.workspace_path.trim()) else {
         return Ok(Vec::new());
     };
-    let should_include_hidden = include_hidden.unwrap_or(false);
-    let include_hidden_flag = if should_include_hidden { "1" } else { "0" }.to_string();
-    let script = r#"
-root=$1
-include_hidden=$2
-limit=$3
-if [ "$include_hidden" = "1" ]; then
-  find "$root" -mindepth 1 -maxdepth 8 \( -type d \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt -o -name dist -o -name build -o -name __pycache__ -o -name .cache -o -name .idea \) -prune \) -o -type f -printf '%P\t%f\t%s\t%T@\n' 2>/dev/null | head -n "$limit"
-else
-  find "$root" -mindepth 1 -maxdepth 8 \( -type d \( -name .git -o -name node_modules -o -name target -o -name .next -o -name .nuxt -o -name dist -o -name build -o -name __pycache__ -o -name .cache -o -name .idea -o -name '.*' \) -prune \) -o -type f ! -name '.*' -printf '%P\t%f\t%s\t%T@\n' 2>/dev/null | head -n "$limit"
-fi
-"#;
-    let output = run_wsl_shell(
+    let entries = list_wsl_dir_internal(
         &wsl_root,
-        script,
-        &[
-            wsl_root.linux_path.clone(),
-            include_hidden_flag,
-            MAX_FILE_SEARCH_CANDIDATES.to_string(),
-        ],
-        WSL_FS_TIMEOUT,
+        ".".to_string(),
+        Some(true),
+        include_hidden,
+        Some(8),
+        Some(false),
     )
     .await?;
     let normalized_query = normalize_search_text(query);
     let use_virtual_root = virtual_root_enabled.unwrap_or(false);
     let mut candidates = Vec::new();
-    for line in output.stdout_text().lines() {
-        let parts = line.splitn(4, '\t').collect::<Vec<_>>();
-        if parts.len() < 4 {
-            continue;
-        }
-        let relative_path = parts[0].replace('\\', "/");
-        let name = parts[1].to_string();
+    for entry in entries.into_iter().filter(|entry| entry.kind == "file") {
+        let relative_path = entry.relative_path;
+        let name = entry.name;
         let score = workspace_file_match_score(&normalized_query, &relative_path, &name);
         if score <= 0 {
             continue;
@@ -2431,8 +2768,8 @@ fi
                 project_id: root.project_id.clone(),
                 project_name: root.project_name.clone(),
                 language: get_file_language(Path::new(&name)),
-                size_bytes: parts[2].trim().parse::<u64>().ok(),
-                modified: epoch_to_rfc3339(parts[3]),
+                size_bytes: entry.size,
+                modified: entry.modified,
                 is_focused: root.is_focused,
             },
         ));
@@ -2514,10 +2851,8 @@ async fn create_dir_entry_dto(
     workspace: &Path,
     base_path: &Path,
 ) -> Result<DirEntryDto, BackendError> {
-    let metadata = tokio::fs::metadata(entry_path)
-        .await
-        .map_err(|e| io_error_to_backend_error(e, entry_path))?;
-    let symlink_metadata = tokio::fs::symlink_metadata(entry_path)
+    // Describe the directory entry itself, including dangling aliases.
+    let metadata = tokio::fs::symlink_metadata(entry_path)
         .await
         .map_err(|e| io_error_to_backend_error(e, entry_path))?;
 
@@ -2534,7 +2869,7 @@ async fn create_dir_entry_dto(
         .to_string_lossy()
         .to_string();
 
-    let kind = if symlink_metadata.is_symlink() {
+    let kind = if metadata.is_symlink() {
         "symlink".to_string()
     } else if metadata.is_dir() {
         "directory".to_string()
@@ -2839,6 +3174,19 @@ async fn delete_path_internal_with_revision_impl(
     } else {
         None
     };
+    let _guarded_delete_lock = if expected_revision.is_some() {
+        Some(
+            tokio::task::spawn_blocking({
+                let validated_path = validated_path.clone();
+                move || acquire_guarded_write_lock(&validated_path)
+            })
+            .await
+            .map_err(capability_task_error)?
+            .map_err(|error| io_error_to_backend_error(error, &validated_path))?,
+        )
+    } else {
+        None
+    };
     if expected_revision.is_some() {
         let actual_revision = match read_file_internal(workspace, path.clone(), Some(false)).await {
             Ok(current) => Some(current.revision),
@@ -3109,10 +3457,263 @@ pub async fn fs_move(
     if let Some(wsl_workspace) = parse_wsl_unc_path(&workspace_string) {
         return move_wsl_path_internal(&wsl_workspace, src_effective, dest_effective).await;
     }
-    let src_path = PathBuf::from(&src_effective);
-    let dest_path = PathBuf::from(&dest_effective);
+    move_native_path_internal(&workspace, &src_effective, &dest_effective).await
+}
 
-    let validated_src = validate_path(&src_path, &workspace)?;
+fn symlink_identity(path: &Path) -> Result<WorkspaceRootIdentity, BackendError> {
+    #[cfg(unix)]
+    {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| io_error_to_backend_error(error, path))?;
+        Ok(workspace_root_identity_from_std(&metadata))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|error| io_error_to_backend_error(error, path))?;
+        workspace_root_identity_from_handle(file.as_raw_handle(), path)
+    }
+}
+
+fn remove_symlink(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if std::fs::symlink_metadata(path)?
+            .file_type()
+            .is_symlink_dir()
+        {
+            return std::fs::remove_dir(path);
+        }
+    }
+    std::fs::remove_file(path)
+}
+
+fn rename_without_replacement(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let source = CString::new(source.as_os_str().as_bytes())
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let destination = CString::new(destination.as_os_str().as_bytes())
+            .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let result =
+            unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let result = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let destination: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+fn rollback_published_symlink(
+    dest: &Path,
+    identity: WorkspaceRootIdentity,
+) -> Result<(), BackendError> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move destination has no parent".to_string(),
+        })?;
+    let quarantine = tempfile::Builder::new()
+        .prefix(".macro-move-rollback-")
+        .tempdir_in(parent)
+        .map_err(|error| io_error_to_backend_error(error, parent))?;
+    let isolated = quarantine.path().join("entry");
+    // Take ownership of one directory entry atomically before inspecting it.
+    std::fs::rename(dest, &isolated).map_err(|error| io_error_to_backend_error(error, dest))?;
+    if symlink_identity(&isolated).ok() == Some(identity) {
+        return remove_symlink(&isolated)
+            .map_err(|error| io_error_to_backend_error(error, &isolated));
+    }
+    if let Err(error) = rename_without_replacement(&isolated, dest) {
+        let recovery = quarantine.keep();
+        return Err(BackendError::Filesystem {
+            message: format!("Destination changed during rollback; preserved displaced entry at '{}' because restoration failed: {error}", recovery.join("entry").display()),
+        });
+    }
+    Err(BackendError::Filesystem {
+        message: "Destination changed; rollback restored it without deleting its contents."
+            .to_string(),
+    })
+}
+
+fn move_symlink_across_devices(
+    src: &Path,
+    dest: &Path,
+    remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), BackendError> {
+    let identity = symlink_identity(src)?;
+    let parent = src
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move source has no parent".to_string(),
+        })?;
+    let quarantine = tempfile::Builder::new()
+        .prefix(".macro-move-source-")
+        .tempdir_in(parent)
+        .map_err(|error| io_error_to_backend_error(error, parent))?;
+    let isolated = quarantine.path().join("entry");
+    std::fs::rename(src, &isolated).map_err(|error| io_error_to_backend_error(error, src))?;
+    let outcome = if symlink_identity(&isolated).ok() == Some(identity) {
+        move_isolated_symlink_across_devices(&isolated, dest, remove_source)
+    } else {
+        Err(BackendError::Filesystem {
+            message: "Move source changed before isolation.".to_string(),
+        })
+    };
+    if let Err(error) = outcome {
+        if let Err(restore) = rename_without_replacement(&isolated, src) {
+            let recovery = quarantine.keep();
+            return Err(BackendError::Filesystem {
+                message: format!(
+                    "{error} Source preserved at '{}' because restoration failed: {restore}",
+                    recovery.join("entry").display()
+                ),
+            });
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn move_isolated_symlink_across_devices(
+    src: &Path,
+    dest: &Path,
+    remove_source: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), BackendError> {
+    let target = std::fs::read_link(src).map_err(|error| io_error_to_backend_error(error, src))?;
+    let parent = dest
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move destination has no parent".to_string(),
+        })?;
+    let staging = tempfile::Builder::new()
+        .prefix(".macro-move-")
+        .tempdir_in(parent)
+        .map_err(|error| io_error_to_backend_error(error, parent))?;
+    let staged = staging.path().join("link");
+    // Creation is exclusive: never overwrite a destination we could not restore.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &staged)
+        .map_err(|error| io_error_to_backend_error(error, dest))?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        let is_directory_link = std::fs::symlink_metadata(src)
+            .map_err(|error| io_error_to_backend_error(error, src))?
+            .file_type()
+            .is_symlink_dir();
+        let result = if is_directory_link {
+            std::os::windows::fs::symlink_dir(&target, &staged)
+        } else {
+            std::os::windows::fs::symlink_file(&target, &staged)
+        };
+        result.map_err(|error| io_error_to_backend_error(error, dest))?;
+    }
+    let published_identity = symlink_identity(&staged)?;
+    rename_without_replacement(&staged, dest)
+        .map_err(|error| io_error_to_backend_error(error, dest))?;
+    if let Err(error) = remove_source(src) {
+        rollback_published_symlink(dest, published_identity).map_err(|rollback| {
+            BackendError::Filesystem {
+                message: format!("Move source removal failed: {error}. {rollback}"),
+            }
+        })?;
+        return Err(io_error_to_backend_error(error, src));
+    }
+    Ok(())
+}
+
+async fn move_symlink_after_rename_error(
+    src: &Path,
+    dest: &Path,
+    rename_error: std::io::Error,
+) -> Result<(), BackendError> {
+    if rename_error.kind() != std::io::ErrorKind::CrossesDevices {
+        return Err(io_error_to_backend_error(rename_error, src));
+    }
+    let src = src.to_path_buf();
+    let dest = dest.to_path_buf();
+    tokio::task::spawn_blocking(move || move_symlink_across_devices(&src, &dest, remove_symlink))
+        .await
+        .map_err(capability_task_error)?
+}
+
+async fn move_native_path_internal(
+    workspace: &Path,
+    src: &str,
+    dest: &str,
+) -> Result<(), BackendError> {
+    let src_path = PathBuf::from(src);
+    let dest_path = PathBuf::from(dest);
+
+    validate_path(&src_path, workspace)?;
+    let lexical_src = if src_path.is_absolute() {
+        src_path
+    } else {
+        workspace.join(src_path)
+    };
+    let parent = lexical_src
+        .parent()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move source has no parent".to_string(),
+        })?;
+    let validated_parent = validate_path(parent, workspace)?;
+    let name = lexical_src
+        .file_name()
+        .ok_or_else(|| BackendError::FilesystemInvalidPath {
+            message: "Move source has no filename".to_string(),
+        })?;
+    let validated_src = validated_parent.join(name);
+    let source_is_symlink = tokio::fs::symlink_metadata(&validated_src)
+        .await
+        .map_err(|error| io_error_to_backend_error(error, &validated_src))?
+        .is_symlink();
     let validated_dest = validate_path_for_write(&dest_path, &workspace)?;
 
     // Try atomic rename first
@@ -3128,6 +3729,14 @@ pub async fn fs_move(
             Ok(())
         }
         Err(rename_err) => {
+            if source_is_symlink {
+                return move_symlink_after_rename_error(
+                    &validated_src,
+                    &validated_dest,
+                    rename_err,
+                )
+                .await;
+            }
             // Rename failed (likely cross-filesystem), fallback to copy + delete
             tracing::debug!("Rename failed, falling back to copy+delete: {}", rename_err);
 
@@ -3181,6 +3790,280 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
+    #[tokio::test]
+    async fn local_files_text_formats_and_unknown_binary() {
+        let workspace = setup_empty_workspace();
+        let text = "<svg><title>Échantillon</title></svg>";
+        for name in ["vector.svg", "same.xml"] {
+            fs::write(workspace.path().join(name), text).unwrap();
+            let content = read_file_internal(workspace.path(), name.into(), None)
+                .await
+                .unwrap();
+            assert!(!content.is_binary);
+            assert_eq!(content.content, text);
+            assert!(!crate::fs::is_binary_file(&workspace.path().join(name)).unwrap());
+        }
+        fs::write(workspace.path().join("sample.data"), [0xff, 0xfe, 0xfd]).unwrap();
+        let content = read_file_internal(workspace.path(), "sample.data".into(), None)
+            .await
+            .unwrap();
+        assert!(content.is_binary);
+        assert_eq!(content.size, 3);
+    }
+
+    #[test]
+    fn local_files_read_uses_open_handle() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("sample.txt");
+        fs::write(&path, "original").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        fs::rename(&path, workspace.path().join("renamed.txt")).unwrap();
+        fs::write(&path, "replacement").unwrap();
+        let (bytes, _) = read_open_file(file, &path).unwrap();
+        assert_eq!(bytes, b"original");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_files_dangling_alias_does_not_abort_listing() {
+        let workspace = setup_empty_workspace();
+        fs::write(
+            workspace.path().join("normal.ts"),
+            "export const value = 1;",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("missing.ts", workspace.path().join("alias.ts")).unwrap();
+        for recursive in [false, true] {
+            let entries = list_dir_internal(
+                workspace.path(),
+                ".".into(),
+                Some(recursive),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(
+                entries
+                    .iter()
+                    .find(|entry| entry.name == "alias.ts")
+                    .unwrap()
+                    .kind,
+                "symlink"
+            );
+            assert_eq!(
+                entries
+                    .iter()
+                    .find(|entry| entry.name == "normal.ts")
+                    .unwrap()
+                    .kind,
+                "file"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_files_move_preserves_alias_targets() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
+        fs::create_dir(workspace.path().join("folder")).unwrap();
+        for target in ["target.txt", "folder"] {
+            let alias = format!("{target}-alias");
+            let moved = format!("{target}-moved");
+            std::os::unix::fs::symlink(target, workspace.path().join(&alias)).unwrap();
+            move_native_path_internal(workspace.path(), &alias, &moved)
+                .await
+                .unwrap();
+            assert!(workspace.path().join(target).exists());
+            assert_eq!(
+                fs::read_link(workspace.path().join(moved)).unwrap(),
+                PathBuf::from(target)
+            );
+            assert!(fs::symlink_metadata(workspace.path().join(alias)).is_err());
+        }
+        move_native_path_internal(workspace.path(), "target.txt", "regular.txt")
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("regular.txt")).unwrap(),
+            "retained"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_files_cross_device_move_recreates_aliases_and_keeps_source_on_failure() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
+        fs::create_dir(workspace.path().join("folder")).unwrap();
+        for target in ["target.txt", "folder"] {
+            let src = workspace.path().join(format!("{target}-alias"));
+            let dest = workspace.path().join(format!("{target}-moved"));
+            std::os::unix::fs::symlink(target, &src).unwrap();
+            move_symlink_after_rename_error(&src, &dest, std::io::ErrorKind::CrossesDevices.into())
+                .await
+                .unwrap();
+            assert_eq!(fs::read_link(&dest).unwrap(), PathBuf::from(target));
+            assert!(fs::symlink_metadata(&src).is_err());
+            assert!(workspace.path().join(target).exists());
+        }
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
+            "retained"
+        );
+
+        let src = workspace.path().join("retained-alias");
+        std::os::unix::fs::symlink("target.txt", &src).unwrap();
+        let dest = workspace.path().join("occupied");
+        fs::create_dir(&dest).unwrap();
+        fs::write(dest.join("untouched.txt"), "retained").unwrap();
+        assert!(move_symlink_after_rename_error(
+            &src,
+            &dest,
+            std::io::ErrorKind::CrossesDevices.into()
+        )
+        .await
+        .is_err());
+        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(
+            fs::read_to_string(dest.join("untouched.txt")).unwrap(),
+            "retained"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_files_cross_device_move_rolls_back_failed_source_removal() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
+        let src = workspace.path().join("alias");
+        let dest = workspace.path().join("destination");
+        std::os::unix::fs::symlink("target.txt", &src).unwrap();
+        let result = move_symlink_across_devices(&src, &dest, |_| {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        });
+        assert!(result.is_err());
+        assert!(fs::symlink_metadata(&dest).is_err());
+        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
+            "retained"
+        );
+
+        let result = move_symlink_across_devices(&src, &dest, |_| {
+            fs::rename(&dest, workspace.path().join("old-alias"))?;
+            fs::write(&dest, "concurrent content")?;
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        });
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Destination changed"));
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "concurrent content");
+        assert_eq!(fs::read_link(&src).unwrap(), PathBuf::from("target.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_files_cross_device_move_preserves_new_entry_at_original_source_path() {
+        let workspace = setup_empty_workspace();
+        fs::write(workspace.path().join("target.txt"), "retained").unwrap();
+        let src = workspace.path().join("alias");
+        let dest = workspace.path().join("destination");
+        std::os::unix::fs::symlink("target.txt", &src).unwrap();
+        move_symlink_across_devices(&src, &dest, |isolated| {
+            fs::write(&src, "new source entry")?;
+            remove_symlink(isolated)
+        })
+        .unwrap();
+        assert_eq!(fs::read_to_string(&src).unwrap(), "new source entry");
+        assert_eq!(fs::read_link(&dest).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("target.txt")).unwrap(),
+            "retained"
+        );
+    }
+
+    #[test]
+    fn local_files_wsl_records_preserve_names_and_modes() {
+        for name in ["a\tb.ts", "a\nb.ts"] {
+            let fields = [
+                format!("/workspace/src/{name}"),
+                format!("src/{name}"),
+                name.into(),
+                "f".into(),
+                "3".into(),
+                "1700000000".into(),
+                "644".into(),
+            ];
+            let bytes = format!("{}\0", fields.join("\0")).into_bytes();
+            let entries = parse_wsl_directory_records(&bytes, "Test", false).unwrap();
+            assert_eq!(entries[0].relative_path, fields[1]);
+            assert_eq!(entries[0].name, name);
+            assert!(!entries[0].is_readonly);
+        }
+        for mode in ["644", "755", "666", "020", "002"] {
+            assert!(!wsl_mode_is_readonly(mode));
+        }
+        for mode in ["444", "555", "000"] {
+            assert!(wsl_mode_is_readonly(mode));
+        }
+        assert!(parse_wsl_directory_records(b"incomplete\0", "Test", false).is_err());
+    }
+
+    #[test]
+    fn local_files_wsl_hidden_ancestors_are_filtered() {
+        let mut records = Vec::new();
+        for relative in [
+            "visible.ts",
+            ".hidden",
+            ".hidden/visible.ts",
+            "src/.nested/visible.ts",
+        ] {
+            let name = relative.rsplit('/').next().unwrap();
+            records.extend_from_slice(
+                format!("/workspace/{relative}\0{relative}\0{name}\0f\03\01700000000\0644\0")
+                    .as_bytes(),
+            );
+        }
+        let visible = parse_wsl_directory_records(&records, "Test", false).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].relative_path, "visible.ts");
+        assert_eq!(
+            parse_wsl_directory_records(&records, "Test", true)
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn local_files_search_ranks_late_candidates_within_one_root() {
+        let workspace = setup_empty_workspace();
+        for index in 0..MAX_FILE_SEARCH_CANDIDATES + 5 {
+            fs::write(
+                workspace.path().join(format!("needle-{index:04}")),
+                "candidate",
+            )
+            .unwrap();
+        }
+        fs::create_dir(workspace.path().join("zz-last")).unwrap();
+        fs::write(workspace.path().join("zz-last/needle"), "exact").unwrap();
+        let roots = vec![WorkspaceFileSearchRootDto {
+            project_id: None,
+            project_name: None,
+            workspace_path: workspace.path().to_string_lossy().into(),
+            mount_name: None,
+            is_focused: true,
+        }];
+        let results =
+            search_workspace_files_blocking(roots, "needle".into(), Some(1), None, None).unwrap();
+        assert_eq!(results[0].relative_path, "zz-last/needle");
+    }
+
     // Helper function to create a test workspace with sample files
     fn setup_test_workspace() -> TempDir {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
@@ -3225,6 +4108,253 @@ mod tests {
 
     fn setup_empty_workspace() -> TempDir {
         TempDir::new().expect("Failed to create temp directory")
+    }
+
+    fn assert_no_write_temp_file(workspace: &Path, file_stem: &str) {
+        let temp_prefix = format!("{file_stem}.tmp.");
+        let leftovers = fs::read_dir(workspace)
+            .expect("read workspace directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.starts_with(&temp_prefix))
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "guarded write left temporary files behind: {leftovers:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wsl_write_script_refuses_symbolic_link_without_replacing_it() {
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("target.txt");
+        let link = workspace.path().join("link.txt");
+        let temp = workspace.path().join("write.tmp");
+        fs::write(&target, "original").unwrap();
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+        let mut child = crate::core::process::background_command("sh")
+            .arg("-c")
+            .arg(WSL_WRITE_FILE_SCRIPT)
+            .arg("macro-wsl-link-test")
+            .arg(&link)
+            .arg("1")
+            .arg(content_revision(b"original"))
+            .arg("")
+            .arg(&temp)
+            .arg(workspace.path().join("write.lock"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("execute WSL script with a synthetic symbolic link");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&vec![b'x'; 128 * 1024])
+            .expect("drain the rejected draft without a broken pipe");
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("symbolic link"));
+        assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("target.txt"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        assert!(!temp.exists());
+    }
+
+    #[test]
+    fn wsl_write_script_guards_both_publication_modes() {
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("tmp=$5"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("lock_path=$6"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("trap cleanup_tmp EXIT HUP INT TERM"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("exec 9>\"$lock_path\" || exit 10"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("flock -x 9 || exit 10"));
+        let lock_index = WSL_WRITE_FILE_SCRIPT
+            .find("flock -x 9")
+            .expect("WSL publication lock");
+        let first_target_read = WSL_WRITE_FILE_SCRIPT
+            .find("if [ -d \"$p\" ]")
+            .expect("first target read");
+        assert!(lock_index < first_target_read);
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("(umask 077; set -C; : > \"$tmp\") || exit 6"));
+        assert!(!WSL_WRITE_FILE_SCRIPT.contains("mktemp"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("cat > \"$tmp\" || { rm -f -- \"$tmp\"; exit 7; }"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("if ! ln -- \"$tmp\" \"$p\"; then"));
+        assert!(WSL_WRITE_FILE_SCRIPT.contains("revision_conflict actual=%s"));
+        assert!(WSL_WRITE_FILE_SCRIPT
+            .contains("mv -fT -- \"$tmp\" \"$p\" || { rm -f -- \"$tmp\"; exit 9; }"));
+        assert!(!WSL_WRITE_FILE_SCRIPT.contains("mv -f -- \"$tmp\" \"$p\""));
+    }
+
+    #[test]
+    fn wsl_write_lock_path_is_stable_and_target_scoped() {
+        let first = wsl_write_lock_path("/workspace/src/file.txt");
+        assert_eq!(first, wsl_write_lock_path("/workspace/src/file.txt"));
+        assert_ne!(first, wsl_write_lock_path("/workspace/src/other.txt"));
+        assert!(first.starts_with("/tmp/macro-write-locks/"));
+        assert!(first.ends_with(".lock"));
+    }
+
+    #[test]
+    fn wsl_delete_script_locks_before_revision_validation() {
+        assert!(WSL_DELETE_PATH_SCRIPT.contains("lock_path=$4"));
+        assert!(WSL_DELETE_PATH_SCRIPT.contains("exec 9>\"$lock_path\" || exit 10"));
+        let lock_index = WSL_DELETE_PATH_SCRIPT
+            .find("flock -x 9")
+            .expect("WSL deletion lock");
+        let first_target_read = WSL_DELETE_PATH_SCRIPT
+            .find("if [ ! -e \"$p\" ]")
+            .expect("first target read");
+        let revision_read = WSL_DELETE_PATH_SCRIPT
+            .find("sha256sum -- \"$p\"")
+            .expect("revision read");
+        assert!(lock_index < first_target_read);
+        assert!(lock_index < revision_read);
+    }
+
+    #[tokio::test]
+    async fn guarded_delete_revalidates_after_the_stable_lock_is_acquired() {
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("guarded-delete.txt");
+        fs::write(&target, b"original").expect("seed guarded target");
+        let revision = content_revision(b"original");
+        let validated_target = validate_path(&target, workspace.path()).expect("validate target");
+        let stable_lock = acquire_guarded_write_lock(&validated_target).expect("hold stable lock");
+        let workspace_path = workspace.path().to_path_buf();
+        let target_path = target.to_string_lossy().to_string();
+        let mut deletion = tokio::spawn(async move {
+            delete_path_internal_with_revision(
+                &workspace_path,
+                target_path,
+                Some(false),
+                Some(&revision),
+            )
+            .await
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(75), &mut deletion)
+                .await
+                .is_err()
+        );
+        fs::write(&target, b"replacement").expect("replace target while delete waits");
+        drop(stable_lock);
+
+        let error = deletion
+            .await
+            .expect("join guarded delete")
+            .expect_err("the replacement must fail revision validation");
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            fs::read(&target).expect("replacement remains"),
+            b"replacement"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn independent_wsl_write_producers_allow_exactly_one_revision_winner() {
+        let temp = TempDir::new().expect("temp dir");
+        let target = temp.path().join("guarded.txt");
+        fs::write(&target, "current").expect("seed target");
+        let revision = content_revision(b"current");
+        let lock_path = temp.path().join("guarded.lock");
+
+        let spawn_producer = |temp_name: &str| {
+            let temp_path = temp.path().join(temp_name);
+            let mut child = crate::core::process::background_command("sh")
+                .arg("-c")
+                .arg(WSL_WRITE_FILE_SCRIPT)
+                .arg("macro-wsl-write-test")
+                .arg(&target)
+                .arg("1")
+                .arg(&revision)
+                .arg("")
+                .arg(&temp_path)
+                .arg(&lock_path)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn independent producer");
+            let stdin = child.stdin.take().expect("producer stdin");
+            (child, stdin)
+        };
+
+        let mut first_content = vec![b'a'; 2 * 1024 * 1024];
+        first_content[..5].copy_from_slice(b"first");
+        let mut second_content = vec![b'b'; 2 * 1024 * 1024];
+        second_content[..6].copy_from_slice(b"second");
+        let (first, mut first_stdin) = spawn_producer("first.tmp");
+        let (second, mut second_stdin) = spawn_producer("second.tmp");
+        let first_writer = std::thread::spawn(move || {
+            first_stdin
+                .write_all(&first_content)
+                .expect("write first producer content");
+        });
+        let second_writer = std::thread::spawn(move || {
+            second_stdin
+                .write_all(&second_content)
+                .expect("write second producer content");
+        });
+        let first_output = first.wait_with_output().expect("wait for first producer");
+        let second_output = second.wait_with_output().expect("wait for second producer");
+        first_writer.join().expect("join first producer writer");
+        second_writer.join().expect("join second producer writer");
+        assert!(first_output.status.success());
+        assert!(second_output.status.success());
+        let outputs = [
+            String::from_utf8(first_output.stdout).expect("first producer output"),
+            String::from_utf8(second_output.stdout).expect("second producer output"),
+        ];
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|output| output.contains("skipped=0"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|output| output.contains("revision_conflict actual="))
+                .count(),
+            1
+        );
+        let final_content = fs::read(&target).expect("read winning content");
+        assert!(final_content.starts_with(b"first") || final_content.starts_with(b"second"));
+        assert_eq!(final_content.len(), 2 * 1024 * 1024);
+        assert!(!temp.path().join("first.tmp").exists());
+        assert!(!temp.path().join("second.tmp").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_a_wsl_temp_guard_schedules_rust_cleanup() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        install_wsl_write_temp_cleanup_hook(sender);
+        let target = WslProjectPath {
+            distro: "TestDistro".to_string(),
+            linux_path: "/workspace/file.txt".to_string(),
+            original_path: r"\\wsl.localhost\TestDistro\workspace\file.txt".to_string(),
+            unc_path: r"\\wsl.localhost\TestDistro\workspace\file.txt".to_string(),
+        };
+        let temp_path = "/workspace/.macro-write-cancelled.tmp".to_string();
+
+        drop(WslWriteTempGuard::new(target, temp_path.clone()));
+
+        let cleaned =
+            tokio::task::spawn_blocking(move || receiver.recv_timeout(Duration::from_secs(5)))
+                .await
+                .expect("cleanup observer task")
+                .expect("cleanup scheduled after guard drop");
+        assert_eq!(cleaned, temp_path);
+    }
+
+    #[test]
+    fn wsl_temp_path_stays_next_to_its_target() {
+        let temp_path = wsl_write_temp_path("/workspace/src/file.txt").expect("temp path");
+        assert!(temp_path.starts_with("/workspace/src/.macro-write-"));
+        assert!(temp_path.ends_with(".tmp"));
     }
 
     #[cfg(windows)]
@@ -3336,6 +4466,53 @@ mod tests {
         )
         .expect("limited search results");
         assert_eq!(limited_results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_workspace_files_inspects_every_root_before_ranking_results() {
+        let first_workspace = setup_empty_workspace();
+        let second_workspace = setup_empty_workspace();
+        for index in 0..MAX_FILE_SEARCH_CANDIDATES {
+            fs::write(
+                first_workspace
+                    .path()
+                    .join(format!("needle-{index:03}.txt")),
+                "candidate",
+            )
+            .expect("write first-root candidate");
+        }
+        fs::write(second_workspace.path().join("needle"), "exact")
+            .expect("write exact second-root match");
+
+        let roots = vec![
+            WorkspaceFileSearchRootDto {
+                project_id: Some("first".to_string()),
+                project_name: Some("First".to_string()),
+                workspace_path: first_workspace.path().to_string_lossy().to_string(),
+                mount_name: Some("first".to_string()),
+                is_focused: true,
+            },
+            WorkspaceFileSearchRootDto {
+                project_id: Some("second".to_string()),
+                project_name: Some("Second".to_string()),
+                workspace_path: second_workspace.path().to_string_lossy().to_string(),
+                mount_name: Some("second".to_string()),
+                is_focused: false,
+            },
+        ];
+
+        let results = search_workspace_files_blocking(
+            roots,
+            "needle".to_string(),
+            Some(1),
+            Some(false),
+            Some(true),
+        )
+        .expect("multi-root search results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "second/needle");
+        assert_eq!(results[0].project_id.as_deref(), Some("second"));
     }
 
     fn init_git_repo(path: &Path) -> Repository {
@@ -3696,6 +4873,35 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn test_write_symbolic_link_refuses_without_replacing_link_or_target() {
+        let workspace = setup_empty_workspace();
+        let target = workspace.path().join("target.txt");
+        let link = workspace.path().join("link.txt");
+        fs::write(&target, "original").unwrap();
+        std::os::unix::fs::symlink("target.txt", &link).unwrap();
+        for allow_outside in [false, true] {
+            let error = write_file_internal_with_revision(
+                workspace.path(),
+                "link.txt".to_string(),
+                "draft".to_string(),
+                Some(true),
+                Some(allow_outside),
+                Some(&content_revision(b"original")),
+            )
+            .await
+            .expect_err("symbolic link must not be replaced");
+            assert!(error.to_string().contains("symbolic link"), "{error}");
+            assert!(fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("target.txt"));
+            assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn test_write_preserves_existing_unix_mode() {
         let workspace = setup_empty_workspace();
         let path = workspace.path().join("script.sh");
@@ -3770,7 +4976,6 @@ mod tests {
         let workspace = setup_empty_workspace();
         let path = workspace.path().join("guarded.txt");
         fs::write(&path, "current").expect("seed guarded file");
-
         let error = write_file_internal_with_revision(
             workspace.path(),
             "guarded.txt".to_string(),
@@ -3814,6 +5019,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn guarded_write_cleans_temp_when_target_disappears_before_revalidation() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+        let path = workspace_path.join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let validated_path = path.canonicalize().expect("canonical guarded file");
+        let revision = content_revision(b"current");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_before_revalidation_hook(
+            validated_path.clone(),
+            reached.clone(),
+            release.clone(),
+        );
+
+        let write_workspace = workspace_path.clone();
+        let write_path = validated_path.clone();
+        let mut write = tokio::spawn(async move {
+            write_file_with_workspace_capability(
+                &write_workspace,
+                &write_path,
+                "guarded.txt",
+                b"updated",
+                Some(true),
+                Some(&revision),
+                None,
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut write => panic!("write finished before revalidation: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("write did not reach revalidation"),
+        }
+        fs::remove_file(&path).expect("remove target before revalidation");
+        release.wait().await;
+
+        write
+            .await
+            .expect("write task")
+            .expect_err("missing target must fail guarded revalidation");
+        assert_no_write_temp_file(&workspace_path, "guarded");
+    }
+
+    #[tokio::test]
+    async fn guarded_create_cleans_temp_when_atomic_publication_fails() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+        let path = workspace_path.join("new.txt");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_after_revalidation_hook(path.clone(), reached.clone(), release.clone());
+
+        let write_workspace = workspace_path.clone();
+        let write_path = path.clone();
+        let mut write = tokio::spawn(async move {
+            write_file_with_workspace_capability(
+                &write_workspace,
+                &write_path,
+                "new.txt",
+                b"created",
+                Some(true),
+                Some(EXPECTED_REVISION_ABSENT),
+                None,
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut write => panic!("write finished before publication: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("write did not reach publication"),
+        }
+        fs::create_dir(&path).expect("occupy target before publication");
+        release.wait().await;
+
+        write
+            .await
+            .expect("write task")
+            .expect_err("occupied target must fail atomic publication");
+        assert_no_write_temp_file(&workspace_path, "new");
+    }
+
+    #[tokio::test]
     async fn concurrent_guarded_writes_allow_exactly_one_winner() {
         let workspace = setup_empty_workspace();
         let workspace_path = workspace.path().to_path_buf();
@@ -3847,6 +5137,124 @@ mod tests {
         assert!(matches!(failure, BackendError::RevisionConflict { .. }));
         let content = fs::read_to_string(path).expect("read winning content");
         assert!(content == "first" || content == "second");
+    }
+
+    #[tokio::test]
+    async fn direct_guarded_writes_lock_the_path_before_reading_the_target() {
+        let workspace = setup_empty_workspace();
+        let workspace_path = workspace.path().to_path_buf();
+        let path = workspace_path.join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let validated_path = path.canonicalize().expect("canonical guarded file");
+        let revision = content_revision(b"current");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_after_revalidation_hook(
+            validated_path.clone(),
+            reached.clone(),
+            release.clone(),
+        );
+
+        let first_workspace = workspace_path.clone();
+        let first_path = validated_path.clone();
+        let first_revision = revision.clone();
+        let mut first = tokio::spawn(async move {
+            write_file_with_workspace_capability(
+                &first_workspace,
+                &first_path,
+                "guarded.txt",
+                b"first",
+                Some(true),
+                Some(&first_revision),
+                None,
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut first => panic!("first write finished before the replacement hook: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("first write did not reach the replacement hook"),
+        }
+
+        let second_workspace = workspace_path.clone();
+        let second_path = validated_path.clone();
+        let second_revision = revision.clone();
+        let mut second = tokio::spawn(async move {
+            write_file_with_workspace_capability(
+                &second_workspace,
+                &second_path,
+                "guarded.txt",
+                b"second",
+                Some(true),
+                Some(&second_revision),
+                None,
+            )
+            .await
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), &mut second)
+                .await
+                .is_err(),
+            "second write must wait for the stable path lock"
+        );
+        release.wait().await;
+
+        first.await.expect("first write task").expect("first write");
+        let error = second
+            .await
+            .expect("second write task")
+            .expect_err("second write must revalidate after acquiring the path lock");
+        assert!(matches!(error, BackendError::RevisionConflict { .. }));
+        assert_eq!(
+            fs::read_to_string(path).expect("read guarded file"),
+            "first"
+        );
+    }
+
+    #[tokio::test]
+    async fn guarded_write_holds_an_os_lock_through_atomic_replacement() {
+        let workspace = setup_empty_workspace();
+        let path = workspace.path().join("guarded.txt");
+        fs::write(&path, "current").expect("seed guarded file");
+        let hook_path = path.canonicalize().expect("canonical guarded file");
+        let revision = content_revision(b"current");
+        let reached = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        install_write_after_revalidation_hook(hook_path, reached.clone(), release.clone());
+
+        let workspace_path = workspace.path().to_path_buf();
+        let mut write = tokio::spawn(async move {
+            write_file_internal_with_revision(
+                &workspace_path,
+                "guarded.txt".to_string(),
+                "updated".to_string(),
+                Some(true),
+                None,
+                Some(&revision),
+            )
+            .await
+        });
+
+        tokio::select! {
+            _ = reached.wait() => {}
+            result = &mut write => panic!("write finished before the replacement hook: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("write did not reach the replacement hook"),
+        }
+        let contender = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open lock contender");
+        assert!(contender.try_lock_exclusive().is_err());
+        release.wait().await;
+
+        write.await.expect("write task").expect("guarded write");
+        assert_eq!(
+            fs::read_to_string(path).expect("read guarded file"),
+            "updated"
+        );
     }
 
     #[tokio::test]

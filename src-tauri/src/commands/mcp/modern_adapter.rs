@@ -12,15 +12,16 @@
 
 use std::error::Error as StdError;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo, Implementation,
-    PaginatedRequestParams, ProtocolVersion,
+    CallToolRequest, CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo,
+    ClientRequest, Implementation, PaginatedRequestParams, ProtocolVersion, ServerResult,
 };
 use rmcp::service::{
-    ClientCacheConfig, ClientInitializeError, ClientLifecycleMode, ClientServiceExt, RoleClient,
-    RunningService, ServiceError,
+    ClientCacheConfig, ClientInitializeError, ClientLifecycleMode, ClientServiceExt,
+    PeerRequestOptions, RoleClient, RunningService, ServiceError,
 };
 use rmcp::transport::IntoTransport;
 use rmcp::ClientHandler;
@@ -29,6 +30,7 @@ use serde_json::Value;
 use super::ids::build_mcp_tool_id;
 use super::result_format::format_tool_call_result;
 use super::rmcp_adapter::{ContainedStdioTransport, McpToolPageDto, RmcpStdioServerConfig};
+use super::runtime::McpOperationCancellation;
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
 
@@ -37,6 +39,7 @@ pub(crate) const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const SERVICE_CLOSE_BUDGET: Duration = Duration::from_secs(10);
+const CANCEL_NOTIFICATION_BUDGET: Duration = Duration::from_secs(1);
 
 /// Modern peer information retained after `server/discover`.
 ///
@@ -305,6 +308,7 @@ impl RmcpModernStdioClient {
         &self,
         tool_name: &str,
         arguments: Value,
+        cancellation: Arc<McpOperationCancellation>,
     ) -> CommandResult<McpModernToolCallOutcome> {
         let arguments = match arguments {
             Value::Null => None,
@@ -318,9 +322,84 @@ impl RmcpModernStdioClient {
         let mut params = CallToolRequestParams::new(tool_name.to_owned());
         params.arguments = arguments;
 
-        let response = self
-            .run_bounded("tools/call", self.service.call_tool_once(params))
-            .await?;
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let operation_timeout = tokio::time::sleep(self.operation_timeout);
+        tokio::pin!(operation_timeout);
+        let mut handle = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(command_error("MCP tool call was cancelled."));
+            }
+            _ = &mut operation_timeout => {
+                return Err(command_error(format!(
+                    "MCP server '{}' timed out during tools/call after {:?}.",
+                    self.server_name, self.operation_timeout
+                )));
+            }
+            result = self.service.peer().send_cancellable_request(
+                request,
+                PeerRequestOptions::no_options(),
+            ) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error))?,
+        };
+        let response = tokio::select! {
+            response = &mut handle.rx => match response {
+                Ok(result) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error)),
+                Err(_) => Err(map_service_error(&self.server_name, "tools/call", ServiceError::TransportClosed)),
+            },
+            _ = cancellation.cancelled() => {
+                match tokio::time::timeout(
+                    CANCEL_NOTIFICATION_BUDGET,
+                    handle.cancel(Some("operation cancelled".to_string())),
+                ).await {
+                    Ok(result) => result.map_err(|error| map_service_error(
+                        &self.server_name,
+                        "tools/call cancellation",
+                        error,
+                    ))?,
+                    Err(_) => {
+                        self.service.cancellation_token().cancel();
+                        tracing::warn!(
+                            server = %self.server_name,
+                            "modern MCP cancellation notification exceeded its send budget; session closed"
+                        );
+                    }
+                }
+                return Err(command_error("MCP tool call was cancelled."));
+            }
+            _ = &mut operation_timeout => {
+                match tokio::time::timeout(
+                    CANCEL_NOTIFICATION_BUDGET,
+                    handle.cancel(Some("request timeout".to_string())),
+                ).await {
+                    Ok(result) => result.map_err(|error| map_service_error(
+                        &self.server_name,
+                        "tools/call timeout",
+                        error,
+                    ))?,
+                    Err(_) => {
+                        self.service.cancellation_token().cancel();
+                        tracing::warn!(
+                            server = %self.server_name,
+                            "modern MCP timeout notification exceeded its send budget; session closed"
+                        );
+                    }
+                }
+                return Err(command_error(format!(
+                    "MCP server '{}' timed out during tools/call after {:?}.",
+                    self.server_name, self.operation_timeout
+                )));
+            }
+        }?;
+        let response = match response {
+            ServerResult::CallToolResult(result) => CallToolResponse::Complete(result),
+            ServerResult::InputRequiredResult(result) => CallToolResponse::InputRequired(result),
+            ServerResult::CreateTaskResult(result) => CallToolResponse::Task(result),
+            _ => {
+                return Err(command_error(
+                    "MCP server returned an unexpected tools/call response.",
+                ))
+            }
+        };
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
@@ -426,8 +505,8 @@ fn map_service_error(server_name: &str, label: &str, error: ServiceError) -> Com
 mod tests {
     use super::*;
     use rmcp::model::{
-        ClientJsonRpcMessage, ClientRequest, DiscoverResult, ErrorCode, ErrorData, GetMeta,
-        ServerCapabilities, ServerJsonRpcMessage, ServerResult,
+        ClientJsonRpcMessage, ClientNotification, ClientRequest, DiscoverResult, ErrorCode,
+        ErrorData, GetMeta, ServerCapabilities, ServerJsonRpcMessage, ServerResult,
     };
     use rmcp::transport::Transport;
 
@@ -696,7 +775,11 @@ mod tests {
         assert_eq!(second.tools[0].name, "second");
         assert!(second.next_cursor.is_none());
         let call = client
-            .call_tool("second", serde_json::json!({}))
+            .call_tool(
+                "second",
+                serde_json::json!({}),
+                Arc::new(McpOperationCancellation::default()),
+            )
             .await
             .expect("tool call");
         let McpModernToolCallOutcome::Complete(call) = call else {
@@ -707,5 +790,215 @@ mod tests {
 
         client.shutdown().await;
         server_task.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_active_tool_call_notifies_its_request_and_preserves_the_next_call() {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let mut server = IntoTransport::<rmcp::RoleServer, _, _>::into_transport(server_io);
+        let (first_request_sent, first_request_received) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let ClientJsonRpcMessage::Request(discover) =
+                server.receive().await.expect("expected discovery request")
+            else {
+                panic!("expected discovery request")
+            };
+            server
+                .send(ServerJsonRpcMessage::response(
+                    ServerResult::DiscoverResult(DiscoverResult::new(
+                        vec![ProtocolVersion::V_2026_07_28],
+                        ServerCapabilities::builder().enable_tools().build(),
+                    )),
+                    discover.id,
+                ))
+                .await
+                .expect("send discovery response");
+
+            let ClientJsonRpcMessage::Request(first) =
+                server.receive().await.expect("expected first tool request")
+            else {
+                panic!("expected first tool request")
+            };
+            assert!(matches!(first.request, ClientRequest::CallToolRequest(_)));
+            let first_id = first.id.clone();
+            first_request_sent.send(()).expect("signal first request");
+
+            let ClientJsonRpcMessage::Notification(notification) = server
+                .receive()
+                .await
+                .expect("expected cancellation notification")
+            else {
+                panic!("expected cancellation notification")
+            };
+            let ClientNotification::CancelledNotification(cancelled) = notification.notification
+            else {
+                panic!("expected notifications/cancelled")
+            };
+            assert_eq!(cancelled.params.request_id, Some(first_id));
+
+            let ClientJsonRpcMessage::Request(second) = server
+                .receive()
+                .await
+                .expect("expected second tool request")
+            else {
+                panic!("expected second tool request")
+            };
+            assert!(matches!(second.request, ClientRequest::CallToolRequest(_)));
+            server
+                .send(ServerJsonRpcMessage::response(
+                    ServerResult::CallToolResult(
+                        serde_json::from_value(serde_json::json!({
+                            "resultType": "complete",
+                            "content": [{"type": "text", "text": "second-ok"}],
+                            "isError": false
+                        }))
+                        .expect("valid tool result"),
+                    ),
+                    second.id,
+                ))
+                .await
+                .expect("send second response");
+        });
+
+        let client = Arc::new(
+            RmcpModernStdioClient::connect_transport(&config(), client_io)
+                .await
+                .expect("connect modern client"),
+        );
+        let cancellation = Arc::new(McpOperationCancellation::default());
+        let first_client = client.clone();
+        let first_cancellation = cancellation.clone();
+        let first_call = tokio::spawn(async move {
+            first_client
+                .call_tool("first", serde_json::json!({}), first_cancellation)
+                .await
+        });
+        first_request_received
+            .await
+            .expect("server received first request");
+        cancellation.cancel();
+        assert!(first_call.await.unwrap().is_err());
+
+        let second = client
+            .call_tool(
+                "second",
+                serde_json::json!({}),
+                Arc::new(McpOperationCancellation::default()),
+            )
+            .await
+            .expect("second call succeeds");
+        assert!(matches!(second, McpModernToolCallOutcome::Complete(_)));
+
+        let client = match Arc::try_unwrap(client) {
+            Ok(client) => client,
+            Err(_) => panic!("all client references should be released"),
+        };
+        client.shutdown().await;
+        server_task.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_tool_call_is_not_sent() {
+        let (server_io, client_io) = tokio::io::duplex(16 * 1024);
+        let mut server = IntoTransport::<rmcp::RoleServer, _, _>::into_transport(server_io);
+        let server_task = tokio::spawn(async move {
+            let ClientJsonRpcMessage::Request(discover) =
+                server.receive().await.expect("expected discovery request")
+            else {
+                panic!("expected discovery request")
+            };
+            server
+                .send(ServerJsonRpcMessage::response(
+                    ServerResult::DiscoverResult(DiscoverResult::new(
+                        vec![ProtocolVersion::V_2026_07_28],
+                        ServerCapabilities::builder().enable_tools().build(),
+                    )),
+                    discover.id,
+                ))
+                .await
+                .expect("send discovery response");
+
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), server.receive())
+                    .await
+                    .is_err(),
+                "a pre-cancelled operation must not send tools/call"
+            );
+        });
+
+        let client = RmcpModernStdioClient::connect_transport(&config(), client_io)
+            .await
+            .expect("connect modern client");
+        let cancellation = Arc::new(McpOperationCancellation::default());
+        cancellation.cancel();
+
+        assert!(client
+            .call_tool("cancelled", serde_json::json!({}), cancellation)
+            .await
+            .is_err());
+
+        server_task.await.expect("server task");
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn timed_out_tool_call_sends_the_sdk_cancellation_notification() {
+        let (server_io, client_io) = tokio::io::duplex(16 * 1024);
+        let mut server = IntoTransport::<rmcp::RoleServer, _, _>::into_transport(server_io);
+        let server_task = tokio::spawn(async move {
+            let ClientJsonRpcMessage::Request(discover) =
+                server.receive().await.expect("expected discovery request")
+            else {
+                panic!("expected discovery request")
+            };
+            server
+                .send(ServerJsonRpcMessage::response(
+                    ServerResult::DiscoverResult(DiscoverResult::new(
+                        vec![ProtocolVersion::V_2026_07_28],
+                        ServerCapabilities::builder().enable_tools().build(),
+                    )),
+                    discover.id,
+                ))
+                .await
+                .expect("send discovery response");
+
+            let ClientJsonRpcMessage::Request(request) =
+                server.receive().await.expect("expected tool request")
+            else {
+                panic!("expected tool request")
+            };
+            let request_id = request.id;
+            let ClientJsonRpcMessage::Notification(notification) = server
+                .receive()
+                .await
+                .expect("expected timeout cancellation notification")
+            else {
+                panic!("expected timeout cancellation notification")
+            };
+            let ClientNotification::CancelledNotification(cancelled) = notification.notification
+            else {
+                panic!("expected notifications/cancelled")
+            };
+            assert_eq!(cancelled.params.request_id, Some(request_id));
+            assert_eq!(cancelled.params.reason.as_deref(), Some("request timeout"));
+        });
+
+        let mut timed_config = config();
+        timed_config.operation_timeout = Some(Duration::from_millis(50));
+        let client = RmcpModernStdioClient::connect_transport(&timed_config, client_io)
+            .await
+            .expect("connect modern client");
+
+        assert!(client
+            .call_tool(
+                "slow",
+                serde_json::json!({}),
+                Arc::new(McpOperationCancellation::default()),
+            )
+            .await
+            .is_err());
+
+        server_task.await.expect("server task");
+        client.shutdown().await;
     }
 }

@@ -558,7 +558,7 @@ const FileChangesDiffModalContent: React.FC<FileChangesDiffModalProps> = ({ onCl
                   editable={canEdit}
                   autoFocus={canEdit}
                   onChange={(value) => {
-                    if (canEdit) {
+                    if (canEdit || canRevertChunks) {
                       updateRightDraft(value);
                     }
                   }}

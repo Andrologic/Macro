@@ -70,7 +70,17 @@
     "interrupted": "Démarrage interrompu",
     "failedTitle": "Macro n’a pas pu terminer son démarrage.",
     "failedDescription": "Macro n’a pas pu initialiser ses données locales. Vous pouvez réessayer sans risque.",
-    "failedSteps": "Étapes en échec"
+    "failedSteps": "Étapes en échec",
+    "metadataRecovery": {
+      "restoredWithCommit": "Métadonnées @macro restaurées depuis l'historique ({{commit}})",
+      "restored": "Métadonnées @macro restaurées depuis l'historique",
+      "restoredDescription": "Macro a restauré le dernier instantané valide des métadonnées avant de charger l'espace de travail.",
+      "reconstructed": "Métadonnées @macro reconfigurées à partir des projets locaux",
+      "reconstructedDescription": "Macro a reconstruit un état minimal des métadonnées à partir des projets locaux connus.",
+      "skipped": "Récupération automatique de @macro ignorée",
+      "blockedConflictDescription": "Macro a trouvé des conflits non résolus dans l'espace de travail des métadonnées et n'a pas appliqué la récupération automatique.",
+      "blockedDirtyDescription": "Macro a trouvé des modifications locales dans l'espace de travail des métadonnées et n'a pas appliqué la récupération automatique."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "Une tâche est encore en cours. Fermer Macro interrompra son travail.",
@@ -478,6 +488,11 @@
     "imageImportFailed": "Aucune image ajoutée. Utilisez des images PNG, JPEG, GIF ou WebP valides : 2 Mo par image, 8 Mo au total et 10 images maximum.",
     "newChat": "Nouvelle discussion",
     "newConversation": "Nouvelle conversation",
+    "unsavedAssistant": {
+      "label": "Non enregistrée",
+      "saving": "Enregistrement de la réponse...",
+      "description": "Macro n'a pas pu enregistrer cette réponse. Réessayez ou supprimez-la avant d'envoyer un autre message."
+    },
     "loadingConversation": "Restaurer la conversation...",
     "showHistory": "Afficher l'historique",
     "hideHistory": "Masquer l'historique",
@@ -564,6 +579,8 @@
     "toolTurnLimitNoticeDescription": "Macro a arrêté la boucle agent après la limite de tours configurée. Modifiez ou désactivez-la dans Paramètres > Général > Tours agent maximum, puis envoyez un nouveau message pour continuer.",
     "toolTurnLimitFallbackTitle": "Limite de tours d'outils atteinte",
     "toolTurnLimitFallbackDescription": "Le dernier passage sans outils n'a pas produit de réponse exploitable, donc Macro a affiché un résumé de secours.",
+    "providerCompletionNoticeTitle": "Réponse interrompue",
+    "providerCompletionNoticeDescription": "Le fournisseur a interrompu cette réponse pour la raison suivante : {{reason}}. Vous pouvez reformuler votre demande et réessayer.",
     "thinking": "En pensant...",
     "tool": "Outil",
     "runningTools": "Outils en cours",
@@ -585,6 +602,9 @@
     "toolApprovalReasonPlaceholder": "Ajoutez une courte raison si vous voulez que Macro sache pourquoi.",
     "toolApprovalConfirmDeny": "Confirmer le refus",
     "toolApprovalDeny": "Refuser",
+    "mcpApprovalArguments": "Opération MCP et arguments",
+    "mcpApprovalRedacted": "Les champs sensibles sont masqués.",
+    "mcpApprovalTruncated": "Arguments tronqués après 16 000 caractères.",
     "toolApprovalAllowOnce": "Autoriser une fois",
     "toolApprovalAllowConversation": "Autoriser pour cette conversation",
     "toolApprovalAllowOnceHint": "Autoriser seulement cette demande précise.",
@@ -1026,7 +1046,8 @@
       "upToDate": "Macro est à jour sur le canal sélectionné.",
       "stableConfirmationTitle": "Passer au canal Stable ?",
       "stableConfirmationDescription": "Si la dernière version Stable est antérieure à cette préversion, Macro proposera d’installer cette ancienne version signée.",
-      "switchToStable": "Passer au canal Stable"
+      "switchToStable": "Passer au canal Stable",
+      "refreshFailed": "Le canal de mise à jour est enregistré, mais les informations de mise à jour n’ont pas pu être actualisées."
     },
     "sound_effects": "Effets sonores",
     "sound_effects_desc": "Jouer des sons à la fin d'une tâche ou en cas d'erreur",
@@ -1559,6 +1580,7 @@
       "collapseProject": "Réduire le projet",
       "noProjects": "Aucun projet pour l’instant.",
       "loadError": "Impossible de charger les plans.",
+      "preferenceLoadError": "Impossible de charger les préférences du navigateur.",
       "activateError": "Ce plan n’est plus disponible.",
       "createError": "Impossible de créer le plan.",
       "readOnlyScope": "Ce projet est en lecture seule.",
@@ -1746,6 +1768,8 @@
     "strategyPreviewNew": "Nouvelles tâches",
     "strategyPreviewRemoved": "Suppressions en attente",
     "strategyPreviewConflicts": "Conflits",
+    "strategyPreviewDiscardError": "Impossible d'abandonner l'aperçu de stratégie.",
+    "strategyPreviewApplyError": "Impossible d'appliquer l'aperçu de stratégie.",
     "applyStrategyPreview": "Appliquer la régénération",
     "selectPlanToStart": "Sélectionnez ou créez un plan pour démarrer l’architecture.",
     "createFirstPlanToStart": "Créez votre premier plan pour démarrer l’architecture.",
@@ -2122,6 +2146,7 @@
   },
   "notifications": {
     "centerTitle": "Notifications",
+    "mcpServersUnavailable": "Certains serveurs MCP sont indisponibles",
     "openCenter": "Ouvrir les notifications",
     "closeCenter": "Fermer les notifications",
     "clearAll": "Tout effacer",
@@ -2514,6 +2539,15 @@
     "confirmRestore": "Au prochain démarrage, cette archive remplacera votre profil local. Macro la valide d’abord et conserve le profil précédent pour récupération. Arrêtez les tâches en cours et quittez immédiatement après confirmation. Restaurer ce fichier ?",
     "confirmExport": "Arrêtez les tâches en cours avant de continuer. Macro créera l’archive au prochain démarrage, avant l’ouverture de la base et de la configuration. Préparer cette sauvegarde ?",
     "confirm": "Confirmer",
-    "scheduled": "Opération préparée. Quittez complètement Macro, puis rouvrez-le. Ne modifiez plus cette session avant de quitter."
+    "scheduled": "Opération préparée. Quittez complètement Macro, puis rouvrez-le. Ne modifiez plus cette session avant de quitter.",
+    "resultExported": "Sauvegarde enregistrée.",
+    "resultRestored": "Profil restauré. Le profil précédent est conservé au chemin ci-dessous.",
+    "resultRolledBack": "La restauration interrompue a été annulée. Le profil précédent a été récupéré.",
+    "resultFailed": "L’opération de sauvegarde n’a pas pu se terminer. Consultez les détails du diagnostic.",
+    "resultInvalidRequest": "La demande en attente était invalide et a été isolée. Votre profil n’a pas été modifié.",
+    "resultLegacy": "Le résultat d’une version précédente est disponible dans les détails du diagnostic.",
+    "diagnostics": "Détails du diagnostic",
+    "startupTitle": "Récupération du profil nécessaire",
+    "startupRecovery": "La restauration des données du navigateur n’a pas pu se terminer. L’archive native de récupération est conservée. Consultez le diagnostic, libérez du stockage local si nécessaire, puis redémarrez Macro pour réessayer."
   }
 }

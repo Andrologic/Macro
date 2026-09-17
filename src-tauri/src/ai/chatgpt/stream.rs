@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const RESPONSE_HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
+const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_SSE_BUFFER_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Default, Clone)]
@@ -128,18 +130,34 @@ async fn stream_chat_inner(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = tokio::time::timeout(ERROR_BODY_TIMEOUT, response.text())
+            .await
+            .map_err(|_| {
+                format!(
+                    "ChatGPT error {} response body timed out after {} seconds.",
+                    status.as_u16(),
+                    ERROR_BODY_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|error| {
+                format!(
+                    "Failed to read ChatGPT error {} response body: {}",
+                    status.as_u16(),
+                    error
+                )
+            })?;
         return Err(extract_response_error(status.as_u16(), &body));
     }
 
     let mut stream = response.bytes_stream();
     let mut parser = SseParser::default();
     let mut saw_completed = false;
+    let mut saw_terminal = false;
     let mut completion_accumulator = StreamingCompletionAccumulator::default();
     let mut emitted_first_provider_event = false;
     let mut emitted_first_token = false;
 
-    loop {
+    'stream: loop {
         let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
@@ -151,36 +169,53 @@ async fn stream_chat_inner(
             }
         };
         let chunk = chunk.map_err(|error| format!("Failed to read ChatGPT stream: {}", error))?;
-        for event in parser.push(&chunk)? {
+        let mut completed = false;
+        let terminal = process_sse_events_until_terminal(parser.push(&chunk)?, |event| {
             if !emitted_first_provider_event {
                 emitted_first_provider_event = true;
                 timeline.emit("first_provider_event");
             }
-            if process_sse_event(
+            if is_sse_done_marker(event) {
+                return Ok(true);
+            }
+            completed = process_sse_event(
                 &app_handle,
                 &request,
-                &event,
+                event,
                 &mut completion_accumulator,
                 started_at,
                 &mut emitted_first_token,
-            )? {
-                saw_completed = true;
-            }
+            )?;
+            Ok(completed)
+        })?;
+        saw_completed |= completed;
+        saw_terminal |= terminal;
+        if terminal {
+            break 'stream;
         }
     }
+    drop(stream);
 
-    for event in parser.finish()? {
-        if !emitted_first_provider_event {
-            timeline.emit("first_provider_event");
-        }
-        let completed = process_sse_event(
-            &app_handle,
-            &request,
-            &event,
-            &mut completion_accumulator,
-            started_at,
-            &mut emitted_first_token,
-        )?;
+    if !saw_terminal {
+        let mut completed = false;
+        let _terminal = process_sse_events_until_terminal(parser.finish()?, |event| {
+            if !emitted_first_provider_event {
+                emitted_first_provider_event = true;
+                timeline.emit("first_provider_event");
+            }
+            if is_sse_done_marker(event) {
+                return Ok(true);
+            }
+            completed = process_sse_event(
+                &app_handle,
+                &request,
+                event,
+                &mut completion_accumulator,
+                started_at,
+                &mut emitted_first_token,
+            )?;
+            Ok(completed)
+        })?;
         saw_completed |= completed;
     }
 
@@ -234,20 +269,29 @@ async fn send_chatgpt_request(
         .filter(|value| !value.is_empty())
         .unwrap_or(request.request_id.as_str());
 
-    client
-        .post(&url)
-        .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "text/event-stream")
-        .header(AUTHORIZATION, format!("Bearer {}", secret.access_token))
-        .header("ChatGPT-Account-Id", account_id)
-        .header("originator", DEFAULT_ORIGINATOR)
-        .header("conversation_id", stable_conversation_id)
-        .header("session_id", stable_conversation_id)
-        .header("x-client-request-id", request.request_id.to_string())
-        .json(body)
-        .send()
-        .await
-        .map_err(|error| format!("Failed to send ChatGPT request: {}", error))
+    tokio::time::timeout(
+        RESPONSE_HEADERS_TIMEOUT,
+        client
+            .post(&url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "text/event-stream")
+            .header(AUTHORIZATION, format!("Bearer {}", secret.access_token))
+            .header("ChatGPT-Account-Id", account_id)
+            .header("originator", DEFAULT_ORIGINATOR)
+            .header("conversation_id", stable_conversation_id)
+            .header("session_id", stable_conversation_id)
+            .header("x-client-request-id", request.request_id.to_string())
+            .json(body)
+            .send(),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "ChatGPT response headers timed out after {} seconds.",
+            RESPONSE_HEADERS_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|error| format!("Failed to send ChatGPT request: {}", error))
 }
 
 #[derive(Debug, Default)]
@@ -561,6 +605,22 @@ fn process_sse_event(
         }
         _ => Ok(false),
     }
+}
+
+fn is_sse_done_marker(raw_event: &str) -> bool {
+    extract_sse_data(raw_event).as_deref() == Some("[DONE]")
+}
+
+fn process_sse_events_until_terminal<F>(events: Vec<String>, mut process: F) -> Result<bool, String>
+where
+    F: FnMut(&str) -> Result<bool, String>,
+{
+    for event in events {
+        if process(&event)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn extract_incomplete_reason(value: &Value) -> &str {
@@ -1382,7 +1442,9 @@ fn extract_stream_error(payload: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_incomplete_reason;
+    use super::{
+        extract_incomplete_reason, is_sse_done_marker, process_sse_events_until_terminal, SseParser,
+    };
     use serde_json::json;
 
     #[test]
@@ -1399,5 +1461,30 @@ mod tests {
             })),
             "content_filter"
         );
+    }
+
+    #[test]
+    fn terminal_marker_is_detected_without_waiting_for_stream_eof() {
+        let mut parser = SseParser::default();
+        let events = parser
+            .push(
+                b"data: {\"type\":\"response.output_text.delta\"}\n\ndata: [DONE]\n\ndata: suffix\n\n",
+            )
+            .expect("SSE events");
+
+        assert_eq!(events.len(), 3);
+        assert!(!is_sse_done_marker(&events[0]));
+        assert!(is_sse_done_marker(&events[1]));
+
+        let mut processed = Vec::new();
+        let terminal = process_sse_events_until_terminal(events, |event| {
+            let data = super::extract_sse_data(event).expect("data");
+            processed.push(data.clone());
+            Ok(data == "[DONE]")
+        })
+        .expect("event batch");
+        assert!(terminal);
+        assert_eq!(processed.len(), 2);
+        assert!(!processed.iter().any(|data| data.contains("suffix")));
     }
 }

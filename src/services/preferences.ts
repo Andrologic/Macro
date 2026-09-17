@@ -14,14 +14,14 @@ import type { StateSnapshotDto } from './tauriIpc';
 import * as tauriIpc from './tauriIpc';
 import { MACRO_AI_SPEECH_PROVIDER_ID } from "../config/macroAi";
 import { DEFAULT_NOTIFICATION_CHANNEL_MODES } from './notificationChannels';
+import { mutateConfigDocument } from './configDocuments';
+import { isPreferenceValueValid } from './preferenceValidation';
 import { getDefaultProjectOpenCommand } from './projectOpenDefaults';
 import {
   CHAT_MAX_TURNS_DISABLED,
-  isValidChatMaxTurnsPreference,
 } from './chatTurnLimits';
 import {
   DEFAULT_TOOL_RISK_LEVEL,
-  TOOL_RISK_LEVELS,
 } from './toolSecurityPolicy';
 import {
   DEFAULT_ARCHITECT_VIEW_FILTERS,
@@ -37,6 +37,7 @@ export const PREF_KEYS = {
   WINDOW_X: "windowX",
   WINDOW_Y: "windowY",
   IS_MAXIMIZED: "isMaximized",
+  WINDOW_POSITION_VERSION: "windowPositionVersion",
   WINDOW_BOOTSTRAP_VERSION: "windowBootstrapVersion",
 
   // Panel state
@@ -281,6 +282,7 @@ export const PREF_DEFAULTS: Record<PrefKey, unknown> = {
   [PREF_KEYS.WINDOW_Y]: null,
   [PREF_KEYS.IS_MAXIMIZED]: false,
   [PREF_KEYS.WINDOW_BOOTSTRAP_VERSION]: 0,
+  [PREF_KEYS.WINDOW_POSITION_VERSION]: 0,
   [PREF_KEYS.LEFT_PANEL_WIDTH]: 280,
   [PREF_KEYS.ARCHITECT_LEFT_PANEL_WIDTH]: 320,
   [PREF_KEYS.RIGHT_PANEL_WIDTH]: 320,
@@ -531,57 +533,8 @@ const cancelDebouncedSave = (key: PrefKey): void => {
   debouncedSaveTimers.delete(key);
 };
 
-const isToolRiskLevel = (value: unknown): value is ToolRiskLevel =>
-  typeof value === "string" &&
-  (TOOL_RISK_LEVELS as readonly string[]).includes(value);
-
-const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean => {
-  if (
-    key === PREF_KEYS.IMPLEMENT_VIEW_FILTERS ||
-    key === PREF_KEYS.ARCHITECT_VIEW_FILTERS ||
-    key === PREF_KEYS.CHAT_VIEW_FILTERS
-  ) {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-  }
-  if (key === PREF_KEYS.UPDATE_CHANNEL) {
-    return value === "stable" || value === "preview";
-  }
-  if (key === PREF_KEYS.TOOL_RISK_LEVEL) {
-    return isToolRiskLevel(value);
-  }
-  if (key === PREF_KEYS.CHAT_MAX_TURNS) {
-    return isValidChatMaxTurnsPreference(value);
-  }
-  if (key === PREF_KEYS.ARCHITECT_COMPLETION_MERGE_POLICY) {
-    return value === "merge_commit" || value === "fast_forward";
-  }
-  if (key === PREF_KEYS.METADATA_MISSING_UPSTREAM_POLICY) {
-    return value === "ask" || value === "ignore";
-  }
-  if (
-    key === PREF_KEYS.COMPACTION_AUTO ||
-    key === PREF_KEYS.COMPACTION_PRUNE ||
-    key === PREF_KEYS.COMPACTION_MANUAL_VISIBLE
-  ) {
-    return typeof value === "boolean";
-  }
-  if (key === PREF_KEYS.COMPACTION_RESERVED_TOKENS) {
-    return (
-      value === null ||
-      (typeof value === "number" && Number.isFinite(value) && value >= 0)
-    );
-  }
-  if (key === PREF_KEYS.SPEECH_PROVIDER_ID || key === PREF_KEYS.SPEECH_LANGUAGE) {
-    return typeof value === "string";
-  }
-  if (key === PREF_KEYS.SPEECH_MAX_DURATION_SECONDS) {
-    return typeof value === "number" && Number.isFinite(value) && value >= 10 && value <= 600;
-  }
-  if (key === PREF_KEYS.SPEECH_ENHANCEMENT_ENABLED) {
-    return typeof value === "boolean";
-  }
-  return true;
-};
+const isValidPreferenceValue = (key: PrefKey, value: unknown): boolean =>
+  isPreferenceValueValid(key, value, PREF_DEFAULTS[key]);
 
 export async function purgeLegacyImplementExecutionModePreference(): Promise<void> {
   // La migration JSON n’importe, ne lit et ne modifie aucun ancien réglage.
@@ -667,11 +620,10 @@ const getStateSnapshot = async (): Promise<StateSnapshotDto> => {
   if (!stateHydrationPromise) {
     stateHydrationPromise = tauriIpc.stateGetSnapshot()
       .then((snapshot) => {
-        if (!isStateSnapshot(snapshot)) return stateSnapshot;
+        if (!isStateSnapshot(snapshot)) throw new Error("Invalid native state snapshot.");
         stateSnapshot = snapshot;
         return snapshot;
       })
-      .catch(() => stateSnapshot)
       .finally(() => {
         stateHydrationPromise = null;
       });
@@ -720,53 +672,53 @@ const persistConfigPreference = async <T>(
   value: T,
   target: ConfigPreferenceTarget,
 ): Promise<void> => {
-  const store = useConfigStore.getState();
-  const document = await store.getDocument(target.document);
-  if (!document || typeof document.etag !== 'string') {
-    throw new Error(`Configuration document ${target.document} is unavailable.`);
-  }
-  const sparse = isRecord(document.value) ? document.value : {};
-  const topLevelKey = target.path[0];
-  const defaultValue = PREF_DEFAULTS[key];
-  const persistedValue = serializeConfigPreference(key, value);
-  const shouldInherit = jsonEqual(persistedValue, defaultValue);
-  const existingTopLevel = sparse[topLevelKey];
-  let operation: 'add' | 'remove' | null = null;
-  let operationValue: unknown;
-
-  if (target.path.length === 1) {
-    if (shouldInherit) {
-      operation = topLevelKey in sparse ? 'remove' : null;
-    } else if (!jsonEqual(existingTopLevel, persistedValue)) {
-      operation = 'add';
-      operationValue = persistedValue;
+  await mutateConfigDocument(target.document, { type: 'user' }, async (document) => {
+    if (!document || typeof document.etag !== 'string') {
+      throw new Error(`Configuration document ${target.document} is unavailable.`);
     }
-  } else {
-    const nextTopLevel = isRecord(existingTopLevel) ? { ...existingTopLevel } : {};
-    const nestedPath = target.path.slice(1);
-    if (shouldInherit) {
-      deleteNestedValue(nextTopLevel, nestedPath);
+    const sparse = isRecord(document.value) ? document.value : {};
+    const topLevelKey = target.path[0];
+    const defaultValue = PREF_DEFAULTS[key];
+    const persistedValue = serializeConfigPreference(key, value);
+    const shouldInherit = jsonEqual(persistedValue, defaultValue);
+    const existingTopLevel = sparse[topLevelKey];
+    let operation: 'add' | 'remove' | null = null;
+    let operationValue: unknown;
+
+    if (target.path.length === 1) {
+      if (shouldInherit) {
+        operation = topLevelKey in sparse ? 'remove' : null;
+      } else if (!jsonEqual(existingTopLevel, persistedValue)) {
+        operation = 'add';
+        operationValue = persistedValue;
+      }
     } else {
-      writeNestedValue(nextTopLevel, nestedPath, persistedValue);
+      const nextTopLevel = isRecord(existingTopLevel) ? { ...existingTopLevel } : {};
+      const nestedPath = target.path.slice(1);
+      if (shouldInherit) {
+        deleteNestedValue(nextTopLevel, nestedPath);
+      } else {
+        writeNestedValue(nextTopLevel, nestedPath, persistedValue);
+      }
+      if (Object.keys(nextTopLevel).length === 0) {
+        operation = topLevelKey in sparse ? 'remove' : null;
+      } else if (!jsonEqual(nextTopLevel, existingTopLevel)) {
+        operation = 'add';
+        operationValue = nextTopLevel;
+      }
     }
-    if (Object.keys(nextTopLevel).length === 0) {
-      operation = topLevelKey in sparse ? 'remove' : null;
-    } else if (!jsonEqual(nextTopLevel, existingTopLevel)) {
-      operation = 'add';
-      operationValue = nextTopLevel;
-    }
-  }
 
-  if (!operation) return;
-  await store.patch({
-    kind: target.document,
-    expectedEtag: document.etag,
-    patch: [{
-      op: operation,
-      path: `/${escapeJsonPointer(topLevelKey)}`,
-      value: operation === 'add' ? operationValue : null,
-      from: null,
-    }],
+    if (!operation) return;
+    await useConfigStore.getState().patch({
+      kind: target.document,
+      expectedEtag: document.etag,
+      patch: [{
+        op: operation,
+        path: `/${escapeJsonPointer(topLevelKey)}`,
+        value: operation === 'add' ? operationValue : null,
+        from: null,
+      }],
+    });
   });
 };
 
@@ -789,16 +741,9 @@ const persistPreference = async <T>(key: PrefKey, value: T): Promise<void> => {
     rememberStatePreference(key, value);
     return;
   }
-  try {
-    const nextSnapshot = await tauriIpc.stateSetValue(key, value);
-    if (isStateSnapshot(nextSnapshot)) {
-      stateSnapshot = nextSnapshot;
-    } else {
-      rememberStatePreference(key, value);
-    }
-  } catch {
-    rememberStatePreference(key, value);
-  }
+  const nextSnapshot = await tauriIpc.stateSetValue(key, value);
+  if (!isStateSnapshot(nextSnapshot)) throw new Error("Invalid native state snapshot.");
+  stateSnapshot = nextSnapshot;
 };
 
 /**
@@ -887,30 +832,18 @@ export async function loadPreference<T>(key: PrefKey): Promise<T> {
 export async function loadPersistedPreference<T>(
   key: PrefKey
 ): Promise<T | undefined> {
-  try {
-    if (!isStateManagerAvailable() && !isConfigurationClientAvailable()) {
-      return memoryPreferenceValues.get(key) as T | undefined;
-    }
-    const configTarget = CONFIG_PREFERENCE_TARGETS[key];
-    if (configTarget && isConfigurationClientAvailable()) {
-      const document = await useConfigStore
-        .getState()
-        .getDocument(configTarget.document);
-      if (!document) return memoryPreferenceValues.get(key) as T | undefined;
-      return deserializeConfigPreference(
-        key,
-        readPath(document.value, configTarget.path),
-      ) as T | undefined;
-    }
+  let value: unknown;
+  const configTarget = CONFIG_PREFERENCE_TARGETS[key];
+  if (configTarget && isConfigurationClientAvailable()) {
+    const document = await useConfigStore.getState().getDocument(configTarget.document);
+    value = deserializeConfigPreference(key, readPath(document.value, configTarget.path));
+  } else if (isStateManagerAvailable()) {
     const state = await getStateSnapshot();
-    return (state.values[key] ?? memoryPreferenceValues.get(key)) as T | undefined;
-  } catch (error) {
-    console.error(`Failed to load persisted preference ${key}:`, error);
-    if (CONFIG_PREFERENCE_TARGETS[key] && isConfigurationClientAvailable()) {
-      return undefined;
-    }
-    return memoryPreferenceValues.get(key) as T | undefined;
+    value = state.values[key];
+  } else {
+    value = memoryPreferenceValues.get(key);
   }
+  return value !== undefined && isValidPreferenceValue(key, value) ? value as T : undefined;
 }
 
 /**
@@ -941,6 +874,42 @@ export async function savePreferences(
   }
 }
 
+/** Persist a set of preferences in one configuration-document transaction. */
+export async function saveConfigPreferencesAtomically(
+  preferences: Partial<Record<PrefKey, unknown>>,
+): Promise<void> {
+  const entries = Object.entries(preferences).map(([key, value]) => {
+    const prefKey = key as PrefKey;
+    const target = CONFIG_PREFERENCE_TARGETS[prefKey];
+    if (!target || !isValidPreferenceValue(prefKey, value)) throw new Error(`Invalid configuration preference: ${key}`);
+    return { key: prefKey, value, target };
+  });
+  if (!entries.length) return;
+  const kind = entries[0].target.document;
+  if (entries.some(({ target }) => target.document !== kind)) {
+    throw new Error('Atomic preferences must belong to the same configuration document.');
+  }
+  entries.forEach(({ key }) => cancelDebouncedSave(key));
+  await mutateConfigDocument(kind, { type: 'user' }, async (document) => {
+    const original = isRecord(document.value) ? document.value : {};
+    const next = structuredClone(original);
+    for (const { key, value, target } of entries) {
+      const persisted = serializeConfigPreference(key, value);
+      if (jsonEqual(persisted, PREF_DEFAULTS[key])) deleteNestedValue(next, target.path);
+      else writeNestedValue(next, target.path, persisted);
+    }
+    const keys = [...new Set(entries.map(({ target }) => target.path[0]))];
+    const patch = keys.filter((key) => !jsonEqual(original[key], next[key])).map((key) => ({
+      op: key in next ? 'add' as const : 'remove' as const,
+      path: `/${escapeJsonPointer(key)}`,
+      value: key in next ? next[key] : null,
+      from: null,
+    }));
+    if (patch.length) await useConfigStore.getState().patch({ kind, expectedEtag: document.etag, patch });
+  });
+  for (const { key, value } of entries) emitPreferenceChange(key, value);
+}
+
 /**
  * Clear all preferences (reset to defaults)
  */
@@ -948,15 +917,14 @@ export async function clearPreferences(): Promise<void> {
   debouncedSaveTimers.forEach((timer) => clearTimeout(timer));
   debouncedSaveTimers.clear();
 
-  memoryPreferenceValues.clear();
   if (isStateManagerAvailable()) {
-    try {
-      const nextSnapshot = await tauriIpc.stateClear();
-      if (isStateSnapshot(nextSnapshot)) stateSnapshot = nextSnapshot;
-    } catch {
-      stateSnapshot = { schemaVersion: 1, values: {} };
-    }
+    const nextSnapshot = await tauriIpc.stateClear();
+    if (!isStateSnapshot(nextSnapshot)) throw new Error("Invalid native state snapshot.");
+    stateSnapshot = nextSnapshot;
+  } else {
+    stateSnapshot = { schemaVersion: 1, values: {} };
   }
+  memoryPreferenceValues.clear();
   for (const key of Object.keys(CONFIG_PREFERENCE_TARGETS) as PrefKey[]) {
     if (isConfigurationClientAvailable()) {
       await persistPreference(key, PREF_DEFAULTS[key]);

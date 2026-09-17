@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { notify } from '../ui/toastService';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   isMarkdownVideo,
@@ -195,5 +198,40 @@ describe('MarkdownRichContent context references', () => {
 
     expect(markup).toContain('[skill: test-skill]');
     expect(markup).not.toContain('data-context-reference-kind="skill"');
+  });
+});
+
+
+describe('MarkdownRichContent clipboard', () => {
+  it('announces copying only after success and permits retry after rejection', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    let resolveCopy!: () => void;
+    let rejectCopy!: (error: Error) => void;
+    const copy = spyOn(navigator.clipboard, 'writeText').mockImplementation(() => new Promise<void>((resolve, reject) => {
+      resolveCopy = resolve;
+      rejectCopy = reject;
+    }));
+    const error = spyOn(notify, 'error').mockImplementation(() => 'clipboard-error');
+    try {
+      await act(async () => { root.render(<MarkdownRichContent content={'```text\nexample\n```'} />); });
+      const button = container.querySelector('button')!;
+      await act(async () => { button.click(); });
+      expect(copy).toHaveBeenCalledWith('example');
+      expect(button.textContent).not.toContain('Copied');
+      await act(async () => { rejectCopy(new Error('clipboard unavailable')); });
+      expect(button.textContent).not.toContain('Copied');
+      expect(error).toHaveBeenCalledTimes(1);
+      await act(async () => { button.click(); });
+      expect(button.textContent).not.toContain('Copied');
+      await act(async () => { resolveCopy(); });
+      expect(button.textContent).toContain('Copied');
+    } finally {
+      await act(async () => { root.unmount(); });
+      container.remove();
+      copy.mockRestore();
+      error.mockRestore();
+    }
   });
 });

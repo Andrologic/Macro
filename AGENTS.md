@@ -1,8 +1,8 @@
 # AGENTS.md
 
-Macro is a local-first desktop environment for agentic software work. Use this
-file as a compact map, not as a full manual. Prefer the repository's source code
-and linked docs when a task needs detail.
+Macro is an open-source, local-first desktop environment for agentic software
+work. Use this file as a compact map, not as a full manual. Prefer the repository's
+source code and linked docs when a task needs detail.
 
 ## Project Map
 
@@ -18,9 +18,18 @@ and linked docs when a task needs detail.
 - Technical architecture source of truth: `docs/technical-architecture.md`.
 - Setup, release, and script overview: `README.md`.
 - Contribution and PR checks: `CONTRIBUTING.md`.
+- Stable release work: read `docs/release-agent-runbook.md` before preparing,
+  tagging, publishing, recovering, or cleaning up a release.
 
 ## Working Rules
 
+- Treat all tracked content as public, including code, documentation, agent
+  instructions, examples, fixtures, and commit messages. Keep private personal
+  data, private conversations, confidential customer information, internal
+  business plans, and machine-specific paths or local configuration outside the
+  repository. Use synthetic examples and portable paths. Before adding
+  third-party code or assets, check compatibility with the repository's license
+  and preserve required attribution.
 - Read nearby code before editing. Follow existing service, store, hook, and
   component patterns instead of inventing a parallel style.
 - Keep changes scoped to the user's request. Do not refactor unrelated code while

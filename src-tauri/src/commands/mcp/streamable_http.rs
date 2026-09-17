@@ -29,14 +29,14 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use http::{HeaderMap, HeaderName, HeaderValue};
 use rmcp::model::{
-    CallToolResponse, ClientCapabilities, ClientInfo, ClientJsonRpcMessage, ClientRequest,
-    DiscoverRequest, DiscoverRequestParams, ErrorCode, Implementation, JsonRpcMessage,
-    PaginatedRequestParams, ProtocolVersion, RequestId, RequestMetaObject, ServerJsonRpcMessage,
-    ServerResult, Tool,
+    CallToolRequest, CallToolResponse, ClientCapabilities, ClientInfo, ClientJsonRpcMessage,
+    ClientRequest, DiscoverRequest, DiscoverRequestParams, ErrorCode, Implementation,
+    JsonRpcMessage, PaginatedRequestParams, ProtocolVersion, RequestId, RequestMetaObject,
+    ServerJsonRpcMessage, ServerResult, Tool,
 };
 use rmcp::service::{
-    ClientCacheConfig, ClientLifecycleMode, ClientServiceExt, RoleClient, RunningService,
-    ServiceError,
+    ClientCacheConfig, ClientLifecycleMode, ClientServiceExt, PeerRequestOptions, RoleClient,
+    RunningService, ServiceError,
 };
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, InsufficientScopeError, StreamableHttpClient, StreamableHttpClientTransport,
@@ -50,6 +50,7 @@ use super::ids::build_mcp_tool_id;
 use super::modern_adapter::{McpModernServerMetadata, MODERN_PROTOCOL_VERSION};
 use super::oauth::McpBearerTokenProvider;
 use super::result_format::format_tool_call_result;
+use super::runtime::McpOperationCancellation;
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
 
@@ -71,6 +72,7 @@ const KNOWN_LEGACY_PROTOCOL_VERSIONS: [&str; 5] = [
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 const SERVICE_CLOSE_BUDGET: Duration = Duration::from_secs(10);
+const CANCEL_NOTIFICATION_BUDGET: Duration = Duration::from_secs(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Buffered JSON or error response bodies larger than this are rejected
@@ -87,6 +89,13 @@ const MAX_REDIRECT_HOPS: usize = 3;
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
 const ACCEPT_MIME_TYPES: &str = "application/json, text/event-stream";
+
+fn matches_mime_type(value: &str, expected: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .is_some_and(|mime_type| mime_type.trim().eq_ignore_ascii_case(expected))
+}
 
 fn session_header_name() -> HeaderName {
     HeaderName::from_static("mcp-session-id")
@@ -790,7 +799,7 @@ impl GuardedStreamableHttpClient {
             let content_type = response_header_value(response.headers(), "content-type");
             let is_sse = content_type
                 .as_deref()
-                .is_some_and(|value| value.starts_with(EVENT_STREAM_MIME_TYPE));
+                .is_some_and(|value| matches_mime_type(value, EVENT_STREAM_MIME_TYPE));
             let body = collect_probe_body(&mut response, is_sse).await?;
             Ok::<_, StreamableHttpError<AdapterError>>(RawHttpResponse {
                 status,
@@ -927,7 +936,7 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
             // negotiation applies its fail-closed rules.
             let json_error = if content_type
                 .as_deref()
-                .is_some_and(|ct| ct.starts_with(JSON_MIME_TYPE))
+                .is_some_and(|ct| matches_mime_type(ct, JSON_MIME_TYPE))
             {
                 parse_json_rpc_error(&body)
             } else {
@@ -954,13 +963,13 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
             return Ok(StreamableHttpPostResponse::Accepted);
         }
         match content_type.as_deref() {
-            Some(ct) if ct.starts_with(EVENT_STREAM_MIME_TYPE) => {
+            Some(ct) if matches_mime_type(ct, EVENT_STREAM_MIME_TYPE) => {
                 Ok(StreamableHttpPostResponse::Sse(
                     limited_sse_stream(response.bytes_stream(), max_sse_event_size),
                     session_from_server,
                 ))
             }
-            Some(ct) if ct.starts_with(JSON_MIME_TYPE) => {
+            Some(ct) if matches_mime_type(ct, JSON_MIME_TYPE) => {
                 let body = collect_bounded_body(&mut response, MAX_HTTP_RESPONSE_BYTES).await?;
                 // Unlike the SDK default, a success JSON body that does not
                 // parse stays an error for requests: silent acceptance would
@@ -1087,7 +1096,7 @@ impl StreamableHttpClient for GuardedStreamableHttpClient {
         }
         let content_type = response_header_value(response.headers(), "content-type");
         match content_type.as_deref() {
-            Some(ct) if ct.starts_with(EVENT_STREAM_MIME_TYPE) => {}
+            Some(ct) if matches_mime_type(ct, EVENT_STREAM_MIME_TYPE) => {}
             other => {
                 return Err(StreamableHttpError::UnexpectedContentType(
                     other.map(str::to_owned),
@@ -1251,7 +1260,7 @@ fn classify_probe_status(
         }
         // Some modern servers answer a discover POST with an SSE stream whose
         // first correlated message carries the result (plan §6.2 step 7).
-        if content_type.is_some_and(|ct| ct.starts_with(EVENT_STREAM_MIME_TYPE)) {
+        if content_type.is_some_and(|ct| matches_mime_type(ct, EVENT_STREAM_MIME_TYPE)) {
             return match first_sse_data_payload(payload) {
                 Some(data) => classify_probe_payload(&data, true, expected_id),
                 None => ProbeVerdict::Fatal {
@@ -1677,12 +1686,87 @@ impl RmcpLegacyHttpClient {
         &self,
         tool_name: &str,
         arguments: Value,
+        cancellation: Arc<McpOperationCancellation>,
     ) -> CommandResult<McpCallToolResponse> {
         let params = build_call_params(tool_name, arguments)?;
-        let response = run_bounded(self, "tools/call", async move {
-            self.service.peer().call_tool_once(params).await
-        })
-        .await?;
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let operation_timeout = tokio::time::sleep(self.operation_timeout);
+        tokio::pin!(operation_timeout);
+        let mut handle = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(command_error("MCP tool call was cancelled."));
+            }
+            _ = &mut operation_timeout => {
+                return Err(command_error(format!(
+                    "MCP server '{}' timed out during tools/call after {:?}.",
+                    self.server_name, self.operation_timeout
+                )));
+            }
+            result = self.service.peer().send_cancellable_request(
+                request,
+                PeerRequestOptions::no_options(),
+            ) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error))?,
+        };
+        let response = tokio::select! {
+            response = &mut handle.rx => match response {
+                Ok(result) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error)),
+                Err(_) => Err(map_service_error(&self.server_name, "tools/call", ServiceError::TransportClosed)),
+            },
+            _ = cancellation.cancelled() => {
+                match tokio::time::timeout(
+                    CANCEL_NOTIFICATION_BUDGET,
+                    handle.cancel(Some("operation cancelled".to_string())),
+                ).await {
+                    Ok(result) => result.map_err(|error| map_service_error(
+                        &self.server_name,
+                        "tools/call cancellation",
+                        error,
+                    ))?,
+                    Err(_) => {
+                        self.service.cancellation_token().cancel();
+                        tracing::warn!(
+                            server = %self.server_name,
+                            "legacy HTTP MCP cancellation notification exceeded its send budget; session closed"
+                        );
+                    }
+                }
+                return Err(command_error("MCP tool call was cancelled."));
+            }
+            _ = &mut operation_timeout => {
+                match tokio::time::timeout(
+                    CANCEL_NOTIFICATION_BUDGET,
+                    handle.cancel(Some("request timeout".to_string())),
+                ).await {
+                    Ok(result) => result.map_err(|error| map_service_error(
+                        &self.server_name,
+                        "tools/call timeout",
+                        error,
+                    ))?,
+                    Err(_) => {
+                        self.service.cancellation_token().cancel();
+                        tracing::warn!(
+                            server = %self.server_name,
+                            "legacy HTTP MCP timeout notification exceeded its send budget; session closed"
+                        );
+                    }
+                }
+                return Err(command_error(format!(
+                    "MCP server '{}' timed out during tools/call after {:?}.",
+                    self.server_name, self.operation_timeout
+                )));
+            }
+        }?;
+        let response = match response {
+            ServerResult::CallToolResult(result) => CallToolResponse::Complete(result),
+            ServerResult::InputRequiredResult(result) => CallToolResponse::InputRequired(result),
+            ServerResult::CreateTaskResult(result) => CallToolResponse::Task(result),
+            _ => {
+                return Err(command_error(
+                    "MCP server returned an unexpected tools/call response.",
+                ))
+            }
+        };
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
@@ -1831,12 +1915,87 @@ impl RmcpModernHttpClient {
         &self,
         tool_name: &str,
         arguments: Value,
+        cancellation: Arc<McpOperationCancellation>,
     ) -> CommandResult<McpCallToolResponse> {
         let params = build_call_params(tool_name, arguments)?;
-        let response = run_bounded(self, "tools/call", async move {
-            self.service.call_tool_once(params).await
-        })
-        .await?;
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let operation_timeout = tokio::time::sleep(self.operation_timeout);
+        tokio::pin!(operation_timeout);
+        let mut handle = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(command_error("MCP tool call was cancelled."));
+            }
+            _ = &mut operation_timeout => {
+                return Err(command_error(format!(
+                    "MCP server '{}' timed out during tools/call after {:?}.",
+                    self.server_name, self.operation_timeout
+                )));
+            }
+            result = self.service.peer().send_cancellable_request(
+                request,
+                PeerRequestOptions::no_options(),
+            ) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error))?,
+        };
+        let response = tokio::select! {
+            response = &mut handle.rx => match response {
+                Ok(result) => result.map_err(|error| map_service_error(&self.server_name, "tools/call", error)),
+                Err(_) => Err(map_service_error(&self.server_name, "tools/call", ServiceError::TransportClosed)),
+            },
+            _ = cancellation.cancelled() => {
+                match tokio::time::timeout(
+                    CANCEL_NOTIFICATION_BUDGET,
+                    handle.cancel(Some("operation cancelled".to_string())),
+                ).await {
+                    Ok(result) => result.map_err(|error| map_service_error(
+                        &self.server_name,
+                        "tools/call cancellation",
+                        error,
+                    ))?,
+                    Err(_) => {
+                        self.service.cancellation_token().cancel();
+                        tracing::warn!(
+                            server = %self.server_name,
+                            "modern HTTP MCP cancellation notification exceeded its send budget; session closed"
+                        );
+                    }
+                }
+                return Err(command_error("MCP tool call was cancelled."));
+            }
+            _ = &mut operation_timeout => {
+                match tokio::time::timeout(
+                    CANCEL_NOTIFICATION_BUDGET,
+                    handle.cancel(Some("request timeout".to_string())),
+                ).await {
+                    Ok(result) => result.map_err(|error| map_service_error(
+                        &self.server_name,
+                        "tools/call timeout",
+                        error,
+                    ))?,
+                    Err(_) => {
+                        self.service.cancellation_token().cancel();
+                        tracing::warn!(
+                            server = %self.server_name,
+                            "modern HTTP MCP timeout notification exceeded its send budget; session closed"
+                        );
+                    }
+                }
+                return Err(command_error(format!(
+                    "MCP server '{}' timed out during tools/call after {:?}.",
+                    self.server_name, self.operation_timeout
+                )));
+            }
+        }?;
+        let response = match response {
+            ServerResult::CallToolResult(result) => CallToolResponse::Complete(result),
+            ServerResult::InputRequiredResult(result) => CallToolResponse::InputRequired(result),
+            ServerResult::CreateTaskResult(result) => CallToolResponse::Task(result),
+            _ => {
+                return Err(command_error(
+                    "MCP server returned an unexpected tools/call response.",
+                ))
+            }
+        };
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
@@ -2039,6 +2198,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn content_type_matching_is_case_insensitive_and_parameter_aware() {
+        assert!(matches_mime_type(
+            "Application/JSON; Charset=UTF-8",
+            JSON_MIME_TYPE
+        ));
+        assert!(matches_mime_type(
+            "Text/Event-Stream; charset=utf-8",
+            EVENT_STREAM_MIME_TYPE
+        ));
+        assert!(!matches_mime_type("application/json-seq", JSON_MIME_TYPE));
+    }
+
     #[tokio::test]
     async fn strict_http_lifecycles_use_initialize_only_for_legacy() {
         let (legacy_url, legacy_methods, legacy_server) = spawn_fixture(FixtureEra::Legacy).await;
@@ -2058,7 +2230,11 @@ mod tests {
         let legacy_tools = legacy.list_tools_page(None).await.unwrap();
         assert_eq!(legacy_tools.tools[0].name, "echo");
         let legacy_call = legacy
-            .call_tool("echo", serde_json::json!({}))
+            .call_tool(
+                "echo",
+                serde_json::json!({}),
+                Arc::new(McpOperationCancellation::default()),
+            )
             .await
             .unwrap();
         assert_eq!(legacy_call.content, "legacy:ok");
@@ -2096,7 +2272,11 @@ mod tests {
         let modern_tools = modern.list_tools_page(None).await.unwrap();
         assert_eq!(modern_tools.tools[0].name, "echo");
         let modern_call = modern
-            .call_tool_complete("echo", serde_json::json!({}))
+            .call_tool_complete(
+                "echo",
+                serde_json::json!({}),
+                Arc::new(McpOperationCancellation::default()),
+            )
             .await
             .unwrap();
         assert_eq!(modern_call.content, "modern:ok");

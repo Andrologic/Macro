@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isTauriAvailable, localBackupSchedule, localBackupStatus } from '../../../services/tauriIpc';
 import { captureBackupBrowserState } from '../../../services/localBackup';
+import type { LocalBackupStatus } from '../../../services/tauriIpc';
+import { BackupRecoveryStatus } from './BackupRecoveryStatus';
 import { usePersistenceHealth } from '../../../services/persistenceHealth';
 
 export function BackupSettingsSection() {
@@ -10,25 +12,29 @@ export function BackupSettingsSection() {
   const [path, setPath] = useState('');
   const [action, setAction] = useState<'export' | 'restore' | null>(null);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState<LocalBackupStatus | null>(null);
+  const [scheduled, setScheduled] = useState(false);
+  const showError = (error: unknown) => setStatus({ code: 'failed', message: String(error), browser: null });
   useEffect(() => {
-    if (isTauriAvailable()) void localBackupStatus().then((value) => setStatus(value.message)).catch((error) => setStatus(String(error)));
+    if (isTauriAvailable()) void localBackupStatus().then(setStatus).catch(showError);
   }, []);
   const schedule = async () => {
     if (!action) return;
     setBusy(true);
+    setScheduled(false);
+    setStatus(null);
     try {
       await localBackupSchedule(action, path.trim(), captureBackupBrowserState(), true);
-      setStatus(t('backup.scheduled', 'Operation prepared. Quit Macro completely, then reopen it. Keep this session unchanged until you quit.'));
+      setScheduled(true);
       setAction(null);
-    } catch (error) { setStatus(String(error)); }
+    } catch (error) { showError(error); }
     finally { setBusy(false); }
   };
   return <section className="space-y-3 rounded-lg border border-border p-4">
     <h3 className="text-sm font-semibold">{t('backup.title', 'Backup and restore')}</h3>
     <p className="text-xs text-muted-foreground">{t('backup.scope', 'Local profile: conversations, stored attachments, code checkpoints, drafts and global preferences. Project folders and their Git metadata are excluded. Keep a separate copy of your projects. Maximum archive size: 256 MiB; restore with the same Macro version.')}</p>
     <p className="text-xs text-muted-foreground">{t('backup.secrets', 'Provider credentials, MCP environment variables and headers are excluded from portable exports. Reconnect providers after restoring. Conversation and file contents remain private data; store the archive securely.')}</p>
-    {Object.entries(issues).map(([key, message]) => <div role="alert" key={key} className="text-xs text-destructive"><span className="font-medium">{t('backup.recovery', 'Recovery required. Original data preserved.')}</span> {message}</div>)}
+    {Object.entries(issues).map(([key, message]) => <div role="alert" key={key} className="text-xs text-destructive"><span className="font-medium">{t('backup.recovery', 'Recovery required. Original data preserved.')}</span><details><summary>{t('backup.diagnostics')}</summary><pre className="whitespace-pre-wrap">{message}</pre></details></div>)}
     <label className="block space-y-1 text-xs">
       <span>{t('backup.path', 'Absolute path to the local backup file')}</span>
       <input className="w-full rounded border border-border bg-background px-3 py-2 text-sm" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/…/macro-profile.json" disabled={busy} />
@@ -42,6 +48,7 @@ export function BackupSettingsSection() {
       <p className="break-all">{path}</p>
       <div className="flex gap-2"><button disabled={busy} className="rounded bg-primary px-3 py-1.5 text-primary-foreground" onClick={() => void schedule()}>{t('backup.confirm', 'Confirm')}</button><button disabled={busy} onClick={() => setAction(null)}>{t('common.cancel', 'Cancel')}</button></div>
     </div>}
-    {status && <p role="status" className="break-words text-xs">{status}</p>}
+    {scheduled && <p role="status" className="text-xs">{t('backup.scheduled')}</p>}
+    {status && <BackupRecoveryStatus status={status} />}
   </section>;
 }

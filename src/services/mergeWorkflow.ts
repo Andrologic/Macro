@@ -1,3 +1,4 @@
+import type { GitWorkflowSessionDto } from './tauriIpc';
 import type {
   PlanFinalizationBlockingKind,
   PlanFinalizationNextAction,
@@ -50,6 +51,7 @@ export interface MergeWorkflowDirtyFile {
 }
 
 export interface MergeWorkflowRepositoryResult {
+  workflowSession?: GitWorkflowSessionDto;
   id: string;
   projectId: string;
   repoPath: string;

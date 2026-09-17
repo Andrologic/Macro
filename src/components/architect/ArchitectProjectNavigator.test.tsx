@@ -10,6 +10,7 @@ import {
 } from '../../services/viewFilterPreferences';
 import { useViewFilterStore } from '../../stores/useViewFilterStore';
 import { dispatchArchitectPlanSelectorRequest } from './planSelectorEvents';
+import { PREF_KEYS, savePreference } from '../../services/preferences';
 
 const flushRender = async () => {
   await Promise.resolve();
@@ -466,5 +467,123 @@ describe('ArchitectProjectNavigator search', () => {
 
     expect(document.body.textContent).toContain('Plan existant');
     expect(document.body.querySelector('[data-architect-scope-create-menu]')).toBeNull();
+  });
+
+  it('keeps every scope collapsed when the expanded-scope preference is empty', async () => {
+    await savePreference(PREF_KEYS.ARCHITECT_NAVIGATOR_EXPANDED_SCOPE_IDS, []);
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      standaloneProjects: [{
+        id: 'project-1',
+        name: 'Macro',
+        path: 'C:/repo/Macro',
+        gitSetupState: 'ready',
+        directEdit: false,
+        isReadOnly: false,
+      }] as never,
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    });
+
+    const existingPlan = plan('existing-plan', 'Plan existant');
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: {
+        branchCatalogByBranch: {},
+        branches: [{
+          branchName: 'develop',
+          activePlanId: null,
+          plans: [existingPlan],
+          error: null,
+        }],
+        scannedBranchNames: ['develop'],
+        scopedProjectIds: ['project-1'],
+        visiblePlans: [existingPlan],
+        modernPlanCount: 1,
+        selectedPlan: null,
+        selectedBranchName: null,
+        selectionReason: 'none',
+        errors: [],
+      },
+      selectedPlan: null,
+      selectedBranchName: null,
+      selectionReason: 'none',
+    }));
+
+    await act(async () => {
+      root?.render(<ArchitectProjectNavigator catalogLoader={catalogLoader} />);
+      await flushRender();
+    });
+
+    const scope = document.body.querySelector<HTMLElement>('[data-architect-scope-id="project:project-1"]');
+    expect(scope?.querySelector('button[aria-expanded="false"]')).not.toBeNull();
+    expect(scope?.textContent).not.toContain('Plan existant');
+  });
+
+  it('reports a rejected preference read without discarding loaded pins', async () => {
+    useAppStore.setState({
+      ...useAppStore.getState(),
+      standaloneProjects: [{
+        id: 'project-1',
+        name: 'Macro',
+        path: 'C:/repo/Macro',
+        gitSetupState: 'ready',
+        directEdit: false,
+        isReadOnly: false,
+      }] as never,
+      projectGroups: [],
+      selectedGroupId: null,
+      selectedProjectId: 'project-1',
+      activeArchitectPlanId: null,
+      activePlanContext: null,
+    });
+
+    const existingPlan = plan('existing-plan', 'Plan existant');
+    const catalogLoader = mock(async (): Promise<MacroProjectMetadataLoadResult> => ({
+      snapshot: {
+        branchCatalogByBranch: {},
+        branches: [{
+          branchName: 'develop',
+          activePlanId: null,
+          plans: [existingPlan],
+          error: null,
+        }],
+        scannedBranchNames: ['develop'],
+        scopedProjectIds: ['project-1'],
+        visiblePlans: [existingPlan],
+        modernPlanCount: 1,
+        selectedPlan: null,
+        selectedBranchName: null,
+        selectionReason: 'none',
+        errors: [],
+      },
+      selectedPlan: null,
+      selectedBranchName: null,
+      selectionReason: 'none',
+    }));
+    const preferenceLoader = {
+      loadPinnedPlanIds: mock(async () => ['existing-plan']),
+      loadExpandedScopeIds: mock(async () => {
+        throw new Error('preference read failed');
+      }),
+    };
+
+    await act(async () => {
+      root?.render(
+        <ArchitectProjectNavigator
+          catalogLoader={catalogLoader}
+          preferenceLoader={preferenceLoader}
+        />
+      );
+      await flushRender();
+    });
+
+    expect(document.body.textContent).toContain('Impossible de charger les préférences du navigateur.');
+    expect(document.body.querySelector('[aria-labelledby="architect-pinned-plans-title"]')?.textContent)
+      .toContain('Plan existant');
+    const scope = document.body.querySelector<HTMLElement>('[data-architect-scope-id="project:project-1"]');
+    expect(scope?.querySelector('button[aria-expanded="false"]')).not.toBeNull();
   });
 });

@@ -68,13 +68,13 @@ export function stepsForProfile(profile, options = {}) {
     case 'native':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
     case 'native-core':
-      return [...repositoryChecks, rustTestCheck, rustDocTestCheck];
+      return [...install, ...repositoryChecks, sidecarCheck, rustTestCheck, rustDocTestCheck];
     case 'sidecar':
       return [...install, sidecarCheck];
     case 'windows':
       return [...install, workflowStep, ...repositoryChecks, sidecarCheck, windowsNativeCheck];
     case 'windows-core':
-      return [...repositoryChecks, windowsNativeCheck];
+      return [...install, ...repositoryChecks, sidecarCheck, windowsNativeCheck];
     case 'full': {
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
     }

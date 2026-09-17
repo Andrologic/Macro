@@ -575,6 +575,27 @@ fn backend_error_response(error: BackendError) -> axum::response::Response {
     (status, Json(error)).into_response()
 }
 
+fn resolve_scoped_workspace_state(
+    state: &HeadlessState,
+    workspace_id: &str,
+) -> Result<HeadlessState, BackendError> {
+    let workspace_id = workspace_id.trim();
+    if workspace_id.is_empty() {
+        return Err(BackendError::Validation(
+            "A non-empty workspace id is required".to_string(),
+        ));
+    }
+    let workspace = state
+        .registered_projects
+        .get(workspace_id)
+        .ok_or_else(|| BackendError::NotFound(format!("Unknown workspace id: {workspace_id}")))?;
+
+    Ok(HeadlessState {
+        workspace_path: workspace.canonical_path.clone(),
+        ..state.clone()
+    })
+}
+
 fn resolve_metadata_root_for_workspace(state: &HeadlessState) -> Result<PathBuf, BackendError> {
     if parse_wsl_unc_path(&state.workspace_path.to_string_lossy()).is_some() {
         return Err(BackendError::Git {
@@ -2086,9 +2107,18 @@ async fn workspace_bootstrap(
 async fn workspace_bootstrap_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> impl IntoResponse {
-    workspace_bootstrap(State(state), headers).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+        Ok(state) => Arc::new(state),
+        Err(error) => return backend_error_response(error),
+    };
+    workspace_bootstrap(State(scoped_state), headers)
+        .await
+        .into_response()
 }
 
 async fn workspace_tasks(
@@ -2113,9 +2143,18 @@ async fn workspace_tasks(
 async fn workspace_tasks_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
 ) -> impl IntoResponse {
-    workspace_tasks(State(state), headers).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+        Ok(state) => Arc::new(state),
+        Err(error) => return backend_error_response(error),
+    };
+    workspace_tasks(State(scoped_state), headers)
+        .await
+        .into_response()
 }
 
 async fn workspace_architect_list_plans(
@@ -2141,10 +2180,19 @@ async fn workspace_architect_list_plans(
 async fn workspace_architect_list_plans_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
     Json(payload): Json<WorkspaceArchitectListPlansRequestDto>,
 ) -> impl IntoResponse {
-    workspace_architect_list_plans(State(state), headers, Json(payload)).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+        Ok(state) => Arc::new(state),
+        Err(error) => return backend_error_response(error),
+    };
+    workspace_architect_list_plans(State(scoped_state), headers, Json(payload))
+        .await
+        .into_response()
 }
 
 async fn workspace_architect_activate_plan_head(
@@ -2172,10 +2220,19 @@ async fn workspace_architect_activate_plan_head(
 async fn workspace_architect_activate_plan_head_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
     Json(payload): Json<WorkspaceArchitectActivatePlanHeadRequestDto>,
 ) -> impl IntoResponse {
-    workspace_architect_activate_plan_head(State(state), headers, Json(payload)).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+        Ok(state) => Arc::new(state),
+        Err(error) => return backend_error_response(error),
+    };
+    workspace_architect_activate_plan_head(State(scoped_state), headers, Json(payload))
+        .await
+        .into_response()
 }
 
 async fn workspace_architect_activate_plan_chat(
@@ -2203,10 +2260,19 @@ async fn workspace_architect_activate_plan_chat(
 async fn workspace_architect_activate_plan_chat_scoped(
     State(state): State<Arc<HeadlessState>>,
     headers: HeaderMap,
-    Path(_workspace_id): Path<String>,
+    Path(workspace_id): Path<String>,
     Json(payload): Json<WorkspaceArchitectActivatePlanChatRequestDto>,
 ) -> impl IntoResponse {
-    workspace_architect_activate_plan_chat(State(state), headers, Json(payload)).await
+    if !authorized(&headers, &state) {
+        return unauthorized_response().into_response();
+    }
+    let scoped_state = match resolve_scoped_workspace_state(&state, &workspace_id) {
+        Ok(state) => Arc::new(state),
+        Err(error) => return backend_error_response(error),
+    };
+    workspace_architect_activate_plan_chat(State(scoped_state), headers, Json(payload))
+        .await
+        .into_response()
 }
 
 async fn project_git_tree(
@@ -2475,6 +2541,72 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    async fn test_headless_state(root: &TempDir, workspace_names: &[&str]) -> HeadlessState {
+        let mut registered_projects = BTreeMap::new();
+        for name in workspace_names {
+            let workspace_path = root.path().join(name);
+            fs::create_dir_all(&workspace_path).expect("workspace directory");
+            registered_projects.insert(
+                (*name).to_string(),
+                RegisteredProject {
+                    canonical_path: workspace_path.canonicalize().expect("canonical workspace"),
+                    root_identity: macro_lib::commands::fs::workspace_root_identity(
+                        &workspace_path,
+                    )
+                    .expect("workspace identity"),
+                    is_read_only: false,
+                },
+            );
+        }
+        let workspace_path = root.path().canonicalize().expect("canonical test root");
+        HeadlessState {
+            bearer_token: None,
+            approval_token: None,
+            allowed_roots: vec![workspace_path.clone()],
+            registered_projects,
+            workspace_path,
+            git_state: GitState::new(),
+            config_manager: ConfigManager::initialize(root.path().join("config"))
+                .await
+                .expect("test config manager"),
+            execution_journal_root: root.path().join("executions"),
+            execution_journal_lock: Arc::new(AsyncMutex::new(())),
+            execution_registry: Arc::new(AsyncMutex::new(BTreeMap::new())),
+        }
+    }
+
+    fn write_workspace_marker(workspace_path: &std::path::Path, marker: &str) {
+        let project_path = workspace_path.join(format!("{marker}-project"));
+        fs::create_dir_all(&project_path).expect("marker project directory");
+        let metadata_root = workspace_path.join(".macro");
+        fs::create_dir_all(&metadata_root).expect("metadata directory");
+        fs::write(
+            metadata_root.join("workspace.json"),
+            serde_json::to_vec_pretty(&json!({
+                "version": 4,
+                "standaloneProjects": [{
+                    "id": format!("{marker}-project"),
+                    "name": marker,
+                    "mountName": marker,
+                    "path": project_path,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "status": "active",
+                    "metadata": {
+                        "description": "",
+                        "tags": [],
+                        "team_members": [],
+                        "api_contracts": [],
+                        "dependencies": []
+                    }
+                }],
+                "projectRegistryExplicitlyEmpty": false,
+                "project_groups": []
+            }))
+            .expect("serialize workspace marker"),
+        )
+        .expect("write workspace marker");
+    }
+
     fn registry_with_projects(
         root: &TempDir,
         names: &[&str],
@@ -2546,6 +2678,57 @@ mod tests {
             validate_approval_authority(Some("agent-secret"), Some("user-approval-secret")).is_ok()
         );
         assert!(!approval_token_authorizes(&headers, None));
+    }
+
+    #[tokio::test]
+    async fn scoped_workspace_commands_isolate_two_concurrent_workspaces() {
+        let root = TempDir::new().expect("workspace registry root");
+        let state = Arc::new(test_headless_state(&root, &["workspace-a", "workspace-b"]).await);
+        write_workspace_marker(
+            &state.registered_projects["workspace-a"].canonical_path,
+            "alpha",
+        );
+        write_workspace_marker(
+            &state.registered_projects["workspace-b"].canonical_path,
+            "beta",
+        );
+
+        let load = |workspace_id: &'static str| {
+            workspace_bootstrap_scoped(
+                State(state.clone()),
+                HeaderMap::new(),
+                Path(workspace_id.to_string()),
+            )
+        };
+        let (alpha_response, beta_response) =
+            tokio::join!(load("workspace-a"), load("workspace-b"));
+        let alpha_response = alpha_response.into_response();
+        let beta_response = beta_response.into_response();
+        assert_eq!(alpha_response.status(), StatusCode::OK);
+        assert_eq!(beta_response.status(), StatusCode::OK);
+        let alpha: Value = serde_json::from_slice(
+            &axum::body::to_bytes(alpha_response.into_body(), usize::MAX)
+                .await
+                .expect("read alpha response"),
+        )
+        .expect("decode alpha response");
+        let beta: Value = serde_json::from_slice(
+            &axum::body::to_bytes(beta_response.into_body(), usize::MAX)
+                .await
+                .expect("read beta response"),
+        )
+        .expect("decode beta response");
+
+        assert_eq!(alpha["standaloneProjects"][0]["name"], "alpha");
+        assert_eq!(beta["standaloneProjects"][0]["name"], "beta");
+        let missing = workspace_bootstrap_scoped(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path("missing-workspace".to_string()),
+        )
+        .await
+        .into_response();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]

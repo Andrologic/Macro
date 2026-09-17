@@ -21,10 +21,10 @@ export const registerSendRuntimeAndDeletionScenarios = (
     createMessageMock,
     createScenarioPlan,
     deleteConversationMock,
+    deleteConversationTurnMock,
     deleteConversationsMock,
     deleteConversationToolboxStateMock,
     deleteMessagesAfterMock,
-    dbUpsertConversationCompactionStateMock,
     emitTaskStoreUpdate,
     executeWorkspaceToolMock,
     flushAsyncWork,
@@ -32,9 +32,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
     listMessagesMock,
     loadChatStore,
     providerState,
-    queueSendChatNonStreamingImplementation,
     savePreferenceForTest,
-    setSelectedProviderModelContext,
     streamChatMock,
     syncArchitectPlanChatFromConversationMock,
     taskStoreState,
@@ -351,31 +349,214 @@ export const registerSendRuntimeAndDeletionScenarios = (
         'Failed to save assistant response: assistant write failed'
       );
       expect(useChatStore.getState().sendState).toBe('error');
+      const failedAssistant = useChatStore
+        .getState()
+        .getConversationMessages('chat-conv')
+        .find((message: ChatMessage) => message.role === 'assistant');
+      expect(failedAssistant).toEqual(expect.objectContaining({
+        content: 'Persist me',
+        persistence_state: 'failed',
+        persistence_error: 'Failed to save assistant response: assistant write failed',
+      }));
+      await expect(
+        useChatStore.getState().sendMessage({
+          conversationId: 'chat-conv',
+          content: 'This must stay blocked.',
+        }),
+      ).rejects.toThrow(
+        'Save or delete the unsaved assistant response before sending another message.',
+      );
+
+      const retryPersistence = createDeferred<undefined>();
+      updateMessageMock.mockImplementation(async () => retryPersistence.promise);
+      const retry = useChatStore
+        .getState()
+        .retryAssistantPersistence(failedAssistant!.id);
+      await Promise.resolve();
       expect(
-        useChatStore
-          .getState()
-          .getConversationMessages('chat-conv')
-          .some((message: { role: string; content: string }) =>
-            message.role === 'assistant' && message.content === 'Persist me'
-          )
-      ).toBe(true);
+        useChatStore.getState().getConversationMessages('chat-conv')
+          .find((message: ChatMessage) => message.id === failedAssistant!.id)
+          ?.persistence_state,
+      ).toBe('retrying');
+
+      retryPersistence.resolve(undefined);
+      await retry;
+      expect(
+        useChatStore.getState().getConversationMessages('chat-conv')
+          .find((message: ChatMessage) => message.id === failedAssistant!.id)
+          ?.persistence_state,
+      ).toBeUndefined();
+      expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe('idle');
+      expect(useChatStore.getState().sendState).toBe('idle');
       updateMessageMock.mockImplementation(async () => undefined);
     });
 
-    it('does not let an older incomplete completion overwrite a newer streaming session', async () => {
+    it('restores an unsaved assistant response after chat hydration', async () => {
       context.tauriAvailable = true;
       appState.mode = 'Chat';
-      const releaseFirstPersistenceRef: { current: (() => void) | null } = {
-        current: null,
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('chat-conv', { message_count: 2 }),
+      ];
+      context.chatSnapshotMessages = [
+        {
+          id: 'user-1',
+          conversation_id: 'chat-conv',
+          role: 'user',
+          content: 'Question persistée',
+          created_at: '2026-08-30T08:00:00.000Z',
+        },
+        {
+          id: 'assistant-1',
+          conversation_id: 'chat-conv',
+          role: 'assistant',
+          content: '',
+          created_at: '2026-08-30T08:01:00.000Z',
+        },
+      ];
+      window.localStorage.setItem(
+        'macro_chat_unsaved_assistant_responses_v1',
+        JSON.stringify({
+          'assistant-1': {
+            id: 'assistant-1',
+            turn_id: 'turn-1',
+            task_id: '',
+            conversation_id: 'chat-conv',
+            role: 'assistant',
+            content: 'Réponse récupérée après rechargement',
+            timestamp: '2026-08-30T08:01:00.000Z',
+            tool_traces: [],
+            persistence_state: 'failed',
+            persistence_error: 'Failed to save assistant response: SQLite unavailable',
+          },
+        }),
+      );
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().initializeCritical();
+
+      expect(
+        useChatStore.getState().getConversationMessages('chat-conv'),
+      ).toContainEqual(expect.objectContaining({
+        id: 'assistant-1',
+        content: 'Réponse récupérée après rechargement',
+        persistence_state: 'failed',
+      }));
+      await expect(
+        useChatStore.getState().sendMessage({
+          conversationId: 'chat-conv',
+          content: 'Toujours bloqué après rechargement.',
+        }),
+      ).rejects.toThrow(
+        'Save or delete the unsaved assistant response before sending another message.',
+      );
+    });
+
+    it('deletes an unsaved assistant turn with later steering messages and unblocks the conversation', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const userMessage: ChatMessage = {
+        id: 'user-1',
+        turn_id: 'turn-1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user',
+        content: 'Question',
+        timestamp: '2026-08-30T08:00:00.000Z',
       };
+      const assistantMessage: ChatMessage = {
+        id: 'assistant-1',
+        turn_id: 'turn-1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'assistant',
+        content: 'Réponse non enregistrée',
+        timestamp: '2026-08-30T08:01:00.000Z',
+        persistence_state: 'failed',
+        persistence_error: 'SQLite indisponible',
+      };
+      const steeringMessage: ChatMessage = {
+        id: 'steer-1',
+        turn_id: 'turn-1',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user',
+        content: 'Ajoute aussi les détails du journal.',
+        timestamp: '2026-08-30T08:02:00.000Z',
+      };
+      const previousMessage: ChatMessage = {
+        id: 'user-previous',
+        turn_id: 'turn-previous',
+        task_id: '',
+        conversation_id: 'chat-conv',
+        role: 'user',
+        content: 'Question précédente',
+        timestamp: '2026-08-30T07:59:00.000Z',
+      };
+      window.localStorage.setItem(
+        'macro_chat_unsaved_assistant_responses_v1',
+        JSON.stringify({ 'assistant-1': assistantMessage }),
+      );
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [{ ...createConversation('chat-conv'), message_count: 4 }],
+        messages: [previousMessage, userMessage, assistantMessage, steeringMessage],
+        messageImagesByMessageId: {
+          'user-previous': [{
+            id: 'image-previous',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,cHJldmlvdXM=',
+            createdAt: '2026-08-30T07:59:00.000Z',
+          }],
+          'user-1': [{
+            id: 'image-failed',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,ZmFpbGVk',
+            createdAt: '2026-08-30T08:00:00.000Z',
+          }],
+        },
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        conversationRuntimeById: {
+          'chat-conv': {
+            phase: 'error',
+            sessionId: null,
+            turnId: 'turn-1',
+            assistantMessageId: 'assistant-1',
+            lastError: 'SQLite indisponible',
+            lastErrorOrigin: 'macro',
+            lastErrorDisplayTarget: 'composer',
+          },
+        },
+      }));
+
+      await useChatStore.getState().deleteUnsavedAssistantResponse('assistant-1');
+
+      expect(deleteConversationTurnMock).toHaveBeenCalledWith('chat-conv', 'turn-1');
+      expect(useChatStore.getState().getConversationMessages('chat-conv')).toEqual([
+        previousMessage,
+      ]);
+      expect(useChatStore.getState().messageImagesByMessageId).toEqual({
+        'user-previous': expect.any(Array),
+      });
+      expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe('idle');
+      expect(
+        window.localStorage.getItem('macro_chat_unsaved_assistant_responses_v1'),
+      ).toBeNull();
+    });
+
+    it('does not start a newer streaming session until the older completion is persisted', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const firstPersistenceStarted = createDeferred<void>();
+      const releaseFirstPersistence = createDeferred<void>();
       const releaseSecondStreamRef: { current: (() => void) | null } = {
         current: null,
       };
       updateMessageMock.mockImplementation(async (_id, content) => {
         if (content === 'Partial response') {
-          await new Promise<void>((resolve) => {
-            releaseFirstPersistenceRef.current = resolve;
-          });
+          firstPersistenceStarted.resolve();
+          await releaseFirstPersistence.promise;
         }
       });
       streamChatMock
@@ -384,19 +565,107 @@ export const registerSendRuntimeAndDeletionScenarios = (
             onComplete?: (result: {
               visibleContent: string;
               toolTraces: unknown[];
-              completionReason: 'incomplete';
             }) => void;
           };
           options.onComplete?.({
             visibleContent: 'Partial response',
             toolTraces: [],
-            completionReason: 'incomplete',
           });
         }) as unknown as typeof streamChatMock)
-        .mockImplementationOnce((async () =>
-          new Promise<void>((resolve) => {
+        .mockImplementationOnce((async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as {
+            onComplete?: (result: {
+              visibleContent: string;
+              toolTraces: unknown[];
+            }) => void;
+          };
+          await new Promise<void>((resolve) => {
             releaseSecondStreamRef.current = resolve;
-          })) as unknown as typeof streamChatMock);
+          });
+          options.onComplete?.({
+            visibleContent: 'Second response',
+            toolTraces: [],
+          });
+        }) as unknown as typeof streamChatMock);
+
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState({
+        conversations: [createConversation('chat-conv', '')],
+        messages: [],
+        selectedConversationId: 'chat-conv',
+        selectedConversationIdsByMode: { Chat: 'chat-conv' },
+        isLoading: false,
+        isStreaming: false,
+        sendState: 'idle',
+        lastError: null,
+        abortController: null,
+        messageImagesByMessageId: {},
+        composerContextRefs: [],
+      });
+
+      await useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'First request',
+      });
+      await firstPersistenceStarted.promise;
+
+      expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe(
+        'persisting',
+      );
+      await expect(
+        useChatStore.getState().sendMessage({
+          conversationId: 'chat-conv',
+          content: 'Blocked request',
+        }),
+      ).rejects.toThrow('This conversation is already running.');
+
+      releaseFirstPersistence.resolve();
+      await flushAsyncWork();
+
+      expect(useChatStore.getState().sendState).toBe('idle');
+      expect(
+        useChatStore.getState().conversationRuntimeById['chat-conv']?.phase,
+      ).toBeUndefined();
+
+      const secondSend = useChatStore.getState().sendMessage({
+        conversationId: 'chat-conv',
+        content: 'Second request',
+      });
+      await flushAsyncWork();
+      expect(useChatStore.getState().sendState).toBe('streaming');
+
+      releaseSecondStreamRef.current?.();
+      await secondSend;
+      await flushAsyncWork();
+      expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe(
+        'idle',
+      );
+      updateMessageMock.mockImplementation(async () => undefined);
+    });
+
+    it('blocks a new stream and marks the response when persistence fails', async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Chat';
+      const releaseOldPersistence = createDeferred<void>();
+      updateMessageMock.mockImplementation(async (_id, content) => {
+        if (content === 'Old response') {
+          await releaseOldPersistence.promise;
+          throw new Error('stale assistant write failed');
+        }
+      });
+      streamChatMock
+        .mockImplementationOnce((async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as {
+            onComplete?: (result: {
+              visibleContent: string;
+              toolTraces: unknown[];
+            }) => void;
+          };
+          options.onComplete?.({
+            visibleContent: 'Old response',
+            toolTraces: [],
+          });
+        }) as unknown as typeof streamChatMock);
 
       const { useChatStore } = await loadChatStore();
       useChatStore.setState({
@@ -418,25 +687,38 @@ export const registerSendRuntimeAndDeletionScenarios = (
         content: 'First request',
       });
       await flushAsyncWork();
+      expect(useChatStore.getState().getConversationRuntime('chat-conv').phase).toBe(
+        'persisting',
+      );
+      await expect(
+        useChatStore.getState().sendMessage({
+          conversationId: 'chat-conv',
+          content: 'Blocked request',
+        }),
+      ).rejects.toThrow('This conversation is already running.');
 
-      const secondSend = useChatStore.getState().sendMessage({
-        conversationId: 'chat-conv',
-        content: 'Second request',
-      });
+      releaseOldPersistence.resolve();
       await flushAsyncWork();
-      expect(useChatStore.getState().sendState).toBe('streaming');
 
-      releaseFirstPersistenceRef.current?.();
-      await flushAsyncWork();
-
-      expect(useChatStore.getState().sendState).toBe('streaming');
-      expect(useChatStore.getState().lastError).toBeNull();
+      expect(useChatStore.getState().sendState).toBe('error');
+      expect(useChatStore.getState().lastError).toBe(
+        'Failed to save assistant response: stale assistant write failed',
+      );
       expect(
-        useChatStore.getState().conversationRuntimeById['chat-conv']?.phase,
-      ).toBe('streaming');
-
-      releaseSecondStreamRef.current?.();
-      await secondSend;
+        useChatStore.getState().getConversationMessages('chat-conv')
+          .find((message: ChatMessage) => message.role === 'assistant'),
+      ).toEqual(expect.objectContaining({
+        content: 'Old response',
+        persistence_state: 'failed',
+      }));
+      await expect(
+        useChatStore.getState().sendMessage({
+          conversationId: 'chat-conv',
+          content: 'Still blocked',
+        }),
+      ).rejects.toThrow(
+        'Save or delete the unsaved assistant response before sending another message.',
+      );
       updateMessageMock.mockImplementation(async () => undefined);
     });
 
@@ -490,118 +772,6 @@ export const registerSendRuntimeAndDeletionScenarios = (
           lastErrorDisplayTarget: 'transcript',
         }),
       );
-    });
-
-    it('does not consolidate an older synthetic checkpoint from a newer turn snapshot', async () => {
-      context.tauriAvailable = true;
-      appState.mode = 'Chat';
-      setSelectedProviderModelContext();
-      const releaseFirstPersistenceRef: { current: (() => void) | null } = {
-        current: null,
-      };
-      const releaseSecondStreamRef: { current: (() => void) | null } = {
-        current: null,
-      };
-      let createdSyntheticCheckpoint = false;
-      queueSendChatNonStreamingImplementation(async () => {
-        createdSyntheticCheckpoint = true;
-        return JSON.stringify({
-          currentObjective: 'Finish the current tool-assisted answer.',
-          userInstructions: [],
-          decisions: [],
-          openQuestions: [],
-          activeFiles: [],
-          toolFacts: [],
-          remainingWork: ['Answer from the latest tool result.'],
-          summary: 'Older turns compacted at the tool boundary.',
-        });
-      });
-      updateMessageMock.mockImplementation(async (_id, content) => {
-        if (content === 'First completed response') {
-          await new Promise<void>((resolve) => {
-            releaseFirstPersistenceRef.current = resolve;
-          });
-        }
-      });
-      streamChatMock
-        .mockImplementationOnce((async (...args: unknown[]) => {
-          const options = (args[0] ?? {}) as {
-            onBeforeFollowUpRequest?: (request: {
-              reason: 'tool_results';
-              messages: Array<{ role: 'system' | 'user' | 'assistant' | 'tool'; content: string }>;
-              turnCount: number;
-              toolResultCount: number;
-            }) => Promise<
-              Array<{
-                role: 'system' | 'user' | 'assistant' | 'tool';
-                content: string;
-              }>
-            >;
-            onComplete?: (result: {
-              visibleContent: string;
-              toolTraces: unknown[];
-              completionReason: 'completed';
-            }) => void;
-          };
-          await options.onBeforeFollowUpRequest?.({
-            reason: 'tool_results',
-            messages: [
-              { role: 'system', content: 'You are Macro.' },
-              { role: 'user', content: `Old request ${'context '.repeat(12_000)}` },
-              { role: 'assistant', content: `Old answer ${'detail '.repeat(12_000)}` },
-              { role: 'tool', content: 'FILE: current.ts\nconst current = true;' },
-            ],
-            turnCount: 1,
-            toolResultCount: 1,
-          });
-          options.onComplete?.({
-            visibleContent: 'First completed response',
-            toolTraces: [],
-            completionReason: 'completed',
-          });
-        }) as unknown as typeof streamChatMock)
-        .mockImplementationOnce((async () =>
-          new Promise<void>((resolve) => {
-            releaseSecondStreamRef.current = resolve;
-          })) as unknown as typeof streamChatMock);
-
-      const { useChatStore } = await loadChatStore();
-      useChatStore.setState({
-        conversations: [createConversation('chat-conv', '')],
-        messages: [],
-        selectedConversationId: 'chat-conv',
-        selectedConversationIdsByMode: { Chat: 'chat-conv' },
-        isLoading: false,
-        isStreaming: false,
-        sendState: 'idle',
-        lastError: null,
-        abortController: null,
-        messageImagesByMessageId: {},
-        composerContextRefs: [],
-      });
-
-      await useChatStore.getState().sendMessage({
-        conversationId: 'chat-conv',
-        content: 'First request',
-      });
-      await flushAsyncWork();
-      expect(createdSyntheticCheckpoint).toBe(true);
-      expect(dbUpsertConversationCompactionStateMock).not.toHaveBeenCalled();
-
-      const secondSend = useChatStore.getState().sendMessage({
-        conversationId: 'chat-conv',
-        content: 'Second request',
-      });
-      await flushAsyncWork();
-      releaseFirstPersistenceRef.current?.();
-      await flushAsyncWork();
-
-      expect(dbUpsertConversationCompactionStateMock).not.toHaveBeenCalled();
-      expect(useChatStore.getState().sendState).toBe('streaming');
-
-      releaseSecondStreamRef.current?.();
-      await secondSend;
-      updateMessageMock.mockImplementation(async () => undefined);
     });
 
     it('rejects concurrent sends while an Implement message is still preparing', async () => {
@@ -761,7 +931,7 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('streaming');
 
       activeStreams.get('chat-2')?.();
-      await Promise.resolve();
+      await flushAsyncWork();
 
       expect(useChatStore.getState().getConversationRuntime('chat-2').phase).toBe('idle');
     });
@@ -1110,7 +1280,11 @@ export const registerSendRuntimeAndDeletionScenarios = (
       context.tauriAvailable = true;
       appState.mode = 'Chat';
       const deletion = createDeferred<undefined>();
-      deleteConversationMock.mockImplementationOnce(async () => deletion.promise);
+      const streamController = new AbortController();
+      deleteConversationMock.mockImplementationOnce(async () => {
+        expect(streamController.signal.aborted).toBe(true);
+        return deletion.promise;
+      });
       const { useChatStore } = await loadChatStore();
       useChatStore.setState(createIdleChatStoreState({
         conversations: [
@@ -1118,10 +1292,22 @@ export const registerSendRuntimeAndDeletionScenarios = (
         ],
         selectedConversationId: 'chat-1',
         selectedConversationIdsByMode: { Chat: 'chat-1' },
+        conversationRuntimeById: {
+          'chat-1': {
+            phase: 'streaming',
+            sessionId: 'session-1',
+            turnId: 'turn-1',
+            assistantMessageId: 'assistant-1',
+            abortController: streamController,
+            lastError: null,
+          },
+        },
       }));
 
       const deletionPromise = useChatStore.getState().deleteConversation('chat-1');
       await Promise.resolve();
+
+      expect(streamController.signal.aborted).toBe(true);
 
       await expect(
         useChatStore.getState().sendMessage({
@@ -1695,6 +1881,29 @@ export const registerSendRuntimeAndDeletionScenarios = (
       expect(useChatStore.getState().composerContextRefs).toEqual(bRefs);
       expect(deleteConversationToolboxStateMock).toHaveBeenCalledWith('chat-a');
       expect(deleteConversationToolboxStateMock).not.toHaveBeenCalledWith('chat-b');
+    });
+
+    it('passes the captured Architect destination to completion metadata sync', async () => {
+      appState.mode = 'Architect';
+      const plan = createScenarioPlan('started', { id: 'captured-plan', targetBranch: 'develop', conversationId: 'captured-chat' });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: plan.targetBranch };
+      streamChatMock.mockImplementationOnce((async (options: import('../../services/streamingChat').StreamingChatOptions) => {
+        appState.activeArchitectPlanId = 'other-plan';
+        appState.activePlanContext = { id: 'other-plan', targetBranch: 'feature/other' };
+        await options.onComplete?.({ visibleContent: 'Synthetic answer', toolTraces: [] });
+      }) as unknown as typeof streamChatMock);
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({
+        conversations: [createConversation('captured-chat')], selectedConversationId: 'captured-chat',
+      }));
+      await useChatStore.getState().sendMessage({ conversationId: 'captured-chat', content: 'Finish this plan.' });
+      await flushAsyncWork();
+      expect(context.syncMacroMetadataAfterStreamMock).toHaveBeenCalledWith({
+        mode: 'Architect', conversationId: 'captured-chat', trigger: 'send',
+        architectPlan: { planId: plan.id, targetBranch: 'develop' },
+      });
     });
 
     it('keeps the Architect plan and branch captured at send when the selection changes', async () => {

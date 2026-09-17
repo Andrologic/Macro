@@ -32,6 +32,7 @@ export const registerArchitectLifecycleScenarios = (
     flushAsyncWork,
     getArchitectPlanActivationPayloadMock,
     getArchitectPlanChatTranscriptMock,
+    getArchitectPlanMock,
     getChatBootstrapSnapshotMock,
     getChatSnapshotMock,
     getLocalProjectContextStateMock,
@@ -268,8 +269,14 @@ export const registerArchitectLifecycleScenarios = (
       ]);
     });
 
-    it('resynchronizes architect metadata when the local DB transcript is ahead', async () => {
-      const plan = createPlan();
+    it('rejects newer local messages for an incomplete project-only replica identity', async () => {
+      context.tauriAvailable = true;
+      const plan = createScenarioPlan('started', {
+        id: 'plan-local-ahead',
+        slug: 'plan-local-ahead',
+        title: 'plan-local-ahead',
+        conversationId: 'local-ahead-conv',
+      });
       architectPlans.set(plan.id, plan);
       architectPlanMessages.set(plan.id, [
         {
@@ -279,51 +286,176 @@ export const registerArchitectLifecycleScenarios = (
           createdAt: '2026-03-19T00:01:00.000Z',
         },
       ]);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('local-ahead-conv', { message_count: 2 }),
+      ];
+      context.chatSnapshotMessages = [
+        createChatMessageRecord({
+          id: 'm-1',
+          conversation_id: 'local-ahead-conv',
+          role: 'user',
+          content: 'First question',
+        }),
+        createChatMessageRecord({
+          id: 'm-2',
+          conversation_id: 'local-ahead-conv',
+          role: 'assistant',
+          content: 'Second answer',
+          created_at: '2026-03-19T00:02:00.000Z',
+        }),
+      ];
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => ({
+        plan,
+        chatMessages: [],
+        chatMessagesLoaded: false,
+        chatTranscriptRevision: 'revision-local-ahead',
+        chatMessageCount: 1,
+        replicaProjectId: 'project-a',
+        conversationId: 'local-ahead-conv',
+        sharedConversation: false,
+        targetBranch: 'develop',
+        resolutionMode: 'full',
+      }));
 
       const { useChatStore } = await loadChatStore();
-      useChatStore.setState({
-        conversations: [createConversation('conv-1')],
-        messages: [
-          {
-            id: 'm-1',
-            task_id: '',
-            conversation_id: 'conv-1',
-            role: 'user',
-            content: 'First question',
-            timestamp: '2026-03-19T00:01:00.000Z',
-          },
-          {
-            id: 'm-2',
-            task_id: '',
-            conversation_id: 'conv-1',
-            role: 'assistant',
-            content: 'Second answer',
-            timestamp: '2026-03-19T00:02:00.000Z',
-          },
-        ],
-        selectedConversationId: null,
-        selectedConversationIdsByMode: {},
-        isLoading: false,
-        isStreaming: false,
-        lastError: null,
-        abortController: null,
-        messageImagesByMessageId: {},
-        composerContextRefs: [],
-      });
+      await useChatStore.getState().initialize();
 
-      const result = await useChatStore.getState().ensureArchitectConversationForPlan({
-        plan,
-        targetBranch: 'develop',
-      });
-
-      expect(result.restoredTranscript).toBe(false);
-      expect(syncArchitectPlanChatFromConversationMock).toHaveBeenCalledWith({
-        branchName: 'develop',
-        planId: plan.id,
-        conversationId: 'conv-1',
-      });
+      expect(syncArchitectPlanChatFromConversationMock).not.toHaveBeenCalled();
       expect(importMessagesMock).not.toHaveBeenCalled();
-      expect(useChatStore.getState().getConversationMessages('conv-1')).toHaveLength(2);
+      expect(useChatStore.getState().selectedConversationId).toBeNull();
+      expect(useChatStore.getState().restoreStatus).toBe('error');
+      expect(useChatStore.getState().lastError).toContain(
+        'les métadonnées ne sont pas modifiées',
+      );
+    });
+
+    it('rejects divergent local messages for an incomplete project-only replica identity', async () => {
+      context.tauriAvailable = true;
+      const plan = createScenarioPlan('started', {
+        id: 'plan-local-diverged',
+        slug: 'plan-local-diverged',
+        title: 'plan-local-diverged',
+        conversationId: 'local-diverged-conv',
+      });
+      architectPlans.set(plan.id, plan);
+      architectPlanMessages.set(plan.id, [
+        {
+          id: 'm-1',
+          role: 'user',
+          content: 'Replica content',
+          createdAt: '2026-03-19T00:01:00.000Z',
+        },
+      ]);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('local-diverged-conv', { message_count: 1 }),
+      ];
+      context.chatSnapshotMessages = [
+        createChatMessageRecord({
+          id: 'm-1',
+          conversation_id: 'local-diverged-conv',
+          role: 'user',
+          content: 'Different local content',
+        }),
+      ];
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => ({
+        plan,
+        chatMessages: [],
+        chatMessagesLoaded: false,
+        chatTranscriptRevision: 'revision-local-diverged',
+        chatMessageCount: 1,
+        replicaProjectId: 'project-a',
+        conversationId: 'local-diverged-conv',
+        sharedConversation: false,
+        targetBranch: 'develop',
+        resolutionMode: 'full',
+      }));
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().initialize();
+
+      expect(syncArchitectPlanChatFromConversationMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().selectedConversationId).toBeNull();
+      expect(useChatStore.getState().restoreStatus).toBe('error');
+      expect(useChatStore.getState().lastError).toContain(
+        'diverge de la réplique Architect active',
+      );
+    });
+
+    it('does not select a restored plan conversation after the visible selection changes', async () => {
+      context.tauriAvailable = true;
+      const plan = createPlan({ conversationId: 'shared-conv' });
+      architectPlans.set(plan.id, plan);
+      architectPlanMessages.set(plan.id, [{ id: 'source', role: 'user', content: 'Synthetic copy', createdAt: '2026-03-19T00:01:00.000Z' }]);
+      const started = createDeferred<void>();
+      const release = createDeferred<void>();
+      importMessagesMock.mockImplementationOnce(async (id, messages) => {
+        started.resolve();
+        await release.promise;
+        return messages.map((message) => ({ ...message, conversation_id: id }));
+      });
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('shared-conv'), createConversation('selected-b')] }));
+      const restoration = useChatStore.getState().ensureArchitectConversationForPlan({ plan, targetBranch: 'develop', sharedConversation: true });
+      await started.promise;
+      await useChatStore.getState().selectConversation('selected-b');
+      release.resolve();
+      await restoration;
+      expect(useChatStore.getState().selectedConversationId).toBe('selected-b');
+    });
+
+    it.each(['content', 'role', 'failure'])('reconciles same-ID transcript changes and stamps only after success: %s', async (change) => {
+      context.tauriAvailable = true;
+      const plan = createPlan({ conversationId: 'conv-1' });
+      architectPlans.set(plan.id, plan);
+      architectPlanMessages.set(plan.id, [{ id: 'same-id', role: 'user', content: 'Old content', createdAt: '2026-03-19T00:01:00.000Z' }]);
+      context.chatSnapshotMessages = [createChatMessageRecord({
+        id: 'same-id', conversation_id: 'conv-1', role: change === 'role' ? 'assistant' : 'user',
+        content: change === 'role' ? 'Old content' : 'Current content', created_at: '2026-03-19T00:01:00.000Z',
+      })];
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [{ ...createConversation('conv-1'), message_count: 1 }] }));
+      if (change === 'failure') syncArchitectPlanChatFromConversationMock.mockImplementationOnce(async () => { throw new Error('Synthetic sync failure'); });
+      const operation = useChatStore.getState().ensureArchitectConversationForPlan({ plan, targetBranch: 'develop' });
+      if (change === 'failure') {
+        await expect(operation).rejects.toThrow('Synthetic sync failure');
+        expect(dbUpsertArchitectPlanConversationSyncMock).not.toHaveBeenCalled();
+      } else {
+        await operation;
+        expect(syncArchitectPlanChatFromConversationMock).toHaveBeenCalledWith({ branchName: 'develop', planId: plan.id, conversationId: 'conv-1' });
+        expect(dbUpsertArchitectPlanConversationSyncMock).toHaveBeenCalled();
+      }
+    });
+
+    it.each([false, true])('verifies a remapped shared transcript before binding (omit copy: %s)', async (omitCopy) => {
+      context.tauriAvailable = true;
+      const plan = createPlan({ conversationId: 'shared-conv' });
+      architectPlans.set(plan.id, plan);
+      const source = { id: 'global-message-id', role: 'user' as const, content: 'Synthetic shared history', createdAt: '2026-03-19T00:03:00.000Z' };
+      architectPlanMessages.set(plan.id, [source]);
+      context.chatSnapshotMessages = [{ id: source.id, conversation_id: 'shared-conv', role: source.role, content: source.content, created_at: source.createdAt }];
+      importMessagesMock.mockImplementationOnce(async (conversationId, messages) =>
+        omitCopy ? [] : messages.filter((message) => message.id !== source.id).map((message) => ({ ...message, conversation_id: conversationId })));
+      const { useChatStore } = await loadChatStore();
+      useChatStore.setState(createIdleChatStoreState({ conversations: [createConversation('shared-conv')] }));
+      const operation = useChatStore.getState().ensureArchitectConversationForPlan({ plan, targetBranch: 'develop', sharedConversation: true });
+      if (omitCopy) {
+        await expect(operation).rejects.toThrow('copie du transcript');
+        expect(updateArchitectPlanMock).not.toHaveBeenCalled();
+        expect(dbUpsertArchitectPlanConversationSyncMock).not.toHaveBeenCalled();
+      } else {
+        const result = await operation;
+        const copied = useChatStore.getState().getConversationMessages(result.conversationId!);
+        expect(copied).toHaveLength(1);
+        expect(copied[0]?.id).not.toBe(source.id);
+        expect(copied[0]?.content).toBe(source.content);
+        expect(copied[0]?.role).toBe(source.role);
+        expect(context.chatSnapshotMessages[0]?.content).toBe(source.content);
+        expect(updateArchitectPlanMock).toHaveBeenCalledWith(expect.objectContaining({ conversationId: result.conversationId }));
+      }
     });
 
     it('creates a dedicated conversation and restores transcript when the plan conversation is shared', async () => {
@@ -784,7 +916,7 @@ export const registerArchitectLifecycleScenarios = (
       expect(useChatStore.getState().selectedConversationId).toBe('started-plan-conv');
     });
 
-    it('uses a head-only architect activation without reading the transcript when DB sync matches', async () => {
+    it('verifies exact runtime transcript content even when the DB sync stamp matches', async () => {
       context.tauriAvailable = true;
       const plan = createScenarioPlan('started', {
         id: 'plan-head-sync-ok',
@@ -793,6 +925,19 @@ export const registerArchitectLifecycleScenarios = (
         conversationId: 'plan-head-sync-conv',
       });
       architectPlans.set(plan.id, plan);
+      architectPlanMessages.set(plan.id, [
+        createTranscriptEntry({
+          id: 'head-sync-user',
+          role: 'user',
+          content: 'Existing local question',
+        }),
+        createTranscriptEntry({
+          id: 'head-sync-assistant',
+          role: 'assistant',
+          content: 'Existing local answer',
+          createdAt: '2026-03-19T00:02:00.000Z',
+        }),
+      ]);
       appState.activeArchitectPlanId = plan.id;
       appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
       context.chatSnapshotConversations = [
@@ -830,6 +975,8 @@ export const registerArchitectLifecycleScenarios = (
         chatMessagesLoaded: false,
         chatTranscriptRevision: 'revision-head-ok',
         chatMessageCount: 2,
+        replicaScopeKey: 'repo:C:/repos/project-a',
+        replicaProjectId: 'project-a',
         conversationId: 'plan-head-sync-conv',
         sharedConversation: false,
         targetBranch: 'develop',
@@ -840,8 +987,17 @@ export const registerArchitectLifecycleScenarios = (
       await useChatStore.getState().initialize();
 
       expect(useChatStore.getState().selectedConversationId).toBe('plan-head-sync-conv');
-      expect(dbGetArchitectPlanConversationSyncMock).toHaveBeenCalledWith('plan-head-sync-conv');
-      expect(getArchitectPlanChatTranscriptMock).not.toHaveBeenCalled();
+      expect(dbGetArchitectPlanConversationSyncMock).not.toHaveBeenCalled();
+      expect(getArchitectPlanChatTranscriptMock).toHaveBeenCalledWith(
+        'develop',
+        plan.id,
+        {
+          replicaScopeKey: 'repo:C:/repos/project-a',
+          replicaProjectId: 'project-a',
+          expectedTranscriptRevision: 'revision-head-ok',
+          expectedMessageCount: 2,
+        },
+      );
       expect(
         useChatStore
           .getState()
@@ -885,6 +1041,8 @@ export const registerArchitectLifecycleScenarios = (
         chatMessagesLoaded: false,
         chatTranscriptRevision: 'revision-head-missing',
         chatMessageCount: 2,
+        replicaScopeKey: 'repo:C:/repos/project-a',
+        replicaProjectId: 'project-a',
         conversationId: 'plan-head-missing-conv',
         sharedConversation: false,
         targetBranch: 'develop',
@@ -894,7 +1052,16 @@ export const registerArchitectLifecycleScenarios = (
       const { useChatStore } = await loadChatStore();
       await useChatStore.getState().initialize();
 
-      expect(getArchitectPlanChatTranscriptMock).toHaveBeenCalledWith('develop', plan.id);
+      expect(getArchitectPlanChatTranscriptMock).toHaveBeenCalledWith(
+        'develop',
+        plan.id,
+        {
+          replicaScopeKey: 'repo:C:/repos/project-a',
+          replicaProjectId: 'project-a',
+          expectedTranscriptRevision: 'revision-head-missing',
+          expectedMessageCount: 2,
+        },
+      );
       expect(importMessagesMock).toHaveBeenCalledWith(
         'plan-head-missing-conv',
         expect.arrayContaining([
@@ -915,6 +1082,74 @@ export const registerArchitectLifecycleScenarios = (
           .getConversationMessages('plan-head-missing-conv')
           .map((message: { id: string }) => message.id)
       ).toEqual(['missing-sync-user', 'missing-sync-assistant']);
+    });
+
+    it('fails closed when the transcript identity changes after head activation', async () => {
+      context.tauriAvailable = true;
+      const plan = createScenarioPlan('started', {
+        id: 'plan-head-conflict',
+        slug: 'plan-head-conflict',
+        title: 'plan-head-conflict',
+        conversationId: 'plan-head-conflict-conv',
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('project-architect-conversation'),
+      ];
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => ({
+        plan,
+        chatMessages: [],
+        chatMessagesLoaded: false,
+        chatTranscriptRevision: 'revision-before-conflict',
+        chatMessageCount: 1,
+        replicaScopeKey: 'repo:C:/repos/project-a',
+        replicaProjectId: 'project-a',
+        conversationId: 'plan-head-conflict-conv',
+        sharedConversation: false,
+        targetBranch: 'develop',
+        resolutionMode: 'full',
+      }));
+      getArchitectPlanChatTranscriptMock.mockImplementationOnce(async () => {
+        throw new Error('Architect transcript identity changed.');
+      });
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().initialize();
+
+      expect(useChatStore.getState().selectedConversationId).toBeNull();
+      expect(useChatStore.getState().selectedConversationIdsByMode.Architect).toBeNull();
+      expect(useChatStore.getState().restoreStatus).toBe('error');
+      expect(useChatStore.getState().lastError).toContain('identity changed');
+    });
+
+    it('does not reload a plan through the legacy reader after runtime activation returns null', async () => {
+      context.tauriAvailable = true;
+      const plan = createScenarioPlan('started', {
+        id: 'plan-runtime-quarantined',
+        slug: 'plan-runtime-quarantined',
+        title: 'plan-runtime-quarantined',
+        conversationId: 'quarantined-plan-conv',
+      });
+      architectPlans.set(plan.id, plan);
+      appState.activeArchitectPlanId = plan.id;
+      appState.activePlanContext = { id: plan.id, targetBranch: 'develop' };
+      context.chatSnapshotConversations = [
+        createChatSnapshotConversation('project-architect-conversation'),
+      ];
+      getArchitectPlanActivationPayloadMock.mockImplementationOnce(async () => null);
+
+      const { useChatStore } = await loadChatStore();
+      await useChatStore.getState().initialize();
+
+      expect(getArchitectPlanMock).not.toHaveBeenCalled();
+      expect(getArchitectPlanChatTranscriptMock).not.toHaveBeenCalled();
+      expect(useChatStore.getState().selectedConversationId).toBeNull();
+      expect(useChatStore.getState().restoreStatus).toBe('error');
+      expect(useChatStore.getState().lastError).toContain(
+        'aucune tête de plan cohérente',
+      );
     });
 
     it('reuses the app-store activation payload before falling back to the plan service', async () => {

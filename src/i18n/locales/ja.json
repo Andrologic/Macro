@@ -41,7 +41,17 @@
     "interrupted": "起動が中断されました",
     "failedTitle": "Macro は起動を完了できませんでした。",
     "failedDescription": "Macro はローカルデータを初期化できませんでした。安全に再試行できます。",
-    "failedSteps": "失敗した手順"
+    "failedSteps": "失敗した手順",
+    "metadataRecovery": {
+      "restoredWithCommit": "履歴から @macro メタデータを復元しました ({{commit}})",
+      "restored": "履歴から @macro メタデータを復元しました",
+      "restoredDescription": "ワークスペースを読み込む前に、最新の有効なメタデータのスナップショットを復元しました。",
+      "reconstructed": "ローカルプロジェクトから @macro メタデータを再構成しました",
+      "reconstructedDescription": "既知のローカルプロジェクトから最小限のメタデータ状態を再構築しました。",
+      "skipped": "@macro の自動復元をスキップしました",
+      "blockedConflictDescription": "メタデータのワークツリーに未解決の競合があるため、自動復元を適用しませんでした。",
+      "blockedDirtyDescription": "メタデータのワークツリーにローカル変更があるため、自動復元を適用しませんでした。"
+    }
   },
   "shutdown": {
     "activeWorkSingle": "実行中のタスクがあります。Macro を閉じると中断されます。",
@@ -450,6 +460,11 @@
     "imageImportFailed": "画像は追加されませんでした。有効なPNG、JPEG、GIF、WebPを使用してください。1画像2 MB、合計8 MB、最大10画像です。",
     "newChat": "新しいチャット",
     "newConversation": "新しい会話",
+    "unsavedAssistant": {
+      "label": "未保存",
+      "saving": "回答を保存しています...",
+      "description": "Macro はこの回答を保存できませんでした。次のメッセージを送る前に、再試行するか削除してください。"
+    },
     "loadingConversation": "会話を復元しています...",
     "showHistory": "番組履歴",
     "hideHistory": "履歴を隠す",
@@ -536,6 +551,8 @@
     "toolTurnLimitNoticeDescription": "Macro は設定されたターン上限に達したためエージェントループを停止しました。設定 > 一般 > エージェント最大ターン数 で変更または無効化してから、新しいメッセージを送って続行してください。",
     "toolTurnLimitFallbackTitle": "ツールターンの上限に達しました",
     "toolTurnLimitFallbackDescription": "最後のツールなしの処理で利用可能な回答が得られなかったため、Macro が代替サマリーを表示しました。",
+    "providerCompletionNoticeTitle": "応答が中断されました",
+    "providerCompletionNoticeDescription": "プロバイダーは次の理由で応答を終了しました: {{reason}}。リクエストを修正して、もう一度お試しください。",
     "thinking": "考え...",
     "tool": "道具",
     "runningTools": "実行中のツール",
@@ -557,6 +574,9 @@
     "toolApprovalReasonPlaceholder": "Add a short reason if you want Macro to know why.",
     "toolApprovalConfirmDeny": "Confirm denial",
     "toolApprovalDeny": "Refuse",
+    "mcpApprovalArguments": "MCP 操作と引数",
+    "mcpApprovalRedacted": "機密フィールドはマスクされています。",
+    "mcpApprovalTruncated": "引数は16,000文字で切り詰められています。",
     "toolApprovalAllowOnce": "Allow once",
     "toolApprovalAllowConversation": "Allow for this conversation",
     "toolApprovalAllowOnceHint": "Approve only this exact request.",
@@ -998,7 +1018,8 @@
       "upToDate": "選択したチャンネルでMacroは最新です。",
       "stableConfirmationTitle": "Stable チャンネルに切り替えますか？",
       "stableConfirmationDescription": "最新の Stable がこの Preview より古い場合、Macro はその署名済み旧バージョンのインストールを提案します。",
-      "switchToStable": "Stable に切り替える"
+      "switchToStable": "Stable に切り替える",
+      "refreshFailed": "更新チャンネルは保存されましたが、更新情報を再取得できませんでした。"
     },
     "sound_effects": "効果音",
     "sound_effects_desc": "タスクの完了またはエラー時にサウンドを再生する",
@@ -1531,6 +1552,7 @@
       "collapseProject": "プロジェクトを折りたたむ",
       "noProjects": "プロジェクトはまだありません。",
       "loadError": "プランを読み込めませんでした。",
+      "preferenceLoadError": "ナビゲーターの設定を読み込めませんでした。",
       "activateError": "このプランは利用できなくなりました。",
       "createError": "プランを作成できませんでした。",
       "readOnlyScope": "このプロジェクトは読み取り専用です。",
@@ -1718,6 +1740,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "戦略プレビューを破棄できませんでした。",
+    "strategyPreviewApplyError": "戦略プレビューを適用できませんでした。",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "設計を始めるにはプランを選択または作成してください。",
     "createFirstPlanToStart": "設計を始めるには最初のプランを作成してください。",
@@ -2094,6 +2118,7 @@
   },
   "notifications": {
     "centerTitle": "通知",
+    "mcpServersUnavailable": "一部の MCP サーバーを利用できません",
     "openCenter": "通知を開く",
     "closeCenter": "通知を閉じる",
     "clearAll": "すべてクリア",
@@ -2476,6 +2501,15 @@
   },
   "backup": {
     "scheduled": "操作を準備しました。Macro を完全に終了して再度開いてください。終了するまでこのセッションを変更しないでください。",
+    "resultExported": "バックアップを保存しました。",
+    "resultRestored": "プロファイルを復元しました。以前のプロファイルは以下のパスに保存されています。",
+    "resultRolledBack": "中断された復元を取り消し、以前のプロファイルに戻しました。",
+    "resultFailed": "バックアップ操作を完了できませんでした。診断の詳細を確認してください。",
+    "resultInvalidRequest": "保留中の要求が無効だったため隔離しました。プロファイルは変更されていません。",
+    "resultLegacy": "以前のバージョンの結果を診断の詳細で確認できます。",
+    "diagnostics": "診断の詳細",
+    "startupTitle": "プロファイルの復旧が必要です",
+    "startupRecovery": "ブラウザーデータの復元を完了できませんでした。ネイティブの復旧アーカイブは保持されています。診断を確認し、必要に応じてローカルストレージの空き容量を増やしてから、Macroを再起動してください。",
     "title": "バックアップと復元",
     "scope": "ローカルプロファイル：会話、保存済み添付ファイル、コードチェックポイント、下書き、全体設定。プロジェクトフォルダーと Git メタデータは含まれません。プロジェクトは別途コピーしてください。上限 256 MiB。同じ Macro バージョンで復元してください。",
     "secrets": "プロバイダーの認証情報、MCP 環境変数とヘッダーはポータブルエクスポートに含まれません。復元後に再接続してください。会話やファイルは個人データを含むため、アーカイブを安全に保管してください。",

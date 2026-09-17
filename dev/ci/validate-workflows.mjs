@@ -118,8 +118,15 @@ export function validateWorkflowDocument(document, filePath) {
       fail('develop synchronization deduplication must verify an exact successful main CI run.');
     }
     for (const jobName of ['linux', 'windows', 'macos']) {
-      if (!String(document.jobs[jobName]?.if ?? '').includes("reusable_validation != 'true'")) {
+      const job = document.jobs[jobName];
+      if (!String(job?.if ?? '').includes("reusable_validation != 'true'")) {
         fail(`job "${jobName}" must run unless an exact main CI result is reusable.`);
+      }
+      const rustToolchainIndex = (job?.steps || []).findIndex((step) => (
+        typeof step?.uses === 'string' && step.uses.startsWith('dtolnay/rust-toolchain@')
+      ));
+      if (rustToolchainIndex === -1) {
+        fail(`job "${jobName}" must install Rust because its runner executes native tests.`);
       }
     }
   }
@@ -179,15 +186,27 @@ export function validateWorkflowDocument(document, filePath) {
     const finalizationBunIndex = finalizationSteps.findIndex((step) => (
       typeof step?.uses === 'string' && step.uses.startsWith('oven-sh/setup-bun@')
     ));
+    const finalizationRustIndex = finalizationSteps.findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('dtolnay/rust-toolchain@')
+    ));
     const updaterManifestIndex = finalizationSteps.findIndex((step) => (
       typeof step?.run === 'string' && step.run.includes('dev/release/updater-manifest.mjs')
     ));
+    const updaterVerification = finalizationSteps.find((step) => (
+      typeof step?.run === 'string' && step.run.includes('dev/release/verify-updater.mjs')
+    ));
+    const updaterVerificationScript = typeof updaterVerification?.run === 'string'
+      ? updaterVerification.run
+      : '';
     if (
       finalizationCheckoutIndex === -1
       || finalizationBunIndex <= finalizationCheckoutIndex
+      || finalizationRustIndex <= finalizationBunIndex
       || updaterManifestIndex <= finalizationBunIndex
+      || !updaterVerificationScript.includes('--channel stable')
+      || !updaterVerificationScript.includes('--tauri-config src-tauri/tauri.conf.json')
     ) {
-      fail('release finalization must check out the tagged sources and set up Bun before generating the updater manifest.');
+      fail('release finalization must check out the tagged sources, generate the updater manifest, and verify all signatures with the configured key.');
     }
   }
 
@@ -243,8 +262,23 @@ export function validateWorkflowDocument(document, filePath) {
     if (!publishScript.includes('dev/release/publish-channel-branch.mjs')) {
       fail('stable channel publication must use the shared channel branch publisher.');
     }
-    if (!publishScript.includes('--asset-root channel-input') || !publishScript.includes('--checksums channel-input/SHA256SUMS.txt')) {
-      fail('stable channel publication must verify downloaded updater assets and checksums before advancing pointers.');
+    const publishRustIndex = (document.jobs.publish?.steps || []).findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('dtolnay/rust-toolchain@')
+    ));
+    const publishBunIndex = (document.jobs.publish?.steps || []).findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('oven-sh/setup-bun@')
+    ));
+    if (publishRustIndex === -1) {
+      fail('stable channel publication must install Rust so cargo is available for signature verification.');
+    }
+    if (
+      publishRustIndex <= publishBunIndex
+      || !publishScript.includes('--asset-root channel-input')
+      || !publishScript.includes('--checksums channel-input/SHA256SUMS.txt')
+      || !publishScript.includes('--channel stable')
+      || !publishScript.includes('--tauri-config src-tauri/tauri.conf.json')
+    ) {
+      fail('stable channel publication must verify downloaded updater assets and checksums, then verify signatures with the configured key before advancing pointers.');
     }
     if (publishScript.includes('git rm -rf .')) {
       fail('channel publication must not remove an already-empty orphan worktree.');
@@ -252,6 +286,10 @@ export function validateWorkflowDocument(document, filePath) {
   }
 
   if (filePath.endsWith('preview.yml')) {
+    const applyPreviewVersion = document.jobs.build?.steps?.find((step) => step?.name === 'Apply preview version');
+    if (applyPreviewVersion?.shell !== 'bash') {
+      fail('preview version application must use Bash so environment variables work on Windows runners.');
+    }
     if (document.permissions?.actions !== 'read') {
       fail('preview validation must keep actions: read permission to verify reusable CI results.');
     }
@@ -280,8 +318,23 @@ export function validateWorkflowDocument(document, filePath) {
     if (!publishScript.includes('dev/release/publish-channel-branch.mjs')) {
       fail('preview channel publication must use the shared channel branch publisher.');
     }
-    if (!publishScript.includes('--asset-root release-assets') || !publishScript.includes('--checksums release-assets/SHA256SUMS.txt')) {
-      fail('preview publication must verify updater assets and checksums before uploading them.');
+    const publishRustIndex = (document.jobs.publish?.steps || []).findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('dtolnay/rust-toolchain@')
+    ));
+    const publishBunIndex = (document.jobs.publish?.steps || []).findIndex((step) => (
+      typeof step?.uses === 'string' && step.uses.startsWith('oven-sh/setup-bun@')
+    ));
+    if (publishRustIndex === -1) {
+      fail('preview publication must install Rust so cargo is available for signature verification.');
+    }
+    if (
+      publishRustIndex <= publishBunIndex
+      || !publishScript.includes('--asset-root release-assets')
+      || !publishScript.includes('--checksums release-assets/SHA256SUMS.txt')
+      || !publishScript.includes('--channel preview')
+      || !publishScript.includes('--tauri-config src-tauri/tauri.conf.json')
+    ) {
+      fail('preview publication must verify downloaded updater assets and checksums, then verify signatures with the configured key before uploading them.');
     }
     if (publishScript.includes('git rm -rf .')) {
       fail('channel publication must not remove an already-empty orphan worktree.');

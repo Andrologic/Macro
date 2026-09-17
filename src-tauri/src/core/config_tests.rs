@@ -8,6 +8,45 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    #[tokio::test]
+    async fn malformed_portable_runtime_defers_to_approved_snapshot_without_losing_bytes() {
+        use crate::config::{ConfigDocumentKind, ConfigManager};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let workspace = root.join("synthetic-workspace");
+        let approved_path = root.join(".runtime/approved/user/runtime.json");
+        fs::create_dir_all(approved_path.parent().unwrap()).unwrap();
+        fs::write(
+            &approved_path,
+            serde_json::json!({
+                "$schema": "runtime.schema.json", "schemaVersion": 1, "defaultWorkspace": workspace,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::copy(&approved_path, root.join("runtime.json")).unwrap();
+        let manager = ConfigManager::initialize(root.clone()).await.unwrap();
+        let approved = manager
+            .effective_user_document(ConfigDocumentKind::Runtime)
+            .await;
+        drop(manager);
+        let path = root.join("runtime.json");
+        fs::write(&path, b"{truncated").unwrap();
+        let mut config = test_load_config_from_runtime_file(path.clone()).unwrap();
+        let recovered = ConfigManager::initialize(root).await.unwrap();
+        let runtime = recovered
+            .effective_user_document(ConfigDocumentKind::Runtime)
+            .await;
+        assert_eq!(runtime, approved);
+        crate::core::config::apply_runtime_workspace(&mut config, &runtime).unwrap();
+        assert_eq!(config.workspace_path, workspace);
+        assert_eq!(
+            config.workspace_path_source,
+            WorkspacePathSource::Configured
+        );
+        assert_eq!(fs::read(path).unwrap(), b"{truncated");
+    }
+
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
@@ -127,9 +166,6 @@ mod tests {
 
         assert!(config.workspace_path.is_absolute());
         assert_ne!(config.workspace_path, runtime_workspace);
-        assert_eq!(
-            config.workspace_path_source,
-            WorkspacePathSource::Configured
-        );
+        assert_eq!(config.workspace_path_source, WorkspacePathSource::Default);
     }
 }

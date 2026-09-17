@@ -41,7 +41,17 @@
     "interrupted": "시작이 중단되었습니다",
     "failedTitle": "Macro가 시작을 완료하지 못했습니다.",
     "failedDescription": "Macro가 로컬 데이터를 초기화하지 못했습니다. 안전하게 다시 시도할 수 있습니다.",
-    "failedSteps": "실패한 단계"
+    "failedSteps": "실패한 단계",
+    "metadataRecovery": {
+      "restoredWithCommit": "기록에서 @macro 메타데이터를 복원했습니다 ({{commit}})",
+      "restored": "기록에서 @macro 메타데이터를 복원했습니다",
+      "restoredDescription": "작업 공간을 불러오기 전에 유효한 최신 메타데이터 스냅샷을 복원했습니다.",
+      "reconstructed": "로컬 프로젝트에서 @macro 메타데이터를 다시 구성했습니다",
+      "reconstructedDescription": "알려진 로컬 프로젝트에서 최소 메타데이터 상태를 다시 구성했습니다.",
+      "skipped": "@macro 자동 복구를 건너뛰었습니다",
+      "blockedConflictDescription": "메타데이터 작업 트리에 해결되지 않은 충돌이 있어 자동 복구를 적용하지 않았습니다.",
+      "blockedDirtyDescription": "메타데이터 작업 트리에 로컬 변경 사항이 있어 자동 복구를 적용하지 않았습니다."
+    }
   },
   "shutdown": {
     "activeWorkSingle": "실행 중인 작업이 있습니다. Macro를 닫으면 작업이 중단됩니다.",
@@ -450,6 +460,11 @@
     "imageImportFailed": "이미지가 추가되지 않았습니다. 유효한 PNG, JPEG, GIF 또는 WebP를 사용하세요. 이미지당 2 MB, 총 8 MB, 최대 10개입니다.",
     "newChat": "새 채팅",
     "newConversation": "새로운 대화",
+    "unsavedAssistant": {
+      "label": "저장되지 않음",
+      "saving": "응답 저장 중...",
+      "description": "Macro가 이 응답을 저장하지 못했습니다. 다음 메시지를 보내기 전에 다시 시도하거나 삭제하세요."
+    },
     "loadingConversation": "대화를 복원하는 중...",
     "showHistory": "기록 표시",
     "hideHistory": "기록 숨기기",
@@ -536,6 +551,8 @@
     "toolTurnLimitNoticeDescription": "Macro가 설정된 턴 한도에 도달해 에이전트 루프를 중지했습니다. 설정 > 일반 > 최대 에이전트 턴에서 변경하거나 비활성화한 뒤 새 메시지를 보내 계속하세요.",
     "toolTurnLimitFallbackTitle": "도구 턴 한도에 도달했습니다",
     "toolTurnLimitFallbackDescription": "마지막 도구 없는 처리에서 사용할 수 있는 답변이 나오지 않아 Macro가 대체 요약을 표시했습니다.",
+    "providerCompletionNoticeTitle": "응답이 중단되었습니다",
+    "providerCompletionNoticeDescription": "공급자가 다음 이유로 응답을 종료했습니다: {{reason}}. 요청을 수정한 후 다시 시도하세요.",
     "thinking": "생각...",
     "tool": "도구",
     "runningTools": "실행 중인 도구",
@@ -557,6 +574,9 @@
     "toolApprovalReasonPlaceholder": "Add a short reason if you want Macro to know why.",
     "toolApprovalConfirmDeny": "Confirm denial",
     "toolApprovalDeny": "Refuse",
+    "mcpApprovalArguments": "MCP 작업 및 인수",
+    "mcpApprovalRedacted": "민감한 필드는 마스킹됩니다.",
+    "mcpApprovalTruncated": "인수가 16,000자 이후 잘렸습니다.",
     "toolApprovalAllowOnce": "Allow once",
     "toolApprovalAllowConversation": "Allow for this conversation",
     "toolApprovalAllowOnceHint": "Approve only this exact request.",
@@ -998,7 +1018,8 @@
       "upToDate": "선택한 채널에서 Macro가 최신 상태입니다.",
       "stableConfirmationTitle": "Stable 채널로 전환할까요?",
       "stableConfirmationDescription": "최신 Stable 버전이 현재 Preview보다 이전 버전이면 Macro가 서명된 이전 버전 설치를 제안합니다.",
-      "switchToStable": "Stable로 전환"
+      "switchToStable": "Stable로 전환",
+      "refreshFailed": "업데이트 채널은 저장되었지만 업데이트 정보를 새로 고칠 수 없습니다."
     },
     "sound_effects": "음향 효과",
     "sound_effects_desc": "작업 완료 또는 오류 시 소리 재생",
@@ -1531,6 +1552,7 @@
       "collapseProject": "프로젝트 접기",
       "noProjects": "아직 프로젝트가 없습니다.",
       "loadError": "플랜을 불러올 수 없습니다.",
+      "preferenceLoadError": "탐색기 환경설정을 불러올 수 없습니다.",
       "activateError": "이 플랜은 더 이상 사용할 수 없습니다.",
       "createError": "플랜을 만들 수 없습니다.",
       "readOnlyScope": "이 프로젝트는 읽기 전용입니다.",
@@ -1718,6 +1740,8 @@
     "strategyPreviewNew": "New tasks",
     "strategyPreviewRemoved": "Pending removals",
     "strategyPreviewConflicts": "Conflicts",
+    "strategyPreviewDiscardError": "전략 미리보기를 취소하지 못했습니다.",
+    "strategyPreviewApplyError": "전략 미리보기를 적용하지 못했습니다.",
     "applyStrategyPreview": "Apply regeneration",
     "selectPlanToStart": "설계를 시작하려면 플랜을 선택하거나 만드세요.",
     "createFirstPlanToStart": "설계를 시작하려면 첫 번째 플랜을 만드세요.",
@@ -2094,6 +2118,7 @@
   },
   "notifications": {
     "centerTitle": "알림",
+    "mcpServersUnavailable": "일부 MCP 서버를 사용할 수 없습니다",
     "openCenter": "알림 열기",
     "closeCenter": "알림 닫기",
     "clearAll": "모두 지우기",
@@ -2476,6 +2501,15 @@
   },
   "backup": {
     "scheduled": "작업이 준비되었습니다. Macro를 완전히 종료한 뒤 다시 여세요. 종료 전까지 이 세션을 변경하지 마세요.",
+    "resultExported": "백업이 저장되었습니다.",
+    "resultRestored": "프로필이 복원되었습니다. 이전 프로필은 아래 경로에 보관됩니다.",
+    "resultRolledBack": "중단된 복원을 취소하고 이전 프로필을 복구했습니다.",
+    "resultFailed": "백업 작업을 완료하지 못했습니다. 진단 세부 정보를 확인하세요.",
+    "resultInvalidRequest": "대기 중인 요청이 유효하지 않아 격리했습니다. 프로필은 변경되지 않았습니다.",
+    "resultLegacy": "이전 버전의 결과를 진단 세부 정보에서 확인할 수 있습니다.",
+    "diagnostics": "진단 세부 정보",
+    "startupTitle": "프로필 복구 필요",
+    "startupRecovery": "브라우저 데이터 복원을 완료하지 못했습니다. 기본 복구 아카이브는 보관됩니다. 진단을 확인하고 필요한 경우 로컬 저장 공간을 확보한 후 Macro를 다시 시작하세요.",
     "title": "백업 및 복원",
     "scope": "로컬 프로필: 대화, 저장된 첨부 파일, 코드 체크포인트, 초안 및 전역 설정. 프로젝트 폴더와 Git 메타데이터는 제외됩니다. 프로젝트는 별도로 복사하세요. 최대 256 MiB이며 동일한 Macro 버전으로 복원해야 합니다.",
     "secrets": "공급자 자격 증명, MCP 환경 변수 및 헤더는 이식용 내보내기에서 제외됩니다. 복원 후 공급자를 다시 연결하세요. 대화와 파일에는 개인 데이터가 포함되므로 안전하게 보관하세요.",
