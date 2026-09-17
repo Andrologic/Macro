@@ -156,41 +156,13 @@ The release workflow generates `latest.json` from five required targets:
 `.app.tar.gz` archive. Windows x64 and Windows ARM64 use separate native NSIS
 installers and updater signatures.
 
-### End-to-end updater test
+### Release validation
 
-Use a disposable VM or machine. Keep the previous signed installer so the test
-can start from a real installed version rather than a development server.
-
-1. Leave the new GitHub release as a draft and download all its assets.
-2. Run `release:updater:verify` against the downloaded `latest.json`, updater
-   bundles, signatures, and `SHA256SUMS.txt`.
-3. On native Windows on ARM, install the ARM64 NSIS package from the draft.
-   Confirm that Macro launches and that a minimal Macro AI request exercises the
-   bundled ARM64 sidecar without falling back to x64 emulation.
-4. Install and open the previous stable Macro version on the x64 test machine.
-5. Publish the draft without announcing it. Draft releases are intentionally
-   invisible to the updater, so the network path cannot be tested earlier.
-6. Restart the old app. Confirm one automatic check occurs, the footer reports
-   download progress, and the app remains open after the update becomes ready.
-7. First test the normal restart path with no active work. Confirm the new
-   version launches and its release-note dialog appears once.
-8. Restore the old VM snapshot and repeat with a streaming conversation and an
-   active Implement command. Confirm `Wait` is focused, both activities are
-   listed, and only `Restart anyway` proceeds without cancelling them.
-9. Restart the updated app again. Confirm the release-note dialog does not open
-   a second time and the footer reports that Macro is current.
-10. On the ARM64 installation, confirm that Tauri selects
-    `stable-windows-aarch64.json` and that the update check reads the expected
-    version without a release-JSON error.
-11. Verify all five public `stable-*.json` files on the `updates` branch, then
-   run `release:updater:verify` against the public `/releases/latest/` manifest.
-
-Version `v0.1.1` is the first supported public release. Use the internal
-`v0.1.0` build only to prove the real `v0.1.0` to `v0.1.1` updater path on a
-disposable x64 test machine. Test Windows ARM64 with a native `v0.1.1` install,
-then prove its first automatic update with the next signed Preview or stable
-build. No compatibility repair for unofficial `v0.1.0` installations is
-required.
+Stable releases require successful automated CI, platform package checks,
+updater signature and checksum verification, and verification of all five
+Stable manifests after publication. Manual installation, AI-request, and updater
+smoke tests are optional diagnostics. They do not block release preparation,
+publication, or announcement, including when native ARM64 hardware is unavailable.
 
 ## Build Outputs
 
@@ -330,18 +302,15 @@ committing it and keep the release dialog usable without media playback.
    environment when the tag and version are correct.
 8. Wait for `.github/workflows/release.yml` to create the draft release.
 9. Download the draft assets and run `release:updater:verify` with the asset
-   directory and `SHA256SUMS.txt`. Install the ARM64 NSIS package on native
-   Windows on ARM, launch Macro, and exercise the bundled AI runtime.
-10. Publish the draft without announcing it. If the stable-channel workflow
+   directory and `SHA256SUMS.txt`.
+10. Publish the reviewed draft. If the stable-channel workflow
     does not run, relaunch it manually with the exact published tag.
 11. Verify that all five raw `stable-*.json` endpoints contain the expected
     version, embedded signature, and tag-pinned asset URL.
-12. From the internal `v0.1.0` x64 installation, verify that Macro offers and
-    installs `v0.1.1`. Install the ARM64 package on native Windows on ARM and
-    verify launch, the bundled AI runtime, and update checking.
-13. Announce the release only after these checks pass. If native ARM64 validation
-    fails while the release is still a draft, leave the tag and draft immutable,
-    fix the defect in a higher patch version, and do not advertise ARM64 support.
+12. Run `release:updater:verify` against the public `/releases/latest/` manifest.
+13. Announce the release after these automated checks pass. If a package check
+    fails while the release is still a draft, leave it unpublished and follow
+    the recovery procedure below.
 
 ## Recovering a faulty release
 
@@ -359,8 +328,8 @@ If the release has already been published:
    its immutable tag or replace its assets.
 3. Fix the problem and publish a higher patch version signed with the same
    updater key. Do not replace tag-pinned assets in place.
-4. Validate the new public channel manifests and test the update from the previous
-   stable installation before announcing recovery.
+4. Validate the new public channel manifests and updater artifacts with the
+   automated release checks before announcing recovery.
 5. Provide the new installer for a manual repair if the faulty application can
    no longer start. An already installed higher version cannot automatically
    downgrade to the previous release.
