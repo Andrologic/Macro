@@ -1,9 +1,10 @@
 use super::*;
-use std::{fs, path::PathBuf, process::Command};
+use crate::core::process::background_command;
+use std::{fs, path::PathBuf};
 use tempfile::TempDir;
 
 fn git(path: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = background_command("git")
         .arg("-C")
         .arg(path)
         .args(args)
@@ -86,7 +87,7 @@ fn cleanup_refuses_target_rewrite_after_frontend_inspection_without_removing_res
 fn cleanup_locks_target_against_external_rewrite_then_removes_source_idempotently() {
     let (temp, repo, state, journal, worktree) = fixture();
     let transaction = lock_cleanup_refs(&repo, &journal).unwrap();
-    let output = Command::new("git")
+    let output = background_command("git")
         .arg("-C")
         .arg(temp.path())
         .args([
@@ -192,6 +193,7 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
     git(
         remote.path(),
         &[
+            "--git-dir=.",
             "update-ref",
             "refs/heads/feature",
             &journal.session.target_commit,
@@ -211,12 +213,13 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
     assert!(!worktree.exists());
     assert!(repo.find_branch("feature", git2::BranchType::Local).is_ok());
     assert_eq!(
-        git(remote.path(), &["rev-parse", "feature"]),
+        git(remote.path(), &["--git-dir=.", "rev-parse", "feature"]),
         journal.session.target_commit
     );
     git(
         remote.path(),
         &[
+            "--git-dir=.",
             "update-ref",
             "refs/heads/feature",
             &journal.session.source_commit,
@@ -238,7 +241,11 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
     assert!(repo
         .find_branch("feature", git2::BranchType::Local)
         .is_err());
-    assert!(git(remote.path(), &["for-each-ref", "refs/heads/feature"]).is_empty());
+    assert!(git(
+        remote.path(),
+        &["--git-dir=.", "for-each-ref", "refs/heads/feature"]
+    )
+    .is_empty());
 }
 
 #[test]
