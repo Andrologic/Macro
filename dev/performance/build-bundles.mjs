@@ -5,13 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { build } from 'vite';
 import config from '../../vite.config';
+import { assertCleanBuildSource } from './build-provenance';
 
 if (process.env.NODE_ENV !== 'production') throw new Error('Run with NODE_ENV=production');
 const root = new URL('../../', import.meta.url);
-const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-if (execFileSync('git', ['diff', 'HEAD', '--', 'src', 'public', 'vite.config.ts', 'package.json', 'bun.lock'], { cwd: root }).length) {
-  throw new Error('Commit product/build changes before attributing bundle sizes to HEAD');
-}
+const sha = assertCleanBuildSource(root);
 const directory = mkdtempSync(join(tmpdir(), 'macro-bundle-baseline-'));
 try {
   const resolved = typeof config === 'function' ? await config({ command: 'build', mode: 'production' }) : await config;

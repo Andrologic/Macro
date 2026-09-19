@@ -6,13 +6,36 @@ type Invoke = (command: string, args?: unknown, options?: unknown) => Promise<un
 type Bridge = { invoke: Invoke };
 type Call = { command: string; ms: number; requestJsonBytes: number | null;
   responseJsonBytes: number | null; failed: boolean };
+// Snapshot only plain data descriptors; never invoke a getter or toJSON.
+// Proxy objects are outside this developer tool's synthetic-data contract.
 const bytes = (value: unknown): number | null => {
+  const seen = new Set<object>();
+  const snapshot = (entry: unknown): unknown => {
+    if (entry === null || typeof entry === 'string' || typeof entry === 'boolean' ||
+        typeof entry === 'number' || typeof entry === 'undefined') return entry;
+    if (typeof entry !== 'object' || seen.has(entry)) throw new Error('Non-JSON data');
+    const prototype = Object.getPrototypeOf(entry);
+    if (prototype !== Object.prototype && prototype !== Array.prototype && prototype !== null) {
+      throw new Error('Non-plain object');
+    }
+    for (let proto = prototype; proto; proto = Object.getPrototypeOf(proto)) {
+      if (Object.getOwnPropertyDescriptor(proto, 'toJSON')) throw new Error('Custom serialization');
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(entry);
+    if (descriptors.toJSON || Object.values(descriptors).some((descriptor) => !('value' in descriptor))) {
+      throw new Error('Accessor or custom serialization');
+    }
+    seen.add(entry);
+    const copy = Array.isArray(entry) ? [] : Object.create(null);
+    if (Array.isArray(copy)) Object.setPrototypeOf(copy, null);
+    for (const [key, descriptor] of Object.entries(descriptors)) {
+      Object.defineProperty(copy, key, { ...descriptor, value: snapshot(descriptor.value) });
+    }
+    seen.delete(entry);
+    return copy;
+  };
   try {
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return null;
-    return new TextEncoder().encode(JSON.stringify(value, (_key, entry) => {
-      if (entry instanceof ArrayBuffer || ArrayBuffer.isView(entry)) throw new Error('Binary payload');
-      return entry;
-    }) ?? '').length;
+    return new TextEncoder().encode(JSON.stringify(snapshot(value)) ?? '').length;
   } catch { return null; }
 };
 

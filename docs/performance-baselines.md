@@ -21,7 +21,9 @@ flag, UTC timestamp, OS, CPU, memory, Bun/SQLite versions, SQL/schema hashes,
 p50/p95/max and sample counts. Compare the same source, toolchain and fixture
 sizes. The bundle command builds the real Vite configuration into a fresh
 system temporary directory, limits Terser to two workers, reports raw and gzip-9
-JS/CSS sizes and content hashes, then removes that directory. It does not build
+JS/CSS sizes and content hashes, then removes that directory. It requires a clean worktree, including untracked
+files, and refuses ignored environment/source/public inputs. Commit the tooling
+before running this command. It does not build
 Rust or a desktop release. A standalone scanner is available for existing
 artifacts, but its source SHA is a caller attestation, not verified provenance:
 
@@ -169,8 +171,11 @@ Application background calls inside the window remain counted; run an idle
 control window to quantify them without subtracting blindly. Per-command timing
 ends before response sizing; action timing includes probe overhead. JSON sizing
 can allocate substantially for large responses. Run latency-only UI traces with
-the probe uninstalled as a control. Unsupported binary/circular values have
-null byte counts, not zero. Export only aggregate timings/counts; raw application
+the probe uninstalled as a control. Byte sizing accepts plain synthetic data descriptors only. Accessors, custom
+`toJSON`, binary/circular values and class instances have
+null byte counts, not zero, without invoking getters or custom serializers.
+Proxy objects are outside this fixture-only contract; do not pass them to the
+probe because descriptor inspection itself can invoke Proxy traps. Export only aggregate timings/counts; raw application
 monitor reports can contain identifiers and URLs.
 
 ## Next experiments justified by this run
