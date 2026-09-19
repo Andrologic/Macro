@@ -16,9 +16,7 @@ mock.module('../services/preferences', () => ({
   savePreference: savePreferenceMock,
 }));
 
-mock.module('../components/ui/toastService', () => ({
-  notify: { success: mock(() => undefined) },
-}));
+const { installLanguageNotifications } = await import('./languageNotifications');
 
 let importCounter = 0;
 
@@ -41,9 +39,14 @@ describe('language changes', () => {
     });
     importCounter += 1;
     const languageModule = await import(`./index.ts?language-order=${importCounter}`);
+    const initialization = languageModule.initializeI18n();
+    expect(languageModule.initializeI18n()).toBe(initialization);
+    await initialization;
     languageModule.default.removeResourceBundle('ja', 'translation');
     languageModule.default.removeResourceBundle('ko', 'translation');
 
+    const notices: string[] = [];
+    const stopNotices = installLanguageNotifications(message => notices.push(message));
     const japanese = languageModule.changeLanguage('ja');
     const korean = languageModule.changeLanguage('ko');
     await Promise.resolve();
@@ -55,5 +58,7 @@ describe('language changes', () => {
 
     expect(languageModule.default.resolvedLanguage).toBe('ko');
     expect(savePreferenceMock.mock.calls.map((call) => call[1])).toEqual(['ja', 'ko']);
+    expect(notices).toEqual(['Language changed', 'Language changed']);
+    stopNotices();
   });
 });

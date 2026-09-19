@@ -2,9 +2,8 @@ import i18n, { applyConfiguredLanguage, resolveSupportedLanguage } from '../i18n
 import { notify } from '../components/ui/toastService';
 import { useAppStore } from '../stores/useAppStore';
 import { useConfigStore, selectConfigValue } from '../stores/useConfigStore';
-import { useProviderStore } from '../stores/useProviderStore';
+import type { ProvidersCommands, ToolsCommands } from '../domains/contracts';
 import { useSkillsStore } from '../stores/useSkillsStore';
-import { useToolsStore } from '../stores/useToolsStore';
 import type { ConfigDocumentKind, ConfigSnapshot } from '../types/generated/config';
 import { subscribePreferencePersistenceErrors } from './preferences';
 import { refreshWebSearchSettings } from './webSearchSettings';
@@ -60,7 +59,10 @@ const applySettings = (snapshot: ConfigSnapshot): void => {
   void applyConfiguredLanguage(resolveSupportedLanguage(configuredLanguage));
 };
 
-export const installConfigRuntimeEffects = (): (() => void) => {
+export const installConfigRuntimeEffects = (dependencies: {
+  providers: Pick<ProvidersCommands, 'loadProviderConfigs'>;
+  tools: Pick<ToolsCommands, 'loadSettings'>;
+}): (() => void) => {
   if (cleanup) return cleanup;
   unsubscribePersistenceErrors = subscribePreferencePersistenceErrors((error) => {
     notify.error(
@@ -77,10 +79,10 @@ export const installConfigRuntimeEffects = (): (() => void) => {
 
     if (changed(previous, nextSnapshot, 'settings')) applySettings(nextSnapshot);
     if (changed(previous, nextSnapshot, 'providers')) {
-      void useProviderStore.getState().loadProviderConfigs();
+      void dependencies.providers.loadProviderConfigs();
     }
     if (changed(previous, nextSnapshot, 'tools')) {
-      void useToolsStore.getState().loadSettings();
+      void dependencies.tools.loadSettings();
       void refreshWebSearchSettings();
     }
     if (changed(previous, nextSnapshot, 'skills')) {

@@ -1,6 +1,6 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
-import { notify } from "../components/ui/toastService";
+import { reportLanguageChange } from "./languageNotifications";
 import { loadPreference, PREF_KEYS, savePreference } from "../services/preferences";
 import {
   DEFAULT_LANGUAGE,
@@ -95,12 +95,8 @@ export function changeLanguage(lang: SupportedLanguage): Promise<void> {
     await ensureLanguageResources(lang);
     await i18n.changeLanguage(lang);
 
-    try {
-      const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
-      notify.success(i18n.t("toast.languageChanged", { language: languageName }));
-    } catch {
-      // Toast not available.
-    }
+    const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
+    reportLanguageChange(i18n.t("toast.languageChanged", { language: languageName }));
 
     try {
       await savePreference(PREF_KEYS.LANGUAGE, lang);

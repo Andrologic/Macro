@@ -9,7 +9,7 @@ import { tauriFetch } from './tauriHttp';
 import { listen, type UnlistenFn } from './tauriRuntimeBridge';
 import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
 import * as tauriIpc from './tauriIpc';
-import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from './architectChat';
+import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from '../domains/chat/prompts';
 import { normalizeChatMaxTurns } from './chatTurnLimits';
 import { isContextOverflowMessage } from './contextOverflow';
 import type { InternalAgentProfile } from './internalAgentProfile';

@@ -1,3 +1,4 @@
+import { installNotificationPreferences } from '../../services/notificationPreferences';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, createElement, forwardRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -115,8 +116,12 @@ let useAppStore!: typeof UseAppStoreHook;
 let useNotificationCenterStore!: typeof UseNotificationCenterStoreHook;
 let initialAppStoreState: ReturnType<typeof useAppStore.getState> | null = null;
 let importCounter = 0;
+let releasePreferences: (() => void) | undefined;
+let releaseRenderer: (() => void) | undefined;
 
 const loadToasterModules = async () => {
+  releasePreferences?.();
+  releaseRenderer?.();
   registerToasterMocks();
 
   importCounter += 1;
@@ -156,6 +161,8 @@ const loadToasterModules = async () => {
   ({ useAppStore } = appStoreModule);
   ({ useNotificationCenterStore } = notificationCenterStoreModule);
   initialAppStoreState = useAppStore.getState();
+  releasePreferences = installNotificationPreferences(() => useAppStore.getState());
+  releaseRenderer = toastServiceModule.attachNotificationRenderer();
 };
 
 const renderCustomToastAt = (index = -1): string => {
@@ -404,6 +411,22 @@ describe('toast wrapper', () => {
       })
     );
     expect(getToastBatchSnapshot().isPaused).toBe(false);
+  });
+
+  it('retains notifications until the renderer mounts without starting their expiry timer', async () => {
+    releaseRenderer?.();
+    const action = mock(() => undefined);
+    const id = notify.actionRequired('Review pending', {
+      notificationKey: 'pending-review',
+      actions: [{ label: 'Review', onClick: action }],
+    });
+    expect(id).toBe('pending-review');
+    expect(sonnerToastMock.custom).not.toHaveBeenCalled();
+    expect(getToastBatchSnapshot().activeToastIds).toHaveLength(0);
+    expect(useNotificationCenterStore.getState().items[0]?.sessionActions?.[0]?.onClick).toBe(action);
+    await act(async () => { root?.render(createElement(Toaster)); });
+    expect(sonnerToastMock.custom).toHaveBeenCalledTimes(1);
+    expect(getToastBatchSnapshot().activeToastIds).toEqual(['pending-review']);
   });
 
   it('stores tracked info, warning, and error toasts in the notification center', () => {

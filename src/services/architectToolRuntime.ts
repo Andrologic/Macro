@@ -50,7 +50,7 @@ import {
   normalizePlanNodeTodos,
   normalizeRequiredPlanNodeTodos,
 } from "./planNodeTodos";
-import { normalizeArtifactContracts } from "./architectPlanArtifactService";
+import { normalizeArtifactContracts } from "../domains/plans/artifactContracts";
 import type {
   ApplyStrategyMutationPreviewParams,
   PrepareStrategyMutationPreviewParams,
