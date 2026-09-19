@@ -276,7 +276,9 @@ async fn check_database(path: &Path) -> Result<()> {
             .fetch_all(&mut db)
             .await
             .map_err(|e| e.to_string())?;
-    if versions.iter().any(|v| ![1, 2, 3, 4].contains(v))
+    if versions
+        .iter()
+        .any(|v| !crate::db::SUPPORTED_MIGRATION_VERSIONS.contains(v))
         || !versions.contains(&1)
         || !versions.contains(&3)
         || !versions.contains(&4)
@@ -1133,6 +1135,13 @@ mod tests {
         sqlx::query("INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('conversation', 'Original', '2026-09-05', '2026-09-05')").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES ('message', 'conversation', 'user', 'Representative transcript', '2026-09-05')").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO app_settings (key,value_json,updated_at) VALUES ('agentCodeCheckpoints:conversation','{broken but preserved','2026-09-05')").execute(&pool).await.unwrap();
+        // Tests comparing the database file must capture committed WAL pages too.
+        // Pool closure can finish before SQLite's background close checkpoints them.
+        let (busy, _, _): (i64, i64, i64) = sqlx::query_as("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(busy, 0);
         pool.close().await;
         (temp, data, config)
     }
@@ -1235,6 +1244,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn database_validation_accepts_v5_and_rejects_unknown_migration_versions() {
+        let (_temp, data, _config) = profile().await;
+        let database = data.join("macro.db");
+        check_database(&database).await.unwrap();
+        let mut db = connection(&database).await.unwrap();
+        let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_migrations")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+        assert_eq!(version, 5);
+        sqlx::query("INSERT INTO schema_migrations VALUES (99, 'future', 'synthetic')")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        assert_eq!(
+            check_database(&database).await.unwrap_err(),
+            "Incompatible database schema"
+        );
+    }
+
+    #[tokio::test]
     async fn accepts_constraints_after_legacy_column_upgrade() {
         let (_temp, data, config) = profile().await;
         let database = data.join("macro.db");
@@ -1244,6 +1275,11 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("ALTER TABLE messages DROP COLUMN turn_id")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        // This fixture represents a pre-v5 database, not damage after migration.
+        sqlx::query("DELETE FROM schema_migrations WHERE version = 5")
             .execute(&mut db)
             .await
             .unwrap();
