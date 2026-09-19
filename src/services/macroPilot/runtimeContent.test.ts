@@ -233,12 +233,12 @@ it('observes changes without remote reads, retries durable events and resets the
   try {
     await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
     expect(h.events).toHaveLength(0);
-    messages[0].content = 'First actual edit';
+    conversations[0].title = 'First catalog edit';
     await until(() => h.events.length >= 2);
     expect(h.events[0]).toEqual(h.events[1]);
     const oldStream = h.events[0].stream_id;
     const oldRevision = h.events.find(e => e.change.kind === 'conversation.changed')?.change.revision ?? 0;
-    messages[0].content = 'Changed while nobody is reading';
+    conversations[0].title = 'Changed while nobody is reading';
     await until(() => h.events.some(e => e.change.kind === 'conversation.changed' && e.change.revision > oldRevision));
     conversations = []; messages = [];
     await until(() => h.events.some(e => e.change.kind === 'conversation.removed'));
@@ -350,6 +350,7 @@ it('serves a review while background transcripts are blocked and interleaves del
   const h = harness(); let releaseMessages!: () => void; let releaseCapture!: () => void;
   try {
     await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
+    expect(await h.deliver(request('conversation.read', { ref: { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id } }))).toMatchObject({ type: 'response' });
     const before = nativeCalls.filter(c => c === 'db_list_messages').length;
     messageWait = new Promise<void>(resolve => { releaseMessages = resolve; });
     await until(() => nativeCalls.filter(c => c === 'db_list_messages').length > before);
@@ -405,7 +406,7 @@ it('keeps deliveries moving while an event acknowledgement is blocked on HTTP', 
   h.waitEvents(new Promise<void>(resolve => { release = resolve; }));
   try {
     await h.runtime.start(); await until(() => h.requests.some(r => r.path.includes('/v2/') && r.path.endsWith('/poll')));
-    messages[0].content = 'Actual edit before the blocked event';
+    conversations[0].title = 'Actual edit before the blocked event';
     await until(() => h.events.length > 0);
     expect(await h.deliver(request('projects.list', { instance_id: instanceId }))).toMatchObject({ type: 'response' });
   } finally { release(); await h.runtime.stop(); }

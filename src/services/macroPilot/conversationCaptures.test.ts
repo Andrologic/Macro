@@ -230,12 +230,12 @@ it('withholds historical display mixtures even when they begin with a recognized
 });
 
 
-it('bounds a slow catalog observation before it can occupy a delivery lease indefinitely', async () => {
+it('bounds a slow full observation before it can occupy a delivery lease indefinitely', async () => {
   const env = setup(); let now = Date.parse(date); let reads = 0;
   env.deps.now = () => now;
   env.conversations.push(...Array.from({ length: 50 }, (_, i) => conversation(`slow:${i}`)));
   env.deps.source.listMessages = async () => { now += 2500; reads++; return []; };
-  await expect(env.captures.refreshCatalog()).rejects.toMatchObject({ code: 'content_unavailable' });
+  await expect(env.captures.refresh()).rejects.toMatchObject({ code: 'content_unavailable' });
   expect(reads).toBe(4); expect(env.stored).toBeNull();
 });
 
@@ -318,4 +318,53 @@ it('validates current catalog identities without loading histories or changing a
   const removed = await env.captures.refreshCatalogMetadata();
   expect(removed.refs).toEqual([]);
   expect(removed.revision).toBe(initial.revision + 1);
+});
+
+
+it('observes catalog changes without hydrating histories that no client has read', async () => {
+  const env = setup();
+  env.conversations.push(...Array.from({ length: 50 }, (_, i) => conversation(`unread:${i}`)));
+  env.deps.source.listMessages = async () => { throw new Error('Unopened history must not be read'); };
+  const initial = await env.captures.refreshCatalog();
+  expect(initial.refs).toHaveLength(51);
+  env.conversations.push(conversation('backdated'));
+  const added = await env.captures.refreshCatalog();
+  expect(added.refs).toHaveLength(52);
+  expect(added.revision).toBe(initial.revision + 1);
+  env.conversations[0].title = 'Renamed';
+  expect((await env.captures.refreshCatalog()).revision).toBe(added.revision + 1);
+});
+
+it('watches only delivered transcripts and catches backdated inserts without metadata edits', async () => {
+  const env = setup(); env.messages.push(message('m2'));
+  env.conversations.push(conversation('unread'));
+  const readMessages = env.deps.source.listMessages; const reads: string[] = [];
+  env.deps.source.listMessages = async id => { reads.push(id); return readMessages(id); };
+  const first = await env.captures.conversationRead(scope, ref, undefined, 1);
+  reads.length = 0;
+  env.messages.push({ ...message('backdated'), created_at: '2025-01-01T00:00:00Z' });
+  const changed = await env.captures.refreshCatalog();
+  expect(reads).toEqual(['chat', 'chat']);
+  expect(changed.revision).toBe(first.page.revision + 1);
+  await expect(env.captures.conversationRead(scope, ref, { snapshot_id: first.page.snapshot_id, cursor: first.page.next_cursor! })).rejects.toMatchObject({ code: 'stale_revision' });
+  env.conversations.splice(0, 1);
+  const removed = await env.captures.refreshCatalog();
+  expect(removed.refs.map(item => item.conversation_id)).toEqual(['unread']);
+  expect(JSON.parse(env.stored!).transcripts).not.toHaveProperty('chat');
+});
+
+for (const lifecycle of ['expiry', 'clear'] as const) it(`stops transcript observation after capture ${lifecycle} and validates a later read`, async () => {
+  const env = setup(); env.messages.push(message('m2'));
+  const first = await env.captures.conversationRead(scope, ref, undefined, 1);
+  if (lifecycle === 'expiry') env.advance(); else env.captures.clear();
+  const readMessages = env.deps.source.listMessages; let reads = 0;
+  env.deps.source.listMessages = async id => { reads++; return readMessages(id); };
+  env.messages[0].content = 'Changed after capture ended';
+  expect((await env.captures.refreshCatalog()).revision).toBe(first.page.revision);
+  expect(reads).toBe(0);
+  await expect(env.captures.conversationRead(scope, ref, { snapshot_id: first.page.snapshot_id, cursor: first.page.next_cursor! })).rejects.toMatchObject({ code: 'snapshot_expired' });
+  const renewed = await env.captures.conversationRead(scope, ref);
+  expect(reads).toBe(2);
+  expect(renewed.page.revision).toBe(first.page.revision + 1);
+  expect(renewed.items[0]).toHaveProperty('text', 'Changed after capture ended');
 });

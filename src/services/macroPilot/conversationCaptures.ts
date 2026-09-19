@@ -53,7 +53,7 @@ interface Observation {
 }
 interface Capture {
   binding: string; revision: number; observed: number; policy: string; items: Item[];
-  bytes: number; cursors: Map<string, number>;
+  bytes: number; cursors: Map<string, number>; conversationId?: string;
 }
 const MAX_QUOTA = 64 * 1024 * 1024;
 const compareId = (a: { id: string }, b: { id: string }) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -91,16 +91,22 @@ export class ConversationCaptures {
   refresh(): Promise<number> { return this.serial(async () => (await this.observe()).revision); }
   refreshCatalog(): Promise<{ revision: number; refs: ConversationRef[] }> {
     return this.serial(async () => {
-      const { observation, revision } = await this.observe();
+      this.pruneExpiredCaptures();
+      // Only transcripts delivered to a client can have live cached pages to
+      // invalidate. Keep observing their contents until those captures expire.
+      const watched = new Set<string>();
+      for (const capture of this.captures.values()) {
+        if (capture.conversationId) watched.add(capture.conversationId);
+      }
+      const { observation, revision } = await this.observe(false, watched);
       const refs = observation.conversations.map(conversation => this.reference(conversation, observation)).filter((ref): ref is ConversationRef => ref !== null);
       return { revision, refs };
     });
   }
-  /** Fresh identity/activity validation without hydrating unrelated histories.
-   * Background refreshCatalog retains complete transcript change detection. */
+  /** Fresh identity/activity validation without hydrating histories. */
   refreshCatalogMetadata(): Promise<{ revision: number; refs: ConversationRef[] }> {
     return this.serial(async () => {
-      const { observation, revision } = await this.observe(false, null);
+      const { observation, revision } = await this.observe(false, new Set());
       const refs = observation.conversations.map(conversation => this.reference(conversation, observation)).filter((ref): ref is ConversationRef => ref !== null);
       return { revision, refs };
     });
@@ -121,7 +127,13 @@ export class ConversationCaptures {
     });
     this.tail = result.catch(() => undefined); return result;
   }
-  private async load(projectsOnly = false, deadline = Infinity, transcriptId?: string | null): Promise<Observation> {
+  private pruneExpiredCaptures(): void {
+    const now = (this.deps.now ?? Date.now)();
+    for (const [key, capture] of this.captures) {
+      if (now >= capture.observed + 300000) this.captures.delete(key);
+    }
+  }
+  private async load(projectsOnly = false, deadline = Infinity, transcriptIds?: ReadonlySet<string>): Promise<Observation> {
     const checkDeadline = () => { if ((this.deps.now ?? Date.now)() >= deadline) throw new ConversationCaptureError('content_unavailable'); };
     const source = this.deps.source;
     const policy = structuredClone(this.deps.policy());
@@ -151,7 +163,7 @@ export class ConversationCaptures {
       if (seen.has(conversation.id)) throw new ConversationCaptureError('content_unavailable');
       seen.add(conversation.id);
       const activity = source.activity(conversation.id);
-      if (transcriptId === null || (transcriptId !== undefined && conversation.id !== transcriptId)) {
+      if (transcriptIds !== undefined && !transcriptIds.has(conversation.id)) {
         transcripts.push({ id: conversation.id, messages: [], provenMessages: [], activity });
         continue;
       }
@@ -175,14 +187,14 @@ export class ConversationCaptures {
     }
     return structuredClone({ projects, tasks, conversations, transcripts, policy });
   }
-  private async observe(projectsOnly = false, transcriptId?: string | null): Promise<{ observation: Observation; revision: number }> {
+  private async observe(projectsOnly = false, transcriptIds?: ReadonlySet<string>): Promise<{ observation: Observation; revision: number }> {
     // Bound complete catalog inspection, including both observations and retry.
     const deadline = (this.deps.now ?? Date.now)() + 10_000;
     // Independent reads detect edits during assembly; retry once, never mix pages.
     for (let attempt = 0; attempt < 2; attempt++) {
       const previous = await this.deps.storage.load();
-      const observation = await this.load(projectsOnly, deadline, transcriptId); const fingerprint = await digest(observation);
-      if (fingerprint !== await digest(await this.load(projectsOnly, deadline, transcriptId))) continue;
+      const observation = await this.load(projectsOnly, deadline, transcriptIds); const fingerprint = await digest(observation);
+      if (fingerprint !== await digest(await this.load(projectsOnly, deadline, transcriptIds))) continue;
       type Revision = { revision: number; fingerprint: string };
       type Journal = { version: 2; projects?: Revision; conversations?: Revision;
         catalog?: string; transcripts?: Record<string, string> };
@@ -201,7 +213,7 @@ export class ConversationCaptures {
         changed = journal.catalog === undefined ? old !== undefined : journal.catalog !== catalog;
         const fingerprints = { ...journal.transcripts };
         for (const transcript of observation.transcripts) {
-          if (transcriptId === null || (transcriptId !== undefined && transcript.id !== transcriptId)) continue;
+          if (transcriptIds !== undefined && !transcriptIds.has(transcript.id)) continue;
           const value = await digest(transcript);
           if (Object.hasOwn(fingerprints, transcript.id) && fingerprints[transcript.id] !== value) changed = true;
           Object.defineProperty(fingerprints, transcript.id, { value, enumerable: true, writable: true, configurable: true });
@@ -238,7 +250,7 @@ export class ConversationCaptures {
       if (scope.instanceId !== this.deps.instanceId || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new ConversationCaptureError('validation_failed');
       const binding = stableJson([scope.accountId, scope.sessionId, scope.instanceId, operation, filter]);
       const now = (this.deps.now ?? Date.now)();
-      for (const [key, capture] of this.captures) if (now >= capture.observed + 300000) this.captures.delete(key);
+      this.pruneExpiredCaptures();
       let snapshotId = continuation?.snapshot_id;
       let capture = snapshotId ? this.captures.get(snapshotId) : undefined;
       let offset = 0;
@@ -247,7 +259,7 @@ export class ConversationCaptures {
         if (capture.binding !== binding || !capture.cursors.has(continuation.cursor)) throw new ConversationCaptureError('validation_failed');
         offset = capture.cursors.get(continuation.cursor)!;
       }
-      const { observation, revision } = await this.observe(operation === 'projects.list', operation === 'conversation.read' ? (filter as ConversationRef).conversation_id : null);
+      const { observation, revision } = await this.observe(operation === 'projects.list', new Set(operation === 'conversation.read' ? [(filter as ConversationRef).conversation_id] : []));
       if (capture && capture.revision !== revision) throw new ConversationCaptureError('stale_revision');
       if (!capture) {
         let items: Item[] = [];
@@ -286,6 +298,7 @@ export class ConversationCaptures {
         if (used + bytes > Math.min(MAX_QUOTA, this.deps.quotaBytes ?? MAX_QUOTA)) throw new ConversationCaptureError('resource_limit');
         snapshotId = crypto.randomUUID();
         capture = { binding, revision, observed: now, policy: observation.policy.revision, items: structuredClone(items), bytes, cursors: new Map() };
+        if (operation === 'conversation.read') capture.conversationId = (filter as ConversationRef).conversation_id;
         this.captures.set(snapshotId, capture);
       }
       if ((this.deps.now ?? Date.now)() >= capture.observed + 300000) { this.captures.delete(snapshotId!); throw new ConversationCaptureError('snapshot_expired'); }
