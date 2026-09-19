@@ -125,9 +125,12 @@ function createGitReader(rootDirectory, ref) {
 export function createVirtualReader(sources) {
   const normalizedSources = new Map(Object.entries(sources).map(([path, text]) => [normalizePath(path), text]));
   return {
-    files: sorted([...normalizedSources.keys()].filter(isSourceFile)),
+    files: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') && isSourceFile(path))),
     read(path) {
       const text = normalizedSources.get(normalizePath(path));
+      if (text === undefined && path === 'vite.config.ts') {
+        return readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8');
+      }
       if (text === undefined) throw new Error(`Virtual source is missing: ${path}`);
       return text;
     },
@@ -302,21 +305,48 @@ function collectImports(path, text) {
   return { diagnostics: [...diagnostics, ...sourceResult.unsupported], imports };
 }
 
-function removeExtension(path) {
-  return path.replace(/\.(?:tsx?|mts|cts)$/, '');
+function configuredAliases(reader) {
+  // Read the configuration as data. Importing it would execute Vite plugins.
+  const config = ts.createSourceFile('vite.config.ts', reader.read('vite.config.ts'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const aliases = [];
+  const propertyName = (node) => ts.isIdentifier(node) || ts.isStringLiteral(node) ? node.text : undefined;
+  const visit = (node) => {
+    if (ts.isPropertyAssignment(node) && propertyName(node.name) === 'alias') {
+      if (!ts.isObjectLiteralExpression(node.initializer)) {
+        throw new Error('Import guard requires a literal Vite alias object. Update the resolver when changing its format.');
+      }
+      for (const entry of node.initializer.properties) {
+        if (!ts.isPropertyAssignment(entry) || !propertyName(entry.name) || !ts.isStringLiteral(entry.initializer)) {
+          throw new Error('Import guard requires literal Vite alias names and replacements.');
+        }
+        aliases.push([propertyName(entry.name), entry.initializer.text]);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(config);
+  return aliases;
 }
 
-function isLocalModuleSpecifier(specifier) {
-  // tsconfig.json uses baseUrl: "."; source-root imports are local too.
-  return specifier.startsWith('.') || specifier.startsWith('src/');
+function localModulePath(from, specifier, aliases) {
+  let modulePath = specifier.split(/[?#]/, 1)[0];
+  for (const [name, replacement] of aliases) {
+    if (modulePath === name || modulePath.startsWith(`${name}/`)) {
+      modulePath = replacement + modulePath.slice(name.length);
+      break;
+    }
+  }
+  // Vite root paths and TypeScript's baseUrl: "." resolve to the same sources.
+  if (modulePath === '/src' || modulePath.startsWith('/src/')) modulePath = modulePath.slice(1);
+  const relativeImport = modulePath.startsWith('.');
+  if (!relativeImport && modulePath !== 'src' && !modulePath.startsWith('src/')) return undefined;
+  modulePath = modulePath.replace(/\.(?:m|c)?js$/, '');
+  return normalizePath(normalize(relativeImport ? join(dirname(from), modulePath) : modulePath));
 }
 
-function resolveLocalImport(from, specifier, available) {
-  if (!isLocalModuleSpecifier(specifier)) return undefined;
-  const modulePath = specifier.replace(/\.(?:m|c)?js$/, '');
-  const base = normalizePath(normalize(specifier.startsWith('.')
-    ? join(dirname(from), modulePath)
-    : modulePath));
+function resolveLocalImport(from, specifier, available, aliases) {
+  const base = localModulePath(from, specifier, aliases);
+  if (base === undefined) return undefined;
   const candidates = [
     base,
     `${base}.ts`,
@@ -324,17 +354,15 @@ function resolveLocalImport(from, specifier, available) {
     `${base}.d.ts`,
     `${base}/index.ts`,
     `${base}/index.tsx`,
-  ].map(removeExtension);
-  const availableWithoutExtensions = new Map([...available].map((file) => [removeExtension(file), file]));
+  ];
   for (const candidate of candidates) {
-    const resolved = availableWithoutExtensions.get(removeExtension(candidate));
-    if (resolved) return resolved;
+    if (available.has(candidate)) return candidate;
   }
   return undefined;
 }
 
 function isTargetedModuleSpecifier(specifier) {
-  const extension = extname(specifier).toLowerCase();
+  const extension = extname(specifier.split(/[?#]/, 1)[0]).toLowerCase();
   return !extension || ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'].includes(extension);
 }
 
@@ -348,6 +376,7 @@ function pairKey(from, to) {
 
 function collectGraph(reader) {
   const available = new Set(reader.files);
+  const aliases = configuredAliases(reader);
   const edges = new Map();
   const diagnostics = [];
   const unresolved = [];
@@ -355,9 +384,9 @@ function collectGraph(reader) {
     const result = collectImports(from, reader.read(from));
     diagnostics.push(...result.diagnostics.map((message) => ({ file: from, message })));
     for (const importEntry of result.imports) {
-      const to = resolveLocalImport(from, importEntry.source, available);
+      const to = resolveLocalImport(from, importEntry.source, available, aliases);
       if (!to) {
-        if (isLocalModuleSpecifier(importEntry.source) && isTargetedModuleSpecifier(importEntry.source)) unresolved.push({ from, specifier: importEntry.source, line: importEntry.line });
+        if (localModulePath(from, importEntry.source, aliases) !== undefined && isTargetedModuleSpecifier(importEntry.source)) unresolved.push({ from, specifier: importEntry.source, line: importEntry.line });
         continue;
       }
       const key = pairKey(from, to);

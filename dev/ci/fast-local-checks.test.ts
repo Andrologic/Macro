@@ -98,4 +98,11 @@ describe('fast local check selection', () => {
       quiet: true,
     });
   });
+  test('checks import boundaries when Vite resolution changes', () => {
+    const plan = planFastLocalChecks(['vite.config.ts']);
+    expect(plan.steps).toContainEqual(expect.objectContaining({
+      args: ['dev/architecture/import-boundaries.mjs', '--check'],
+    }));
+  });
+
 });

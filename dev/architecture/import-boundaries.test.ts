@@ -137,6 +137,51 @@ describe('TypeScript import boundary analysis', () => {
     expect(comparison.passed).toBe(false);
   });
 
+  it('resolves configured Vite aliases and root paths for boundaries and cycles', () => {
+    for (const specifier of ['@stores/store', '@/stores/store', '/src/stores/store', '@stores/store?module']) {
+      const report = analyzeSources({
+        'src/services/new.ts': `import "${specifier}";`,
+        'src/stores/store.ts': 'import "../services/new"; export const state = 1;',
+      });
+      expect(report.violations).toEqual([
+        expect.objectContaining({ from: 'src/services/new.ts', to: 'src/stores/store.ts', kind: 'runtime' }),
+      ]);
+      const comparison = compareReports(analyzeSources({}), report);
+      expect(comparison.newSccs).toEqual([['src/services/new.ts', 'src/stores/store.ts']]);
+      expect(comparison.passed).toBe(false);
+    }
+  });
+
+  it('reads alias additions from configuration and diagnoses unresolved alias targets', () => {
+    const report = analyzeSources({
+      'vite.config.ts': 'export default { resolve: { alias: { "@state": "/src/stores" } } };',
+      'src/types/model.ts': 'export type State = import("@state/store").State;',
+      'src/services/new.ts': 'import "@state/missing";',
+      'src/stores/store.ts': 'export type State = number;',
+    });
+    expect(report.violations).toEqual([
+      expect.objectContaining({ from: 'src/types/model.ts', to: 'src/stores/store.ts', kind: 'type' }),
+    ]);
+    expect(report.unresolved).toEqual([
+      expect.objectContaining({ from: 'src/services/new.ts', specifier: '@state/missing' }),
+    ]);
+    expect(() => analyzeSources({
+      'vite.config.ts': 'export default { resolve: { alias: getAliases() } };',
+    })).toThrow('literal Vite alias object');
+  });
+
+  it('preserves explicit extensions and prefers .ts over .tsx for extensionless imports', () => {
+    const report = analyzeSources({
+      'src/services/new.ts': 'import "../stores/store";',
+      'src/services/explicit.ts': 'import "../stores/store.tsx";',
+      'src/stores/store.ts': 'import "../services/new"; export const state = 1;',
+      'src/stores/store.tsx': 'export const state = 2;',
+    });
+    expect(edge(report, 'src/services/new.ts', 'src/stores/store.ts').kinds).toEqual(['runtime']);
+    expect(edge(report, 'src/services/explicit.ts', 'src/stores/store.tsx').kinds).toEqual(['runtime']);
+    expect(report.sccs).toEqual([['src/services/new.ts', 'src/stores/store.ts']]);
+  });
+
   it('keeps the four planned removals explicit and blocking', () => {
     const sources = Object.fromEntries(EXPLICITLY_FORBIDDEN_EDGES.map(({ from, to }) => [
       from,
