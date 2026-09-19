@@ -301,7 +301,11 @@ Mesure de cette extraction, hors tests et déclarations `.d.ts` :
 Une même paire de modules peut porter une arête runtime et une arête de types.
 Le graphe conserve aussi les imports dynamiques ; les déplacer ne contourne pas
 la garde. Les alias sont lus dans la configuration Vite sans exécuter ses plugins ;
-les imports relatifs, depuis la racine source et via ces alias sont résolus. Les nouveaux modules d'adaptation augmentent le nombre total d'arêtes,
+les imports relatifs, depuis la racine source et via ces alias sont résolus.
+La configuration exportée doit garder des objets `resolve` et `alias` explicites ;
+une forme indirecte ou ambiguë fait échouer la garde et demande une adaptation
+du résolveur. Un changement de racine Vite ou l'ajout d'options de résolution
+doit aussi être pris en charge explicitement avant de passer la garde. Les nouveaux modules d'adaptation augmentent le nombre total d'arêtes,
 mais réduisent le groupe de modules chargés cycliquement. Le cycle séparé entre
 `MentionChip` et `MentionNode` reste attribué au lot Chat. La SCC statique restante
 unit encore les stores App, Chat, Tasks, Skills et Terminal aux services Architect,

@@ -306,26 +306,59 @@ function collectImports(path, text) {
 }
 
 function configuredAliases(reader) {
-  // Read the configuration as data. Importing it would execute Vite plugins.
+  // Read only an explicit exported configuration. Never execute Vite plugins.
   const config = ts.createSourceFile('vite.config.ts', reader.read('vite.config.ts'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const aliases = [];
-  const propertyName = (node) => ts.isIdentifier(node) || ts.isStringLiteral(node) ? node.text : undefined;
-  const visit = (node) => {
-    if (ts.isPropertyAssignment(node) && propertyName(node.name) === 'alias') {
-      if (!ts.isObjectLiteralExpression(node.initializer)) {
-        throw new Error('Import guard requires a literal Vite alias object. Update the resolver when changing its format.');
-      }
-      for (const entry of node.initializer.properties) {
-        if (!ts.isPropertyAssignment(entry) || !propertyName(entry.name) || !ts.isStringLiteral(entry.initializer)) {
-          throw new Error('Import guard requires literal Vite alias names and replacements.');
-        }
-        aliases.push([propertyName(entry.name), entry.initializer.text]);
-      }
+  const exported = config.statements.find(ts.isExportAssignment);
+  let root = exported?.expression;
+  if (root && ts.isCallExpression(root) && ts.isIdentifier(root.expression) && root.expression.text === 'defineConfig' && root.arguments.length === 1) {
+    root = root.arguments[0];
+    if (ts.isArrowFunction(root) || ts.isFunctionExpression(root)) {
+      const body = root.body;
+      if (ts.isBlock(body)) {
+        const returns = [];
+        const visit = (node) => {
+          if (node !== body && ts.isFunctionLike(node)) return;
+          if (ts.isReturnStatement(node)) returns.push(node.expression);
+          ts.forEachChild(node, visit);
+        };
+        visit(body);
+        root = returns.length === 1 ? returns[0] : undefined;
+      } else root = body;
     }
-    ts.forEachChild(node, visit);
+  }
+  if (config.parseDiagnostics.length || !root || !ts.isObjectLiteralExpression(root)) {
+    throw new Error('Import guard requires an explicit exported Vite configuration object. Update the resolver when changing its format.');
+  }
+  const propertyName = (node) => ts.isIdentifier(node) || ts.isStringLiteral(node) ? node.text : undefined;
+  const objectProperty = (object, name) => {
+    // Spreads/computed keys could replace resolve or alias after this property.
+    if (object.properties.some((entry) => ts.isSpreadAssignment(entry) || (entry.name && ts.isComputedPropertyName(entry.name)))) {
+      throw new Error('Import guard cannot analyze spreads or computed keys in Vite resolution configuration.');
+    }
+    const matches = object.properties.filter((entry) => entry.name && propertyName(entry.name) === name);
+    if (matches.length !== 1 || !ts.isPropertyAssignment(matches[0]) || !ts.isObjectLiteralExpression(matches[0].initializer)) {
+      throw new Error(`Import guard requires a literal Vite ${name} object. Update the resolver when changing its format.`);
+    }
+    return matches[0].initializer;
   };
-  visit(config);
-  return aliases;
+  if (root.properties.some((entry) => entry.name && propertyName(entry.name) === 'root')) {
+    throw new Error('Import guard requires the default Vite project root.');
+  }
+  const resolution = objectProperty(root, 'resolve');
+  if (resolution.properties.some((entry) => entry.name && !['alias', 'dedupe'].includes(propertyName(entry.name)))) {
+    throw new Error('Import guard requires support for additional Vite resolution options before they can be used.');
+  }
+  const aliasObject = objectProperty(resolution, 'alias');
+  const aliases = new Map();
+  for (const entry of aliasObject.properties) {
+    if (!ts.isPropertyAssignment(entry) || !propertyName(entry.name) || !ts.isStringLiteral(entry.initializer)) {
+      throw new Error('Import guard requires literal Vite alias names and replacements.');
+    }
+    const name = propertyName(entry.name);
+    if (aliases.has(name)) throw new Error(`Import guard cannot analyze duplicate Vite alias ${name}.`);
+    aliases.set(name, entry.initializer.text);
+  }
+  return [...aliases];
 }
 
 function localModulePath(from, specifier, aliases) {

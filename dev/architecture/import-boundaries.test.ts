@@ -182,6 +182,27 @@ describe('TypeScript import boundary analysis', () => {
     expect(report.sccs).toEqual([['src/services/new.ts', 'src/stores/store.ts']]);
   });
 
+  it('fails closed for shorthand, spreads and indirect Vite resolution configuration', () => {
+    const configurations = [
+      'const alias = { "@stores": "/src/stores" }; export default { resolve: { alias } };',
+      'const resolve = { alias: {} }; export default { resolve };',
+      'export default { resolve: { ...shared, alias: {} } };',
+      'export default { resolve: { alias: {} }, ...other };',
+      'export default { resolve: { [key]: {} } };',
+      'const unused = { alias: {} }; export default externalConfiguration;',
+      'export default defineConfig(() => flag ? first : second);',
+      'export default { root: "other", resolve: { alias: {} } };',
+      'export default { resolve: { alias: {}, extensions: [".tsx", ".ts"] } };',
+    ];
+    for (const configuration of configurations) {
+      expect(() => analyzeSources({
+        'vite.config.ts': configuration,
+        'src/services/new.ts': 'import "@stores/store";',
+        'src/stores/store.ts': 'import "../services/new";',
+      })).toThrow('Import guard');
+    }
+  });
+
   it('keeps the four planned removals explicit and blocking', () => {
     const sources = Object.fromEntries(EXPLICITLY_FORBIDDEN_EDGES.map(({ from, to }) => [
       from,
