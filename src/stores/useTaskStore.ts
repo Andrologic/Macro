@@ -71,6 +71,7 @@ import {
   getGitFlowBaseBranch,
   resolveTargetBranch,
   updateArchitectPlan,
+  mutateArchitectPlanTaskStatus,
   writeArchitectTaskExecution,
 } from '../services/architectPlanService';
 import { persistArchitectPlanMergeWorkflowSession } from '../services/architectPlanRuntimeService';
@@ -2430,74 +2431,73 @@ const persistTaskStatusToArchitectPlan = async (
     }
 
     const targetBranch = getTaskPlanStorageBranch(task);
-    const plan = await getArchitectPlan(targetBranch, task.plan_id);
-    if (!plan || plan.status === 'deleted') {
-      setError(
-        tTask('implement.errors.unknownTaskPlan', 'Cannot update plan metadata for task {{taskId}}.', {
-          taskId: task.id,
-        })
-      );
-      return false;
-    }
-
-    const businessTaskId = getTaskBusinessId(task);
-    const nextPlanNodes = applyTaskStatusToPlanNodes(plan.nodes || [], businessTaskId, status);
-    const currentPlanTasks = deriveImplementTasksFromStrategy({
-      planId: plan.id,
-      planSlug: plan.slug,
-      nodes: plan.nodes || [],
-      predictedBranches: plan.predictedBranches || [],
-      targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
-    }).tasks;
-    const nextPredictedBranches = applyPredictedBranchLifecycle(
-      currentPlanTasks.map((currentTask) => ({
-        ...currentTask,
-        task_source: 'architect',
-        plan_title: plan.title,
-        plan_status: plan.status,
-        plan_storage_branch: plan.targetBranch,
-        plan_target_branch: task.plan_target_branch,
-        plan_target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
-        draft: false,
-        standalone_kind: 'legacy',
-        base_branch: null,
-        feature_slug: null,
-        conversation_id: null,
-        archived_at: null,
-        archive_reason: null,
-        merged_at: null,
-      })),
-      plan.predictedBranches || [],
-      businessTaskId,
-      status
-    );
-    const strategy = deriveImplementTasksFromStrategy({
-      planId: plan.id,
-      planSlug: plan.slug,
-      nodes: nextPlanNodes,
-      predictedBranches: nextPredictedBranches,
-      targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
-    });
-    const nextPlanStatus = plan.status === 'validated' && status !== 'Pending'
-      ? 'in_progress'
-      : plan.status;
-
-    await updateArchitectPlan({
+    const plan = await mutateArchitectPlanTaskStatus({
       branchName: targetBranch,
-      planId: plan.id,
-      nodes: strategy.nodes,
-      predictedBranches: strategy.predictedBranches,
-      status: nextPlanStatus,
-      setActive: false,
+      planId: task.plan_id,
+    }, (plan) => {
+      if (plan.status === 'deleted') {
+        throw new Error(tTask(
+          'implement.errors.unknownTaskPlan',
+          'Cannot update plan metadata for task {{taskId}}.',
+          { taskId: task.id },
+        ));
+      }
+      const businessTaskId = getTaskBusinessId(task);
+      const nextPlanNodes = applyTaskStatusToPlanNodes(plan.nodes || [], businessTaskId, status);
+      const currentPlanTasks = deriveImplementTasksFromStrategy({
+        planId: plan.id,
+        planSlug: plan.slug,
+        nodes: plan.nodes || [],
+        predictedBranches: plan.predictedBranches || [],
+        targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
+      }).tasks;
+      const nextPredictedBranches = applyPredictedBranchLifecycle(
+        currentPlanTasks.map((currentTask) => ({
+          ...currentTask,
+          task_source: 'architect',
+          plan_title: plan.title,
+          plan_status: plan.status,
+          plan_storage_branch: plan.targetBranch,
+          plan_target_branch: task.plan_target_branch,
+          plan_target_branches_by_project_id: getArchitectPlanTargetBranchesByProjectId(plan),
+          draft: false,
+          standalone_kind: 'legacy',
+          base_branch: null,
+          feature_slug: null,
+          conversation_id: null,
+          archived_at: null,
+          archive_reason: null,
+          merged_at: null,
+        })),
+        plan.predictedBranches || [],
+        businessTaskId,
+        status
+      );
+      const strategy = deriveImplementTasksFromStrategy({
+        planId: plan.id,
+        planSlug: plan.slug,
+        nodes: nextPlanNodes,
+        predictedBranches: nextPredictedBranches,
+        targetBranchesByProjectId: getArchitectPlanTargetBranchesByProjectId(plan),
+      });
+      const nextPlanStatus = plan.status === 'validated' && status !== 'Pending'
+        ? 'in_progress'
+        : plan.status;
+
+      return {
+        nodes: strategy.nodes,
+        predictedBranches: strategy.predictedBranches,
+        status: nextPlanStatus,
+      };
     });
     const appState = useAppStore.getState();
     if (appState.activeArchitectPlanId === plan.id) {
-      appState.setPlanNodes(strategy.nodes);
-      appState.setPredictedBranches(strategy.predictedBranches);
+      appState.setPlanNodes(plan.nodes);
+      appState.setPredictedBranches(plan.predictedBranches);
       if (appState.activePlanContext?.id === plan.id) {
         appState.setActivePlanContext({
           ...appState.activePlanContext,
-          status: nextPlanStatus,
+          status: plan.status,
         });
       }
     }
@@ -2510,7 +2510,11 @@ const persistTaskStatusToArchitectPlan = async (
     return true;
   } catch (error) {
     const normalized = toServiceError(error);
-    setError(normalized.message);
+    setError(isPlanMetadataMissingError(error)
+      ? tTask('implement.errors.unknownTaskPlan', 'Cannot update plan metadata for task {{taskId}}.', {
+          taskId: task.id,
+        })
+      : normalized.message);
     return false;
   }
 };
