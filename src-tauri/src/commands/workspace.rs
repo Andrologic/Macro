@@ -435,6 +435,10 @@ async fn register_project_config_roots(
                                 })
                                 .await
                             {
+                                errors.push(format!(
+                                    "Impossible d’initialiser la configuration Git du projet {} : {} ({})",
+                                    project.id, error.message, error.code
+                                ));
                                 tracing::warn!(
                                     project_id = %project.id,
                                     code = %error.code,
@@ -443,17 +447,28 @@ async fn register_project_config_roots(
                                 );
                             }
                         }
-                        Err(error) => tracing::warn!(
-                            project_id = %project.id,
-                            code = %error.code,
-                            message = %error.message,
-                            "Impossible de préparer le document Git du projet"
-                        ),
+                        Err(error) => {
+                            errors.push(format!(
+                                "Impossible de préparer la configuration Git du projet {} : {} ({})",
+                                project.id, error.message, error.code
+                            ));
+                            tracing::warn!(
+                                project_id = %project.id,
+                                code = %error.code,
+                                message = %error.message,
+                                "Impossible de préparer le document Git du projet"
+                            );
+                        }
                     }
                 }
                 roots.insert(project.id.clone(), config_root);
             }
             Err(error) => {
+                // A resolved root stays desired when loading a document failed.
+                // Keep its watcher and manager retry state until registry removal.
+                if let Some(root) = config_manager.desired_project_root(&project.id).await {
+                    roots.insert(project.id.clone(), root);
+                }
                 errors.push(format!(
                     "Impossible de charger la configuration du projet {} : {} ({})",
                     project.id, error.message, error.code
@@ -2163,6 +2178,116 @@ mod tests {
         assert!(watcher.subscribed_project_roots().is_empty());
         assert!(manager.get_snapshot(&["project".into()]).await.is_err());
         assert_eq!(std::fs::read_to_string(retained_file).unwrap(), "{}");
+    }
+
+    #[tokio::test]
+    async fn config_git_initialization_failure_keeps_registry_and_exposes_diagnostic() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        let metadata = workspace_path.join(".macro");
+        let project_path = temp.path().join("project");
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::create_dir_all(&project_path).unwrap();
+        let project: ProjectDto = serde_json::from_value(json!({
+            "id": "project", "name": "project", "path": project_path,
+            "created_at": "2026-01-01T00:00:00Z", "status": "active",
+            "metadata": {"description": "", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []}
+        })).unwrap();
+        let state = workspace::metadata::WorkspaceState {
+            standalone_projects: vec![project],
+            ..Default::default()
+        };
+        std::fs::write(
+            metadata.join("workspace.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let git = GitState::new();
+        let project_metadata = resolve_metadata_root(project_path, git.clone())
+            .await
+            .unwrap();
+        let config_root = project_metadata.join("projects/project/config");
+        std::fs::create_dir_all(config_root.join("git.json.lock")).unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("global"))
+            .await
+            .unwrap();
+        let watcher = Arc::new(crate::config::ConfigWatcher::for_test(manager.root()));
+        let (bootstrap, diagnostic) = load_bootstrap_with_config_diagnostic(
+            &workspace_path,
+            &metadata,
+            git,
+            &manager,
+            &watcher,
+        )
+        .await
+        .unwrap();
+        assert_eq!(bootstrap.standalone_projects.len(), 1);
+        assert!(diagnostic
+            .diagnostics
+            .iter()
+            .any(|entry| entry.message.contains("Git") && entry.message.contains("project")));
+        assert_eq!(
+            watcher.subscribed_project_roots(),
+            vec![config_root.canonicalize().unwrap()]
+        );
+    }
+
+    #[tokio::test]
+    async fn config_failed_initial_load_keeps_root_for_automatic_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        let metadata = workspace_path.join(".macro");
+        let project_path = temp.path().join("project");
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::create_dir_all(&project_path).unwrap();
+        let project: ProjectDto = serde_json::from_value(json!({
+            "id": "project", "name": "project", "path": project_path,
+            "created_at": "2026-01-01T00:00:00Z", "status": "active",
+            "metadata": {"description": "", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []}
+        })).unwrap();
+        let state = workspace::metadata::WorkspaceState {
+            standalone_projects: vec![project],
+            ..Default::default()
+        };
+        std::fs::write(
+            metadata.join("workspace.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let git = GitState::new();
+        let project_metadata = resolve_metadata_root(project_path, git.clone())
+            .await
+            .unwrap();
+        let config_root = project_metadata.join("projects/project/config");
+        std::fs::create_dir_all(config_root.join("tools.json")).unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("global"))
+            .await
+            .unwrap();
+        let watcher = Arc::new(crate::config::ConfigWatcher::for_test(manager.root()));
+        let (bootstrap, diagnostic) = load_bootstrap_with_config_diagnostic(
+            &workspace_path,
+            &metadata,
+            git,
+            &manager,
+            &watcher,
+        )
+        .await
+        .unwrap();
+        assert_eq!(bootstrap.standalone_projects.len(), 1);
+        assert!(diagnostic
+            .diagnostics
+            .iter()
+            .any(|entry| entry.message.contains("charger") && entry.message.contains("project")));
+        assert_eq!(
+            watcher.subscribed_project_roots(),
+            vec![config_root.canonicalize().unwrap()]
+        );
+        std::fs::remove_dir(config_root.join("tools.json")).unwrap();
+        std::fs::write(config_root.join("tools.json"), r#"{"schemaVersion":1}"#).unwrap();
+        let (changed, errors) = manager.refresh_project_roots().await;
+        assert!(changed);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(manager.get_snapshot(&["project".to_string()]).await.is_ok());
     }
 
     #[tokio::test]

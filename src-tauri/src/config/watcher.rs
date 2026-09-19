@@ -1,5 +1,5 @@
 use super::manager::DirectoryIdentity;
-use super::{ConfigChangeSource, ConfigManager};
+use super::{ConfigChangeSource, ConfigDocument, ConfigDocumentKind, ConfigManager, ConfigScope};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -83,12 +83,11 @@ impl ConfigWatcher {
                     let manager = &manager;
                     let app = &app;
                     async move {
-                        let (changed_manager, refresh_errors) =
-                            manager.refresh_project_roots().await;
-                        let mut errors: Vec<String> = refresh_errors
-                            .into_iter()
-                            .map(|error| format!("{}: {}", error.code, error.message))
-                            .collect();
+                        let (changed_manager, mut errors) =
+                            refresh_project_state(manager, |document| {
+                                let _ = app.emit("config://changed", &document);
+                            })
+                            .await;
                         if !reload_requested && !changed_manager {
                             return errors;
                         }
@@ -158,6 +157,29 @@ impl ConfigWatcher {
             .insert(project_id.to_string(), root.to_path_buf());
         state.reconcile()
     }
+}
+
+// A purge has no surviving document reload outcome. Notify snapshot consumers
+// directly when root refresh changes the cache, including an empty replacement.
+async fn refresh_project_state(
+    manager: &ConfigManager,
+    mut notify_changed: impl FnMut(ConfigDocument),
+) -> (bool, Vec<String>) {
+    let (changed, refresh_errors) = manager.refresh_project_roots().await;
+    let mut errors: Vec<String> = refresh_errors
+        .into_iter()
+        .map(|error| format!("{}: {}", error.code, error.message))
+        .collect();
+    if changed {
+        match manager
+            .get_document(ConfigDocumentKind::Runtime, ConfigScope::User)
+            .await
+        {
+            Ok(document) => notify_changed(document),
+            Err(error) => errors.push(format!("{}: {}", error.code, error.message)),
+        }
+    }
+    (changed, errors)
 }
 
 struct MaintenanceBackoff {
@@ -727,6 +749,39 @@ mod tests {
         })
         .await
         .expect("condition not reached");
+    }
+
+    #[tokio::test]
+    async fn root_purge_notifies_snapshot_consumers_once_without_file_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("global"))
+            .await
+            .unwrap();
+        let root = manager
+            .register_project_root("project", temp.path().join("metadata"))
+            .await
+            .unwrap();
+        let scope = ConfigScope::Project {
+            project_id: "project".into(),
+        };
+        manager
+            .get_document(ConfigDocumentKind::Tools, scope)
+            .await
+            .unwrap();
+        std::fs::rename(&root, root.with_file_name("old-config")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let mut notifications = Vec::new();
+        let (changed, errors) =
+            refresh_project_state(&manager, |document| notifications.push(document)).await;
+        assert!(changed);
+        assert!(errors.is_empty());
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].kind, ConfigDocumentKind::Runtime);
+        let (changed, errors) =
+            refresh_project_state(&manager, |document| notifications.push(document)).await;
+        assert!(!changed);
+        assert!(errors.is_empty());
+        assert_eq!(notifications.len(), 1);
     }
 
     #[tokio::test]
