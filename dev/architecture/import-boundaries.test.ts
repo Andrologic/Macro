@@ -392,3 +392,36 @@ describe('installed Vite resolution contract', () => {
     expect(compareReports(analyzeSources({}), report).passed).toBe(false);
   });
 });
+
+
+describe('package resolution diagnostics', () => {
+  it('blocks package imports mappings for static, dynamic and type references', async () => {
+    for (const source of ['import "#store";', 'export const load = () => import("#store", {});', 'export type Model = import("#store").Model;']) {
+      const files = {
+        'package.json': JSON.stringify({ name: 'fixture', type: 'module', imports: { '#store': './src/stores/store.ts' } }),
+        'src/services/entry.ts': source,
+        'src/stores/store.ts': 'import "../services/entry"; export type Model = number;',
+      };
+      await withViteFixture(files, {}, async (resolveId) => {
+        expect(await resolveId('#store')).toBe('src/stores/store.ts');
+        const report = analyzeSources({ ...files, 'vite.config.ts': aliasConfig({}) });
+        expect(report.diagnostics).toEqual([expect.objectContaining({ message: expect.stringContaining('package imports mappings') })]);
+        expect(compareReports(analyzeSources({}), report).passed).toBe(false);
+      });
+    }
+  });
+
+  it('rejects package self-exports and browser redirects before treating them as external', async () => {
+    const files = {
+      'package.json': JSON.stringify({ name: 'fixture', type: 'module', exports: { './store': './src/stores/store.ts' } }),
+      'src/services/entry.ts': 'import "fixture/store";',
+      'src/stores/store.ts': 'export {};',
+    };
+    await withViteFixture(files, {}, async (resolveId) => {
+      expect(await resolveId('fixture/store')).toBe('src/stores/store.ts');
+      expect(() => analyzeSources({ ...files, 'vite.config.ts': aliasConfig({}) })).toThrow('package exports/browser resolution');
+    });
+    expect(() => analyzeSources({ 'package.json': '{"browser":{"dependency":"./src/stores/store.ts"}}' })).toThrow('package exports/browser resolution');
+    expect(() => analyzeSources({ 'src/nested/package.json': '{"exports":{".":"./store.ts"}}' })).toThrow('package exports/browser resolution');
+  });
+});

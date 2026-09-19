@@ -318,7 +318,9 @@ propres à une machine, les remplacements par un nom de paquet, les substitution
 `$`, les configurations indirectes ou ambiguës et les options de résolution
 supplémentaires font échouer la garde. Les chemins symboliques, les imports qui
 sortent de `src/` et la résolution d'un répertoire source par son `package.json`
-demandent aussi une adaptation explicite. L'inventaire des fichiers sous `src/`
+demandent aussi une adaptation explicite. Les spécificateurs internes `#...`
+ainsi que les champs `exports` ou `browser` des manifests de paquet du projet
+sont refusés pour empêcher une redirection locale classée comme externe. L'inventaire des fichiers sous `src/`
 permet de refuser un module JavaScript ou `.mts`/`.cts` qui masquerait une cible
 TypeScript analysée. Les tests, déclarations et assets restent hors du graphe.
 Les règles de frontières des domaines gardent le même périmètre.

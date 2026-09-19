@@ -139,6 +139,7 @@ export function createVirtualReader(sources) {
     files: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') && isSourceFile(path))),
     read(path) {
       const text = normalizedSources.get(normalizePath(path));
+      if (text === undefined && path === 'package.json') return '{}';
       if (text === undefined && path === 'vite.config.ts') {
         return readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8');
       }
@@ -383,6 +384,7 @@ function configuredAliases(reader) {
 }
 
 function localModulePath(from, specifier, aliases) {
+  if (specifier.startsWith('#')) throw new Error(`Import guard does not support package imports mappings: ${specifier}`);
   let modulePath = specifier;
   for (const [name, replacement] of aliases) {
     if (modulePath === name || modulePath.startsWith(`${name}/`)) {
@@ -440,6 +442,13 @@ function pairKey(from, to) {
 }
 
 function collectGraph(reader) {
+  // Package self-references and browser maps can redirect apparently external imports.
+  for (const path of ['package.json', ...reader.resolutionFiles.filter((file) => file.endsWith('/package.json'))]) {
+    const manifest = JSON.parse(reader.read(path));
+    if (manifest.exports !== undefined || manifest.browser !== undefined) {
+      throw new Error(`Import guard requires support for package exports/browser resolution before using ${path}.`);
+    }
+  }
   const available = new Set(reader.resolutionFiles);
   const aliases = configuredAliases(reader);
   const edges = new Map();

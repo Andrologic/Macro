@@ -140,7 +140,7 @@ export function planFastLocalChecks(paths, options = {}) {
     steps.push({ name: 'Traductions cohérentes', command: process.execPath, args: ['dev/i18n/audit.mjs'] });
   }
   if (normalized.some((path) =>
-    (path.startsWith('src/') && TYPESCRIPT_PATTERN.test(path)) ||
+    path.startsWith('src/') || path === 'package.json' ||
     path.startsWith('dev/architecture/') || path === 'vite.config.ts')) {
     steps.push({
       name: 'Frontières des domaines',
