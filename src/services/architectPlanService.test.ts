@@ -2140,6 +2140,17 @@ describe('architectPlanService', () => {
     ).toBe('project-octan-sales-1780653766405');
   });
 
+  it('releases the branch mutation queue when a task transition cannot be derived', async () => {
+    const created = await service.createArchitectPlan({ branchName, planId: 'failed-transition' });
+    await expect(service.mutateArchitectPlanTaskStatus({ branchName, planId: created.id }, () => {
+      throw new Error('Transition rejected');
+    })).rejects.toThrow('Transition rejected');
+    expect((await service.getArchitectPlan(branchName, created.id))?.revision).toBe(created.revision);
+    const updated = await service.updateArchitectPlan({ branchName, planId: created.id, description: 'Queue released' });
+    expect(updated.description).toBe('Queue released');
+    expect(updated.revision).toBe((created.revision ?? 1) + 1);
+  });
+
   it('does not bump revision when updating a plan with identical semantic content', async () => {
     const created = await service.createArchitectPlan({
       branchName,

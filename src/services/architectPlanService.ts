@@ -5154,7 +5154,7 @@ export const createArchitectPlan = async (
 ): Promise<ArchitectPlanRecord> =>
   enqueueArchitectPlanCreation(input.branchName, () => createArchitectPlanUnlocked(input, deps));
 
-export const updateArchitectPlan = async (input: {
+export interface UpdateArchitectPlanInput {
   branchName: string;
   planId: string;
   expectedRevision?: number;
@@ -5175,7 +5175,29 @@ export const updateArchitectPlan = async (input: {
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
-}, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
+}
+
+type ArchitectPlanDerivedUpdate = Pick<UpdateArchitectPlanInput, 'nodes' | 'predictedBranches' | 'status'>;
+
+/** Compute a task transition from the current replica while holding the branch mutation lock. */
+export const mutateArchitectPlanTaskStatus = (
+  input: { branchName: string; planId: string },
+  deriveUpdate: (plan: ArchitectPlanRecord) => ArchitectPlanDerivedUpdate,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies(),
+): Promise<ArchitectPlanRecord> => updateArchitectPlanWithDerivedUpdate(
+  { ...input, setActive: false }, deps, deriveUpdate,
+);
+
+export const updateArchitectPlan = (
+  input: UpdateArchitectPlanInput,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies(),
+): Promise<ArchitectPlanRecord> => updateArchitectPlanWithDerivedUpdate(input, deps);
+
+const updateArchitectPlanWithDerivedUpdate = async (
+  input: UpdateArchitectPlanInput,
+  deps: ResolvedArchitectPlanServiceDependencies,
+  deriveUpdate?: (plan: ArchitectPlanRecord) => ArchitectPlanDerivedUpdate,
+): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(input.planId);
@@ -5201,6 +5223,10 @@ export const updateArchitectPlan = async (input: {
     throw new Error(
       `Architect plan revision changed before mutation: expected ${input.expectedRevision}, found ${existing.revision ?? 'unavailable'}.`,
     );
+  }
+  if (deriveUpdate) {
+    assertPlanReplicaSetWritable(replicaSet, 'update');
+    input = { ...input, ...deriveUpdate(existing) };
   }
   const inputKeys = Object.keys(input).filter(
     (key) => key !== 'branchName' && key !== 'planId' && key !== 'expectedRevision',
@@ -6365,6 +6391,7 @@ export interface ArchitectPlanService {
   getArchitectPlan: typeof getArchitectPlan;
   createArchitectPlan: typeof createArchitectPlan;
   updateArchitectPlan: typeof updateArchitectPlan;
+  mutateArchitectPlanTaskStatus: typeof mutateArchitectPlanTaskStatus;
   bindArchitectPlanConversation: typeof bindArchitectPlanConversation;
   setActiveArchitectPlan: typeof setActiveArchitectPlan;
   deleteArchitectPlan: typeof deleteArchitectPlan;
@@ -6396,6 +6423,7 @@ export const createArchitectPlanService = (
     getArchitectPlan: (branchName, planId) => getArchitectPlan(branchName, planId, deps),
     createArchitectPlan: (input) => createArchitectPlan(input, deps),
     updateArchitectPlan: (input) => updateArchitectPlan(input, deps),
+    mutateArchitectPlanTaskStatus: (input, deriveUpdate) => mutateArchitectPlanTaskStatus(input, deriveUpdate, deps),
     bindArchitectPlanConversation: (params) => bindArchitectPlanConversation(params, deps),
     setActiveArchitectPlan: (branchName, planId) => setActiveArchitectPlan(branchName, planId, deps),
     deleteArchitectPlan: (input) => deleteArchitectPlan(input, deps),
