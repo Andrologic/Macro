@@ -1244,6 +1244,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restores_pre_v5_archive_before_migrating_restored_database() {
+        let (temp, data, config) = profile().await;
+        let database = data.join("macro.db");
+        let mut db = connection(&database).await.unwrap();
+        // The last pre-v5 runtime had the same schema but only stamps 1/3/4.
+        sqlx::query("DELETE FROM schema_migrations WHERE version = 5")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        let archive = capture(&data, &config, BTreeMap::new(), true)
+            .await
+            .unwrap();
+        let archived_database = temp.path().join("archived-v4.db");
+        fs::write(
+            &archived_database,
+            STANDARD
+                .decode(&archive.files["data/macro.db"].data)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut archived = connection(&archived_database).await.unwrap();
+        let versions: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
+                .fetch_all(&mut archived)
+                .await
+                .unwrap();
+        assert_eq!(versions, [1, 3, 4]);
+        archived.close().await.unwrap();
+        validate(&archive).await.unwrap();
+
+        // Change the source without running migrations, so restoration must recover it.
+        let mut db = connection(&database).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&mut db)
+                .await
+                .unwrap(),
+            4
+        );
+        sqlx::query("UPDATE conversations SET title = 'Changed' WHERE id = 'conversation'")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.close().await.unwrap();
+        queue_restore(&data, &archive);
+        process_startup(&data, &config).await.unwrap();
+        let status: BackupStatus =
+            serde_json::from_slice(&fs::read(data.join("local-backup/status.json")).unwrap())
+                .unwrap();
+        assert_eq!(status.code, Some(BackupStatusCode::Restored));
+        let mut restored = connection(&database).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&mut restored)
+                .await
+                .unwrap(),
+            4
+        );
+        restored.close().await.unwrap();
+
+        // Normal application startup migrates the restored database, not the archive.
+        let pool = crate::db::create_pool(&database).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM schema_migrations")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT title FROM conversations WHERE id = 'conversation'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "Original"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT content FROM message_search WHERE message_search MATCH 'Representative'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "Representative transcript"
+        );
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn database_validation_accepts_v5_and_rejects_unknown_migration_versions() {
         let (_temp, data, _config) = profile().await;
         let database = data.join("macro.db");
