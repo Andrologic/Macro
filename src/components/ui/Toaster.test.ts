@@ -1,3 +1,4 @@
+import { installNotificationNavigation } from '../../services/notificationNavigation';
 import { installNotificationPreferences } from '../../services/notificationPreferences';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, createElement, forwardRef } from 'react';
@@ -1004,7 +1005,7 @@ describe('toast wrapper', () => {
 
   it('restores and executes a persisted navigation button without replaying session mutations', async () => {
     const navigate = mock(async (_navigation: unknown) => undefined);
-    mock.module('../../services/openWorkflowNotificationContext', () => ({ openWorkflowNotificationContext: navigate }));
+    const releaseNavigation = installNotificationNavigation(navigate);
     const mutation = mock(() => undefined);
     notify.actionRequired('Question waiting', {
       category: 'task_attention_required', notificationKey: 'persisted-workflow',
@@ -1016,6 +1017,7 @@ describe('toast wrapper', () => {
     const { sessionActions: _actions, sessionToastId: _toast, ...persisted } = item;
     useNotificationCenterStore.setState({ items: [JSON.parse(JSON.stringify(persisted))] });
     await expect(__testables.executeRegisteredNotificationAction('persisted-workflow', 0)).resolves.toBe(true);
+    releaseNavigation();
     expect(navigate).toHaveBeenCalledWith({ kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-current' });
     expect(mutation).not.toHaveBeenCalled();
     expect(useNotificationCenterStore.getState().items).toEqual([]);

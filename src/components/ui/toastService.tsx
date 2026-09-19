@@ -16,6 +16,7 @@ import {
 } from '../../services/notificationChannels';
 import { getNotificationPreferences } from '../../services/notificationPreferences';
 import { createNotificationDelivery } from '../../services/notificationDelivery';
+import { navigateFromNotification } from '../../services/notificationNavigation';
 import {
   useNotificationCenterStore,
   type NotificationLevel,
@@ -638,8 +639,7 @@ export const getNotificationCenterActions = (
     variant: 'primary',
     dismissOnSuccess: true,
     onClick: async () => {
-      const { openWorkflowNotificationContext } = await import('../../services/openWorkflowNotificationContext');
-      await openWorkflowNotificationContext(navigation);
+      await navigateFromNotification(navigation);
     },
   }];
 };
