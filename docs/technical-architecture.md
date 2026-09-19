@@ -323,6 +323,8 @@ ainsi que les champs `exports` ou `browser` des manifests de paquet du projet
 sont refusés pour empêcher une redirection locale classée comme externe. L'inventaire des fichiers sous `src/`
 permet de refuser un module JavaScript ou `.mts`/`.cts` qui masquerait une cible
 TypeScript analysée. Les tests, déclarations et assets restent hors du graphe.
+`import.meta.glob`, `globEager` et `globEagerDefault` sont refusés : leurs imports
+sont produits par une transformation Vite, hors de l'analyse TypeScript.
 Les règles de frontières des domaines gardent le même périmètre.
 
 Les nouveaux modules d'adaptation augmentent le nombre total d'arêtes,

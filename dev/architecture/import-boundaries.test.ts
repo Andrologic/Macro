@@ -425,3 +425,24 @@ describe('package resolution diagnostics', () => {
     expect(() => analyzeSources({ 'src/nested/package.json': '{"exports":{".":"./store.ts"}}' })).toThrow('package exports/browser resolution');
   });
 });
+
+
+describe('Vite-generated module imports', () => {
+  it('blocks eager/lazy globs and legacy forms instead of overlooking their dependencies', () => {
+    for (const expression of [
+      'import.meta.glob("../stores/store.ts", { eager: true })',
+      'import.meta.glob("../stores/*.ts")',
+      'import.meta.globEager("../stores/*.ts")',
+      'import.meta.globEagerDefault("../stores/*.ts")',
+      'import.meta["glob"]("../stores/*.ts")',
+    ]) {
+      const report = analyzeSources({
+        'src/services/entry.ts': `${expression};`,
+        'src/stores/store.ts': 'import "../services/entry";',
+      });
+      expect(report.diagnostics).toEqual([expect.objectContaining({ message: expect.stringContaining('Unsupported Vite import.meta.glob') })]);
+      expect(compareReports(analyzeSources({}), report).passed).toBe(false);
+    }
+    expect(analyzeSources({ 'src/env.ts': 'export const development = import.meta.env.DEV;' }).diagnostics).toEqual([]);
+  });
+});

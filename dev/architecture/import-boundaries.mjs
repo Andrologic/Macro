@@ -232,6 +232,15 @@ function sourceImportEntries(sourceFile) {
     }
   }
   const visit = (node) => {
+    // These Vite transforms generate imports that transpileModule cannot expose.
+    if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+      && ts.isMetaProperty(node.expression) && node.expression.keywordToken === ts.SyntaxKind.ImportKeyword) {
+      const name = ts.isPropertyAccessExpression(node) ? node.name.text
+        : ts.isStringLiteral(node.argumentExpression) ? node.argumentExpression.text : undefined;
+      if (['glob', 'globEager', 'globEagerDefault'].includes(name)) {
+        unsupported.push(`Unsupported Vite import.meta.${name} at line ${sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1}.`);
+      }
+    }
     if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteral(node.argument.literal)) {
       entries.push({
         source: node.argument.literal.text,
