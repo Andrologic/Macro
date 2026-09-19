@@ -2,8 +2,9 @@ use super::{ConfigChangeSource, ConfigManager};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
 
@@ -12,19 +13,48 @@ pub struct ConfigWatcher {
 }
 
 struct WatcherState {
-    // Kept alive independently; reconciliation never changes this subscription.
+    // This backend is never changed by project reconciliation.
     _global_watcher: RecommendedWatcher,
-    project_watcher: RecommendedWatcher,
-    roots: RootSubscriptions,
+    signal_tx: watch::Sender<u64>,
+    roots: RootSubscriptions<RecommendedWatcher>,
 }
 
-struct RootSubscriptions {
-    global_root: PathBuf,
-    // Requested paths are retained for retries through the compatibility API.
+struct RootSubscriptions<W> {
     project_roots: BTreeMap<String, PathBuf>,
-    // Confirmed project subscriptions, plus a NonRecursive global sentinel when
-    // no project subscription shares that path. The global backend stays independent.
-    watched_roots: BTreeMap<PathBuf, RecursiveMode>,
+    subscriptions: BTreeMap<PathBuf, Subscription<W>>,
+}
+
+struct Subscription<W> {
+    _backend: W,
+    identity: DirectoryIdentity,
+    invalidated: Arc<AtomicBool>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DirectoryIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    created: Option<SystemTime>,
+}
+
+impl DirectoryIdentity {
+    fn read(root: &Path) -> Result<Self, String> {
+        let metadata = root.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_dir() {
+            return Err("Configuration root is not a directory".into());
+        }
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            created: metadata.created().ok(),
+        })
+    }
 }
 
 pub type ConfigWatcherState = Arc<ConfigWatcher>;
@@ -111,64 +141,99 @@ impl ConfigWatcher {
     }
 }
 
+// Own the backend before attempting watch: even a partially installed recursive
+// watch is disposed of on error by dropping the entire backend.
+fn install_backend<W>(
+    mut backend: W,
+    install: impl FnOnce(&mut W) -> notify::Result<()>,
+) -> Result<W, String> {
+    install(&mut backend).map_err(|error| error.to_string())?;
+    Ok(backend)
+}
+
+fn invalidates_root(root: &Path, result: &notify::Result<Event>) -> bool {
+    match result {
+        Err(_) => true,
+        Ok(event) => {
+            event.need_rescan()
+                || (matches!(
+                    event.kind,
+                    notify::EventKind::Remove(_)
+                        | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+                ) && event.paths.iter().any(|path| root.starts_with(path)))
+        }
+    }
+}
+
+fn make_backend(
+    root: &Path,
+    mode: RecursiveMode,
+    signal_tx: watch::Sender<u64>,
+    invalidated: Arc<AtomicBool>,
+) -> Result<RecommendedWatcher, String> {
+    let callback_root = root.to_path_buf();
+    let backend = RecommendedWatcher::new(
+        move |result: notify::Result<Event>| {
+            if invalidates_root(&callback_root, &result) {
+                invalidated.store(true, Ordering::Release);
+            }
+            // Errors/rescans must also wake the consumer, not just ordinary events.
+            signal_tx.send_modify(|generation| *generation = generation.wrapping_add(1));
+        },
+        Config::default().with_poll_interval(Duration::from_millis(100)),
+    )
+    .map_err(|error| error.to_string())?;
+    install_backend(backend, |backend| backend.watch(root, mode))
+}
+
 impl WatcherState {
     fn new(root: &Path, signal_tx: watch::Sender<u64>) -> Result<Self, String> {
         let root = root.canonicalize().map_err(|error| error.to_string())?;
-        let make_watcher = |signal_tx: watch::Sender<u64>| {
-            RecommendedWatcher::new(
-                move |result: Result<Event, notify::Error>| {
-                    if result.is_ok() {
-                        signal_tx.send_modify(|generation| {
-                            *generation = generation.wrapping_add(1);
-                        });
-                    }
-                },
-                Config::default().with_poll_interval(Duration::from_millis(100)),
-            )
-            .map_err(|error| error.to_string())
-        };
-        let mut global_watcher = make_watcher(signal_tx.clone())?;
-        global_watcher
-            .watch(&root, RecursiveMode::NonRecursive)
-            .map_err(|error| error.to_string())?;
-        let project_watcher = make_watcher(signal_tx)?;
+        DirectoryIdentity::read(&root)?;
+        let global_watcher = make_backend(
+            &root,
+            RecursiveMode::NonRecursive,
+            signal_tx.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )?;
         Ok(Self {
             _global_watcher: global_watcher,
-            project_watcher,
+            signal_tx,
             roots: RootSubscriptions {
-                global_root: root.clone(),
                 project_roots: BTreeMap::new(),
-                watched_roots: BTreeMap::from([(root, RecursiveMode::NonRecursive)]),
+                subscriptions: BTreeMap::new(),
             },
         })
     }
 
     fn reconcile(&mut self) -> Result<(), String> {
-        let watcher = &mut self.project_watcher;
-        self.roots.reconcile(|root, subscribe| {
-            if let Some(mode) = subscribe {
-                watcher.watch(root, mode)
-            } else {
-                watcher.unwatch(root)
-            }
+        let signal_tx = &self.signal_tx;
+        self.roots.reconcile(|root, invalidated| {
+            make_backend(
+                root,
+                RecursiveMode::Recursive,
+                signal_tx.clone(),
+                invalidated,
+            )
         })
     }
 }
 
-impl RootSubscriptions {
+impl<W> RootSubscriptions<W> {
     fn reconcile(
         &mut self,
-        mut update: impl FnMut(&Path, Option<RecursiveMode>) -> notify::Result<()>,
+        mut create: impl FnMut(&Path, Arc<AtomicBool>) -> Result<W, String>,
     ) -> Result<(), String> {
-        // The global subscription is pinned, even when no project uses it.
-        // An exact project match adds a separate recursive project subscription.
-        // The global backend always remains nonrecursive.
-        let mut desired = BTreeMap::from([(self.global_root.clone(), RecursiveMode::NonRecursive)]);
+        let mut desired = BTreeMap::new();
         let mut errors = Vec::new();
         for (project_id, root) in &self.project_roots {
-            match root.canonicalize() {
-                Ok(root) => {
-                    desired.insert(root, RecursiveMode::Recursive);
+            let resolved = root
+                .canonicalize()
+                .map_err(|error| error.to_string())
+                .and_then(|root| DirectoryIdentity::read(&root).map(|identity| (root, identity)));
+            match resolved {
+                Ok((root, identity)) => {
+                    desired.insert(root, identity);
                 }
                 Err(error) => errors.push(format!(
                     "Cannot resolve configuration root for project {project_id} ({}): {error}",
@@ -177,54 +242,42 @@ impl RootSubscriptions {
             }
         }
 
-        // Remove obsolete subscriptions even if resolution or a new watch fails.
-        let obsolete: Vec<_> = self
-            .watched_roots
-            .keys()
-            .filter(|root| !desired.contains_key(*root))
-            .cloned()
-            .collect();
-        for root in obsolete {
-            match update(&root, None) {
-                Ok(()) => {
-                    self.watched_roots.remove(&root);
-                }
-                Err(error) => {
-                    // The backend may already have dropped a deleted root.
-                    if matches!(&error.kind, notify::ErrorKind::WatchNotFound) {
-                        self.watched_roots.remove(&root);
-                    }
-                    errors.push(format!("Cannot unwatch {}: {error}", root.display()));
-                }
+        // Dispose of obsolete, replaced or invalidated backends before any additions.
+        // Each backend owns only one root, so partial cleanup cannot affect siblings
+        // or overlapping project roots. No fallible per-path unwatch is necessary.
+        self.subscriptions.retain(|root, subscription| {
+            desired.get(root) == Some(&subscription.identity)
+                && !subscription.invalidated.load(Ordering::Acquire)
+        });
+        for (root, identity) in desired {
+            if self.subscriptions.contains_key(&root) {
+                continue;
             }
-        }
-        // NonRecursive means only the independent global subscription remains.
-        // Remove the project subscription instead of rewatching an existing path:
-        // notify on Windows does not stop the previous handle when rewatching.
-        let missing: Vec<_> = desired
-            .iter()
-            .filter(|(root, mode)| self.watched_roots.get(*root) != Some(*mode))
-            .map(|(root, mode)| (root.clone(), *mode))
-            .collect();
-        for (root, mode) in missing {
-            let subscribe = (mode == RecursiveMode::Recursive).then_some(mode);
-            match update(&root, subscribe) {
-                Ok(()) => {
-                    self.watched_roots.insert(root, mode);
-                }
-                Err(error) => {
-                    if subscribe.is_none()
-                        && matches!(&error.kind, notify::ErrorKind::WatchNotFound)
+            let invalidated = Arc::new(AtomicBool::new(false));
+            match create(&root, invalidated.clone()) {
+                Ok(backend) => {
+                    // Detect replacement during installation as well. A callback
+                    // racing after this check still leaves its flag set for retry.
+                    if DirectoryIdentity::read(&root).as_ref() != Ok(&identity)
+                        || invalidated.load(Ordering::Acquire)
                     {
-                        self.watched_roots.insert(root.clone(), mode);
+                        drop(backend);
+                        errors.push(format!(
+                            "Configuration root changed while watching {}",
+                            root.display()
+                        ));
+                        continue;
                     }
-                    let action = if subscribe.is_some() {
-                        "watch"
-                    } else {
-                        "unwatch"
-                    };
-                    errors.push(format!("Cannot {action} {}: {error}", root.display()));
+                    self.subscriptions.insert(
+                        root,
+                        Subscription {
+                            _backend: backend,
+                            identity,
+                            invalidated,
+                        },
+                    );
                 }
+                Err(error) => errors.push(format!("Cannot watch {}: {error}", root.display())),
             }
         }
         if errors.is_empty() {
@@ -238,298 +291,284 @@ impl RootSubscriptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
-    fn subscriptions(global: &Path) -> RootSubscriptions {
-        let global_root = global.canonicalize().expect("global root");
-        RootSubscriptions {
-            watched_roots: BTreeMap::from([(global_root.clone(), RecursiveMode::NonRecursive)]),
-            global_root,
-            project_roots: BTreeMap::new(),
+    struct BackendGuard(Arc<AtomicUsize>);
+    impl Drop for BackendGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
         }
     }
-
-    fn apply(roots: &mut RootSubscriptions) -> Vec<(PathBuf, Option<RecursiveMode>)> {
-        let mut calls = Vec::new();
-        roots
-            .reconcile(|path, subscribe| {
-                calls.push((path.to_path_buf(), subscribe));
+    fn mock_backend(active: &Arc<AtomicUsize>, fail: bool) -> Result<BackendGuard, String> {
+        install_backend(BackendGuard(active.clone()), |_| {
+            // Mutate backend-owned resources before returning the injected error.
+            active.fetch_add(1, Ordering::SeqCst);
+            if fail {
+                Err(notify::Error::generic("partially installed"))
+            } else {
                 Ok(())
-            })
-            .expect("reconcile");
-        calls
-    }
-
-    #[test]
-    fn add_share_move_remove_and_preserve_global() {
-        let global = tempfile::tempdir().unwrap();
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        let first = first.path().canonicalize().unwrap();
-        let second = second.path().canonicalize().unwrap();
-        let mut roots = subscriptions(global.path());
-        roots.project_roots.insert("a".into(), first.clone());
-        roots.project_roots.insert("b".into(), first.join("."));
-        assert_eq!(
-            apply(&mut roots),
-            vec![(first.clone(), Some(RecursiveMode::Recursive))]
-        );
-        assert!(apply(&mut roots).is_empty());
-        roots.project_roots.insert("a".into(), second.clone());
-        assert_eq!(
-            apply(&mut roots),
-            vec![(second.clone(), Some(RecursiveMode::Recursive))]
-        );
-        roots.project_roots.remove("b");
-        assert_eq!(apply(&mut roots), vec![(first, None)]);
-        roots.project_roots.insert("a".into(), global.path().into());
-        assert_eq!(
-            apply(&mut roots),
-            vec![
-                (second, None),
-                (roots.global_root.clone(), Some(RecursiveMode::Recursive)),
-            ]
-        );
-        roots.project_roots.clear();
-        assert_eq!(apply(&mut roots), vec![(roots.global_root.clone(), None)]);
-        assert_eq!(
-            roots.watched_roots,
-            BTreeMap::from([(roots.global_root.clone(), RecursiveMode::NonRecursive)])
-        );
-    }
-
-    #[test]
-    fn missing_replacement_removes_old_subscription_and_can_retry() {
-        let global = tempfile::tempdir().unwrap();
-        let old = tempfile::tempdir().unwrap();
-        let mut roots = subscriptions(global.path());
-        let old = old.path().canonicalize().unwrap();
-        roots.project_roots.insert("a".into(), old.clone());
-        apply(&mut roots);
-        let missing = global.path().join("missing");
-        roots.project_roots.insert("a".into(), missing.clone());
-        let mut calls = Vec::new();
-        assert!(roots
-            .reconcile(|path, subscribe| {
-                calls.push((path.to_path_buf(), subscribe));
-                Ok(())
-            })
-            .is_err());
-        assert_eq!(calls, vec![(old, None)]);
-        assert_eq!(roots.watched_roots.len(), 1);
-        std::fs::create_dir(&missing).unwrap();
-        assert_eq!(
-            apply(&mut roots),
-            vec![(
-                missing.canonicalize().unwrap(),
-                Some(RecursiveMode::Recursive)
-            )]
-        );
-    }
-
-    #[test]
-    fn partial_backend_failures_preserve_confirmed_state_and_retry() {
-        let global = tempfile::tempdir().unwrap();
-        let old = tempfile::tempdir().unwrap();
-        let new = tempfile::tempdir().unwrap();
-        let old = old.path().canonicalize().unwrap();
-        let new = new.path().canonicalize().unwrap();
-        let mut roots = subscriptions(global.path());
-        roots.project_roots.insert("a".into(), old.clone());
-        apply(&mut roots);
-        roots.project_roots.insert("a".into(), new.clone());
-        let error = roots
-            .reconcile(|_, _| Err(notify::Error::generic("injected")))
-            .unwrap_err();
-        assert!(error.contains("Cannot unwatch"));
-        assert!(error.contains("Cannot watch"));
-        assert!(roots.watched_roots.contains_key(&old));
-        assert!(!roots.watched_roots.contains_key(&new));
-        // A successful removal must survive a failing addition.
-        assert!(roots
-            .reconcile(|_, subscribe| {
-                if subscribe.is_some() {
-                    Err(notify::Error::generic("injected"))
-                } else {
-                    Ok(())
-                }
-            })
-            .is_err());
-        assert!(!roots.watched_roots.contains_key(&old));
-        assert_eq!(
-            apply(&mut roots),
-            vec![(new, Some(RecursiveMode::Recursive))]
-        );
-        assert!(apply(&mut roots).is_empty());
-    }
-
-    #[test]
-    fn successful_addition_is_not_repeated_after_failed_removal() {
-        let global = tempfile::tempdir().unwrap();
-        let old = tempfile::tempdir().unwrap();
-        let new = tempfile::tempdir().unwrap();
-        let old = old.path().canonicalize().unwrap();
-        let new = new.path().canonicalize().unwrap();
-        let mut roots = subscriptions(global.path());
-        roots.project_roots.insert("a".into(), old.clone());
-        apply(&mut roots);
-        roots.project_roots.insert("a".into(), new.clone());
-        assert!(roots
-            .reconcile(|_, subscribe| {
-                if subscribe.is_some() {
-                    Ok(())
-                } else {
-                    Err(notify::Error::generic("injected"))
-                }
-            })
-            .is_err());
-        assert!(roots.watched_roots.contains_key(&new));
-        assert!(roots.watched_roots.contains_key(&old));
-        assert_eq!(apply(&mut roots), vec![(old, None)]);
-    }
-
-    #[test]
-    fn compatibility_api_replaces_by_id_and_full_reconciliation_removes_projects() {
-        let global = tempfile::tempdir().unwrap();
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        let state = ConfigWatcher::for_test(global.path());
-        state.watch_project_root("a", first.path()).unwrap();
-        state.watch_project_root("b", first.path()).unwrap();
-        state.watch_project_root("a", second.path()).unwrap();
-        state.watch_project_root("b", second.path()).unwrap();
-        {
-            let locked = state.state.lock().unwrap();
-            assert_eq!(locked.roots.project_roots.len(), 2);
-            assert_eq!(locked.roots.watched_roots.len(), 2);
-            assert!(!locked
-                .roots
-                .watched_roots
-                .contains_key(&first.path().canonicalize().unwrap()));
-        }
-        state.reconcile_project_roots(&BTreeMap::new()).unwrap();
-        let locked = state.state.lock().unwrap();
-        assert!(locked.roots.project_roots.is_empty());
-        assert_eq!(
-            locked.roots.watched_roots,
-            BTreeMap::from([(
-                locked.roots.global_root.clone(),
-                RecursiveMode::NonRecursive
-            )])
-        );
-    }
-
-    #[test]
-    fn shared_global_project_subscription_is_retryable_without_rewatching() {
-        let global = tempfile::tempdir().unwrap();
-        let mut roots = subscriptions(global.path());
-        let global = roots.global_root.clone();
-        assert!(apply(&mut roots).is_empty());
-        roots.project_roots.insert("a".into(), global.clone());
-        roots.project_roots.insert("b".into(), global.join("."));
-        assert!(roots
-            .reconcile(|path, mode| {
-                assert_eq!(path, global);
-                assert_eq!(mode, Some(RecursiveMode::Recursive));
-                Err(notify::Error::generic("upgrade failed"))
-            })
-            .is_err());
-        assert_eq!(roots.watched_roots[&global], RecursiveMode::NonRecursive);
-        assert_eq!(
-            apply(&mut roots),
-            vec![(global.clone(), Some(RecursiveMode::Recursive))]
-        );
-        roots.project_roots.remove("a");
-        assert!(apply(&mut roots).is_empty());
-        roots.project_roots.clear();
-        assert!(roots
-            .reconcile(|path, mode| {
-                assert_eq!(path, global);
-                assert_eq!(mode, None);
-                Err(notify::Error::generic("downgrade failed"))
-            })
-            .is_err());
-        assert_eq!(roots.watched_roots[&global], RecursiveMode::Recursive);
-        assert_eq!(apply(&mut roots), vec![(global.clone(), None)]);
-        assert!(apply(&mut roots).is_empty());
-        assert_eq!(
-            roots.watched_roots,
-            BTreeMap::from([(global, RecursiveMode::NonRecursive)])
-        );
-    }
-
-    #[test]
-    fn real_backends_keep_global_subscription_after_repeated_sharing() {
-        let global = tempfile::tempdir().unwrap();
-        let state = ConfigWatcher::for_test(global.path());
-        let root = global.path().canonicalize().unwrap();
-        for _ in 0..3 {
-            state.watch_project_root("a", &root).unwrap();
-            state.watch_project_root("b", &root).unwrap();
-            state
-                .reconcile_project_roots(&BTreeMap::from([("b".into(), root.clone())]))
-                .unwrap();
-            assert_eq!(
-                state.state.lock().unwrap().roots.watched_roots[&root],
-                RecursiveMode::Recursive
-            );
-            state.reconcile_project_roots(&BTreeMap::new()).unwrap();
-            let mut locked = state.state.lock().unwrap();
-            assert_eq!(
-                locked.roots.watched_roots[&root],
-                RecursiveMode::NonRecursive
-            );
-            // The recursive subscription was actually removed, not replaced.
-            // Windows accepts unwatch requests asynchronously, including unknown paths.
-            #[cfg(not(target_os = "windows"))]
-            {
-                let error = locked.project_watcher.unwatch(&root).unwrap_err();
-                assert!(matches!(error.kind, notify::ErrorKind::WatchNotFound));
             }
+        })
+    }
+    fn roots<W>() -> RootSubscriptions<W> {
+        RootSubscriptions {
+            project_roots: BTreeMap::new(),
+            subscriptions: BTreeMap::new(),
         }
-        // Probe the independent global backend only after all reconciliation is done.
-        // Success proves its subscription survived every project removal.
-        state
-            .state
-            .lock()
-            .unwrap()
-            ._global_watcher
-            .unwatch(&root)
-            .unwrap();
     }
 
     #[test]
-    fn already_absent_shared_project_watch_restores_global_sentinel() {
-        let global = tempfile::tempdir().unwrap();
-        let mut roots = subscriptions(global.path());
-        let root = roots.global_root.clone();
-        roots.project_roots.insert("a".into(), root.clone());
-        apply(&mut roots);
-        roots.project_roots.clear();
+    fn partial_installation_is_dropped_and_replacement_failure_removes_old_backend() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut roots = roots();
+        roots.project_roots.insert("a".into(), first.path().into());
+        roots
+            .reconcile(|_, _| mock_backend(&active, false))
+            .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        roots.project_roots.insert("a".into(), second.path().into());
         assert!(roots
-            .reconcile(|path, mode| {
-                assert_eq!(path, root);
-                assert_eq!(mode, None);
-                Err(notify::Error::watch_not_found())
+            .reconcile(|_, _| {
+                assert_eq!(active.load(Ordering::SeqCst), 0);
+                mock_backend(&active, true)
             })
             .is_err());
-        assert_eq!(roots.watched_roots[&root], RecursiveMode::NonRecursive);
-        assert!(apply(&mut roots).is_empty());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(roots.subscriptions.is_empty());
+        roots
+            .reconcile(|_, _| mock_backend(&active, false))
+            .unwrap();
+        roots.project_roots.clear();
+        roots
+            .reconcile(|_, _| panic!("unexpected creation"))
+            .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn already_absent_watch_is_removed_from_state_but_reports_error() {
-        let global = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let mut roots = subscriptions(global.path());
+    fn aliases_share_backend_and_missing_replacement_removes_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut roots = roots();
         roots
             .project_roots
-            .insert("a".into(), project.path().into());
-        apply(&mut roots);
-        roots.project_roots.clear();
+            .insert("a".into(), directory.path().into());
+        roots
+            .project_roots
+            .insert("b".into(), directory.path().join("."));
+        roots
+            .reconcile(|_, _| mock_backend(&active, false))
+            .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        roots.project_roots.remove("a");
+        roots
+            .reconcile(|_, _| panic!("unchanged identity"))
+            .unwrap();
+        roots
+            .project_roots
+            .insert("b".into(), directory.path().join("missing"));
+        assert!(roots.reconcile(|_, _| panic!("missing root")).is_err());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn invalidation_rebuilds_and_partial_success_is_retained() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut roots = roots();
+        roots.project_roots.insert("a".into(), first.path().into());
+        roots.project_roots.insert("b".into(), second.path().into());
+        let second_root = second.path().canonicalize().unwrap();
         assert!(roots
-            .reconcile(|_, _| Err(notify::Error::watch_not_found()))
+            .reconcile(|path, _| mock_backend(&active, path == second_root))
             .is_err());
-        assert_eq!(roots.watched_roots.len(), 1);
-        assert!(apply(&mut roots).is_empty());
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        roots
+            .reconcile(|path, _| {
+                assert_eq!(path, second_root);
+                mock_backend(&active, false)
+            })
+            .unwrap();
+        let first_root = first.path().canonicalize().unwrap();
+        roots.subscriptions[&first_root]
+            .invalidated
+            .store(true, Ordering::Release);
+        roots
+            .reconcile(|path, _| {
+                assert_eq!(path, first_root);
+                assert_eq!(active.load(Ordering::SeqCst), 1);
+                mock_backend(&active, false)
+            })
+            .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_change_rebuilds_even_without_callback() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut roots = roots();
+        roots.project_roots.insert("a".into(), root.clone());
+        roots
+            .reconcile(|_, _| mock_backend(&active, false))
+            .unwrap();
+        let canonical = root.canonicalize().unwrap();
+        let old_flag = roots.subscriptions[&canonical].invalidated.clone();
+        std::fs::write(root.join("config"), "content change").unwrap();
+        roots
+            .reconcile(|_, _| panic!("content changes do not replace the directory"))
+            .unwrap();
+        // Keep the old inode allocated to make identity replacement deterministic.
+        std::fs::rename(&root, parent.path().join("previous")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        roots
+            .reconcile(|_, _| {
+                assert_eq!(active.load(Ordering::SeqCst), 0);
+                mock_backend(&active, false)
+            })
+            .unwrap();
+        assert!(!Arc::ptr_eq(
+            &old_flag,
+            &roots.subscriptions[&canonical].invalidated
+        ));
+    }
+
+    #[test]
+    fn invalidation_during_installation_drops_backend_and_is_retryable() {
+        let directory = tempfile::tempdir().unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut roots = roots();
+        roots
+            .project_roots
+            .insert("a".into(), directory.path().into());
+        assert!(roots
+            .reconcile(|_, invalidated| {
+                let backend = mock_backend(&active, false)?;
+                invalidated.store(true, Ordering::Release);
+                Ok(backend)
+            })
+            .is_err());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(roots.subscriptions.is_empty());
+        roots
+            .reconcile(|_, _| mock_backend(&active, false))
+            .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn root_events_errors_and_rescans_invalidate_but_child_changes_do_not() {
+        use notify::event::{Flag, ModifyKind, RemoveKind, RenameMode};
+        let root = Path::new("project");
+        assert!(invalidates_root(
+            root,
+            &Err(notify::Error::generic("lost events"))
+        ));
+        assert!(invalidates_root(
+            root,
+            &Ok(Event::new(notify::EventKind::Other).set_flag(Flag::Rescan))
+        ));
+        for kind in [
+            notify::EventKind::Remove(RemoveKind::Folder),
+            notify::EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+        ] {
+            assert!(invalidates_root(
+                root,
+                &Ok(Event::new(kind).add_path(root.into()))
+            ));
+            assert!(!invalidates_root(
+                root,
+                &Ok(Event::new(kind).add_path(root.join("child")))
+            ));
+        }
+    }
+
+    fn wait_for_signal(rx: &mut watch::Receiver<u64>) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !rx.has_changed().unwrap() {
+            assert!(std::time::Instant::now() < deadline, "missing native event");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        rx.borrow_and_update();
+    }
+
+    #[test]
+    fn native_shared_global_and_nested_roots_are_independent() {
+        let global = tempfile::tempdir().unwrap();
+        let nested = global.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let (tx, mut rx) = watch::channel(0);
+        let mut state = WatcherState::new(global.path(), tx).unwrap();
+        state
+            .roots
+            .project_roots
+            .insert("a".into(), global.path().into());
+        state
+            .roots
+            .project_roots
+            .insert("b".into(), global.path().join("."));
+        state.roots.project_roots.insert("nested".into(), nested);
+        state.reconcile().unwrap();
+        assert_eq!(state.roots.subscriptions.len(), 2);
+        let flag = state.roots.subscriptions[&global.path().canonicalize().unwrap()]
+            .invalidated
+            .clone();
+        state.reconcile().unwrap();
+        assert!(Arc::ptr_eq(
+            &flag,
+            &state.roots.subscriptions[&global.path().canonicalize().unwrap()].invalidated
+        ));
+        state.roots.project_roots.clear();
+        state.reconcile().unwrap();
+        assert!(state.roots.subscriptions.is_empty());
+        rx.borrow_and_update();
+        std::fs::write(global.path().join("global-config"), "changed").unwrap();
+        wait_for_signal(&mut rx);
+    }
+
+    #[test]
+    fn native_recreated_root_receives_events_after_reconciliation() {
+        let global = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (tx, _rx) = watch::channel(0);
+        let mut state = WatcherState::new(global.path(), tx).unwrap();
+        state.roots.project_roots.insert("a".into(), root.clone());
+        state.reconcile().unwrap();
+        let canonical = root.canonicalize().unwrap();
+        let old_flag = state.roots.subscriptions[&canonical].invalidated.clone();
+        std::fs::remove_dir(&root).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        // Observe removal before reconciling even on filesystems that reuse identity.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !old_flag.load(Ordering::Acquire)
+            && DirectoryIdentity::read(&root).unwrap()
+                == state.roots.subscriptions[&canonical].identity
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "replacement not detected"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // A fresh channel isolates events emitted by the rebuilt backend from
+        // deletion events still queued on the old backend and global watcher.
+        let (tx, mut rx) = watch::channel(0);
+        state.signal_tx = tx;
+        state.reconcile().unwrap();
+        assert!(!Arc::ptr_eq(
+            &old_flag,
+            &state.roots.subscriptions[&canonical].invalidated
+        ));
+        rx.borrow_and_update();
+        std::fs::write(root.join("config"), "changed").unwrap();
+        wait_for_signal(&mut rx);
     }
 }
