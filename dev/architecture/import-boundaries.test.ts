@@ -106,6 +106,37 @@ describe('TypeScript import boundary analysis', () => {
     ]);
   });
 
+  it('resolves baseUrl source-root imports and diagnoses missing local targets', () => {
+    const report = analyzeSources({
+      'src/services/new.ts': 'import { state } from "src/stores/store"; export const value = state;',
+      'src/types/model.ts': 'export type State = import("src/stores/store").State;',
+      'src/services/missing.ts': 'import "src/stores/missing";',
+      'src/stores/store.ts': 'export const state = 1; export type State = number;',
+    });
+    expect(report.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'src/services/new.ts', to: 'src/stores/store.ts', kind: 'runtime' }),
+      expect.objectContaining({ from: 'src/types/model.ts', to: 'src/stores/store.ts', kind: 'type' }),
+    ]));
+    expect(report.unresolved).toEqual([
+      expect.objectContaining({ from: 'src/services/missing.ts', specifier: 'src/stores/missing' }),
+    ]);
+    expect(compareReports(analyzeSources({}), report).passed).toBe(false);
+  });
+
+  it('includes dynamic import options in forbidden edges and cycle detection', () => {
+    const report = analyzeSources({
+      'src/services/a.ts': 'export const load = () => import("../stores/b", {});',
+      'src/stores/b.ts': 'export const load = () => import("../services/a", {});',
+    });
+    expect(report.diagnostics).toEqual([]);
+    expect(report.violations).toEqual([
+      expect.objectContaining({ from: 'src/services/a.ts', to: 'src/stores/b.ts', kind: 'runtime' }),
+    ]);
+    const comparison = compareReports(analyzeSources({}), report);
+    expect(comparison.newSccs).toEqual([['src/services/a.ts', 'src/stores/b.ts']]);
+    expect(comparison.passed).toBe(false);
+  });
+
   it('keeps the four planned removals explicit and blocking', () => {
     const sources = Object.fromEntries(EXPLICITLY_FORBIDDEN_EDGES.map(({ from, to }) => [
       from,

@@ -227,7 +227,7 @@ function sourceImportEntries(sourceFile) {
         line: sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1,
       });
     }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments.length === 1) {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments.length >= 1) {
       const argument = node.arguments[0];
       if (ts.isStringLiteral(argument)) {
         entries.push({
@@ -275,7 +275,7 @@ function outputRuntimeEntries(path, outputText) {
     }
   }
   const visit = (node) => {
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments.length === 1) {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments.length >= 1) {
       const argument = node.arguments[0];
       if (ts.isStringLiteral(argument)) entries.push({ source: argument.text, names: [], lazy: true });
     }
@@ -306,9 +306,17 @@ function removeExtension(path) {
   return path.replace(/\.(?:tsx?|mts|cts)$/, '');
 }
 
+function isLocalModuleSpecifier(specifier) {
+  // tsconfig.json uses baseUrl: "."; source-root imports are local too.
+  return specifier.startsWith('.') || specifier.startsWith('src/');
+}
+
 function resolveLocalImport(from, specifier, available) {
-  if (!specifier.startsWith('.')) return undefined;
-  const base = normalizePath(normalize(join(dirname(from), specifier.replace(/\.(?:m|c)?js$/, ''))));
+  if (!isLocalModuleSpecifier(specifier)) return undefined;
+  const modulePath = specifier.replace(/\.(?:m|c)?js$/, '');
+  const base = normalizePath(normalize(specifier.startsWith('.')
+    ? join(dirname(from), modulePath)
+    : modulePath));
   const candidates = [
     base,
     `${base}.ts`,
@@ -349,7 +357,7 @@ function collectGraph(reader) {
     for (const importEntry of result.imports) {
       const to = resolveLocalImport(from, importEntry.source, available);
       if (!to) {
-        if (importEntry.source.startsWith('.') && isTargetedModuleSpecifier(importEntry.source)) unresolved.push({ from, specifier: importEntry.source, line: importEntry.line });
+        if (isLocalModuleSpecifier(importEntry.source) && isTargetedModuleSpecifier(importEntry.source)) unresolved.push({ from, specifier: importEntry.source, line: importEntry.line });
         continue;
       }
       const key = pairKey(from, to);
