@@ -343,6 +343,11 @@ async fn register_project_config_roots(
         if parse_wsl_unc_path(&project.path).is_some() {
             continue;
         }
+        // Registry membership owns the desired subscription. Temporary repository
+        // or metadata lookup failures must not turn into project removal.
+        if let Some(root) = config_manager.desired_project_root(&project.id).await {
+            roots.insert(project.id.clone(), root);
+        }
         let project_path = PathBuf::from(&project.path);
         let project_path = if project_path.is_absolute() {
             project_path
@@ -464,8 +469,7 @@ async fn register_project_config_roots(
                 roots.insert(project.id.clone(), config_root);
             }
             Err(error) => {
-                // A resolved root stays desired when loading a document failed.
-                // Keep its watcher and manager retry state until registry removal.
+                // Registration may have resolved a new root before loading failed.
                 if let Some(root) = config_manager.desired_project_root(&project.id).await {
                     roots.insert(project.id.clone(), root);
                 }
@@ -2340,6 +2344,35 @@ mod tests {
             .await
             .unwrap();
         let bytes = std::fs::read(&config_path).unwrap();
+        let config_root = config_path.parent().unwrap().to_path_buf();
+        let unavailable_project = temp.path().join("unavailable-project");
+        std::fs::rename(&standalone.path, &unavailable_project).unwrap();
+        let (bootstrap, diagnostic) = load_bootstrap_with_config_diagnostic(
+            &workspace_path,
+            &metadata,
+            git.clone(),
+            &manager,
+            &watcher,
+        )
+        .await
+        .unwrap();
+        assert_eq!(bootstrap.standalone_projects[0].id, standalone.id);
+        assert!(!diagnostic.diagnostics.is_empty());
+        assert_eq!(
+            manager.desired_project_root(&standalone.id).await,
+            Some(config_root.clone())
+        );
+        assert_eq!(
+            watcher.desired_project_roots().get(&standalone.id),
+            Some(&config_root)
+        );
+        manager.refresh_project_roots().await;
+        std::fs::rename(&unavailable_project, &standalone.path).unwrap();
+        // Recovery uses the retained desired root, without another registry read.
+        let (changed, errors) = manager.refresh_project_roots().await;
+        assert!(changed);
+        assert!(errors.is_empty());
+        assert!(manager.get_snapshot(&[standalone.id.clone()]).await.is_ok());
         workspace::close_project(&workspace_path, &metadata, &standalone.id)
             .await
             .unwrap();

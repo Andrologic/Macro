@@ -41,6 +41,16 @@ pub type ConfigWatcherState = Arc<ConfigWatcher>;
 
 impl ConfigWatcher {
     #[cfg(test)]
+    pub(crate) fn desired_project_roots(&self) -> BTreeMap<String, PathBuf> {
+        self.state
+            .lock()
+            .expect("test configuration watcher lock")
+            .roots
+            .project_roots
+            .clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn subscribed_project_roots(&self) -> Vec<PathBuf> {
         self.state
             .lock()
