@@ -1,8 +1,8 @@
 // Core types for the Macro application
 
 import type { SupportedLanguage } from '../i18n/languages';
-import type { IconName } from '../components/ui/Icon';
-import type { Citation } from '../stores/useCitationsStore';
+import type { IconName } from './icon';
+import type { Citation } from './citation';
 
 export type ProjectStatus = 'active' | 'paused' | 'archived';
 export type ProjectPathKind = 'windows' | 'wsl';

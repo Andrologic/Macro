@@ -78,6 +78,7 @@ describe('fast local check selection', () => {
       'Binaires suivis autorisés',
       'Workflows GitHub valides',
       'Traductions cohérentes',
+      'Frontières des domaines',
       'ESLint ciblé (1 fichier)',
       'Tests liés (1 fichier)',
       'Formatage Rust',
@@ -97,4 +98,13 @@ describe('fast local check selection', () => {
       quiet: true,
     });
   });
+  test('checks import boundaries when resolution inputs change', () => {
+    for (const path of ['vite.config.ts', 'package.json', 'src/nested/package.json', 'src/stores/store.js', 'src/stores/store.mts']) {
+      const plan = planFastLocalChecks([path]);
+      expect(plan.steps).toContainEqual(expect.objectContaining({
+        args: ['dev/architecture/import-boundaries.mjs', '--check'],
+      }));
+    }
+  });
+
 });

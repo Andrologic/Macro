@@ -233,7 +233,109 @@ L'initialisation se fait en plusieurs niveaux :
 - données cœur comme chat et tâches
 - configuration et providers en basse priorité
 
-### 5.5 Lazy loading
+### 5.5 Composition et frontières TypeScript
+
+`main.tsx` est la racine de composition. Il installe les préférences de
+notification, l'ouverture des contextes de travail et l'adaptateur de changement de langue avant l'initialisation de
+la configuration. `startNotificationComposition` retourne un arrêt idempotent,
+appelé par HMR. Un redémarrage reconnecte les notifications de langue en attente.
+Le renderer est attaché par l'effet de montage de `Toaster` et détaché au démontage.
+
+`src/domains/contracts.ts` définit les capacités publiques déjà utilisées :
+
+| Domaine | Requêtes | Commandes exposées |
+| --- | --- | --- |
+| Chat | Conversations et messages par conversation | Sélection, arrêt du streaming |
+| Plans | Nœuds du plan actif | Activation d'un plan |
+| Tasks | Tâche par identifiant | Activation, passage en review |
+| Projects | Projets autonomes et groupes | Changement de contexte projet |
+| Tools | Identifiants d'outils Chat et MCP activés | Chargement des réglages, appel MCP |
+| Providers | Providers et modèles par provider | Chargement, sélection du provider et du modèle |
+
+Les adaptateurs de `src/composition/domainAdapters.ts` délèguent aux propriétaires
+actuels à chaque appel. Ils ne copient pas l'état durable. Les effets de
+configuration reçoivent les commandes Tools et Providers comme paramètres ;
+ils ne connaissent plus leurs stores. Les autres adaptateurs préparent les
+extractions suivantes et ne remplacent pas encore les appels internes des stores.
+Les consommateurs injectés importent les interfaces du domaine, jamais la racine
+de composition. Les modèles partagés résident dans `src/types/` ; les types
+`Citation` et `IconName` y sont définis indépendamment de leurs consommateurs.
+
+Le prompt de reprise après outil et la normalisation des contrats d'artefacts
+résident dans `src/domains/chat/` et `src/domains/plans/`. Leur utilisation ne
+charge plus l'orchestration Architect ni le service de persistance des artefacts.
+
+L'API `notify.*`, les templates accessibles, les actions de session, l'historique
+et le canal desktop restent centralisés. Les préférences sont lues par un
+adaptateur typé, directement dans leur store propriétaire. Sans renderer, les
+notifications destinées au toast sont conservées par identifiant en mémoire ;
+une mise à jour remplace la livraison du même identifiant et une fermeture
+l'annule. Leur délai d'expiration commence au montage du renderer. L'historique
+et le canal desktop restent traités lors de l'émission. Cette attente est
+transitoire et n'introduit aucune seconde persistance. Les anciens appels
+techniques `toast.*` conservent leur comportement Sonner ; le contrat de livraison
+différée concerne `notify.*`.
+
+La garde `architecture:check`, exécutée par le profil CI frontend et le contrôle différentiel avant push, analyse les
+imports locaux, distingue les types du runtime et interdit les nouvelles arêtes
+contraires aux frontières ainsi que les nouveaux cycles. Les exceptions
+historiques sont nommées dans le fichier de référence portable sous
+`dev/architecture/`. Leur attribution organise les extractions restantes :
+Chat pour l'orchestration conversationnelle, Tasks/Plans pour la persistance et
+les transitions, Providers pour la sélection et les transports, Shell pour
+les réglages et l'interface. `appStateRuntime` reste une dette existante ; aucun
+nouveau consommateur ni service locator n'est ajouté ici. Les contrats globaux
+seront consolidés au lot 15.
+
+Mesure de cette extraction, hors tests et déclarations `.d.ts` :
+
+| Mesure | Avant | Après |
+| --- | ---: | ---: |
+| Modules TypeScript | 513 | 524 |
+| Arêtes runtime | 1 773 | 1 789 |
+| Arêtes de types | 671 | 679 |
+| Plus grande SCC statique | 25 | 16 |
+| Plus grande SCC avec imports dynamiques | 34 | 24 |
+| Exceptions de frontières | 40 | 36 |
+
+Une même paire de modules peut porter une arête runtime et une arête de types.
+Le graphe conserve aussi les imports dynamiques ; les déplacer ne contourne pas
+la garde. Le parcours des fichiers commence dans `src/`. Les alias sont lus dans
+la configuration Vite sans exécuter ses plugins. Le contrat du résolveur couvre :
+
+- les imports relatifs, les chemins `/src/...` et les références TypeScript
+  `src/...` permises par le `baseUrl` actuel ;
+- les objets `resolve` et `alias` littéraux dans la configuration exportée,
+  avec des clés d'alias textuelles et des cibles `/src/...`, `./...` ou `../...` ;
+- l'ordre des alias et la normalisation des barres finales de Vite. La première
+  correspondance décide de la cible, même si celle-ci est absente ;
+- les fichiers exacts, la conversion des suffixes JavaScript en suffixes TypeScript,
+  puis les extensions par défaut de Vite et les fichiers `index`. Des fixtures
+  comparent ces choix au résolveur Vite installé, avec une configuration isolée.
+
+Une cible relative d'alias part du fichier importeur. Les remplacements absolus
+propres à une machine, les remplacements par un nom de paquet, les substitutions
+`$`, les configurations indirectes ou ambiguës et les options de résolution
+supplémentaires font échouer la garde. Les chemins symboliques, les imports qui
+sortent de `src/` et la résolution d'un répertoire source par son `package.json`
+demandent aussi une adaptation explicite. Les spécificateurs internes `#...`
+ainsi que les champs `exports` ou `browser` des manifests de paquet du projet
+sont refusés pour empêcher une redirection locale classée comme externe. L'inventaire des fichiers sous `src/`
+permet de refuser un module JavaScript ou `.mts`/`.cts` qui masquerait une cible
+TypeScript analysée. Les tests, déclarations et assets restent hors du graphe.
+`import.meta.glob`, `globEager` et `globEagerDefault` sont refusés : leurs imports
+sont produits par une transformation Vite, hors de l'analyse TypeScript.
+Les règles de frontières des domaines gardent le même périmètre.
+
+Les nouveaux modules d'adaptation augmentent le nombre total d'arêtes,
+mais réduisent le groupe de modules chargés cycliquement. Le cycle séparé entre
+`MentionChip` et `MentionNode` reste attribué au lot Chat. La SCC statique restante
+unit encore les stores App, Chat, Tasks, Skills et Terminal aux services Architect,
+metadata, merge et worktrees ; ces extractions appartiennent aux lots suivants.
+Les notifications et i18n ne participent plus aux SCC, même avec les imports
+dynamiques. La baseline finale interdit leur réintroduction.
+
+### 5.6 Lazy loading
 
 L'application charge paresseusement :
 

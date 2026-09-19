@@ -1,3 +1,5 @@
+import { startNotificationComposition } from './composition/notificationComposition';
+import { providers, tools } from './composition/domainAdapters';
 import { BackupStartupRecovery } from './components/settings/views/BackupRecoveryStatus';
 import { PersistenceHealthNotifications } from "./components/notifications/PersistenceHealthNotifications";
 import { restoreBackupBrowserState } from "./services/localBackup";
@@ -87,6 +89,8 @@ if (typeof performance !== 'undefined' && performance.mark) {
 installBenignTauriReloadWarningFilter();
 installFrontendDiagnostics();
 registerAppStateGetter(() => useAppStore.getState());
+const stopNotifications = startNotificationComposition();
+if (import.meta.hot) import.meta.hot.dispose(stopNotifications);
 
 const renderApp = (): void => {
   const macroWindow = window as MacroRootWindow;
@@ -112,7 +116,7 @@ void restoreBackupBrowserState()
     }
     return initializeConfigRuntime()
       .then(() => Promise.all([initializeI18n(), refreshWebSearchSettings()]))
-      .then(() => { installConfigRuntimeEffects(); })
+      .then(() => { installConfigRuntimeEffects({ providers, tools }); })
       .catch((error) => { console.error("Failed to initialize Macro runtime:", error); })
       .finally(renderApp);
   })

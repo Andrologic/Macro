@@ -10,6 +10,7 @@ const installStep = step('Install locked frontend dependencies', 'bun', ['instal
 const workflowStep = step('Validate GitHub workflows', 'bun', ['dev/ci/validate-workflows.mjs']);
 
 const frontendChecks = [
+  step('Check domain import boundaries', 'bun', ['run', 'architecture:check']),
   step('Typecheck frontend', 'bun', ['run', 'typecheck']),
   step('Lint frontend', 'bun', ['run', 'lint']),
   step('Audit translations', 'bun', ['run', 'i18n:audit']),
