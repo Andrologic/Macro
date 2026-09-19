@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, copyFileSync, chmodSync, rmSync } from 'node:fs';
 import { cpus, totalmem, platform, release, arch, tmpdir } from 'node:os';
@@ -15,6 +15,18 @@ export function sourceFingerprint(directory = root) {
   return hash.digest('hex');
 }
 
+type BuildIdentity = { sourceSha256: string; buildNonce: string };
+export function stageVerifiedBinary(source: string, destination: string, expected: BuildIdentity,
+  readIdentity: (binary: string) => unknown = (binary) =>
+    JSON.parse(execFileSync(binary, ['--build-identity'], { encoding: 'utf8' }))) {
+  copyFileSync(source, destination);
+  chmodSync(destination, 0o700);
+  const identity = readIdentity(destination) as Partial<BuildIdentity> | null;
+  if (!identity || identity.sourceSha256 !== expected.sourceSha256 || identity.buildNonce !== expected.buildNonce) {
+    throw new Error('Compiled identity mismatch: shared-cache binary changed; discard this run');
+  }
+}
+
 async function run() {
   if (process.argv.slice(2).some((arg) => arg !== '--self-test') || process.argv.slice(2).length > 1) {
     throw new Error('Usage: bun dev/performance/native-sqlite.ts [--self-test]');
@@ -22,9 +34,11 @@ async function run() {
   const head = git('rev-parse', 'HEAD');
   const fingerprint = sourceFingerprint();
   const dirty = Boolean(git('status', '--porcelain', '--untracked-files=all'));
+  const identity = { sourceSha256: fingerprint, buildNonce: randomUUID() };
   const build = Bun.spawn(['cargo', 'build', '--manifest-path', 'src-tauri/Cargo.toml',
     '--example', 'performance-sqlite', '--locked', '--offline', '-j', '2'], {
-    cwd: root, env: { ...process.env, TAURI_CONFIG: '{"bundle":{"externalBin":[]}}' },
+    cwd: root, env: { ...process.env, TAURI_CONFIG: '{"bundle":{"externalBin":[]}}',
+      MACRO_NATIVE_PERF_SOURCE_SHA256: identity.sourceSha256, MACRO_NATIVE_PERF_BUILD_NONCE: identity.buildNonce },
     stdout: 'inherit', stderr: 'inherit',
   });
   if (await build.exited !== 0) throw new Error('Native benchmark build failed');
@@ -35,8 +49,7 @@ async function run() {
   const directory = mkdtempSync(join(tmpdir(), 'macro-native-perf-runner-'));
   try {
     const binary = join(directory, executable);
-    copyFileSync(join(target, 'debug/examples', executable), binary);
-    chmodSync(binary, 0o700);
+    stageVerifiedBinary(join(target, 'debug/examples', executable), binary, identity);
     const binarySha256 = createHash('sha256').update(readFileSync(binary)).digest('hex');
     const result = execFileSync(binary, process.argv.slice(2), { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
     if (head !== git('rev-parse', 'HEAD') || fingerprint !== sourceFingerprint()) {

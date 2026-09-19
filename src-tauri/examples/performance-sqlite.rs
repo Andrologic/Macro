@@ -282,6 +282,16 @@ async fn self_test() -> Result<()> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args == ["--build-identity"] {
+        println!(
+            "{}",
+            json!({
+                "sourceSha256": option_env!("MACRO_NATIVE_PERF_SOURCE_SHA256"),
+                "buildNonce": option_env!("MACRO_NATIVE_PERF_BUILD_NONCE")
+            })
+        );
+        return Ok(());
+    }
     if !args.is_empty() && args != ["--self-test"] {
         return Err("Only --self-test is supported".into());
     }

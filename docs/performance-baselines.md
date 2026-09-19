@@ -208,9 +208,14 @@ The command runs `cargo build --manifest-path src-tauri/Cargo.toml --example
 performance-sqlite --locked --offline -j 2`, using debug mode and
 `TAURI_CONFIG='{"bundle":{"externalBin":[]}}'`. Dependencies must already be
 available offline. It honors `CARGO_TARGET_DIR`; an existing compatible cache may
-be shared with another local worktree. Cargo's lock is respected. The measured
-executable is copied into a private temporary directory before execution, so a
-later build using that cache cannot replace the running benchmark. No source in
+be shared with another local worktree. Cargo's lock is respected. Each build embeds a fresh invocation nonce and the source fingerprint via
+compile-time environment variables. The measured executable is copied into a private temporary directory before execution, so a
+later build using that cache cannot replace the running benchmark. Before
+opening SQLite, the runner queries the copied binary with `--build-identity` and
+rejects any different nonce/fingerprint, including replacement between Cargo
+exit and the copy. A mismatch discards the run; it does not silently use a newer
+binary. This recompiles the example for each invocation, while keeping dependency
+caching. The replacement race is reproduced by a focused staging test. No source in
 the cache owner is changed. A cache hit does not mean a release build or an
 idle machine.
 
@@ -224,7 +229,7 @@ the fixture database; no credentials or provider connections are used.
 
 ### Isolation and validation
 
-The example accepts only the optional `--self-test` switch; it accepts no database
+The example accepts `--self-test` and a read-only `--build-identity` handshake; it accepts no database
 path. Every case creates a new `TempDir` and injects its new `fixture.db` path
 into the real `db::create_pool`. Before writing fixture rows, it compares
 `PRAGMA database_list`'s canonical main path with that owned path. It also checks
@@ -297,8 +302,8 @@ Observed UTC 2026-09-19 23:15:42 on Darwin 27.0.0 arm64, Apple M5, 10 logical CP
 Cargo cache. Source base was `70b56179d9ccc207d6f475a047d09bb54b61b8e3`, dirty with
 this benchmark addition. The captured source fingerprint was
 `fbf7c948a0a1322c8eeb32cd6bb06e4805f85aca7c5db3b7cee16b57eb077851`.
-This run preceded the final existing-path negative-check refinement; no measured
-repository operation changed. Frozen-candidate validation reports are retained
+This run preceded the final existing-path negative check and build-identity
+handshake; no measured repository operation changed. Frozen-candidate validation reports are retained
 outside Git with their own HEAD and fingerprint.
 
 Values are milliseconds, p50 / p95 for the 100 retained samples:
