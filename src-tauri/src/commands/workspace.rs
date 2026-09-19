@@ -29,7 +29,7 @@ use crate::WorkspaceRoot;
 use futures::{stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -318,15 +318,44 @@ pub async fn workspace_quarantine_legacy_state_lock(
     .map_err(to_join_error)?
 }
 
+static CONFIG_ROOT_RECONCILIATION: Mutex<()> = Mutex::const_new(());
+
 async fn register_project_config_roots(
-    projects: impl IntoIterator<Item = ProjectDto>,
+    workspace_path: &std::path::Path,
+    workspace_metadata_root: &std::path::Path,
     git_state: GitState,
     config_manager: &ConfigManager,
     config_watcher: &ConfigWatcherState,
 ) {
+    // Fetch the complete registry under the reconciliation lock. A grouped-only list
+    // must never evict standalone projects, nor may an older snapshot win a race.
+    let _reconciliation = CONFIG_ROOT_RECONCILIATION.lock().await;
+    let bootstrap = match workspace::get_bootstrap(workspace_path, workspace_metadata_root).await {
+        Ok(bootstrap) => bootstrap,
+        Err(error) => {
+            tracing::warn!(%error, "Impossible de réconcilier les racines de configuration");
+            return;
+        }
+    };
+    let projects = bootstrap.standalone_projects.into_iter().chain(
+        bootstrap
+            .project_groups
+            .into_iter()
+            .flat_map(|group| group.projects),
+    );
+    let mut roots = BTreeMap::new();
     for project in projects {
-        let project_path = PathBuf::from(&project.path);
         if parse_wsl_unc_path(&project.path).is_some() {
+            continue;
+        }
+        let project_path = PathBuf::from(&project.path);
+        let project_path = if project_path.is_absolute() {
+            project_path
+        } else {
+            workspace_path.join(project_path)
+        };
+        if !project_path.is_dir() {
+            tracing::warn!(project_id = %project.id, "La racine du projet est absente, configuration désinscrite");
             continue;
         }
         let metadata_root =
@@ -424,13 +453,7 @@ async fn register_project_config_roots(
                         ),
                     }
                 }
-                if let Err(error) = config_watcher.watch_project_root(&project.id, &config_root) {
-                    tracing::warn!(
-                        project_id = %project.id,
-                        %error,
-                        "Impossible de surveiller la configuration du projet"
-                    );
-                }
+                roots.insert(project.id.clone(), config_root);
             }
             Err(error) => {
                 tracing::warn!(
@@ -441,6 +464,12 @@ async fn register_project_config_roots(
                 );
             }
         }
+    }
+    config_manager
+        .retain_project_roots(&roots.keys().cloned().collect())
+        .await;
+    if let Err(error) = config_watcher.reconcile_project_roots(&roots) {
+        tracing::warn!(%error, "La surveillance des configurations reste partiellement réconciliée");
     }
 }
 
@@ -554,19 +583,9 @@ pub async fn workspace_get_bootstrap(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     let bootstrap = workspace::get_bootstrap(&workspace_path, &metadata_root).await?;
-    let projects = bootstrap
-        .standalone_projects
-        .iter()
-        .chain(
-            bootstrap
-                .project_groups
-                .iter()
-                .flat_map(|group| group.projects.iter()),
-        )
-        .cloned()
-        .collect::<Vec<_>>();
     register_project_config_roots(
-        projects,
+        &workspace_path,
+        &metadata_root,
         git_state.inner().clone(),
         config_manager.inner(),
         config_watcher.inner(),
@@ -648,13 +667,9 @@ pub async fn workspace_list_projects(
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
     let groups = workspace::list_projects(&workspace_path, &metadata_root).await?;
-    let projects = groups
-        .iter()
-        .flat_map(|group| group.projects.iter())
-        .cloned()
-        .collect::<Vec<_>>();
     register_project_config_roots(
-        projects,
+        &workspace_path,
+        &metadata_root,
         git_state.inner().clone(),
         config_manager.inner(),
         config_watcher.inner(),
@@ -700,36 +715,73 @@ pub async fn workspace_get_project_registry_diagnostics(
 pub async fn workspace_recover_missing_metadata(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     request: WorkspaceRecoverMissingMetadataRequestDto,
 ) -> Result<WorkspaceMetadataRecoveryReportDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::recover_missing_metadata(&workspace_path, &metadata_root, request).await
+    let result =
+        workspace::recover_missing_metadata(&workspace_path, &metadata_root, request).await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn workspace_reconcile_project_registry_from_hints(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     request: WorkspaceReconcileProjectRegistryFromHintsRequestDto,
 ) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::reconcile_project_registry_from_hints(&workspace_path, &metadata_root, request).await
+    let result =
+        workspace::reconcile_project_registry_from_hints(&workspace_path, &metadata_root, request)
+            .await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn workspace_discover_recoverable_projects(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     request: WorkspaceReconcileProjectRegistryFromKnownParentsRequestDto,
 ) -> Result<WorkspaceProjectRegistryReconcileReportDto> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::discover_recoverable_projects(&workspace_path, &metadata_root, request).await
+    let result =
+        workspace::discover_recoverable_projects(&workspace_path, &metadata_root, request).await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -899,6 +951,8 @@ pub async fn workspace_set_active_root(
 pub async fn workspace_create_project(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     project_operations: State<'_, ProjectOperationStore>,
     name: String,
     description: String,
@@ -950,6 +1004,16 @@ pub async fn workspace_create_project(
             error = %error
         ),
     }
+    if result.is_ok() {
+        register_project_config_roots(
+            &workspace_path,
+            &metadata_root,
+            git_state.inner().clone(),
+            config_manager.inner(),
+            config_watcher.inner(),
+        )
+        .await;
+    }
     result
 }
 
@@ -958,6 +1022,8 @@ pub async fn workspace_create_project(
 pub async fn workspace_create_project_with_git_setup(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     project_operations: State<'_, ProjectOperationStore>,
     name: String,
     description: String,
@@ -1016,6 +1082,16 @@ pub async fn workspace_create_project_with_git_setup(
             error = %error
         ),
     }
+    if result.is_ok() {
+        register_project_config_roots(
+            &workspace_path,
+            &metadata_root,
+            git_state.inner().clone(),
+            config_manager.inner(),
+            config_watcher.inner(),
+        )
+        .await;
+    }
     result
 }
 
@@ -1024,6 +1100,8 @@ pub async fn workspace_create_project_with_git_setup(
 pub async fn workspace_create_new_project_repo(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     project_operations: State<'_, ProjectOperationStore>,
     repo_name: String,
     parent_path: String,
@@ -1073,6 +1151,16 @@ pub async fn workspace_create_new_project_repo(
             error = %error
         ),
     }
+    if result.is_ok() {
+        register_project_config_roots(
+            &workspace_path,
+            &metadata_root,
+            git_state.inner().clone(),
+            config_manager.inner(),
+            config_watcher.inner(),
+        )
+        .await;
+    }
     result
 }
 
@@ -1081,6 +1169,8 @@ pub async fn workspace_create_new_project_repo(
 pub async fn workspace_import_git_repo(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     git_url: String,
     project_name: String,
     branch: String,
@@ -1102,7 +1192,16 @@ pub async fn workspace_import_git_repo(
         git_flow_settings,
     };
 
-    workspace::import_git_repo(&workspace_path, &metadata_root, request).await
+    let result = workspace::import_git_repo(&workspace_path, &metadata_root, request).await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1122,32 +1221,56 @@ pub async fn workspace_rename_project_group(
 pub async fn workspace_create_project_group(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     name: String,
     project_ids: Vec<String>,
 ) -> Result<Vec<ProjectGroupDto>> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::create_project_group(&workspace_path, &metadata_root, &name, &project_ids).await
+    let result =
+        workspace::create_project_group(&workspace_path, &metadata_root, &name, &project_ids)
+            .await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn workspace_move_project_to_group(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     project_id: String,
     group_id: Option<String>,
 ) -> Result<Vec<ProjectGroupDto>> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::move_project_to_group(
+    let result = workspace::move_project_to_group(
         &workspace_path,
         &metadata_root,
         &project_id,
         group_id.as_deref(),
     )
-    .await
+    .await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1348,36 +1471,70 @@ pub async fn workspace_restore_project(
 pub async fn workspace_remove_project_group(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     group_id: String,
 ) -> Result<Vec<ProjectGroupDto>> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::remove_project_group(&workspace_path, &metadata_root, &group_id).await
+    let result =
+        workspace::remove_project_group(&workspace_path, &metadata_root, &group_id).await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn workspace_close_project(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     project_id: String,
 ) -> Result<Vec<ProjectGroupDto>> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::close_project(&workspace_path, &metadata_root, &project_id).await
+    let result = workspace::close_project(&workspace_path, &metadata_root, &project_id).await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn workspace_remove_project(
     workspace_root: State<'_, WorkspaceMetadataRoot>,
     git_state: State<'_, GitState>,
+    config_manager: State<'_, ConfigManager>,
+    config_watcher: State<'_, ConfigWatcherState>,
     project_id: String,
 ) -> Result<Vec<ProjectGroupDto>> {
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    workspace::remove_project(&workspace_path, &metadata_root, &project_id).await
+    let result = workspace::remove_project(&workspace_path, &metadata_root, &project_id).await?;
+    register_project_config_roots(
+        &workspace_path,
+        &metadata_root,
+        git_state.inner().clone(),
+        config_manager.inner(),
+        config_watcher.inner(),
+    )
+    .await;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1700,6 +1857,70 @@ pub async fn workspace_update_manual_feature_merge_workflow(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn config_roots_reconcile_complete_registry_and_preserve_removed_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        let metadata = workspace_path.join(".macro");
+        std::fs::create_dir_all(&metadata).unwrap();
+        let global = temp.path().join("global");
+        let manager = ConfigManager::initialize(global.clone()).await.unwrap();
+        let watcher = Arc::new(crate::config::ConfigWatcher::for_test(&global));
+        let make_project = |id: &str| {
+            let path = temp.path().join(id);
+            std::fs::create_dir_all(&path).unwrap();
+            serde_json::from_value::<ProjectDto>(json!({
+                "id": id, "name": id, "path": path, "created_at": "2026-01-01T00:00:00Z", "status": "active",
+                "metadata": {"description": "", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []}
+            })).unwrap()
+        };
+        let standalone = make_project("standalone");
+        let grouped = make_project("grouped");
+        let grouped_peer = make_project("grouped-peer");
+        let state = workspace::metadata::WorkspaceState {
+            standalone_projects: vec![standalone.clone()],
+            project_groups: vec![ProjectGroupDto {
+                id: "group".into(),
+                name: "group".into(),
+                is_open: true,
+                projects: vec![grouped.clone(), grouped_peer],
+            }],
+            ..Default::default()
+        };
+        std::fs::write(
+            metadata.join("workspace.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let git = GitState::new();
+        register_project_config_roots(&workspace_path, &metadata, git.clone(), &manager, &watcher)
+            .await;
+        for id in [&standalone.id, &grouped.id] {
+            assert!(manager.get_snapshot(&[id.clone()]).await.is_ok());
+        }
+        let scope = ConfigScope::Project {
+            project_id: standalone.id.clone(),
+        };
+        let config_path = manager
+            .path_for_scope(ConfigDocumentKind::Git, &scope)
+            .await
+            .unwrap();
+        let bytes = std::fs::read(&config_path).unwrap();
+        workspace::close_project(&workspace_path, &metadata, &standalone.id)
+            .await
+            .unwrap();
+        register_project_config_roots(&workspace_path, &metadata, git.clone(), &manager, &watcher)
+            .await;
+        assert!(manager.get_snapshot(&[standalone.id]).await.is_err());
+        assert!(manager.get_snapshot(&[grouped.id.clone()]).await.is_ok());
+        assert_eq!(std::fs::read(config_path).unwrap(), bytes);
+        workspace::remove_project_group(&workspace_path, &metadata, "group")
+            .await
+            .unwrap();
+        register_project_config_roots(&workspace_path, &metadata, git, &manager, &watcher).await;
+        assert!(manager.get_snapshot(&[grouped.id]).await.is_ok());
+    }
 
     struct DropProbe(Arc<AtomicBool>);
 

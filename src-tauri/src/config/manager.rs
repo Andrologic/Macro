@@ -71,6 +71,7 @@ pub struct ConfigManager {
     root: Arc<PathBuf>,
     state: Arc<RwLock<ConfigState>>,
     document_locks: Arc<Mutex<BTreeMap<DocumentKey, Arc<Mutex<()>>>>>,
+    project_registration: Arc<Mutex<()>>,
     mcp_runtime_authority: Arc<RwLock<()>>,
 }
 
@@ -146,6 +147,7 @@ impl ConfigManager {
             root: Arc::new(root),
             state: Arc::new(RwLock::new(ConfigState::default())),
             document_locks: Arc::new(Mutex::new(BTreeMap::new())),
+            project_registration: Arc::new(Mutex::new(())),
             mcp_runtime_authority: Arc::new(RwLock::new(())),
         };
         manager.write_schemas()?;
@@ -175,6 +177,8 @@ impl ConfigManager {
         project_id: &str,
         macro_metadata_root: PathBuf,
     ) -> Result<PathBuf, ConfigApiError> {
+        let _references = self.mcp_runtime_authority.write().await;
+        let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
         let projects_root = macro_metadata_root.join("projects");
         fs::create_dir_all(&projects_root).map_err(|error| {
@@ -197,6 +201,18 @@ impl ConfigManager {
             )
         })?;
 
+        let config_root = config_root.canonicalize().map_err(|error| {
+            ConfigApiError::new("config.project.resolve_failed", error.to_string())
+        })?;
+        if self.state.read().await.project_roots.get(project_id) == Some(&config_root) {
+            return Ok(config_root);
+        }
+        self.unregister_project_root_inner(project_id).await;
+        self.state
+            .write()
+            .await
+            .project_roots
+            .insert(project_id.to_string(), config_root.clone());
         for kind in ConfigDocumentKind::ALL
             .into_iter()
             .filter(|kind| kind.supports_project_scope())
@@ -207,29 +223,64 @@ impl ConfigManager {
             let path = config_root.join(kind.file_name());
             if path.exists() {
                 if let Err(error) = self.load_document_from_path(kind, scope, path, false).await {
-                    let mut state = self.state.write().await;
-                    state.documents.retain(|key, _| {
-                        key.scope
-                            != (ConfigScope::Project {
-                                project_id: project_id.to_string(),
-                            })
-                    });
-                    state.pending_changes.retain(|_, pending| {
-                        pending.pending.scope
-                            != (ConfigScope::Project {
-                                project_id: project_id.to_string(),
-                            })
-                    });
+                    self.unregister_project_root_inner(project_id).await;
                     return Err(error);
                 }
             }
         }
-        self.state
-            .write()
+        Ok(config_root)
+    }
+
+    /// Forget runtime state only. Approved baselines, proposals and project files stay on disk.
+    pub async fn unregister_project_root(&self, project_id: &str) {
+        let _references = self.mcp_runtime_authority.write().await;
+        let _registration = self.project_registration.lock().await;
+        self.unregister_project_root_inner(project_id).await;
+    }
+
+    async fn unregister_project_root_inner(&self, project_id: &str) {
+        let scope = ConfigScope::Project {
+            project_id: project_id.to_string(),
+        };
+        // Keep mutex identities alive: callers may already be waiting on these locks.
+        let mut guards = Vec::new();
+        for kind in ConfigDocumentKind::ALL
+            .into_iter()
+            .filter(|kind| kind.supports_project_scope())
+        {
+            guards.push(
+                self.document_lock(&DocumentKey {
+                    kind,
+                    scope: scope.clone(),
+                })
+                .await
+                .lock_owned()
+                .await,
+            );
+        }
+        let mut state = self.state.write().await;
+        state.project_roots.remove(project_id);
+        state.documents.retain(|key, _| key.scope != scope);
+        state
+            .pending_changes
+            .retain(|_, pending| pending.pending.scope != scope);
+    }
+
+    pub async fn retain_project_roots(&self, project_ids: &BTreeSet<String>) {
+        let _references = self.mcp_runtime_authority.write().await;
+        let _registration = self.project_registration.lock().await;
+        let removed = self
+            .state
+            .read()
             .await
             .project_roots
-            .insert(project_id.to_string(), config_root.clone());
-        Ok(config_root)
+            .keys()
+            .filter(|id| !project_ids.contains(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in removed {
+            self.unregister_project_root_inner(&id).await;
+        }
     }
 
     async fn load_initial_user_document(
@@ -484,6 +535,7 @@ impl ConfigManager {
         kind: ConfigDocumentKind,
         project_id: &str,
     ) -> Result<(), ConfigApiError> {
+        let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
         if !kind.supports_project_scope() {
             return Err(ConfigApiError::new(
@@ -527,10 +579,11 @@ impl ConfigManager {
             .await
     }
 
-    async fn discover_project_documents(
+    async fn lock_and_discover_project_documents(
         &self,
         project_ids: &[String],
-    ) -> Result<(), ConfigApiError> {
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, ConfigApiError> {
+        let registration = self.project_registration.lock().await;
         let roots = {
             let state = self.state.read().await;
             let mut roots = Vec::with_capacity(project_ids.len());
@@ -570,7 +623,7 @@ impl ConfigManager {
                 }
             }
         }
-        Ok(())
+        Ok(registration)
     }
 
     pub async fn get_document(
@@ -596,7 +649,10 @@ impl ConfigManager {
         &self,
         project_ids: &[String],
     ) -> Result<ConfigSnapshot, ConfigApiError> {
-        self.discover_project_documents(project_ids).await?;
+        // A snapshot must not observe a registration with only some documents loaded.
+        let _registration = self
+            .lock_and_discover_project_documents(project_ids)
+            .await?;
         let state = self.state.read().await;
         let user_documents = state
             .documents
@@ -1508,8 +1564,14 @@ impl ConfigManager {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        if let Err(error) = self.discover_project_documents(&project_ids).await {
-            return vec![Err(error)];
+        let mut outcomes = Vec::new();
+        for project_id in &project_ids {
+            if let Err(error) = self
+                .lock_and_discover_project_documents(std::slice::from_ref(project_id))
+                .await
+            {
+                outcomes.push(Err(error));
+            }
         }
         let keys = self
             .state
@@ -1519,7 +1581,7 @@ impl ConfigManager {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        let mut outcomes = Vec::with_capacity(keys.len());
+        outcomes.reserve(keys.len());
         for key in keys {
             outcomes.push(self.reload(key.kind, key.scope, source).await);
         }
@@ -2948,7 +3010,230 @@ mod tests {
             .register_project_root("project-123", metadata.path().to_path_buf())
             .await
             .expect("valid project id");
-        assert!(root.starts_with(metadata.path().join("projects")));
+        assert!(root.starts_with(metadata.path().join("projects").canonicalize().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn unregister_clears_runtime_documents_and_preserves_durable_proposals() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let root = manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        let scope = ConfigScope::Project {
+            project_id: "project".into(),
+        };
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, scope.clone())
+            .await
+            .unwrap();
+        let result = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: scope.clone(),
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/riskLevel".into(),
+                    from: None,
+                    value: Some(json!("strict")),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .unwrap();
+        let pending = result.pending_change.expect("sensitive tools proposal");
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Tools,
+            scope: scope.clone(),
+        };
+        let durable = pending_document_path(manager.root(), &key);
+        let bytes = fs::read(&durable).unwrap();
+        let document_bytes = fs::read(root.join("tools.json")).unwrap();
+
+        manager.unregister_project_root("project").await;
+        manager.unregister_project_root("project").await;
+        assert!(manager.list_pending_changes().await.is_empty());
+        assert_eq!(
+            manager
+                .get_document(ConfigDocumentKind::Tools, scope)
+                .await
+                .unwrap_err()
+                .code,
+            "config.project.not_registered"
+        );
+        assert_eq!(fs::read(&durable).unwrap(), bytes);
+        assert_eq!(fs::read(root.join("tools.json")).unwrap(), document_bytes);
+        assert!(manager
+            .reload_all_changed(ConfigChangeSource::ExternalEditor)
+            .await
+            .iter()
+            .all(Result::is_ok));
+        assert!(manager
+            .get_snapshot(&[])
+            .await
+            .unwrap()
+            .documents
+            .iter()
+            .all(|doc| doc.scope == ConfigScope::User));
+
+        manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        assert_eq!(manager.list_pending_changes().await[0].id, pending.id);
+    }
+
+    #[tokio::test]
+    async fn moving_project_forgets_absent_documents_and_retains_other_projects() {
+        let (_temp, manager) = manager().await;
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        let old_root = manager
+            .register_project_root("moving", old.path().into())
+            .await
+            .unwrap();
+        manager
+            .register_project_root("retained", old.path().into())
+            .await
+            .unwrap();
+        let scope = ConfigScope::Project {
+            project_id: "moving".into(),
+        };
+        manager
+            .get_document(ConfigDocumentKind::Git, scope.clone())
+            .await
+            .unwrap();
+        let root = manager
+            .register_project_root("moving", new.path().into())
+            .await
+            .unwrap();
+        let snapshot = manager.get_snapshot(&["moving".into()]).await.unwrap();
+        assert!(snapshot.documents.iter().all(|doc| doc.scope != scope));
+        assert!(old_root.join("git.json").is_file());
+        assert_eq!(
+            manager
+                .path_for_scope(ConfigDocumentKind::Git, &scope)
+                .await
+                .unwrap(),
+            root.join("git.json")
+        );
+        manager
+            .retain_project_roots(&BTreeSet::from(["retained".into()]))
+            .await;
+        assert!(manager.get_snapshot(&["retained".into()]).await.is_ok());
+        assert!(manager.get_snapshot(&["moving".into()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn unavailable_project_does_not_block_global_reload() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let root = manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        // A directory in place of a JSON file makes discovery fail.
+        fs::create_dir(root.join("git.json")).unwrap();
+        let mut general = sparse_document(ConfigDocumentKind::Settings);
+        general["language"] = json!("fr");
+        atomic_write_json(&manager.root().join("settings.json"), &general).unwrap();
+        let outcomes = manager
+            .reload_all_changed(ConfigChangeSource::ExternalEditor)
+            .await;
+        assert!(outcomes.iter().any(Result::is_err));
+        assert!(outcomes
+            .iter()
+            .any(
+                |outcome| outcome.as_ref().is_ok_and(|outcome| outcome.document.kind
+                    == ConfigDocumentKind::Settings
+                    && outcome.document.scope == ConfigScope::User
+                    && outcome.changed
+                    && !outcome.invalid)
+            ));
+    }
+
+    #[tokio::test]
+    async fn repeated_registration_does_not_replace_loaded_documents() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        let scope = ConfigScope::Project {
+            project_id: "project".into(),
+        };
+        let before = manager
+            .get_document(ConfigDocumentKind::Git, scope.clone())
+            .await
+            .unwrap();
+        manager
+            .register_project_root("project", metadata.path().join("."))
+            .await
+            .unwrap();
+        let after = manager
+            .get_document(ConfigDocumentKind::Git, scope)
+            .await
+            .unwrap();
+        assert_eq!(before.etag, after.etag);
+        assert_eq!(manager.state.read().await.project_roots.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unregister_does_not_deadlock_an_authorized_runtime_snapshot() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        let authority = manager.lock_mcp_runtime_configuration().await;
+        let unregister = manager.unregister_project_root("project");
+        tokio::pin!(unregister);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut unregister)
+                .await
+                .is_err()
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.get_snapshot(&["project".into()]),
+        )
+        .await
+        .expect("snapshot must not wait for the unregister holding the registry lock")
+        .unwrap();
+        drop(authority);
+        unregister.await;
+    }
+
+    #[tokio::test]
+    async fn unregister_waits_for_document_writes_before_forgetting_project() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        let key = DocumentKey {
+            kind: ConfigDocumentKind::Git,
+            scope: ConfigScope::Project {
+                project_id: "project".into(),
+            },
+        };
+        let lock = manager.document_lock(&key).await;
+        let guard = lock.lock().await;
+        let unregister = manager.unregister_project_root("project");
+        tokio::pin!(unregister);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut unregister)
+                .await
+                .is_err()
+        );
+        drop(guard);
+        unregister.await;
+        assert!(manager.state.read().await.project_roots.is_empty());
     }
 
     #[tokio::test]
