@@ -85,19 +85,25 @@ function sourceFileNames(rootDirectory) {
         walk(path);
       } else {
         const relativePath = normalizePath(relative(rootDirectory, path));
-        if (isSourceFile(relativePath) && relativePath.startsWith('src/')) files.push(relativePath);
+        if (entry.isSymbolicLink()) throw new Error(`Import guard requires regular source paths, found symlink: ${relativePath}`);
+        files.push(relativePath);
       }
     }
   };
-  walk(rootDirectory);
+  const sourceRoot = join(rootDirectory, 'src');
+  if (existsSync(sourceRoot)) walk(sourceRoot);
   return sorted(files);
 }
 
 function gitSourceFileNames(rootDirectory, ref) {
-  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-r', '--name-only', ref, '--', 'src'], {
+  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src'], {
     encoding: 'utf8',
   });
-  return sorted(output.split('\n').filter(isSourceFile));
+  return sorted(output.split('\0').filter(Boolean).map((entry) => {
+    const [metadata, path] = entry.split('\t');
+    if (metadata.startsWith('120000')) throw new Error(`Import guard requires regular source paths, found symlink: ${path}`);
+    return path;
+  }));
 }
 
 function readGitFile(rootDirectory, ref, path) {
@@ -105,8 +111,10 @@ function readGitFile(rootDirectory, ref, path) {
 }
 
 function createFilesystemReader(rootDirectory) {
+  const resolutionFiles = sourceFileNames(rootDirectory);
   return {
-    files: sourceFileNames(rootDirectory),
+    resolutionFiles,
+    files: resolutionFiles.filter(isSourceFile),
     read(path) {
       return readFileSync(join(rootDirectory, path), 'utf8');
     },
@@ -114,8 +122,10 @@ function createFilesystemReader(rootDirectory) {
 }
 
 function createGitReader(rootDirectory, ref) {
+  const resolutionFiles = gitSourceFileNames(rootDirectory, ref);
   return {
-    files: gitSourceFileNames(rootDirectory, ref),
+    resolutionFiles,
+    files: resolutionFiles.filter(isSourceFile),
     read(path) {
       return readGitFile(rootDirectory, ref, path);
     },
@@ -125,6 +135,7 @@ function createGitReader(rootDirectory, ref) {
 export function createVirtualReader(sources) {
   const normalizedSources = new Map(Object.entries(sources).map(([path, text]) => [normalizePath(path), text]));
   return {
+    resolutionFiles: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/'))),
     files: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') && isSourceFile(path))),
     read(path) {
       const text = normalizedSources.get(normalizePath(path));
@@ -356,42 +367,63 @@ function configuredAliases(reader) {
     }
     const name = propertyName(entry.name);
     if (aliases.has(name)) throw new Error(`Import guard cannot analyze duplicate Vite alias ${name}.`);
-    aliases.set(name, entry.initializer.text);
+    const replacement = entry.initializer.text;
+    // Keep the accepted contract portable and free of String.replace tokens.
+    if (!/^[@a-zA-Z_][@a-zA-Z0-9_./-]*$/.test(name)
+      || !/^(?:\/src(?:\/|$)|\.\.?\/)/.test(replacement)
+      || /[\\$?#\0]/.test(replacement)) {
+      throw new Error(`Import guard supports alias ${name} only with a /src root path or an importer-relative replacement; unsupported alias name or replacement.`);
+    }
+    aliases.set(name, replacement);
   }
-  return [...aliases];
+  // Vite normalizeAlias preserves object key order and trims only paired slashes.
+  return [...aliases].map(([name, replacement]) => name.endsWith('/') && replacement.endsWith('/')
+    ? [name.slice(0, -1), replacement.slice(0, -1)]
+    : [name, replacement]);
 }
 
 function localModulePath(from, specifier, aliases) {
-  let modulePath = specifier.split(/[?#]/, 1)[0];
+  let modulePath = specifier;
   for (const [name, replacement] of aliases) {
     if (modulePath === name || modulePath.startsWith(`${name}/`)) {
       modulePath = replacement + modulePath.slice(name.length);
       break;
     }
   }
+  modulePath = modulePath.split(/[?#]/, 1)[0];
   // Vite root paths and TypeScript's baseUrl: "." resolve to the same sources.
   if (modulePath === '/src' || modulePath.startsWith('/src/')) modulePath = modulePath.slice(1);
-  const relativeImport = modulePath.startsWith('.');
-  if (!relativeImport && modulePath !== 'src' && !modulePath.startsWith('src/')) return undefined;
-  modulePath = modulePath.replace(/\.(?:m|c)?js$/, '');
+  const relativeImport = /^\.\.?(?:\/|$)/.test(modulePath);
+  if (!relativeImport && modulePath !== 'src' && !modulePath.startsWith('src/')) {
+    if (/^(?:\/|file:|[a-zA-Z]:[\\/])/.test(modulePath) && isTargetedModuleSpecifier(modulePath)) {
+      throw new Error(`Import guard supports local module paths only within /src or relative to the importer: ${specifier}`);
+    }
+    return undefined;
+  }
   return normalizePath(normalize(relativeImport ? join(dirname(from), modulePath) : modulePath));
 }
+
+// Vite's default extension order, checked differentially against the installed resolver.
+const VITE_EXTENSIONS = ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'];
 
 function resolveLocalImport(from, specifier, available, aliases) {
   const base = localModulePath(from, specifier, aliases);
   if (base === undefined) return undefined;
-  const candidates = [
-    base,
-    `${base}.ts`,
-    `${base}.tsx`,
-    `${base}.d.ts`,
-    `${base}/index.ts`,
-    `${base}/index.tsx`,
-  ];
+  if (base !== 'src' && !base.startsWith('src/')) throw new Error(`Import guard cannot resolve a source import outside src/: ${specifier}`);
+  const candidates = [base];
+  // Exact files precede JS-output remapping; appended extensions keep the original suffix.
+  if (/\.(?:js|mjs|cjs|jsx)$/.test(base)) {
+    candidates.push(base.replace(/js(x?)$/, 'ts$1'));
+    if (base.endsWith('.js')) candidates.push(base.slice(0, -3) + '.tsx');
+  }
+  candidates.push(...VITE_EXTENSIONS.map((extension) => base + extension));
   for (const candidate of candidates) {
     if (available.has(candidate)) return candidate;
   }
-  return undefined;
+  if (available.has(`${base}/package.json`)) {
+    throw new Error(`Import guard requires explicit file imports for source directories with package.json: ${specifier}`);
+  }
+  return VITE_EXTENSIONS.map((extension) => `${base}/index${extension}`).find((candidate) => available.has(candidate));
 }
 
 function isTargetedModuleSpecifier(specifier) {
@@ -408,7 +440,7 @@ function pairKey(from, to) {
 }
 
 function collectGraph(reader) {
-  const available = new Set(reader.files);
+  const available = new Set(reader.resolutionFiles);
   const aliases = configuredAliases(reader);
   const edges = new Map();
   const diagnostics = [];
@@ -417,7 +449,17 @@ function collectGraph(reader) {
     const result = collectImports(from, reader.read(from));
     diagnostics.push(...result.diagnostics.map((message) => ({ file: from, message })));
     for (const importEntry of result.imports) {
-      const to = resolveLocalImport(from, importEntry.source, available, aliases);
+      let to;
+      try {
+        to = resolveLocalImport(from, importEntry.source, available, aliases);
+        if (to && !isSourceFile(to)) {
+          if (!EXCLUDED_SUFFIXES.some((suffix) => to.endsWith(suffix)) && isTargetedModuleSpecifier(to)) throw new Error(`Import guard resolved an unsupported source module: ${to}`);
+          continue;
+        }
+      } catch (error) {
+        diagnostics.push({ file: from, message: error.message });
+        continue;
+      }
       if (!to) {
         if (localModulePath(from, importEntry.source, aliases) !== undefined && isTargetedModuleSpecifier(importEntry.source)) unresolved.push({ from, specifier: importEntry.source, line: importEntry.line });
         continue;

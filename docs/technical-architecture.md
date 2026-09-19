@@ -300,12 +300,30 @@ Mesure de cette extraction, hors tests et déclarations `.d.ts` :
 
 Une même paire de modules peut porter une arête runtime et une arête de types.
 Le graphe conserve aussi les imports dynamiques ; les déplacer ne contourne pas
-la garde. Les alias sont lus dans la configuration Vite sans exécuter ses plugins ;
-les imports relatifs, depuis la racine source et via ces alias sont résolus.
-La configuration exportée doit garder des objets `resolve` et `alias` explicites ;
-une forme indirecte ou ambiguë fait échouer la garde et demande une adaptation
-du résolveur. Un changement de racine Vite ou l'ajout d'options de résolution
-doit aussi être pris en charge explicitement avant de passer la garde. Les nouveaux modules d'adaptation augmentent le nombre total d'arêtes,
+la garde. Le parcours des fichiers commence dans `src/`. Les alias sont lus dans
+la configuration Vite sans exécuter ses plugins. Le contrat du résolveur couvre :
+
+- les imports relatifs, les chemins `/src/...` et les références TypeScript
+  `src/...` permises par le `baseUrl` actuel ;
+- les objets `resolve` et `alias` littéraux dans la configuration exportée,
+  avec des clés d'alias textuelles et des cibles `/src/...`, `./...` ou `../...` ;
+- l'ordre des alias et la normalisation des barres finales de Vite. La première
+  correspondance décide de la cible, même si celle-ci est absente ;
+- les fichiers exacts, la conversion des suffixes JavaScript en suffixes TypeScript,
+  puis les extensions par défaut de Vite et les fichiers `index`. Des fixtures
+  comparent ces choix au résolveur Vite installé, avec une configuration isolée.
+
+Une cible relative d'alias part du fichier importeur. Les remplacements absolus
+propres à une machine, les remplacements par un nom de paquet, les substitutions
+`$`, les configurations indirectes ou ambiguës et les options de résolution
+supplémentaires font échouer la garde. Les chemins symboliques, les imports qui
+sortent de `src/` et la résolution d'un répertoire source par son `package.json`
+demandent aussi une adaptation explicite. L'inventaire des fichiers sous `src/`
+permet de refuser un module JavaScript ou `.mts`/`.cts` qui masquerait une cible
+TypeScript analysée. Les tests, déclarations et assets restent hors du graphe.
+Les règles de frontières des domaines gardent le même périmètre.
+
+Les nouveaux modules d'adaptation augmentent le nombre total d'arêtes,
 mais réduisent le groupe de modules chargés cycliquement. Le cycle séparé entre
 `MentionChip` et `MentionNode` reste attribué au lot Chat. La SCC statique restante
 unit encore les stores App, Chat, Tasks, Skills et Terminal aux services Architect,

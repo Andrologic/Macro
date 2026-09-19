@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolveConfig } from 'vite';
 import { dirname, join, relative } from 'node:path';
 import {
   analyzeSources,
@@ -241,5 +243,152 @@ describe('TypeScript import boundary analysis', () => {
       'src/c.ts': 'export const c = 1;\n',
     });
     expect(compareReports({ ...cycleBaseline, baseRef: 'base' }, newCycle).newSccs).toEqual([['src/a.ts', 'src/b.ts']]);
+  });
+});
+
+// This resolver loads Vite itself, never Macro's config, plugins, env files or server.
+async function withViteFixture(
+  files: Record<string, string>,
+  alias: Record<string, string>,
+  check: (resolveId: (specifier: string) => Promise<string | undefined>, root: string) => Promise<void>,
+) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'macro-import-resolution-')));
+  try {
+    for (const [file, source] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      writeFileSync(join(root, file), source);
+    }
+    const config = await resolveConfig({ root, configFile: false, envFile: false, plugins: [], resolve: { alias } }, 'serve');
+    const resolveId = config.createResolver();
+    await check(async (specifier) => {
+      const resolved = await resolveId(specifier, join(root, 'src/services/entry.ts'));
+      return resolved ? relative(root, resolved.split(/[?#]/, 1)[0]) : undefined;
+    }, root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function aliasConfig(alias: Record<string, string>) {
+  return `export default { resolve: { alias: ${JSON.stringify(alias)} } };`;
+}
+
+describe('installed Vite resolution contract', () => {
+  it('matches slash normalization, first-match order, root and relative replacements', async () => {
+    const cases: Array<{ alias: Record<string, string>; specifier: string; target: string }> = [
+      { alias: { '@stores/': '/src/stores/' }, specifier: '@stores/store', target: 'src/stores/store.ts' },
+      { alias: { '@stores/': '/src/stores/' }, specifier: '@stores', target: 'src/stores/index.ts' },
+      { alias: { '@stores': '/src/stores/' }, specifier: '@stores/store', target: 'src/stores/store.ts' },
+      { alias: { '@stores/': '/src/stores' }, specifier: '@stores//store', target: 'src/stores/store.ts' },
+      { alias: { '@': '/src', '@/stores': '/src/other' }, specifier: '@/stores/store', target: 'src/stores/store.ts' },
+      { alias: { '@/stores': '/src/other', '@': '/src' }, specifier: '@/stores/store', target: 'src/other/store.ts' },
+      { alias: { '@stores': '../stores' }, specifier: '@stores/store', target: 'src/stores/store.ts' },
+      { alias: { '@stores': './nested' }, specifier: '@stores/store', target: 'src/services/nested/store.ts' },
+      { alias: {}, specifier: '/src/stores/store', target: 'src/stores/store.ts' },
+      { alias: { '@stores': '/src/stores' }, specifier: '@stores/store?module', target: 'src/stores/store.ts' },
+    ];
+    for (const { alias, specifier, target } of cases) {
+      const files = {
+        'src/services/entry.ts': `import ${JSON.stringify(specifier)};`,
+        'src/stores/store.ts': 'import "../services/entry";',
+        'src/stores/index.ts': 'export {};',
+        'src/other/store.ts': 'export {};',
+        'src/services/nested/store.ts': 'export {};',
+      };
+      await withViteFixture(files, alias, async (resolveId) => {
+        expect(await resolveId(specifier)).toBe(target);
+        const report = analyzeSources({ ...files, 'vite.config.ts': aliasConfig(alias) });
+        expect(report.diagnostics).toEqual([]);
+        expect(report.unresolved).toEqual([]);
+        edge(report, 'src/services/entry.ts', target);
+        if (target === 'src/stores/store.ts') {
+          expect(report.sccs).toContainEqual(['src/services/entry.ts', target]);
+          expect(compareReports(analyzeSources({}), report).passed).toBe(false);
+        }
+      });
+    }
+  });
+
+  it('does not fall through to a later alias when the first target is missing', async () => {
+    const alias = { '@': '/src/missing', '@/stores': '/src/stores' };
+    const files = { 'src/services/entry.ts': 'import "@/stores/store";', 'src/stores/store.ts': 'export {};' };
+    await withViteFixture(files, alias, async (resolveId) => {
+      expect(await resolveId('@/stores/store')).not.toBe('src/stores/store.ts');
+      const report = analyzeSources({ ...files, 'vite.config.ts': aliasConfig(alias) });
+      expect(report.edges).toEqual([]);
+      expect(report.unresolved).toHaveLength(1);
+      expect(compareReports(analyzeSources({}), report).passed).toBe(false);
+    });
+  });
+
+  it('matches exact files, JS-output remapping, extension precedence and directory index', async () => {
+    const cases = [
+      { request: 'store', targets: ['store.ts', 'store.tsx'], expected: 'store.ts' },
+      { request: 'store.tsx', targets: ['store.ts', 'store.tsx'], expected: 'store.tsx' },
+      { request: 'store.js', targets: ['store.ts', 'store.tsx', 'store.js.ts'], expected: 'store.ts' },
+      { request: 'store.js', targets: ['store.tsx', 'store.js.ts'], expected: 'store.tsx' },
+      { request: 'store.jsx', targets: ['store.ts', 'store.tsx'], expected: 'store.tsx' },
+      { request: 'store.js', targets: ['store.js.ts'], expected: 'store.js.ts' },
+      { request: 'store.mjs', targets: ['store.ts', 'store.mjs.ts'], expected: 'store.mjs.ts' },
+      { request: 'store.cjs', targets: ['store.ts', 'store.cjs.ts'], expected: 'store.cjs.ts' },
+      { request: 'store', targets: ['store/index.ts', 'store/index.tsx'], expected: 'store/index.ts' },
+      { request: 'store', targets: ['store.tsx', 'store/index.ts'], expected: 'store.tsx' },
+    ];
+    for (const { request, targets, expected } of cases) {
+      const specifier = `../stores/${request}`;
+      const files = Object.fromEntries(targets.map((target) => [`src/stores/${target}`, 'export {};']));
+      files['src/services/entry.ts'] = `import ${JSON.stringify(specifier)};`;
+      await withViteFixture(files, {}, async (resolveId) => {
+        expect(await resolveId(specifier)).toBe(`src/stores/${expected}`);
+        const report = analyzeSources({ ...files, 'vite.config.ts': aliasConfig({}) });
+        expect(report.diagnostics).toEqual([]);
+        expect(report.unresolved).toEqual([]);
+        edge(report, 'src/services/entry.ts', `src/stores/${expected}`);
+      });
+    }
+  });
+
+  it('blocks unsupported targets that would otherwise shadow an analyzed source file', async () => {
+    for (const [request, target] of [['store', 'store.js'], ['store', 'store.mts'], ['store.js', 'store.js'], ['store.mjs', 'store.mts'], ['store.cjs', 'store.cts']]) {
+      const files = {
+        'src/services/entry.ts': `import "../stores/${request}";`,
+        'src/stores/store.ts': 'export {};',
+        [`src/stores/${target}`]: 'export {};',
+      };
+      await withViteFixture(files, {}, async (resolveId) => {
+        expect(await resolveId(`../stores/${request}`)).toBe(`src/stores/${target}`);
+        const report = analyzeSources({ ...files, 'vite.config.ts': aliasConfig({}) });
+        expect(report.diagnostics).toEqual([expect.objectContaining({ message: expect.stringContaining('unsupported source module') })]);
+        expect(compareReports(analyzeSources({}), report).passed).toBe(false);
+      });
+    }
+  });
+
+  it('rejects filesystem and bare alias replacements and unsupported resolution options', async () => {
+    const files = { 'src/services/entry.ts': 'import "@stores/store";', 'src/stores/store.ts': 'export {};' };
+    await withViteFixture(files, {}, async (_resolveId, root) => {
+      const alias = { '@stores': join(root, 'src/stores') };
+      const config = await resolveConfig({ root, configFile: false, envFile: false, plugins: [], resolve: { alias } }, 'serve');
+      expect(await config.createResolver()('@stores/store', join(root, 'src/services/entry.ts'))).toBe(join(root, 'src/stores/store.ts'));
+      expect(() => analyzeSources({ ...files, 'vite.config.ts': aliasConfig(alias) })).toThrow('unsupported alias name or replacement');
+    });
+    for (const replacement of ['src/stores', '/absolute/src/stores', '/src/$&', '/src/stores?query', 'some-package']) {
+      expect(() => analyzeSources({ 'vite.config.ts': aliasConfig({ '@stores': replacement }) })).toThrow('Import guard');
+    }
+    for (const option of ['extensions: [".tsx", ".ts"]', 'preserveSymlinks: true', 'mainFields: ["main"]']) {
+      expect(() => analyzeSources({ 'vite.config.ts': `export default { resolve: { alias: {}, ${option} } };` })).toThrow('additional Vite resolution options');
+    }
+  });
+
+  it('blocks package entry resolution and relative imports that escape the source tree', () => {
+    const report = analyzeSources({
+      'vite.config.ts': aliasConfig({ '@outside': '../../outside' }),
+      'src/services/entry.ts': 'import "../stores"; import "@outside/module";',
+      'src/stores/package.json': '{"main":"actual.ts"}',
+      'src/stores/actual.ts': 'export {};',
+      'src/stores/index.ts': 'export {};',
+    });
+    expect(report.diagnostics).toHaveLength(2);
+    expect(compareReports(analyzeSources({}), report).passed).toBe(false);
   });
 });
