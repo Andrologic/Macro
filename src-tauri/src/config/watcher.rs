@@ -1,10 +1,11 @@
+use super::manager::DirectoryIdentity;
 use super::{ConfigChangeSource, ConfigManager};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
 
@@ -15,51 +16,42 @@ pub struct ConfigWatcher {
 struct WatcherState {
     // This backend is never changed by project reconciliation.
     _global_watcher: RecommendedWatcher,
+    global_invalidated: Arc<AtomicBool>,
+    global_backend_errors: Arc<Mutex<BTreeMap<PathBuf, String>>>,
     signal_tx: watch::Sender<u64>,
     roots: RootSubscriptions<RecommendedWatcher>,
+    backend_errors: Arc<Mutex<BTreeMap<PathBuf, String>>>,
 }
 
 struct RootSubscriptions<W> {
     project_roots: BTreeMap<String, PathBuf>,
     subscriptions: BTreeMap<PathBuf, Subscription<W>>,
+    revision: u64,
 }
 
 struct Subscription<W> {
+    // Each unique canonical root owns a native backend and its worker thread(s).
+    // IDs share it; nested roots do not. Resource cost follows roots, not IDs.
     _backend: W,
     identity: DirectoryIdentity,
     invalidated: Arc<AtomicBool>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct DirectoryIdentity {
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-    created: Option<SystemTime>,
-}
-
-impl DirectoryIdentity {
-    fn read(root: &Path) -> Result<Self, String> {
-        let metadata = root.metadata().map_err(|error| error.to_string())?;
-        if !metadata.is_dir() {
-            return Err("Configuration root is not a directory".into());
-        }
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        Ok(Self {
-            #[cfg(unix)]
-            device: metadata.dev(),
-            #[cfg(unix)]
-            inode: metadata.ino(),
-            created: metadata.created().ok(),
-        })
-    }
-}
-
 pub type ConfigWatcherState = Arc<ConfigWatcher>;
 
 impl ConfigWatcher {
+    #[cfg(test)]
+    pub(crate) fn subscribed_project_roots(&self) -> Vec<PathBuf> {
+        self.state
+            .lock()
+            .expect("test configuration watcher lock")
+            .roots
+            .subscriptions
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(root: &Path) -> Self {
         let (signal_tx, _signal_rx) = watch::channel(0_u64);
@@ -75,44 +67,61 @@ impl ConfigWatcher {
         manager: ConfigManager,
         app: AppHandle,
     ) -> Result<ConfigWatcherState, String> {
-        let (signal_tx, mut signal_rx) = watch::channel(0_u64);
+        let (signal_tx, signal_rx) = watch::channel(0_u64);
         let watcher_state = Arc::new(Self {
             state: Mutex::new(WatcherState::new(&root, signal_tx)?),
         });
 
+        let weak = Arc::downgrade(&watcher_state);
         tauri::async_runtime::spawn(async move {
-            let debounce = Duration::from_millis(250);
-            while signal_rx.changed().await.is_ok() {
-                tokio::time::sleep(debounce).await;
-                signal_rx.borrow_and_update();
-                for outcome in manager
-                    .reload_all_changed(ConfigChangeSource::ExternalEditor)
-                    .await
-                {
-                    match outcome {
-                        Ok(outcome) if outcome.invalid => {
-                            let _ = app.emit("config://invalid", &outcome.document);
+            maintain_subscriptions(
+                weak,
+                signal_rx,
+                Duration::from_secs(2),
+                Duration::from_millis(250),
+                |reload_requested| {
+                    let manager = &manager;
+                    let app = &app;
+                    async move {
+                        let (changed_manager, refresh_errors) =
+                            manager.refresh_project_roots().await;
+                        let mut errors: Vec<String> = refresh_errors
+                            .into_iter()
+                            .map(|error| format!("{}: {}", error.code, error.message))
+                            .collect();
+                        if !reload_requested && !changed_manager {
+                            return errors;
                         }
-                        Ok(outcome) => {
-                            if let Some(pending) = &outcome.pending {
-                                let _ = app.emit("config://pending-sensitive-change", pending);
-                            } else if outcome.changed {
-                                let _ = app.emit("config://changed", &outcome.document);
+                        for outcome in manager
+                            .reload_all_changed(ConfigChangeSource::ExternalEditor)
+                            .await
+                        {
+                            match outcome {
+                                Ok(outcome) if outcome.invalid => {
+                                    let _ = app.emit("config://invalid", &outcome.document);
+                                }
+                                Ok(outcome) => {
+                                    if let Some(pending) = &outcome.pending {
+                                        let _ =
+                                            app.emit("config://pending-sensitive-change", pending);
+                                    } else if outcome.changed {
+                                        let _ = app.emit("config://changed", &outcome.document);
+                                    }
+                                    if outcome.restart_required {
+                                        let _ = app
+                                            .emit("config://restart-required", &outcome.document);
+                                    }
+                                }
+                                Err(error) => {
+                                    errors.push(format!("{}: {}", error.code, error.message));
+                                }
                             }
-                            if outcome.restart_required {
-                                let _ = app.emit("config://restart-required", &outcome.document);
-                            }
                         }
-                        Err(error) => {
-                            tracing::warn!(
-                                code = %error.code,
-                                message = %error.message,
-                                "Échec du rechargement de la configuration"
-                            );
-                        }
+                        errors
                     }
-                }
-            }
+                },
+            )
+            .await;
         });
 
         Ok(watcher_state)
@@ -128,6 +137,16 @@ impl ConfigWatcher {
         state.reconcile()
     }
 
+    pub fn unregister_project_root(&self, project_id: &str) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Le verrou du watcher de configuration est empoisonné.".to_string())?;
+        state.roots.project_roots.remove(project_id);
+        // Reconciliation drops obsolete backends before attempting any retry.
+        state.reconcile()
+    }
+
     pub fn watch_project_root(&self, project_id: &str, root: &Path) -> Result<(), String> {
         let mut state = self
             .state
@@ -138,6 +157,129 @@ impl ConfigWatcher {
             .project_roots
             .insert(project_id.to_string(), root.to_path_buf());
         state.reconcile()
+    }
+}
+
+struct MaintenanceBackoff {
+    failures: u32,
+    next_attempt: tokio::time::Instant,
+}
+
+impl MaintenanceBackoff {
+    fn new() -> Self {
+        Self {
+            failures: 0,
+            next_attempt: tokio::time::Instant::now(),
+        }
+    }
+
+    fn ready(&self) -> bool {
+        tokio::time::Instant::now() >= self.next_attempt
+    }
+
+    fn finish(&mut self, failed: bool, base: Duration) {
+        if failed {
+            let delay = base
+                .saturating_mul(1_u32 << self.failures.min(5))
+                .min(Duration::from_secs(30));
+            self.failures = self.failures.saturating_add(1);
+            self.next_attempt = tokio::time::Instant::now() + delay;
+        } else {
+            self.failures = 0;
+            self.next_attempt = tokio::time::Instant::now();
+        }
+    }
+}
+
+// Keep only a Weak reference across every await, including manager refresh/reload.
+// During failure cooldown, leave events pending in the coalescing watch channel:
+// even an error storm cannot wake this loop faster than its bounded periodic tick.
+// This shared budget can delay healthy roots too, by up to the 30-second cooldown.
+async fn maintain_subscriptions<F, Fut>(
+    state: Weak<ConfigWatcher>,
+    mut signal_rx: watch::Receiver<u64>,
+    retry_interval: Duration,
+    debounce: Duration,
+    mut refresh_and_reload: F,
+) where
+    F: FnMut(bool) -> Fut,
+    Fut: std::future::Future<Output = Vec<String>>,
+{
+    let mut interval = tokio::time::interval(retry_interval);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_revision = 0;
+    let mut last_errors = Vec::new();
+    let mut backoff = MaintenanceBackoff::new();
+    loop {
+        let event = tokio::select! {
+            changed = signal_rx.changed(), if backoff.ready() => {
+                if changed.is_err() { return; }
+                true
+            }
+            _ = tokio::time::sleep_until(backoff.next_attempt), if !backoff.ready() => false,
+            _ = interval.tick() => false,
+        };
+        if state.strong_count() == 0 {
+            return;
+        }
+        if !backoff.ready() {
+            continue;
+        }
+        // A cooldown wakes through its timer, not through changed(). Consume any
+        // event queued during that wait so a failing root cannot starve healthy ones.
+        let event = event || signal_rx.has_changed().unwrap_or(false);
+        if event {
+            tokio::time::sleep(debounce).await;
+            signal_rx.borrow_and_update();
+        }
+        let (revision, invalidated, mut errors) = {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            let Ok(mut locked) = state.state.lock() else {
+                tracing::warn!("Le verrou du watcher de configuration est empoisonné.");
+                return;
+            };
+            let global_invalidated = locked.global_invalidated.load(Ordering::Acquire);
+            let invalidated = global_invalidated
+                || locked
+                    .roots
+                    .subscriptions
+                    .values()
+                    .any(|subscription| subscription.invalidated.load(Ordering::Acquire));
+            let mut errors = locked.reconcile().err().into_iter().collect::<Vec<_>>();
+            // Global status is independent of project aliases and is never pruned
+            // with the requested project roots. A lost global watch stays invalid
+            // until this ConfigWatcher is replaced; project maintenance cannot fix it.
+            if global_invalidated {
+                errors.push("Global configuration watcher invalidated; restart required".into());
+            }
+            match locked.global_backend_errors.lock() {
+                Ok(global_errors) => errors.extend(global_errors.iter().map(|(root, error)| {
+                    format!("Global configuration watcher ({}): {error}", root.display())
+                })),
+                Err(_) => errors.push("Global configuration watcher error lock poisoned".into()),
+            }
+            (locked.roots.revision, invalidated, errors)
+        };
+        // Manager checks run after releasing the watcher mutex. They can request
+        // reload when in-memory document identity changed, even on a quiet tick.
+        let changed = revision != last_revision;
+        last_revision = revision;
+        errors.extend(refresh_and_reload(event || changed).await);
+        errors.sort();
+        errors.dedup();
+        if errors != last_errors {
+            if errors.is_empty() {
+                tracing::info!("Maintenance du watcher de configuration rétablie");
+            } else {
+                tracing::warn!(message = %errors.join("; "), "Échec de la maintenance du watcher de configuration");
+            }
+        }
+        // Also back off repeated asynchronous invalidations, even when a fresh
+        // backend initially reports successful installation before emitting Err.
+        backoff.finish(!errors.is_empty() || invalidated, retry_interval);
+        last_errors = errors;
     }
 }
 
@@ -170,12 +312,32 @@ fn make_backend(
     mode: RecursiveMode,
     signal_tx: watch::Sender<u64>,
     invalidated: Arc<AtomicBool>,
+    backend_errors: Arc<Mutex<BTreeMap<PathBuf, String>>>,
 ) -> Result<RecommendedWatcher, String> {
     let callback_root = root.to_path_buf();
     let backend = RecommendedWatcher::new(
         move |result: notify::Result<Event>| {
-            if invalidates_root(&callback_root, &result) {
-                invalidated.store(true, Ordering::Release);
+            if let Ok(mut errors) = backend_errors.lock() {
+                match &result {
+                    Err(error) => {
+                        let message = error.to_string();
+                        if errors.get(&callback_root) != Some(&message) {
+                            tracing::warn!(root = %callback_root.display(), message = %message, "Erreur du watcher de configuration");
+                            errors.insert(callback_root.clone(), message);
+                        }
+                    }
+                    Ok(_) if !invalidated.load(Ordering::Acquire) => {
+                        if errors.remove(&callback_root).is_some() {
+                            tracing::info!(root = %callback_root.display(), "Watcher de configuration rétabli");
+                        }
+                    }
+                    Ok(_) => {}
+                }
+            }
+            if invalidates_root(&callback_root, &result)
+                && invalidated.swap(true, Ordering::AcqRel)
+            {
+                return; // One wakeup per invalidated backend, including repeated errors.
             }
             // Errors/rescans must also wake the consumer, not just ordinary events.
             signal_tx.send_modify(|generation| *generation = generation.wrapping_add(1));
@@ -190,30 +352,49 @@ impl WatcherState {
     fn new(root: &Path, signal_tx: watch::Sender<u64>) -> Result<Self, String> {
         let root = root.canonicalize().map_err(|error| error.to_string())?;
         DirectoryIdentity::read(&root)?;
+        let backend_errors = Arc::new(Mutex::new(BTreeMap::new()));
+        let global_invalidated = Arc::new(AtomicBool::new(false));
+        let global_backend_errors = Arc::new(Mutex::new(BTreeMap::new()));
         let global_watcher = make_backend(
             &root,
             RecursiveMode::NonRecursive,
             signal_tx.clone(),
-            Arc::new(AtomicBool::new(false)),
+            global_invalidated.clone(),
+            global_backend_errors.clone(),
         )?;
         Ok(Self {
             _global_watcher: global_watcher,
+            global_invalidated,
+            global_backend_errors,
             signal_tx,
+            backend_errors,
             roots: RootSubscriptions {
                 project_roots: BTreeMap::new(),
                 subscriptions: BTreeMap::new(),
+                revision: 0,
             },
         })
     }
 
     fn reconcile(&mut self) -> Result<(), String> {
         let signal_tx = &self.signal_tx;
+        let backend_errors = &self.backend_errors;
+        let requested: std::collections::BTreeSet<_> = self
+            .roots
+            .project_roots
+            .values()
+            .filter_map(|root| root.canonicalize().ok())
+            .collect();
+        if let Ok(mut errors) = backend_errors.lock() {
+            errors.retain(|root, _| requested.contains(root));
+        }
         self.roots.reconcile(|root, invalidated| {
             make_backend(
                 root,
                 RecursiveMode::Recursive,
                 signal_tx.clone(),
                 invalidated,
+                backend_errors.clone(),
             )
         })
     }
@@ -245,10 +426,14 @@ impl<W> RootSubscriptions<W> {
         // Dispose of obsolete, replaced or invalidated backends before any additions.
         // Each backend owns only one root, so partial cleanup cannot affect siblings
         // or overlapping project roots. No fallible per-path unwatch is necessary.
+        let previous_count = self.subscriptions.len();
         self.subscriptions.retain(|root, subscription| {
             desired.get(root) == Some(&subscription.identity)
                 && !subscription.invalidated.load(Ordering::Acquire)
         });
+        if self.subscriptions.len() != previous_count {
+            self.revision = self.revision.wrapping_add(1);
+        }
         for (root, identity) in desired {
             if self.subscriptions.contains_key(&root) {
                 continue;
@@ -268,6 +453,7 @@ impl<W> RootSubscriptions<W> {
                         ));
                         continue;
                     }
+                    self.revision = self.revision.wrapping_add(1);
                     self.subscriptions.insert(
                         root,
                         Subscription {
@@ -314,6 +500,7 @@ mod tests {
         RootSubscriptions {
             project_roots: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
+            revision: 0,
         }
     }
 
@@ -532,43 +719,287 @@ mod tests {
         wait_for_signal(&mut rx);
     }
 
-    #[test]
-    fn native_recreated_root_receives_events_after_reconciliation() {
+    async fn wait_until(mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("condition not reached");
+    }
+
+    #[tokio::test]
+    async fn maintenance_recovers_recreated_root_without_manual_reconciliation() {
         let global = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("project");
         std::fs::create_dir(&root).unwrap();
-        let (tx, _rx) = watch::channel(0);
-        let mut state = WatcherState::new(global.path(), tx).unwrap();
-        state.roots.project_roots.insert("a".into(), root.clone());
-        state.reconcile().unwrap();
+        let (tx, rx) = watch::channel(0);
+        let state = Arc::new(ConfigWatcher {
+            state: Mutex::new(WatcherState::new(global.path(), tx).unwrap()),
+        });
+        state.watch_project_root("a", &root).unwrap();
         let canonical = root.canonicalize().unwrap();
-        let old_flag = state.roots.subscriptions[&canonical].invalidated.clone();
-        std::fs::remove_dir(&root).unwrap();
-        std::fs::create_dir(&root).unwrap();
-        // Observe removal before reconciling even on filesystems that reuse identity.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !old_flag.load(Ordering::Acquire)
-            && DirectoryIdentity::read(&root).unwrap()
-                == state.roots.subscriptions[&canonical].identity
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "replacement not detected"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        // A fresh channel isolates events emitted by the rebuilt backend from
-        // deletion events still queued on the old backend and global watcher.
-        let (tx, mut rx) = watch::channel(0);
-        state.signal_tx = tx;
-        state.reconcile().unwrap();
-        assert!(!Arc::ptr_eq(
-            &old_flag,
-            &state.roots.subscriptions[&canonical].invalidated
+        let weak = Arc::downgrade(&state);
+        let (reload_tx, mut reload_rx) = tokio::sync::mpsc::unbounded_channel();
+        let file = root.join("config");
+        let observed_file = file.clone();
+        let callback_state = weak.clone();
+        let task = tokio::spawn(maintain_subscriptions(
+            weak.clone(),
+            rx,
+            Duration::from_millis(50),
+            Duration::from_millis(20),
+            move |reload_requested| {
+                let state = callback_state.upgrade().unwrap();
+                assert!(
+                    state.state.try_lock().is_ok(),
+                    "reload must run outside the mutex"
+                );
+                let content = std::fs::read_to_string(&observed_file).ok();
+                if reload_requested {
+                    reload_tx.send(content).unwrap();
+                }
+                std::future::ready(Vec::new())
+            },
         ));
-        rx.borrow_and_update();
-        std::fs::write(root.join("config"), "changed").unwrap();
-        wait_for_signal(&mut rx);
+        std::fs::remove_dir(&root).unwrap();
+        wait_until(|| state.state.lock().unwrap().roots.subscriptions.is_empty()).await;
+        // This path is outside the global root and its project backend is gone:
+        // only periodic maintenance can discover its recreation.
+        std::fs::create_dir(&root).unwrap();
+        wait_until(|| {
+            state
+                .state
+                .lock()
+                .unwrap()
+                .roots
+                .subscriptions
+                .contains_key(&canonical)
+        })
+        .await;
+        // Let the revision-triggered reload finish before testing a new native event.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        while reload_rx.try_recv().is_ok() {}
+        std::fs::write(&file, "new content").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if reload_rx.recv().await.unwrap().as_deref() == Some("new content") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("new file was not observed automatically");
+        drop(state);
+        assert!(weak.upgrade().is_none());
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn quiet_and_failed_periodic_passes_do_not_reload_or_retain_state() {
+        let global = tempfile::tempdir().unwrap();
+        let missing_parent = tempfile::tempdir().unwrap();
+        let (tx, rx) = watch::channel(0);
+        let state = Arc::new(ConfigWatcher {
+            state: Mutex::new(WatcherState::new(global.path(), tx).unwrap()),
+        });
+        assert!(state
+            .watch_project_root("missing", &missing_parent.path().join("missing"))
+            .is_err());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let weak = Arc::downgrade(&state);
+        let task = tokio::spawn(maintain_subscriptions(
+            weak.clone(),
+            rx,
+            Duration::from_millis(30),
+            Duration::from_millis(10),
+            move |reload_requested| {
+                if reload_requested {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }
+                std::future::ready(Vec::new())
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        state.unregister_project_root("missing").unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(state);
+        assert!(weak.upgrade().is_none());
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn persistent_errors_and_event_storm_cannot_bypass_cooldown() {
+        let global = tempfile::tempdir().unwrap();
+        let (tx, rx) = watch::channel(0_u64);
+        let state = Arc::new(ConfigWatcher {
+            state: Mutex::new(WatcherState::new(global.path(), tx.clone()).unwrap()),
+        });
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = attempts.clone();
+        let event_reloads = Arc::new(AtomicUsize::new(0));
+        let reload_counter = event_reloads.clone();
+        let task = tokio::spawn(maintain_subscriptions(
+            Arc::downgrade(&state),
+            rx,
+            Duration::from_millis(40),
+            Duration::ZERO,
+            move |reload_requested| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                if reload_requested {
+                    reload_counter.fetch_add(1, Ordering::SeqCst);
+                }
+                std::future::ready(vec!["permanent manager failure".into()])
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while attempts.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        while tokio::time::Instant::now() < deadline {
+            tx.send_modify(|generation| *generation += 1);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        // Attempts at approximately 0, 40, 120ms; none may follow every event.
+        assert!((1..=3).contains(&attempts.load(Ordering::SeqCst)));
+        assert!(
+            event_reloads.load(Ordering::SeqCst) > 0,
+            "queued healthy-root events must survive permanent reconciliation errors"
+        );
+        drop(state);
+        // Keep tx alive to prove shutdown uses Weak even during cooldown.
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn global_errors_and_invalidation_each_enforce_cooldown() {
+        for invalidation_only in [false, true] {
+            let global = tempfile::tempdir().unwrap();
+            let root = global.path().canonicalize().unwrap();
+            let (tx, rx) = watch::channel(0_u64);
+            let state = Arc::new(ConfigWatcher {
+                state: Mutex::new(WatcherState::new(global.path(), tx.clone()).unwrap()),
+            });
+            state.watch_project_root("shared", &root).unwrap();
+            {
+                let locked = state.state.lock().unwrap();
+                assert!(!Arc::ptr_eq(
+                    &locked.backend_errors,
+                    &locked.global_backend_errors
+                ));
+                if invalidation_only {
+                    locked.global_invalidated.store(true, Ordering::Release);
+                } else {
+                    locked
+                        .global_backend_errors
+                        .lock()
+                        .unwrap()
+                        .insert(root.clone(), "permanent global failure".into());
+                    locked
+                        .backend_errors
+                        .lock()
+                        .unwrap()
+                        .insert(root.clone(), "project failure".into());
+                }
+            }
+            state.unregister_project_root("shared").unwrap();
+            {
+                let locked = state.state.lock().unwrap();
+                assert!(locked.backend_errors.lock().unwrap().is_empty());
+                if !invalidation_only {
+                    assert_eq!(
+                        locked
+                            .global_backend_errors
+                            .lock()
+                            .unwrap()
+                            .get(&root)
+                            .map(String::as_str),
+                        Some("permanent global failure")
+                    );
+                }
+            }
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let counter = attempts.clone();
+            let task = tokio::spawn(maintain_subscriptions(
+                Arc::downgrade(&state),
+                rx,
+                Duration::from_millis(40),
+                Duration::ZERO,
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Vec::new())
+                },
+            ));
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+            while tokio::time::Instant::now() < deadline {
+                tx.send_modify(|generation| *generation += 1);
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            assert!((1..=3).contains(&attempts.load(Ordering::SeqCst)));
+            drop(state);
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn maintenance_backoff_caps_at_thirty_seconds_and_resets_after_recovery() {
+        let mut backoff = MaintenanceBackoff::new();
+        for expected in [2, 4, 8, 16, 30, 30, 30] {
+            let before = tokio::time::Instant::now();
+            backoff.finish(true, Duration::from_secs(2));
+            let delay = backoff.next_attempt.duration_since(before);
+            assert!(delay >= Duration::from_secs(expected));
+            assert!(delay < Duration::from_secs(expected) + Duration::from_millis(100));
+            assert!(!backoff.ready());
+        }
+        backoff.finish(false, Duration::from_secs(2));
+        assert!(backoff.ready());
+        assert_eq!(backoff.failures, 0);
+    }
+
+    #[test]
+    fn unregister_preserves_shared_root_and_drops_last_owner_despite_other_errors() {
+        let global = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let state = ConfigWatcher::for_test(global.path());
+        state.watch_project_root("a", project.path()).unwrap();
+        state
+            .watch_project_root("b", &project.path().join("."))
+            .unwrap();
+        assert!(state
+            .watch_project_root("missing", &project.path().join("missing"))
+            .is_err());
+        assert!(state.unregister_project_root("a").is_err());
+        assert_eq!(
+            state.subscribed_project_roots(),
+            vec![project.path().canonicalize().unwrap()]
+        );
+        assert!(state.unregister_project_root("b").is_err());
+        assert!(state.subscribed_project_roots().is_empty());
+        let locked = state.state.lock().unwrap();
+        assert!(locked.roots.subscriptions.is_empty());
+        assert_eq!(locked.roots.project_roots.len(), 1);
+        assert!(locked.roots.project_roots.contains_key("missing"));
     }
 }

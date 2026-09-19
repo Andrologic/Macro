@@ -127,6 +127,28 @@ complétés par un verrou de fichier interprocessus ; l’ETag est relu sous ce
 verrou avant toute écriture. Le watcher desktop coalesce les événements puis
 rescane les documents chargés et les nouveaux documents projet.
 
+Le watcher réconcilie les dossiers de configuration par racine canonique. Les
+projets partageant une racine partagent son abonnement ; chaque racine unique
+possède un backend natif indépendant, séparé du backend global. Ce choix permet
+de libérer aussi une installation récursive partiellement échouée, au prix de
+handles et de threads dont le nombre croît avec les racines uniques. Les quotas
+du système restent applicables et la fermeture native peut être asynchrone.
+La maintenance vérifie les identités des dossiers et réessaie les abonnements
+avec une temporisation progressive plafonnée à trente secondes. Ce délai est
+commun aux racines : une panne persistante peut donc retarder aussi le
+rechargement d'une racine saine. Le manager refuse de servir un document dont
+la racine a été remplacée avant le rafraîchissement de son cache.
+
+Si la réconciliation échoue après une mutation du registre déjà persistée, la
+commande conserve son résultat métier. Un avertissement `ConfigDiagnostic`,
+publié via `config://changed` et consultable dans le snapshot, distingue cet
+échec de configuration de l'opération déjà terminée. Le client doit réessayer
+le rechargement de configuration, pas la création, l'import ou le retrait.
+Une lecture principale du registre échouée peut transmettre une erreur. En
+revanche, un bootstrap ou un listage déjà lu reste fourni si seule la
+réconciliation accessoire échoue ; cette dégradation utilise le même diagnostic
+et le même événement, pour ne pas ouvrir un shell vide à la place des projets.
+
 Une acceptation sensible est engagée dès que la baseline approuvée est écrite.
 Si le nettoyage de la proposition échoue ensuite, le résultat reste appliqué,
 avec un diagnostic de nettoyage différé. Le chargement suivant reprend ce
