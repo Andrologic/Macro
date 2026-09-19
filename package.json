@@ -69,6 +69,8 @@
     "clean:cache": "rm -rf node_modules/.vite ~/.bun/install/cache",
     "i18n:audit": "bun dev/i18n/audit.mjs",
     "i18n:generate": "python dev/i18n/generate_locales.py",
+    "architecture:check": "bun dev/architecture/import-boundaries.mjs --check",
+    "architecture:report": "bun dev/architecture/import-boundaries.mjs",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
     "lint": "bun node_modules/eslint/bin/eslint.js . --ext .ts,.tsx",
     "update": "bun update",

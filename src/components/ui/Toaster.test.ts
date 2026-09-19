@@ -430,6 +430,18 @@ describe('toast wrapper', () => {
     expect(getToastBatchSnapshot().activeToastIds).toEqual(['pending-review']);
   });
 
+  it('does not replay a pending notification after its action succeeds', async () => {
+    releaseRenderer?.();
+    notify.actionRequired('Pending action', {
+      notificationKey: 'pending-action',
+      actions: [{ label: 'Resolve', onClick: () => undefined }],
+    });
+    await expect(__testables.executeRegisteredNotificationAction('pending-action', 0)).resolves.toBe(true);
+    await act(async () => { root?.render(createElement(Toaster)); });
+    expect(sonnerToastMock.custom).not.toHaveBeenCalled();
+    expect(getToastBatchSnapshot().activeToastIds).toHaveLength(0);
+  });
+
   it('stores tracked info, warning, and error toasts in the notification center', () => {
     toast.info('Info title', { description: 'More details' });
     toast.warning('Warning title');

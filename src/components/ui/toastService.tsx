@@ -620,6 +620,8 @@ export const executeNotificationAction = async (
   try {
     await action.onClick();
     if (action.dismissOnSuccess && toastId !== null) {
+      templatedDelivery.dismiss(toastId);
+      unregisterToastFromBatch(toastId);
       sonnerToast.dismiss(toastId);
     }
     return true;

@@ -1,0 +1,148 @@
+import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
+import {
+  analyzeSources,
+  compareReports,
+  EXPLICITLY_FORBIDDEN_EDGES,
+} from './import-boundaries.mjs';
+
+const fixtureRoot = join(import.meta.dir, 'fixtures');
+
+function edge(report: ReturnType<typeof analyzeSources>, from: string, to: string) {
+  const result = report.edges.find((candidate) => candidate.from === from && candidate.to === to);
+  expect(result).toBeDefined();
+  return result!;
+}
+
+describe('TypeScript import boundary analysis', () => {
+  it('uses TSX-aware transpilation and preserves type/runtime import kinds', () => {
+    const sources = {
+      'src/fixture.tsx': readFileSync(join(fixtureRoot, 'tsx-import-fixture.tsx'), 'utf8'),
+      'src/type-model.ts': readFileSync(join(fixtureRoot, 'type-model.ts'), 'utf8'),
+      'src/runtime-renderer.ts': readFileSync(join(fixtureRoot, 'runtime-renderer.ts'), 'utf8'),
+      'src/unmarked-type.ts': "import { Model } from './type-model'; export const id = (model: Model) => model.id;\n",
+      'src/js-mapping.ts': "import { Model } from './type-model.js'; export const id = (model: Model) => model.id;\n",
+      'src/lazy.ts': "export const load = () => import('./runtime-renderer');\n",
+      'src/side-effect.ts': 'export const loaded = true;\n',
+    };
+    const report = analyzeSources(sources);
+
+    expect(report.diagnostics).toEqual([]);
+    expect(edge(report, 'src/fixture.tsx', 'src/type-model.ts').kinds).toEqual(['type']);
+    expect(edge(report, 'src/fixture.tsx', 'src/runtime-renderer.ts').kinds).toEqual(['runtime', 'type']);
+    expect(edge(report, 'src/unmarked-type.ts', 'src/type-model.ts').kinds).toEqual(['type']);
+    expect(edge(report, 'src/js-mapping.ts', 'src/type-model.ts').kinds).toEqual(['type']);
+    expect(edge(report, 'src/fixture.tsx', 'src/side-effect.ts').kinds).toEqual(['runtime']);
+    expect(edge(report, 'src/lazy.ts', 'src/runtime-renderer.ts')).toMatchObject({ kinds: ['runtime'], lazy: true });
+  });
+
+  it('detects a newly added forbidden service edge while retaining the baseline exception', () => {
+    const baseline = analyzeSources({
+      'src/services/existing.ts': 'import { useStore } from "../stores/store"; export const value = useStore;\n',
+      'src/stores/store.ts': 'export const useStore = {};\n',
+    }, 'base');
+    const current = analyzeSources({
+      'src/services/existing.ts': 'import { useStore } from "../stores/store"; import { useOtherStore } from "../stores/other"; export const value = [useStore, useOtherStore];\n',
+      'src/stores/store.ts': 'export const useStore = {};\n',
+      'src/stores/other.ts': 'export const useOtherStore = {};\n',
+    });
+
+    const comparison = compareReports({ ...baseline, baseRef: 'base', exceptions: baseline.exceptions }, current);
+    expect(comparison.newForbiddenEdges).toEqual([
+      expect.objectContaining({ from: 'src/services/existing.ts', to: 'src/stores/other.ts', kind: 'runtime' }),
+    ]);
+    expect(comparison.passed).toBe(false);
+  });
+
+  it('detects a new runtime SCC and includes model type imports in boundary violations', () => {
+    const baseline = analyzeSources({
+      'src/types/model.ts': 'export type Model = { id: string };\n',
+      'src/services/one.ts': 'export const one = 1;\n',
+      'src/services/two.ts': 'export const two = 2;\n',
+    }, 'base');
+    const current = analyzeSources({
+      'src/types/model.ts': 'import type { StoreState } from "../stores/store"; export type Model = StoreState;\n',
+      'src/stores/store.ts': 'export type StoreState = { id: string };\n',
+      'src/services/one.ts': 'import { two } from "./two"; export const one = two;\n',
+      'src/services/two.ts': 'import { one } from "./one"; export const two = one;\n',
+    });
+
+    const comparison = compareReports({ ...baseline, baseRef: 'base', exceptions: baseline.exceptions }, current);
+    expect(current.violations).toEqual([
+      expect.objectContaining({ rule: 'models-to-application', kind: 'type', from: 'src/types/model.ts', to: 'src/stores/store.ts' }),
+    ]);
+    expect(comparison.newSccs).toEqual([['src/services/one.ts', 'src/services/two.ts']]);
+    expect(comparison.passed).toBe(false);
+  });
+
+  it('guards model ImportTypeNode references', () => {
+    const report = analyzeSources({
+      'src/types/import-type-model.ts': "export type Model = import('../stores/store').Store;\n",
+      'src/stores/store.ts': 'export type Store = { id: string };\n',
+    });
+
+    expect(report.edges).toEqual([
+      expect.objectContaining({
+        from: 'src/types/import-type-model.ts',
+        to: 'src/stores/store.ts',
+        kinds: ['type'],
+      }),
+    ]);
+    expect(report.violations).toEqual([
+      expect.objectContaining({ rule: 'models-to-application', kind: 'type' }),
+    ]);
+  });
+
+  it('rejects non-literal dynamic imports and require calls', () => {
+    const report = analyzeSources({
+      'src/unsupported.ts': "const moduleName = './module'; import(moduleName); require(moduleName);\n",
+      'src/module.ts': 'export const value = 1;\n',
+    });
+
+    expect(report.diagnostics).toEqual([
+      expect.objectContaining({ message: 'Unsupported non-literal dynamic import at line 1.' }),
+      expect.objectContaining({ message: 'Unsupported non-literal require at line 1.' }),
+    ]);
+  });
+
+  it('keeps the four planned removals explicit and blocking', () => {
+    const sources = Object.fromEntries(EXPLICITLY_FORBIDDEN_EDGES.map(({ from, to }) => [
+      from,
+      `import value from './${relative(dirname(from), to).replace(/\.(?:ts|tsx)$/, '')}'; export default value;\n`,
+    ]));
+    const graphSources = {
+      ...sources,
+    };
+    for (const { to } of EXPLICITLY_FORBIDDEN_EDGES) graphSources[to] ??= 'export default {};\n';
+    const report = analyzeSources(graphSources);
+
+    expect(report.explicitForbiddenEdges.map(({ id }) => id)).toEqual(EXPLICITLY_FORBIDDEN_EDGES.map(({ id }) => id));
+  });
+
+  it('allows a legitimate reduction of a baseline SCC but rejects a new cycle inside old members', () => {
+    const baseline = analyzeSources({
+      'src/a.ts': 'import { b } from "./b"; import { c } from "./c"; export const a = [b, c];\n',
+      'src/b.ts': 'import { a } from "./a"; import { c } from "./c"; export const b = [a, c];\n',
+      'src/c.ts': 'import { a } from "./a"; export const c = a;\n',
+    }, 'base');
+    const reduced = analyzeSources({
+      'src/a.ts': 'import { b } from "./b"; export const a = b;\n',
+      'src/b.ts': 'import { a } from "./a"; export const b = a;\n',
+      'src/c.ts': 'export const c = 1;\n',
+    });
+    expect(compareReports({ ...baseline, baseRef: 'base' }, reduced).newSccs).toEqual([]);
+
+    const cycleBaseline = analyzeSources({
+      'src/a.ts': 'import { c } from "./c"; export const a = c;\n',
+      'src/b.ts': 'import { a } from "./a"; export const b = a;\n',
+      'src/c.ts': 'import { b } from "./b"; export const c = b;\n',
+    }, 'base');
+    const newCycle = analyzeSources({
+      'src/a.ts': 'import { b } from "./b"; export const a = b;\n',
+      'src/b.ts': 'import { a } from "./a"; export const b = a;\n',
+      'src/c.ts': 'export const c = 1;\n',
+    });
+    expect(compareReports({ ...cycleBaseline, baseRef: 'base' }, newCycle).newSccs).toEqual([['src/a.ts', 'src/b.ts']]);
+  });
+});

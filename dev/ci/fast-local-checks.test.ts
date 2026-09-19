@@ -78,6 +78,7 @@ describe('fast local check selection', () => {
       'Binaires suivis autorisés',
       'Workflows GitHub valides',
       'Traductions cohérentes',
+      'Frontières des domaines',
       'ESLint ciblé (1 fichier)',
       'Tests liés (1 fichier)',
       'Formatage Rust',
