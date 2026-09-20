@@ -4,6 +4,7 @@ export const CHAT_RUNTIME_ENTRIES = Object.freeze([
   'src/services/chatRequestPreparation.ts',
   'src/services/chatAssistantStreamRuntime.ts',
   'src/services/chatToolExecution.ts',
+  'src/services/chatToolExecutionRuntime.ts',
   'src/services/chatAssistantPersistenceRuntime.ts',
   'src/services/chatCompactionRuntime.ts',
   'src/services/chatStreamOrchestrator.ts',
@@ -33,6 +34,7 @@ const isConcreteAdapter = (path) =>
   path === 'src/services/tauriWindow.ts' ||
   (path.startsWith('src/services/ipc/') && !path.endsWith('.types.ts')) ||
   path === 'src/services/streamingChat.ts' ||
+  path === 'src/services/streamingChatExecution.ts' ||
   path.startsWith('src/services/providers/') ||
   path.startsWith('src/composition/');
 

@@ -205,7 +205,7 @@ describe('TypeScript import boundary analysis', () => {
     }
   });
 
-  it('keeps the four planned removals explicit and blocking', () => {
+  it('keeps the resolved edges explicit and blocking', () => {
     const sources = Object.fromEntries(EXPLICITLY_FORBIDDEN_EDGES.map(({ from, to }) => [
       from,
       `import value from './${relative(dirname(from), to).replace(/\.(?:ts|tsx)$/, '')}'; export default value;\n`,
@@ -217,6 +217,12 @@ describe('TypeScript import boundary analysis', () => {
     const report = analyzeSources(graphSources);
 
     expect(report.explicitForbiddenEdges.map(({ id }) => id)).toEqual(EXPLICITLY_FORBIDDEN_EDGES.map(({ id }) => id));
+    expect(report.explicitForbiddenEdges).toContainEqual(expect.objectContaining({
+      id: 'streaming-execution-to-architect-chat',
+      from: 'src/services/streamingChatExecution.ts',
+      to: 'src/services/architectChat.ts',
+    }));
+    expect(compareReports(report, report).passed).toBe(false);
   });
 
   it('allows a legitimate reduction of a baseline SCC but rejects a new cycle inside old members', () => {

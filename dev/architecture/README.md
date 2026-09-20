@@ -5,12 +5,16 @@ extraction guards in `extracted-boundaries.mjs`. JSON reports expose violations
 under `extractedBoundaries` and list the native files inspected. `--base <ref>`
 reads both TypeScript and native files from that Git revision.
 
-The eight named Chat runtime entries cannot import React, ReactDOM or Zustand
+The named Chat runtime entries, including the lazy `chatToolExecutionRuntime`
+implementation behind `chatToolExecution`, cannot import React, ReactDOM or Zustand
 at runtime, including through local dependencies, reexports and lazy imports.
 Their direct runtime imports also cannot target the concrete Tauri IPC façade
 or domain wrappers (`services/ipc/*` except pure `*.types.ts` contracts), Tauri
 runtime bridge, HTTP, browser transport, dialog/window adapters, streaming,
 provider or composition adapters, or an `@tauri-apps/*` package.
+Both the public `streamingChat` façade and its concrete `streamingChatExecution`
+implementation are forbidden direct targets. The latter also retains the explicit
+forbidden edge to `architectChat`, just like its façade.
 The explicit `AI_ADAPTERS` list also covers concrete generation, transport,
 cancellation, diagnostic and fallback-tool I/O modules under `services/ai`.
 The directory itself is allowed, including runtime codecs and type contracts.
