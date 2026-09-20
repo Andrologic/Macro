@@ -1158,6 +1158,29 @@ describe('useTerminalStore', () => {
     expect(useTerminalStore.getState().activeTabId).toBe(tab.id);
   });
 
+  it('keeps incomplete native closes inactive and reachable after initialization', async () => {
+    const retained = [
+      buildManualTabDto({ status: 'closed', has_live_session: false }),
+      buildTaskTabDto({
+        kind: 'worktree_setup', status: 'closed', has_live_session: false, is_restored: false,
+      }),
+    ];
+    terminalListTabsMock.mockResolvedValueOnce(retained);
+    const { useTerminalStore } = await loadTerminalStore();
+    await useTerminalStore.getState().initialize();
+
+    expect(terminalUpdateTabMetadataMock).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().getVisibleTabsForScope().map((tab: { id: string }) => tab.id))
+      .toEqual(retained.map((tab) => tab.id));
+    for (const dto of retained) {
+      expect(useTerminalStore.getState().tabs[dto.id].hasLiveSession).toBe(false);
+      expect(useTerminalStore.getState().tabs[dto.id].status).toBe('closed');
+      await useTerminalStore.getState().closeTab(dto.id);
+      expect(terminalCloseTabMock).toHaveBeenCalledWith(dto.id);
+      expect(useTerminalStore.getState().tabs[dto.id]).toBeUndefined();
+    }
+  });
+
   it('keeps successful worktree setup tabs hidden from the visible terminal scope', async () => {
     const { useTerminalStore } = await loadTerminalStore();
 

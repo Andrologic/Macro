@@ -218,6 +218,7 @@ export const isVisibleTerminalTab = (
   tab: Pick<TerminalTab, 'purpose' | 'status' | 'lastExitCode'>
 ): boolean =>
   tab.purpose !== 'worktree_setup' ||
+  tab.status === 'closed' ||
   isFailedTerminalStatus(tab.status) ||
   hasFailedTerminalExitCode(tab.lastExitCode);
 
@@ -1585,7 +1586,7 @@ export const createTerminalStore = (initialPort?: TerminalLifecyclePort) => crea
         if (!tab.taskId) {
           return false;
         }
-        if (tab.purpose === 'worktree_setup') {
+        if (tab.purpose === 'worktree_setup' || tab.status === 'closed') {
           return false;
         }
 

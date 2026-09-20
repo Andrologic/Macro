@@ -1701,6 +1701,13 @@ retirée sans annoncer une annulation ou une remise en état. Une terminaison ou
 une persistance initiale échouée conserve le propriétaire natif pour une nouvelle
 tentative de fermeture. Les protections `Drop` du PTY et
 les annulations par identifiant d'exécution restent indépendantes.
+Les lecteurs natifs présentent les propriétaires conservés pour nettoyage comme
+des onglets `closed` inactifs. Ils restent visibles après rechargement, y compris
+pour une préparation de worktree, afin de reprendre le nettoyage avec le bouton
+de fermeture existant. Leur synchronisation de métadonnées est suspendue. Un
+`closed` persisté sans propriétaire natif est omis de la liste et refusé en lecture.
+À EOF, la révocation précède l'événement de déconnexion et l'attente du verrou
+de persistance ; la sauvegarde finale et les sorties déjà admises sont conservées.
 
 Le cache Git natif appartient à `GitState`, partagé par les opérations. Ses
 handles restent utilisables par une opération admise après leur retrait du cache.
