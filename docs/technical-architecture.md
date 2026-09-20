@@ -196,6 +196,10 @@ Le frontend est organisé autour de :
 
 L'application n'utilise pas un routage classique basé sur des pages.
 
+Les définitions d'espaces, sessions et contributions du shell sont décrites dans
+[Workspace and shell contributions](workspace-shell.md). Consulter ce contrat
+avant d'ajouter une vue interne, un raccourci ou une entrée de réglages.
+
 Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
 Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et stratégie à droite.

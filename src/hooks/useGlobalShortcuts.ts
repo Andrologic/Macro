@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
-import { shortcutDefinitions } from '../shortcuts/catalog';
-import { CHAT_INPUT_SELECTOR, executeShortcut, isShortcutAvailable } from '../shortcuts/runtime';
+import { CHAT_INPUT_SELECTOR, commandRegistry, executeShortcut, isShortcutAvailable } from '../shortcuts/runtime';
 import { bindingMatchesEvent, isEditableTarget } from '../shortcuts/utils';
 import { useShortcutsStore } from '../stores/useShortcutsStore';
 import { useAppStore } from '../stores/useAppStore';
@@ -33,20 +32,21 @@ export const useGlobalShortcuts = (): void => {
       const isChatInputFocused =
         focusedElement instanceof HTMLElement && focusedElement.matches(CHAT_INPUT_SELECTOR);
 
-      const matchingShortcut = shortcutDefinitions.find((definition) => {
-        const binding = bindings[definition.id];
-        if (!binding) return false;
-
-        if (!bindingMatchesEvent(binding, event)) return false;
-
-        return isShortcutAvailable(definition, {
-          editable,
-          isChatInputFocused,
-          isStreaming,
-          mode,
-          promptHistoryNavigationMode,
-          settingsOpen,
-        });
+      const availability = {
+        editable,
+        isChatInputFocused,
+        isStreaming,
+        mode,
+        promptHistoryNavigationMode,
+        settingsOpen,
+      };
+      const matchingShortcut = commandRegistry.list(availability).find((command) => {
+        const definition = { ...command.definition, id: command.id };
+        const binding = Object.hasOwn(bindings, definition.id)
+          ? bindings[definition.id]
+          : definition.defaultBinding;
+        return Boolean(binding && bindingMatchesEvent(binding, event)) &&
+          isShortcutAvailable(definition, availability);
       });
 
       if (!matchingShortcut) return;
@@ -55,20 +55,17 @@ export const useGlobalShortcuts = (): void => {
         appState: useAppStore.getState(),
         chatState: useChatStore.getState(),
         providerState: useProviderStore.getState(),
+        availability,
+        onStreamStopped: (conversationId) => {
+          const goalState = useConversationGoalStore.getState();
+          if (goalState.goalsByConversationId[conversationId]?.status === 'executor_running') {
+            goalState.setOperationalStatus(conversationId, 'paused');
+          }
+        },
         document,
         window,
       });
       if (executed) {
-        if (matchingShortcut.id === 'chat.stopStreaming') {
-          const conversationId = useChatStore.getState().selectedConversationId;
-          const goalState = useConversationGoalStore.getState();
-          if (
-            conversationId &&
-            goalState.goalsByConversationId[conversationId]?.status === 'executor_running'
-          ) {
-            goalState.setOperationalStatus(conversationId, 'paused');
-          }
-        }
         event.preventDefault();
         event.stopPropagation();
       }

@@ -10,14 +10,14 @@ import { useTranslation } from 'react-i18next';
 import { useTauriWindow } from '../../hooks/useTauriWindow';
 import { windowSetTrafficLightPosition } from '../../services/tauriWindow';
 import { useAppStore } from '../../stores/useAppStore';
-import { type AppMode } from '../../types';
+import type { WorkspaceViewId } from '../../domains/shell/workspace';
 import { cn } from '../../utils/cn';
 import { getPlatformChromeState } from '../../utils/desktopPlatform';
 import { getEffectiveUiZoomScale } from '../../utils/uiZoom';
 import { Logo } from '../ui/Logo';
 import { Icon, type IconName } from '../ui/Icon';
 import { WindowControls } from './WindowControls';
-import { hasModePanel } from './modePanelLoaders';
+import { useWorkspaceShell } from '../../composition/useWorkspaceShell';
 import {
   getMacosTrafficLightPosition,
   getTitleBarLayout,
@@ -37,7 +37,8 @@ interface HeaderProps {
 }
 
 interface ModeOption {
-  value: AppMode;
+  value: WorkspaceViewId;
+  tourId: string;
   label: string;
   icon: IconName;
 }
@@ -72,8 +73,7 @@ export function Header({
   onToggleLeft,
   onToggleRight,
 }: HeaderProps) {
-  const mode = useAppStore((state) => state.mode);
-  const setMode = useAppStore((state) => state.setMode);
+  const { view, navigation, selectView } = useWorkspaceShell();
   const openSettings = useAppStore((state) => state.openSettings);
   const uiZoomMode = useAppStore((state) => state.uiZoomMode);
   const uiZoomLevel = useAppStore((state) => state.uiZoomLevel);
@@ -95,13 +95,11 @@ export function Header({
   const modeMenuPortalRef = useRef<HTMLDivElement>(null);
   const lastTrafficLightPositionRef = useRef<string | null>(null);
 
-  const modeOptions: ModeOption[] = [
-    { value: 'Architect', label: t('header.architect'), icon: 'compass' },
-    { value: 'Implement', label: t('header.implement'), icon: 'code' },
-    { value: 'Chat', label: t('header.chat'), icon: 'message-circle' },
-  ];
-
-  const currentMode = modeOptions.find((candidate) => candidate.value === mode) || modeOptions[0];
+  const modeOptions: ModeOption[] = navigation.map(({ view: candidate, mode }) => ({
+    value: candidate.id, label: t(candidate.labelKey, candidate.label), icon: candidate.icon,
+    tourId: `mode-${mode.toLowerCase()}`,
+  }));
+  const currentMode = modeOptions.find((candidate) => candidate.value === view?.id);
   const isNativeMacosTitlebar = platformChrome.usesNativeMacosTitlebar;
   const effectiveUiZoomScale = getEffectiveUiZoomScale(uiZoomMode, uiZoomLevel);
   const headerStyle = {
@@ -224,12 +222,12 @@ export function Header({
   const renderModeButton = (modeOption: ModeOption) => (
     <button
       key={modeOption.value}
-      onClick={() => setMode(modeOption.value)}
+      onClick={() => selectView(modeOption.value)}
       data-tauri-drag-region="false"
-      data-tour-id={`mode-${modeOption.value.toLowerCase()}`}
+      data-tour-id={modeOption.tourId}
       className={cn(
         'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-200',
-        mode === modeOption.value
+        view?.id === modeOption.value
           ? 'bg-primary text-primary-foreground shadow-sm'
           : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
       )}
@@ -301,8 +299,8 @@ export function Header({
                 data-tauri-drag-region="false"
                 data-tour-id="mode-switcher"
               >
-                <Icon name={currentMode.icon} size={14} />
-                <span className="truncate max-w-[80px]">{currentMode.label}</span>
+                <Icon name={currentMode?.icon ?? 'layers'} size={14} />
+                <span className="truncate max-w-[80px]">{currentMode?.label ?? ''}</span>
                 <Icon name="chevron-down" size={12} className="text-muted-foreground shrink-0" />
               </button>
 
@@ -321,12 +319,12 @@ export function Header({
                     <button
                       key={modeOption.value}
                       onClick={() => {
-                        setMode(modeOption.value);
+                        selectView(modeOption.value);
                         setModeMenuOpen(false);
                       }}
                       className={cn(
                         'w-full flex items-center gap-2 px-3 py-2 text-xs font-medium transition-colors',
-                        mode === modeOption.value
+                        view?.id === modeOption.value
                           ? 'bg-primary/10 text-primary'
                           : 'text-muted-foreground hover:bg-accent hover:text-foreground'
                       )}
@@ -342,7 +340,7 @@ export function Header({
           </div>
 
           <div className="macro-topbar-trailing flex min-w-[100px] sm:min-w-[160px] md:min-w-[200px] items-center justify-end gap-2 justify-self-end">
-            {hasModePanel(mode, 'left') && (
+            {view?.panels.left && (
               <button
                 onClick={onToggleLeft}
                 className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"
@@ -357,7 +355,7 @@ export function Header({
                 />
               </button>
             )}
-            <button
+            {view?.panels.right && <button
               onClick={onToggleRight}
               className="macro-titlebar-action hidden rounded-md p-1.5 transition-colors hover:bg-accent sm:block"
               title={t('header.toggleRightPanel')}
@@ -369,7 +367,7 @@ export function Header({
                 size={16}
                 className="text-muted-foreground"
               />
-            </button>
+            </button>}
 
             <div className="hidden sm:block w-px h-5 bg-border mx-1" />
 

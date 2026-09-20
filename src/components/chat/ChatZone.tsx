@@ -1,3 +1,4 @@
+import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
   useCallback,
@@ -1310,9 +1311,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
-  const secondarySendBinding = useShortcutsStore(
-    (state) => state.bindings ? state.bindings['chat.secondarySend'] : 'Mod+Enter',
-  );
+  const secondarySendBinding = useShortcutBinding('chat.secondarySend');
   const speechLanguage = useSpeechToTextStore((state) => state.language);
   const { tasks, startTask } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,

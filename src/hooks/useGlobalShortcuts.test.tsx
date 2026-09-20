@@ -1,3 +1,4 @@
+import { commandRegistry } from '../shortcuts/runtime';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import React from 'react';
 import { act } from 'react';
@@ -234,6 +235,35 @@ describe('useGlobalShortcuts', () => {
 
     expect(Object.keys(shortcutRuntimeDefinitions).sort()).toEqual(ids);
     expect(Object.keys(shortcutHandlers).sort()).toEqual(ids);
+  });
+
+  it('dispatches late synthetic contributions by registry order and respects live activation', async () => {
+    await renderHook();
+    const first = mock(() => true);
+    const second = mock(() => true);
+    const register = (id: string, handler: () => boolean) => commandRegistry.register({
+      id, owner: 'test.global-shortcuts', order: -1,
+      definition: { category: 'app', label: id, description: id, defaultBinding: 'Alt+J' },
+      constraints: {}, contextHints: [], available: ({ mode }) => mode === 'Chat', handler,
+    });
+    const disposeB = register('test.b', second);
+    const disposeA = register('test.a', first);
+    try {
+      expect((await dispatchBinding('Alt+J')).defaultPrevented).toBe(true);
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(0);
+      commandRegistry.setActive('test.a', false);
+      await dispatchBinding('Alt+J');
+      expect(second).toHaveBeenCalledTimes(1);
+      await act(async () => useAppStore.setState({ mode: 'Architect' }));
+      expect((await dispatchBinding('Alt+J')).defaultPrevented).toBe(false);
+      await act(async () => useAppStore.setState({ mode: 'Chat' }));
+      commandRegistry.removeOwner('test.global-shortcuts');
+      expect((await dispatchBinding('Alt+J')).defaultPrevented).toBe(false);
+    } finally {
+      disposeA();
+      disposeB();
+    }
   });
 
   it('opens general settings with the desktop-standard settings shortcut', async () => {

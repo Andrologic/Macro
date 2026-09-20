@@ -5,7 +5,7 @@ import { useWindowRestoration } from "./hooks/useWindowRestoration";
 import { useUiZoom } from "./hooks/useUiZoom";
 import { PanelResizer } from "./components/layout/PanelResizer";
 import { ModeRouter } from "./components/layout/ModeRouter";
-import { hasModePanel } from "./components/layout/modePanelLoaders";
+import { useWorkspaceShell } from "./composition/useWorkspaceShell";
 import { Footer } from "./components/layout/Footer";
 import { Toaster } from "./components/ui/Toaster";
 import { notify } from "./components/ui/toastService";
@@ -181,7 +181,6 @@ const App: React.FC = () => {
     setArchitectLeftPanelWidth,
     setRightPanelWidth,
     metadataRecoveryReport,
-    mode,
     projectNavigatorOpen,
     closeProjectNavigator,
   ] = useAppStore(
@@ -197,15 +196,15 @@ const App: React.FC = () => {
       state.setArchitectLeftPanelWidth,
       state.setRightPanelWidth,
       state.metadataRecoveryReport,
-      state.mode,
       state.projectNavigatorOpen,
       state.closeProjectNavigator,
     ]),
   );
-  const hasLeftPanel = hasModePanel(mode, "left");
-  const hasRightPanel = hasModePanel(mode, "right");
-  const activeLeftPanelWidth = mode === "Architect" ? architectLeftPanelWidth : leftPanelWidth;
-  const resizeActiveLeftPanel = mode === "Architect" ? setArchitectLeftPanelWidth : setLeftPanelWidth;
+  const { view: workspaceView } = useWorkspaceShell();
+  const hasLeftPanel = Boolean(workspaceView?.panels.left);
+  const hasRightPanel = Boolean(workspaceView?.panels.right);
+  const activeLeftPanelWidth = workspaceView?.leftWidthPreference === "architect" ? architectLeftPanelWidth : leftPanelWidth;
+  const resizeActiveLeftPanel = workspaceView?.leftWidthPreference === "architect" ? setArchitectLeftPanelWidth : setLeftPanelWidth;
 
   useEffect(() => {
     void useConversationArchiveStore.getState().hydrateArchivedConversationIds();
