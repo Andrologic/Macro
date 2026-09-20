@@ -293,7 +293,7 @@ describe('streamingChat native request ownership', () => {
     expect(cancelledRequestIds).toEqual([requestIds[1]]);
 
     emit('ai:done', { request_id: requestIds[1], output_text: 'second', tool_calls: [] });
-    void second;
+    await second;
   });
 });
 

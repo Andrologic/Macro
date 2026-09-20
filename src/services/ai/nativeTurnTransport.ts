@@ -8,7 +8,7 @@ import {
 import {
   activeStreamResourcesBySessionId,
   getStreamSessionId,
-  getOrCreateActiveStreamResources,
+  createActiveStreamResources,
   pruneActiveStreamResources,
   createStreamingRequestId,
 } from './streamResources';
@@ -72,7 +72,7 @@ export const streamNativeTurnViaTauri = async (params: {
   }
 
   const sessionId = getStreamSessionId(params.sessionId);
-  const resources = getOrCreateActiveStreamResources(sessionId);
+  const resources = createActiveStreamResources(sessionId);
   const requestId = createStreamingRequestId();
   resources.tauriRequestId = requestId;
   const allowedTools = new Set(params.allowedToolIds ?? []);
@@ -123,6 +123,8 @@ export const streamNativeTurnViaTauri = async (params: {
       });
       finish(() => reject(new DOMException('Aborted', 'AbortError')));
     };
+
+    resources.cancel = signalHandler;
 
     if (params.signal?.aborted) {
       signalHandler();

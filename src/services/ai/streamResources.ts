@@ -1,4 +1,3 @@
-import { type UnlistenFn } from '../tauriRuntimeBridge';
 import * as tauriIpc from '../tauriIpc';
 
 export interface ActiveStreamResources {
@@ -6,7 +5,6 @@ export interface ActiveStreamResources {
   reader: ReadableStreamDefaultReader<Uint8Array> | null;
   stream: ReadableStream<Uint8Array> | null;
   tauriRequestId: string | null;
-  tauriUnlisteners: UnlistenFn[];
 }
 
 export const DEFAULT_STREAM_SESSION_ID = '__default__';
@@ -15,39 +13,14 @@ export const activeStreamResourcesBySessionId = new Map<string, ActiveStreamReso
 export const getStreamSessionId = (sessionId?: string): string =>
   sessionId && sessionId.trim().length > 0 ? sessionId : DEFAULT_STREAM_SESSION_ID;
 
-export const getOrCreateActiveStreamResources = (sessionId?: string): ActiveStreamResources => {
-  const resolvedSessionId = getStreamSessionId(sessionId);
-  const existing = activeStreamResourcesBySessionId.get(resolvedSessionId);
-  if (existing) {
-    return existing;
-  }
-  return createActiveStreamResources(resolvedSessionId);
-};
-
 export const createActiveStreamResources = (sessionId?: string): ActiveStreamResources => {
   const created: ActiveStreamResources = {
     reader: null,
     stream: null,
     tauriRequestId: null,
-    tauriUnlisteners: [],
   };
   activeStreamResourcesBySessionId.set(getStreamSessionId(sessionId), created);
   return created;
-};
-
-export const cleanupStreamListeners = (resources: ActiveStreamResources) => {
-  if (resources.tauriUnlisteners.length === 0) {
-    return;
-  }
-
-  resources.tauriUnlisteners.forEach((unlisten) => {
-    try {
-      unlisten();
-    } catch {
-      // Ignore listener cleanup errors
-    }
-  });
-  resources.tauriUnlisteners = [];
 };
 
 export const pruneActiveStreamResources = (sessionId?: string, owner?: ActiveStreamResources) => {
@@ -60,8 +33,7 @@ export const pruneActiveStreamResources = (sessionId?: string, owner?: ActiveStr
   if (
     resources.reader === null &&
     resources.stream === null &&
-    resources.tauriRequestId === null &&
-    resources.tauriUnlisteners.length === 0
+    resources.tauriRequestId === null
   ) {
     activeStreamResourcesBySessionId.delete(resolvedSessionId);
   }
@@ -101,20 +73,9 @@ export function cancelStream(sessionId?: string): void {
       });
     }
     resources.tauriRequestId = null;
-    cleanupStreamListeners(resources);
     pruneActiveStreamResources(activeSessionId);
   });
 }
-
-export const clearTauriListeners = (sessionId?: string) => {
-  const resources = activeStreamResourcesBySessionId.get(getStreamSessionId(sessionId));
-  if (!resources) {
-    return;
-  }
-
-  cleanupStreamListeners(resources);
-  pruneActiveStreamResources(sessionId);
-};
 
 export const getActiveStreamingSessionIds = (): string[] =>
   Array.from(activeStreamResourcesBySessionId.keys());
