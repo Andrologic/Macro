@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Task } from '../types';
 import type {
   ArchitectPlanRecord,
@@ -6,6 +6,17 @@ import type {
 } from './architectPlanService';
 import { buildImplementTaskCatalog } from './implementTaskCatalog';
 import { createLoadImplementTaskCatalog } from './loadImplementTaskCatalog';
+import { installArchitectPlanRuntimePorts } from './architectPlanRuntimeService';
+
+let releasePlanRuntimePorts: (() => void) | undefined;
+beforeEach(() => {
+  // This browser-only fixture has no native runtime replicas; keep the real reader.
+  releasePlanRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById: () => undefined });
+});
+afterEach(() => {
+  releasePlanRuntimePorts?.();
+  releasePlanRuntimePorts = undefined;
+});
 
 const makePlan = (
   overrides: Partial<ArchitectPlanRecord> & Pick<ArchitectPlanRecord, 'id' | 'title' | 'status' | 'targetBranch'>

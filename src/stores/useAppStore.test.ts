@@ -9,6 +9,7 @@ import type {
   ArchitectPlanStatus,
 } from '../services/architectPlanService';
 import type { PlanNode } from '../types';
+import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 
 type ProjectRecord = {
   id: string;
@@ -653,9 +654,17 @@ const registerUseAppStoreMocks = async () => {
   }));
 };
 
+let releasePlanRuntimePorts: (() => void) | undefined;
+
 const loadIsolatedUseAppStore = async () => {
   importCounter += 1;
-  return import(`./useAppStore.ts?architect-plan-resolution-test=${importCounter}`);
+  const module = await import(`./useAppStore.ts?architect-plan-resolution-test=${importCounter}`);
+  // main.tsx installs these ports before bootstrap; isolated stores bypass that entrypoint.
+  releasePlanRuntimePorts?.();
+  releasePlanRuntimePorts = installArchitectPlanRuntimePorts({
+    getProjectById: (id) => module.useAppStore.getState().getProjectById(id),
+  });
+  return module;
 };
 
 describe('useAppStore architect plan resolution', () => {
@@ -764,6 +773,8 @@ describe('useAppStore architect plan resolution', () => {
   });
 
   afterEach(() => {
+    releasePlanRuntimePorts?.();
+    releasePlanRuntimePorts = undefined;
     mock.restore();
   });
 
