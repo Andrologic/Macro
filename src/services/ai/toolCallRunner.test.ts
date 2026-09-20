@@ -45,6 +45,27 @@ describe('shared tool batch', () => {
     expect(result.toolResults[0]).toEqual({ tool_call_id: 'original', tool_name: 'read_file', content: 'Denied', is_error: true, error_kind: 'permission' });
   });
 
+  it.each([
+    ['empty string', '', '', false],
+    ['whitespace string', ' \n', ' \n', false],
+    ['structured empty result', { kind: 'result' as const, result: '' }, '', false],
+    ['absent result', undefined, 'Error executing tool read_file: workspace read returned no content.', true],
+    ['legacy error', 'File not found: empty.txt', 'Error executing tool read_file: File not found: empty.txt', true],
+  ] as const)('preserves workspace read semantics for %s', async (_label, response, content, isError) => {
+    const handler = mock((name: string, _args: Record<string, unknown>, _id?: string) => name === 'read' ? response : undefined);
+    const read = call('read_file', 'original');
+    read.function.arguments = '{"file":"empty.txt"}';
+    const acc = accumulator();
+    const result = await runToolBatch({ calls: [read], messages: [], options: options(handler), accumulator: acc,
+      allowedTools: new Set(['read_file', 'read']), schemas: new Map(), batchId: 'fixture', usedToolNames: new Set() });
+    expect(handler.mock.calls.map(([name, , id]) => [name, id])).toEqual([['read_file', 'original'], ['read', 'original']]);
+    expect(result.toolResults).toEqual([{
+      tool_call_id: 'original', tool_name: 'read_file', content, is_error: isError,
+      ...(isError ? { error_kind: 'execution' } : {}),
+    }]);
+    expect(acc.addHiddenToolContext).toHaveBeenCalledWith('original', 'read_file', expect.any(String), content);
+  });
+
   it('does not execute the next tool or publish late output after an awaited handler is cancelled', async () => {
     const controller = new AbortController();
     const handler = mock(async () => { controller.abort(); await Promise.resolve(); return 'late'; });

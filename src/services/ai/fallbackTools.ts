@@ -61,23 +61,19 @@ export async function executeFallbackTool(params: {
     }, callId);
     throwIfToolAborted(signal);
     const normalized = normalizeToolCallResolution(rawWorkspaceResult);
-    if (normalized && typeof rawWorkspaceResult !== 'string') return normalized;
-    const workspaceResult = rawWorkspaceResult;
+    const isLegacyReadError = typeof rawWorkspaceResult === 'string' && (
+      /^Error executing read:/i.test(rawWorkspaceResult) ||
+      /^Missing\s+/i.test(rawWorkspaceResult) ||
+      /^No match found/i.test(rawWorkspaceResult) ||
+      /^File not found/i.test(rawWorkspaceResult) ||
+      /^Cannot\s+/i.test(rawWorkspaceResult)
+    );
+    // An explicit result, including an empty string, is not a missing result.
+    if (normalized && !isLegacyReadError) return normalized;
 
-    if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
-      const isWorkspaceReadError =
-        /^Error executing read:/i.test(workspaceResult) ||
-        /^Missing\s+/i.test(workspaceResult) ||
-        /^No match found/i.test(workspaceResult) ||
-        /^File not found/i.test(workspaceResult) ||
-        /^Cannot\s+/i.test(workspaceResult);
-
-      if (isWorkspaceReadError) {
-        toolResult = `Error executing tool read_file: ${workspaceResult}`;
-        toolErrorKind = 'execution';
-      } else {
-        toolResult = workspaceResult;
-      }
+    if (isLegacyReadError) {
+      toolResult = `Error executing tool read_file: ${rawWorkspaceResult}`;
+      toolErrorKind = 'execution';
     } else {
       toolResult = 'Error executing tool read_file: workspace read returned no content.';
       toolErrorKind = 'execution';
