@@ -92,6 +92,11 @@ et la reprise des journaux. Les fabriques de lecture, mutation, synchronisation,
 runtime et GitFlow peuvent recevoir leurs ports sans charger le store. Les
 appels historiques passent par la façade compatible.
 
+Les tests qui importent directement un store ou un service contournent ce
+démarrage. Leurs fixtures doivent installer les ports Plans utilisés et les
+libérer après chaque test, même sans backend natif. Le runtime réel reste en
+place ; le port de recherche de projet consulte les données de la fixture.
+
 Certaines E/S de répliques et de journaux GitFlow utilisent encore l'adaptateur
 Tauri global. Les fabriques n'assurent donc pas l'isolation simultanée de
 plusieurs backends. Une lecture de cohérence peut reprendre une intention
