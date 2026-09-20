@@ -15,12 +15,14 @@ let pendingUpdateNote: unknown;
 let onboardingListener: ((value: OnboardingPreferenceState) => void) | null;
 let currentAppVersion: string;
 const savePreferenceMock = mock(async (_key: string, _value: unknown) => undefined);
+const reactI18next = await import('react-i18next');
 
 mock.module('../../hooks/useAppVersion', () => ({
   useAppVersion: () => currentAppVersion,
 }));
 
 mock.module('react-i18next', () => ({
+  ...reactI18next,
   useTranslation: () => ({
     t: (_key: string, fallback: string) => fallback,
     i18n: { language: 'fr', resolvedLanguage: 'fr-FR' },
