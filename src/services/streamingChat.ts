@@ -1,3 +1,21 @@
+import { ProviderRuntimeError, classifyReasoningRejection, isReasoningUnsupportedError, isReasoningReplayRequiredError, isContextOverflowError, classifyProviderError, extractProviderErrorMessage, extractSseProviderError } from './ai/providerErrors';
+import type {
+  StreamMessage,
+  StreamMessageContent,
+  ToolCall,
+  ToolResult,
+  StreamCompletionResult,
+  LiveStreamContextSnapshot,
+  StreamCompletionReason,
+  StreamTimelinePhase,
+  StreamTimelineEvent,
+  ToolInterruptResolution,
+  ToolCallResolution,
+  StreamingFollowUpCompactionReason,
+  StreamingChatOptions,
+  StreamingTurnResult,
+} from './ai/contracts';
+export type * from './ai/contracts';
 /**
  * Streaming Chat Service
  * Handles SSE streaming from OpenAI-compatible endpoints
@@ -11,8 +29,6 @@ import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions
 import * as tauriIpc from './tauriIpc';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from '../domains/chat/prompts';
 import { normalizeChatMaxTurns } from './chatTurnLimits';
-import { isContextOverflowMessage } from './contextOverflow';
-import type { InternalAgentProfile } from './internalAgentProfile';
 import {
   applyReasoningToChatCompletionsRequest,
   resolveChatCompletionProviderProtocolProfile,
@@ -30,7 +46,6 @@ import {
 import { toMCPFunctionToolShape } from './mcp';
 import type {
   AppMode,
-  ChatCompletionReason,
   MCPTool,
   ProjectMount,
   ProviderTurnState,
@@ -45,7 +60,6 @@ import {
   estimateImageContextTokens,
   estimateStructuredContext,
   estimateTextTokens,
-  type ImageContextMetadata,
 } from './contextTokenEstimation';
 import {
   formatToolArgumentValidationError,
@@ -198,61 +212,6 @@ const clearTauriListeners = (sessionId?: string) => {
 const getActiveStreamingSessionIds = (): string[] =>
   Array.from(activeStreamResourcesBySessionId.keys());
 
-export interface StreamMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: StreamMessageContent;
-  image_metadata?: ImageContextMetadata[];
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-  provider_input_items?: unknown[];
-  provider_turn_state?: ProviderTurnState;
-}
-
-export type StreamMessageContent =
-  | string
-  | Array<
-    | { type: 'text'; text: string }
-    | { type: 'image_url'; image_url: { url: string } }
-  >;
-
-export interface ToolCall {
-  id: string;
-  type: 'function';
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-export interface ToolResult {
-  tool_call_id: string;
-  content: string;
-  tool_name?: string;
-  is_error: boolean;
-  error_kind?: 'validation' | 'execution' | 'permission' | 'aborted';
-}
-
-export interface StreamCompletionResult {
-  visibleContent: string;
-  toolTraces: ToolTrace[];
-  hiddenContext?: string;
-  providerInputItems?: unknown[];
-  providerTurnState?: ProviderTurnState;
-  completionReason?: StreamCompletionReason;
-}
-
-export interface LiveStreamContextSnapshot {
-  version: number;
-  visibleContent: string;
-  visibleContentLength: number;
-  toolTraces: ToolTrace[];
-  hiddenContext?: string;
-  providerInputItems?: unknown[];
-  providerTurnState?: ProviderTurnState;
-}
-
-export type StreamCompletionReason = ChatCompletionReason;
-
 const INCOMPLETE_RECOVERY_PROMPT =
   'The previous assistant output ended before completion. ' +
   'Continue exactly where it stopped. Return only the missing continuation. ' +
@@ -305,81 +264,6 @@ const recoveredCompletionReason = (
 ): StreamCompletionReason =>
   cause === 'length' ? 'length_recovered' : 'incomplete_recovered';
 
-export type StreamTimelinePhase =
-  | 'send_requested'
-  | 'messages_ready'
-  | 'compaction_done'
-  | 'provider_stream_start_requested'
-  | 'backend_task_started'
-  | 'provider_request_sent'
-  | 'auth_ready'
-  | 'auth_refreshed'
-  | 'first_provider_event'
-  | 'first_token'
-  | 'done'
-  | 'error';
-
-export interface StreamTimelineEvent {
-  request_id: string;
-  provider_id: string;
-  provider_type: string;
-  phase: StreamTimelinePhase | string;
-  elapsed_ms: number;
-}
-
-type ProviderRuntimeErrorKind =
-  | 'reasoning_replay_required'
-  | 'unsupported_reasoning'
-  | 'rate_limited'
-  | 'provider_overloaded'
-  | 'network'
-  | 'stream_idle_timeout'
-  | 'context_overflow'
-  | 'auth'
-  | 'invalid_tool_protocol'
-  | 'unknown';
-
-class ProviderRuntimeError extends Error {
-  readonly kind: ProviderRuntimeErrorKind;
-  readonly status?: number;
-  readonly retryAfterMs?: number;
-  readonly retryable: boolean;
-  readonly providerError = true;
-  readonly providerMessage?: string;
-  readonly providerCode?: string;
-  readonly providerType?: string;
-  readonly providerRawBodyExcerpt?: string;
-
-  constructor(
-    message: string,
-    options: {
-      kind?: ProviderRuntimeErrorKind;
-      status?: number;
-      retryAfterMs?: number;
-      retryable?: boolean;
-      providerMessage?: string;
-      providerCode?: string;
-      providerType?: string;
-      providerRawBodyExcerpt?: string;
-      cause?: unknown;
-    } = {}
-  ) {
-    super(message);
-    this.name = 'ProviderRuntimeError';
-    this.kind = options.kind ?? 'unknown';
-    this.status = options.status;
-    this.retryAfterMs = options.retryAfterMs;
-    this.retryable = options.retryable ?? false;
-    this.providerMessage = options.providerMessage;
-    this.providerCode = options.providerCode;
-    this.providerType = options.providerType;
-    this.providerRawBodyExcerpt = options.providerRawBodyExcerpt;
-    if (options.cause !== undefined) {
-      this.cause = options.cause;
-    }
-  }
-}
-
 interface ChatCompletionProviderMessageItem {
   type: typeof CHAT_COMPLETION_PROVIDER_ITEM_TYPE;
   role: 'assistant' | 'tool';
@@ -390,105 +274,6 @@ interface ChatCompletionProviderMessageItem {
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   tool_name?: string;
-}
-
-export interface ToolResultResolution {
-  kind: 'result';
-  result: string;
-  isError?: boolean;
-  errorKind?: ToolResult['error_kind'];
-  toString?: () => string;
-}
-
-export interface ToolInterruptResolution {
-  kind: 'interrupt';
-  result: string;
-  visibleContent: string;
-  hiddenContext?: string;
-}
-
-export type ToolCallResolution = ToolResultResolution | ToolInterruptResolution;
-
-export type StreamingFollowUpCompactionReason = 'tool_results';
-
-export interface StreamingFollowUpCompactionRequest {
-  reason: StreamingFollowUpCompactionReason;
-  messages: StreamMessage[];
-  turnCount: number;
-  toolResultCount: number;
-}
-
-export interface StreamingFollowUpCompactionResult {
-  messages: StreamMessage[];
-  compacted?: boolean;
-}
-
-export interface StreamingChatOptions {
-  sessionId?: string;
-  conversationId?: string;
-  mode?: AppMode;
-  internalAgentProfile?: InternalAgentProfile | null;
-  providerId: string;
-  providerType: string;
-  baseUrl: string;
-  apiKey?: string;
-  modelId: string;
-  reasoningEffort?: ReasoningEffort | null;
-  reasoningTransportMode?: ReasoningTransportMode;
-  messages: StreamMessage[];
-  onToken: (token: string) => void;
-  onComplete: (result: StreamCompletionResult) => void;
-  onError: (error: Error) => void;
-  onTimeline?: (event: StreamTimelineEvent) => void;
-  onToolTracesUpdate?: (toolTraces: ToolTrace[]) => void;
-  onLiveContextUpdate?: (snapshot: LiveStreamContextSnapshot) => void;
-  signal?: AbortSignal;
-  // Tool calling options
-  enableWebSearch?: boolean;
-  enableWebFetch?: boolean;
-  webSearchOptions?: WebSearchOptions;
-  mcpTools?: MCPTool[];
-  onToolCall?: (
-    toolName: string,
-    args: Record<string, unknown>,
-    toolCallId?: string,
-  ) =>
-    | Promise<ToolCallResolution | string | void>
-    | ToolCallResolution
-    | string
-    | void;
-  onToolResult?: (toolName: string, result: string) => void;
-  onBeforeFollowUpRequest?: (
-    request: StreamingFollowUpCompactionRequest,
-  ) =>
-    | Promise<StreamingFollowUpCompactionResult | StreamMessage[] | void>
-    | StreamingFollowUpCompactionResult
-    | StreamMessage[]
-    | void;
-  consumePendingSteers?: () => StreamMessage[];
-  fileToolContext?: Array<{
-    title: string;
-    source: string;
-    path?: string;
-    snippet?: string;
-    content?: string;
-  }>;
-  allowedToolIds?: string[];
-  skillToolIds?: string[];
-  runnableSkillToolIds?: string[];
-  copilotSendTimeoutMs?: number | null;
-  workspacePath?: string | null;
-  defaultWorkspacePath?: string | null;
-  projectMounts?: ProjectMount[];
-  virtualRootEnabled?: boolean;
-  focusedProjectId?: string | null;
-  showToolTraces?: boolean;
-  guidedToolRetry?: {
-    requiredToolNames: string[];
-    retrySystemPrompt: string;
-    maxRetries?: number;
-  };
-  maxTurns?: number | null;
 }
 
 const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResult => ({
@@ -527,64 +312,6 @@ const maybeCompactFollowUpMessages = async (
     return result.messages.map(cloneStreamMessage);
   }
   return params.messages;
-};
-
-type ReasoningRejectionKind = 'parameter' | 'value';
-
-const classifyReasoningRejection = (message: string): ReasoningRejectionKind | null => {
-  const normalized = message.toLowerCase();
-  if (!normalized.includes('reasoning') && !normalized.includes('thinking')) {
-    return null;
-  }
-
-  if (
-    normalized.includes('unsupported parameter: reasoning') ||
-    normalized.includes('unknown parameter: reasoning') ||
-    normalized.includes('unknown parameter: reasoning_effort') ||
-    normalized.includes('unsupported parameter: thinking') ||
-    normalized.includes('unknown parameter: thinking') ||
-    /(?:unknown|unsupported|unrecognized) (?:parameter|field)[^\n]*(?:reasoning|thinking)/.test(
-      normalized
-    ) ||
-    /(?:reasoning|thinking)[^\n]*(?:parameter|field) (?:is )?(?:unknown|unsupported|unrecognized)/.test(
-      normalized
-    ) ||
-    /(?:reasoning_effort|reasoning\.effort|thinking) is not supported/.test(normalized) ||
-    normalized.includes('does not support thinking') ||
-    normalized.includes('does not support reasoning')
-  ) {
-    return 'parameter';
-  }
-
-  if (
-    normalized.includes('unsupported value') ||
-    normalized.includes('invalid value') ||
-    normalized.includes('invalid enum') ||
-    normalized.includes('allowed values') ||
-    normalized.includes('supported values') ||
-    normalized.includes('must be one of')
-  ) {
-    return 'value';
-  }
-
-  return null;
-};
-
-const isReasoningUnsupportedError = (message: string): boolean =>
-  classifyReasoningRejection(message) !== null;
-
-const isReasoningReplayRequiredError = (message: string): boolean => {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes('reasoning_content') &&
-    (normalized.includes('must be passed back') ||
-      normalized.includes('must be passed') ||
-      normalized.includes('thinking mode'))
-  );
-};
-
-const isContextOverflowError = (message: string, status?: number): boolean => {
-  return isContextOverflowMessage(message, status);
 };
 
 const disableReasoningForSession = (providerId: string, modelId: string) => {
@@ -1024,7 +751,7 @@ const classifyProviderDiagnosticCategory = (error: unknown): string => {
   if (message.includes('system message must be at the beginning')) {
     return 'system_message_order';
   }
-  if (isContextOverflowMessage(message)) return 'context_overflow';
+  if (isContextOverflowError(message)) return 'context_overflow';
   if (error instanceof ProviderRuntimeError) return error.kind;
   return 'unknown';
 };
@@ -1276,203 +1003,6 @@ const appendReasoningDetails = (target: unknown[], value: unknown) => {
   }
 
   target.push(deepCloneJsonValue(value));
-};
-
-const getHeaderValue = (headers: Headers | undefined, name: string): string | null => {
-  if (!headers || typeof headers.get !== 'function') {
-    return null;
-  }
-
-  return headers.get(name);
-};
-
-const parseRetryAfterMs = (headers: Headers | undefined): number | undefined => {
-  const retryAfterMs = getHeaderValue(headers, 'retry-after-ms');
-  if (retryAfterMs) {
-    const parsed = Number(retryAfterMs);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      return parsed;
-    }
-  }
-
-  const retryAfter = getHeaderValue(headers, 'retry-after');
-  if (!retryAfter) {
-    return undefined;
-  }
-
-  const seconds = Number(retryAfter);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return seconds * 1000;
-  }
-
-  const dateMs = Date.parse(retryAfter);
-  if (Number.isFinite(dateMs)) {
-    return Math.max(0, dateMs - Date.now());
-  }
-
-  return undefined;
-};
-
-const classifyProviderError = (
-  message: string,
-  status?: number,
-  retryAfterMs?: number,
-  details?: {
-    providerMessage?: string;
-    providerCode?: string;
-    providerType?: string;
-    providerRawBodyExcerpt?: string;
-  }
-): ProviderRuntimeError => {
-  const normalized = message.toLowerCase();
-  let kind: ProviderRuntimeErrorKind = 'unknown';
-  if (isReasoningReplayRequiredError(message)) {
-    kind = 'reasoning_replay_required';
-  } else if (isReasoningUnsupportedError(message)) {
-    kind = 'unsupported_reasoning';
-  } else if (status === 401 || status === 403) {
-    kind = 'auth';
-  } else if (isContextOverflowError(message, status)) {
-    kind = 'context_overflow';
-  } else if (status === 429) {
-    kind = 'rate_limited';
-  } else if (status === 408 || status === 502 || status === 503 || status === 504) {
-    kind = 'provider_overloaded';
-  } else if (
-    normalized.includes('tool_call') ||
-    normalized.includes('tool call') ||
-    normalized.includes('tool_calls')
-  ) {
-    kind = 'invalid_tool_protocol';
-  }
-
-  const retryable =
-    kind !== 'context_overflow' &&
-    (status === 408 ||
-      status === 429 ||
-      status === 502 ||
-      status === 503 ||
-      status === 504);
-
-  return new ProviderRuntimeError(message, {
-    kind,
-    status,
-    retryAfterMs,
-    retryable,
-    ...details,
-  });
-};
-
-const extractProviderErrorMessage = async (response: Response): Promise<ProviderRuntimeError> => {
-  const errorText = await response.text().catch(() => 'Unknown error');
-  let errorMessage = `Request failed: ${response.status}`;
-  let providerMessage: string | undefined;
-  let providerCode: string | undefined;
-  let providerType: string | undefined;
-
-  try {
-    const errorJson = JSON.parse(errorText) as {
-      error?: { message?: unknown; code?: unknown; type?: unknown };
-      message?: unknown;
-      code?: unknown;
-      type?: unknown;
-    };
-    const parsedMessage = errorJson.error?.message ?? errorJson.message;
-    providerMessage = typeof parsedMessage === 'string' ? parsedMessage : undefined;
-    providerCode =
-      typeof errorJson.error?.code === 'string'
-        ? errorJson.error.code
-        : typeof errorJson.code === 'string'
-          ? errorJson.code
-          : undefined;
-    providerType =
-      typeof errorJson.error?.type === 'string'
-        ? errorJson.error.type
-        : typeof errorJson.type === 'string'
-          ? errorJson.type
-          : undefined;
-    const contextParts = [
-      providerMessage,
-      providerCode,
-      providerType,
-    ].filter((part): part is string => Boolean(part));
-    errorMessage = contextParts.length > 0 ? contextParts.join(' ') : errorMessage;
-  } catch {
-    if (errorText) {
-      errorMessage = errorText;
-      providerMessage = errorText;
-    }
-  }
-
-  return classifyProviderError(
-    errorMessage,
-    response.status,
-    parseRetryAfterMs(response.headers),
-    {
-      providerMessage,
-      providerCode,
-      providerType,
-      providerRawBodyExcerpt: errorText.slice(0, 1200),
-    }
-  );
-};
-
-const getProviderErrorString = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.trim() ? value : undefined;
-
-const getProviderErrorStatus = (value: unknown): number | undefined => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-};
-
-const extractSseProviderError = (
-  payload: unknown,
-  rawData: string,
-): ProviderRuntimeError | null => {
-  if (!payload || typeof payload !== 'object' || !('error' in payload)) {
-    return null;
-  }
-
-  const envelope = payload as {
-    error?: unknown;
-    status?: unknown;
-    status_code?: unknown;
-  };
-  const error = envelope.error;
-  if (error == null) return null;
-  const details = error && typeof error === 'object'
-    ? error as {
-      message?: unknown;
-      code?: unknown;
-      type?: unknown;
-      status?: unknown;
-      status_code?: unknown;
-    }
-    : {};
-  const providerMessage = getProviderErrorString(details.message) ?? getProviderErrorString(error);
-  const providerCode = getProviderErrorString(details.code);
-  const providerType = getProviderErrorString(details.type);
-  const status =
-    getProviderErrorStatus(details.status) ??
-    getProviderErrorStatus(details.status_code) ??
-    getProviderErrorStatus(envelope.status) ??
-    getProviderErrorStatus(envelope.status_code);
-  const message = [providerMessage, providerCode, providerType]
-    .filter((part): part is string => Boolean(part))
-    .join(' ') || 'Provider sent an error event in the stream';
-
-  return classifyProviderError(message, status, undefined, {
-    providerMessage,
-    providerCode,
-    providerType,
-    providerRawBodyExcerpt: rawData.slice(0, 1200),
-  });
 };
 
 const getRetryDelayMs = (attempt: number, retryAfterMs?: number): number => {
@@ -2157,17 +1687,6 @@ const emitStreamTimeline = (
     elapsedMs: event.elapsed_ms,
   });
 };
-
-interface StreamingTurnResult {
-  content: string;
-  toolCalls: ToolCall[];
-  completionReason?: StreamCompletionReason;
-  providerInputItems?: unknown[];
-  providerTurnState?: ProviderTurnState;
-  reasoningSummary?: string;
-  toolTraces?: ToolTrace[];
-  hiddenContext?: string;
-}
 
 const getValidToolCalls = (toolCalls: ToolCall[]): ToolCall[] =>
   toolCalls.filter((toolCall) => toolCall.id && toolCall.function.name);
