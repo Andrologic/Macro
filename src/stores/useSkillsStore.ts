@@ -1,3 +1,4 @@
+import { type LifecycleContext } from '../services/lifecycleScope';
 import { create } from 'zustand';
 import { services } from '../services';
 import { toServiceError } from '../services/contracts/errors';
@@ -122,8 +123,8 @@ interface SkillsStore {
   isLoading: boolean;
   saving: boolean;
   lastError: string | null;
-  loadSettings: () => Promise<void>;
-  refreshSkills: () => Promise<void>;
+  loadSettings: (lifecycle?: LifecycleContext) => Promise<void>;
+  refreshSkills: (lifecycle?: LifecycleContext) => Promise<void>;
   installSkillFromLocalPath: (sourcePath: string) => Promise<void>;
   createSkillTemplate: (
     data: Omit<SkillTemplateCreateRequest, 'projectRoots'>,
@@ -178,12 +179,14 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
   saving: false,
   lastError: null,
 
-  loadSettings: async () => {
+  loadSettings: async (lifecycle) => {
+    lifecycle?.assertActive();
     const hydrationVersion = settingsMutationVersion;
     set({ isLoading: true, lastError: null });
     try {
       const settingsBySkillId = readStoredSkillSettings();
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
+      lifecycle?.assertActive();
       const currentSettings =
         hydrationVersion === settingsMutationVersion
           ? settingsBySkillId
@@ -195,17 +198,21 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
         isLoading: false,
       });
     } catch (error) {
+      lifecycle?.assertActive();
       set({ isLoading: false, lastError: toServiceError(error).message });
     }
   },
 
-  refreshSkills: async () => {
+  refreshSkills: async (lifecycle) => {
+    lifecycle?.assertActive();
     set({ isLoading: true, lastError: null });
     try {
       const response = await services.listSkills({ projectRoots: getProjectRootsFromAppState() });
+      lifecycle?.assertActive();
       const migratedSettings = migrateLegacySkillSettings(get().settingsBySkillId, response.skills);
       set({ skills: response.skills, settingsBySkillId: migratedSettings, isLoading: false });
     } catch (error) {
+      lifecycle?.assertActive();
       set({ isLoading: false, lastError: toServiceError(error).message });
     }
   },

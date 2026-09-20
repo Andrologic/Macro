@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 
 const loadTranslationMock = mock(async (_language: string) => ({}));
@@ -61,4 +62,19 @@ describe('language changes', () => {
     expect(notices).toEqual(['Language changed', 'Language changed']);
     stopNotices();
   });
+  it('does not change the configured language after its owner retires during resource loading', async () => {
+    let release!: (value: Record<string, unknown>) => void;
+    loadTranslationMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const languageModule = await import(`./index.ts?language-retirement=${++importCounter}`);
+    await languageModule.initializeI18n();
+    languageModule.default.removeResourceBundle('ja', 'translation');
+    const before = languageModule.default.resolvedLanguage;
+    const owner = createLifecycleScope();
+    const pending = languageModule.applyConfiguredLanguage('ja', owner).catch((error: unknown) => error);
+    owner.stop();
+    release({ language: 'ja' });
+    await pending;
+    expect(languageModule.default.resolvedLanguage).toBe(before);
+  });
+
 });

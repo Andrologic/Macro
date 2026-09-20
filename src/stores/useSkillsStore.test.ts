@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import type { SkillManifest } from '../types';
 
@@ -174,6 +175,23 @@ describe('useSkillsStore', () => {
     localStorage.clear();
     mock.restore();
   });
+
+  for (const method of ['loadSettings', 'refreshSkills'] as const) {
+    it(`does not apply a stopped ${method} response`, async () => {
+      const { useSkillsStore, services } = await loadSkillsStore([]);
+      const scope = createLifecycleScope();
+      let release!: () => void;
+      services.listSkills.mockImplementationOnce(async () => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return { skills: [buildSkill('global:agents:late')], projectRoots: [] };
+      });
+      const loading = useSkillsStore.getState()[method](scope).catch((error: unknown) => error);
+      scope.stop();
+      release();
+      expect((await loading).name).toBe('LifecycleStoppedError');
+      expect(useSkillsStore.getState().skills).toEqual([]);
+    });
+  }
 
   it('loads persisted settings and sends active project roots to the service', async () => {
     const skill = buildSkill('project:project-1:agents:docs:aaa111', { name: 'docs' });

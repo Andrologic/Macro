@@ -1657,3 +1657,95 @@ Ce document ne doit pas être mis à jour pour :
 - des ajustements purement visuels
 - des détails d'UX sans impact d'architecture
 - des idées produit non encore traduites en architecture cible
+
+## 20. Durées de vie des ressources frontend
+
+`LifecycleContext` exprime la validité d'un consommateur ; il ne remplace ni
+l'identité d'un tour Chat, ni les versions de mutation et identifiants de requête.
+`createLifecycleScope` révoque le contexte avant de libérer les ressources. Un
+handle acquis après cette révocation est libéré immédiatement, une seule fois.
+`track` et `drain` attendent les opérations déjà admises : arrêter un consommateur
+ne constitue pas un retour arrière d'une écriture durable.
+
+- **Application et bootstrap.** `applicationStartup`, consommé par `main.tsx`,
+  possède le pipeline de restauration, la configuration et les compositions.
+  Une génération HMR retirée ne peut ni lancer l'étape suivante, ni installer
+  les effets de configuration, ni rendre une application ou un écran de reprise.
+  La génération suivante attend le drainage de la précédente. Les ports Plans
+  restent installés jusqu'à la fin des opérations admises. Le bootstrap possède
+  son ordonnanceur différé et ses abonnements Task/Chat ; son redémarrage révoque
+  d'abord l'ancien contexte et attend ses effets avant de réhydrater.
+- **Sessions de domaine.** Les conversations, tâches et plans restent possédés
+  par leurs stores et runtimes. Monter ou retirer un panneau ne termine pas un
+  tour Chat ni une opération de métadonnées. Les captures immuables de Chat et
+  les leases et journaux des mutations gardent leur rôle. Une saga admise finit
+  son unité durable avant que son consommateur constate le retrait.
+- **Vues et opérations.** Les lectures du pied de page capturent la cible Git et
+  la génération de vue ; changer de cible permet une nouvelle lecture sans
+  attendre l'ancienne et sans recevoir son résultat. La dictée conserve son
+  identité d'opération après chaque préparation asynchrone de l'audio et avant
+  l'envoi au fournisseur. La fin d'une ancienne dictée ne réinitialise pas celle
+  du contexte suivant. Les nettoyages existants des fenêtres et de CodeMirror
+  restent en place, ainsi que la barrière globale de fermeture de page.
+- **Terminaux.** La composition injecte un port de rendu typé dans le store,
+  sans import du rendu depuis le store. Les fermetures locales et événements
+  natifs passent par une finalisation commune. Les réponses tardives ne peuvent
+  pas recréer un onglet fermé. L'arrêt frontend libère les listeners, timers,
+  observers et ressources xterm et attend les appels admis, sans fermer les PTY
+  natifs. Le détachement d'une vue conserve au plus six rendus détachés ; il
+  n'introduit aucune expiration de session native.
+  La composition d'entrée installe un port léger. Le renderer et xterm restent
+  chargés avec le panneau Terminal ; le premier attachement acquiert ce port.
+  Après l'arrêt de l'application, un attachement tardif est refusé avant toute
+  création xterm. Le nettoyage d'un onglet non rendu ne charge pas le renderer.
+- **Caches.** L'identité de la requête protège les publications des caches Plans
+  et panneaux après invalidation. Le registre des projets possède l'éviction
+  ciblée des caches Git frontend lorsqu'un projet disparaît ou change de chemin.
+  Ces règles décrivent la propriété des données ; elles ne constituent pas une
+  mesure de fuite mémoire ni une nouvelle politique de TTL.
+
+Cette frontière frontend ne rend pas annulable un IPC natif déjà envoyé.
+
+Le watcher de fichiers de `src-tauri/src/fs/watcher.rs` possède son propre arrêt,
+distinct du watcher de configuration. Il révoque la publication, abandonne les
+événements de debounce en attente, puis attend la tâche et la destruction du
+callback natif. `Drop` révoque aussi la publication et demande l'arrêt de la tâche.
+La sortie acceptée de l'application attend ce nettoyage pendant au plus deux
+secondes ; une demande de fermeture encore annulable ne l'engage pas. Le délai
+expiré produit un avertissement et laisse le nettoyage continuer tant que le
+processus vit. Il ne constitue pas une preuve de fin du nettoyage natif.
+
+Les opérations natives Terminal possèdent un verrou par identifiant d'onglet.
+La reconnexion le conserve de la lecture persistée à l'installation du PTY ; la
+fermeture le conserve jusqu'à la suppression durable. Une fermeture révoque les
+sauvegardes différées et attend celles déjà admises. Son intention `closed` est
+persistée avant la terminaison du processus. Si la suppression échoue, une
+nouvelle fermeture peut la reprendre et la reconnexion reste refusée, y compris
+après redémarrage lorsque cette intention a été persistée. Une écriture initiale
+échouée ne garantit pas la conservation de l'intention après crash. Le fence en
+mémoire reste détenu jusqu'à la reprise ; les propriétaires ordinaires sont
+retirés du registre lorsqu'ils ne servent plus. EOF retire le droit de sauvegarde
+du runtime et persiste son état final sous le même verrou de persistance.
+Une tâche différée de ce runtime ne peut donc pas remplacer la session reconnectée,
+même si son compteur de révision est plus récent. Les événements et DTO actifs
+vérifient aussi ce propriétaire au moment de leur publication. Une commande déjà
+envoyée continue son effet natif ; un retour après retrait signale la session
+retirée sans annoncer une annulation ou une remise en état. Une terminaison ou
+une persistance initiale échouée conserve le propriétaire natif pour une nouvelle
+tentative de fermeture. Les protections `Drop` du PTY et
+les annulations par identifiant d'exécution restent indépendantes.
+Les lecteurs natifs présentent les propriétaires conservés pour nettoyage comme
+des onglets `closed` inactifs. Ils restent visibles après rechargement, y compris
+pour une préparation de worktree, afin de reprendre le nettoyage avec le bouton
+de fermeture existant. Leur synchronisation de métadonnées est suspendue. Un
+`closed` persisté sans propriétaire natif est omis de la liste et refusé en lecture.
+À EOF, la révocation précède l'événement de déconnexion et l'attente du verrou
+de persistance ; la sauvegarde finale et les sorties déjà admises sont conservées.
+
+Le cache Git natif appartient à `GitState`, partagé par les opérations. Ses
+handles restent utilisables par une opération admise après leur retrait du cache.
+`invalidate_repo_if_same` retire seulement le handle attendu du chemin canonique,
+sans retirer un remplacement ou un autre dépôt. Les racines metadata en cache
+sont revalidées avant réutilisation et retirées après nettoyage du projet. Cette
+propriété native ne fait pas dépendre un handle Git du montage d'un panneau et
+n'ajoute ni TTL ni affirmation de fuite mesurée.

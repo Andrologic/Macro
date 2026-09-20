@@ -1,3 +1,4 @@
+import { createLifecycleScope, type LifecycleContext, type LifecycleScope } from './lifecycleScope';
 import { preloadModePanels } from '../components/layout/modePanelLoaders';
 import type { AppMode } from '../types';
 import { isPageShuttingDown } from '../utils/pageLifecycle';
@@ -37,22 +38,26 @@ export interface AppBootstrapSnapshot {
   startupError: AppBootstrapStartupError | null;
 }
 
-interface AppBootstrapDependencies {
-  initializeDatabaseCritical?: () => Promise<void>;
-  initializeAppCritical: () => Promise<void>;
-  resumeAppAfterInitialize: () => Promise<void>;
-  initializeChatCritical: () => Promise<void>;
-  initializeTasksCritical: () => Promise<void>;
-  resumeTasksAfterInitialize: () => Promise<void>;
-  initializeTerminal: () => Promise<void>;
-  initializeTools: () => Promise<void>;
-  initializeSkills: () => Promise<void>;
-  initializeProviders: () => Promise<void>;
-  restoreChatSelectionAfterProviderInit: () => Promise<void>;
-  initializeShortcuts: () => Promise<void>;
+export type AppBootstrapInit = (context?: LifecycleContext) => Promise<void>;
+
+export interface AppBootstrapDependencies {
+  initializeDatabaseCritical?: AppBootstrapInit;
+  initializeAppCritical: AppBootstrapInit;
+  resumeAppAfterInitialize: AppBootstrapInit;
+  initializeChatCritical: AppBootstrapInit;
+  initializeTasksCritical: AppBootstrapInit;
+  resumeTasksAfterInitialize: AppBootstrapInit;
+  initializeTerminal: AppBootstrapInit;
+  initializeTools: AppBootstrapInit;
+  initializeSkills: AppBootstrapInit;
+  initializeProviders: AppBootstrapInit;
+  restoreChatSelectionAfterProviderInit: AppBootstrapInit;
+  initializeShortcuts: AppBootstrapInit;
   getCurrentMode: () => AppMode;
-  preloadModeComponents: (mode: AppMode) => Promise<void>;
-  scheduleLowPriority: (run: () => void) => void;
+  preloadModeComponents: (mode: AppMode, context?: LifecycleContext) => Promise<void>;
+  scheduleLowPriority: (run: () => void) => (() => void) | void;
+  startSubscriptions?: (context: LifecycleContext) => () => void;
+  drainSubscriptions?: () => Promise<void>;
   now: () => number;
   log: (message: string) => void;
   error: (message: string) => void;
@@ -62,6 +67,8 @@ interface AppBootstrapDependencies {
 export interface AppBootstrapController {
   ensureStarted: () => Promise<void>;
   restart: () => Promise<void>;
+  stop: () => Promise<void>;
+  drain: () => Promise<void>;
   getSnapshot: () => AppBootstrapSnapshot;
   subscribe: (listener: () => void) => () => void;
 }
@@ -81,11 +88,12 @@ const createInitialSnapshot = (): AppBootstrapSnapshot => ({
 const createWindowLowPriorityScheduler = (): AppBootstrapDependencies['scheduleLowPriority'] => {
   return (run) => {
     if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      window.requestIdleCallback(() => run(), { timeout: 2000 });
-      return;
+      const handle = window.requestIdleCallback(() => run(), { timeout: 2000 });
+      return () => window.cancelIdleCallback(handle);
     }
 
-    setTimeout(() => run(), 100);
+    const handle = setTimeout(() => run(), 100);
+    return () => clearTimeout(handle);
   };
 };
 
@@ -95,6 +103,10 @@ export const createAppBootstrapController = (
   let snapshot = createInitialSnapshot();
   let startPromise: Promise<void> | null = null;
   let preloadTriggered = false;
+  let owner: LifecycleScope | null = null;
+  let retirement: Promise<void> = Promise.resolve();
+  let stopPromise: Promise<void> = retirement;
+  let drainOwnedSubscriptions: (() => Promise<void>) | undefined;
   let runId = 0;
   const listeners = new Set<() => void>();
 
@@ -122,28 +134,37 @@ export const createAppBootstrapController = (
       return startPromise;
     }
 
-    startPromise = (async () => {
-      const activeRunId = ++runId;
+    const scope = createLifecycleScope();
+    owner = scope;
+    const activeRunId = ++runId;
+    const previousRetirement = retirement;
+    startPromise = scope.track((async () => {
+      await previousRetirement;
+      if (!scope.isActive()) return;
       const dependencies = getDependencies();
+      const isActive = () => scope.isActive() && !dependencies.isPageShuttingDown();
+      if (!isActive()) return;
+      drainOwnedSubscriptions = dependencies.drainSubscriptions;
 
       const initWithTracking = async (
         name: string,
-        initFn: () => Promise<void>,
+        initFn: AppBootstrapInit,
         priority: InitPriority,
         options?: { fatal?: boolean; warningOnly?: boolean }
       ): Promise<boolean> => {
+        if (!isActive()) return false;
         const startTime = dependencies.now();
 
         try {
-          await initFn();
-          if (dependencies.isPageShuttingDown()) {
-            return true;
+          await scope.track(initFn(scope));
+          if (!isActive()) {
+            return false;
           }
           const duration = dependencies.now() - startTime;
           dependencies.log(`[Init] ${name} (${priority}) completed in ${duration.toFixed(2)}ms`);
           return true;
         } catch (error) {
-          if (dependencies.isPageShuttingDown()) {
+          if (!isActive()) {
             return false;
           }
 
@@ -191,6 +212,7 @@ export const createAppBootstrapController = (
           'critical',
           { fatal: true }
         );
+        if (!isActive()) return;
         if (!databaseOk) {
           updateSnapshotForRun(activeRunId, (current) => ({
             ...current,
@@ -209,6 +231,7 @@ export const createAppBootstrapController = (
         { fatal: true }
       );
 
+      if (!isActive()) return;
       if (!appCriticalOk) {
         updateSnapshotForRun(activeRunId, (current) => ({
           ...current,
@@ -224,17 +247,20 @@ export const createAppBootstrapController = (
         initWithTracking('Chat Critical', dependencies.initializeChatCritical, 'critical'),
       ]);
 
+      if (!isActive()) return;
+      if (dependencies.startSubscriptions) scope.own(dependencies.startSubscriptions(scope));
+      if (!isActive()) return;
       if (!preloadTriggered) {
         preloadTriggered = true;
         await initWithTracking(
           'Current Mode UI Preload',
-          () => dependencies.preloadModeComponents(dependencies.getCurrentMode()),
+          (context) => dependencies.preloadModeComponents(dependencies.getCurrentMode(), context),
           'critical',
           { warningOnly: true }
         );
       }
 
-      if (!dependencies.isPageShuttingDown()) {
+      if (isActive()) {
         updateSnapshotForRun(activeRunId, (current) => ({
           ...current,
           critical: true,
@@ -242,6 +268,7 @@ export const createAppBootstrapController = (
         }));
       }
 
+      if (!isActive()) return;
       const highPriorityInit = Promise.all([
         initWithTracking('App Resume', dependencies.resumeAppAfterInitialize, 'high', {
           warningOnly: true,
@@ -250,7 +277,7 @@ export const createAppBootstrapController = (
           warningOnly: true,
         }),
       ]).then(() => {
-        if (!dependencies.isPageShuttingDown()) {
+        if (isActive()) {
           updateSnapshotForRun(activeRunId, (current) => ({ ...current, high: true }));
         }
       });
@@ -259,38 +286,47 @@ export const createAppBootstrapController = (
         initWithTracking('Shortcuts', dependencies.initializeShortcuts, 'normal'),
         initWithTracking('Terminal Store', dependencies.initializeTerminal, 'normal'),
       ]).then(() => {
-        if (!dependencies.isPageShuttingDown()) {
+        if (isActive()) {
           updateSnapshotForRun(activeRunId, (current) => ({ ...current, normal: true }));
         }
       });
 
       const lowPriorityInit = new Promise<void>((resolve) => {
-        dependencies.scheduleLowPriority(() => {
-          void (async () => {
-            await Promise.all([
-              initWithTracking('Tools Store', dependencies.initializeTools, 'low'),
-              initWithTracking('Skills Store', dependencies.initializeSkills, 'low'),
-              initWithTracking('Provider Store', dependencies.initializeProviders, 'low'),
-            ]);
-            await highPriorityInit;
-            await initWithTracking(
-              'Chat Context Restore',
-              dependencies.restoreChatSelectionAfterProviderInit,
-              'low',
-              { warningOnly: true }
-            );
-
-            if (!dependencies.isPageShuttingDown()) {
-              updateSnapshotForRun(activeRunId, (current) => ({ ...current, low: true }));
-            }
-            resolve();
-          })();
+        let cancel: (() => void) | void;
+        const release = scope.own(() => {
+          try { cancel?.(); } finally { resolve(); }
         });
+        cancel = dependencies.scheduleLowPriority(() => {
+          if (!isActive()) { release(); return; }
+          void scope.track((async () => {
+            try {
+              await Promise.all([
+                initWithTracking('Tools Store', dependencies.initializeTools, 'low'),
+                initWithTracking('Skills Store', dependencies.initializeSkills, 'low'),
+                initWithTracking('Provider Store', dependencies.initializeProviders, 'low'),
+              ]);
+              if (!isActive()) return;
+              await highPriorityInit;
+              if (!isActive()) return;
+              await initWithTracking(
+                'Chat Context Restore',
+                dependencies.restoreChatSelectionAfterProviderInit,
+                'low',
+                { warningOnly: true }
+              );
+              if (isActive()) {
+                updateSnapshotForRun(activeRunId, (current) => ({ ...current, low: true }));
+              }
+            } finally { release(); }
+          })());
+        });
+        // A scheduler may synchronously invoke the callback or stop its owner.
+        if (!scope.isActive()) cancel?.();
       });
 
       await Promise.all([highPriorityInit, normalPriorityInit, lowPriorityInit]);
 
-      if (!dependencies.isPageShuttingDown()) {
+      if (isActive()) {
         const totalDuration = dependencies.now() - startTime;
         dependencies.log(`[Init] App ready in ${totalDuration.toFixed(2)}ms`);
         updateSnapshotForRun(activeRunId, (current) => ({
@@ -299,23 +335,49 @@ export const createAppBootstrapController = (
           ready: true,
         }));
       }
-    })();
+    })());
 
     return startPromise;
   };
 
-  const restart = () => {
+  const stop = (): Promise<void> => {
+    const retired = owner;
+    if (!retired) return stopPromise;
+    owner = null;
     runId += 1;
     startPromise = null;
     preloadTriggered = false;
+    const failures: unknown[] = [];
+    // Revoke before releasing resources; cleanup failure must not skip draining.
+    try { retired.stop(); } catch (error) { failures.push(error); }
+    const drainSubscriptions = drainOwnedSubscriptions;
+    drainOwnedSubscriptions = undefined;
+    retirement = Promise.allSettled([
+      retirement,
+      retired.drain(),
+      Promise.resolve().then(() => drainSubscriptions?.()),
+    ]).then((results) => {
+      for (const result of results) if (result.status === 'rejected') failures.push(result.reason);
+    });
+    stopPromise = retirement.then(() => {
+      if (failures.length) throw new AggregateError(failures, 'Failed to stop app bootstrap.');
+    });
     snapshot = createInitialSnapshot();
     notify();
-    return ensureStarted();
+    return stopPromise;
+  };
+
+  const restart = () => {
+    const stopping = stop();
+    const starting = ensureStarted();
+    return Promise.all([stopping, starting]).then(() => undefined);
   };
 
   return {
     ensureStarted,
     restart,
+    stop,
+    drain: () => Promise.all([retirement, owner?.drain()]).then(() => undefined),
     getSnapshot: () => snapshot,
     subscribe: (listener) => {
       listeners.add(listener);
@@ -326,14 +388,17 @@ export const createAppBootstrapController = (
   };
 };
 
-const waitForDatabaseInitialization = async (): Promise<void> => {
+export const waitForDatabaseInitialization: AppBootstrapInit = async (context) => {
+  context?.assertActive();
   if (!isTauriAvailable()) {
     return;
   }
 
   const deadline = Date.now() + 15_000;
   while (true) {
+    context?.assertActive();
     const status = await getDatabaseInitializationStatus();
+    context?.assertActive();
     if (status.status === 'ready') {
       return;
     }
@@ -343,11 +408,39 @@ const waitForDatabaseInitialization = async (): Promise<void> => {
     if (Date.now() >= deadline) {
       throw new Error('Database is still initializing after 15 seconds.');
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(handle);
+        context?.signal.removeEventListener('abort', finish);
+        resolve();
+      };
+      const handle = setTimeout(finish, 50);
+      context?.signal.addEventListener('abort', finish, { once: true });
+      if (context?.signal.aborted) finish();
+    });
   }
 };
 
 const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
+  startSubscriptions: (context) => {
+    const scope = createLifecycleScope();
+    try {
+      scope.own(useTaskStore.getState().startAppSync(context));
+      scope.own(useChatStore.getState().startSubscriptions(context));
+      return () => scope.stop();
+    } catch (error) {
+      try { scope.stop(); } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Failed to start bootstrap subscriptions.');
+      }
+      throw error;
+    }
+  },
+  drainSubscriptions: async () => {
+    await Promise.all([
+      useTaskStore.getState().drainAppSync(),
+      useChatStore.getState().drainSubscriptions(),
+    ]);
+  },
   initializeDatabaseCritical: waitForDatabaseInitialization,
   initializeAppCritical: useAppStore.getState().initializeCritical,
   resumeAppAfterInitialize: useAppStore.getState().resumeAfterInitialize,
@@ -362,13 +455,16 @@ const getAppBootstrapDependencies = (): AppBootstrapDependencies => ({
     useChatStore.getState().reapplySelectionForCurrentContext,
   initializeShortcuts: useShortcutsStore.getState().initialize,
   getCurrentMode: () => useAppStore.getState().mode,
-  preloadModeComponents: async (mode) => {
+  preloadModeComponents: async (mode, context) => {
+    context?.assertActive();
     const state = useAppStore.getState();
     const result = await preloadModePanels(mode, {
       includeLeft: state.isLeftPanelOpen,
       includeRight: state.isRightPanelOpen,
       timeoutMs: 450,
+      lifecycle: context,
     });
+    context?.assertActive();
 
     if (result.failed.length > 0) {
       throw new Error(
