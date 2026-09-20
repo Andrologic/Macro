@@ -12,10 +12,7 @@ import {
 } from './toolPresentation';
 import type { ProviderTurnState, ToolTrace } from '../../types';
 
-export const emptyStreamCompletionResult = (visibleContent = ''): StreamCompletionResult => ({
-  visibleContent,
-  toolTraces: [],
-});
+export { emptyStreamCompletionResult } from './streamCompletionResult';
 
 export const createStreamAccumulator = (
   options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate'>

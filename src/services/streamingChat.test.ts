@@ -1,3 +1,67 @@
+import { stripContinuationOverlap, shouldRetryMissingRequiredTool } from './ai/completionRecovery';
+import { hasMeaningfulVisibleAssistantText, summarizeProviderTextPresence, shouldRetryArchitectPostToolResponse } from './ai/streamDiagnostics';
+import { stripThinkingBlocksForModel, resolveChatCompletionProviderProfile, normalizeToolCallIdForProvider, finalizeDanglingToolCallsForChatCompletions, normalizeChatCompletionMessageSequence, buildChatCompletionMessages, validateChatCompletionMessageSequence, buildAssistantChatCompletionProviderItem, buildToolChatCompletionProviderItem, chatCompletionMessagesHaveToolHistory, applyToolsToChatCompletionsRequest } from './ai/chatCompletionsCodec';
+import { serializeCopilotConversationPrompt, estimateCopilotSerializedPayloadTokens } from './ai/copilotPromptCodec';
+import { buildChatGptProviderTurnState, buildFunctionCallOutputProviderInputItem, extractVisibleTextFromProviderInputItems, buildChatGptVisibleTurnContent, getMissingChatGptVisibleTurnSuffix, isEmptyTerminalChatGptTurn, compactToolResultForChatGptModelContext } from './ai/responsesCodec';
+import { createStreamAccumulator } from './ai/streamAccumulator';
+import { collectAllowedTools } from './ai/toolDefinitions';
+import { getActiveStreamingSessionIds } from './ai/streamResources';
+import { readStreamChunkWithIdleTimeout } from './ai/httpTransport';
+import { extractSseData, createSseEventParser } from './ai/sse';
+import { classifyReasoningRejection, isReasoningUnsupportedError, isReasoningReplayRequiredError, isContextOverflowError, classifyProviderError } from './ai/providerErrors';
+import { getToolCallLoopKey, isRepeatedToolCallLoop } from './ai/toolCallRunner';
+import { isToolInterruptResolution, normalizeToolCallResolution } from './ai/toolCallResolution';
+import { formatToolTraceDetail, buildToolContextBlock } from './ai/toolPresentation';
+import { applyReasoningToChatCompletionsRequest, shouldRequestProviderReasoning } from './providerProtocolProfiles';
+
+const __testables = {
+  applyReasoningToChatCompletionsRequest,
+  applyToolsToChatCompletionsRequest,
+  buildAssistantChatCompletionProviderItem,
+  buildChatCompletionMessages,
+  buildChatGptProviderTurnState,
+  buildChatGptVisibleTurnContent,
+  buildFunctionCallOutputProviderInputItem,
+  buildToolChatCompletionProviderItem,
+  buildToolContextBlock,
+  chatCompletionMessagesHaveToolHistory,
+  classifyProviderError,
+  classifyReasoningRejection,
+  collectAllowedTools,
+  compactToolResultForChatGptModelContext,
+  createStreamAccumulator,
+  createSseEventParser,
+  estimateCopilotSerializedPayloadTokens,
+  extractVisibleTextFromProviderInputItems,
+  extractSseData,
+  finalizeDanglingToolCallsForChatCompletions,
+  formatToolTraceDetail,
+  getActiveStreamingSessionIds,
+  getMissingChatGptVisibleTurnSuffix,
+  getToolCallLoopKey,
+  hasMeaningfulVisibleAssistantText,
+  isContextOverflowError,
+  isEmptyTerminalChatGptTurn,
+  isReasoningReplayRequiredError,
+  isReasoningUnsupportedError,
+  isRepeatedToolCallLoop,
+  isToolInterruptResolution,
+  normalizeChatCompletionMessageSequence,
+  normalizeToolCallIdForProvider,
+  normalizeToolCallResolution,
+  readStreamChunkWithIdleTimeout,
+  resolveChatCompletionProviderCapabilities: resolveChatCompletionProviderProfile,
+  resolveChatCompletionProviderProfile,
+  serializeCopilotConversationPrompt,
+  shouldRetryArchitectPostToolResponse,
+  shouldRetryMissingRequiredTool,
+  shouldRequestProviderReasoning,
+  stripThinkingBlocksForModel,
+  stripContinuationOverlap,
+  summarizeProviderTextPresence,
+  validateChatCompletionMessageSequence,
+};
+
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ChatMessage } from '../types';
 import { buildCompactedMessagesForRequest } from './contextCompaction';
@@ -150,7 +214,10 @@ const loadStreamingChat = async (
   }));
 
   streamingChatImportCounter += 1;
-  return import(`./streamingChat.ts?test=${streamingChatImportCounter}`);
+  return {
+    ...await import(`./streamingChat.ts?test=${streamingChatImportCounter}`),
+    __testables,
+  };
 };
 
 const asObjectSchema = (

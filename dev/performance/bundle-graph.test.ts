@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { bundleGraph, deferredVendorViolations } from './bundle-graph.mjs';
+import { bundleGraph, deferredStartupViolations } from './bundle-graph.mjs';
 
 test('static closure deduplicates cycles and excludes deferred code', () => {
   const chunk = (fileName: string, imports: string[], dynamicImports: string[] = []) => ({
@@ -19,8 +19,9 @@ test('startup check catches both terminal CSS coupling and shared Mermaid helper
   const graph = { entries: [{ name: 'entry.js', staticClosure: ['entry.js'] }],
     chunks: [{ name: 'entry.js', modules: [{ id: 'src/main.tsx' }] },
       { name: 'terminal.js', modules: [{ id: 'node_modules/xterm/lib/xterm.js' }] },
-      { name: 'diagram.js', modules: [{ id: 'node_modules/mermaid/dist/mermaid.core.mjs' }] }] };
-  expect(deferredVendorViolations(graph)).toEqual([]);
-  graph.entries[0].staticClosure.push('terminal.js', 'diagram.js');
-  expect(deferredVendorViolations(graph).map(issue => issue.chunk)).toEqual(['terminal.js', 'diagram.js']);
+      { name: 'diagram.js', modules: [{ id: 'node_modules/mermaid/dist/mermaid.core.mjs' }] },
+      { name: 'chat.js', modules: [{ id: 'src/services/streamingChatExecution.ts' }] }]  };
+  expect(deferredStartupViolations(graph)).toEqual([]);
+  graph.entries[0].staticClosure.push('terminal.js', 'diagram.js', 'chat.js');
+  expect(deferredStartupViolations(graph).map(issue => issue.chunk)).toEqual(['terminal.js', 'diagram.js', 'chat.js']);
 });

@@ -1,13 +1,13 @@
 import { relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
-/** Catch the two startup regressions caused by shared helpers and extracted CSS. */
-export function deferredVendorViolations(graph) {
+/** Keep deferred transports, tool handlers, diagrams and terminal JS outside the static startup closure. */
+export function deferredStartupViolations(graph) {
   const chunks = new Map(graph.chunks.map(chunk => [chunk.name, chunk]));
   return graph.entries.flatMap(entry => entry.staticClosure.flatMap(name => {
     const chunk = chunks.get(name);
     if (!chunk) throw new Error(`Missing static chunk: ${name}`);
-    return chunk.modules.filter(module => /(?:^|\/)node_modules\/(?:mermaid\/|xterm\/lib\/|xterm-addon-fit\/lib\/)/.test(module.id))
+    return chunk.modules.filter(module => /(?:^|\/)node_modules\/(?:mermaid\/|xterm\/lib\/|xterm-addon-fit\/lib\/)/.test(module.id) || /^src\/services\/(?:streamingChatExecution|chatToolExecutionRuntime|architectToolRuntime)\.ts$/.test(module.id))
       .map(module => ({ entry: entry.name, chunk: name, module: module.id }));
   }));
 }

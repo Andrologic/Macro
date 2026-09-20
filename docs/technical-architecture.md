@@ -491,7 +491,13 @@ engagée peut finir après Stop, sans lancer la projection suivante. Une erreur
 tardive du placeholder assistant n'autorise pas l'ancien tour à remettre en
 brouillon une tâche reprise par son successeur ; un échec du tour encore
 propriétaire conserve sa compensation.
-`chatToolExecution` route les appels et contrôle leur politique ;
+`chatToolExecution` charge `chatToolExecutionRuntime` au premier appel d'outil.
+Ce runtime garde le routage et les contrôles de politique existants, notamment
+la vérification du propriétaire après le chargement. `deferredArchitectTool`
+charge le handler Architect au premier appel concerné et revérifie l'autorité
+du tour avant ses effets. Les ports et le contexte restent ceux capturés par
+l'appelant ; ces façades n'ajoutent aucun propriétaire de workflow.
+
 `chatToolApproval` coordonne leur approbation durable et `chatAgentTerminal`
 gère les sessions terminal de l'agent. Les ports raccordent les effets des
 autres domaines sans importer leurs stores. `chatPersistenceService` reste propriétaire
@@ -1387,7 +1393,21 @@ La surface complète reste supportée par le desktop local via Tauri IPC.
 
 ### 15.1 Chat streaming
 
-`streamingChat.ts` conserve la façade publique et choisit le transport. Les
+`streamingChat.ts` conserve la façade publique, les estimateurs synchrones et
+l'annulation. Au premier envoi, il charge `streamingChatExecution.ts`, qui
+choisit le transport et conserve la boucle existante. Avant cette attente,
+la façade capture les options, les callbacks et le mode de raisonnement résolu
+(y compris son absence), puis réserve les ressources dans le registre unique
+`streamResources`. L'annulation interrompt cette attente même sans signal
+fourni par l'appelant ; un chargement tardif ne lance aucun transport. Un échec
+de chargement est évincé du cache pour permettre une nouvelle tentative.
+
+Le même objet de ressources accompagne tous les tours natifs ou HTTP d'un
+envoi. Deux appels non annulés d'une même session peuvent s'exécuter, mais seul
+le plus récent occupe la clé du registre. Un ancien appel ne réinscrit jamais
+sa clé et ne nettoie jamais les ressources de son successeur. Les callbacks de
+compatibilité fournisseur sont injectés par la façade ; l'exécution différée
+ne relit pas le store pour choisir le mode de raisonnement. Les
 types métier purs sont dans `services/ai/contracts.ts`. `toolCallingLoop.ts`
 possède les tours, le rejeu, le compactage inter-tours, le steering, les limites
 et les interruptions. `nativeAdapter.ts` et `chatCompletionsAdapter.ts` lui

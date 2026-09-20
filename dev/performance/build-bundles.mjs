@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { build } from 'vite';
 import config from '../../vite.config';
 import { assertCleanBuildSource } from './build-provenance';
-import { bundleGraph, deferredVendorViolations } from './bundle-graph.mjs';
+import { bundleGraph, deferredStartupViolations } from './bundle-graph.mjs';
 import assert from 'node:assert/strict';
 import postcss from 'postcss';
 
@@ -51,7 +51,7 @@ try {
   const budget = spawnSync(process.execPath, ['dev/check-bundle-size.mjs', join(directory, 'assets')],
     { cwd: root, encoding: 'utf8' });
   if (budget.error) throw budget.error;
-  const startupViolations = deferredVendorViolations(graph);
+  const startupViolations = deferredStartupViolations(graph);
   console.log(JSON.stringify({ ...scan, graph, localeDefaultsVerified: locales.length, xtermRules, startupViolations,
     budget: { exitCode: budget.status, output: (budget.stdout + budget.stderr).trim() } }, null, 2));
   if (budget.status !== 0 || startupViolations.length > 0) process.exitCode = 1;
