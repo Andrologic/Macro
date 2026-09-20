@@ -4163,7 +4163,7 @@ describe('streamingChat shared tool batch cancellation', () => {
           webSearchOptions: { configured: true }, signal: controller.signal,
           onToken: () => undefined, onComplete: (result: StreamCompletionResult) => completed.push(result), onError, onToolResult: onResult,
         });
-        expect(seenSignal).toBe(controller.signal);
+        expect(seenSignal?.aborted).toBe(true);
         expect(providerCalls).toBe(1);
         expect(onResult).not.toHaveBeenCalled();
         expect(onError).not.toHaveBeenCalled();
@@ -4172,4 +4172,150 @@ describe('streamingChat shared tool batch cancellation', () => {
       });
     }
   }
+});
+
+describe('streamingChat transport lifetime', () => {
+  it('keeps the newer HTTP reader cancellable after an older same-session stream finishes', async () => {
+    const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const cancelled: number[] = [];
+    let bothStarted!: () => void;
+    const started = new Promise<void>((resolve) => { bothStarted = resolve; });
+    const fetchImpl = mock(async () => {
+      const index = streams.length;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+          if (streams.length === 2) bothStarted();
+        },
+        cancel() { cancelled.push(index); },
+      }));
+    });
+    const { streamChat, cancelStream } = await loadStreamingChat(fetchImpl);
+    const completed: StreamCompletionResult[] = [];
+    const errors: Error[] = [];
+    const options = {
+      sessionId: 'overlapping-http', providerId: 'custom', providerType: 'custom',
+      modelId: 'model', baseUrl: 'https://example.invalid', messages: [],
+      onToken: () => undefined,
+      onComplete: (result: StreamCompletionResult) => completed.push(result),
+      onError: (error: Error) => errors.push(error),
+    };
+    const first = streamChat(options);
+    const second = streamChat(options);
+    await started;
+    streams[0].enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"first"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+    await first;
+    cancelStream('overlapping-http');
+    await second;
+    expect(cancelled).toContain(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(completed).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+
+  it('discards a live native tool resolution after its provider turn has completed', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    let resolveTool!: (value: string) => void;
+    const tool = new Promise<string>((resolve) => { resolveTool = resolve; });
+    const submit = mock(async () => undefined);
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') await submit();
+      }),
+    });
+    const results: string[] = [];
+    const traces: unknown[] = [];
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['read'], onToolCall: () => tool,
+      onToolResult: (_name: string, result: string) => results.push(result),
+      onToolTracesUpdate: (value: unknown) => traces.push(value),
+      onToken: () => undefined, onComplete: () => undefined,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: { request_id: requestId, tool_call_id: 'late-call', tool_name: 'read', args: { path: 'README.md' } } });
+    listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
+    await run;
+    const finishedTraceCount = traces.length;
+    resolveTool('late-result');
+    await tool;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(submit).not.toHaveBeenCalled();
+    expect(results).toEqual([]);
+    expect(traces).toHaveLength(finishedTraceCount);
+  });
+});
+
+describe('streamingChat partial native listener setup', () => {
+  it('disposes immediate and late acquisitions once without touching a successor', async () => {
+    const disposers: Array<ReturnType<typeof mock>> = [];
+    const callbacks: Array<{ name: string; callback: (event: { payload: Record<string, unknown> }) => void }> = [];
+    const late: Array<() => void> = [];
+    let failSetup!: (error: Error) => void;
+    let successorReady!: () => void;
+    const ready = new Promise<void>((resolve) => { successorReady = resolve; });
+    let successorId = '';
+    const cancel = mock(() => undefined);
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock((name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        const index = callbacks.length;
+        callbacks.push({ name, callback });
+        const dispose = mock(() => undefined);
+        disposers.push(dispose);
+        if (index === 2) return new Promise<() => void>((_resolve, reject) => { failSetup = reject; });
+        if (index > 2 && index < 6) return new Promise<() => void>((resolve) => { late.push(() => resolve(dispose)); });
+        return Promise.resolve(dispose);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id: string } }) => {
+        if (command === 'ai_cancel_stream') cancel();
+        if (command === 'ai_stream_chat') {
+          successorId = params.request!.request_id;
+          successorReady();
+        }
+      }),
+    });
+    const controller = new AbortController();
+    const errors: Error[] = [];
+    const completed = mock(() => undefined);
+    const options = {
+      sessionId: 'listener-race', providerId: 'copilot', providerType: 'copilot', modelId: 'model',
+      messages: [], onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => errors.push(error),
+    };
+    const first = streamChat({ ...options, signal: controller.signal });
+    const successor = streamChat(options);
+    await ready;
+    failSetup(new Error('listener setup failed'));
+    await first;
+    expect(errors.map((error) => error.message)).toEqual(['listener setup failed']);
+    expect(disposers[0]).toHaveBeenCalledTimes(1);
+    expect(disposers[1]).toHaveBeenCalledTimes(1);
+    for (const dispose of disposers.slice(3)) expect(dispose).not.toHaveBeenCalled();
+    for (const resolve of late) resolve();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    for (const index of [0, 1, 3, 4, 5]) expect(disposers[index]).toHaveBeenCalledTimes(1);
+    for (const dispose of disposers.slice(6)) expect(dispose).not.toHaveBeenCalled();
+    controller.abort();
+    expect(cancel).not.toHaveBeenCalled();
+    callbacks.slice(6).find(({ name }) => name === 'ai:done')!.callback({
+      payload: { request_id: successorId, output_text: 'successor', tool_calls: [] },
+    });
+    await successor;
+    expect(completed).toHaveBeenCalledTimes(1);
+    for (const index of [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11]) expect(disposers[index]).toHaveBeenCalledTimes(1);
+  });
 });

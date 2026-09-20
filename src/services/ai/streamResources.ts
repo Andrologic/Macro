@@ -2,6 +2,7 @@ import { type UnlistenFn } from '../tauriRuntimeBridge';
 import * as tauriIpc from '../tauriIpc';
 
 export interface ActiveStreamResources {
+  cancel?: () => void;
   reader: ReadableStreamDefaultReader<Uint8Array> | null;
   stream: ReadableStream<Uint8Array> | null;
   tauriRequestId: string | null;
@@ -20,14 +21,17 @@ export const getOrCreateActiveStreamResources = (sessionId?: string): ActiveStre
   if (existing) {
     return existing;
   }
+  return createActiveStreamResources(resolvedSessionId);
+};
 
+export const createActiveStreamResources = (sessionId?: string): ActiveStreamResources => {
   const created: ActiveStreamResources = {
     reader: null,
     stream: null,
     tauriRequestId: null,
     tauriUnlisteners: [],
   };
-  activeStreamResourcesBySessionId.set(resolvedSessionId, created);
+  activeStreamResourcesBySessionId.set(getStreamSessionId(sessionId), created);
   return created;
 };
 
@@ -46,10 +50,10 @@ export const cleanupStreamListeners = (resources: ActiveStreamResources) => {
   resources.tauriUnlisteners = [];
 };
 
-export const pruneActiveStreamResources = (sessionId?: string) => {
+export const pruneActiveStreamResources = (sessionId?: string, owner?: ActiveStreamResources) => {
   const resolvedSessionId = getStreamSessionId(sessionId);
   const resources = activeStreamResourcesBySessionId.get(resolvedSessionId);
-  if (!resources) {
+  if (!resources || (owner && resources !== owner)) {
     return;
   }
 
@@ -76,6 +80,8 @@ export function cancelStream(sessionId?: string): void {
     if (!resources) {
       return;
     }
+
+    resources.cancel?.();
 
     if (resources.reader) {
       resources.reader.cancel().catch(() => {

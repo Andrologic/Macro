@@ -1,0 +1,113 @@
+import type { StreamingChatOptions, StreamingTurnResult } from './contracts';
+import type { ReasoningEffort } from '../../types';
+import type { ToolCallingAdapter, StreamAccumulator } from './toolCallingLoop';
+import { streamNativeTurnViaTauri } from './nativeTurnTransport';
+import { classifyReasoningRejection } from './providerErrors';
+import type { ReasoningCompatibility } from './reasoningCompatibility';
+import { emitStreamTimeline } from './streamDiagnostics';
+import { formatToolTraceDetail } from './toolPresentation';
+import { buildNativeReasoningVisibleTurnContent, buildAssistantProviderInputItemsFromTurn, buildFunctionCallOutputProviderInputItem, isEmptyTerminalChatGptTurn } from './responsesCodec';
+import { cloneProviderInputItems } from './jsonValues';
+import { devLogger } from '../../utils/devLogger';
+
+export function createNativeAdapter(options: StreamingChatOptions, accumulator: StreamAccumulator, reasoning: ReasoningCompatibility): ToolCallingAdapter {
+  const { providerId, providerType, modelId } = options;
+  let currentReasoningEffort = options.reasoningTransportMode === 'none' ? null : options.reasoningEffort;
+  let didRetryWithoutReasoning = false;
+  const rejectedReasoningEfforts = new Set<ReasoningEffort>();
+  return {
+    kind: 'native',
+    streamTurn: async ({ messages, tools, recovering, onDelta }) => {
+      let streamedTurnContent = '';
+      let turnResult: StreamingTurnResult;
+      while (true) {
+        try {
+          turnResult = await streamNativeTurnViaTauri({
+            sessionId: options.sessionId,
+            providerId,
+            providerType,
+            modelId,
+            reasoningEffort: currentReasoningEffort,
+            conversationId: options.conversationId,
+            messages,
+            tools,
+            allowedToolIds: recovering ? [] : options.allowedToolIds,
+            workspacePath: options.workspacePath,
+            defaultWorkspacePath: options.defaultWorkspacePath,
+            projectMounts: options.projectMounts,
+            virtualRootEnabled: options.virtualRootEnabled,
+            focusedProjectId: options.focusedProjectId,
+            copilotSendTimeoutMs: options.copilotSendTimeoutMs,
+            signal: options.signal,
+            onTimeline: (event) => emitStreamTimeline(options, event),
+            onDelta: (delta) => {
+              streamedTurnContent += delta;
+              onDelta(delta);
+            },
+            onToolTrace: (toolTrace) => {
+              accumulator.upsertToolTraceFromProvider(toolTrace);
+            },
+            onToolCall: options.onToolCall,
+            onToolResult: options.onToolResult,
+            onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext }) => {
+              const detail = formatToolTraceDetail(toolName, args);
+              accumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
+              accumulator.addHiddenContextBlock(hiddenContext);
+            },
+          });
+          break;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const rejection = classifyReasoningRejection(message);
+          const rejectedEffort = currentReasoningEffort;
+          if (rejection === 'parameter' && rejectedEffort && !didRetryWithoutReasoning) {
+            didRetryWithoutReasoning = true;
+            currentReasoningEffort = null;
+            reasoning.disableReasoning();
+            continue;
+          }
+          if (
+            rejection === 'value' &&
+            rejectedEffort &&
+            !rejectedReasoningEfforts.has(rejectedEffort)
+          ) {
+            rejectedReasoningEfforts.add(rejectedEffort);
+            reasoning.disableEffort(rejectedEffort);
+            currentReasoningEffort = null;
+            continue;
+          }
+          throw error;
+        }
+      }
+      const content = providerType === 'chatgpt' || providerType === 'copilot'
+        ? buildNativeReasoningVisibleTurnContent(turnResult.content || streamedTurnContent, turnResult.reasoningSummary)
+        : turnResult.content || streamedTurnContent;
+      return {
+        result: { ...turnResult, content, completionReason: turnResult.completionReason ?? 'completed' },
+        projectAssistant: (replayContent, calls, recovering, incomplete) => {
+          const items = recovering || incomplete
+            ? buildAssistantProviderInputItemsFromTurn(replayContent, calls)
+            : cloneProviderInputItems(turnResult.providerInputItems) ?? buildAssistantProviderInputItemsFromTurn(replayContent, calls);
+          const state = turnResult.providerTurnState ? {
+            ...turnResult.providerTurnState,
+            output_items: recovering || incomplete ? cloneProviderInputItems(items) ?? [] : turnResult.providerTurnState.output_items,
+          } : undefined;
+          return { items, state };
+        },
+      };
+    },
+    projectTool: (result) => buildFunctionCallOutputProviderInputItem(result.tool_call_id, result.content),
+    afterToolResults: (_messages, results) => {
+      const hasToolErrors = results.some((result) => result.is_error);
+      const hasFileReadResults = results.some((result) => /^FILE:\s+/m.test(result.content));
+      if (hasToolErrors || hasFileReadResults) devLogger.info('ChatGPT follow-up turn proceeding with full transcript after guarded tool results', {
+        hasToolErrors, hasFileReadResults, toolResultCount: results.length,
+      });
+    },
+    assertTerminal: (content, calls) => {
+      if (providerType === 'chatgpt' && isEmptyTerminalChatGptTurn(content, calls)) {
+        throw new Error('Réponse ChatGPT vide après exécution des outils.');
+      }
+    },
+  };
+}

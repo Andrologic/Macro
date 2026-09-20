@@ -86,21 +86,29 @@ export const streamNativeTurnViaTauri = async (params: {
 
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
-    let nativeUnlisteners: UnlistenFn[] = [];
+    const nativeUnlisteners: UnlistenFn[] = [];
     let questionToolRequestCount = 0;
     let nativeToolRequestOrder = 0;
 
+    const disposeListener = (unlisten: UnlistenFn) => {
+      try {
+        unlisten();
+      } catch {
+        // Completion can race listener setup and cleanup.
+      }
+    };
+    const ownListener: typeof listen = async (event, handler) => {
+      const unlisten = await listen(event, handler);
+      // Promise.all can reject before the other registrations resolve.
+      if (settled) disposeListener(unlisten);
+      else nativeUnlisteners.push(unlisten);
+      return unlisten;
+    };
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      nativeUnlisteners.forEach((unlisten) => {
-        try {
-          unlisten();
-        } catch {
-          // Completion can race listener setup and cleanup.
-        }
-      });
-      nativeUnlisteners = [];
+      params.signal?.removeEventListener('abort', signalHandler);
+      nativeUnlisteners.splice(0).forEach(disposeListener);
       const activeResources = activeStreamResourcesBySessionId.get(sessionId);
       if (activeResources && activeResources.tauriRequestId === requestId) {
         activeResources.tauriRequestId = null;
@@ -127,9 +135,9 @@ export const streamNativeTurnViaTauri = async (params: {
 
     void (async () => {
       try {
-        const unlisteners = await Promise.all([
-          listen<tauriIpc.AiStreamTimelineEvent>('ai:timeline', (event) => {
-            if (event.payload.request_id !== requestId) return;
+        await Promise.all([
+          ownListener<tauriIpc.AiStreamTimelineEvent>('ai:timeline', (event) => {
+            if (settled || event.payload.request_id !== requestId) return;
             params.onTimeline?.({
               request_id: event.payload.request_id,
               provider_id: event.payload.provider_id,
@@ -138,17 +146,17 @@ export const streamNativeTurnViaTauri = async (params: {
               elapsed_ms: event.payload.elapsed_ms,
             });
           }),
-          listen<tauriIpc.AiStreamChunkEvent>('ai:stream', (event) => {
-            if (event.payload.request_id !== requestId) return;
+          ownListener<tauriIpc.AiStreamChunkEvent>('ai:stream', (event) => {
+            if (settled || event.payload.request_id !== requestId) return;
             fullContent += event.payload.delta;
             params.onDelta(event.payload.delta);
           }),
-          listen<tauriIpc.AiStreamToolTraceEvent>('ai:tool-trace', (event) => {
-            if (event.payload.request_id !== requestId) return;
+          ownListener<tauriIpc.AiStreamToolTraceEvent>('ai:tool-trace', (event) => {
+            if (settled || event.payload.request_id !== requestId) return;
             params.onToolTrace?.(event.payload.tool_trace);
           }),
-          listen<tauriIpc.AiToolRequestEvent>('ai:tool-request', (event) => {
-            if (event.payload.request_id !== requestId) return;
+          ownListener<tauriIpc.AiToolRequestEvent>('ai:tool-request', (event) => {
+            if (settled || event.payload.request_id !== requestId) return;
 
             void (async () => {
               const toolName = event.payload.tool_name;
@@ -200,7 +208,7 @@ export const streamNativeTurnViaTauri = async (params: {
 
                   // A stopped generation must never submit a late tool result
                   // back to the native provider loop.
-                  if (params.signal?.aborted) {
+                  if (settled || params.signal?.aborted) {
                     return;
                   }
 
@@ -216,6 +224,7 @@ export const streamNativeTurnViaTauri = async (params: {
                   }
                 }
 
+                if (settled || params.signal?.aborted) return;
                 await tauriIpc.aiSubmitToolResult({
                   requestId,
                   toolCallId,
@@ -226,6 +235,7 @@ export const streamNativeTurnViaTauri = async (params: {
                   isError,
                   errorKind,
                 });
+                if (settled || params.signal?.aborted) return;
                 params.onLiveToolResult?.({
                   toolName,
                   args,
@@ -235,10 +245,11 @@ export const streamNativeTurnViaTauri = async (params: {
                 });
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
-                if (params.signal?.aborted) {
+                if (settled || params.signal?.aborted) {
                   return;
                 }
                 const toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
+                if (settled || params.signal?.aborted) return;
                 await tauriIpc.aiSubmitToolResult({
                   requestId,
                   toolCallId,
@@ -246,6 +257,7 @@ export const streamNativeTurnViaTauri = async (params: {
                   isError: true,
                   errorKind: 'execution',
                 }).catch(() => undefined);
+                if (settled || params.signal?.aborted) return;
                 params.onLiveToolResult?.({
                   toolName,
                   args,
@@ -254,7 +266,7 @@ export const streamNativeTurnViaTauri = async (params: {
                 });
                 params.onToolResult?.(toolName, toolResult);
               } finally {
-                params.onToolTrace?.({
+                if (!settled && !params.signal?.aborted) params.onToolTrace?.({
                   tool_call_id: toolCallId,
                   tool_name: toolName,
                   detail,
@@ -267,11 +279,8 @@ export const streamNativeTurnViaTauri = async (params: {
               }
             })();
           }),
-          listen<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
-            if (event.payload.request_id !== requestId) return;
-            if (params.signal) {
-              params.signal.removeEventListener('abort', signalHandler);
-            }
+          ownListener<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
+            if (settled || event.payload.request_id !== requestId) return;
             const providerInputItems = event.payload.provider_input_items ?? undefined;
             const providerTurnState =
               event.payload.provider_turn_state ??
@@ -297,30 +306,15 @@ export const streamNativeTurnViaTauri = async (params: {
               })
             );
           }),
-          listen<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
-            if (event.payload.request_id !== requestId) return;
-            if (params.signal) {
-              params.signal.removeEventListener('abort', signalHandler);
-            }
+          ownListener<tauriIpc.AiStreamErrorEvent>('ai:error', (event) => {
+            if (settled || event.payload.request_id !== requestId) return;
             finish(() => reject(classifyProviderError(event.payload.message)));
           }),
         ]);
 
-        // These listeners belong to this request. Two requests may briefly share
-        // a session identifier while the previous conversation is stopping.
-        nativeUnlisteners = unlisteners;
-        if (settled || params.signal?.aborted) {
-          unlisteners.forEach((unlisten) => {
-            try {
-              unlisten();
-            } catch {
-              // Ignore listener cleanup errors during an abort race.
-            }
-          });
-          nativeUnlisteners = [];
-          if (!settled) {
-            signalHandler();
-          }
+        if (settled) return;
+        if (params.signal?.aborted) {
+          signalHandler();
           return;
         }
         const tools = normalizeNativeProviderTools(params.tools, params.providerType);
@@ -355,13 +349,6 @@ export const streamNativeTurnViaTauri = async (params: {
           copilotSendTimeoutMs: params.copilotSendTimeoutMs,
         });
       } catch (error) {
-        if (params.signal) {
-          params.signal.removeEventListener('abort', signalHandler);
-        }
-        const activeResources = activeStreamResourcesBySessionId.get(sessionId);
-        if (activeResources && activeResources.tauriRequestId === requestId) {
-          activeResources.tauriRequestId = null;
-        }
         finish(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     })();

@@ -9,6 +9,17 @@ export const TOOL_TRACE_STATUSES = [
 
 const TOOL_TRACE_STATUS_SET = new Set<string>(TOOL_TRACE_STATUSES);
 
+export const isProtectedToolTraceStatus = (status: ToolTraceStatus): boolean =>
+  status === "denied" || status === "pending_approval";
+
+export const mergeToolTraceStatus = (
+  existing: ToolTraceStatus | undefined,
+  incoming: ToolTraceStatus,
+): ToolTraceStatus =>
+  existing && (isProtectedToolTraceStatus(existing) || (existing === "done" && incoming === "running"))
+    ? existing
+    : incoming;
+
 export const isToolTraceStatus = (value: unknown): value is ToolTraceStatus =>
   typeof value === "string" && TOOL_TRACE_STATUS_SET.has(value);
 
@@ -47,8 +58,7 @@ export const mergeToolTracesPreservingDeniedStatus = (
     if (!existingTrace) return trace;
 
     if (
-      existingTrace.status === "denied" ||
-      existingTrace.status === "pending_approval" ||
+      isProtectedToolTraceStatus(existingTrace.status) ||
       (existingTrace.status === "done" && trace.status === "running")
     ) {
       return {

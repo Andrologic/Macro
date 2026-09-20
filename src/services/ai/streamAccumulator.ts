@@ -1,3 +1,4 @@
+import { isProtectedToolTraceStatus, mergeToolTraceStatus } from '../toolTraceState';
 import {
   cloneProviderInputItems,
 } from './jsonValues';
@@ -65,22 +66,9 @@ export const createStreamAccumulator = (
     publishLiveContext();
   };
 
-  const isProtectedToolTraceStatus = (status: ToolTrace['status']): boolean =>
-    status === 'pending_approval' || status === 'denied';
-
-  const mergeToolTraceStatus = (
-    existingTrace: ToolTrace | undefined,
-    incomingStatus: ToolTrace['status']
-  ): ToolTrace['status'] => {
-    if (!existingTrace) return incomingStatus;
-    if (isProtectedToolTraceStatus(existingTrace.status)) return existingTrace.status;
-    if (existingTrace.status === 'done' && incomingStatus === 'running') return 'done';
-    return incomingStatus;
-  };
-
   const upsertToolTrace = (trace: ToolTrace) => {
     const existingTrace = toolTraces.get(trace.tool_call_id);
-    const status = mergeToolTraceStatus(existingTrace, trace.status);
+    const status = mergeToolTraceStatus(existingTrace?.status, trace.status);
     const completedAtMs =
       status === 'done'
         ? trace.completed_at_ms ?? existingTrace?.completed_at_ms ?? Date.now()
