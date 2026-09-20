@@ -1672,7 +1672,40 @@ ne constitue pas un retour arrière d'une écriture durable.
   mesure de fuite mémoire ni une nouvelle politique de TTL.
 
 Cette frontière frontend ne rend pas annulable un IPC natif déjà envoyé.
-L'arrêt des watchers de fichiers de `src-tauri/src/fs/watcher.rs` et les courses
-entre reconnexion et fermeture natives nécessitent un contrat backend distinct.
-Le watcher de configuration de `src-tauri/src/config/watcher.rs` ne fournit pas
-ce contrat au watcher de fichiers.
+
+Le watcher de fichiers de `src-tauri/src/fs/watcher.rs` possède son propre arrêt,
+distinct du watcher de configuration. Il révoque la publication, abandonne les
+événements de debounce en attente, puis attend la tâche et la destruction du
+callback natif. `Drop` révoque aussi la publication et demande l'arrêt de la tâche.
+La sortie acceptée de l'application attend ce nettoyage pendant au plus deux
+secondes ; une demande de fermeture encore annulable ne l'engage pas. Le délai
+expiré produit un avertissement et laisse le nettoyage continuer tant que le
+processus vit. Il ne constitue pas une preuve de fin du nettoyage natif.
+
+Les opérations natives Terminal possèdent un verrou par identifiant d'onglet.
+La reconnexion le conserve de la lecture persistée à l'installation du PTY ; la
+fermeture le conserve jusqu'à la suppression durable. Une fermeture révoque les
+sauvegardes différées et attend celles déjà admises. Son intention `closed` est
+persistée avant la terminaison du processus. Si la suppression échoue, une
+nouvelle fermeture peut la reprendre et la reconnexion reste refusée, y compris
+après redémarrage lorsque cette intention a été persistée. Une écriture initiale
+échouée ne garantit pas la conservation de l'intention après crash. Le fence en
+mémoire reste détenu jusqu'à la reprise ; les propriétaires ordinaires sont
+retirés du registre lorsqu'ils ne servent plus. EOF retire le droit de sauvegarde
+du runtime et persiste son état final sous le même verrou de persistance.
+Une tâche différée de ce runtime ne peut donc pas remplacer la session reconnectée,
+même si son compteur de révision est plus récent. Les événements et DTO actifs
+vérifient aussi ce propriétaire au moment de leur publication. Une commande déjà
+envoyée continue son effet natif ; un retour après retrait signale la session
+retirée sans annoncer une annulation ou une remise en état. Une terminaison ou
+une persistance initiale échouée conserve le propriétaire natif pour une nouvelle
+tentative de fermeture. Les protections `Drop` du PTY et
+les annulations par identifiant d'exécution restent indépendantes.
+
+Le cache Git natif appartient à `GitState`, partagé par les opérations. Ses
+handles restent utilisables par une opération admise après leur retrait du cache.
+`invalidate_repo_if_same` retire seulement le handle attendu du chemin canonique,
+sans retirer un remplacement ou un autre dépôt. Les racines metadata en cache
+sont revalidées avant réutilisation et retirées après nettoyage du projet. Cette
+propriété native ne fait pas dépendre un handle Git du montage d'un panneau et
+n'ajoute ni TTL ni affirmation de fuite mesurée.

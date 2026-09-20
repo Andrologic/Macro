@@ -12,6 +12,10 @@ import type {
 import type { PlanNode } from '../types';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 
+// Capture once before mock.module rewrites the shared IPC re-export binding.
+// A query-suffixed facade still re-exports the same underlying runtime module.
+const { isTauriAvailable: actualIsTauriAvailable } = await import('../services/tauriIpc');
+
 type ProjectRecord = {
   id: string;
   name: string;
@@ -639,7 +643,7 @@ const registerUseAppStoreMocks = async () => {
 
   registerMockModulePair('../services/tauriIpc', () => ({
     ...actualTauriIpc,
-    isTauriAvailable: () => tauriAvailable || actualTauriIpc.isTauriAvailable(),
+    isTauriAvailable: () => tauriAvailable || actualIsTauriAvailable(),
     workspaceArchitectInvalidate: async () => undefined,
     workspaceRecoverMissingMetadata: workspaceRecoverMissingMetadataMock,
     workspaceReconcileProjectRegistryFromHints:
