@@ -4,7 +4,7 @@ import { createWorkspaceSession, workspaceDefinitions } from '../domains/shell/w
 import { resolveWorkspaceGitContext, type WorkspaceGitContextInput } from './workspaceGitContext';
 
 const projects: Project[] = ['api', 'web'].map((id) => ({
-  id, name: id, path: `/repo/${id}`, created_at: '2026-01-01', status: 'active',
+  id, mountName: id, name: id, path: `/repo/${id}`, created_at: '2026-01-01', status: 'active',
   gitSetupState: 'ready', directEdit: false, isReadOnly: false,
   metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
 }));
