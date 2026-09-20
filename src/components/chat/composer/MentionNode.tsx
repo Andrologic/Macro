@@ -12,8 +12,9 @@ import type {
 import { $applyNodeReplacement, DecoratorNode } from 'lexical';
 import type { ContextRefKind } from '../../../types';
 import { MentionChip } from './MentionChip.tsx';
+import { MENTION_NODE_TYPE, type MentionSurface } from './mentionContract';
 
-export type MentionSurface = 'composer' | 'message-edit';
+export type { MentionSurface } from './mentionContract';
 
 export type SerializedMentionNode = Spread<
   {
@@ -34,7 +35,7 @@ export class MentionNode extends DecoratorNode<ReactNode> {
   __syncContextRefs: boolean;
 
   static getType(): string {
-    return 'mention';
+    return MENTION_NODE_TYPE;
   }
 
   static clone(node: MentionNode): MentionNode {
@@ -106,7 +107,7 @@ export class MentionNode extends DecoratorNode<ReactNode> {
   exportJSON(): SerializedMentionNode {
     return {
       ...super.exportJSON(),
-      type: 'mention',
+      type: MENTION_NODE_TYPE,
       refId: this.__refId,
       kind: this.__kind,
       title: this.__title,
