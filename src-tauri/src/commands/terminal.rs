@@ -71,7 +71,7 @@ impl TerminalSessionStore {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct TerminalTabDto {
     pub id: String,
     pub kind: String,
@@ -94,8 +94,8 @@ pub struct TerminalTabDto {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct TerminalOutputEvent {
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct TerminalOutputEvent {
     tab_id: String,
     data: String,
     snapshot: String,
@@ -109,7 +109,7 @@ struct TerminalClosedEvent {
     tab_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct TerminalSessionDto {
     pub id: String,
     pub project_id: Option<String>,
@@ -438,6 +438,7 @@ struct ProjectTerminalTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct TerminalPromptContext {
     #[serde(alias = "project_label")]
     pub project_label: Option<String>,

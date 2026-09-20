@@ -1,0 +1,2 @@
+import type { Child } from "./Child";
+export type Root = { child: Child };

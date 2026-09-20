@@ -623,6 +623,55 @@ Les DTO frontend servent de couche de stabilisation entre :
 
 Cette couche limite le couplage direct entre composants React et détails de sérialisation.
 
+Les wrappers natifs sont regroupés par domaine dans `src/services/ipc/`. La façade
+`tauriIpc.ts` conserve les exports historiques. Les modules de domaine utilisent
+`tauriRuntimeBridge` directement ; le bridge navigateur reste un transport desktop,
+sans sélectionner le provider HTTP expérimental.
+
+Les formes réseau Rust sont réexportées par domaine dans `ipc_contracts` et
+générées sous `src/types/generated/ipc/`. Le générateur `generate_config` partage
+son moteur entre configuration et IPC. Le registre suit les dépendances ts-rs,
+vérifie les imports et les collisions, puis produit un manifeste déterministe.
+`config:check` et `ipc:check` refusent les fichiers manquants, modifiés ou
+surnuméraires sans écrire. Les profils CI natifs et le contrôle différentiel
+exécutent ces vérifications.
+
+Les fichiers `ipc/*.types.ts` adaptent les contrats générés aux consommateurs
+existants : propriétés facultatives historiques, unions frontend plus précises
+que les champs String Rust, vues partielles et normalisation du statut Git.
+Ils conservent uniquement les différences de forme. Les helpers `OmitFields` et
+`OptionalFields` bornent leurs clés à `keyof` du contrat natif : retirer ou renommer
+un champ adapté fait échouer le typage à cette frontière. Cette contrainte vérifie
+les noms de champs ; elle ne remplace pas une validation runtime ni la relecture
+des adaptations sémantiques. Les parseurs et les objets
+pratiques de paramètres restent frontend. Une modification de ces adaptations
+exige de vérifier les consommateurs, pas seulement de régénérer les fichiers.
+
+La génération utilise ts-rs 12 avec une représentation numérique explicite des
+entiers IPC, conforme au JSON actuel. Cette représentation ne garantit pas une
+précision au-delà des entiers sûrs de JavaScript. Les valeurs JSON libres utilisent
+le type récursif `JsonValue`. La configuration conserve ses annotations et ses
+sorties existantes. Les omissions `skip_serializing_if` sont déclarées explicitement
+lorsque ts-rs ne peut pas les déduire. Les aliases Serde d'entrée et les fonctions
+`deserialize_with` continuent de valider côté Rust ; les bindings décrivent les
+noms canoniques et les formes, pas ces contraintes de valeurs.
+
+Les unions de statut dont le backend renvoie encore une String, les paramètres
+pratiques tels que `FrontendLogParams`, les projections de mise à jour et les
+champs provider adaptés restent des contrats frontend identifiés. Le canal
+`MCPRuntimeEvent` réservé au frontend n'a pas de DTO Rust à générer. Les erreurs
+natives, elles, dérivent du payload effectivement sérialisé par `CommandError` ;
+la normalisation des erreurs de service conserve aussi les rejets historiques
+sous forme de chaîne ou d'enveloppe distante.
+
+
+Les exports de `ServiceProvider` restent raccordés au chargement dynamique des
+providers. L'absence d'appel direct à une méthode ne démontre pas qu'elle est
+inutilisée. La façade `tauriIpc.ts` et les réexports Rust de `commands` pourront
+être retirés après migration explicite de leurs appelants ; leur retrait ne doit
+pas être déduit d'une recherche d'imports nommés uniquement.
+
+
 ### 7.4 Boucle d'outils et compatibilité des providers
 
 `streamingChat` valide les arguments d'un outil avec le schéma publié dans le
@@ -715,6 +764,25 @@ Le module `core` porte :
 - la gestion d'erreurs
 - le logging
 - la politique d'outils
+
+`core::workspace_execution` porte l'exécution native partagée, les montages
+virtuels, l'annulation et les transactions de fichiers avec checkpoints.
+`fs::operations` porte les accès confinés et `git::operations` les opérations
+Git natives et WSL utilisées par ce cœur. Le dispatch des workflows et leurs
+journaux résident dans `git::operations::workflow`. Ces modules ne dépendent
+ni des commandes Tauri ni de State, Window ou AppHandle.
+
+`core::command_error` conserve le contrat d'erreur sérialisé et
+`core::db_state` l'état d'initialisation DB. Les identifiants de secrets MCP
+sont définis dans `core::mcp_ids`, accessibles au registre de configuration
+sans importer son adaptateur de commandes.
+
+Les adaptateurs gardent leur autorité propre. Tauri conserve les décisions du
+frontend et la validation native ; le tool host vérifie son bearer local et
+refuse les outils terminal ; le headless vérifie le registre serveur, les
+politiques de tous les projets affectés et son journal durable. Partager
+l'exécuteur ne remplace aucun de ces contrôles. Les options internes de racine
+et de capture des checkpoints ne deviennent pas des paramètres client.
 
 ### 9.3 `db`
 
@@ -1309,7 +1377,7 @@ Les DTO de skills sont transport-neutres. Le manifeste conserve les champs histo
 
 Le provider remote expose les opérations équivalentes `list`, `get`, `readResource` et `runScript` via HTTP (`POST /skills/list`, `POST /skills/get`, `POST /skills/read-resource`, `POST /skills/run-script`, sous le préfixe workspace quand applicable). Les payloads frontend sont en camelCase et le backend remote doit rester tolérant. Un kernel distant peut fournir des skills projet, utilisateur ou registry sans filesystem local. S'il ne supporte pas encore cette surface, il doit répondre `unsupported` ou 404/405/501; l'UI présente alors que le runtime courant ne supporte pas la capacité précise.
 
-Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des réglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par défaut, le profil remote minimal a `skills=true` et `skillScripts=false`.
+Les capabilities remote distinguent `skills` et `skillScripts`. `skills=true` permet `skill_activate` et `skill_read_resource`; `skillScripts=true` est requis en plus des réglages trusted/scripts et de la politique Macro pour proposer `skill_run_script`. Par défaut, le profil remote minimal a `skills=false` et `skillScripts=false`. Le bootstrap peut annoncer les capacités effectivement disponibles.
 
 La surface complète reste supportée par le desktop local via Tauri IPC.
 

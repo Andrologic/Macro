@@ -348,7 +348,7 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
                 };
                 if reference.starts_with("macro-secret://")
                     && !matches!(
-                        crate::commands::mcp::parse_mcp_env_secret_ref(reference),
+                        crate::core::mcp_ids::parse_mcp_env_secret_ref(reference),
                         Some((reference_server_id, reference_key))
                             if reference_server_id == expected_server_id
                                 && reference_key.eq_ignore_ascii_case(header_name)
@@ -393,7 +393,7 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
             if let Some(reference) = authorization.get("clientSecretRef").and_then(Value::as_str) {
                 let valid = client_id.is_some()
                     && matches!(
-                        crate::commands::mcp::parse_mcp_oauth_client_secret_ref(reference),
+                        crate::core::mcp_ids::parse_mcp_oauth_client_secret_ref(reference),
                         Some(reference_server_id) if reference_server_id == expected_server_id
                     );
                 if !valid {

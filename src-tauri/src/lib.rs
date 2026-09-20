@@ -97,6 +97,7 @@ pub mod core;
 mod db;
 mod dev_overrides;
 mod diagnostics;
+pub mod ipc_contracts;
 mod local_backup;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
@@ -107,7 +108,7 @@ mod speech;
 mod state_manager;
 
 // Placeholder modules for critical manual implementation
-mod fs;
+pub mod fs;
 pub mod git;
 pub mod lsp;
 

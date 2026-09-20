@@ -82,6 +82,9 @@ describe('fast local check selection', () => {
       'ESLint ciblé (1 fichier)',
       'Tests liés (1 fichier)',
       'Formatage Rust',
+      'Préparer le sidecar pour les contrats natifs',
+      'Contrats générés config',
+      'Contrats générés ipc',
     ]);
   });
 
@@ -107,4 +110,38 @@ describe('fast local check selection', () => {
     }
   });
 
+});
+
+
+test('checks generated contracts for dependencies, generator helpers, and removed artifacts', () => {
+  for (const path of [
+    'src-tauri/src/db/models.rs', 'src-tauri/src/any/dependency.rs',
+    'src-tauri/examples/generate_config/register_ipc.rs',
+    'src-tauri/examples/generate_config/fixtures/Root.ts.fixture',
+    'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock',
+    'src/types/generated/ipc/serde_json/JsonValue.ts',
+    'src/types/generated/config/ConfigScope.ts',
+    'src-tauri/config-schemas/v1/workspace.schema.json',
+    'package.json', 'dev/ci/check-profiles.mjs',
+  ]) {
+    const plan = planFastLocalChecks([path], { exists: () => false });
+    const checks = plan.steps.filter((entry) => entry.args.includes('generate_config'));
+    expect(checks).toHaveLength(2);
+    expect(checks.map((entry) => entry.args.at(-2))).toEqual(['config', 'ipc']);
+    expect(checks.every((entry) => entry.args.includes('--check'))).toBe(true);
+    expect(checks.every((entry) => entry.args.includes('--locked'))).toBe(true);
+  }
+  for (const path of ['src/components/Panel.tsx', 'README.md']) {
+    expect(planFastLocalChecks([path]).steps.some((entry) => entry.args.includes('generate_config'))).toBe(false);
+  }
+});
+
+
+test('selects CI policy tests when JavaScript gate implementations change', () => {
+  const tests = ['dev/ci/fast-local-checks.test.ts', 'dev/ci/check-profiles.test.ts', 'dev/ci/importer.test.ts'];
+  expect(selectRelatedTestFiles({
+    changedPaths: ['dev/ci/fast-local-checks.mjs', 'dev/ci/check-profiles.mjs'],
+    testFiles: tests,
+    readFile: () => "import { stepsForProfile } from './check-profiles.mjs';",
+  })).toEqual(['dev/ci/check-profiles.test.ts', 'dev/ci/fast-local-checks.test.ts', 'dev/ci/importer.test.ts']);
 });
