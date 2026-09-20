@@ -14,7 +14,9 @@ import {
   sanitizeNotificationChannelMode,
   type NotificationCategory,
 } from '../../services/notificationChannels';
-import { useAppStore } from '../../stores/useAppStore';
+import { getNotificationPreferences } from '../../services/notificationPreferences';
+import { createNotificationDelivery } from '../../services/notificationDelivery';
+import { navigateFromNotification } from '../../services/notificationNavigation';
 import {
   useNotificationCenterStore,
   type NotificationLevel,
@@ -33,6 +35,7 @@ import {
 } from './notifications/types';
 import {
   clearToastBatch,
+  pauseToastBatchTimer,
   registerToastInBatch,
   setToastBatchExpiryHandler,
   unregisterToastFromBatch,
@@ -133,6 +136,34 @@ interface TemplatedNotificationPayload {
   closeButton?: boolean;
 }
 
+const templatedDelivery = createNotificationDelivery<{
+  payload: TemplatedNotificationPayload;
+  options: NotificationOptions;
+}>();
+
+let rendererUsers = 0;
+let detachRenderer: (() => void) | undefined;
+export const attachNotificationRenderer = (): (() => void) => {
+  if (!detachRenderer) {
+    detachRenderer = templatedDelivery.attach((toastId, { payload, options }) => {
+      registerToastInBatch(toastId);
+      emitTemplatedToastChannel(payload, toastId, options);
+    });
+  }
+  rendererUsers += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    rendererUsers -= 1;
+    if (rendererUsers === 0) {
+      detachRenderer?.();
+      detachRenderer = undefined;
+      pauseToastBatchTimer();
+    }
+  };
+};
+
 let generatedNotificationCounter = 0;
 
 setToastBatchExpiryHandler((toastIds) => {
@@ -142,6 +173,7 @@ setToastBatchExpiryHandler((toastIds) => {
 });
 
 const dismissAllVisibleToasts = (): void => {
+  templatedDelivery.dismiss();
   clearToastBatch();
   sonnerToast.dismiss();
 };
@@ -154,7 +186,7 @@ export const subscribeToNotificationCenterOpen = (): (() => void) =>
   });
 
 const uncategorizedNotificationsEnabled = (): boolean =>
-  useAppStore.getState().inAppNotificationsEnabled !== false;
+  getNotificationPreferences().inAppNotificationsEnabled !== false;
 
 const getTrackableDescription = (data: NotificationOptions | undefined): unknown =>
   data?.description;
@@ -321,7 +353,7 @@ const getNotificationChannelMode = (options?: NotificationOptions) => {
 
   const configuredMode = sanitizeNotificationChannelMode(
     category,
-    useAppStore.getState().notificationChannelModes[category] ??
+    getNotificationPreferences().notificationChannelModes[category] ??
       DEFAULT_NOTIFICATION_CHANNEL_MODES[category]
   );
 
@@ -588,6 +620,8 @@ export const executeNotificationAction = async (
   try {
     await action.onClick();
     if (action.dismissOnSuccess && toastId !== null) {
+      templatedDelivery.dismiss(toastId);
+      unregisterToastFromBatch(toastId);
       sonnerToast.dismiss(toastId);
     }
     return true;
@@ -607,8 +641,7 @@ export const getNotificationCenterActions = (
     variant: 'primary',
     dismissOnSuccess: true,
     onClick: async () => {
-      const { openWorkflowNotificationContext } = await import('../../services/openWorkflowNotificationContext');
-      await openWorkflowNotificationContext(navigation);
+      await navigateFromNotification(navigation);
     },
   }];
 };
@@ -848,8 +881,8 @@ const emitTemplatedNotification = (
   let result: ToastId = historyId;
 
   if (toastEnabled) {
-    registerToastInBatch(toastId);
-    result = emitTemplatedToastChannel(payload, toastId, options);
+    templatedDelivery.deliver(toastId, { payload, options });
+    result = toastId;
     if (payload.tone !== 'success') {
       persistNotification(toNotificationLevel(payload.tone), historyId, {
         title: payload.title,
@@ -939,6 +972,7 @@ export const toast = Object.assign(
         return;
       }
 
+      templatedDelivery.dismiss(toastId);
       unregisterToastFromBatch(toastId);
       return sonnerToast.dismiss(toastId);
     }) as typeof sonnerToast.dismiss,

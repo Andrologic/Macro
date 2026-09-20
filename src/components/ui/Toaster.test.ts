@@ -1,3 +1,5 @@
+import { installNotificationNavigation } from '../../services/notificationNavigation';
+import { installNotificationPreferences } from '../../services/notificationPreferences';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act, createElement, forwardRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -115,8 +117,12 @@ let useAppStore!: typeof UseAppStoreHook;
 let useNotificationCenterStore!: typeof UseNotificationCenterStoreHook;
 let initialAppStoreState: ReturnType<typeof useAppStore.getState> | null = null;
 let importCounter = 0;
+let releasePreferences: (() => void) | undefined;
+let releaseRenderer: (() => void) | undefined;
 
 const loadToasterModules = async () => {
+  releasePreferences?.();
+  releaseRenderer?.();
   registerToasterMocks();
 
   importCounter += 1;
@@ -156,6 +162,8 @@ const loadToasterModules = async () => {
   ({ useAppStore } = appStoreModule);
   ({ useNotificationCenterStore } = notificationCenterStoreModule);
   initialAppStoreState = useAppStore.getState();
+  releasePreferences = installNotificationPreferences(() => useAppStore.getState());
+  releaseRenderer = toastServiceModule.attachNotificationRenderer();
 };
 
 const renderCustomToastAt = (index = -1): string => {
@@ -404,6 +412,34 @@ describe('toast wrapper', () => {
       })
     );
     expect(getToastBatchSnapshot().isPaused).toBe(false);
+  });
+
+  it('retains notifications until the renderer mounts without starting their expiry timer', async () => {
+    releaseRenderer?.();
+    const action = mock(() => undefined);
+    const id = notify.actionRequired('Review pending', {
+      notificationKey: 'pending-review',
+      actions: [{ label: 'Review', onClick: action }],
+    });
+    expect(id).toBe('pending-review');
+    expect(sonnerToastMock.custom).not.toHaveBeenCalled();
+    expect(getToastBatchSnapshot().activeToastIds).toHaveLength(0);
+    expect(useNotificationCenterStore.getState().items[0]?.sessionActions?.[0]?.onClick).toBe(action);
+    await act(async () => { root?.render(createElement(Toaster)); });
+    expect(sonnerToastMock.custom).toHaveBeenCalledTimes(1);
+    expect(getToastBatchSnapshot().activeToastIds).toEqual(['pending-review']);
+  });
+
+  it('does not replay a pending notification after its action succeeds', async () => {
+    releaseRenderer?.();
+    notify.actionRequired('Pending action', {
+      notificationKey: 'pending-action',
+      actions: [{ label: 'Resolve', onClick: () => undefined }],
+    });
+    await expect(__testables.executeRegisteredNotificationAction('pending-action', 0)).resolves.toBe(true);
+    await act(async () => { root?.render(createElement(Toaster)); });
+    expect(sonnerToastMock.custom).not.toHaveBeenCalled();
+    expect(getToastBatchSnapshot().activeToastIds).toHaveLength(0);
   });
 
   it('stores tracked info, warning, and error toasts in the notification center', () => {
@@ -981,7 +1017,7 @@ describe('toast wrapper', () => {
 
   it('restores and executes a persisted navigation button without replaying session mutations', async () => {
     const navigate = mock(async (_navigation: unknown) => undefined);
-    mock.module('../../services/openWorkflowNotificationContext', () => ({ openWorkflowNotificationContext: navigate }));
+    const releaseNavigation = installNotificationNavigation(navigate);
     const mutation = mock(() => undefined);
     notify.actionRequired('Question waiting', {
       category: 'task_attention_required', notificationKey: 'persisted-workflow',
@@ -993,6 +1029,7 @@ describe('toast wrapper', () => {
     const { sessionActions: _actions, sessionToastId: _toast, ...persisted } = item;
     useNotificationCenterStore.setState({ items: [JSON.parse(JSON.stringify(persisted))] });
     await expect(__testables.executeRegisteredNotificationAction('persisted-workflow', 0)).resolves.toBe(true);
+    releaseNavigation();
     expect(navigate).toHaveBeenCalledWith({ kind: 'conversation', requestKind: 'questionnaire', conversationId: 'conversation-current' });
     expect(mutation).not.toHaveBeenCalled();
     expect(useNotificationCenterStore.getState().items).toEqual([]);

@@ -139,6 +139,16 @@ export function planFastLocalChecks(paths, options = {}) {
   if (normalized.some((path) => matchesAny(path, I18N_PATTERNS))) {
     steps.push({ name: 'Traductions cohérentes', command: process.execPath, args: ['dev/i18n/audit.mjs'] });
   }
+  if (normalized.some((path) =>
+    path.startsWith('src/') || path === 'package.json' ||
+    path.startsWith('dev/architecture/') || path === 'vite.config.ts')) {
+    steps.push({
+      name: 'Frontières des domaines',
+      command: process.execPath,
+      args: ['dev/architecture/import-boundaries.mjs', '--check'],
+      needsDependencies: true,
+    });
+  }
   if (lintFiles.length > 0) {
     steps.push({
       name: `ESLint ciblé (${lintFiles.length} fichier${lintFiles.length > 1 ? 's' : ''})`,

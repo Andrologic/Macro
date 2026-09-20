@@ -1,0 +1,1503 @@
+{
+  "schemaVersion": 1,
+  "policy": {
+    "rules": [
+      {
+        "id": "services-to-stores-or-ui",
+        "label": "services -> stores/UI",
+        "kinds": [
+          "runtime"
+        ],
+        "sourcePrefixes": [
+          "src/services/"
+        ],
+        "targetPrefixes": [
+          "src/stores/",
+          "src/components/",
+          "src/composition/"
+        ]
+      },
+      {
+        "id": "models-to-application",
+        "label": "models -> stores/UI/services/composition",
+        "kinds": [
+          "runtime",
+          "type"
+        ],
+        "sourcePrefixes": [
+          "src/types/",
+          "src/domains/"
+        ],
+        "targetPrefixes": [
+          "src/stores/",
+          "src/components/",
+          "src/services/",
+          "src/composition/"
+        ]
+      }
+    ],
+    "explicitlyForbiddenEdges": [
+      {
+        "id": "streaming-chat-to-architect-chat",
+        "from": "src/services/streamingChat.ts",
+        "to": "src/services/architectChat.ts",
+        "owner": "Chat",
+        "reason": "Resolved in this lot by moving the shared prompt contract to src/domains/chat/prompts.ts."
+      },
+      {
+        "id": "architect-chat-to-plan-artifact-service",
+        "from": "src/services/architectChat.ts",
+        "to": "src/services/architectPlanArtifactService.ts",
+        "owner": "Tasks/Plans",
+        "reason": "Resolved in this lot by moving artifact contracts to src/domains/plans/artifactContracts.ts."
+      },
+      {
+        "id": "i18n-to-toast-service",
+        "from": "src/i18n/index.ts",
+        "to": "src/components/ui/toastService.tsx",
+        "owner": "Shell",
+        "reason": "Resolved in this lot by routing language notifications through src/i18n/languageNotifications.ts."
+      },
+      {
+        "id": "toast-service-to-app-store",
+        "from": "src/components/ui/toastService.tsx",
+        "to": "src/stores/useAppStore.ts",
+        "owner": "Shell",
+        "reason": "Resolved in this lot by injecting notification preferences and delivery services."
+      }
+    ],
+    "sccRatchet": {
+      "allowStrictSubset": true,
+      "requireBaselineInducedCycle": true
+    }
+  },
+  "baseRef": "5d1e6052841bd5336a214bd674a20f9c6633cca7",
+  "sourceMode": "git-show",
+  "fileCount": 524,
+  "edgeCount": 2209,
+  "runtimeEdgeCount": 1789,
+  "typeEdgeCount": 679,
+  "runtimeSccEdges": [
+    {
+      "from": "src/components/chat/composer/MentionChip.tsx",
+      "to": "src/components/chat/composer/MentionNode.tsx",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/components/chat/composer/MentionChip.tsx",
+      "to": "src/stores/useChatStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/components/chat/composer/MentionNode.tsx",
+      "to": "src/components/chat/composer/MentionChip.tsx",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectGitFlowService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectPlanArtifactService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectPlanRuntimeService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectScopePromotionService.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectScopePromotionService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectStrategyMutationGuard.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectToolRuntime.ts",
+      "to": "src/services/architectPlanRuntimeService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/configVirtualScope.ts",
+      "to": "src/services/workspaceToolExecutor.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": true,
+      "hasEagerRuntime": false,
+      "hasLazyRuntime": true
+    },
+    {
+      "from": "src/services/index.ts",
+      "to": "src/services/providers/ipc.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": true,
+      "hasEagerRuntime": false,
+      "hasLazyRuntime": true
+    },
+    {
+      "from": "src/services/loadImplementTaskCatalog.ts",
+      "to": "src/services/architectPlanRuntimeService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/loadImplementTaskCatalog.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/macroSyncService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/manualFeatureMetadataService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/mergeWorkflowRuntime.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/providers/ipc.ts",
+      "to": "src/services/loadImplementTaskCatalog.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/providers/ipc.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/scopedMcpRuntime.ts",
+      "to": "src/services/index.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/skills/chatIntegration.ts",
+      "to": "src/stores/useSkillsStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/workspaceToolExecutor.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/worktreeSetupCommands.ts",
+      "to": "src/stores/useTerminalStore.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useAppStore.ts",
+      "to": "src/services/architectPlanRuntimeService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useAppStore.ts",
+      "to": "src/services/index.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useAppStore.ts",
+      "to": "src/stores/useChatStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useAppStore.ts",
+      "to": "src/stores/useTaskStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/architectPlanArtifactService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/architectStrategyMutationGuard.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/architectToolRuntime.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/configVirtualScope.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/macroSyncService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/scopedMcpRuntime.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/skills/chatIntegration.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/workspaceToolExecutor.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": true,
+      "hasEagerRuntime": false,
+      "hasLazyRuntime": true
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useSkillsStore.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useTaskStore.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useTerminalStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useToolsStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useGitStore.ts",
+      "to": "src/services/index.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useSkillsStore.ts",
+      "to": "src/services/index.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useSkillsStore.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/architectPlanArtifactService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/architectPlanRuntimeService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/architectScopePromotionService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/index.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/manualFeatureMetadataService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/mergeWorkflowRuntime.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/worktreeSetupCommands.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/stores/useChatStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/stores/useGitStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/stores/useTerminalStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTerminalStore.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTerminalStore.ts",
+      "to": "src/stores/useChatStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTerminalStore.ts",
+      "to": "src/stores/useTaskStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useToolsStore.ts",
+      "to": "src/services/index.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useToolsStore.ts",
+      "to": "src/services/scopedMcpRuntime.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    }
+  ],
+  "eagerSccEdges": [
+    {
+      "from": "src/components/chat/composer/MentionChip.tsx",
+      "to": "src/components/chat/composer/MentionNode.tsx",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/components/chat/composer/MentionChip.tsx",
+      "to": "src/stores/useChatStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/components/chat/composer/MentionNode.tsx",
+      "to": "src/components/chat/composer/MentionChip.tsx",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectGitFlowService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectPlanArtifactService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectPlanRuntimeService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectScopePromotionService.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectScopePromotionService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectStrategyMutationGuard.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/architectToolRuntime.ts",
+      "to": "src/services/architectPlanRuntimeService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/macroSyncService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/manualFeatureMetadataService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/mergeWorkflowRuntime.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/skills/chatIntegration.ts",
+      "to": "src/stores/useSkillsStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/services/worktreeSetupCommands.ts",
+      "to": "src/stores/useTerminalStore.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useAppStore.ts",
+      "to": "src/services/architectPlanRuntimeService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useAppStore.ts",
+      "to": "src/stores/useChatStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useAppStore.ts",
+      "to": "src/stores/useTaskStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/architectPlanArtifactService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/architectStrategyMutationGuard.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/architectToolRuntime.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/macroSyncService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/services/skills/chatIntegration.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useSkillsStore.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useTaskStore.ts",
+      "kinds": [
+        "runtime",
+        "type"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useChatStore.ts",
+      "to": "src/stores/useTerminalStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useSkillsStore.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/architectGitFlowService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/architectPlanArtifactService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/architectPlanRuntimeService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/architectScopePromotionService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/manualFeatureMetadataService.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/mergeWorkflowRuntime.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/services/worktreeSetupCommands.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/stores/useChatStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTaskStore.ts",
+      "to": "src/stores/useTerminalStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTerminalStore.ts",
+      "to": "src/stores/useAppStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTerminalStore.ts",
+      "to": "src/stores/useChatStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    },
+    {
+      "from": "src/stores/useTerminalStore.ts",
+      "to": "src/stores/useTaskStore.ts",
+      "kinds": [
+        "runtime"
+      ],
+      "lazy": false,
+      "hasEagerRuntime": true,
+      "hasLazyRuntime": false
+    }
+  ],
+  "sccs": [
+    [
+      "src/components/chat/composer/MentionChip.tsx",
+      "src/components/chat/composer/MentionNode.tsx"
+    ],
+    [
+      "src/services/architectGitFlowService.ts",
+      "src/services/architectPlanArtifactService.ts",
+      "src/services/architectPlanRuntimeService.ts",
+      "src/services/architectScopePromotionService.ts",
+      "src/services/architectStrategyMutationGuard.ts",
+      "src/services/architectToolRuntime.ts",
+      "src/services/configVirtualScope.ts",
+      "src/services/index.ts",
+      "src/services/loadImplementTaskCatalog.ts",
+      "src/services/macroSyncService.ts",
+      "src/services/manualFeatureMetadataService.ts",
+      "src/services/mergeWorkflowRuntime.ts",
+      "src/services/providers/ipc.ts",
+      "src/services/scopedMcpRuntime.ts",
+      "src/services/skills/chatIntegration.ts",
+      "src/services/workspaceToolExecutor.ts",
+      "src/services/worktreeSetupCommands.ts",
+      "src/stores/useAppStore.ts",
+      "src/stores/useChatStore.ts",
+      "src/stores/useGitStore.ts",
+      "src/stores/useSkillsStore.ts",
+      "src/stores/useTaskStore.ts",
+      "src/stores/useTerminalStore.ts",
+      "src/stores/useToolsStore.ts"
+    ]
+  ],
+  "eagerSccs": [
+    [
+      "src/components/chat/composer/MentionChip.tsx",
+      "src/components/chat/composer/MentionNode.tsx"
+    ],
+    [
+      "src/services/architectGitFlowService.ts",
+      "src/services/architectPlanArtifactService.ts",
+      "src/services/architectPlanRuntimeService.ts",
+      "src/services/architectScopePromotionService.ts",
+      "src/services/architectStrategyMutationGuard.ts",
+      "src/services/architectToolRuntime.ts",
+      "src/services/macroSyncService.ts",
+      "src/services/manualFeatureMetadataService.ts",
+      "src/services/mergeWorkflowRuntime.ts",
+      "src/services/skills/chatIntegration.ts",
+      "src/services/worktreeSetupCommands.ts",
+      "src/stores/useAppStore.ts",
+      "src/stores/useChatStore.ts",
+      "src/stores/useSkillsStore.ts",
+      "src/stores/useTaskStore.ts",
+      "src/stores/useTerminalStore.ts"
+    ]
+  ],
+  "dynamicSccs": [
+    [
+      "src/services/architectGitFlowService.ts",
+      "src/services/architectPlanArtifactService.ts",
+      "src/services/architectPlanRuntimeService.ts",
+      "src/services/architectScopePromotionService.ts",
+      "src/services/architectStrategyMutationGuard.ts",
+      "src/services/architectToolRuntime.ts",
+      "src/services/configVirtualScope.ts",
+      "src/services/index.ts",
+      "src/services/loadImplementTaskCatalog.ts",
+      "src/services/macroSyncService.ts",
+      "src/services/manualFeatureMetadataService.ts",
+      "src/services/mergeWorkflowRuntime.ts",
+      "src/services/providers/ipc.ts",
+      "src/services/scopedMcpRuntime.ts",
+      "src/services/skills/chatIntegration.ts",
+      "src/services/workspaceToolExecutor.ts",
+      "src/services/worktreeSetupCommands.ts",
+      "src/stores/useAppStore.ts",
+      "src/stores/useChatStore.ts",
+      "src/stores/useGitStore.ts",
+      "src/stores/useSkillsStore.ts",
+      "src/stores/useTaskStore.ts",
+      "src/stores/useTerminalStore.ts",
+      "src/stores/useToolsStore.ts"
+    ]
+  ],
+  "exceptions": [
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/components/layout/modePanelLoaders.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/stores/useChatStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/stores/useProviderStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/stores/useShortcutsStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/stores/useSkillsStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/stores/useTaskStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/stores/useTerminalStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/appBootstrap.ts",
+      "to": "src/stores/useToolsStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/architectPlanArtifactService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Tasks/Plans",
+      "reason": "Existing dependency assigned to the Tasks/Plans lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/configDocuments.ts",
+      "to": "src/stores/useConfigStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/configRuntimeEffects.ts",
+      "to": "src/components/ui/toastService.tsx",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/configRuntimeEffects.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/configRuntimeEffects.ts",
+      "to": "src/stores/useConfigStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/configRuntimeEffects.ts",
+      "to": "src/stores/useSkillsStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/conflictAssistantService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/conflictAssistantService.ts",
+      "to": "src/stores/useChatStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/loadImplementTaskCatalog.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Tasks/Plans",
+      "reason": "Existing dependency assigned to the Tasks/Plans lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/macroSyncService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/manualFeatureMetadataService.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/openWorkflowNotificationContext.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/openWorkflowNotificationContext.ts",
+      "to": "src/stores/useChatStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/openWorkflowNotificationContext.ts",
+      "to": "src/stores/useTaskStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/preferences.ts",
+      "to": "src/stores/useConfigStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/providers/ipc.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Providers",
+      "reason": "Existing dependency assigned to the Providers lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/restartSafety.ts",
+      "to": "src/stores/chat/chatRuntimeState.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/skills/chatIntegration.ts",
+      "to": "src/stores/useSkillsStore.ts",
+      "owner": "Chat",
+      "reason": "Existing dependency assigned to the Chat lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/skills/settings.ts",
+      "to": "src/stores/useConfigStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/smartCommitMessageGenerator.ts",
+      "to": "src/stores/useProviderStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/speech/transcriptEnhancement.ts",
+      "to": "src/stores/useProviderStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/streamingChat.ts",
+      "to": "src/stores/useProviderStore.ts",
+      "owner": "Chat",
+      "reason": "Existing dependency assigned to the Chat lot."
+    },
+    {
+      "rule": "services-to-stores-or-ui",
+      "label": "services -> stores/UI",
+      "kind": "runtime",
+      "from": "src/services/workspaceToolExecutor.ts",
+      "to": "src/stores/useAppStore.ts",
+      "owner": "Shell",
+      "reason": "Existing dependency assigned to the Shell lot."
+    }
+  ]
+}

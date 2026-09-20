@@ -1,10 +1,13 @@
 import type {
-  PlanNode,
   PlanNodeArtifactContract,
   PlanTaskArtifact,
   PlanTaskArtifactContentType,
   PlanTaskArtifactReview,
 } from '../types';
+import {
+  normalizeArtifactContracts,
+  sanitizeId,
+} from '../domains/plans/artifactContracts';
 import type { ProjectExecutionContext } from './projectExecutionContext';
 import type { ArchitectPlanRecord } from './architectPlanService';
 import {
@@ -139,14 +142,6 @@ const normalizeBranchName = (value?: string | null): string => {
     return getGitFlowBaseBranch();
   }
 };
-
-const sanitizeId = (value: string): string =>
-  value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+/, '')
-    .replace(/-+$/, '') || `artifact-${Date.now()}`;
 
 const slugify = (value: string): string =>
   sanitizeId(value).replace(/[._]+/g, '-').slice(0, 60) || `artifact-${Date.now()}`;
@@ -1155,28 +1150,7 @@ const unvalidateVisibleTaskArtifactInternal = async (params: {
   });
 };
 
-export const normalizeArtifactContracts = (
-  node: Pick<PlanNode, 'artifactContracts'>,
-): PlanNodeArtifactContract[] =>
-  (node.artifactContracts || [])
-    .filter((contract) =>
-      Boolean(
-        contract &&
-          typeof contract.id === 'string' &&
-          contract.id.trim().length > 0 &&
-          typeof contract.title === 'string' &&
-          contract.title.trim().length > 0,
-      ),
-    )
-    .map((contract) => ({
-      id: sanitizeId(contract.id),
-      title: contract.title.trim(),
-      kind: typeof contract.kind === 'string' && contract.kind.trim() ? contract.kind.trim() : 'note',
-      ...(typeof contract.description === 'string' && contract.description.trim()
-        ? { description: contract.description.trim() }
-        : {}),
-      required: true,
-    }));
+export { normalizeArtifactContracts, sanitizeId } from '../domains/plans/artifactContracts';
 
 const putTaskArtifactInternal = async ({
   target,

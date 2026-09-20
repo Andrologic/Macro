@@ -185,6 +185,36 @@ describe('Header', () => {
     expect(render()).toContain('data-tour-id="toggle-left-panel"');
   });
 
+  it('adds and withdraws an internal view through the live registry', async () => {
+    const { Header } = await loadHeader();
+    const { workspaceViews } = await import('../../composition/workspaceViews');
+    const { useWorkspaceSessionsStore } = await import('../../stores/useWorkspaceSessionsStore');
+    appState.mode = 'Chat';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<Header isLeftOpen isRightOpen onToggleLeft={() => undefined} onToggleRight={() => undefined} />);
+      workspaceViews.register({
+        id: 'view.synthetic-header', workspaceId: 'workspace.chat', owner: 'test.header', order: 10,
+        label: 'Synthetic inspector', labelKey: 'test.inspector', icon: 'layers', panels: {},
+      });
+    });
+    try {
+      const button = Array.from(container.querySelectorAll('button')).find((node) => node.textContent === 'Synthetic inspector');
+      expect(button).toBeDefined();
+      await act(async () => { button?.click(); });
+      expect(container.querySelector('[data-tour-id="toggle-left-panel"]')).toBeNull();
+      expect(container.querySelector('[data-tour-id="toggle-right-panel"]')).toBeNull();
+      expect(appState.mode).toBe('Chat');
+      await act(async () => { workspaceViews.removeOwner('test.header'); });
+      expect(container.textContent).not.toContain('Synthetic inspector');
+      expect(container.querySelector('[data-tour-id="toggle-left-panel"]')).not.toBeNull();
+    } finally {
+      await act(async () => { workspaceViews.removeOwner('test.header'); useWorkspaceSessionsStore.setState({ sessions: {} }); });
+    }
+  });
+
   it('does not expose the retired project picker in the header', async () => {
     const { Header } = await loadHeader();
     const render = () => renderToStaticMarkup(
