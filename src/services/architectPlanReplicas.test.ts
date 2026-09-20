@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
 import type { Project, ProjectGroup } from '../types';
-import { registerAppStateGetter } from './appStateRuntime';
+import { installArchitectPlanPorts, type ArchitectPlanServiceAppState } from './architectPlanReadContext';
+const registerAppStateGetter = (getAppState: () => unknown) => installArchitectPlanPorts({
+  getAppState: () => getAppState() as ArchitectPlanServiceAppState,
+});
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
 
 type MockAppState = {

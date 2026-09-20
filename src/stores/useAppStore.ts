@@ -1,3 +1,5 @@
+import type { SettingsTab } from '../domains/shell/settings';
+import { isWorkspaceMode as isAppMode, workspaceDefinitions } from '../domains/shell/workspace';
 import { create } from "zustand";
 import { useChatStore } from "./useChatStore";
 import { useTaskStore } from "./useTaskStore";
@@ -104,19 +106,7 @@ import type {
 } from "../services/tauriIpc";
 
 export type TaskSortOption = "status" | "date" | "title" | "project";
-export type SettingsTab =
-  | "general"
-  | "notifications"
-  | "appearance"
-  | "providers"
-  | "models"
-  | "speech"
-  | "tools"
-  | "skills"
-  | "shortcuts"
-  | "prompts"
-  | "architect"
-  | "diagnostics";
+export type { SettingsTab } from '../domains/shell/settings';
 export type UiZoomMode = "auto" | "override";
 export type MetadataSyncState = "clean" | "pending" | "failed" | "conflict";
 export type { MetadataMissingUpstreamPolicy };
@@ -380,11 +370,6 @@ const insertProjectInGroups = (
 
 const normalizePath = (value: string): string =>
   value.replace(/\\/g, "/").replace(/\/$/, "");
-
-const isAppMode = (value: unknown): value is AppMode =>
-  value === "Architect" ||
-  value === "Implement" ||
-  value === "Chat";
 
 const isLegacyPlaceholderWorkspacePath = (path?: string): boolean => {
   const normalized = normalizePath(path || "");
@@ -1746,7 +1731,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   rightPanelWidth: 320,
   isLeftPanelOpen: true,
   isRightPanelOpen: true,
-  enabledModes: ["Architect", "Implement", "Chat"],
+  enabledModes: Object.values(workspaceDefinitions).map(({ semanticMode }) => semanticMode),
   uiZoomMode: "auto",
   uiZoomLevel: 1,
   codeOverflowMode: "wrap",
@@ -4981,7 +4966,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       const resolvedMode: AppMode = isAppMode(sessionMode)
         ? sessionMode
-        : ["Architect", "Implement", "Chat"].includes(lastActiveMode)
+        : isAppMode(lastActiveMode)
           ? lastActiveMode
           : "Implement";
       const resolvedAgentType: AgentType = ["build", "plan"].includes(

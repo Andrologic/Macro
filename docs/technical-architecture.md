@@ -196,6 +196,10 @@ Le frontend est organisé autour de :
 
 L'application n'utilise pas un routage classique basé sur des pages.
 
+Les définitions d'espaces, sessions et contributions du shell sont décrites dans
+[Workspace and shell contributions](workspace-shell.md). Consulter ce contrat
+avant d'ajouter une vue interne, un raccourci ou une entrée de réglages.
+
 Le cœur de l'interface repose sur une configuration centralisée qui affecte facultativement les emplacements gauche, centre et droit selon le mode actif. Le routeur, le shell, le Header et le préchargement consultent tous cette même configuration.
 
 Lorsqu'un emplacement est absent, aucun conteneur, largeur, séparateur, bouton d'ouverture ou préchargement ne lui est associé. Le mode Architect utilise les trois emplacements : navigation projets/plans à gauche, conversation au centre et stratégie à droite.
@@ -414,13 +418,15 @@ En mode Implement, l'en-tête de la conversation dérive le contexte visible de 
 
 ### 6.3 `useTaskStore`
 
-`useTaskStore` gère :
+`useTaskStore` conserve le catalogue des tâches, la sélection et les projections
+visibles des opérations. Le démarrage, la préparation, les commandes projet et
+la revue/merge s'exécutent dans des services auxquels le store fournit des ports
+typés. Les mutations de statut d'un plan calculent leur résultat sous le verrou
+par branche du service Plans.
 
-- les tâches dérivées de la stratégie
-- leur activation
-- leurs transitions d'état
-- la relation entre tâche, branche et worktree
-- la persistance du statut d'exécution dans les metadata du plan
+[Workflows des tâches et des plans](task-plan-workflows.md) décrit la propriété
+de l'état, les raccords de composition, les protections de concurrence, la
+reprise après effets durables et les responsabilités qui restent dans l'UI.
 
 ### 6.4 Stores spécialisés
 

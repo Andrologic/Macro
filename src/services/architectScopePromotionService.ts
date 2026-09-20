@@ -1,6 +1,5 @@
 import type { PlanNode, PredictedBranch, Project, ProjectGitFlowSettings, ProjectGroup } from '../types';
 import i18n from '../i18n';
-import { useAppStore } from '../stores/useAppStore';
 import {
   collectRenderedPlanPredictedBranchDescriptors,
   getPredictedBranchLogicalIdentity,
@@ -14,7 +13,7 @@ import { provisionPlanBranches, type ProvisionPlanBranchesResult } from './archi
 import { renderArchitectPlanIntegrationBranchName } from './architectPlanKinds';
 import { resolveProjectExecutionMode } from './projectExecutionMode';
 
-interface ArchitectScopePromotionAppState {
+export interface ArchitectScopePromotionAppState {
   projectGroups: ProjectGroup[];
   getProjectById: (projectId: string) => Project | undefined;
 }
@@ -269,11 +268,24 @@ export const createArchitectScopePromotionService = (
   };
 };
 
+let defaultScopePromotionPorts: Pick<ArchitectScopePromotionDependencies, 'getAppState'> | null = null;
+
+export const installArchitectScopePromotionPorts = (
+  ports: Pick<ArchitectScopePromotionDependencies, 'getAppState'>,
+): (() => void) => {
+  const previous = defaultScopePromotionPorts;
+  defaultScopePromotionPorts = ports;
+  return () => { if (defaultScopePromotionPorts === ports) defaultScopePromotionPorts = previous; };
+};
+
 export const promoteArchitectTaskContextProjects = (
   params: PromoteArchitectTaskContextProjectsParams,
 ): Promise<PromoteArchitectTaskContextProjectsResult> =>
   createArchitectScopePromotionService({
-    getAppState: () => useAppStore.getState(),
+    getAppState: () => {
+      if (!defaultScopePromotionPorts) throw new Error('Plans scope promotion project ports have not been installed.');
+      return defaultScopePromotionPorts.getAppState();
+    },
     getArchitectPlan,
     updateArchitectPlan,
     provisionPlanBranches,

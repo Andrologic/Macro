@@ -1,5 +1,4 @@
 import type { PlanNode, PredictedBranch, Project, ProjectGitFlowSettings, ProjectGroup } from '../types';
-import { useAppStore } from '../stores/useAppStore';
 import * as tauriIpc from './tauriIpc';
 import {
   archiveArchitectPlan,
@@ -349,6 +348,58 @@ export interface PlanFinalizationBlockedError extends Error {
   blockedRepositories: PlanReviewRepositoryResult[];
 }
 
+export interface PlanFinalizationRecovery {
+  planId: string;
+  branchName: string;
+  outcome: 'partial' | 'recovery_required';
+  direction: 'forward';
+  phase: PlanLifecycleSaga['phase'];
+  repositories: PlanFinalizationRepositoryCheckpoint[];
+  nextActions: Array<'reconcile_git' | 'write_metadata' | 'cleanup_resources' | 'commit_metadata' | 'close_journal'>;
+}
+
+export interface PlanFinalizationRecoveryError extends Error {
+  recovery: PlanFinalizationRecovery;
+}
+
+export const isPlanFinalizationRecoveryError = (error: unknown): error is PlanFinalizationRecoveryError =>
+  error instanceof Error && 'recovery' in error &&
+  (error as PlanFinalizationRecoveryError).recovery?.direction === 'forward';
+
+/** Read durable checkpoints, including after the originating service has restarted.
+ * A pending merge can already be durable in Git; recovery must reconcile it.
+ */
+export const readPlanFinalizationRecovery = async (params: {
+  branchName: string;
+  planId: string;
+}): Promise<PlanFinalizationRecovery | null> => {
+  const sagas = (await loadPlanLifecycleSagas()).filter((saga) =>
+    saga.branchName === params.branchName && saga.planId === params.planId);
+  const finalization = sagas.find((saga) => saga.operation === 'finalize');
+  const archive = sagas.find((saga) => saga.operation === 'archive' && saga.requiresMetadataCommit);
+  const saga = finalization ?? archive;
+  if (!saga) return null;
+  const repositories = finalization?.finalizationRepositories ?? [];
+  const phase = archive?.phase ?? saga.phase;
+  const nextActions: PlanFinalizationRecovery['nextActions'] = archive
+    ? phase === 'metadata_committed' ? ['close_journal'] : phase === 'metadata_commit_pending' || phase === 'git_cleanup_complete'
+      ? ['commit_metadata'] : ['cleanup_resources', 'commit_metadata']
+    : phase === 'prepared'
+      ? ['reconcile_git', 'write_metadata', 'cleanup_resources', 'commit_metadata']
+      : phase === 'git_merges_complete'
+        ? ['write_metadata', 'cleanup_resources', 'commit_metadata']
+        : ['cleanup_resources', 'commit_metadata'];
+  return {
+    ...params,
+    outcome: archive || phase !== 'prepared' || repositories.some((repo) => repo.baseCommitAfterMerge)
+      ? 'partial' : 'recovery_required',
+    direction: 'forward',
+    phase,
+    repositories,
+    nextActions,
+  };
+};
+
 interface ResolvedProjectRepository {
   projectId: string;
   repoPath: string;
@@ -445,7 +496,7 @@ type ArchitectGitFlowTauriDeps = Pick<
   workspaceRenewPlanLifecycleLock?: (leaseId: string) => Promise<void>;
 };
 
-interface ArchitectGitFlowAppState {
+export interface ArchitectGitFlowAppState {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   standaloneProjects?: ProjectGroup['projects'];
@@ -470,9 +521,22 @@ export interface ArchitectGitFlowDependencies {
   getGitFlowBaseBranch: typeof getGitFlowBaseBranch;
 }
 
+let defaultGitFlowPorts: Partial<ArchitectGitFlowDependencies> = {};
+
+export const installArchitectGitFlowPorts = (ports: Partial<ArchitectGitFlowDependencies>): (() => void) => {
+  const previous = defaultGitFlowPorts;
+  defaultGitFlowPorts = ports;
+  defaultArchitectGitFlowService = null;
+  return () => {
+    if (defaultGitFlowPorts !== ports) return;
+    defaultGitFlowPorts = previous;
+    defaultArchitectGitFlowService = null;
+  };
+};
+
 const getDefaultArchitectGitFlowDependencies = (): ArchitectGitFlowDependencies => ({
   tauri: tauriIpc,
-  getAppState: () => useAppStore.getState(),
+  getAppState: () => { throw new Error('Plans GitFlow project ports have not been installed.'); },
   getArchitectPlan,
   updateArchitectPlan,
   archiveArchitectPlan,
@@ -480,6 +544,7 @@ const getDefaultArchitectGitFlowDependencies = (): ArchitectGitFlowDependencies 
   deleteArchitectPlan,
   commitArchitectPlanMetadata,
   getGitFlowBaseBranch,
+  ...defaultGitFlowPorts,
 });
 
 const withPlanLifecycleLock = async <T>(
@@ -2875,9 +2940,25 @@ export const createArchitectGitFlowService = (
   const finalizePlanIntoBaseBranchWithDeps = async (
     params: Parameters<typeof finalizePlanIntoBaseBranchUnlocked>[0],
   ): ReturnType<typeof finalizePlanIntoBaseBranchUnlocked> =>
-    withPlanLifecycleLock(deps, params.branchName, params.planId, () =>
-      finalizePlanIntoBaseBranchUnlocked(params)
-    );
+    withPlanLifecycleLock(deps, params.branchName, params.planId, async () => {
+      try {
+        return await finalizePlanIntoBaseBranchUnlocked(params);
+      } catch (error) {
+        // Preserve blocked-error identity and existing rejection semantics for UI
+        // callers, while exposing durable partial progress to headless callers.
+        const failure = error instanceof Error ? error : new Error(toServiceError(error).message);
+        try {
+          const recovery = await readPlanFinalizationRecovery(params);
+          if (recovery) Object.assign(failure, { recovery });
+        } catch (journalError) {
+          devLogger.warn('[architectGitFlow] Could not read finalization recovery checkpoints.', {
+            planId: params.planId,
+            error: toServiceError(journalError).message,
+          });
+        }
+        throw failure;
+      }
+    });
 
   const deletePlanAndCleanupBranchesUnlocked = async (params: {
     branchName: string;
@@ -3132,6 +3213,7 @@ export const createArchitectGitFlowService = (
     mergeFeatureBranchIntoPlanBranch: mergeFeatureBranchIntoPlanBranchWithDeps,
     loadPlanReview: loadPlanReviewWithDeps,
     finalizePlanIntoBaseBranch: finalizePlanIntoBaseBranchWithDeps,
+    readPlanFinalizationRecovery,
     cleanupPlanBranches: cleanupPlanBranchesWithDeps,
     archivePlanAndCleanupBranches: archivePlanAndCleanupBranchesWithDeps,
     restorePlanAndProvisionBranches: restorePlanAndProvisionBranchesWithDeps,
