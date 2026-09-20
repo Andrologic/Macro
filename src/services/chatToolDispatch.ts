@@ -4,7 +4,7 @@ import { normalizeArchitectToolId } from "./architectToolNames";
 import { normalizeLegacyToolExecutionResult } from "./toolResultNormalization";
 
 export interface ChatToolDispatchPorts {
-  execute(operation: FrozenToolCallContext, name: string, args: Record<string, unknown>, callId?: string): Promise<ToolCallResolution | string | void>;
+  execute(operation: FrozenToolCallContext, name: string, args: Record<string, unknown>, callId?: string, isCurrent?: () => boolean): Promise<ToolCallResolution | string | void>;
   preserve(operation: FrozenToolCallContext, name: string, callId: string | undefined, resolution: ToolCallResolution | string | void): Promise<ToolCallResolution | string | void>;
   boundError(operation: FrozenToolCallContext, name: string, callId: string | undefined, error: unknown): Promise<unknown>;
 }
@@ -27,7 +27,7 @@ export function createChatToolDispatch(
     const normalizedName = normalizeArchitectToolId(toolName);
     let resolution: ToolCallResolution | string | void;
     try {
-      resolution = await ports.execute(operation, toolName, args, toolCallId);
+      resolution = await ports.execute(operation, toolName, args, toolCallId, isCurrent);
     } catch (error) {
       if (!isCurrent()) return ABORTED;
       const bounded = await ports.boundError(operation, normalizedName, toolCallId, error);

@@ -44,6 +44,10 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     owner.set(id, {
       phase: 'preparing', ...current, assistantMessageId: assistantId, lastError: null,
     }, { globalLastError: null });
+  const sentWithoutAssistant = (message: ChatMessage): ChatSendResult => ({
+    status: 'sent', conversationId, turnId: lease?.turnId ?? '',
+    userMessageId: message.id, assistantMessageId: null,
+  });
   const publishUser = (message: ChatMessage) => projection.publishUser(message, {
     images, contextRefs, clearComposerRevision,
   });
@@ -125,6 +129,9 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     if (firstManualFeatureMessage) {
       userMessage = await saveUser(current);
       publishUser(userMessage);
+      if (!isCurrent()) {
+        return sentWithoutAssistant(userMessage);
+      }
       tasks.beginLaunch({ conversationId, taskId: resolvedTaskId, userMessageId: userMessage.id, sessionId: current.sessionId });
     }
     if (mode === 'Implement' && resolvedTaskId) {
@@ -146,28 +153,33 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       userMessage = await saveUser(current);
     }
     const persistedUserMessage = userMessage;
+    const returnSavedUser = () => {
+      if (!firstManualFeatureMessage) publishUser(persistedUserMessage);
+      return sentWithoutAssistant(persistedUserMessage);
+    };
+    if (!isCurrent()) return returnSavedUser();
     if (messages.hasInterruptedApproval(conversationId)) {
       await messages.clearApprovalRecovery(conversationId)
         .catch((error) => projection.approvalRecoveryError(toServiceError(error).message));
+      if (!isCurrent()) return returnSavedUser();
       projection.clearSecurity(conversationId);
     }
-    const sentWithoutAssistant = (): ChatSendResult => ({
-      status: 'sent', conversationId, turnId: current.turnId,
-      userMessageId: persistedUserMessage.id, assistantMessageId: null,
-    });
     if (!isCurrent()) {
-      if (!firstManualFeatureMessage) publishUser(persistedUserMessage);
-      return sentWithoutAssistant();
+      return returnSavedUser();
     }
     if (!firstManualFeatureMessage) publishUser(persistedUserMessage);
     if (userCountBeforeSend === 0 && !finalizedDraft) {
       let skipMetadata = false;
       if (architectPlan) {
         const bound = await preparation.bindArchitectConversation({ architectPlan, conversationId });
+        if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
         if (!bound) skipMetadata = true;
-        else await preparation.syncArchitectMetadata({
-          branchName: architectPlan.targetBranch, planId: architectPlan.planId, conversationId, reason: 'metadata_prefix',
-        });
+        else {
+          await preparation.syncArchitectMetadata({
+            branchName: architectPlan.targetBranch, planId: architectPlan.planId, conversationId, reason: 'metadata_prefix',
+          });
+          if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+        }
       }
       if (!skipMetadata) void preparation.generateMetadata({ ...model, conversationId, firstUserContent: content, architectPlan });
     }
@@ -180,7 +192,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),
       };
       const launch = await stream.prepare(request);
-      if (!isCurrent()) return sentWithoutAssistant();
+      if (!isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       timeline('compaction_done', { conversationId, providerId, providerType: providerForUse.providerType });
       let assistant: ChatMessage;
       try {
@@ -194,7 +206,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
         if (owner.latestSession(conversationId) === current.sessionId) {
           await deleteMessagesAfter(messages.persistence, conversationId, persistedUserMessage.id).catch(() => undefined);
         }
-        return sentWithoutAssistant();
+        return sentWithoutAssistant(persistedUserMessage);
       }
       assistantMessageId = assistant.id;
       projection.publishAssistant(assistant, mode, agentType);
@@ -207,7 +219,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }, launch);
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
     } catch (error) {
-      if (error instanceof ChatTurnSupersededError && !isCurrent()) return sentWithoutAssistant();
+      if (error instanceof ChatTurnSupersededError && !isCurrent()) return sentWithoutAssistant(persistedUserMessage);
       launchError = error;
       if (recovery) await tasks.rollbackDraft(recovery);
       throw error;

@@ -492,6 +492,8 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
     sent.scopedTurnConfiguration.projectIds.push("b-project");
     sent.scopedTurnConfiguration.focusProjectId = "b-project";
     sent.allowedToolIds.push("write");
+    sent.architectPlanAtSend!.planId = "b-plan";
+    sent.architectPlanAtSend!.targetBranch = "branch-b";
     tool.resolve("A file contents");
     expect(await toolResult).toBe("A file contents");
 
@@ -499,7 +501,7 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
       conversationId: "a", sessionId: sent.sessionId, turnId: sent.assistantMessage.turn_id,
       assistantMessageId: sent.assistantMessage.id, mode: "Architect", taskId: sent.resolvedTaskId,
       executionContext: originalContext, scopedTurnConfiguration: originalConfiguration,
-      allowedToolIds: ["read"],
+      allowedToolIds: ["read"], architectPlanAtSend: originalPlan,
       signal: sent.abortController!.signal,
     };
     expect(h.execute.mock.calls[0][0]).toMatchObject(expectedOperation);

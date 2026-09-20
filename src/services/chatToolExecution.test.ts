@@ -5,6 +5,11 @@ import type { FrozenToolCallContext } from "./chatStreamContracts";
 import type { ScopedTurnConfiguration } from "./configurationClient";
 import type { TerminalSessionDto } from "./tauriIpc";
 import { EMPTY_CONVERSATION_RUNTIME } from "../domains/chat/runtimeState";
+import { handleArchitectToolCall } from "./architectToolRuntime";
+import type { ArchitectPlanRecord } from "./architectPlanService";
+import { createChatTurnRuntime } from "./chatTurnRuntime";
+import { createChatToolDispatch } from "./chatToolDispatch";
+import type { ConversationRuntimeState } from "../types";
 import { buildMCPToolId } from "./mcp/identifiers";
 
 // Mock only IO services. The runtime imports no store or UI, even without these mocks.
@@ -172,7 +177,10 @@ describe("chat tool execution policy and frozen ownership", () => {
     f.operation.allowedToolIds = ["plan_get"];
     f.ports.handlers.architect = mock(async () => "plan");
     expect(await f.execute(f.operation, "get_plan", {}, "alias")).toBe("plan");
-    expect(f.ports.handlers.architect).toHaveBeenCalledWith({ assistantMessageId: "assistant", toolName: "plan_get", args: {} });
+    expect(f.ports.handlers.architect).toHaveBeenCalledWith({
+      assistantMessageId: "assistant", toolName: "plan_get", args: {},
+      turnContext: { planId: null, targetBranch: "develop", projectId: "project", groupId: null, isCurrent: expect.any(Function) },
+    });
   });
 
   test("suppresses late source marking and checks cancellation between legacy handlers", async () => {
@@ -339,4 +347,157 @@ describe("agent terminal isolation", () => {
     expect(f.ports.terminal.killSession).toHaveBeenCalledWith("terminal", expect.any(String));
     expect(f.ports.terminal.killSession).toHaveBeenCalledTimes(1);
   });
+});
+
+function architectFixture() {
+  const f = setup("plan_update");
+  f.operation.mode = "Architect";
+  f.operation.architectPlanAtSend = { planId: "plan-a", targetBranch: "branch-a" };
+  f.operation.executionContext.branchName = "branch-a";
+  let selectedBranch = "branch-a";
+  const plan: ArchitectPlanRecord = {
+    id: "plan-a", slug: "plan-a", title: "Plan A", label: "Plan A", description: "",
+    planKind: "feature", status: "draft", targetBranch: "branch-a",
+    targetBranchesByProjectId: { project: "branch-a" }, conversationId: "conversation",
+    projectId: "project", projectIds: ["project"], contextProjectIds: [], expectedProjectIds: ["project"],
+    createdAt: "2026-01-01", updatedAt: "2026-01-01", revision: 1, nodes: [], predictedBranches: [],
+  };
+  type ArchitectParams = Parameters<typeof handleArchitectToolCall>[0];
+  const getPlan = mock<ArchitectParams["planService"]["getArchitectPlan"]>(async () => plan);
+  const update = mock<ArchitectParams["planService"]["updateArchitectPlan"]>(async input => ({ ...plan, description: input.description ?? plan.description }));
+  const activate = mock(async () => true);
+  const preview = mock(() => {});
+  const ensure = mock(async () => ({ conversationId: "conversation", restoredTranscript: false, createdConversation: false }));
+  const refresh = mock(async () => {});
+  f.ports.handlers.architect = params => handleArchitectToolCall({
+    ...params,
+    planService: {
+      createArchitectPlan: async () => plan, getArchitectPlan: getPlan, updateArchitectPlan: update,
+      resolveTargetBranch: value => String(value), getGitFlowBaseBranch: () => "develop",
+      isArchitectPlanSlugAvailable: async () => true, isArchitectPlanSlugMutable: () => true,
+      listArchitectPlans: async () => ({ activePlanId: "plan-a", plans: [] }),
+      resolvePlanProjectContextId: () => "project",
+    },
+    strategyService: {
+      prepareStrategyMutationPreview: () => { throw new Error("Unexpected strategy preview"); },
+      applyStrategyMutationPreview: async () => { throw new Error("Unexpected strategy mutation"); },
+      guardDeps: {
+        getArchitectPlan: getPlan, updateArchitectPlan: update,
+        provisionPlanBranches: async () => { throw new Error("Unexpected branch provisioning"); },
+      },
+    },
+    getAppState: () => ({
+      activeArchitectPlanId: "plan-a", activePlanContext: { targetBranch: selectedBranch },
+      selectedProjectId: "project", selectedGroupId: null, projectGroups: [], standaloneProjects: [],
+      getProjectById: () => undefined, activateArchitectPlan: activate, setStrategyMutationPreview: preview,
+    }),
+    getTaskState: () => ({ tasks: [], refreshFromPlan: refresh }),
+    ensureArchitectConversationForPlan: ensure,
+  });
+  return { ...f, plan, getPlan, update, activate, preview, ensure, refresh,
+    select: (branch: string) => { selectedBranch = branch; } };
+}
+
+describe("Architect turn authority with the real handler", () => {
+  test("keeps branch A after selecting branch B without reactivating A", async () => {
+    const f = architectFixture();
+    f.select("branch-b");
+    await f.run({ plan_id: "plan-a", description: "new description" });
+    expect(f.update.mock.calls[0]?.[0].branchName).toBe("branch-a");
+    expect(f.activate).not.toHaveBeenCalled();
+    expect(f.ensure).not.toHaveBeenCalled();
+  });
+
+  test("hydrates the same selected plan after a current write", async () => {
+    const f = architectFixture();
+    await f.run({ plan_id: "plan-a", description: "new description" });
+    expect(f.update).toHaveBeenCalledTimes(1);
+    expect(f.activate).toHaveBeenCalledTimes(1);
+    expect(f.ensure).toHaveBeenCalledTimes(1);
+  });
+
+  for (const invalidation of ["abort", "replacement"] as const) {
+    test(`blocks the write after ${invalidation} during lookup and leaves another session active`, async () => {
+      const f = architectFixture();
+      const other = architectFixture();
+      other.operation.sessionId = other.runtime.sessionId = "other-session";
+      const read = deferred<ArchitectPlanRecord>();
+      f.getPlan.mockImplementation(() => read.promise);
+      const running = f.run({ plan_id: "plan-a", description: "new description" });
+      await checkpoint();
+      expect(f.getPlan).toHaveBeenCalledTimes(1);
+      if (invalidation === "abort") f.abort.abort();
+      else f.runtime.sessionId = "replacement";
+      read.resolve(f.plan);
+      expect(await running).toMatchObject({ errorKind: "aborted" });
+      expect(f.update).not.toHaveBeenCalled();
+      expect(f.activate).not.toHaveBeenCalled();
+      expect(f.ensure).not.toHaveBeenCalled();
+      expect(f.preview).not.toHaveBeenCalled();
+      await other.run({ plan_id: "plan-a", description: "other session" });
+      expect(other.update).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  test("does not change the selection when it moves while a write is pending", async () => {
+    const f = architectFixture();
+    const write = deferred<ArchitectPlanRecord>();
+    f.update.mockImplementation(() => write.promise);
+    const running = f.run({ plan_id: "plan-a", description: "new description" });
+    await checkpoint();
+    f.select("branch-b");
+    write.resolve(f.plan);
+    await running;
+    expect(f.update.mock.calls[0]?.[0].branchName).toBe("branch-a");
+    expect(f.activate).not.toHaveBeenCalled();
+    expect(f.ensure).not.toHaveBeenCalled();
+  });
+
+  test("strategy lookup uses the captured plan even when another plan is selected", async () => {
+    const f = architectFixture();
+    f.operation.allowedToolIds = ["strategy_get"];
+    f.select("branch-b");
+    await f.execute(f.operation, "strategy_get", {});
+    expect(f.getPlan).toHaveBeenCalledWith("branch-a", "plan-a");
+  });
+
+  test("preserves an already-started write but skips UI hydration after Stop", async () => {
+    const f = architectFixture();
+    const write = deferred<ArchitectPlanRecord>();
+    f.update.mockImplementation(() => write.promise);
+    const running = f.run({ plan_id: "plan-a", description: "new description" });
+    await checkpoint();
+    expect(f.update).toHaveBeenCalledTimes(1);
+    f.abort.abort();
+    write.resolve({ ...f.plan, description: "new description" });
+    expect(await running).toMatchObject({ errorKind: "aborted" });
+    expect(f.activate).not.toHaveBeenCalled();
+    expect(f.ensure).not.toHaveBeenCalled();
+  });
+});
+
+test("a tool suspended in an old attempt cannot execute after the same turn is reclaimed", async () => {
+  const f = setup("write");
+  let state: ConversationRuntimeState = { ...f.runtime, phase: "preparing", abortController: f.abort };
+  const owner = createChatTurnRuntime({ state: {
+    read: () => state, project: (_id, next) => { state = next ?? EMPTY_CONVERSATION_RUNTIME; }, isDeleted: () => false,
+  }, cancelTransport: () => {}, settled: () => {} });
+  owner.rememberSession("conversation", "session");
+  const identity = { conversationId: "conversation", sessionId: "session", turnId: "turn", assistantMessageId: "assistant" };
+  f.ports.runtime.read = () => state;
+  const acceptsOld = owner.claimStream(identity, f.abort)!;
+  const gate = deferred<boolean>();
+  f.ports.policy.isSourceToolEnabled = () => gate.promise;
+  const dispatch = createChatToolDispatch(f.operation, {
+    execute: f.execute, preserve: async (_op, _name, _id, value) => value,
+    boundError: async (_op, _name, _id, error) => error,
+  }, acceptsOld, () => {});
+  const pending = dispatch("write", { path: "file.txt", content: "stale" }, "call");
+  state = { ...state, phase: "preparing" };
+  const acceptsNew = owner.claimStream(identity, f.abort)!;
+  expect(acceptsOld()).toBe(false);
+  expect(acceptsNew()).toBe(true);
+  gate.resolve(true);
+  expect(await pending).toMatchObject({ errorKind: "aborted" });
+  expect(f.executor.executeWorkspaceTool).not.toHaveBeenCalled();
 });

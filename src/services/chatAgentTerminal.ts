@@ -14,7 +14,10 @@ export async function executeChatAgentTerminal(
   normalizedToolName: string,
   args: Record<string, unknown>,
   signal: AbortSignal,
+  isCurrent: () => boolean = () => true,
 ): Promise<string> {
+  const abortedResult = "Tool execution aborted";
+  const isCurrentOperation = () => !signal.aborted && isCurrent();
   const serializeAgentTerminalSession = <T extends object>(session: T) => {
     const agentSession = { ...session } as Record<string, unknown>;
     delete agentSession.project_id;
@@ -36,6 +39,8 @@ export async function executeChatAgentTerminal(
     return { session, error: null };
   };
 
+  if (!isCurrentOperation()) return abortedResult;
+
   if (normalizedToolName === "terminal_create_session") {
     const session = await terminal.createSession({
       projectId: null,
@@ -51,6 +56,7 @@ export async function executeChatAgentTerminal(
   }
 
   const agentSession = await readAgentTerminalSession(sessionId);
+  if (!isCurrentOperation()) return abortedResult;
   if (agentSession.error) {
     return `Error executing ${normalizedToolName}: ${agentSession.error}`;
   }
@@ -60,6 +66,7 @@ export async function executeChatAgentTerminal(
     if (!command.trim()) {
       return "Missing command argument for terminal_run.";
     }
+    if (!isCurrentOperation()) return abortedResult;
     const executionId = createTerminalToolExecutionId();
     const runPromise = terminal.runCommand({
       sessionId,
@@ -89,6 +96,7 @@ export async function executeChatAgentTerminal(
     return serializeAgentTerminalSession(agentSession.session);
   }
 
+  if (!isCurrentOperation()) return abortedResult;
   const session = await terminal.killSession(sessionId);
   return serializeAgentTerminalSession(session);
 }

@@ -216,6 +216,7 @@ interface ArchitectToolPlanService {
 }
 
 interface ArchitectToolStrategyService {
+  persistPreview?: typeof persistArchitectPlanStrategyPreview;
   prepareStrategyMutationPreview: (
     params: PrepareStrategyMutationPreviewParams,
   ) => StrategyMutationPreview;
@@ -226,7 +227,17 @@ interface ArchitectToolStrategyService {
   guardDeps: StrategyMutationGuardDeps;
 }
 
+interface ArchitectToolTurnContext {
+  planId: string | null;
+  targetBranch: string | null;
+  projectId: string | null;
+  groupId: string | null;
+  isCurrent: () => boolean;
+}
+
 interface ArchitectToolRuntimeDependencies {
+  /** Captured by chat at send time. Selection is only read to gate UI projections. */
+  turnContext?: ArchitectToolTurnContext;
   assistantMessageId: string;
   toolName: string;
   args: Record<string, unknown>;
@@ -992,7 +1003,7 @@ const executeStrategyMutation = async (params: {
     (strategyMutationRepairAttempts.get(repairAttemptKey) || 0) > 0;
 
   params.getAppState().setStrategyMutationPreview(null);
-  await persistArchitectPlanStrategyPreview({
+  await (params.strategyService.persistPreview ?? persistArchitectPlanStrategyPreview)({
     branchName: params.targetBranch,
     plan: params.activePlan,
     preview: null,
@@ -1023,7 +1034,7 @@ const executeStrategyMutation = async (params: {
 
     if (preview.requiresPreview) {
       params.getAppState().setStrategyMutationPreview(preview);
-      await persistArchitectPlanStrategyPreview({
+      await (params.strategyService.persistPreview ?? persistArchitectPlanStrategyPreview)({
         branchName: params.targetBranch,
         plan: params.activePlan,
         preview,
@@ -1042,7 +1053,7 @@ const executeStrategyMutation = async (params: {
       params.strategyService.guardDeps,
     );
     params.getAppState().setStrategyMutationPreview(null);
-    await persistArchitectPlanStrategyPreview({
+    await (params.strategyService.persistPreview ?? persistArchitectPlanStrategyPreview)({
       branchName: params.targetBranch,
       plan,
       preview: null,
@@ -1078,7 +1089,7 @@ const executeStrategyMutation = async (params: {
 
   strategyMutationRepairAttempts.delete(repairAttemptKey);
   params.getAppState().setStrategyMutationPreview(preview);
-  await persistArchitectPlanStrategyPreview({
+  await (params.strategyService.persistPreview ?? persistArchitectPlanStrategyPreview)({
     branchName: params.targetBranch,
     plan: params.activePlan,
     preview,
@@ -1089,9 +1100,93 @@ const executeStrategyMutation = async (params: {
   };
 };
 
+/** Bind IO admission to the turn, while allowing already-started writes to finish. */
+const bindArchitectTurn = (params: ArchitectToolRuntimeDependencies): ArchitectToolRuntimeDependencies => {
+  const context = params.turnContext;
+  if (!context) return params;
+  const assertCurrent = () => {
+    if (!context.isCurrent()) throw new Error("Tool execution aborted");
+  };
+  const guard = <Args extends unknown[], Result>(run: (...args: Args) => Promise<Result>) =>
+    async (...args: Args): Promise<Result> => {
+      assertCurrent();
+      const result = await run(...args);
+      assertCurrent();
+      return result;
+    };
+  let activePlanId = context.planId;
+  let targetBranch = context.targetBranch;
+  const canProject = () => {
+    const selected = params.getAppState();
+    return context.isCurrent() &&
+      selected.activeArchitectPlanId === activePlanId &&
+      (selected.activePlanContext?.targetBranch ?? null) === targetBranch &&
+      selected.selectedProjectId === context.projectId &&
+      selected.selectedGroupId === context.groupId;
+  };
+  const planService = params.planService;
+  const strategyService = params.strategyService;
+  return {
+    ...params,
+    planService: {
+      ...planService,
+      createArchitectPlan: guard(planService.createArchitectPlan),
+      getArchitectPlan: guard(planService.getArchitectPlan),
+      isArchitectPlanSlugAvailable: guard(planService.isArchitectPlanSlugAvailable),
+      listArchitectPlans: guard(planService.listArchitectPlans),
+      updateArchitectPlan: guard(planService.updateArchitectPlan),
+    },
+    strategyService: {
+      ...strategyService,
+      persistPreview: guard(strategyService.persistPreview ?? persistArchitectPlanStrategyPreview),
+      applyStrategyMutationPreview: guard(strategyService.applyStrategyMutationPreview),
+      guardDeps: {
+        getArchitectPlan: guard(strategyService.guardDeps.getArchitectPlan),
+        updateArchitectPlan: guard(strategyService.guardDeps.updateArchitectPlan),
+        provisionPlanBranches: guard(strategyService.guardDeps.provisionPlanBranches),
+      },
+    },
+    getAppState: () => {
+      assertCurrent();
+      const live = params.getAppState();
+      return {
+        ...live,
+        activeArchitectPlanId: activePlanId,
+        activePlanContext: targetBranch ? { id: activePlanId ?? undefined, targetBranch } : null,
+        selectedProjectId: context.projectId,
+        selectedGroupId: context.groupId,
+        activateArchitectPlan: async (planId, options) => {
+          if (!canProject()) return false;
+          const activated = await live.activateArchitectPlan(planId, options);
+          assertCurrent();
+          if (activated) {
+            activePlanId = planId;
+            targetBranch = options?.targetBranch ?? targetBranch;
+          }
+          return activated && canProject();
+        },
+        setStrategyMutationPreview: (preview) => {
+          if (canProject()) live.setStrategyMutationPreview(preview);
+        },
+      };
+    },
+    getTaskState: () => ({
+      ...params.getTaskState(),
+      refreshFromPlan: async () => {
+        if (canProject()) await params.getTaskState().refreshFromPlan();
+      },
+    }),
+    ensureArchitectConversationForPlan: async (input) => {
+      if (!canProject()) return { conversationId: null, restoredTranscript: false, createdConversation: false };
+      return guard(params.ensureArchitectConversationForPlan)(input);
+    },
+  };
+};
+
 export const handleArchitectToolCall = async (
   params: ArchitectToolRuntimeDependencies,
 ): Promise<string | undefined> => {
+  params = bindArchitectTurn(params);
   const {
     toolName,
     args,

@@ -74,6 +74,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
     toolName: string,
     args: Record<string, unknown>,
     toolCallId?: string,
+    acceptsAttempt: () => boolean = () => true,
   ): Promise<ToolCallResolution | string | void> => {
     const {
       conversationId,
@@ -85,7 +86,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
     } = operation;
     const isCurrentOperation = () => {
       const runtime = ports.runtime.read(conversationId);
-      return !signal.aborted &&
+      return !signal.aborted && acceptsAttempt() &&
         runtime.sessionId === operation.sessionId &&
         runtime.turnId === operation.turnId &&
         runtime.assistantMessageId === assistantMessageId &&
@@ -169,6 +170,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       normalizedToolName === "git_stash"
     ) {
       const workspaceToolExecutor = await ports.workspace.executor();
+      if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
       approvalScope = workspaceToolExecutor.resolveMutatingToolApprovalScope(
         normalizedToolName,
         args,
@@ -404,9 +406,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
     }
 
     const configToolResult = await handleConfigToolCall(normalizedToolName, args);
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
+    if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (configToolResult !== undefined) {
       return configToolResult;
     }
@@ -415,9 +415,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       normalizedToolName,
       args,
     );
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
+    if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (configVirtualScopeResult !== undefined) {
       return configVirtualScopeResult;
     }
@@ -427,9 +425,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       args,
       conversationId,
     );
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
+    if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (skillToolResult !== undefined) {
       return skillToolResult;
     }
@@ -486,6 +482,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       normalizedToolName,
       args,
     );
+    if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (taskTodoToolResult !== undefined) {
       return taskTodoToolResult;
     }
@@ -495,6 +492,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       normalizedToolName,
       args,
     );
+    if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (taskArtifactToolResult !== undefined) {
       return taskArtifactToolResult;
     }
@@ -503,7 +501,15 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       assistantMessageId,
       toolName: normalizedToolName,
       args,
+      turnContext: {
+        planId: operation.architectPlanAtSend?.planId ?? null,
+        targetBranch: operation.architectPlanAtSend?.targetBranch ?? executionContext.branchName,
+        projectId: executionContext.focusedProjectId ?? executionContext.projectId,
+        groupId: executionContext.groupId,
+        isCurrent: isCurrentOperation,
+      },
     }).catch((error) => {
+      if (!isCurrentOperation()) return undefined;
       if (!ports.policy.isPlanReplicaDivergence(error)) {
         throw error;
       }
@@ -527,12 +533,13 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       ].join('\n');
     });
 
+    if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (architectToolResult !== undefined) {
       return architectToolResult;
     }
 
     if (AGENT_TERMINAL_TOOL_IDS.has(normalizedToolName)) {
-      return executeChatAgentTerminal(ports.terminal, normalizedToolName, args, signal);
+      return executeChatAgentTerminal(ports.terminal, normalizedToolName, args, signal, isCurrentOperation);
     }
 
     if (
@@ -548,6 +555,7 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       normalizedToolName.startsWith("git_")
     ) {
       const workspaceToolExecutor = await ports.workspace.executor();
+      if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
       const mode = modeAtSend;
       let promotedProjectIdsForTool: string[] = [];
 

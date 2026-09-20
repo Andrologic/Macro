@@ -91,7 +91,7 @@ function fixture(mode: ChatSendSnapshot['mode'] = 'Chat') {
       finalizeDraft: mock(async () => { events.push('finalize'); task.draft = false; return { taskId: 'task-1' }; }),
       assertReady: mock(async () => task), assertExecutionContextReady: () => {},
       rollbackDraft: mock(async () => { events.push('rollback'); task.draft = true; }),
-      beginLaunch: (params) => { events.push('launch'); launch = params; },
+      beginLaunch: mock((params) => { events.push('launch'); launch = params; }),
       setLaunchStep: (_id, _session, step) => { events.push(step); },
       completeLaunch: mock(() => { events.push('complete'); }), readLaunch: () => launch,
       failLaunch: mock(() => { events.push('fail'); }),
@@ -153,6 +153,25 @@ describe('sendMessage use case without UI stores', () => {
     expect(f.ports.stream.prepare).not.toHaveBeenCalled();
   });
 
+  for (const invalidation of ['abort', 'owner'] as const) {
+    it(`keeps the first draft message but skips launch after ${invalidation} during saveUser`, async () => {
+      const f = fixture('Implement'); const original = f.createMessage.getMockImplementation()!;
+      f.createMessage.mockImplementation(async (...args) => {
+        const message = await original(...args);
+        if (invalidation === 'abort') f.stop();
+        else f.runtimes.set('conversation-1', { phase: 'preparing', sessionId: 'replacement', turnId: 'replacement' });
+        return message;
+      });
+      expect(await f.run()).toEqual({ status: 'sent', conversationId: 'conversation-1', turnId: 'turn-1', userMessageId: 'user-1', assistantMessageId: null });
+      expect(f.published.map((message) => message.role)).toEqual(['user']);
+      expect(f.ports.tasks.beginLaunch).not.toHaveBeenCalled();
+      expect(f.ports.tasks.finalizeDraft).not.toHaveBeenCalled();
+      expect(f.ports.tasks.rollbackDraft).not.toHaveBeenCalled();
+      expect(f.ports.tasks.assertReady).not.toHaveBeenCalled();
+      expect(f.ports.stream.start).not.toHaveBeenCalled();
+    });
+  }
+
   for (const replacement of [false, true]) {
     it(`cleans an orphan placeholder only if its session remains latest: replacement=${replacement}`, async () => {
       const f = fixture(); const original = f.createMessage.getMockImplementation()!;
@@ -213,6 +232,32 @@ describe('sendMessage use case without UI stores', () => {
     expect(f.ports.preparation.syncArchitectMetadata).not.toHaveBeenCalled();
     expect(f.ports.preparation.generateMetadata).not.toHaveBeenCalled();
   });
+
+  for (const phase of ['bind', 'sync'] as const) {
+    it(`keeps the published Architect message and skips later metadata effects when ${phase} is stopped`, async () => {
+      const f = fixture('Architect');
+      const entered = deferred();
+      const release = deferred();
+      if (phase === 'bind') {
+        f.ports.preparation.bindArchitectConversation = async () => {
+          entered.resolve(); await release.promise; return true;
+        };
+      } else {
+        f.ports.preparation.syncArchitectMetadata = async () => {
+          entered.resolve(); await release.promise;
+        };
+      }
+      const sending = f.run();
+      await entered.promise;
+      f.stop();
+      release.resolve();
+      expect(await sending).toEqual({ status: 'sent', conversationId: 'conversation-1', turnId: 'turn-1', userMessageId: 'user-1', assistantMessageId: null });
+      expect(f.published.map((message) => message.role)).toEqual(['user']);
+      expect(f.ports.preparation.generateMetadata).not.toHaveBeenCalled();
+      expect(f.ports.stream.prepare).not.toHaveBeenCalled();
+      if (phase === 'bind') expect(f.ports.preparation.syncArchitectMetadata).not.toHaveBeenCalled();
+    });
+  }
 
   it('reports interrupted approval cleanup errors while continuing the new turn', async () => {
     const f = fixture(); f.ports.messages.hasInterruptedApproval = () => true;

@@ -71,7 +71,7 @@ export interface ChatToolExecutionPorts {
     mcp: typeof callScopedMcpTool;
     taskTodo: TaskTool;
     taskArtifact: TaskTool;
-    architect(params: Pick<Parameters<typeof handleArchitectToolCall>[0], "assistantMessageId" | "toolName" | "args">): ReturnType<typeof handleArchitectToolCall>;
+    architect(params: Pick<Parameters<typeof handleArchitectToolCall>[0], "assistantMessageId" | "toolName" | "args" | "turnContext">): ReturnType<typeof handleArchitectToolCall>;
   };
   terminal: {
     cachedSession(id: string): TerminalSessionDto | undefined;

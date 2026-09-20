@@ -392,7 +392,12 @@ successeur et l'attente de fin suit les remplacements dus à la récupération.
 
 `chatStreamCompaction` garde le checkpoint provisoire d'un stream ;
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
-asynchrones et transmet le contexte figé avec son signal d'annulation.
+asynchrones et transmet le contexte figé avec son signal d'annulation. Le contrôle
+de tentative accompagne aussi l'exécuteur pendant ses attentes, puis les ports
+Architect et terminal avant chaque nouvelle opération. Architect résout sa cible
+implicite à partir du plan et de la branche capturés ; ses projections UI ne
+s'appliquent que si la sélection correspond encore au tour. Une écriture déjà
+engagée peut finir après Stop, sans lancer la projection suivante.
 `chatToolExecution` route les appels et contrôle leur politique ;
 `chatToolApproval` coordonne leur approbation durable et `chatAgentTerminal`
 gère les sessions terminal de l'agent. Les ports raccordent les effets des

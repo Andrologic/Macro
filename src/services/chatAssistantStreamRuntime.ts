@@ -79,6 +79,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
     const shouldAcceptStreamUpdate = ports.owner.claimStream(identity, abortController);
     if (!shouldAcceptStreamUpdate) return;
     const operation: FrozenToolCallContext = Object.freeze({
+          architectPlanAtSend: params.architectPlanAtSend,
           conversationId: params.conversationId,
           sessionId: params.sessionId,
           turnId: streamTurnId,
