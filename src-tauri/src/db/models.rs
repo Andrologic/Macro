@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(ts_rs::TS)]
 pub enum AgentRunStatus {
     Queued,
     Running,
@@ -52,7 +53,7 @@ impl FromStr for AgentRunStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct AgentRun {
     pub id: String,
     pub parent_conversation_id: String,
@@ -84,7 +85,7 @@ pub struct AgentRun {
     pub last_interrupted_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct CreateAgentRunInput {
     pub id: Option<String>,
     pub parent_conversation_id: String,
@@ -95,7 +96,7 @@ pub struct CreateAgentRunInput {
     pub model_metadata_json: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct AgentRunUsageInput {
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
@@ -105,14 +106,14 @@ pub struct AgentRunUsageInput {
     pub usage_json: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct CompleteAgentRunInput {
     pub result_text: Option<String>,
     pub result_json: Option<String>,
     pub usage: AgentRunUsageInput,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct FailAgentRunInput {
     pub error_code: Option<String>,
     pub error_message: String,
@@ -120,19 +121,19 @@ pub struct FailAgentRunInput {
     pub usage: AgentRunUsageInput,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct CancelAgentRunInput {
     pub reason: Option<String>,
     pub usage: AgentRunUsageInput,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 pub struct TimeOutAgentRunInput {
     pub reason: Option<String>,
     pub usage: AgentRunUsageInput,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct Conversation {
     pub id: String,
     pub title: String,
@@ -151,7 +152,7 @@ pub struct Conversation {
     pub is_pinned: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct Message {
     pub id: String,
     pub conversation_id: String,
@@ -170,6 +171,7 @@ pub struct Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct MessageSearchResult {
     pub message_id: String,
     pub conversation_id: String,
@@ -182,12 +184,13 @@ pub struct MessageSearchResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct MessageSearchPage {
     pub results: Vec<MessageSearchResult>,
     pub next_offset: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationCompactionStateRecord {
     pub conversation_id: String,
     pub up_to_message_id: String,
@@ -220,19 +223,19 @@ pub struct ConversationCompactionStateRecord {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ChatSnapshot {
     pub conversations: Vec<Conversation>,
     pub messages: Vec<Message>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ChatBootstrapSnapshot {
     pub conversations: Vec<Conversation>,
     pub messages_by_conversation_id: HashMap<String, Vec<Message>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationCitation {
     pub id: String,
     pub conversation_id: String,
@@ -254,7 +257,7 @@ pub struct ConversationCitation {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ConversationToolboxStateRecord {
     pub conversation_id: String,
     pub composer_context_refs_json: String,
@@ -262,7 +265,7 @@ pub struct ConversationToolboxStateRecord {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ArchitectPlanConversationSyncRecord {
     pub conversation_id: String,
     pub plan_id: String,
@@ -272,7 +275,7 @@ pub struct ArchitectPlanConversationSyncRecord {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProviderConfig {
     pub id: String,
     pub name: String,
@@ -291,7 +294,7 @@ pub struct ProviderConfig {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ts_rs::TS)]
 pub struct ProviderAuthMetadata {
     pub auth_status: Option<String>,
     pub auth_source: Option<String>,
@@ -300,7 +303,7 @@ pub struct ProviderAuthMetadata {
     pub token_expires_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct AiModel {
     pub id: String,
     pub provider_id: String,
@@ -324,7 +327,7 @@ pub struct AiModel {
     pub last_seen_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProviderSettings {
     pub provider_id: String,
     pub filter_free_models: bool,
@@ -333,6 +336,7 @@ pub struct ProviderSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SpeechProviderConfig {
     pub id: String,
     pub name: String,
@@ -346,19 +350,19 @@ pub struct SpeechProviderConfig {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct AppSettingRecord {
     pub key: String,
     pub value_json: String,
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct CompareAndSwapAppSettingResult {
     pub applied: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct TerminalTabRecord {
     pub id: String,
     pub kind: String,
@@ -379,7 +383,7 @@ pub struct TerminalTabRecord {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectContextStateRecord {
     pub project_id: String,
     pub group_id: Option<String>,
@@ -391,7 +395,7 @@ pub struct ProjectContextStateRecord {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct SessionContextStateRecord {
     pub selected_group_id: Option<String>,
     pub selected_project_id: Option<String>,
@@ -399,7 +403,7 @@ pub struct SessionContextStateRecord {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct CreateConversationInput {
     pub title: Option<String>,
     pub scope_mode: String,
@@ -411,7 +415,7 @@ pub struct CreateConversationInput {
     pub reasoning_effort: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct CreateMessageInput {
     pub id: Option<String>,
     pub conversation_id: String,
@@ -427,7 +431,7 @@ pub struct CreateMessageInput {
     pub completion_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ImportMessageInput {
     pub id: String,
     pub turn_id: Option<String>,
@@ -437,7 +441,7 @@ pub struct ImportMessageInput {
     pub completion_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct UpsertConversationCitationInput {
     pub id: String,
     pub conversation_id: String,
@@ -458,14 +462,14 @@ pub struct UpsertConversationCitationInput {
     pub timestamp: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct UpsertConversationToolboxStateInput {
     pub conversation_id: String,
     pub composer_context_refs_json: String,
     pub timestamp: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct UpsertArchitectPlanConversationSyncInput {
     pub conversation_id: String,
     pub plan_id: String,
@@ -474,7 +478,7 @@ pub struct UpsertArchitectPlanConversationSyncInput {
     pub message_count: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct UpdateProviderConfigInput {
     pub id: String,
     pub name: Option<String>,
@@ -485,7 +489,7 @@ pub struct UpdateProviderConfigInput {
     pub is_enabled: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct GitRepositoryRecord {
     pub id: String,
     pub project_id: String,
@@ -496,7 +500,7 @@ pub struct GitRepositoryRecord {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct GitWorktreeRecord {
     pub id: String,
     pub repo_id: String,
@@ -513,7 +517,7 @@ pub struct GitWorktreeRecord {
     pub is_prunable: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct CreateGitRepositoryInput {
     pub project_id: String,
     pub path: String,
@@ -521,7 +525,7 @@ pub struct CreateGitRepositoryInput {
     pub last_commit: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct CreateGitWorktreeInput {
     pub repo_id: String,
     pub project_id: String,
@@ -534,7 +538,7 @@ pub struct CreateGitWorktreeInput {
     pub is_prunable: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProviderModelInput {
     pub model_id: String,
     pub name: String,
@@ -552,7 +556,7 @@ pub struct ProviderModelInput {
     pub context_limits_updated_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct UpsertConversationCompactionStateInput {
     pub conversation_id: String,
     pub up_to_message_id: String,
@@ -583,7 +587,7 @@ pub struct UpsertConversationCompactionStateInput {
     pub last_trigger: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct InsertConversationCompactionEventInput {
     pub conversation_id: String,
     pub trigger: String,
@@ -598,7 +602,7 @@ pub struct InsertConversationCompactionEventInput {
     pub metadata_json: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct UpsertProjectContextStateInput {
     pub project_id: String,
     pub group_id: Option<String>,
@@ -609,14 +613,14 @@ pub struct UpsertProjectContextStateInput {
     pub implement_conversation_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct UpsertSessionContextStateInput {
     pub selected_group_id: Option<String>,
     pub selected_project_id: Option<String>,
     pub mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ReconcileProjectRegistryInput {
     pub valid_group_ids: Vec<String>,
     pub valid_project_ids: Vec<String>,
@@ -624,7 +628,7 @@ pub struct ReconcileProjectRegistryInput {
     pub selected_project_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct ProjectRegistryDbRepairReport {
     pub conversations_updated: usize,
     pub project_contexts_deleted: usize,

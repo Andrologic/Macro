@@ -15,12 +15,11 @@ use self::ids::{
     build_mcp_env_secret_id, build_mcp_env_secret_ref, build_mcp_oauth_client_secret_id,
     build_mcp_oauth_client_secret_ref, is_canonical_mcp_server_id, is_valid_mcp_env_key,
 };
-pub(crate) use self::ids::{parse_mcp_env_secret_ref, parse_mcp_oauth_client_secret_ref};
 use self::stdio::{call_stdio_tool, discover_stdio_tools};
 pub use self::types::{
-    McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpRuntimeKey,
-    McpRuntimeSelector, McpRuntimeServerSnapshot, McpRuntimeSnapshotDto, McpRuntimeStatus,
-    McpServerDto, McpToolDto, McpTransportDto,
+    McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpProtocolEra, McpProtocolMode,
+    McpRuntimeKey, McpRuntimeSelector, McpRuntimeServerSnapshot, McpRuntimeSnapshotDto,
+    McpRuntimeStatus, McpServerDto, McpToolDto, McpTransportDto,
 };
 use crate::commands::{command_error, CommandResult};
 use crate::config::ConfigManager;

@@ -1,0 +1,2 @@
+import type { Leaf } from "./Leaf";
+export type Child = { leaf: Leaf };

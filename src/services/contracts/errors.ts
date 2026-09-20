@@ -1,6 +1,7 @@
-export interface ServiceError {
+import type { CommandErrorPayload } from '../../types/generated/ipc';
+
+export interface ServiceError extends CommandErrorPayload {
   code: string;
-  message: string;
   details?: unknown;
 }
 

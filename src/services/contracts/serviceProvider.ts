@@ -1,3 +1,13 @@
+import type { OmitFields } from '../ipc/compatibility.types';
+import type {
+  McpCatalogDto,
+  McpProtocolEra,
+  McpRuntimeKey,
+  McpRuntimeSelector,
+  McpRuntimeServerSnapshot,
+  McpRuntimeSnapshotDto,
+  McpRuntimeStatus,
+} from '../../types/generated/ipc';
 import type {
   AppBootstrapDto,
   ChatCompletionRequestDto,
@@ -21,7 +31,6 @@ import type {
 import type {
   MCPServer,
   MCPTool,
-  MCPProtocolMode,
   ProjectAccessChangePreview,
   ProjectGitFlowDetection,
   ProjectGitFlowSettings,
@@ -42,56 +51,51 @@ import type {
 // (docs/mcp-dual-era-implementation-plan.md, sections 4.2, 7 and 8).
 
 export type { MCPProtocolMode } from '../../types';
-export type MCPProtocolEra = 'legacy' | 'modern';
-export type MCPRuntimeStatus =
-  | 'disconnected'
-  | 'probing'
-  | 'connecting'
-  | 'ready'
-  | 'reconnecting'
-  | 'failed';
+export type MCPProtocolEra = McpProtocolEra;
+export type MCPRuntimeStatus = McpRuntimeStatus;
 
 /**
  * Runtime identity used by frontend calls. The backend owns the resolved
  * server definition per config generation, so callers never transmit a full
  * server definition.
  */
-export interface MCPRuntimeKey {
-  serverId: string;
+export interface MCPRuntimeKey extends OmitFields<McpRuntimeKey, 'projectId' | 'projectIds'> {
   /** `null`/`undefined` targets the global scope; otherwise a project scope. */
-  projectId?: string | null;
+  projectId?: McpRuntimeKey['projectId'] | null;
   /** Sorted effective multi-project scope. Mutually exclusive with projectId. */
-  projectIds?: string[];
-  configGeneration: number;
+  projectIds?: McpRuntimeKey['projectIds'];
 }
 
-export interface MCPRuntimeSelector {
-  serverId: string;
-  /** Sorted effective project scope. An empty array targets global configuration. */
-  projectIds: string[];
-}
+export type MCPRuntimeSelector = McpRuntimeSelector;
 
-export interface MCPRuntimeServerSnapshot {
+// Frontend snapshots allow omitted nullable metadata and the adapted runtime key.
+export interface MCPRuntimeServerSnapshot extends OmitFields<
+  McpRuntimeServerSnapshot,
+  | 'key'
+  | 'requestedProtocolMode'
+  | 'negotiatedEra'
+  | 'negotiatedProtocolVersion'
+  | 'protocolDecisionReason'
+  | 'lastErrorCode'
+  | 'lastError'
+> {
   key: MCPRuntimeKey;
-  status: MCPRuntimeStatus;
-  requestedProtocolMode?: MCPProtocolMode | null;
-  negotiatedEra?: MCPProtocolEra | null;
-  negotiatedProtocolVersion?: string | null;
-  protocolDecisionReason?: string | null;
-  lastErrorCode?: string | null;
-  lastError?: string | null;
-  updatedAt: string;
+  requestedProtocolMode?: McpRuntimeServerSnapshot['requestedProtocolMode'] | null;
+  negotiatedEra?: McpRuntimeServerSnapshot['negotiatedEra'] | null;
+  negotiatedProtocolVersion?: McpRuntimeServerSnapshot['negotiatedProtocolVersion'] | null;
+  protocolDecisionReason?: McpRuntimeServerSnapshot['protocolDecisionReason'] | null;
+  lastErrorCode?: McpRuntimeServerSnapshot['lastErrorCode'] | null;
+  lastError?: McpRuntimeServerSnapshot['lastError'] | null;
 }
 
-export interface MCPRuntimeSnapshotDto {
-  generatedAt: string;
+export interface MCPRuntimeSnapshotDto extends OmitFields<McpRuntimeSnapshotDto, 'servers'> {
   servers: MCPRuntimeServerSnapshot[];
 }
 
-export interface MCPCatalogDto {
+export interface MCPCatalogDto extends OmitFields<McpCatalogDto, 'key' | 'tools' | 'refreshedAt'> {
   key: MCPRuntimeKey;
   tools: MCPTool[];
-  refreshedAt?: string | null;
+  refreshedAt?: McpCatalogDto['refreshedAt'] | null;
 }
 
 export type MCPRuntimeEvent =

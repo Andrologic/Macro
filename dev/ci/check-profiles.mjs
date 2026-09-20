@@ -36,7 +36,13 @@ const rustDocTestCheck = step('Run locked Rust doc tests', 'cargo', [
   '--locked',
   '--doc',
 ]);
-const nativeChecks = [sidecarCheck, rustTestCheck, rustDocTestCheck];
+const generatedContractChecks = ['config', 'ipc'].map((domain) => step(
+  `Check generated ${domain} contracts`, 'cargo', [
+    'run', '--manifest-path', 'src-tauri/Cargo.toml', '--locked', '--jobs', '2',
+    '--example', 'generate_config', '--', '--domain', domain, '--check',
+  ],
+));
+const nativeChecks = [sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck];
 
 const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
   'check',
@@ -69,13 +75,13 @@ export function stepsForProfile(profile, options = {}) {
     case 'native':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
     case 'native-core':
-      return [...install, ...repositoryChecks, sidecarCheck, rustTestCheck, rustDocTestCheck];
+      return [...install, ...repositoryChecks, sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck];
     case 'sidecar':
       return [...install, sidecarCheck];
     case 'windows':
-      return [...install, workflowStep, ...repositoryChecks, sidecarCheck, windowsNativeCheck];
+      return [...install, workflowStep, ...repositoryChecks, sidecarCheck, ...generatedContractChecks, windowsNativeCheck];
     case 'windows-core':
-      return [...install, ...repositoryChecks, sidecarCheck, windowsNativeCheck];
+      return [...install, ...repositoryChecks, sidecarCheck, ...generatedContractChecks, windowsNativeCheck];
     case 'full': {
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
     }

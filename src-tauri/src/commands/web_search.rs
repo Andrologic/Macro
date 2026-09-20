@@ -185,6 +185,7 @@ where
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WebSearchSecretInput {
     pub provider: String,
     pub value: Option<String>,
@@ -192,6 +193,7 @@ pub struct WebSearchSecretInput {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WebSearchSecretStatus {
     pub provider: String,
     pub has_secret: bool,
@@ -200,6 +202,7 @@ pub struct WebSearchSecretStatus {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WebSearchResultDto {
     pub url: String,
     pub title: String,
@@ -209,6 +212,7 @@ pub struct WebSearchResultDto {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct WebFetchResourceDto {
     pub url: String,
     pub content_type: Option<String>,
