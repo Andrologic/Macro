@@ -1,3 +1,6 @@
+import { runToolBatch, getToolCallLoopKey, isRepeatedToolCallLoop, validateToolInvocation, invokeToolHandler } from './ai/toolCallRunner';
+import { formatToolTraceDetail, buildToolContextBlock } from './ai/toolPresentation';
+import { formatToolExecutionError, isToolInterruptResolution, normalizeToolCallResolution } from './ai/toolCallResolution';
 import { ProviderRuntimeError, classifyReasoningRejection, isReasoningUnsupportedError, isReasoningReplayRequiredError, isContextOverflowError, classifyProviderError, extractProviderErrorMessage, extractSseProviderError } from './ai/providerErrors';
 import type {
   StreamMessage,
@@ -9,8 +12,6 @@ import type {
   StreamCompletionReason,
   StreamTimelinePhase,
   StreamTimelineEvent,
-  ToolInterruptResolution,
-  ToolCallResolution,
   StreamingFollowUpCompactionReason,
   StreamingChatOptions,
   StreamingTurnResult,
@@ -25,7 +26,7 @@ export type * from './ai/contracts';
 
 import { tauriFetch } from './tauriHttp';
 import { listen, type UnlistenFn } from './tauriRuntimeBridge';
-import { webSearch, fetchWebPage, formatSearchResultsAsContext, WebSearchOptions } from './webSearch';
+import type { WebSearchOptions } from './webSearch';
 import * as tauriIpc from './tauriIpc';
 import { ARCHITECT_POST_TOOL_RETRY_SYSTEM_PROMPT } from '../domains/chat/prompts';
 import { normalizeChatMaxTurns } from './chatTurnLimits';
@@ -55,16 +56,11 @@ import type {
 } from '../types';
 import { devLogger } from '../utils/devLogger';
 import { useProviderStore } from '../stores/useProviderStore';
-import { formatConversationFilePage } from './conversationFileTool';
 import {
   estimateImageContextTokens,
   estimateStructuredContext,
   estimateTextTokens,
 } from './contextTokenEstimation';
-import {
-  formatToolArgumentValidationError,
-  validateToolArguments,
-} from './toolArgumentValidation';
 
 interface ActiveStreamResources {
   reader: ReadableStreamDefaultReader<Uint8Array> | null;
@@ -79,33 +75,8 @@ const GENERIC_STREAM_IDLE_TIMEOUT_MS = 45_000;
 const GENERIC_RETRY_BASE_DELAY_MS = 250;
 const GENERIC_RETRY_MAX_DELAY_MS = 5_000;
 const GENERIC_RETRY_MAX_ATTEMPTS = 2;
-const TOOL_DOOM_LOOP_THRESHOLD = 3;
 const TOOL_EXECUTION_ABORTED_RESULT = 'Tool execution aborted';
-const REPEATED_TOOL_CALL_ABORT_RESULT =
-  'Tool execution aborted: repeated identical tool call.';
 const HISTORICAL_TOOL_RESULT_MAX_CHARS = 1600;
-
-const formatToolExecutionError = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error && typeof error === 'object') {
-    const maybeMessage = 'message' in error ? (error as { message?: unknown }).message : undefined;
-    if (typeof maybeMessage === 'string' && maybeMessage.trim()) {
-      return maybeMessage;
-    }
-    const maybeError = 'error' in error ? (error as { error?: unknown }).error : undefined;
-    if (typeof maybeError === 'string' && maybeError.trim()) {
-      return maybeError;
-    }
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return Object.prototype.toString.call(error);
-    }
-  }
-  return String(error);
-};
 
 const DEFAULT_STREAM_SESSION_ID = '__default__';
 const activeStreamResourcesBySessionId = new Map<string, ActiveStreamResources>();
@@ -1220,109 +1191,6 @@ export const createSseEventParser = (): SseEventParser => {
   };
 };
 
-const escapeToolContextAttribute = (value: string): string =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-const formatToolTraceDetail = (toolName: string, args: Record<string, unknown>): string | undefined => {
-  if (toolName === 'web_search') {
-    return typeof args.query === 'string' ? args.query : undefined;
-  }
-
-  if (toolName === 'web_fetch') {
-    return typeof args.url === 'string' ? args.url : undefined;
-  }
-
-  if (toolName === 'mark_source_passage') {
-    const title = typeof args.title === 'string' ? args.title.trim() : '';
-    const kind = typeof args.kind === 'string' ? args.kind.trim() : '';
-    if (title && kind) return `${title}, kind=${kind}`;
-    return title || kind || undefined;
-  }
-
-  if (toolName === 'read_sources') {
-    const parts = [
-      typeof args.kind === 'string' && args.kind.trim() ? `kind=${args.kind.trim()}` : '',
-      typeof args.query === 'string' && args.query.trim() ? `query=${args.query.trim()}` : '',
-    ].filter(Boolean);
-    return parts.length > 0 ? parts.join(', ') : undefined;
-  }
-
-  if (toolName === 'edit_source_passage') {
-    const parts = [
-      typeof args.citation_id === 'string' && args.citation_id.trim()
-        ? `id=${args.citation_id.trim()}`
-        : '',
-      typeof args.action === 'string' && args.action.trim() ? `action=${args.action.trim()}` : '',
-    ].filter(Boolean);
-    return parts.length > 0 ? parts.join(', ') : undefined;
-  }
-
-  if (toolName === 'read_file') {
-    const file = typeof args.file === 'string' ? args.file.trim() : '';
-    const extractText = args.extract_text === true ? 'extract_text=true' : '';
-    return [file, extractText].filter(Boolean).join(', ') || undefined;
-  }
-
-  if (
-    toolName === 'list' ||
-    toolName === 'read' ||
-    toolName === 'write' ||
-    toolName === 'edit' ||
-    toolName === 'delete'
-  ) {
-    return typeof args.path === 'string' ? args.path.trim() : undefined;
-  }
-
-  if (toolName === 'glob') {
-    return typeof args.pattern === 'string' ? args.pattern.trim() : undefined;
-  }
-
-  if (toolName === 'grep') {
-    return typeof args.query === 'string' ? args.query.trim() : undefined;
-  }
-
-  if (toolName === 'terminal_create_session') {
-    return typeof args.cwd === 'string' ? args.cwd.trim() : undefined;
-  }
-
-  if (toolName === 'terminal_run') {
-    return typeof args.command === 'string' ? args.command.trim() : undefined;
-  }
-
-  if (toolName === 'question') {
-    const questions = Array.isArray(args.questions) ? args.questions.length : 0;
-    return questions > 0 ? `${questions} question${questions > 1 ? 's' : ''}` : undefined;
-  }
-
-  return undefined;
-};
-
-const formatToolUsageLabel = (toolName: string, args: Record<string, unknown>) => {
-  const detail = formatToolTraceDetail(toolName, args);
-  return detail ? `\n\n[TOOL] ${toolName} (${detail})\n` : `\n\n[TOOL] ${toolName}\n`;
-};
-
-const buildToolContextBlock = (
-  toolCallId: string,
-  toolName: string,
-  detail: string | undefined,
-  result: string
-): string | null => {
-  if (!result.trim()) return null;
-  const attrs = [
-    `tool_call_id="${escapeToolContextAttribute(toolCallId)}"`,
-    `tool="${escapeToolContextAttribute(toolName)}"`,
-    detail ? `detail="${escapeToolContextAttribute(detail)}"` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-  return `<tool_context ${attrs}>\n${result}\n</tool_context>`;
-};
-
 const createStreamAccumulator = (
   options: Pick<StreamingChatOptions, 'onToken' | 'onToolTracesUpdate' | 'onLiveContextUpdate'>
 ) => {
@@ -1706,36 +1574,6 @@ const hasCompleteToolCallBatch = (toolCalls: ToolCall[]): boolean => {
   });
 };
 
-const normalizeToolArgumentsForLoopKey = (argumentsJson: string): string => {
-  try {
-    return JSON.stringify(JSON.parse(argumentsJson));
-  } catch {
-    return argumentsJson.trim();
-  }
-};
-
-const getToolCallLoopKey = (toolCall: ToolCall): string =>
-  `${toolCall.function.name}\u0000${normalizeToolArgumentsForLoopKey(toolCall.function.arguments)}`;
-
-const getAssistantToolCallLoopKeys = (messages: StreamMessage[]): string[] =>
-  messages.flatMap((message) =>
-    message.role === 'assistant' && Array.isArray(message.tool_calls)
-      ? getValidToolCalls(message.tool_calls).map(getToolCallLoopKey)
-      : []
-  );
-
-const isRepeatedToolCallLoop = (
-  messages: StreamMessage[],
-  toolCall: ToolCall
-): boolean => {
-  const recentKeys = getAssistantToolCallLoopKeys(messages).slice(-TOOL_DOOM_LOOP_THRESHOLD);
-  if (recentKeys.length < TOOL_DOOM_LOOP_THRESHOLD) {
-    return false;
-  }
-  const targetKey = getToolCallLoopKey(toolCall);
-  return recentKeys.every((key) => key === targetKey);
-};
-
 const buildChatGptProviderTurnState = (
   responseId?: string | null,
   outputItems?: unknown[] | null
@@ -2048,25 +1886,6 @@ const compactToolResultForChatGptModelContext = (
   }
 
   return `${truncateMiddle(result, contentBudget)}${truncationNotice}`;
-};
-
-const isToolInterruptResolution = (
-  value: ToolCallResolution | undefined,
-): value is ToolInterruptResolution => value?.kind === 'interrupt';
-
-const normalizeToolCallResolution = (
-  value: ToolCallResolution | string | void,
-): ToolCallResolution | undefined => {
-  if (!value) {
-    return undefined;
-  }
-  if (typeof value === 'string') {
-    return {
-      kind: 'result',
-      result: value,
-    };
-  }
-  return value;
 };
 
 function shouldRetryMissingRequiredTool(
@@ -2493,29 +2312,22 @@ const streamNativeTurnViaTauri = async (params: {
                 let isError = false;
                 let errorKind: ToolResult['error_kind'] | undefined;
 
-                const schema = toolSchemas.get(toolName);
-                const validationIssues = schema ? validateToolArguments(args, schema) : [];
-                if (validationIssues.length > 0) {
-                  toolResult = formatToolArgumentValidationError(toolName, validationIssues);
+                const invalid = validateToolInvocation({
+                  toolName, args, schema: toolSchemas.get(toolName), allowedTools,
+                  questionErrorKind: questionToolRequestCount > 0 ? 'execution' : undefined,
+                });
+                if (invalid) {
+                  toolResult = invalid.result;
                   isError = true;
-                  errorKind = 'validation';
-                } else if (!allowedTools.has(toolName)) {
-                  toolResult = `Tool ${toolName} is disabled for the current mode.`;
-                  isError = true;
-                  errorKind = 'permission';
-                } else if (toolName === 'question' && questionToolRequestCount > 0) {
-                  toolResult =
-                    'Error executing tool question: only one question tool call is allowed per assistant turn.';
-                  isError = true;
-                  errorKind = 'execution';
+                  errorKind = invalid.errorKind;
                 } else if (!params.onToolCall) {
                   toolResult = `Tool ${toolName} is unavailable in this provider context.`;
                   isError = true;
                   errorKind = 'permission';
                 } else {
                   if (toolName === 'question') questionToolRequestCount += 1;
-                  const resolution = normalizeToolCallResolution(
-                    await params.onToolCall(toolName, args, toolCallId)
+                  const resolution = await invokeToolHandler(
+                    params.onToolCall, toolName, args, toolCallId, params.signal,
                   );
 
                   // A stopped generation must never submit a late tool result
@@ -2717,9 +2529,7 @@ const streamChatViaNativeToolCallingProvider = async (
     webSearchOptions,
     onToolCall,
     onToolResult,
-    fileToolContext = [],
     allowedToolIds,
-    showToolTraces = false,
   } = options;
 
   const allowedTools = new Set(allowedToolIds ?? []);
@@ -3009,303 +2819,11 @@ const streamChatViaNativeToolCallingProvider = async (
         throw new Error('Incomplete response recovery attempted to call a tool.');
       }
 
-      const toolResults: ToolResult[] = [];
-      let interruptResolution: ToolInterruptResolution | null = null;
-      const questionToolCallCount = validToolCalls.filter(
-        (toolCall) => toolCall.function.name === 'question'
-      ).length;
-
-      const toolBatchId = `native-turn-${turnCount}`;
-      for (const [toolIndex, toolCall] of validToolCalls.entries()) {
-        const toolName = toolCall.function.name;
-        architectToolNamesUsed.add(toolName);
-        let toolResult = '';
-        let customToolResult: string | undefined;
-        let detail: string | undefined;
-        let toolErrorKind: ToolResult['error_kind'];
-        streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
-          execution_mode: 'sequential',
-          batch_id: toolBatchId,
-          order: toolIndex,
-        });
-
-        if (isRepeatedToolCallLoop(currentMessages, toolCall)) {
-          toolResult = REPEATED_TOOL_CALL_ABORT_RESULT;
-          onToolResult?.(toolName, toolResult);
-          toolResults.push({
-            tool_call_id: toolCall.id,
-            content: toolResult,
-            tool_name: toolName,
-            is_error: true,
-            error_kind: 'aborted',
-          });
-          streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-          streamAccumulator.completeToolTrace(toolCall.id);
-          continue;
-        }
-
-        try {
-          const args = JSON.parse(toolCall.function.arguments);
-          detail = formatToolTraceDetail(toolName, args);
-          streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
-            execution_mode: 'sequential',
-            batch_id: toolBatchId,
-            order: toolIndex,
-          });
-
-          const schema = toolSchemas.get(toolName);
-          const validationIssues = schema ? validateToolArguments(args, schema) : [];
-          if (validationIssues.length > 0) {
-            toolResult = formatToolArgumentValidationError(toolName, validationIssues);
-            onToolResult?.(toolName, toolResult);
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: toolResult,
-              tool_name: toolName,
-              is_error: true,
-              error_kind: 'validation',
-            });
-            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-            continue;
-          }
-
-          if (!allowedTools.has(toolName)) {
-            toolResult = `Tool ${toolName} is disabled for the current mode.`;
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: toolResult,
-              tool_name: toolName,
-              is_error: true,
-              error_kind: 'permission',
-            });
-            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-            continue;
-          }
-
-          if (toolName === 'question' && questionToolCallCount > 1) {
-            toolResult =
-              'Error executing tool question: only one question tool call is allowed per assistant turn.';
-            onToolResult?.(toolName, toolResult);
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: toolResult,
-              tool_name: toolName,
-              is_error: true,
-              error_kind: 'validation',
-            });
-            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-            continue;
-          }
-
-          const customResult = normalizeToolCallResolution(
-            await onToolCall?.(toolName, args, toolCall.id)
-          );
-          if (options.signal?.aborted) {
-            streamAccumulator.completeToolTrace(toolCall.id);
-            completeNativeStream();
-            return;
-          }
-          if (isToolInterruptResolution(customResult)) {
-            interruptResolution = customResult;
-            customToolResult = customResult.result;
-            streamAccumulator.addHiddenContextBlock(customResult.hiddenContext);
-          } else if (customResult?.kind === 'result') {
-            customToolResult = customResult.result;
-            if (customResult.isError) {
-              toolErrorKind = customResult.errorKind ?? 'execution';
-            }
-          }
-          if (showToolTraces) {
-            streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
-          }
-
-          if (!customToolResult && toolName === 'web_search') {
-            if (
-              !enableWebSearch ||
-              (!webSearchOptions?.configured &&
-                !webSearchOptions?.tavilyApiKey &&
-                !webSearchOptions?.braveApiKey)
-            ) {
-              toolResult = 'Web search is not configured for this provider.';
-              onToolResult?.(toolName, toolResult);
-              toolResults.push({
-                tool_call_id: toolCall.id,
-                content: toolResult,
-                tool_name: toolName,
-                is_error: true,
-                error_kind: 'execution',
-              });
-              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-              continue;
-            }
-            const searchResults = await webSearch(args.query, webSearchOptions);
-            toolResult = formatSearchResultsAsContext(searchResults);
-
-            if (showToolTraces) {
-              const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
-              streamAccumulator.appendSystemChunk(searchMsg, false);
-            }
-          }
-
-          if (!customToolResult && toolName === 'web_fetch') {
-            if (!enableWebFetch) {
-              toolResult = 'Web fetch is disabled for this provider.';
-              onToolResult?.(toolName, toolResult);
-              toolResults.push({
-                tool_call_id: toolCall.id,
-                content: toolResult,
-                tool_name: toolName,
-                is_error: true,
-                error_kind: 'permission',
-              });
-              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-              continue;
-            }
-            const url = typeof args.url === 'string' ? args.url : '';
-            if (!url.trim()) {
-              toolResult = 'Missing URL for web_fetch.';
-            } else {
-              const fetched = await fetchWebPage(url);
-              toolResult = `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
-            }
-          }
-
-          if (!customToolResult && toolName === 'read_file') {
-            const normalizeMatch = (value?: string) =>
-              (value || '')
-                .trim()
-                .normalize('NFD')
-                .replace(/[\u0300-\u036f]/g, '')
-                .toLowerCase();
-
-            const requestedRaw = typeof args.file === 'string' ? args.file.trim() : '';
-            const requested = normalizeMatch(requestedRaw);
-            const extractText = args.extract_text === true;
-            const available = fileToolContext.map((f) => f.path || f.title || f.source).filter(Boolean);
-            let workspaceReadAttempted = false;
-            const workspaceMode = allowedTools.has('read') || allowedTools.has('list');
-
-            if (requestedRaw && allowedTools.has('read') && onToolCall) {
-              workspaceReadAttempted = true;
-              const workspaceResult = await onToolCall('read', {
-                path: requestedRaw,
-                start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
-                end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
-                max_lines: typeof args.max_lines === 'number' ? args.max_lines : undefined,
-                cursor: typeof args.cursor === 'string' ? args.cursor : undefined,
-              });
-
-              if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
-                const isWorkspaceReadError =
-                  /^Error executing read:/i.test(workspaceResult) ||
-                  /^Missing\s+/i.test(workspaceResult) ||
-                  /^No match found/i.test(workspaceResult) ||
-                  /^File not found/i.test(workspaceResult) ||
-                  /^Cannot\s+/i.test(workspaceResult);
-
-                if (isWorkspaceReadError) {
-                  toolResult = `Error executing tool read_file: ${workspaceResult}`;
-                  toolErrorKind = 'execution';
-                } else {
-                  toolResult = workspaceResult;
-                }
-              } else {
-                toolResult = 'Error executing tool read_file: workspace read returned no content.';
-                toolErrorKind = 'execution';
-              }
-            }
-
-            if (!toolResult.trim()) {
-              if (workspaceReadAttempted) {
-                toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
-                toolErrorKind = 'execution';
-              } else if (workspaceMode) {
-                toolResult =
-                  `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
-                  ' Use the read tool directly with an explicit path.';
-                toolErrorKind = 'permission';
-              } else {
-                const contextMatch = fileToolContext.find((file) => {
-                  const title = normalizeMatch(file.title);
-                  const source = normalizeMatch(file.source);
-                  const path = normalizeMatch(file.path);
-                  return (
-                    requested === title ||
-                    requested === source ||
-                    requested === path ||
-                    title.includes(requested) ||
-                    source.includes(requested) ||
-                    path.includes(requested)
-                  );
-                });
-
-                if (!requested) {
-                  toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
-                } else if (!contextMatch) {
-                  toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
-                  toolErrorKind = 'execution';
-                } else {
-                  const label = contextMatch.path || contextMatch.title || contextMatch.source;
-                  const content = (contextMatch.content || contextMatch.snippet || '').trim();
-                  const isDocx = /\.docx$/i.test(label || '');
-                  const extractNotice =
-                    extractText && isDocx
-                      ? 'Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
-                      : '';
-
-                  toolResult = content
-                    ? formatConversationFilePage({
-                        label,
-                        source: 'CONTEXT_SNIPPET',
-                        content,
-                        args,
-                        notice: extractNotice,
-                      })
-                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ''}`;
-                }
-              }
-            }
-          }
-
-          if (customToolResult && toolName === 'mark_source_passage') {
-            toolResult = customToolResult;
-          } else if (toolName === 'mark_source_passage') {
-            toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
-            toolErrorKind = 'execution';
-          } else if (toolName === 'read_sources') {
-            toolResult = customToolResult || 'No source passages available.';
-          } else if (toolName === 'edit_source_passage') {
-            toolResult = customToolResult || 'Source passage edit request processed.';
-          } else if (customToolResult) {
-            toolResult = customToolResult;
-          } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
-            toolResult = `Unsupported tool: ${toolName}`;
-            toolErrorKind = 'execution';
-          }
-
-          onToolResult?.(toolName, toolResult);
-          streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-        } catch (error) {
-          toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(error)}`;
-          toolErrorKind = 'execution';
-          onToolResult?.(toolName, toolResult);
-          streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-        } finally {
-          streamAccumulator.completeToolTrace(toolCall.id);
-        }
-
-        toolResults.push({
-          tool_call_id: toolCall.id,
-          content: toolResult,
-          tool_name: toolName,
-          is_error: Boolean(toolErrorKind),
-          ...(toolErrorKind ? { error_kind: toolErrorKind } : {}),
-        });
-
-        if (interruptResolution) {
-          break;
-        }
-      }
+      const { toolResults, interruptResolution } = await runToolBatch({
+        calls: validToolCalls, messages: currentMessages, options, allowedTools,
+        schemas: toolSchemas, accumulator: streamAccumulator,
+        batchId: `native-turn-${turnCount}`, usedToolNames: architectToolNamesUsed,
+      });
 
       if (interruptResolution) {
         streamAccumulator.replaceVisibleContent(interruptResolution.visibleContent);
@@ -3449,11 +2967,7 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
     enableWebSearch = true,
     enableWebFetch = true,
     webSearchOptions,
-    onToolCall,
-    onToolResult,
-    fileToolContext = [],
     allowedToolIds,
-    showToolTraces = false,
   } = options;
   const sessionId = getStreamSessionId(options.sessionId);
   const activeResources = getOrCreateActiveStreamResources(sessionId);
@@ -4090,308 +3604,11 @@ export async function streamChat(options: StreamingChatOptions): Promise<void> {
       }
 
       if (replayableToolCalls.length > 0) {
-        const toolResults: ToolResult[] = [];
-        let interruptResolution: ToolInterruptResolution | null = null;
-        const questionToolCallCount = replayableToolCalls.filter(
-          (toolCall) => toolCall.function.name === 'question'
-        ).length;
-
-        const toolBatchId = `generic-turn-${turnCount}`;
-        for (const [toolIndex, toolCall] of replayableToolCalls.entries()) {
-          const toolName = toolCall.function.name;
-          architectToolNamesUsed.add(toolName);
-          let toolResult = '';
-          let customToolResult: string | undefined;
-          let detail: string | undefined;
-          let toolErrorKind: ToolResult['error_kind'];
-          streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
-            execution_mode: 'sequential',
-            batch_id: toolBatchId,
-            order: toolIndex,
-          });
-
-          if (isRepeatedToolCallLoop(currentMessages, toolCall)) {
-            toolResult = REPEATED_TOOL_CALL_ABORT_RESULT;
-            onToolResult?.(toolName, toolResult);
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              content: toolResult,
-              tool_name: toolName,
-              is_error: true,
-              error_kind: 'aborted',
-            });
-            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-            streamAccumulator.completeToolTrace(toolCall.id);
-            continue;
-          }
-
-          try {
-            const args = JSON.parse(toolCall.function.arguments);
-            detail = formatToolTraceDetail(toolName, args);
-            streamAccumulator.beginToolTrace(toolCall.id, toolName, detail, {
-              execution_mode: 'sequential',
-              batch_id: toolBatchId,
-              order: toolIndex,
-            });
-
-            const schema = toolSchemas.get(toolName);
-            const validationIssues = schema ? validateToolArguments(args, schema) : [];
-            if (validationIssues.length > 0) {
-              toolResult = formatToolArgumentValidationError(toolName, validationIssues);
-              onToolResult?.(toolName, toolResult);
-              toolResults.push({
-                tool_call_id: toolCall.id,
-                content: toolResult,
-                tool_name: toolName,
-                is_error: true,
-                error_kind: 'validation',
-              });
-              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-              continue;
-            }
-
-            if (!allowedTools.has(toolName)) {
-              toolResult = `Tool ${toolName} is disabled for the current mode.`;
-              toolResults.push({
-                tool_call_id: toolCall.id,
-                content: toolResult,
-                tool_name: toolName,
-                is_error: true,
-                error_kind: 'permission',
-              });
-              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-              continue;
-            }
-
-            if (toolName === 'question' && questionToolCallCount > 1) {
-              toolResult =
-                'Error executing tool question: only one question tool call is allowed per assistant turn.';
-              onToolResult?.(toolName, toolResult);
-              toolResults.push({
-                tool_call_id: toolCall.id,
-                content: toolResult,
-                tool_name: toolName,
-                is_error: true,
-                error_kind: 'validation',
-              });
-              streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-              continue;
-            }
-
-            const customResult = normalizeToolCallResolution(
-              await onToolCall?.(toolName, args, toolCall.id)
-            );
-            if (options.signal?.aborted) {
-              streamAccumulator.completeToolTrace(toolCall.id);
-              completeGenericStream();
-              emitGenericTimeline('done');
-              return;
-            }
-            if (isToolInterruptResolution(customResult)) {
-              interruptResolution = customResult;
-              customToolResult = customResult.result;
-              streamAccumulator.addHiddenContextBlock(customResult.hiddenContext);
-            } else if (customResult?.kind === 'result') {
-              customToolResult = customResult.result;
-              if (customResult.isError) {
-                toolErrorKind = customResult.errorKind ?? 'execution';
-              }
-            }
-            if (showToolTraces) {
-              streamAccumulator.appendSystemChunk(formatToolUsageLabel(toolName, args), false);
-            }
-
-            if (!customToolResult && toolName === 'web_search') {
-              if (
-                !enableWebSearch ||
-                (!webSearchOptions?.configured &&
-                  !webSearchOptions?.tavilyApiKey &&
-                  !webSearchOptions?.braveApiKey)
-              ) {
-                toolResult = 'Web search is not configured for this provider.';
-                onToolResult?.(toolName, toolResult);
-                toolResults.push({
-                  tool_call_id: toolCall.id,
-                  content: toolResult,
-                  tool_name: toolName,
-                  is_error: true,
-                  error_kind: 'execution',
-                });
-                streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-                continue;
-              }
-
-              // Execute web search
-              const searchResults = await webSearch(args.query, webSearchOptions);
-              toolResult = formatSearchResultsAsContext(searchResults);
-
-              // Show search indicator in chat
-              if (showToolTraces) {
-                const searchMsg = `\n\n🔍 **Recherche web:** "${args.query}"\n`;
-                streamAccumulator.appendSystemChunk(searchMsg, false);
-              }
-            }
-
-            if (!customToolResult && toolName === 'web_fetch') {
-              if (!enableWebFetch) {
-                toolResult = 'Web fetch is disabled for this provider.';
-                onToolResult?.(toolName, toolResult);
-                toolResults.push({
-                  tool_call_id: toolCall.id,
-                  content: toolResult,
-                  tool_name: toolName,
-                  is_error: true,
-                  error_kind: 'permission',
-                });
-                streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-                continue;
-              }
-
-              const url = typeof args.url === 'string' ? args.url : '';
-              if (!url.trim()) {
-                toolResult = 'Missing URL for web_fetch.';
-              } else {
-                const fetched = await fetchWebPage(url);
-                toolResult = `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
-              }
-            }
-
-            if (!customToolResult && toolName === 'read_file') {
-              const normalizeMatch = (value?: string) =>
-                (value || '')
-                  .trim()
-                  .normalize('NFD')
-                  .replace(/[\u0300-\u036f]/g, '')
-                  .toLowerCase();
-
-              const requestedRaw = typeof args.file === 'string' ? args.file.trim() : '';
-              const requested = normalizeMatch(requestedRaw);
-              const extractText = args.extract_text === true;
-              const available = fileToolContext.map((f) => f.path || f.title || f.source).filter(Boolean);
-              let workspaceReadAttempted = false;
-              const workspaceMode = allowedTools.has('read') || allowedTools.has('list');
-
-              if (requestedRaw && allowedTools.has('read') && onToolCall) {
-                workspaceReadAttempted = true;
-                const workspaceResult = await onToolCall('read', {
-                  path: requestedRaw,
-                  start_line: typeof args.start_line === 'number' ? args.start_line : undefined,
-                  end_line: typeof args.end_line === 'number' ? args.end_line : undefined,
-                  max_lines: typeof args.max_lines === 'number' ? args.max_lines : undefined,
-                  cursor: typeof args.cursor === 'string' ? args.cursor : undefined,
-                });
-
-                if (typeof workspaceResult === 'string' && workspaceResult.trim()) {
-                  const isWorkspaceReadError =
-                    /^Error executing read:/i.test(workspaceResult) ||
-                    /^Missing\s+/i.test(workspaceResult) ||
-                    /^No match found/i.test(workspaceResult) ||
-                    /^File not found/i.test(workspaceResult) ||
-                    /^Cannot\s+/i.test(workspaceResult);
-
-                  if (isWorkspaceReadError) {
-                    toolResult = `Error executing tool read_file: ${workspaceResult}`;
-                    toolErrorKind = 'execution';
-                  } else {
-                    toolResult = workspaceResult;
-                  }
-                } else {
-                  toolResult = 'Error executing tool read_file: workspace read returned no content.';
-                  toolErrorKind = 'execution';
-                }
-              }
-
-              if (toolResult.trim()) {
-                // We already have authoritative workspace output; do not fall back to context snippets.
-              } else if (workspaceReadAttempted) {
-                toolResult = `Error executing tool read_file: unable to read "${requestedRaw}" from workspace.`;
-                toolErrorKind = 'execution';
-              } else if (workspaceMode) {
-                toolResult =
-                  `Error executing tool read_file: workspace read tool is unavailable for "${requestedRaw}".` +
-                  ` Use the read tool directly with an explicit path.`;
-                toolErrorKind = 'permission';
-              } else {
-                const match = fileToolContext.find((f) => {
-                  const title = normalizeMatch(f.title);
-                  const source = normalizeMatch(f.source);
-                  const path = normalizeMatch(f.path);
-                  return (
-                    requested === title ||
-                    requested === source ||
-                    requested === path ||
-                    title.includes(requested) ||
-                    source.includes(requested) ||
-                    path.includes(requested)
-                  );
-                });
-
-                if (!requested) {
-                  toolResult = `No file provided. Available files: ${available.join(', ') || 'none'}`;
-                } else if (!match) {
-                  toolResult = `File not found in context: "${requestedRaw}". Available files: ${available.join(', ') || 'none'}`;
-                  toolErrorKind = 'execution';
-                } else {
-                  const label = match.path || match.title || match.source;
-                  const content = (match.content || match.snippet || '').trim();
-                  const isDocx = /\.docx$/i.test(label || '');
-                  const extractNotice =
-                    extractText && isDocx
-                      ? 'Note: extract_text=true requested. Rich DOCX extraction is not available in this build; using available context text.'
-                      : '';
-
-                  toolResult = content
-                    ? formatConversationFilePage({
-                        label,
-                        source: 'CONTEXT_SNIPPET',
-                        content,
-                        args,
-                        notice: extractNotice,
-                      })
-                    : `FILE: ${label}\nSOURCE: CONTEXT_SNIPPET\n\nNo textual content available for this file in context.${extractNotice ? `\n\n${extractNotice}` : ''}`;
-                }
-              }
-            }
-
-            if (customToolResult && toolName === 'mark_source_passage') {
-              toolResult = customToolResult;
-            } else if (toolName === 'mark_source_passage') {
-              toolResult = 'Error executing tool mark_source_passage: source tracking is unavailable in this context.';
-              toolErrorKind = 'execution';
-            } else if (toolName === 'read_sources') {
-              toolResult = customToolResult || 'No source passages available.';
-            } else if (toolName === 'edit_source_passage') {
-              toolResult = customToolResult || 'Source passage edit request processed.';
-            } else if (customToolResult) {
-              toolResult = customToolResult;
-            } else if (toolName !== 'web_search' && toolName !== 'read_file' && toolName !== 'web_fetch') {
-              toolResult = `Unsupported tool: ${toolName}`;
-              toolErrorKind = 'execution';
-            }
-
-            onToolResult?.(toolName, toolResult);
-            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-          } catch (e) {
-            toolResult = `Error executing tool ${toolName}: ${formatToolExecutionError(e)}`;
-            toolErrorKind = 'execution';
-            onToolResult?.(toolName, toolResult);
-            streamAccumulator.addHiddenToolContext(toolCall.id, toolName, detail, toolResult);
-          } finally {
-            streamAccumulator.completeToolTrace(toolCall.id);
-          }
-
-          toolResults.push({
-            tool_call_id: toolCall.id,
-            content: toolResult,
-            tool_name: toolName,
-            is_error: Boolean(toolErrorKind),
-            ...(toolErrorKind ? { error_kind: toolErrorKind } : {}),
-          });
-
-          if (interruptResolution) {
-            break;
-          }
-        }
+        const { toolResults, interruptResolution } = await runToolBatch({
+          calls: replayableToolCalls, messages: currentMessages, options, allowedTools,
+          schemas: toolSchemas, accumulator: streamAccumulator,
+          batchId: `generic-turn-${turnCount}`, usedToolNames: architectToolNamesUsed,
+        });
 
         if (interruptResolution) {
           streamAccumulator.replaceVisibleContent(interruptResolution.visibleContent);

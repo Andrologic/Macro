@@ -10,6 +10,7 @@ import type {
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
+const actualWebSearch = await import('./webSearch');
 
 const loadStreamingChat = async (
   fetchImpl?: ReturnType<typeof mock>,
@@ -17,9 +18,16 @@ const loadStreamingChat = async (
     invokeImpl?: ReturnType<typeof mock>;
     listenImpl?: ReturnType<typeof mock>;
     forceTauriAvailable?: boolean;
+    webSearchImpl?: typeof actualWebSearch.webSearch;
+    webFetchImpl?: typeof actualWebSearch.fetchWebPage;
   }
 ) => {
   mock.restore();
+  mock.module('./webSearch', () => ({
+    ...actualWebSearch,
+    webSearch: options?.webSearchImpl ?? actualWebSearch.webSearch,
+    fetchWebPage: options?.webFetchImpl ?? actualWebSearch.fetchWebPage,
+  }));
   const invokeImpl = options?.invokeImpl ?? mock(async () => undefined);
   const actualCore = await import('@tauri-apps/api/core');
   const actualEvent = await import('@tauri-apps/api/event');
@@ -4103,4 +4111,65 @@ describe('streamingChat tool rendering helpers', () => {
     });
   });
 
+});
+
+
+describe('streamingChat shared tool batch cancellation', () => {
+  for (const transport of ['native', 'http'] as const) {
+    for (const toolName of ['web_search', 'web_fetch'] as const) {
+      it(`cancels ${toolName} fallback on ${transport} without publishing late output or another turn`, async () => {
+        const controller = new AbortController();
+        const callbacks = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+        const toolCall = { id: 'web-call', type: 'function', function: { name: toolName, arguments: JSON.stringify(toolName === 'web_search' ? { query: 'query' } : { url: 'https://example.invalid' }) } };
+        let providerCalls = 0;
+        let seenSignal: AbortSignal | undefined;
+        const invokeImpl = mock(async (command: string, payload?: { request?: { request_id: string } }) => {
+          if (command === 'ai_stream_chat') {
+            providerCalls += 1;
+            queueMicrotask(() => callbacks.get('ai:done')?.({ payload: { request_id: payload?.request?.request_id, output_text: '', tool_calls: [toolCall], completion_reason: 'completed' } }));
+          }
+        });
+        const fetchImpl = mock(async () => {
+          providerCalls += 1;
+          return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, ...toolCall }] }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
+        });
+        const { streamChat } = await loadStreamingChat(fetchImpl, {
+          invokeImpl,
+          forceTauriAvailable: transport === 'native',
+          listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+            callbacks.set(name, callback);
+            return () => { callbacks.delete(name); };
+          }),
+          webSearchImpl: async (_query, options) => {
+            seenSignal = options?.signal;
+            controller.abort();
+            await Promise.resolve();
+            return [{ title: 'late-result', url: 'https://example.invalid', snippet: 'late-result' }];
+          },
+          webFetchImpl: async (_url, signal) => {
+            seenSignal = signal;
+            controller.abort();
+            await Promise.resolve();
+            return { title: 'late-result', url: 'https://example.invalid', content: 'late-result', snippet: 'late-result' };
+          },
+        });
+        const completed: StreamCompletionResult[] = [];
+        const onResult = mock(() => undefined);
+        const onError = mock(() => undefined);
+        await streamChat({
+          providerId: 'fixture', providerType: transport === 'native' ? 'chatgpt' : 'openai',
+          baseUrl: 'https://example.invalid', apiKey: 'fixture-key', modelId: 'fixture',
+          messages: [{ role: 'user', content: 'Inspect the page' }], allowedToolIds: [toolName],
+          webSearchOptions: { configured: true }, signal: controller.signal,
+          onToken: () => undefined, onComplete: (result: StreamCompletionResult) => completed.push(result), onError, onToolResult: onResult,
+        });
+        expect(seenSignal).toBe(controller.signal);
+        expect(providerCalls).toBe(1);
+        expect(onResult).not.toHaveBeenCalled();
+        expect(onError).not.toHaveBeenCalled();
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.hiddenContext ?? '').not.toContain('late-result');
+      });
+    }
+  }
 });
