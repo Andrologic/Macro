@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import type { Project } from '../types';
-import { useAppStore } from '../stores/useAppStore';
 import type { ArchitectPlanRuntimeRecord } from './architectPlanRuntimeService';
 
 const actualTauriIpc = await import('./tauriIpc');
@@ -174,7 +173,13 @@ mock.module('./tauriIpc.ts', createTauriModule);
 
 const loadRuntimeService = async () => {
   runtimeImportCounter += 1;
-  return import(`./architectPlanRuntimeService.ts?runtime-test=${runtimeImportCounter}`);
+  const module = await import(`./architectPlanRuntimeService.ts?runtime-test=${runtimeImportCounter}`);
+  return {
+    ...module,
+    ...module.createArchitectPlanRuntimeService({
+      getProjectById: (id: string) => registeredProjects.find((project) => project.id === id),
+    }),
+  };
 };
 
 const makeProject = (id: string, path: string): Project => ({
@@ -195,8 +200,9 @@ const makeProject = (id: string, path: string): Project => ({
   },
 });
 
+let registeredProjects: Project[] = [];
 const configureProjects = (projects: Project[]): void => {
-  useAppStore.setState({ standaloneProjects: projects, projectGroups: [] });
+  registeredProjects = projects;
 };
 
 const planFor = (projectIds: string[]) => ({
@@ -334,7 +340,7 @@ const resetMockState = (): void => {
 
 afterEach(() => {
   resetMockState();
-  useAppStore.setState({ standaloneProjects: [], projectGroups: [] });
+  registeredProjects = [];
 });
 
 describe('architectPlanRuntimeService', () => {

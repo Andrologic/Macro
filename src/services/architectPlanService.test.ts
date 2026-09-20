@@ -1,10 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 const actualTauriIpc = await import('./tauriIpc');
 import type { ArchitectPlanRecord, ArchitectPlanSummary } from './architectPlanService';
 import type { WorkspaceScope } from './tauriIpc';
 import type { ValidProjectRegistrySnapshot } from './validProjectRegistry';
 import { DEFAULT_NEW_PLAN_LABEL } from './architectPlanPresentation';
-import { registerAppStateGetter } from './appStateRuntime';
+import { installArchitectPlanPorts, type ArchitectPlanServiceAppState } from './architectPlanReadContext';
+const registerAppStateGetter = (getAppState: () => unknown) => installArchitectPlanPorts({
+  getAppState: () => getAppState() as ArchitectPlanServiceAppState,
+});
 
 interface LocalStorageMock {
   clear: () => void;
@@ -281,7 +284,9 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
 const loadArchitectPlanService = async (options?: LoadArchitectPlanServiceOptions) => {
   registerArchitectPlanMocks(options);
   importCounter += 1;
-  return import(`./architectPlanService.ts?local-test=${importCounter}`);
+  const service = await import(`./architectPlanService.ts?local-test=${importCounter}`);
+  service.clearArchitectPlanFrontendCaches();
+  return service;
 };
 
 const seedLegacyPlan = (storage: LocalStorageMock, plan: ArchitectPlanRecord) => {
@@ -321,6 +326,7 @@ describe('architectPlanService', () => {
   let service: Awaited<ReturnType<typeof loadArchitectPlanService>>;
 
   beforeEach(async () => {
+    registerAppStateGetter(() => ({ standaloneProjects: [], projectGroups: [] }));
     storage = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
       addEventListener: () => undefined,
@@ -2138,6 +2144,45 @@ describe('architectPlanService', () => {
         'project-octan-sales-1780653766405'
       )
     ).toBe('project-octan-sales-1780653766405');
+  });
+
+  it('keeps isolated factories independent of facade spies while sharing the branch queue', async () => {
+    const facade = await import('./architectPlanService');
+    const commands = (await import('./architectPlanMutationService')).createArchitectPlanMutationService();
+    const queries = (await import('./architectPlanReadService')).createArchitectPlanReadService();
+    const isolated = service.createArchitectPlanService();
+    const created = await commands.createArchitectPlan({
+      branchName, planId: 'factory-concurrency',
+      nodes: ['a', 'b'].map((id) => ({
+        id, title: id, type: 'task' as const, status: 'pending' as const, dependencies: [],
+      })),
+    });
+    const active = await commands.createArchitectPlan({ branchName, planId: 'active-factory-plan' });
+    const get = spyOn(facade, 'getArchitectPlan').mockImplementation(isolated.getArchitectPlan);
+    const update = spyOn(facade, 'updateArchitectPlan').mockImplementation(isolated.updateArchitectPlan);
+    const mutate = spyOn(facade, 'mutateArchitectPlanTaskStatus').mockImplementation(isolated.mutateArchitectPlanTaskStatus);
+    try {
+      await Promise.all([
+        facade.mutateArchitectPlanTaskStatus({ branchName, planId: created.id }, (plan) => ({
+          nodes: plan.nodes.map((node) => node.id === 'a' ? { ...node, status: 'completed' } : node),
+        })),
+        commands.updateArchitectPlan({ branchName, planId: created.id, description: 'Parallel metadata', setActive: false }),
+        commands.mutateArchitectPlan({ branchName, planId: created.id }, (plan) => ({
+          nodes: plan.nodes.map((node) => node.id === 'b' ? { ...node, status: 'in-progress' } : node),
+        })),
+      ]);
+      const persisted = await facade.getArchitectPlan(branchName, created.id);
+      expect(persisted?.nodes.map((node) => node.status)).toEqual(['completed', 'in-progress']);
+      expect(persisted?.description).toBe('Parallel metadata');
+      expect((await queries.listArchitectPlans(branchName)).activePlanId).toBe(active.id);
+      await expect(commands.updateArchitectPlan({ branchName, planId: created.id,
+        expectedRevision: created.revision, description: 'Stale metadata',
+      })).rejects.toThrow('plan revision changed before mutation');
+    } finally {
+      get.mockRestore();
+      update.mockRestore();
+      mutate.mockRestore();
+    }
   });
 
   it('releases the branch mutation queue when a task transition cannot be derived', async () => {

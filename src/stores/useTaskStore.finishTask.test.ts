@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
+import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
+let releaseRuntimePorts: (() => void) | undefined;
 
 const actualArchitectPlanService = await import('../services/architectPlanService');
 const actualArchitectGitFlowService = await import('../services/architectGitFlowService');
@@ -80,6 +82,13 @@ const updateArchitectPlanMock = mock(async (input: { nodes?: typeof planState.no
       updatedAt: '2026-04-22T10:00:00.000Z',
     };
   }
+  return planState;
+});
+const mutateArchitectPlanTaskStatusMock = mock(async (
+  _input: Parameters<typeof actualArchitectPlanService.mutateArchitectPlanTaskStatus>[0],
+  deriveUpdate: Parameters<typeof actualArchitectPlanService.mutateArchitectPlanTaskStatus>[1],
+) => {
+  Object.assign(planState, deriveUpdate(planState));
   return planState;
 });
 const commitArchitectPlanMetadataMock = mock(async () => undefined);
@@ -354,6 +363,7 @@ mock.module('../services/architectPlanService', () => ({
   getGitFlowBaseBranch: () => 'develop',
   resolveTargetBranch: (branchName: string) => branchName,
   updateArchitectPlan: updateArchitectPlanMock,
+  mutateArchitectPlanTaskStatus: mutateArchitectPlanTaskStatusMock,
   writeArchitectTaskExecution: writeArchitectTaskExecutionMock,
 }));
 
@@ -366,6 +376,7 @@ mock.module('../services/architectPlanService.ts', () => ({
   getGitFlowBaseBranch: () => 'develop',
   resolveTargetBranch: (branchName: string) => branchName,
   updateArchitectPlan: updateArchitectPlanMock,
+  mutateArchitectPlanTaskStatus: mutateArchitectPlanTaskStatusMock,
   writeArchitectTaskExecution: writeArchitectTaskExecutionMock,
 }));
 
@@ -574,6 +585,7 @@ mock.module('../services/index', () => ({
 describe('useTaskStore.finishTask', () => {
   beforeEach(() => {
     installTauriRuntimeMock();
+    releaseRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById: appStoreState.getProjectById });
 
     planState = {
       id: 'plan-1',
@@ -614,6 +626,7 @@ describe('useTaskStore.finishTask', () => {
     finalizePlanIntoBaseBranchMock.mockClear();
     getArchitectPlanMock.mockClear();
     updateArchitectPlanMock.mockClear();
+    mutateArchitectPlanTaskStatusMock.mockClear();
     commitArchitectPlanMetadataMock.mockClear();
     writeArchitectTaskExecutionMock.mockClear();
     gitWorktreeInspectMock.mockClear();
@@ -700,6 +713,7 @@ describe('useTaskStore.finishTask', () => {
   });
 
   afterEach(() => {
+    releaseRuntimePorts?.();
     removeTauriRuntimeMock();
   });
 

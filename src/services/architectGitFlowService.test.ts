@@ -58,6 +58,7 @@ mock.module('./tauriIpc', () => ({
 const {
   createArchitectGitFlowService,
   isPlanFinalizationBlockedError,
+  isPlanFinalizationRecoveryError,
 } = await import('./architectGitFlowService');
 type PlanFinalizationBlockedError = import('./architectGitFlowService').PlanFinalizationBlockedError;
 
@@ -71,6 +72,7 @@ const projectPaths = new Map<string, {
   gitFlowSettings?: ProjectGitFlowSettings;
 }>();
 let currentPlan: any = null;
+let gitFlowDependencies: Parameters<typeof createArchitectGitFlowService>[0];
 
 interface MockGitStatus {
   branch: string;
@@ -694,7 +696,7 @@ describe('architectGitFlowService', () => {
     deleteArchitectPlanMock.mockClear();
     commitArchitectPlanMetadataMock.mockClear();
 
-    architectGitFlowService = createArchitectGitFlowService({
+    gitFlowDependencies = {
       tauri: {
         isTauriAvailable: () => true,
         gitStatus: gitStatusMock,
@@ -734,7 +736,8 @@ describe('architectGitFlowService', () => {
       deleteArchitectPlan: deleteArchitectPlanMock,
       commitArchitectPlanMetadata: commitArchitectPlanMetadataMock,
       getGitFlowBaseBranch: () => 'develop',
-    });
+    };
+    architectGitFlowService = createArchitectGitFlowService(gitFlowDependencies);
   });
 
   it('reprovisions executable plan branches before restoring archived metadata', async () => {
@@ -2013,10 +2016,27 @@ describe('architectGitFlowService', () => {
       return `merged:${repoPath}`;
     });
 
-    await expect(architectGitFlowService.finalizePlanIntoBaseBranch({
+    const failure = await architectGitFlowService.finalizePlanIntoBaseBranch({
       branchName: 'feature/implement',
       planId: 'plan-1',
-    })).rejects.toThrow('injected api merge failure');
+    }).catch((error: unknown) => error);
+    expect(isPlanFinalizationRecoveryError(failure)).toBe(true);
+    if (!isPlanFinalizationRecoveryError(failure)) throw new Error('Expected recoverable partial finalization');
+    expect(failure.message).toContain('injected api merge failure');
+    expect(failure.recovery).toMatchObject({
+      outcome: 'partial', direction: 'forward',
+      nextActions: ['reconcile_git', 'write_metadata', 'cleanup_resources', 'commit_metadata'],
+      repositories: expect.arrayContaining([
+        expect.objectContaining({ projectId: 'web', phase: 'complete' }),
+        expect.objectContaining({ projectId: 'api', phase: 'plan_merge_pending' }),
+      ]),
+    });
+    expect(gitBranchDeleteMock).not.toHaveBeenCalled();
+    // A fresh service must use the durable journal, not the failed call's closure.
+    architectGitFlowService = createArchitectGitFlowService(gitFlowDependencies);
+    expect(await architectGitFlowService.readPlanFinalizationRecovery({
+      branchName: 'feature/implement', planId: 'plan-1',
+    })).toEqual(failure.recovery);
 
     const pendingAfterFailure = readPersistedLifecycleSagas().find(
       (saga) => saga.operation === 'finalize',
