@@ -169,10 +169,12 @@ export const loadCachedArchitectPlanValue = async <T>(params: {
 
   const promise = params.loader().then(
     (value) => {
-      params.cache.set(params.cacheKey, {
-        value,
-        expiresAt: Date.now() + params.ttlMs,
-      });
+      if (params.cache.get(params.cacheKey)?.promise === promise) {
+        params.cache.set(params.cacheKey, {
+          value,
+          expiresAt: Date.now() + params.ttlMs,
+        });
+      }
       return value;
     },
     (error) => {

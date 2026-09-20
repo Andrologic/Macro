@@ -152,7 +152,7 @@ describe('configRuntimeEffects', () => {
       inAppNotificationsEnabled: true,
       notificationChannelModes: { agent: 'both' },
     });
-    expect(applyConfiguredLanguage).toHaveBeenCalledWith('fr');
+    expect(applyConfiguredLanguage).toHaveBeenCalledWith('fr', expect.objectContaining({ isActive: expect.any(Function) }));
     expect(loadProviderConfigs).toHaveBeenCalledTimes(1);
     expect(loadToolSettings).toHaveBeenCalledTimes(1);
     expect(refreshWebSearchSettings).toHaveBeenCalledTimes(1);
@@ -187,7 +187,7 @@ describe('configRuntimeEffects', () => {
       notificationChannelModes: { agent: 'in_app', system: 'desktop' },
     });
     expect(resolveSupportedLanguage).toHaveBeenCalledWith('fr');
-    expect(applyConfiguredLanguage).toHaveBeenCalledWith('fr');
+    expect(applyConfiguredLanguage).toHaveBeenCalledWith('fr', expect.objectContaining({ isActive: expect.any(Function) }));
     expect(loadProviderConfigs).not.toHaveBeenCalled();
     expect(loadToolSettings).not.toHaveBeenCalled();
     expect(refreshWebSearchSettings).not.toHaveBeenCalled();
@@ -312,4 +312,16 @@ describe('configRuntimeEffects', () => {
     expect(persistenceErrorListeners.size).toBe(0);
     expect(persistenceUnsubscribes[0]).toHaveBeenCalledTimes(1);
   });
+});
+
+it('a retired effects disposer cannot unsubscribe its replacement', async () => {
+  const dependencies = { providers: { loadProviderConfigs }, tools: { loadSettings: loadToolSettings } };
+  const old = installConfigRuntimeEffects(dependencies);
+  await old();
+  const next = installConfigRuntimeEffects(dependencies);
+  await old();
+  loadProviderConfigs.mockClear();
+  useConfigStore.setState({ snapshot: snapshot({ providers: { default: 'new' } }) });
+  expect(loadProviderConfigs).toHaveBeenCalledTimes(1);
+  await next();
 });

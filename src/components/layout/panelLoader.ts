@@ -49,15 +49,16 @@ export const createModePanelLoader = ({
       }
 
       if (!pending) {
-        pending = importComponent()
+        const request = importComponent()
           .then((loadedComponent) => {
-            component = loadedComponent;
+            if (pending === request) component = loadedComponent;
             return loadedComponent;
           })
           .catch((error) => {
-            pending = null;
+            if (pending === request) pending = null;
             throw error;
           });
+        pending = request;
       }
 
       return pending;

@@ -1,3 +1,4 @@
+import { createLifecycleScope, type LifecycleContext } from '../services/lifecycleScope';
 import { listen, type UnlistenFn } from '../services/tauriRuntimeBridge';
 import { create } from 'zustand';
 import type {
@@ -34,7 +35,7 @@ interface ConfigStore {
   error: string | null;
   activeProjectIds: string[];
   pendingChanges: PendingSensitiveConfigChange[];
-  hydrate: (projectIds?: string[]) => Promise<ConfigSnapshot | null>;
+  hydrate: (projectIds?: string[], context?: LifecycleContext) => Promise<ConfigSnapshot | null>;
   refresh: () => Promise<ConfigSnapshot | null>;
   getDocument: (
     kind: ConfigDocumentKind,
@@ -73,7 +74,8 @@ type HydrationResult = readonly [ConfigSnapshot, PendingSensitiveConfigChange[]]
 const hydrationPromises = new Map<string, Promise<HydrationResult>>();
 let hydrationGeneration = 0;
 let listenerPromise: Promise<void> | null = null;
-let eventUnlisteners: UnlistenFn[] = [];
+let runtime = createLifecycleScope();
+let retirement: Promise<void> = Promise.resolve();
 
 const errorMessage = (error: unknown): string => {
   if (typeof error === 'string') return error;
@@ -100,7 +102,9 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   activeProjectIds: [],
   pendingChanges: [],
 
-  hydrate: async (projectIds = get().activeProjectIds) => {
+  hydrate: async (projectIds = get().activeProjectIds, context) => {
+    const owner = runtime;
+    if (!owner.isActive() || context?.isActive() === false) return null;
     const normalizedProjectIds = [...new Set(projectIds)].sort();
     if (!isConfigurationClientAvailable()) {
       set({ status: 'ready', error: null });
@@ -111,10 +115,10 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
     set({ status: 'loading', error: null });
     let request = hydrationPromises.get(scopeKey);
     if (!request) {
-      request = Promise.all([
+      request = owner.track(Promise.all([
         configurationGetSnapshot(normalizedProjectIds),
         configurationListPendingChanges(),
-      ]).finally(() => {
+      ])).finally(() => {
         if (hydrationPromises.get(scopeKey) === request) {
           hydrationPromises.delete(scopeKey);
         }
@@ -127,7 +131,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
         // A different scope may have become active while this request was in
         // flight. Its response must not replace the newer snapshot or pending
         // approval list.
-        if (generation === hydrationGeneration) {
+        if (generation === hydrationGeneration && owner.isActive() && context?.isActive() !== false) {
           set({
             snapshot,
             pendingChanges,
@@ -139,7 +143,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
         return snapshot;
       })
       .catch((error: unknown) => {
-        if (generation === hydrationGeneration) {
+        if (generation === hydrationGeneration && owner.isActive() && context?.isActive() !== false) {
           set({ status: 'error', error: errorMessage(error) });
         }
         throw error;
@@ -158,13 +162,16 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
     patch,
     source = 'userInterface',
   }) => {
-    const result = await configurationApplyPatch({
+    const owner = runtime;
+    owner.assertActive();
+    const result = await owner.track(configurationApplyPatch({
       kind,
       scope,
       expectedEtag,
       patch,
       source,
-    });
+    }));
+    if (!owner.isActive()) return result;
     if (result.pendingChange) {
       set((state) => ({
         pendingChanges: upsertPending(
@@ -178,19 +185,28 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   },
 
   resetPath: async ({ kind, scope = { type: 'user' }, path, expectedEtag }) => {
-    const result = await configurationResetPath({ kind, scope, path, expectedEtag });
+    const owner = runtime;
+    owner.assertActive();
+    const result = await owner.track(configurationResetPath({ kind, scope, path, expectedEtag }));
+    if (!owner.isActive()) return result;
     await get().refresh();
     return result;
   },
 
   reloadDocument: async (kind, scope = { type: 'user' }) => {
-    const document = await configurationReload({ kind, scope });
+    const owner = runtime;
+    owner.assertActive();
+    const document = await owner.track(configurationReload({ kind, scope }));
+    if (!owner.isActive()) return document;
     await get().refresh();
     return document;
   },
 
   acceptPendingChange: async (id) => {
-    const document = await configurationAcceptPendingChange(id);
+    const owner = runtime;
+    owner.assertActive();
+    const document = await owner.track(configurationAcceptPendingChange(id));
+    if (!owner.isActive()) return document;
     set((state) => ({
       pendingChanges: state.pendingChanges.filter((entry) => entry.id !== id),
     }));
@@ -199,7 +215,10 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
   },
 
   rejectPendingChange: async (id, restoreApproved) => {
-    const document = await configurationRejectPendingChange({ id, restoreApproved });
+    const owner = runtime;
+    owner.assertActive();
+    const document = await owner.track(configurationRejectPendingChange({ id, restoreApproved }));
+    if (!owner.isActive()) return document;
     set((state) => ({
       pendingChanges: state.pendingChanges.filter((entry) => entry.id !== id),
     }));
@@ -242,60 +261,63 @@ export const selectConfigDiagnostics = (
   ? snapshot?.diagnostics.filter((diagnostic) => diagnostic.document === kind) ?? []
   : snapshot?.diagnostics ?? [];
 
-export const initializeConfigRuntime = async (): Promise<void> => {
+/** Configuration listeners belong to the application, not to its settings view. */
+export const initializeConfigRuntime = async (context?: LifecycleContext): Promise<void> => {
+  context?.assertActive();
+  if (!runtime.isActive()) {
+    await retirement;
+    context?.assertActive();
+    if (!runtime.isActive()) runtime = createLifecycleScope();
+  }
+  const owner = runtime;
   if (!isConfigurationClientAvailable()) {
     useConfigStore.setState({ status: 'ready', error: null });
     return;
   }
   if (isTauriAvailable() && !listenerPromise) {
+    const acquisition = createLifecycleScope();
+    const release = owner.own(() => acquisition.stop());
+    if (context) {
+      context.signal.addEventListener('abort', release, { once: true });
+      acquisition.own(() => context.signal.removeEventListener('abort', release));
+    }
+    const refresh = () => {
+      if (acquisition.isActive()) void useConfigStore.getState().hydrate(undefined, acquisition).catch(() => undefined);
+    };
     const registrations = [
-      listen<ConfigDocument>('config://changed', () => {
-        void useConfigStore.getState().refresh();
+      listen<ConfigDocument>('config://changed', refresh),
+      listen<ConfigDocument>('config://invalid', refresh),
+      listen<PendingSensitiveConfigChange>('config://pending-sensitive-change', (event) => {
+        if (!acquisition.isActive()) return;
+        useConfigStore.setState((state) => ({ pendingChanges: upsertPending(state.pendingChanges, event.payload) }));
+        refresh();
       }),
-      listen<ConfigDocument>('config://invalid', () => {
-        void useConfigStore.getState().refresh();
-      }),
-      listen<PendingSensitiveConfigChange>(
-        'config://pending-sensitive-change',
-        (event) => {
-          useConfigStore.setState((state) => ({
-            pendingChanges: upsertPending(state.pendingChanges, event.payload),
-          }));
-          void useConfigStore.getState().refresh();
-        },
-      ),
-      listen<ConfigDocument>('config://restart-required', () => {
-        void useConfigStore.getState().refresh();
-      }),
-    ];
-    const currentListenerPromise = Promise.allSettled(registrations).then((results) => {
-      const unlisteners = results.flatMap((result) =>
-        result.status === 'fulfilled' ? [result.value] : []
-      );
-      const failure = results.find(
-        (result): result is PromiseRejectedResult => result.status === 'rejected',
-      );
-      if (failure) {
-        for (const unlisten of unlisteners) unlisten();
-        throw failure.reason;
-      }
-      eventUnlisteners = unlisteners;
-    });
-    listenerPromise = currentListenerPromise;
-    void currentListenerPromise.catch(() => {
-      if (listenerPromise === currentListenerPromise) {
-        listenerPromise = null;
-      }
-    });
+      listen<ConfigDocument>('config://restart-required', refresh),
+    ].map((registration) => registration.then((unlisten: UnlistenFn) => { acquisition.own(unlisten); }).catch((error) => { release(); throw error; }));
+    const current = owner.track(Promise.allSettled(registrations).then((results) => {
+      const failure = results.find((result) => result.status === 'rejected');
+      if (failure?.status === 'rejected') { release(); throw failure.reason; }
+    }));
+    listenerPromise = current;
+    void current.catch(() => { if (listenerPromise === current) listenerPromise = null; });
   }
   if (listenerPromise) await listenerPromise;
-  await useConfigStore.getState().hydrate();
+  if (!owner.isActive() || context?.isActive() === false) return;
+  await useConfigStore.getState().hydrate(undefined, context ?? owner);
+};
+
+export const stopConfigRuntime = (): Promise<void> => {
+  const retiring = runtime;
+  hydrationGeneration += 1;
+  listenerPromise = null;
+  hydrationPromises.clear();
+  let failure: unknown;
+  try { retiring.stop(); } catch (error) { failure = error; }
+  retirement = Promise.all([retirement, retiring.drain()]).then(() => undefined);
+  return retirement.then(() => { if (failure) throw failure; });
 };
 
 export const disposeConfigRuntimeForTests = (): void => {
-  for (const unlisten of eventUnlisteners) unlisten();
-  eventUnlisteners = [];
-  listenerPromise = null;
-  hydrationPromises.clear();
-  hydrationGeneration = 0;
+  void stopConfigRuntime();
+  runtime = createLifecycleScope();
 };

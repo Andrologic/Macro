@@ -1,3 +1,4 @@
+import { type LifecycleContext } from '../services/lifecycleScope';
 import type { SettingsTab } from '../domains/shell/settings';
 import { isWorkspaceMode as isAppMode, workspaceDefinitions } from '../domains/shell/workspace';
 import { create } from "zustand";
@@ -393,9 +394,11 @@ const persistSessionContext = async (input: {
   selectedGroupId: string | null;
   selectedProjectId: string | null;
   mode: AppMode;
-}): Promise<void> => {
+}, lifecycle?: LifecycleContext): Promise<void> => {
+  lifecycle?.assertActive();
   const selectionAtStart = useAppStore.getState();
   await localProjectContext.upsertLocalSessionContextState(input);
+  lifecycle?.assertActive();
   const current = useAppStore.getState();
   if (current.selectedGroupId !== selectionAtStart.selectedGroupId ||
     current.selectedProjectId !== selectionAtStart.selectedProjectId ||
@@ -404,15 +407,17 @@ const persistSessionContext = async (input: {
       selectedGroupId: current.selectedGroupId,
       selectedProjectId: current.selectedProjectId,
       mode: current.mode,
-    });
+    }, lifecycle);
     return;
   }
-  void savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, input.selectedGroupId);
-  void savePreference(
-    PREF_KEYS.LAST_SELECTED_PROJECT_ID,
-    input.selectedProjectId,
-  );
-  void savePreference(PREF_KEYS.LAST_ACTIVE_MODE, input.mode);
+  const writes = await Promise.allSettled([
+    savePreference(PREF_KEYS.LAST_SELECTED_GROUP_ID, input.selectedGroupId),
+    savePreference(PREF_KEYS.LAST_SELECTED_PROJECT_ID, input.selectedProjectId),
+    savePreference(PREF_KEYS.LAST_ACTIVE_MODE, input.mode),
+  ]);
+  lifecycle?.assertActive();
+  const failed = writes.find((result) => result.status === 'rejected');
+  if (failed?.status === 'rejected') throw failed.reason;
 };
 
 const sortByUpdatedAtDesc = <T extends { updated_at?: string }>(
@@ -580,7 +585,8 @@ const scheduleScopedBlankPlanConsolidation = (params: {
   pendingBlankPlanConsolidationsByScopeKey.set(scopeKey, task);
 };
 
-const reconcileProjectRegistryDependencies = async (): Promise<void> => {
+const reconcileProjectRegistryDependencies = async (lifecycle?: LifecycleContext): Promise<void> => {
+  lifecycle?.assertActive();
   while (true) {
     const state = useAppStore.getState();
     const { validGroupIds, validProjectIds } = collectProjectRegistryIds(state);
@@ -590,6 +596,7 @@ const reconcileProjectRegistryDependencies = async (): Promise<void> => {
       selectedGroupId: state.selectedGroupId,
       selectedProjectId: state.selectedProjectId,
     });
+    lifecycle?.assertActive();
     const current = useAppStore.getState();
     if (current.projectGroups !== state.projectGroups ||
       current.standaloneProjects !== state.standaloneProjects ||
@@ -733,7 +740,9 @@ const persistCurrentProjectContext = async (
 const restoreProjectContext = async (
   groupId: string,
   preferredFocusProjectId?: string | null,
+  lifecycle?: LifecycleContext,
 ): Promise<void> => {
+  lifecycle?.assertActive();
   const appState = useAppStore.getState();
   const globalProject = getGlobalProjectById(appState.projectGroups, groupId);
   if (!globalProject) return;
@@ -745,6 +754,7 @@ const restoreProjectContext = async (
     useAppStore.getState().mode === appState.mode;
   if (!isCurrent()) return;
   const context = await localProjectContext.getLocalProjectContextState(groupId);
+  lifecycle?.assertActive();
   if (!isCurrent()) return;
   const taskStore = useTaskStore.getState();
 
@@ -764,9 +774,11 @@ const restoreProjectContext = async (
 
   if (restoredTaskId) {
     useAppStore.setState({ selectedTaskId: restoredTaskId });
-    await taskStore.activateTask(restoredTaskId);
+    await taskStore.activateTask(restoredTaskId, lifecycle);
+    lifecycle?.assertActive();
     if (!isCurrent()) return;
-    await useChatStore.getState().ensureConversationForCurrentMode();
+    await useChatStore.getState().ensureConversationForCurrentMode(lifecycle);
+    lifecycle?.assertActive();
     if (!isCurrent()) return;
   } else {
     useAppStore.setState({ selectedTaskId: null });
@@ -786,13 +798,17 @@ const restoreProjectContext = async (
     selectedGroupId: groupId,
     selectedProjectId: nextFocusProjectId,
     mode: useAppStore.getState().mode,
-  });
+  }, lifecycle);
+  lifecycle?.assertActive();
 };
 
 const hydrateArchitectPlanInStore = async (input: {
+  lifecycle?: LifecycleContext;
   requestId: number;
   activationPayload: ArchitectPlanActivationPayload;
 }): Promise<void> => {
+  const lifecycle = input.lifecycle;
+  lifecycle?.assertActive();
   const { activationPayload } = input;
   const rawPlan = activationPayload.plan;
   if (!rawPlan || rawPlan.status === "deleted") {
@@ -850,6 +866,7 @@ const hydrateArchitectPlanInStore = async (input: {
     projectIds: plan.projectIds,
     executionModesByProjectId: plan.executionModesByProjectId,
   });
+  lifecycle?.assertActive();
   const persistedPreview = runtime?.strategyPreview ?? null;
   if (!persistedPreview) {
     return;
@@ -870,6 +887,7 @@ const hydrateArchitectPlanInStore = async (input: {
       plan,
       preview: null,
     });
+    lifecycle?.assertActive();
     return;
   }
 
@@ -954,9 +972,12 @@ const isCurrentArchitectPlanSwitchRequest = (input: {
 };
 
 const activateArchitectPlanInStore = async (input: {
+  lifecycle?: LifecycleContext;
   planId: string;
   options?: ActivateArchitectPlanOptions;
 }): Promise<Awaited<ReturnType<typeof getArchitectPlan>> | null> => {
+  const lifecycle = input.lifecycle;
+  lifecycle?.assertActive();
   const appStore = useAppStore.getState();
   const targetBranch = resolveTargetBranch(
     input.options?.targetBranch ||
@@ -1029,7 +1050,9 @@ const activateArchitectPlanInStore = async (input: {
         scopedProjectIdsHint: activationScopedProjectIdsHint,
       }
     );
+    lifecycle?.assertActive();
   } catch (error) {
+    lifecycle?.assertActive();
     if (
       switchingArchitectPlan &&
       isCurrentArchitectPlanSwitchRequest({ requestId, planId: input.planId, targetBranch })
@@ -1103,6 +1126,7 @@ const activateArchitectPlanInStore = async (input: {
         restoreProjectContext: false,
         ensureAutoPlan: false,
       });
+      lifecycle?.assertActive();
       if (
         switchingArchitectPlan &&
         !isCurrentArchitectPlanSwitchRequest({
@@ -1117,6 +1141,7 @@ const activateArchitectPlanInStore = async (input: {
   }
 
   await hydrateArchitectPlanInStore({
+    lifecycle,
     requestId,
     activationPayload:
       activationPayload ?? {
@@ -1128,6 +1153,7 @@ const activateArchitectPlanInStore = async (input: {
         resolutionMode: 'full',
       },
   });
+  lifecycle?.assertActive();
   const latestAppState = useAppStore.getState();
   if (input.options?.consolidateBlankPlans !== false) {
     scheduleScopedBlankPlanConsolidation({
@@ -1539,6 +1565,7 @@ interface AppStore {
     options?: ActivateArchitectPlanOptions,
   ) => Promise<boolean>;
   loadMacroProjectMetadataForSelection: (options?: {
+    lifecycle?: LifecycleContext;
     hydrateActivePlan?: boolean;
     refreshTasks?: boolean;
     includeArchivedInVisible?: boolean;
@@ -1574,9 +1601,9 @@ interface AppStore {
   setRightPanelWidth: (width: number) => void;
   setLeftPanelOpen: (open: boolean) => void;
   setRightPanelOpen: (open: boolean) => void;
-  initialize: () => Promise<void>;
-  initializeCritical: () => Promise<void>;
-  resumeAfterInitialize: () => Promise<void>;
+  initialize: (lifecycle?: LifecycleContext) => Promise<void>;
+  initializeCritical: (lifecycle?: LifecycleContext) => Promise<void>;
+  resumeAfterInitialize: (lifecycle?: LifecycleContext) => Promise<void>;
 }
 
 interface CreateProjectData {
@@ -2205,6 +2232,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   loadMacroProjectMetadataForSelection: async (options = {}) => {
+    const lifecycle = options.lifecycle;
+    lifecycle?.assertActive();
     const requestId = ++architectPlanCatalogRequestId;
     const state = get();
     const registry = {
@@ -2253,7 +2282,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         architectPlanCatalogError: null,
       });
       if (options.refreshTasks) {
-        await useTaskStore.getState().refreshFromPlan();
+        await useTaskStore.getState().refreshFromPlan({ lifecycle });
+        lifecycle?.assertActive();
       }
       return null;
     }
@@ -2270,6 +2300,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const localContext =
         await localProjectContext.getLocalProjectContextState(contextId);
+      lifecycle?.assertActive();
       const result = await loadMacroProjectMetadataCatalog({
         scopedProjectIds,
         selectedGroupId: state.selectedGroupId,
@@ -2284,6 +2315,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }),
         includeArchivedInVisible: options.includeArchivedInVisible === true,
       });
+      lifecycle?.assertActive();
       if (!isCurrentScope()) return null;
       const catalogModernPlanCount = result.snapshot.branches.reduce(
         (count, branch) =>
@@ -2305,6 +2337,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (options.hydrateActivePlan !== false) {
         if (result.selectedPlan && result.selectedBranchName) {
           const activatedPlan = await activateArchitectPlanInStore({
+            lifecycle,
             planId: result.selectedPlan.id,
             options: {
               targetBranch: result.selectedBranchName,
@@ -2315,6 +2348,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
               scopedProjectIdsHint: scopedProjectIds,
             },
           });
+          lifecycle?.assertActive();
           if (!isCurrentScope()) return null;
           if (activatedPlan) {
             await persistResolvedArchitectPlanContext({
@@ -2324,6 +2358,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
               planId: activatedPlan.id,
               localContext,
             });
+            lifecycle?.assertActive();
           } else {
             clearActiveArchitectPlanInStore();
           }
@@ -2333,7 +2368,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
 
       if (options.refreshTasks) {
-        await useTaskStore.getState().refreshFromPlan();
+        await useTaskStore.getState().refreshFromPlan({ lifecycle });
+        lifecycle?.assertActive();
       }
 
       devLogger.info(
@@ -2356,6 +2392,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       return result;
     } catch (error) {
+      lifecycle?.assertActive();
       if (!isCurrentScope()) return null;
       const normalized = toServiceError(error);
       set({
@@ -4745,11 +4782,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     return undefined;
   },
 
-  initializeCritical: async () => {
+  initializeCritical: async (lifecycle) => {
+    lifecycle?.assertActive();
     set({ isLoading: true, lastError: null });
     try {
       logProjectRegistryAction("started", { action: "initializeCritical" });
       await purgeLegacyImplementExecutionModePreference();
+      lifecycle?.assertActive();
       // Load persisted panel preferences
       const [
         activeThemeId,
@@ -4802,6 +4841,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         localProjectContext.getProjectSwitchPolicy(),
         localProjectContext.getLocalSessionContextState(),
       ]);
+      lifecycle?.assertActive();
 
       const normalizedZoomMode: UiZoomMode =
         uiZoomMode === "override" ? "override" : "auto";
@@ -4823,7 +4863,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       let bootstrapErrorMessage: string | null = null;
 
       const reloadWorkspaceBootstrapAfterRegistryRepair = async () => {
+        lifecycle?.assertActive();
         const bootstrap = await services.getAppBootstrap();
+        lifecycle?.assertActive();
         bootstrapPlan = bootstrap.plan;
         bootstrapStandaloneProjects = bootstrap.standaloneProjects ?? [];
         bootstrapProjectGroups = bootstrap.projectGroups;
@@ -4833,7 +4875,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       try {
         await reloadWorkspaceBootstrapAfterRegistryRepair();
+        lifecycle?.assertActive();
       } catch (bootstrapError) {
+        lifecycle?.assertActive();
         bootstrapErrorMessage = toServiceError(bootstrapError).message;
         devLogger.info(
           `[Init] workspace bootstrap failed: ${bootstrapErrorMessage}`,
@@ -4893,7 +4937,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         : null;
 
       if (!sanitizedLastOpenProjectPath && lastOpenProjectPath) {
-        void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+        await savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+        lifecycle?.assertActive();
       }
 
       if (!resolvedProjectId && sanitizedLastOpenProjectPath) {
@@ -4914,7 +4959,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         if (!standaloneProjectForPath && groupForPath) {
           resolvedGroupId = groupForPath.id;
         } else if (!standaloneProjectForPath) {
-          void savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+          await savePreference(PREF_KEYS.LAST_OPEN_PROJECT_PATH, null);
+          lifecycle?.assertActive();
         }
       }
 
@@ -5030,11 +5076,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
           : null,
       });
 
-      void savePreference(PREF_KEYS.RECENT_PROJECTS, cleanedRecentProjects);
-      void savePreference(
+      await savePreference(PREF_KEYS.RECENT_PROJECTS, cleanedRecentProjects);
+      lifecycle?.assertActive();
+      await savePreference(
         PREF_KEYS.MACRO_ENABLED_PROJECTS,
         cleanedMacroEnabledProjects,
       );
+      lifecycle?.assertActive();
 	      const resolvedFocusedProject = resolvedProjectId
 	        ? findProjectInRegistry(
 	            {
@@ -5044,13 +5092,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	            resolvedProjectId,
 	          )
 	        : null;
-      void savePreference(
+      await savePreference(
         PREF_KEYS.LAST_OPEN_PROJECT_PATH,
         resolvedFocusedProject?.path &&
           shouldPersistProjectPath(resolvedFocusedProject.path)
           ? resolvedFocusedProject.path
           : null,
       );
+      lifecycle?.assertActive();
       logProjectRegistryAction("succeeded", {
         action: "initializeCritical",
         afterCount: countProjectsInProjectRegistry({
@@ -5060,6 +5109,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         repairApplied: normalizedRegistry.report.repaired,
       });
     } catch (error) {
+      lifecycle?.assertActive();
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message });
       logProjectRegistryAction("failed", {
@@ -5069,23 +5119,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  resumeAfterInitialize: async () => {
+  resumeAfterInitialize: async (lifecycle) => {
+    lifecycle?.assertActive();
     const state = get();
     try {
       await persistSessionContext({
         selectedGroupId: state.selectedGroupId,
         selectedProjectId: state.selectedProjectId,
         mode: state.mode,
-      });
+      }, lifecycle);
+      lifecycle?.assertActive();
     } catch (error) {
+      lifecycle?.assertActive();
       devLogger.info(
         `[Init] session context persistence failed after shell boot: ${toServiceError(error).message}`,
       );
     }
 
     try {
-	      await reconcileProjectRegistryDependencies();
+	      await reconcileProjectRegistryDependencies(lifecycle);
+	      lifecycle?.assertActive();
     } catch (error) {
+      lifecycle?.assertActive();
       devLogger.info(
         `[Init] project registry dependency reconciliation failed after shell boot: ${toServiceError(error).message}`,
       );
@@ -5097,9 +5152,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	        current.selectedGroupId &&
 	        current.projectSwitchPolicy === "resume_per_project"
 	      ) {
-	        await restoreProjectContext(current.selectedGroupId);
+	        await restoreProjectContext(current.selectedGroupId, undefined, lifecycle);
+	        lifecycle?.assertActive();
 	      }
     } catch (error) {
+      lifecycle?.assertActive();
       devLogger.info(
         `[Init] project context restore failed after shell boot: ${toServiceError(error).message}`,
       );
@@ -5111,16 +5168,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
         hydrateActivePlan: current.mode === "Architect",
         refreshTasks: true,
         reason: "boot",
+        lifecycle,
       });
+      lifecycle?.assertActive();
     } catch (error) {
+      lifecycle?.assertActive();
       devLogger.info(
         `[Init] auto plan restore failed after shell boot: ${toServiceError(error).message}`,
       );
     }
   },
 
-  initialize: async () => {
-    await get().initializeCritical();
-    await get().resumeAfterInitialize();
+  initialize: async (lifecycle) => {
+    lifecycle?.assertActive();
+    await get().initializeCritical(lifecycle);
+    lifecycle?.assertActive();
+    await get().resumeAfterInitialize(lifecycle);
+    lifecycle?.assertActive();
   },
 }));
