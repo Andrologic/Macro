@@ -159,7 +159,7 @@ import {
 import {
   getArchitectProfileAdjustedToolIds,
 } from "../services/architectToolSurface";
-import { handleArchitectToolCall } from "../services/architectToolRuntime";
+import { handleDeferredArchitectToolCall } from "../services/deferredArchitectTool";
 import {
   canPlanFinalizationTaskReceiveMessages,
   isPlanFinalizationTaskSource,
@@ -5298,7 +5298,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       mcp: callScopedMcpTool,
       taskTodo: handleTaskTodoToolCall,
       taskArtifact: handleTaskArtifactToolCall,
-      architect: (params) => handleArchitectToolCall({
+      architect: (params) => handleDeferredArchitectToolCall({
         ...params,
         planService: {
           createArchitectPlan,
