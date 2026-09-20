@@ -396,12 +396,17 @@ successeur et l'attente de fin suit les remplacements dus à la récupération.
 
 `chatStreamCompaction` garde le checkpoint provisoire d'un stream ;
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
-asynchrones et transmet le contexte figé avec son signal d'annulation. Le contrôle
+asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
+MCP conserve la clé opaque de génération backend via `mcp/runtimeSnapshot`.
+La récupération d'overflow réutilise le type d'agent capturé à l'envoi. Le contrôle
 de tentative accompagne aussi l'exécuteur pendant ses attentes, puis les ports
 Architect et terminal avant chaque nouvelle opération. Architect résout sa cible
 implicite à partir du plan et de la branche capturés ; ses projections UI ne
 s'appliquent que si la sélection correspond encore au tour. Une écriture déjà
-engagée peut finir après Stop, sans lancer la projection suivante.
+engagée peut finir après Stop, sans lancer la projection suivante. Une erreur
+tardive du placeholder assistant n'autorise pas l'ancien tour à remettre en
+brouillon une tâche reprise par son successeur ; un échec du tour encore
+propriétaire conserve sa compensation.
 `chatToolExecution` route les appels et contrôle leur politique ;
 `chatToolApproval` coordonne leur approbation durable et `chatAgentTerminal`
 gère les sessions terminal de l'agent. Les ports raccordent les effets des

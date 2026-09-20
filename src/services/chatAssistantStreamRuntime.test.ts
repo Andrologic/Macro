@@ -1,5 +1,10 @@
+import { chatSendFixture } from "../test-utils/chatSendFixture";
+import { resolveScopedMcpRuntime, callScopedMcpTool, type ScopedMcpRuntimeDeps } from "./scopedMcpRuntime";
+import { chatRequestPreparationFixture } from "../test-utils/chatRequestPreparationFixture";
+import { prepareAssistantStreamLaunch } from "./chatRequestPreparation";
+import { getImplementAgentToolPolicy } from "./toolModePolicy";
 import { describe, expect, mock, test } from "bun:test";
-import type { ChatMessage, ConversationRuntimeState, ToolTrace } from "../types";
+import type { AgentType, ChatMessage, ConversationRuntimeState, ToolTrace } from "../types";
 import { EMPTY_CONVERSATION_RUNTIME } from "../domains/chat/runtimeState";
 import { createAssistantStreamRuntime, type ChatAssistantStreamPorts } from "./chatAssistantStreamRuntime";
 import { createChatTurnRuntime } from "./chatTurnRuntime";
@@ -538,4 +543,107 @@ describe("chatAssistantStreamRuntime with real lifecycle and orchestrator", () =
 
     expect(h.sync.mock.calls).toEqual([["Architect", "a", originalPlan]]);
   });
+});
+
+async function mcpFixture() {
+  let generation = 1;
+  const calls: number[] = [];
+  let connects = 0;
+  const deps: ScopedMcpRuntimeDeps = {
+    mcpRuntimeConnect: async selector => {
+      connects++;
+      return { key: { serverId: selector.serverId, projectId: null, projectIds: [...selector.projectIds], configGeneration: generation },
+        status: "ready", requestedProtocolMode: null, negotiatedEra: null, negotiatedProtocolVersion: null,
+        protocolDecisionReason: null, lastError: null, updatedAt: "2026-01-01" };
+    },
+    mcpRuntimeRefreshCatalog: async key => ({ key, tools: [{ id: "mcp__docs__read", serverId: "docs", name: "read", enabled: true }], refreshedAt: "2026-01-01" }),
+    mcpRuntimeCallTool: async input => { calls.push(input.key.configGeneration); return { content: "ok", isError: false, rawResult: {} }; },
+    mcpRuntimeCancelOperation: async () => true,
+  };
+  const scoped = await resolveScopedMcpRuntime({ docs: { enabled: true, name: "Docs", transport: { type: "stdio", command: "never-executed" } } }, [], { projectIds: ["a-project"], deps });
+  expect(scoped.failures).toEqual([]);
+  return { scoped, deps, calls, connects: () => connects, advance: () => { generation = 2; } };
+}
+
+
+test("stream snapshot preserves MCP generation and isolates mutable server data", async () => {
+  const mcp = await mcpFixture();
+  const h = setup();
+  const params = launch("a");
+  params.allowedToolIds = ["mcp__docs__read"];
+  params.mcpTools = mcp.scoped.tools;
+  params.mcpServers = mcp.scoped.servers;
+  h.execute.mockImplementation((operation, name, args) => callScopedMcpTool(name, args, operation.mcpServers, {
+    projectIds: operation.executionContext.projectIds, signal: operation.signal, deps: mcp.deps,
+  }));
+  const stream = h.start(params);
+  mcp.advance();
+  mcp.scoped.servers[0].tools = [];
+  const answer = await stream.options.onToolCall?.("mcp__docs__read", {}, "call");
+  expect(answer).toBe("ok");
+  stream.options.onComplete(result("done"));
+  stream.done.resolve();
+  await h.owner.drain("a");
+  expect(mcp.calls).toEqual([1]);
+  expect(mcp.connects()).toBe(1);
+});
+
+for (const agentAtSend of ["build", "plan"] as const) {
+  test(`overflow retains ${agentAtSend} tool capabilities after selecting the other agent`, async () => {
+    const h = setup();
+    const params = launch("a");
+    params.modeAtSend = "Implement";
+    params.agentTypeAtSend = agentAtSend;
+    params.allowedToolIds = ["read", "write"].filter(id => getImplementAgentToolPolicy(agentAtSend).allowedToolIds.includes(id));
+    params.riskLevel = "yolo";
+    params.providerSupportsNativeToolCalling = true;
+    const prep = chatRequestPreparationFixture();
+    prep.prepared.executionContext = params.executionContext;
+    let selectedAgent: AgentType = agentAtSend;
+    // Match the product adapter's fallback to the current selection if no agent was captured.
+    prep.ports.tools.allowedForMode = async (_profile, _mode, agent) =>
+      ["read", "write"].filter(id => getImplementAgentToolPolicy(agent ?? selectedAgent).allowedToolIds.includes(id));
+    prep.ports.tools.mcpSnapshot = () => ({ servers: [], enabledTools: () => [] });
+    prep.ports.tools.resolveScopedMcp = async () => ({ servers: [], tools: [], failures: [] });
+    h.prepare.mockImplementation(request => prepareAssistantStreamLaunch(request, prep.ports));
+    const old = h.start(params);
+    selectedAgent = agentAtSend === "build" ? "plan" : "build";
+    old.options.onError(new Error("maximum context length is 128000 tokens"));
+    await checkpoint();
+    expect(h.calls).toHaveLength(2);
+    const recovered = h.calls[1];
+    expect(h.prepare.mock.calls[0][0].agentTypeAtSend).toBe(agentAtSend);
+    expect(recovered.options.allowedToolIds).toEqual(old.options.allowedToolIds);
+    old.done.resolve();
+    recovered.options.onComplete(result("done"));
+    recovered.done.resolve();
+    await h.owner.drain("a");
+  });
+}
+
+test("send handles a synchronous diagnostic failure after the real runtime claims streaming", async () => {
+  const h = setup();
+  const sending = chatSendFixture("Implement");
+  sending.ports.owner = h.owner;
+  const projectAssistant = sending.ports.projection.publishAssistant;
+  sending.ports.projection.publishAssistant = (message, mode, agent) => {
+    projectAssistant(message, mode, agent);
+    h.messages.set(message.id, message);
+  };
+  sending.ports.projection.launchError = mock((id, sessionId, _assistantId, error) => ({
+    applied: h.owner.failLaunch(id, sessionId, error.message),
+  }));
+  sending.ports.stream.start = request => h.runtime.start({
+    ...launch(request.conversationId, request.sessionId), ...request,
+    selectedProviderId: request.providerId, selectedModelId: request.modelId,
+  });
+  h.record.mockImplementation(() => {
+    expect(h.owner.read(sending.input.conversationId).phase).toBe("streaming");
+    throw new Error("diagnostics failed after claim");
+  });
+  await expect(sending.run()).rejects.toThrow("diagnostics failed after claim");
+  expect(sending.ports.tasks.rollbackDraft).toHaveBeenCalledTimes(1);
+  expect(sending.ports.projection.launchError).toHaveBeenCalledTimes(1);
+  expect(h.owner.read(sending.input.conversationId)).toMatchObject({ phase: "error", lastError: "diagnostics failed after claim" });
+  expect(h.calls).toHaveLength(0);
 });

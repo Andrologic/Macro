@@ -1,4 +1,3 @@
-import { ChatTurnSupersededError } from "../chatTurnRuntime";
 import type { ChatMessage } from '../../types';
 import type { PrepareAssistantStreamParams } from '../chatStreamContracts';
 import {
@@ -34,12 +33,13 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     status: 'cancelled', conversationId, turnId: lease?.turnId ?? '',
     userMessageId: null, assistantMessageId: null,
   });
-  const isCurrent = (id = conversationId) => {
+  const ownsTurn = (id = conversationId) => {
     const runtime = owner.read(id);
     return lease !== null && !preparation.isDeleted(id) && !abortController.signal.aborted &&
       runtime.sessionId === lease.sessionId && runtime.turnId === lease.turnId &&
-      runtime.abortController === abortController && runtime.phase === 'preparing';
+      runtime.abortController === abortController;
   };
+  const isCurrent = (id = conversationId) => ownsTurn(id) && owner.read(id).phase === 'preparing';
   const setPreparing = (id: string, current: SendLease, assistantId: string | null = null) =>
     owner.set(id, {
       phase: 'preparing', ...current, assistantMessageId: assistantId, lastError: null,
@@ -219,7 +219,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       }, launch);
       if (firstManualFeatureMessage) tasks.completeLaunch(conversationId, current.sessionId);
     } catch (error) {
-      if (error instanceof ChatTurnSupersededError && !isCurrent()) return sentWithoutAssistant(persistedUserMessage);
+      if (!ownsTurn()) return sentWithoutAssistant(persistedUserMessage);
       launchError = error;
       if (recovery) await tasks.rollbackDraft(recovery);
       throw error;

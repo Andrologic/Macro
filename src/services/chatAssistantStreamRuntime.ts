@@ -1,3 +1,4 @@
+import { snapshotScopedMcpServers } from "./mcp/runtimeSnapshot";
 import { createChatToolDispatch, type ChatToolDispatchPorts } from "./chatToolDispatch";
 import type { ConversationCompactionStatus } from "./contextCompactionSession";
 import type { AppMode, ChatMessage, ToolTrace } from "../types";
@@ -65,7 +66,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       executionContext: structuredClone(input.executionContext),
       scopedTurnConfiguration: structuredClone(input.scopedTurnConfiguration),
       allowedToolIds: [...input.allowedToolIds],
-      mcpServers: structuredClone(input.mcpServers),
+      mcpServers: snapshotScopedMcpServers(input.mcpServers),
       mcpTools: structuredClone(input.mcpTools),
       abortController: input.abortController ?? new AbortController(),
     };
@@ -252,6 +253,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
           userContent: params.userContent,
           resolvedTaskId: params.resolvedTaskId,
           modeAtSend: params.modeAtSend,
+          agentTypeAtSend: params.agentTypeAtSend,
           providerId: params.selectedProviderId,
           modelId: params.selectedModelId,
           reasoningEffort: params.selectedReasoningEffort,
