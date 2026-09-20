@@ -437,3 +437,55 @@ replacement for visual measurements. The native SQLite results above do not
 fill those gaps. The raw reports, command logs, exit codes, clock/load records,
 source/binary/lockfile fingerprints and superseded experiments are kept outside
 Git, without ordinary user data.
+
+### Final bundle correction
+
+The final production bundle was measured at `661f3fa5`. The integrated baseline
+bundle at `9451ddc6` has the product sources of `1715979a`; its intervening
+commits add measurement tooling only. All values below are emitted bytes.
+
+| Metric | Historical `4622f45c` | Integrated before correction `9451ddc6` | Corrected `661f3fa5` |
+| --- | ---: | ---: | ---: |
+| Entry JavaScript | 1,453,296 | 1,502,512 | 1,421,689 |
+| Static JavaScript closure | 2,766,814 | 2,816,030 | 1,769,333 |
+| Static JavaScript closure, gzip | 718,013 | 733,518 | 479,164 |
+| All emitted JS/CSS | 9,194,607 | 9,257,128 | 9,129,770 |
+| All emitted JS/CSS, gzip | 2,603,171 | 2,633,615 | 2,596,077 |
+| Existing budget failures | Entry, fr, ko, ja | Entry, fr, ko, ja | None |
+
+The entry limit remains 1,425,000 bytes, leaving 3,311 bytes of margin. Every
+other existing budget is unchanged and passes. This margin is small; subsequent
+work must keep checking the fixed gate. The entry shrank by 80,823 bytes and its
+static JS closure by 1,046,697 bytes against the integrated baseline. The closure
+is deduplicated, includes shared chunks, and excludes dynamic imports. It is
+not a browser waterfall or a navigation latency measurement.
+
+The Vite preload helper now lives in the existing eager utility chunk instead
+of pulling Mermaid into startup. The xterm CSS import remains in `main.tsx`,
+but CSS no longer assigns the terminal JS vendor to the startup closure.
+Comparison through the same CSS transforms found all 33 canonical xterm rules
+unchanged among 36 emitted rules, including three application overrides. This
+checks declarations, not visual layout or cascade order in the WebView.
+
+Locale JSON is emitted as default object literals without named exports. All
+12 compiled default objects were deep-compared with their source JSON. French,
+Japanese and Korean chunks now measure 130,427, 145,514 and 131,089 bytes.
+
+Application code is deferred at calls that already return promises:
+`chatToolExecutionRuntime` loads on the first tool execution,
+`architectToolRuntime` on the first Architect tool, and
+`streamingChatExecution` on the first streaming or non-streaming provider call.
+The latter emits a 37,564-byte chunk. These modules are absent from the emitted
+static startup closure; their imports are invoked by those operations, not by
+application initialization. No new always-eager application chunk hides entry
+bytes. The build guard checks these three modules as well as Mermaid and xterm.
+The transport facade retains synchronous estimators, captures provider mode and
+callbacks before loading, and reserves cancellation in the existing session
+registry. The detailed lifetime contract is in `technical-architecture.md`.
+
+The JS/native/diagnostics timing series above remain tied to `57986ada`.
+Their measured product paths did not change with these lazy-loading corrections;
+the timing values are not measurements of first-send module loading. That latency
+requires a browser measurement. Focused transport tests cover delayed loading,
+cancellation without an external signal, reentrant and same-session successors,
+reasoning capture, retry after module failure, HTTP readers and native listeners.
