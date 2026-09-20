@@ -36,7 +36,11 @@ async function run() {
   const dirty = Boolean(git('status', '--porcelain', '--untracked-files=all'));
   const identity = { sourceSha256: fingerprint, buildNonce: randomUUID() };
   const build = Bun.spawn(['cargo', 'build', '--manifest-path', 'src-tauri/Cargo.toml',
-    '--example', 'performance-sqlite', '--locked', '--offline', '-j', '2'], {
+    '--example', 'performance-sqlite', '--locked', '--offline', '-j', '1',
+    '--config', 'profile.dev.package.macro.debug=0',
+    '--config', 'profile.test.package.macro.debug=0',
+    '--config', 'profile.dev.incremental=false',
+    '--config', 'profile.test.incremental=false'], {
     cwd: root, env: { ...process.env, TAURI_CONFIG: '{"bundle":{"externalBin":[]}}',
       MACRO_NATIVE_PERF_SOURCE_SHA256: identity.sourceSha256, MACRO_NATIVE_PERF_BUILD_NONCE: identity.buildNonce },
     stdout: 'inherit', stderr: 'inherit',
@@ -60,7 +64,8 @@ async function run() {
         cargoTargetCache: process.env.CARGO_TARGET_DIR ? 'explicit-shared-cache' : 'local-default',
         rustc: execFileSync('rustc', ['--version'], { encoding: 'utf8' }).trim(),
         cargo: execFileSync('cargo', ['--version'], { encoding: 'utf8' }).trim(),
-        profile: 'debug', cargoJobs: 2, offline: true, locked: true },
+        profile: 'dev', profileOverrides: { macroDebug: 0, incremental: false,
+          testMacroDebug: 0, testIncremental: false }, cargoJobs: 1, offline: true, locked: true },
       environment: { timestamp: new Date().toISOString(), platform: platform(), release: release(),
         arch: arch(), cpu: cpus()[0].model, cpuCount: cpus().length, memoryGiB: totalmem() / 2 ** 30,
         load: 'shared machine; no idle-machine or cold-OS-cache claim' },
