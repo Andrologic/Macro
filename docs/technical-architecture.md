@@ -127,6 +127,87 @@ complétés par un verrou de fichier interprocessus ; l’ETag est relu sous ce
 verrou avant toute écriture. Le watcher desktop coalesce les événements puis
 rescane les documents chargés et les nouveaux documents projet.
 
+Le watcher réconcilie les dossiers de configuration par racine canonique. Les
+projets partageant une racine partagent son abonnement ; chaque racine unique
+possède un backend natif indépendant, séparé du backend global. Ce choix permet
+de libérer aussi une installation récursive partiellement échouée, au prix de
+handles et de threads dont le nombre croît avec les racines uniques. Les quotas
+du système restent applicables et la fermeture native peut être asynchrone.
+La maintenance vérifie les identités des dossiers et réessaie les abonnements
+avec une temporisation progressive plafonnée à trente secondes. Ce délai est
+commun aux racines : une panne persistante peut donc retarder aussi le
+rechargement d'une racine saine. Le manager refuse de servir un document dont
+la racine a été remplacée avant le rafraîchissement de son cache.
+Une dégradation de maintenance apparaît dans un diagnostic dédié, consultable
+dans le snapshot. Son apparition et son rétablissement émettent
+`config://changed`, sans répéter un état inchangé ni effacer les avertissements
+issus des commandes workspace. Un rechargement échoué reste à réessayer après
+la temporisation, même sans nouvel événement. Le diagnostic de panne est retiré
+seulement après une nouvelle vérification réussie.
+Une racine résolue reste surveillée si le chargement d'un document échoue ; la
+maintenance réessaie ce chargement après correction du fichier. Le manager
+conserve séparément la racine demandée et la configuration activée, pour que
+les abonnements et les retries suivent le registre même pendant une transition
+bloquée. Le retrait explicite désactive ce désiré sans effacer une intention
+durable encore nécessaire lors d’un futur enregistrement. La demande est
+mémorisée avant toute création, résolution ou lecture d’identité du dossier.
+Une erreur à cette frontière utilise la même intention avec une cible
+indisponible et bloque l’ancienne configuration. Le chemin demandé permet une
+reprise lorsque le dossier redevient valide. Le besoin de résoudre cette
+racine appartient à la demande elle-même ; une erreur de révocation peut changer
+le diagnostic sans effacer ce travail restant.
+Le chemin du dépôt fourni par le registre reste distinct de sa racine metadata.
+Son indisponibilité empêche de réactiver une racine metadata encore accessible.
+Si la destination metadata elle-même est inconnue, l’ancienne racine n’est plus
+servie ni surveillée à sa place. Le diagnostic demande une nouvelle
+réconciliation du registre pour résoudre cette destination. Une racine déjà
+connue reprend automatiquement lorsque le même dépôt revient. Une purge ou une récupération du cache
+émet aussi `config://changed` pour actualiser le
+snapshot frontend. Une absence observée par le bootstrap invalide aussi le
+consentement sans attendre la maintenance. Le watcher conserve les événements
+de suppression ou de déplacement de la racine jusqu’à leur transmission au
+manager, même si le dossier revient avant cette transmission. Une erreur native
+ou une demande de rescan seule ne constitue pas une preuve de disparition.
+Les opérations projet acquièrent
+leurs verrous de document, de transaction et de publication avant le contrôle
+final du chemin canonique et de l’identité ; les écritures suivantes ne
+reprennent pas ces verrous. Un déplacement masqué par un lien symbolique reste
+donc une transition, même si l’inode du dossier n’a pas changé.
+Les propositions projet persistées lient leur identifiant d'approbation au
+chemin canonique et à l'identité du dossier. Un changement de racine renouvelle
+cet identifiant, même si la nouvelle racine ne contient pas le document. Ce
+renouvellement persiste après redémarrage, en conservant le contenu proposé et
+la baseline approuvée. Les anciennes propositions sans ce lien demandent
+également une nouvelle approbation.
+Une intention durable unique par projet, dans le stockage privé `.runtime`,
+impose la reprise d’une transition incomplète avant toute réutilisation de sa
+racine, y compris au retour au dossier initial ou après redémarrage. Elle est
+persistée avant le renouvellement des propositions. Chaque proposition reçoit
+atomiquement un nouvel identifiant et l’acquittement de cette intention. La
+reprise parcourt tous les types de documents projet, même si leur JSON est
+absent, et conserve les contenus proposés et les baselines. Une erreur sur une
+proposition ne dispense pas de traiter les suivantes. L’intention n’est retirée
+qu’après tous les acquittements durables ; une erreur conserve la configuration
+concernée indisponible et déclenche une nouvelle tentative.
+Ce protocole remplace les journaux intermédiaires de renouvellement par
+proposition. Les journaux de publication des documents restent indépendants.
+Le stockage ne conserve qu’une intention courante et un acquittement par
+proposition, sans historique croissant ni fichier annexe dans le projet.
+Si l’intention ne peut pas être persistée, Macro retourne une erreur et bloque
+la configuration concernée dans le processus. La reprise après crash suppose
+une intention persistée ; l’échec de cette première écriture peut perdre
+l’observation au redémarrage, même si d’autres fichiers restent inscriptibles.
+
+Si la réconciliation échoue après une mutation du registre déjà persistée, la
+commande conserve son résultat métier. Un avertissement `ConfigDiagnostic`,
+publié via `config://changed` et consultable dans le snapshot, distingue cet
+échec de configuration de l'opération déjà terminée. Le client doit réessayer
+le rechargement de configuration, pas la création, l'import ou le retrait.
+Une lecture principale du registre échouée peut transmettre une erreur. En
+revanche, un bootstrap ou un listage déjà lu reste fourni si seule la
+réconciliation accessoire échoue ; cette dégradation utilise le même diagnostic
+et le même événement, pour ne pas ouvrir un shell vide à la place des projets.
+
 Une acceptation sensible est engagée dès que la baseline approuvée est écrite.
 Si le nettoyage de la proposition échoue ensuite, le résultat reste appliqué,
 avec un diagnostic de nettoyage différé. Le chargement suivant reprend ce
