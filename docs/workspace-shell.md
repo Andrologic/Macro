@@ -54,8 +54,13 @@ the owning domain rather than a second workflow store. A removed session's
 optional UI selection can be discarded with `removeSession`; this store is
 memory-only and does not delete domain data.
 
-Git remains the existing footer/review workflow. It is not a fourth agent mode.
-Its context resolution, worktree selection and mutation rules are unchanged.
+The Footer consumes the session's execution target through
+`workspaceGitContext.ts`. This adapter translates local task, plan, conversation
+or selection references into the existing Git domain resolver. A missing durable
+entity never falls back to the selected project, and a remote or incompatible
+reference produces no actionable Git target. Task worktree records remain owned
+and resolved by the existing domain. Git is not a fourth agent mode; its review
+workflow and mutation rules remain unchanged.
 
 ## Commands, shortcuts and settings
 

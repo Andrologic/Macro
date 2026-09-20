@@ -1,3 +1,5 @@
+import { createWorkspaceSession, workspaceDefinitions } from '../../domains/shell/workspace';
+import { resolveWorkspaceGitContext } from '../../services/workspaceGitContext';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useShallow } from 'zustand/react/shallow';
@@ -21,7 +23,6 @@ import { ConflictResolutionPanel } from '../conflicts/ConflictResolutionPanel';
 import { ProjectIcon } from '../project/ProjectIcon';
 import { createMacroSyncService, getMacroSyncDescription } from '../../services/macroSyncService';
 import {
-  resolveFooterGitContext,
   type FooterGitContext,
   type FooterGitFolder,
 } from '../../services/footerGitContext';
@@ -51,6 +52,8 @@ type ChatStoreState = ReturnType<typeof useChatStore.getState>;
 
 interface FooterContextSnapshot {
   mode: AppStoreState['mode'];
+  agentType: AppStoreState['agentType'];
+  selectedGroupId: AppStoreState['selectedGroupId'];
   selectedProjectId: AppStoreState['selectedProjectId'];
   standaloneProjects: AppStoreState['standaloneProjects'];
   projectGroups: AppStoreState['projectGroups'];
@@ -2388,6 +2391,8 @@ FooterContent.displayName = 'FooterContent';
 export const Footer: React.FC = () => {
   const appContext = useAppStore(useShallow((state) => ({
     mode: state.mode,
+    agentType: state.agentType,
+    selectedGroupId: state.selectedGroupId,
     selectedProjectId: state.selectedProjectId,
     standaloneProjects: state.standaloneProjects ?? [],
     projectGroups: state.projectGroups,
@@ -2415,15 +2420,19 @@ export const Footer: React.FC = () => {
       0,
     );
   const canSelectFolder = currentContextSnapshot.mode === 'Architect' && registeredProjectCount === 0;
-  const resolvedGitContext = useMemo(() => resolveFooterGitContext({
-    mode: currentContextSnapshot.mode,
+  const resolvedGitContext = useMemo(() => resolveWorkspaceGitContext(
+    createWorkspaceSession(workspaceDefinitions[currentContextSnapshot.mode], {
+      agentType: currentContextSnapshot.agentType,
+      planId: currentContextSnapshot.activeArchitectPlanId,
+      taskId: currentContextSnapshot.selectedTaskId,
+      conversationId: currentContextSnapshot.selectedConversationId,
+      groupId: currentContextSnapshot.selectedGroupId,
+      projectId: currentContextSnapshot.selectedProjectId,
+    }), {
     standaloneProjects: currentContextSnapshot.standaloneProjects,
     projectGroups: currentContextSnapshot.projectGroups,
-    selectedTaskId: currentContextSnapshot.selectedTaskId,
     tasks: currentContextSnapshot.tasks,
-    activeArchitectPlanId: currentContextSnapshot.activeArchitectPlanId,
     visibleArchitectPlans: currentContextSnapshot.visibleArchitectPlans,
-    selectedConversationId: currentContextSnapshot.selectedConversationId,
     conversations: currentContextSnapshot.conversations,
     durableFocusProjectId: currentContextSnapshot.selectedProjectId,
     manualProjectId: gitScopeProjectId,
