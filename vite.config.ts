@@ -433,7 +433,9 @@ export default defineConfig(({ command }) => {
     define: {
       'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
     },
-    json: { namedExports: false },
+    // Local JSON is consumed through default exports; emit object literals so
+    // large locale objects do not gain an escaped JSON.parse string wrapper.
+    json: { namedExports: false, stringify: false },
     plugins: [
       createMermaidParserSourcePlugin(),
       react({
