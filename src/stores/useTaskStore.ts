@@ -2649,12 +2649,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       // Standalone completion must also survive a catalog/selection switch.
       if (task.task_source === 'standalone' && tauriIpc.isTauriAvailable()) {
         await tauriIpc.workspaceUpdateStandaloneTaskStatus({ taskId: task.id, status: 'Completed' });
+        await get().refreshFromPlan();
       }
-      set((state) => ({
-        tasks: state.tasks.map((current) => getTaskStatusMutationIdentity(current) === getTaskStatusMutationIdentity(task)
-          ? { ...current, status: 'Completed' as const } : current),
-        lastError: null,
-      }));
+      set((state) => {
+        const current = state.tasks.find((candidate) =>
+          getTaskStatusMutationIdentity(candidate) === getTaskStatusMutationIdentity(task));
+        return {
+          // Recompute dependent standalone tasks even if catalog refresh is unavailable.
+          tasks: current ? applyTaskStatusLocally(state.tasks, current, 'Completed') : state.tasks,
+          lastError: null,
+        };
+      });
     },
   };
   const taskReviewWorkflow = createTaskReviewWorkflow(taskWorkflowPorts);

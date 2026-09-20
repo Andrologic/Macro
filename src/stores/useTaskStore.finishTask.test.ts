@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../test-utils/tauriRuntime';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
+import { deriveFallbackImplementTasks } from '../services/implementTaskCatalog';
+import type { Task, TaskStatus } from '../types';
 let releaseRuntimePorts: (() => void) | undefined;
 
 const actualArchitectPlanService = await import('../services/architectPlanService');
@@ -306,7 +308,9 @@ const workspaceGetActiveRootMock = mock(async () => '/repos/web');
 const workspaceArchiveManualFeatureMock = mock(async () => ({
   archivedAt: '2026-08-30T10:00:00.000Z',
 } as Awaited<ReturnType<typeof actualTauriIpc.workspaceArchiveManualFeature>>));
-const workspaceUpdateStandaloneTaskStatusMock = mock(async () => undefined);
+const workspaceUpdateStandaloneTaskStatusMock = mock(async (
+  _input: Parameters<typeof actualTauriIpc.workspaceUpdateStandaloneTaskStatus>[0],
+): Promise<number | null> => 1);
 const syncTerminalDisplayMetadataMock = mock(async () => undefined);
 const syncManualFeatureMetadataFromTaskMock = mock(async () => undefined);
 const commitManualFeatureMetadataMock = mock(async () => undefined);
@@ -694,6 +698,7 @@ describe('useTaskStore.finishTask', () => {
     dbCompareAndSwapAppSettingMock.mockClear();
     workspaceArchiveManualFeatureMock.mockClear();
     workspaceUpdateStandaloneTaskStatusMock.mockClear();
+    workspaceUpdateStandaloneTaskStatusMock.mockImplementation(async () => 1);
     syncTerminalDisplayMetadataMock.mockClear();
     syncManualFeatureMetadataFromTaskMock.mockClear();
     commitManualFeatureMetadataMock.mockClear();
@@ -715,6 +720,40 @@ describe('useTaskStore.finishTask', () => {
   afterEach(() => {
     releaseRuntimePorts?.();
     removeTauriRuntimeMock();
+  });
+
+  it('unblocks dependent standalone tasks after their predecessor finishes', async () => {
+    const predecessor = buildArchitectTask({
+      task_source: 'standalone', plan_id: null, base_branch: 'develop',
+      execution_targets: [{ ...buildArchitectTask().execution_targets[0], planBranchName: null }],
+    });
+    const dependent = buildArchitectTask({
+      ...predecessor, id: 'task-2', title: 'Task 2', status: 'Pending', dependencies: ['task-1'],
+      assigned_branch: 'feature/task-2', branch_name: 'feature/task-2',
+      execution_targets: [{ ...predecessor.execution_targets[0], branchName: 'feature/task-2', worktreeKey: 'repo-2' }],
+    });
+    let durableTasks = [predecessor, dependent] as Task[];
+    workspaceUpdateStandaloneTaskStatusMock.mockImplementation(async ({ taskId, status }) => {
+      durableTasks = durableTasks.map((task) => task.id === taskId ? { ...task, status: status as TaskStatus } : task);
+      return 2;
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const refresh = mock(async () => {
+      useTaskStore.setState({ tasks: deriveFallbackImplementTasks(durableTasks) });
+    });
+    useTaskStore.setState({
+      tasks: deriveFallbackImplementTasks(durableTasks),
+      branchWorktrees: { 'repo-1': '/worktrees/task-1' },
+      refreshFromPlan: refresh,
+    });
+
+    expect(useTaskStore.getState().getTaskById('task-2')?.is_blocked).toBe(true);
+    await useTaskStore.getState().finishTask('task-1');
+
+    expect(useTaskStore.getState().getTaskById('task-1')?.status).toBe('Completed');
+    expect(useTaskStore.getState().getTaskById('task-2')).toMatchObject({
+      status: 'Pending', is_blocked: false, blocked_by: [],
+    });
   });
 
   it('archives architect tasks after merging them into the plan branch', async () => {
