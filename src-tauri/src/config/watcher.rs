@@ -1,4 +1,4 @@
-use super::manager::DirectoryIdentity;
+use super::manager::{DirectoryIdentity, ReloadOutcome};
 use super::{ConfigChangeSource, ConfigDocument, ConfigDocumentKind, ConfigManager, ConfigScope};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{BTreeMap, BTreeSet};
@@ -104,23 +104,17 @@ impl ConfigWatcher {
                     let manager = &manager;
                     let app = &app;
                     async move {
-                        let (changed_manager, mut errors) =
-                            refresh_project_state(manager, observed_absences, |document| {
+                        refresh_and_reload_project_state(
+                            manager,
+                            reload_requested,
+                            observed_absences,
+                            |document| {
                                 let _ = app.emit("config://changed", &document);
-                            })
-                            .await;
-                        if !reload_requested && !changed_manager {
-                            return errors;
-                        }
-                        for outcome in manager
-                            .reload_all_changed(ConfigChangeSource::ExternalEditor)
-                            .await
-                        {
-                            match outcome {
-                                Ok(outcome) if outcome.invalid => {
+                            },
+                            |outcome| {
+                                if outcome.invalid {
                                     let _ = app.emit("config://invalid", &outcome.document);
-                                }
-                                Ok(outcome) => {
+                                } else {
                                     if let Some(pending) = &outcome.pending {
                                         let _ =
                                             app.emit("config://pending-sensitive-change", pending);
@@ -132,12 +126,9 @@ impl ConfigWatcher {
                                             .emit("config://restart-required", &outcome.document);
                                     }
                                 }
-                                Err(error) => {
-                                    errors.push(format!("{}: {}", error.code, error.message));
-                                }
-                            }
-                        }
-                        errors
+                            },
+                        )
+                        .await
                     }
                 },
             )
@@ -215,6 +206,31 @@ async fn refresh_project_state(
     (changed, errors)
 }
 
+// Shared by production and the maintenance regression test, including the
+// quiet-pass shortcut. The loop retains failed reloads until this verifies them.
+async fn refresh_and_reload_project_state(
+    manager: &ConfigManager,
+    reload_requested: bool,
+    observed_absences: Vec<String>,
+    notify_changed: impl FnMut(ConfigDocument),
+    mut notify_reload: impl FnMut(ReloadOutcome),
+) -> Vec<String> {
+    let (changed, mut errors) =
+        refresh_project_state(manager, observed_absences, notify_changed).await;
+    if reload_requested || changed {
+        for outcome in manager
+            .reload_all_changed(ConfigChangeSource::ExternalEditor)
+            .await
+        {
+            match outcome {
+                Ok(outcome) => notify_reload(outcome),
+                Err(error) => errors.push(format!("{}: {}", error.code, error.message)),
+            }
+        }
+    }
+    errors
+}
+
 async fn publish_maintenance_status(
     manager: &ConfigManager,
     errors: Vec<String>,
@@ -279,6 +295,7 @@ async fn maintain_subscriptions<F, Fut, R, ReportFuture>(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_revision = 0;
     let mut last_errors = Vec::new();
+    let mut retry_reload = false;
     let mut backoff = MaintenanceBackoff::new();
     loop {
         let event = tokio::select! {
@@ -380,7 +397,12 @@ async fn maintain_subscriptions<F, Fut, R, ReportFuture>(
         // reload when in-memory document identity changed, even on a quiet tick.
         let changed = revision != last_revision;
         last_revision = revision;
-        errors.extend(refresh_and_reload(event || changed, observed_absences).await);
+        let reload_errors =
+            refresh_and_reload(event || changed || retry_reload, observed_absences).await;
+        // No new event does not prove recovery. Re-run the failed work after the
+        // existing cooldown, including repairs outside the watched directories.
+        retry_reload = !reload_errors.is_empty();
+        errors.extend(reload_errors);
         errors.sort();
         errors.dedup();
         if errors != last_errors {
@@ -1219,6 +1241,105 @@ mod tests {
             .diagnostics
             .is_empty());
         assert_eq!(state.subscribed_project_roots().len(), 1);
+        drop(state);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn quiet_pass_retries_failed_production_reload_until_verified_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("global"))
+            .await
+            .unwrap();
+        let root = manager
+            .register_project_root("project", temp.path().join("metadata"))
+            .await
+            .unwrap();
+        manager
+            .get_document(
+                ConfigDocumentKind::Tools,
+                ConfigScope::Project {
+                    project_id: "project".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let path = root.join("tools.json");
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        // Only this independent empty directory is watched. The failure and its
+        // repair cannot generate another native event for the production callback.
+        let unrelated = tempfile::tempdir().unwrap();
+        let (tx, rx) = watch::channel(0);
+        let state = Arc::new(ConfigWatcher {
+            state: Mutex::new(WatcherState::new(unrelated.path(), tx.clone()).unwrap()),
+        });
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = attempts.clone();
+        let refresh_manager = manager.clone();
+        let report_manager = manager.clone();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(maintain_subscriptions(
+            Arc::downgrade(&state),
+            rx,
+            Duration::from_millis(30),
+            Duration::ZERO,
+            move |errors| {
+                let manager = report_manager.clone();
+                let events = event_tx.clone();
+                async move {
+                    publish_maintenance_status(&manager, errors, |document| {
+                        events.send(document).unwrap();
+                    })
+                    .await;
+                }
+            },
+            move |requested, observations| {
+                let manager = refresh_manager.clone();
+                let count = count.clone();
+                async move {
+                    if requested {
+                        count.fetch_add(1, Ordering::SeqCst);
+                    }
+                    refresh_and_reload_project_state(
+                        &manager,
+                        requested,
+                        observations,
+                        |_| {},
+                        |_| {},
+                    )
+                    .await
+                }
+            },
+        ));
+        tx.send_modify(|generation| *generation += 1);
+        let degraded = tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!degraded.diagnostics.is_empty());
+        wait_until(|| attempts.load(Ordering::SeqCst) >= 3).await;
+        assert!(
+            event_rx.try_recv().is_err(),
+            "a quiet pass cannot announce recovery or repeat the warning"
+        );
+        assert!(!manager
+            .get_snapshot(&[])
+            .await
+            .unwrap()
+            .diagnostics
+            .is_empty());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let recovered = tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(recovered.diagnostics.is_empty());
         drop(state);
         tokio::time::timeout(Duration::from_secs(2), task)
             .await

@@ -338,22 +338,31 @@ async fn register_project_config_roots(
             .flat_map(|group| group.projects),
     );
     let mut roots = BTreeMap::new();
+    let mut registry_ids = std::collections::BTreeSet::new();
     let mut errors = Vec::new();
     for project in projects {
         if parse_wsl_unc_path(&project.path).is_some() {
             continue;
         }
-        // Registry membership owns the desired subscription. Temporary repository
-        // or metadata lookup failures must not turn into project removal.
-        if let Some(root) = config_manager.desired_project_root(&project.id).await {
-            roots.insert(project.id.clone(), root);
-        }
+        registry_ids.insert(project.id.clone());
         let project_path = PathBuf::from(&project.path);
         let project_path = if project_path.is_absolute() {
             project_path
         } else {
             workspace_path.join(project_path)
         };
+        if let Err(error) = config_manager
+            .request_project_repository(&project.id, project_path.clone())
+            .await
+        {
+            errors.push(format!(
+                "Impossible de préparer la destination du projet {} : {}",
+                project.id, error.message
+            ));
+        }
+        if let Some(root) = config_manager.desired_project_root(&project.id).await {
+            roots.insert(project.id.clone(), root);
+        }
         if !project_path.is_dir() {
             // Preserve this observation before the repository can return with the
             // same identity. A later timer must not mistake it for uninterrupted use.
@@ -377,6 +386,16 @@ async fn register_project_config_roots(
             match resolve_metadata_root(project_path.clone(), git_state.clone()).await {
                 Ok(root) => root,
                 Err(error) => {
+                    if let Err(invalidation) = config_manager
+                        .defer_project_repository_resolution(&project.id)
+                        .await
+                    {
+                        errors.push(format!(
+                            "Impossible d’invalider la configuration du projet {} : {}",
+                            project.id, invalidation.message
+                        ));
+                    }
+                    roots.remove(&project.id);
                     errors.push(format!(
                         "Impossible de résoudre la configuration du projet {} : {error}",
                         project.id
@@ -491,18 +510,24 @@ async fn register_project_config_roots(
             }
         }
     }
-    reconcile_loaded_project_config_roots(config_manager, config_watcher, roots, errors).await
+    reconcile_loaded_project_config_roots(
+        config_manager,
+        config_watcher,
+        roots,
+        registry_ids,
+        errors,
+    )
+    .await
 }
 
 async fn reconcile_loaded_project_config_roots(
     config_manager: &ConfigManager,
     config_watcher: &ConfigWatcherState,
     roots: BTreeMap<String, PathBuf>,
+    registry_ids: std::collections::BTreeSet<String>,
     mut errors: Vec<String>,
 ) -> Result<()> {
-    config_manager
-        .retain_project_roots(&roots.keys().cloned().collect())
-        .await;
+    config_manager.retain_project_roots(&registry_ids).await;
     if let Err(error) = config_watcher.reconcile_project_roots(&roots) {
         errors.push(error);
     }
@@ -2163,6 +2188,7 @@ mod tests {
             &manager,
             &watcher,
             BTreeMap::from([("project".into(), root.clone())]),
+            std::collections::BTreeSet::from(["project".into()]),
             Vec::new(),
         )
         .await
@@ -2303,6 +2329,73 @@ mod tests {
         assert!(changed);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(manager.get_snapshot(&["project".to_string()]).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn config_unresolved_destination_preserves_bootstrap_and_blocks_old_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_path = temp.path().join("workspace");
+        let metadata = workspace_path.join(".macro");
+        let project_path = temp.path().join("project");
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::create_dir_all(&project_path).unwrap();
+        let project: ProjectDto = serde_json::from_value(json!({
+            "id": "project", "name": "project", "path": project_path,
+            "created_at": "2026-01-01T00:00:00Z", "status": "active",
+            "metadata": {"description": "", "tags": [], "team_members": [], "api_contracts": [], "dependencies": []}
+        })).unwrap();
+        let state = workspace::metadata::WorkspaceState {
+            standalone_projects: vec![project],
+            ..Default::default()
+        };
+        std::fs::write(
+            metadata.join("workspace.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let git = GitState::new();
+        let project_metadata = resolve_metadata_root(project_path, git.clone())
+            .await
+            .unwrap();
+        let config_root = project_metadata.join("projects/project/config");
+        std::fs::create_dir_all(config_root.parent().unwrap()).unwrap();
+        std::fs::write(&config_root, b"not a directory").unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("global"))
+            .await
+            .unwrap();
+        manager
+            .register_project_root("project", temp.path().join("old-metadata"))
+            .await
+            .unwrap();
+        let original = config_manager_test_pending(&manager, "project").await;
+        let watcher = Arc::new(crate::config::ConfigWatcher::for_test(manager.root()));
+        let (bootstrap, diagnostic) = load_bootstrap_with_config_diagnostic(
+            &workspace_path,
+            &metadata,
+            git,
+            &manager,
+            &watcher,
+        )
+        .await
+        .unwrap();
+        assert_eq!(bootstrap.standalone_projects.len(), 1);
+        assert!(diagnostic
+            .diagnostics
+            .iter()
+            .any(|entry| entry.message.contains("charger") && entry.message.contains("project")));
+        assert!(watcher.subscribed_project_roots().is_empty());
+        assert_eq!(
+            watcher.desired_project_roots().get("project"),
+            Some(&config_root)
+        );
+        assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+        assert!(manager.accept_pending_change(&original.id).await.is_err());
+        std::fs::remove_file(&config_root).unwrap();
+        let (changed, errors) = manager.refresh_project_roots().await;
+        assert!(changed);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(manager.get_snapshot(&["project".to_string()]).await.is_ok());
+        assert!(manager.accept_pending_change(&original.id).await.is_err());
     }
 
     async fn config_manager_test_pending(

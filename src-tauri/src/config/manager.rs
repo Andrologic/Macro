@@ -113,9 +113,12 @@ struct DurableConfigPublication {
 struct ConfigState {
     documents: BTreeMap<DocumentKey, StoredDocument>,
     project_roots: BTreeMap<String, PathBuf>,
-    // Resolved destinations requested by the registry, including roots not yet
-    // usable. Withdrawal removes this entry but keeps any consent transition.
+    // Destinations requested by the registry, canonicalized when available. Withdrawal removes this entry but keeps any consent transition.
     desired_project_roots: BTreeMap<String, PathBuf>,
+    // Registry locator and its availability are distinct from the metadata root.
+    // An unresolved new repository must not reactivate the old metadata directory.
+    project_repository_roots: BTreeMap<String, PathBuf>,
+    unresolved_project_repositories: BTreeSet<String>,
     project_identities: BTreeMap<String, Option<DirectoryIdentity>>,
     project_load_errors: BTreeMap<String, ConfigApiError>,
     // Cache the current intent, including an initial write that failed. The disk
@@ -242,32 +245,45 @@ impl ConfigManager {
         let _references = self.mcp_runtime_authority.write().await;
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
-        let projects_root = macro_metadata_root.join("projects");
-        let config_root = projects_root.join(project_id).join("config");
-        if !config_root.try_exists().map_err(|error| {
-            ConfigApiError::new("config.project.resolve_failed", error.to_string())
-        })? {
-            // Resolve the directory identity before requesting its binding. The
-            // registered root and every proposal remain unchanged until the intent
-            // is durable. No project document is loaded or locked here.
-            fs::create_dir_all(&config_root).map_err(|error| {
-                ConfigApiError::new(
-                    "config.project.create_failed",
-                    format!("Impossible de créer le dossier de configuration du projet : {error}"),
-                )
-            })?;
-        }
-        let config_root = config_root.canonicalize().map_err(|error| {
-            ConfigApiError::new("config.project.resolve_failed", error.to_string())
-        })?;
-        let identity = DirectoryIdentity::read(&config_root)
-            .map_err(|message| ConfigApiError::new("config.project.resolve_failed", message))?;
-        let binding = PendingRootBinding {
-            path: config_root.clone(),
-            identity,
+        self.state
+            .write()
+            .await
+            .unresolved_project_repositories
+            .remove(project_id);
+        // Remember the request before any fallible filesystem operation. A bad
+        // destination must not leave the previous root authorized or hide retries.
+        let requested = macro_metadata_root
+            .join("projects")
+            .join(project_id)
+            .join("config");
+        self.state
+            .write()
+            .await
+            .desired_project_roots
+            .insert(project_id.to_string(), requested.clone());
+        let resolved = resolve_project_config_root(&requested);
+        let binding = match resolved {
+            Ok(binding) => binding,
+            Err(mut error) => {
+                // None means unavailable, not a binding to the old directory.
+                // This uses the same project intent even for failures before any
+                // target document/lock can be reached.
+                if let Err(transition_error) = self.prepare_project_root(project_id, None).await {
+                    error.message = format!(
+                        "{} Révocation incomplète : {}",
+                        error.message, transition_error.message
+                    );
+                    error.diagnostics.extend(transition_error.diagnostics);
+                }
+                self.state
+                    .write()
+                    .await
+                    .project_load_errors
+                    .insert(project_id.to_string(), error.clone());
+                return Err(error);
+            }
         };
-        // Subscription intent is separate from activating configuration. Retain
-        // this resolved path even if the runtime gate or initial intent write fails.
+        let config_root = binding.path.clone();
         self.state
             .write()
             .await
@@ -287,16 +303,68 @@ impl ConfigManager {
         Ok(config_root)
     }
 
-    /// Return the latest resolved subscription requested by the registry, even
+    /// Return the latest subscription requested by the registry, even
     /// while an older consent transition blocks activation. Withdrawal hides the
     /// request without erasing its unfinished transition or reopening the project.
     pub(crate) async fn desired_project_root(&self, project_id: &str) -> Option<PathBuf> {
-        self.state
-            .read()
+        let state = self.state.read().await;
+        if state.unresolved_project_repositories.contains(project_id) {
+            return None;
+        }
+        state.desired_project_roots.get(project_id).cloned()
+    }
+
+    /// Record the registry's repository locator before resolving its metadata.
+    /// A first locator is blocked until registration but does not renew existing
+    /// durable consent on an otherwise unchanged restart.
+    pub(crate) async fn request_project_repository(
+        &self,
+        project_id: &str,
+        repository: PathBuf,
+    ) -> Result<(), ConfigApiError> {
+        let _references = self.mcp_runtime_authority.write().await;
+        let _registration = self.project_registration.lock().await;
+        validate_project_id(project_id)?;
+        let previous = self
+            .state
+            .write()
             .await
-            .desired_project_roots
-            .get(project_id)
-            .cloned()
+            .project_repository_roots
+            .insert(project_id.to_string(), repository.clone());
+        if previous.as_ref().is_some_and(|previous| {
+            previous == &repository
+                || matches!((previous.canonicalize(), repository.canonicalize()),
+                (Ok(previous), Ok(requested)) if previous == requested)
+        }) {
+            return Ok(());
+        }
+        self.state
+            .write()
+            .await
+            .unresolved_project_repositories
+            .insert(project_id.to_string());
+        if previous.is_some() {
+            self.prepare_project_root(project_id, None).await?;
+        }
+        Ok(())
+    }
+
+    /// Metadata could not be resolved. Only registry reconciliation can supply
+    /// that destination; root maintenance must not guess using an older root.
+    pub(crate) async fn defer_project_repository_resolution(
+        &self,
+        project_id: &str,
+    ) -> Result<(), ConfigApiError> {
+        let _references = self.mcp_runtime_authority.write().await;
+        let _registration = self.project_registration.lock().await;
+        validate_project_id(project_id)?;
+        self.state
+            .write()
+            .await
+            .unresolved_project_repositories
+            .insert(project_id.to_string());
+        self.prepare_project_root(project_id, None).await?;
+        Ok(())
     }
 
     // Caller has completed any necessary transition and holds registration and
@@ -388,6 +456,16 @@ impl ConfigManager {
     }
 
     async fn require_no_project_transition(&self, project_id: &str) -> Result<(), ConfigApiError> {
+        if self
+            .state
+            .read()
+            .await
+            .unresolved_project_repositories
+            .contains(project_id)
+        {
+            return Err(ConfigApiError::new("config.project.resolution_pending",
+                "La destination metadata du projet est indisponible. Réessayez la réconciliation du registre."));
+        }
         if self
             .state
             .read()
@@ -609,14 +687,13 @@ impl ConfigManager {
         validate_project_id(project_id)?;
         // Observations cannot reopen an explicitly removed project. Only register
         // may resume a retained intent after unregister.
-        if !self
-            .state
-            .read()
-            .await
-            .desired_project_roots
-            .contains_key(project_id)
         {
-            return Ok(());
+            let state = self.state.read().await;
+            if !state.desired_project_roots.contains_key(project_id)
+                && !state.project_repository_roots.contains_key(project_id)
+            {
+                return Ok(());
+            }
         }
         // Finish the older intent first; an error leaves this observation for the
         // caller to retry, rather than acknowledging an unrecorded absence.
@@ -629,11 +706,12 @@ impl ConfigManager {
     pub async fn unregister_project_root(&self, project_id: &str) {
         let _references = self.mcp_runtime_authority.write().await;
         let _registration = self.project_registration.lock().await;
-        self.state
-            .write()
-            .await
-            .desired_project_roots
-            .remove(project_id);
+        {
+            let mut state = self.state.write().await;
+            state.desired_project_roots.remove(project_id);
+            state.project_repository_roots.remove(project_id);
+            state.unresolved_project_repositories.remove(project_id);
+        }
         self.unregister_project_root_inner(project_id).await;
     }
 
@@ -670,17 +748,23 @@ impl ConfigManager {
     pub async fn retain_project_roots(&self, project_ids: &BTreeSet<String>) {
         let _references = self.mcp_runtime_authority.write().await;
         let _registration = self.project_registration.lock().await;
-        let removed = self
-            .state
-            .read()
-            .await
-            .desired_project_roots
-            .keys()
-            .filter(|id| !project_ids.contains(*id))
-            .cloned()
-            .collect::<Vec<_>>();
+        let removed = {
+            let state = self.state.read().await;
+            state
+                .desired_project_roots
+                .keys()
+                .chain(state.project_repository_roots.keys())
+                .filter(|id| !project_ids.contains(*id))
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        };
         for id in removed {
-            self.state.write().await.desired_project_roots.remove(&id);
+            {
+                let mut state = self.state.write().await;
+                state.desired_project_roots.remove(&id);
+                state.project_repository_roots.remove(&id);
+                state.unresolved_project_repositories.remove(&id);
+            }
             self.unregister_project_root_inner(&id).await;
         }
     }
@@ -697,6 +781,7 @@ impl ConfigManager {
             state
                 .desired_project_roots
                 .keys()
+                .chain(state.project_repository_roots.keys())
                 .cloned()
                 .collect::<BTreeSet<_>>()
         };
@@ -721,7 +806,18 @@ impl ConfigManager {
                 )
             };
             let result = async {
+                let retry_resolution = self.state.read().await.project_load_errors.get(&project_id)
+                    .is_some_and(|error| matches!(error.code.as_str(), "config.project.resolve_failed" | "config.project.create_failed"));
                 let resumed = self.resume_project_transition(&project_id).await?;
+                if self.state.read().await.unresolved_project_repositories.contains(&project_id) {
+                    return Err(ConfigApiError::new("config.project.resolution_pending",
+                        "La destination metadata du projet est indisponible. Réessayez la réconciliation du registre."));
+                }
+                let repository = self.state.read().await.project_repository_roots.get(&project_id).cloned();
+                if repository.is_some_and(|path| !path.is_dir()) {
+                    self.prepare_project_root(&project_id, None).await?;
+                    return Err(ConfigApiError::new("config.project.repository_missing", "Le dépôt du projet est indisponible."));
+                }
                 let (root, previous_identity, needs_retry) = {
                     let state = self.state.read().await;
                     (
@@ -733,7 +829,22 @@ impl ConfigManager {
                 let Some(root) = root else {
                     return Ok(resumed);
                 };
-                let identity = DirectoryIdentity::read(&root).ok();
+                let (root, identity) = if retry_resolution {
+                    match resolve_project_config_root(&root) {
+                        Ok(binding) => {
+                            self.state.write().await.desired_project_roots.insert(project_id.clone(), binding.path.clone());
+                            (binding.path, Some(binding.identity))
+                        }
+                        Err(error) => {
+                            self.state.write().await.project_load_errors.insert(project_id.clone(), error.clone());
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    let root = root.canonicalize().unwrap_or(root);
+                    let identity = DirectoryIdentity::read(&root).ok();
+                    (root, identity)
+                };
                 let same_root =
                     self.state.read().await.project_roots.get(&project_id) == Some(&root);
                 if same_root
@@ -751,7 +862,7 @@ impl ConfigManager {
                     .prepare_project_root(&project_id, target.clone())
                     .await?;
                 if identity.is_none() {
-                    if previous_identity != Some(None) {
+                    if previous_identity != Some(None) || needs_retry {
                         return Err(ConfigApiError::new(
                             "config.project.root_missing",
                             format!(
@@ -2414,6 +2525,28 @@ fn publication_document_path(root: &Path, key: &DocumentKey) -> PathBuf {
 // These replace the unreleased per-document root-renewal journals. Publication
 // journals still recover document writes. No shipped root-renewal format needs a
 // migration; development fixtures must be recreated when changing this protocol.
+// Initial registration and retries use the same filesystem boundary. No caller
+// may continue serving an older root when this resolution fails.
+fn resolve_project_config_root(root: &Path) -> Result<PendingRootBinding, ConfigApiError> {
+    if !root
+        .try_exists()
+        .map_err(|error| ConfigApiError::new("config.project.resolve_failed", error.to_string()))?
+    {
+        fs::create_dir_all(&root).map_err(|error| {
+            ConfigApiError::new(
+                "config.project.create_failed",
+                format!("Impossible de créer le dossier de configuration du projet : {error}"),
+            )
+        })?;
+    }
+    let path = root
+        .canonicalize()
+        .map_err(|error| ConfigApiError::new("config.project.resolve_failed", error.to_string()))?;
+    let identity = DirectoryIdentity::read(&path)
+        .map_err(|message| ConfigApiError::new("config.project.resolve_failed", message))?;
+    Ok(PendingRootBinding { path, identity })
+}
+
 fn project_transition_path(root: &Path, project_id: &str) -> PathBuf {
     root.join(".runtime")
         .join("project-transitions")
@@ -4353,6 +4486,197 @@ mod tests {
             pending_value(after).unwrap(),
             "only binding, consent ID, timestamp and current ack may change"
         );
+    }
+
+    #[tokio::test]
+    async fn unresolved_destination_revokes_old_consent_and_recovers_without_registration() {
+        for parent_blocked in [false, true] {
+            for restart in [false, true] {
+                let (_temp, mut manager) = manager().await;
+                let metadata = tempfile::tempdir().unwrap();
+                let destination = tempfile::tempdir().unwrap();
+                let (root_a, originals) = project_pending_pair(&manager, metadata.path()).await;
+                manager
+                    .register_project_root("healthy", metadata.path().into())
+                    .await
+                    .unwrap();
+                let baselines = originals
+                    .iter()
+                    .map(|(key, _)| fs::read(approved_document_path(manager.root(), key)).unwrap())
+                    .collect::<Vec<_>>();
+                let requested = destination.path().join("projects/project/config");
+                let obstruction = if parent_blocked {
+                    destination.path().join("projects")
+                } else {
+                    requested.clone()
+                };
+                fs::create_dir_all(obstruction.parent().unwrap()).unwrap();
+                fs::write(&obstruction, b"obstruction").unwrap();
+                assert!(manager
+                    .register_project_root("project", destination.path().into())
+                    .await
+                    .is_err());
+                assert_eq!(
+                    manager.desired_project_root("project").await,
+                    Some(requested.clone())
+                );
+                assert!(manager
+                    .get_document(ConfigDocumentKind::Tools, originals[0].0.scope.clone())
+                    .await
+                    .is_err());
+                assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+                assert!(manager.get_snapshot(&["healthy".into()]).await.is_ok());
+                assert!(manager.get_snapshot(&[]).await.is_ok());
+                for ((key, original), baseline) in originals.iter().zip(&baselines) {
+                    let after = read_durable_pending(&pending_document_path(manager.root(), key))
+                        .unwrap()
+                        .unwrap();
+                    assert_ne!(after.pending.id, original.pending.id);
+                    assert!(after.project_root.is_none());
+                    assert_proposal_content_preserved(original, &after);
+                    assert_eq!(
+                        fs::read(approved_document_path(manager.root(), key)).unwrap(),
+                        *baseline
+                    );
+                    assert_eq!(
+                        read_json_value(&root_a.join(key.kind.file_name())).unwrap(),
+                        original.pending.proposed_document
+                    );
+                    assert!(manager
+                        .accept_pending_change(&original.pending.id)
+                        .await
+                        .is_err());
+                    assert!(manager
+                        .reject_pending_change(&original.pending.id, true)
+                        .await
+                        .is_err());
+                }
+                assert_eq!(fs::read(&obstruction).unwrap(), b"obstruction");
+                if restart {
+                    manager = ConfigManager::initialize(manager.root().to_path_buf())
+                        .await
+                        .unwrap();
+                    assert!(manager
+                        .register_project_root("project", destination.path().into())
+                        .await
+                        .is_err());
+                }
+                assert!(!manager.refresh_project_roots().await.1.is_empty());
+                fs::remove_file(&obstruction).unwrap();
+                let (changed, errors) = manager.refresh_project_roots().await;
+                assert!(changed);
+                assert!(errors.is_empty(), "{errors:?}");
+                assert_eq!(
+                    manager.state.read().await.project_roots.get("project"),
+                    Some(&requested.canonicalize().unwrap())
+                );
+                assert!(manager.get_snapshot(&["project".into()]).await.is_ok());
+                manager
+                    .register_project_root("project", metadata.path().into())
+                    .await
+                    .unwrap();
+                for (_, original) in &originals {
+                    assert!(manager
+                        .accept_pending_change(&original.pending.id)
+                        .await
+                        .is_err());
+                }
+                for pending in manager.list_pending_changes().await {
+                    manager.accept_pending_change(&pending.id).await.unwrap();
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn repository_availability_and_unknown_metadata_never_reactivate_old_root() {
+        let (_temp, mut manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let repository_parent = tempfile::tempdir().unwrap();
+        let repository = repository_parent.path().join("repository");
+        fs::create_dir(&repository).unwrap();
+        manager
+            .request_project_repository("project", repository.clone())
+            .await
+            .unwrap();
+        let (root, originals) = project_pending_pair(&manager, metadata.path()).await;
+        manager
+            .request_project_repository("project", repository.join("."))
+            .await
+            .unwrap();
+        assert!(manager.get_snapshot(&["project".into()]).await.is_ok());
+        // Re-recording the same repository after restart does not revoke consent.
+        manager = ConfigManager::initialize(manager.root().to_path_buf())
+            .await
+            .unwrap();
+        manager
+            .request_project_repository("project", repository.clone())
+            .await
+            .unwrap();
+        manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        for (key, original) in &originals {
+            assert_eq!(
+                read_durable_pending(&pending_document_path(manager.root(), key))
+                    .unwrap()
+                    .unwrap()
+                    .pending
+                    .id,
+                original.pending.id
+            );
+        }
+        let hidden = repository_parent.path().join("hidden");
+        fs::rename(&repository, &hidden).unwrap();
+        assert!(
+            root.is_dir(),
+            "metadata can live outside the unavailable repository"
+        );
+        manager
+            .observe_project_root_unavailable("project")
+            .await
+            .unwrap();
+        assert!(!manager.refresh_project_roots().await.1.is_empty());
+        assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+        fs::rename(&hidden, &repository).unwrap();
+        assert!(manager.refresh_project_roots().await.1.is_empty());
+        assert!(manager.get_snapshot(&["project".into()]).await.is_ok());
+        manager
+            .defer_project_repository_resolution("project")
+            .await
+            .unwrap();
+        assert!(manager.desired_project_root("project").await.is_none());
+        assert!(!manager.refresh_project_roots().await.1.is_empty());
+        assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+        manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        let missing_destination = repository_parent.path().join("new-repository");
+        manager
+            .request_project_repository("project", missing_destination.clone())
+            .await
+            .unwrap();
+        manager
+            .observe_project_root_unavailable("project")
+            .await
+            .unwrap();
+        assert!(manager.desired_project_root("project").await.is_none());
+        fs::create_dir(&missing_destination).unwrap();
+        assert!(
+            !manager.refresh_project_roots().await.1.is_empty(),
+            "a repository returning does not resolve its metadata to the old A"
+        );
+        assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+        for (_, original) in &originals {
+            assert!(manager
+                .accept_pending_change(&original.pending.id)
+                .await
+                .is_err());
+        }
+        manager.unregister_project_root("project").await;
+        assert!(manager.refresh_project_roots().await.1.is_empty());
     }
 
     #[tokio::test]

@@ -141,20 +141,32 @@ la racine a été remplacée avant le rafraîchissement de son cache.
 Une dégradation de maintenance apparaît dans un diagnostic dédié, consultable
 dans le snapshot. Son apparition et son rétablissement émettent
 `config://changed`, sans répéter un état inchangé ni effacer les avertissements
-issus des commandes workspace.
+issus des commandes workspace. Un rechargement échoué reste à réessayer après
+la temporisation, même sans nouvel événement. Le diagnostic de panne est retiré
+seulement après une nouvelle vérification réussie.
 Une racine résolue reste surveillée si le chargement d'un document échoue ; la
 maintenance réessaie ce chargement après correction du fichier. Le manager
 conserve séparément la racine demandée et la configuration activée, pour que
 les abonnements et les retries suivent le registre même pendant une transition
 bloquée. Le retrait explicite désactive ce désiré sans effacer une intention
-durable encore nécessaire lors d’un futur enregistrement. Une indisponibilité temporaire du dépôt ne retire pas sa racine désirée tant
-que le projet reste dans le registre. Une purge ou une récupération du cache
+durable encore nécessaire lors d’un futur enregistrement. La demande est
+mémorisée avant toute création, résolution ou lecture d’identité du dossier.
+Une erreur à cette frontière utilise la même intention avec une cible
+indisponible et bloque l’ancienne configuration. Le chemin demandé permet une
+reprise lorsque le dossier redevient valide.
+Le chemin du dépôt fourni par le registre reste distinct de sa racine metadata.
+Son indisponibilité empêche de réactiver une racine metadata encore accessible.
+Si la destination metadata elle-même est inconnue, l’ancienne racine n’est plus
+servie ni surveillée à sa place. Le diagnostic demande une nouvelle
+réconciliation du registre pour résoudre cette destination. Une racine déjà
+connue reprend automatiquement lorsque le même dépôt revient. Une purge ou une récupération du cache
 émet aussi `config://changed` pour actualiser le
 snapshot frontend. Une absence observée par le bootstrap invalide aussi le
 consentement sans attendre la maintenance. Le watcher conserve les événements
 de suppression ou de déplacement de la racine jusqu’à leur transmission au
 manager, même si le dossier revient avant cette transmission. Une erreur native
-ou une demande de rescan seule ne constitue pas une preuve de disparition. Les opérations projet acquièrent
+ou une demande de rescan seule ne constitue pas une preuve de disparition.
+Les opérations projet acquièrent
 leurs verrous de document, de transaction et de publication avant le contrôle
 final d'identité ; les écritures suivantes ne reprennent pas ces verrous.
 Les propositions projet persistées lient leur identifiant d'approbation au
@@ -177,9 +189,10 @@ Ce protocole remplace les journaux intermédiaires de renouvellement par
 proposition. Les journaux de publication des documents restent indépendants.
 Le stockage ne conserve qu’une intention courante et un acquittement par
 proposition, sans historique croissant ni fichier annexe dans le projet.
-Si le stockage refuse toute écriture durable, Macro retourne une erreur et
-bloque la configuration concernée. Aucune trace après redémarrage ne peut être
-garantie dans ce cas.
+Si l’intention ne peut pas être persistée, Macro retourne une erreur et bloque
+la configuration concernée dans le processus. La reprise après crash suppose
+une intention persistée ; l’échec de cette première écriture peut perdre
+l’observation au redémarrage, même si d’autres fichiers restent inscriptibles.
 
 Si la réconciliation échoue après une mutation du registre déjà persistée, la
 commande conserve son résultat métier. Un avertissement `ConfigDiagnostic`,
