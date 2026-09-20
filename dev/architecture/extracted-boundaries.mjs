@@ -14,6 +14,12 @@ const isUiPackage = (specifier) => /^(react|react-dom|zustand)(\/|$)/.test(speci
 const isNativePackage = (specifier) => specifier.startsWith('@tauri-apps/');
 const isConcreteAdapter = (path) =>
   path === 'src/services/tauriIpc.ts' ||
+  path === 'src/services/tauriRuntimeBridge.ts' ||
+  path === 'src/services/tauriHttp.ts' ||
+  path === 'src/services/browserRuntimeTransport.ts' ||
+  path === 'src/services/tauriDialog.ts' ||
+  path === 'src/services/tauriWindow.ts' ||
+  (path.startsWith('src/services/ipc/') && !path.endsWith('.types.ts')) ||
   path === 'src/services/streamingChat.ts' ||
   path.startsWith('src/services/providers/') ||
   path.startsWith('src/composition/');

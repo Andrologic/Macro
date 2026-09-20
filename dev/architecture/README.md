@@ -7,8 +7,10 @@ reads both TypeScript and native files from that Git revision.
 
 The eight named Chat runtime entries cannot import React, ReactDOM or Zustand
 at runtime, including through local dependencies, reexports and lazy imports.
-Their direct runtime imports also cannot target the concrete Tauri IPC,
-streaming, provider or composition adapters, or an `@tauri-apps/*` package.
+Their direct runtime imports also cannot target the concrete Tauri IPC façade
+or domain wrappers (`services/ipc/*` except pure `*.types.ts` contracts), Tauri
+runtime bridge, HTTP, browser transport, dialog/window adapters, streaming,
+provider or composition adapters, or an `@tauri-apps/*` package.
 The existing TypeScript parser, transpiler and alias resolver determine these
 edges; type-only imports remain allowed. This is not a claim that every Chat
 dependency is transport-free: tool execution still reaches configuration
