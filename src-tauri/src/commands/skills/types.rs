@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillProjectRootDto {
     pub project_id: String,
     pub project_name: String,
@@ -11,6 +12,7 @@ pub struct SkillProjectRootDto {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillTemplateCreateRequest {
     pub name: String,
     pub description: String,
@@ -22,6 +24,7 @@ pub struct SkillTemplateCreateRequest {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillSourceDto {
     pub kind: String,
     pub namespace: String,
@@ -35,6 +38,7 @@ pub struct SkillSourceDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillResourceDto {
     pub path: String,
     pub kind: String,
@@ -43,6 +47,7 @@ pub struct SkillResourceDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillLocationDto {
     pub kind: String,
     pub uri: String,
@@ -50,6 +55,7 @@ pub struct SkillLocationDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillDiagnosticDto {
     pub severity: String,
     pub code: String,
@@ -58,6 +64,7 @@ pub struct SkillDiagnosticDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillManifestDto {
     pub id: String,
     pub name: String,
@@ -82,12 +89,14 @@ pub struct SkillManifestDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillListResponse {
     pub skills: Vec<SkillManifestDto>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillDetailResponse {
     pub skill: SkillManifestDto,
     pub body: String,
@@ -95,6 +104,7 @@ pub struct SkillDetailResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillTemplateCreateResponse {
     pub skill: SkillManifestDto,
     pub folder_path: String,
@@ -103,6 +113,7 @@ pub struct SkillTemplateCreateResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillResourceReadResponse {
     pub skill_id: String,
     pub path: String,
@@ -111,6 +122,7 @@ pub struct SkillResourceReadResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct SkillScriptRunResponse {
     pub skill_id: String,
     pub script_path: String,

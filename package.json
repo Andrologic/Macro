@@ -33,6 +33,8 @@
     "build:ai-runtime": "bun ./dev/build-ai-runtime.mjs",
     "config:generate": "cargo run --manifest-path src-tauri/Cargo.toml --example generate_config",
     "config:check": "cargo run --manifest-path src-tauri/Cargo.toml --example generate_config -- --check",
+    "ipc:generate": "cargo run --manifest-path src-tauri/Cargo.toml --locked --jobs 2 --example generate_config -- --domain ipc",
+    "ipc:check": "cargo run --manifest-path src-tauri/Cargo.toml --locked --jobs 2 --example generate_config -- --domain ipc --check",
     "build": "NODE_ENV=production bun node_modules/typescript/bin/tsc && NODE_ENV=production bun node_modules/vite/bin/vite.js build",
     "build:vite": "NODE_ENV=production bun node_modules/vite/bin/vite.js build",
     "build:analyze": "NODE_ENV=production bun node_modules/vite/bin/vite.js build --mode analyze",

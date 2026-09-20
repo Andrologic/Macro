@@ -162,6 +162,7 @@ fn fail_after_package_publication(_package_file: &str) -> Result<(), String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub enum StagedUpdatePhase {
     Staged,
     Activating,
@@ -170,6 +171,7 @@ pub enum StagedUpdatePhase {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct StagedUpdateManifest {
     #[serde(default)]
     pub generation: String,
@@ -203,6 +205,7 @@ struct CleanShutdownMarker {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct AppUpdateSnapshot {
     pub current_version: String,
     pub update: Option<StagedUpdateManifest>,

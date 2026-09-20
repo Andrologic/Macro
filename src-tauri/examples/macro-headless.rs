@@ -1,3 +1,4 @@
+use macro_lib::{fs::operations as fs, git::operations as git};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -10,14 +11,6 @@ use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use macro_lib::commands::workspace_tools::{
-    affected_virtual_tool_project_ids, validate_headless_project_mounts,
-    validate_headless_workspace_path,
-};
-use macro_lib::commands::{
-    execute_workspace_tool_controlled_with_options, fs, git, tool_cancel_workspace,
-    validate_workspace_tool_execution, WorkspaceProjectMount, WorkspaceToolExecutionOptions,
-};
 use macro_lib::config::{
     delete_orphan_secret, install_runtime_config_manager, list_orphan_secrets,
     resolve_standalone_config_root, ConfigApiError, ConfigChangeSource, ConfigDocumentKind,
@@ -28,6 +21,14 @@ use macro_lib::core::error::BackendError;
 use macro_lib::core::http_auth::BearerTokenDigest;
 use macro_lib::core::tool_policy::{
     get_mode_policy, validate_tool_execution, ToolModePolicyResult, ToolValidationResult,
+};
+use macro_lib::core::workspace_execution::workspace_tools::{
+    affected_virtual_tool_project_ids, validate_headless_project_mounts,
+    validate_headless_workspace_path,
+};
+use macro_lib::core::workspace_execution::{
+    execute_workspace_tool_controlled_with_options, tool_cancel_workspace,
+    validate_workspace_tool_execution, WorkspaceProjectMount, WorkspaceToolExecutionOptions,
 };
 use macro_lib::core::{apply_runtime_workspace, load_config};
 use macro_lib::git::GitState;
@@ -2550,7 +2551,7 @@ mod tests {
                 (*name).to_string(),
                 RegisteredProject {
                     canonical_path: workspace_path.canonicalize().expect("canonical workspace"),
-                    root_identity: macro_lib::commands::fs::workspace_root_identity(
+                    root_identity: macro_lib::fs::operations::workspace_root_identity(
                         &workspace_path,
                     )
                     .expect("workspace identity"),
@@ -2619,7 +2620,7 @@ mod tests {
                 name.to_string(),
                 RegisteredProject {
                     canonical_path: project_dir.canonicalize().expect("canonical project path"),
-                    root_identity: macro_lib::commands::fs::workspace_root_identity(&project_dir)
+                    root_identity: macro_lib::fs::operations::workspace_root_identity(&project_dir)
                         .expect("project root identity"),
                     is_read_only: false,
                 },

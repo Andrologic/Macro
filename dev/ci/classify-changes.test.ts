@@ -133,3 +133,10 @@ describe('buildDiffArgs', () => {
     expect(buildDiffArgs('0000000000000000000000000000000000000000', 'head', 'direct')).toBeNull();
   });
 });
+
+
+test('generated contract changes route through native validation, including nested dependencies', () => {
+  for (const path of ['src/types/generated/ipc/serde_json/JsonValue.ts', 'src/types/generated/ipc/manifest.json', 'src/types/generated/config/index.ts']) {
+    expect(classifyPaths([path])).toMatchObject({ native: true, frontend: true, linux: true, windows: true });
+  }
+});

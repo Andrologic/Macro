@@ -3680,3 +3680,5 @@ mod tests {
         assert!(GitRepository::init(&repo_path).is_err());
     }
 }
+
+pub mod operations;
