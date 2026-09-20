@@ -4900,7 +4900,8 @@ describe('useTaskStore task command terminal lifecycle', () => {
         repoPath: '/repos/octan_sales',
         worktreePath: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
         command: 'bun install',
-      })
+      }),
+      expect.anything(),
     );
     expect(startTaskCommandTabMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -4967,7 +4968,8 @@ describe('useTaskStore task command terminal lifecycle', () => {
         repoPath: '/repos/web',
         worktreePath: '/repos/web/.macro/worktrees/project-1::feature/run-app',
         command: 'bun install',
-      })
+      }),
+      expect.anything(),
     );
     expect(startTaskCommandTabMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5532,6 +5534,7 @@ describe('durable Architect task transitions', () => {
     };
     globalThis.localStorage = storage;
     const isolatedPlans: typeof plans = await import(`../services/architectPlanService.ts?concurrent=${Date.now()}`);
+    isolatedPlans.clearArchitectPlanFrontendCaches();
     const service = isolatedPlans.createArchitectPlanService({
       tauri: { ...actualTauriIpc, isTauriAvailable: () => false },
       getAppState: () => ({ standaloneProjects: [], projectGroups: [], selectedGroupId: null, selectedProjectId: null }),

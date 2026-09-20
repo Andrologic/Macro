@@ -383,13 +383,15 @@ En mode Implement, l'en-tête de la conversation dérive le contexte visible de 
 
 ### 6.3 `useTaskStore`
 
-`useTaskStore` gère :
+`useTaskStore` conserve le catalogue des tâches, la sélection et les projections
+visibles des opérations. Le démarrage, la préparation, les commandes projet et
+la revue/merge s'exécutent dans des services auxquels le store fournit des ports
+typés. Les mutations de statut d'un plan calculent leur résultat sous le verrou
+par branche du service Plans.
 
-- les tâches dérivées de la stratégie
-- leur activation
-- leurs transitions d'état
-- la relation entre tâche, branche et worktree
-- la persistance du statut d'exécution dans les metadata du plan
+[Workflows des tâches et des plans](task-plan-workflows.md) décrit la propriété
+de l'état, les raccords de composition, les protections de concurrence, la
+reprise après effets durables et les responsabilités qui restent dans l'UI.
 
 ### 6.4 Stores spécialisés
 

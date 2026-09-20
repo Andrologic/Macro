@@ -1296,34 +1296,7 @@
       "rule": "services-to-stores-or-ui",
       "label": "services -> stores/UI",
       "kind": "runtime",
-      "from": "src/services/architectGitFlowService.ts",
-      "to": "src/stores/useAppStore.ts",
-      "owner": "Tasks/Plans",
-      "reason": "Existing dependency assigned to the Tasks/Plans lot."
-    },
-    {
-      "rule": "services-to-stores-or-ui",
-      "label": "services -> stores/UI",
-      "kind": "runtime",
       "from": "src/services/architectPlanArtifactService.ts",
-      "to": "src/stores/useAppStore.ts",
-      "owner": "Tasks/Plans",
-      "reason": "Existing dependency assigned to the Tasks/Plans lot."
-    },
-    {
-      "rule": "services-to-stores-or-ui",
-      "label": "services -> stores/UI",
-      "kind": "runtime",
-      "from": "src/services/architectPlanRuntimeService.ts",
-      "to": "src/stores/useAppStore.ts",
-      "owner": "Tasks/Plans",
-      "reason": "Existing dependency assigned to the Tasks/Plans lot."
-    },
-    {
-      "rule": "services-to-stores-or-ui",
-      "label": "services -> stores/UI",
-      "kind": "runtime",
-      "from": "src/services/architectScopePromotionService.ts",
       "to": "src/stores/useAppStore.ts",
       "owner": "Tasks/Plans",
       "reason": "Existing dependency assigned to the Tasks/Plans lot."
@@ -1525,15 +1498,6 @@
       "to": "src/stores/useAppStore.ts",
       "owner": "Shell",
       "reason": "Existing dependency assigned to the Shell lot."
-    },
-    {
-      "rule": "services-to-stores-or-ui",
-      "label": "services -> stores/UI",
-      "kind": "runtime",
-      "from": "src/services/worktreeSetupCommands.ts",
-      "to": "src/stores/useTerminalStore.ts",
-      "owner": "Tasks/Plans",
-      "reason": "Existing dependency assigned to the Tasks/Plans lot."
     }
   ]
 }
