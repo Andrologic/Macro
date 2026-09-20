@@ -30,8 +30,8 @@ Neither guard has baseline exceptions. Regenerating the historical graph baselin
 cannot accept a regression in these boundaries. Existing SCC budgets and service
 exceptions are unchanged.
 
-The existing frontend/native/full profiles run `architecture:check`. The fast
-changed-file gate runs it for frontend and architecture-tool changes. Routing
-native-only changes to this guard (and the native-core profile) still needs CI
-wiring; that work is separate from these bounded policies. Revalidate the guards
-on the final integrated revision before the full audit.
+The frontend and all native profiles, including native-core and Windows, run
+`architecture:check`. The fast changed-file gate also selects it for changes or
+deletions in the extracted native scope, using the same scope predicate as the
+guard. Revalidate the guards on the final integrated revision before the full
+audit.
