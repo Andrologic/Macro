@@ -1,5 +1,6 @@
 import { Terminal, type ITerminalOptions } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
+import { createLifecycleScope, type LifecycleScope } from './lifecycleScope';
 import type { Theme } from '../types/theme';
 import { openExternalUrl } from './externalUrlOpener';
 import {
@@ -28,6 +29,7 @@ type RuntimeHandlers = {
 };
 
 type RuntimeSession = {
+  scope: LifecycleScope;
   tabId: string;
   terminal: Terminal;
   fitAddon: FitAddon;
@@ -43,7 +45,6 @@ type RuntimeSession = {
   writeFrameId: number | null;
   fitFrameId: number | null;
   fitRetryTimeoutId: number | null;
-  linkProviderDisposable: { dispose: () => void } | null;
   lastTouchedAt: number;
   themeSignature: string;
   lastFitFailureKey: string | null;
@@ -66,7 +67,6 @@ export interface TerminalRuntimeSyncParams extends RuntimeHandlers {
   theme?: Theme | null;
 }
 
-const runtimeSessions = new Map<string, RuntimeSession>();
 
 const getTerminalFitBlocker = (terminal: Terminal, container: HTMLDivElement): string | null => {
   if (!container.isConnected) {
@@ -114,7 +114,8 @@ const getWindowsPtyOptions = (): { backend: 'conpty' } | undefined => {
 
 const buildTerminalOptions = (
   hasLiveSession: boolean,
-  theme?: Theme | null
+  theme?: Theme | null,
+  isActive: () => boolean = () => true,
 ): ITerminalOptions => {
   const terminalOptions: ITerminalOptions & { rescaleOverlappingGlyphs?: boolean } = {
     fontFamily: 'JetBrains Mono, monospace',
@@ -132,7 +133,7 @@ const buildTerminalOptions = (
     linkHandler: {
       allowNonHttpProtocols: false,
       activate: (event, text) => {
-        if (event.button !== 0) {
+        if (!isActive() || event.button !== 0) {
           return;
         }
         event.preventDefault();
@@ -178,7 +179,7 @@ const clearWriteTimers = (session: RuntimeSession) => {
 };
 
 const refreshTerminal = (session: RuntimeSession) => {
-  if (!session.isOpened || session.terminal.rows <= 0) {
+  if (!session.scope.isActive() || !session.isOpened || session.terminal.rows <= 0) {
     return;
   }
 
@@ -202,7 +203,7 @@ const writeAndRefresh = (session: RuntimeSession, data: string) => {
 
 const flushWriteQueue = (session: RuntimeSession) => {
   session.writeFrameId = null;
-  if (!session.isOpened || session.writeQueue.length === 0) {
+  if (!session.scope.isActive() || !session.isOpened || session.writeQueue.length === 0) {
     return;
   }
 
@@ -232,7 +233,7 @@ const flushWriteQueue = (session: RuntimeSession) => {
 };
 
 const scheduleWriteFlush = (session: RuntimeSession) => {
-  if (!session.isOpened || session.writeFrameId !== null) {
+  if (!session.scope.isActive() || !session.isOpened || session.writeFrameId !== null) {
     return;
   }
 
@@ -268,7 +269,7 @@ const logFitFailure = (session: RuntimeSession, reason: string) => {
 };
 
 const scheduleFit = (session: RuntimeSession, attempt = 0) => {
-  if (!session.host) {
+  if (!session.scope.isActive() || !session.host) {
     return;
   }
 
@@ -276,13 +277,13 @@ const scheduleFit = (session: RuntimeSession, attempt = 0) => {
   session.fitFrameId = window.requestAnimationFrame(() => {
     session.fitFrameId = null;
 
-    if (!session.host) {
+    if (!session.scope.isActive() || !session.host) {
       return;
     }
 
     const fitBlocker = getTerminalFitBlocker(session.terminal, session.host);
     if (fitBlocker) {
-      if (attempt < FIT_RETRY_LIMIT) {
+      if (session.scope.isActive() && attempt < FIT_RETRY_LIMIT) {
         session.fitRetryTimeoutId = window.setTimeout(
           () => scheduleFit(session, attempt + 1),
           FIT_RETRY_DELAY_MS
@@ -312,7 +313,7 @@ const scheduleFit = (session: RuntimeSession, attempt = 0) => {
       session.lastFitFailureKey = null;
       refreshTerminal(session);
     } catch {
-      if (attempt < FIT_RETRY_LIMIT) {
+      if (session.scope.isActive() && attempt < FIT_RETRY_LIMIT) {
         session.fitRetryTimeoutId = window.setTimeout(
           () => scheduleFit(session, attempt + 1),
           FIT_RETRY_DELAY_MS
@@ -334,8 +335,8 @@ const connectResizeObserver = (session: RuntimeSession, hostElement: HTMLDivElem
   const resizeObserver = new ResizeObserver(() => {
     scheduleFit(session);
   });
-  resizeObserver.observe(hostElement);
   session.resizeObserver = resizeObserver;
+  resizeObserver.observe(hostElement);
 };
 
 const syncSnapshot = (session: RuntimeSession, snapshot: string): SnapshotSyncResult => {
@@ -394,252 +395,281 @@ const createRuntimeSession = (tabId: string): RuntimeSession => {
   mount.style.height = '100%';
   mount.style.width = '100%';
 
-  const terminal = new Terminal(buildTerminalOptions(false));
-  const fitAddon = new FitAddon();
-  terminal.loadAddon(fitAddon);
-  const linkProviderDisposable = terminal.registerLinkProvider(
-    createTerminalUrlLinkProvider(terminal, (url) => {
-      void openExternalUrl(url).catch((error) => {
-        console.warn('Failed to open terminal URL:', error);
-      });
-    })
-  );
+  const scope = createLifecycleScope();
+  try {
+    const terminal = new Terminal(buildTerminalOptions(false, undefined, scope.isActive));
+    scope.own(() => terminal.dispose());
+    const fitAddon = new FitAddon();
+    // xterm owns a successfully loaded addon, including its disposal.
+    try { terminal.loadAddon(fitAddon); }
+    catch (error) { fitAddon.dispose(); throw error; }
+    const linkProviderDisposable = terminal.registerLinkProvider(
+      createTerminalUrlLinkProvider(terminal, (url) => {
+        if (!scope.isActive()) return;
+        void openExternalUrl(url).catch((error) => {
+          console.warn('Failed to open terminal URL:', error);
+        });
+      })
+    );
 
-  let session: RuntimeSession;
-  session = {
-    tabId,
-    terminal,
-    fitAddon,
-    mount,
-    host: null,
-    isOpened: false,
-    resizeObserver: null,
-    lastSnapshot: '',
-    lastReportedSize: null,
-    hasLiveSession: false,
-    handlers: {
-      onInput: () => undefined,
-      onResize: () => undefined,
-    },
-    writeQueue: [],
-    writeFrameId: null,
-    fitFrameId: null,
-    fitRetryTimeoutId: null,
-    linkProviderDisposable,
-    lastTouchedAt: Date.now(),
-    themeSignature: getTerminalThemeSignature(),
-    lastFitFailureKey: null,
-    windowResizeListener: () => {
-      scheduleFit(session);
-    },
-    visibilityChangeListener: () => {
-      scheduleFit(session);
-    },
-  };
+    scope.own(() => linkProviderDisposable.dispose());
 
-  terminal.onData((data) => {
-    if (session.hasLiveSession) {
-      if (data === '\x0c' && session.handlers.onClear) {
-        session.handlers.onClear();
-        return;
+    let session: RuntimeSession;
+    session = {
+      scope,
+      tabId,
+      terminal,
+      fitAddon,
+      mount,
+      host: null,
+      isOpened: false,
+      resizeObserver: null,
+      lastSnapshot: '',
+      lastReportedSize: null,
+      hasLiveSession: false,
+      handlers: {
+        onInput: () => undefined,
+        onResize: () => undefined,
+      },
+      writeQueue: [],
+      writeFrameId: null,
+      fitFrameId: null,
+      fitRetryTimeoutId: null,
+      lastTouchedAt: Date.now(),
+      themeSignature: getTerminalThemeSignature(),
+      lastFitFailureKey: null,
+      windowResizeListener: () => {
+        scheduleFit(session);
+      },
+      visibilityChangeListener: () => {
+        scheduleFit(session);
+      },
+    };
+
+    scope.own(() => session.mount.remove());
+    scope.own(() => disconnectResizeObserver(session));
+    scope.own(() => clearFitTimers(session));
+    scope.own(() => clearWriteTimers(session));
+    const inputSubscription = terminal.onData((data) => {
+      if (scope.isActive() && session.host && session.hasLiveSession) {
+        if (data === '\x0c' && session.handlers.onClear) {
+          session.handlers.onClear();
+          return;
+        }
+        session.handlers.onInput(data);
       }
-      session.handlers.onInput(data);
-    }
-  });
-  window.addEventListener('resize', session.windowResizeListener);
-  document.addEventListener('visibilitychange', session.visibilityChangeListener);
-  void document.fonts?.ready
-    .then(() => {
-      scheduleFit(session);
-      refreshTerminal(session);
-    })
-    .catch(() => undefined);
+    });
+    scope.own(() => inputSubscription.dispose());
+    window.addEventListener('resize', session.windowResizeListener);
+    scope.own(() => window.removeEventListener('resize', session.windowResizeListener));
+    document.addEventListener('visibilitychange', session.visibilityChangeListener);
+    scope.own(() => document.removeEventListener('visibilitychange', session.visibilityChangeListener));
+    void document.fonts?.ready
+      .then(() => {
+        scheduleFit(session);
+        refreshTerminal(session);
+      })
+      .catch(() => undefined);
 
-  return session;
+    return session;
+  } catch (error) {
+    try { scope.stop(); } catch (cleanupError) { console.warn('Terminal acquisition cleanup failed:', cleanupError); }
+    throw error;
+  }
 };
 
 const destroyRuntimeSession = (session: RuntimeSession) => {
-  clearFitTimers(session);
-  clearWriteTimers(session);
-  disconnectResizeObserver(session);
-  window.removeEventListener('resize', session.windowResizeListener);
-  document.removeEventListener('visibilitychange', session.visibilityChangeListener);
-  if (session.host && session.mount.parentElement === session.host) {
-    session.host.replaceChildren();
-  }
+  if (!session.scope.isActive()) return;
+  // Invalidate callbacks before disposing any xterm-owned resource.
+  session.isOpened = false;
+  session.hasLiveSession = false;
+  session.writeQueue = [];
+  session.handlers = { onInput: () => undefined, onResize: () => undefined };
   session.host = null;
-  session.linkProviderDisposable?.dispose();
-  session.linkProviderDisposable = null;
-  session.terminal.dispose();
+  try { session.scope.stop(); }
+  catch (error) { console.warn('Terminal rendering cleanup failed:', error); }
 };
 
-const pruneDetachedSessions = () => {
-  if (runtimeSessions.size <= MAX_DETACHED_RUNTIME_SESSIONS) {
-    return;
-  }
+export const createTerminalRuntime = () => {
+  const runtimeSessions = new Map<string, RuntimeSession>();
 
-  const detachedSessions = [...runtimeSessions.values()]
-    .filter((session) => session.host === null)
-    .sort((left, right) => left.lastTouchedAt - right.lastTouchedAt);
+  const pruneDetachedSessions = () => {
+    const detachedSessions = [...runtimeSessions.values()]
+      .filter((session) => session.host === null)
+      .sort((left, right) => left.lastTouchedAt - right.lastTouchedAt);
 
-  while (
-    runtimeSessions.size > MAX_DETACHED_RUNTIME_SESSIONS &&
-    detachedSessions.length > 0
-  ) {
-    const session = detachedSessions.shift();
-    if (!session) {
-      break;
+    while (
+      detachedSessions.length > MAX_DETACHED_RUNTIME_SESSIONS
+    ) {
+      const session = detachedSessions.shift();
+      if (!session) {
+        break;
+      }
+      runtimeSessions.delete(session.tabId);
+      destroyRuntimeSession(session);
     }
-    runtimeSessions.delete(session.tabId);
-    destroyRuntimeSession(session);
-  }
-};
+  };
 
-const getOrCreateRuntimeSession = (tabId: string): RuntimeSession => {
-  const existing = runtimeSessions.get(tabId);
-  if (existing) {
-    existing.lastTouchedAt = Date.now();
-    return existing;
-  }
+  const getOrCreateRuntimeSession = (tabId: string): RuntimeSession => {
+    const existing = runtimeSessions.get(tabId);
+    if (existing) {
+      existing.lastTouchedAt = Date.now();
+      return existing;
+    }
 
-  const session = createRuntimeSession(tabId);
-  runtimeSessions.set(tabId, session);
-  pruneDetachedSessions();
-  return session;
-};
+    const session = createRuntimeSession(tabId);
+    runtimeSessions.set(tabId, session);
+    return session;
+  };
 
-export const terminalRuntime = {
-  attachTab(params: TerminalRuntimeAttachParams) {
-    const session = getOrCreateRuntimeSession(params.tabId);
-    updateSessionState(session, params, { syncSnapshot: false });
+  return {
+    attachTab(params: TerminalRuntimeAttachParams) {
+      const session = getOrCreateRuntimeSession(params.tabId);
+      try {
+        updateSessionState(session, params, { syncSnapshot: false });
 
-    if (session.host !== params.hostElement) {
+        if (session.host !== params.hostElement) {
+          if (session.host && session.mount.parentElement === session.host) {
+            session.host.replaceChildren();
+          }
+          params.hostElement.replaceChildren(session.mount);
+          session.host = params.hostElement;
+          connectResizeObserver(session, params.hostElement);
+        }
+
+        ensureTerminalOpened(session);
+        scheduleFit(session);
+        syncSnapshot(session, params.snapshot);
+        session.terminal.focus();
+      } catch (error) {
+        runtimeSessions.delete(params.tabId);
+        destroyRuntimeSession(session);
+        throw error;
+      }
+    },
+
+    detachTab(tabId: string, hostElement?: HTMLDivElement | null) {
+      const session = runtimeSessions.get(tabId);
+      if (!session) {
+        return;
+      }
+
+      if (hostElement && session.host !== hostElement) {
+        return;
+      }
+
       if (session.host && session.mount.parentElement === session.host) {
         session.host.replaceChildren();
       }
-      params.hostElement.replaceChildren(session.mount);
-      session.host = params.hostElement;
-      connectResizeObserver(session, params.hostElement);
-    }
+      session.host = null;
+      session.handlers = { onInput: () => undefined, onResize: () => undefined };
+      disconnectResizeObserver(session);
+      clearFitTimers(session);
+      session.lastTouchedAt = Date.now();
+      pruneDetachedSessions();
+    },
 
-    ensureTerminalOpened(session);
-    scheduleFit(session);
-    syncSnapshot(session, params.snapshot);
-    session.terminal.focus();
-  },
+    syncTab(params: TerminalRuntimeSyncParams) {
+      const session = runtimeSessions.get(params.tabId);
+      if (!session) {
+        return;
+      }
 
-  detachTab(tabId: string, hostElement?: HTMLDivElement | null) {
-    const session = runtimeSessions.get(tabId);
-    if (!session) {
-      return;
-    }
-
-    if (hostElement && session.host !== hostElement) {
-      return;
-    }
-
-    if (session.host && session.mount.parentElement === session.host) {
-      session.host.replaceChildren();
-    }
-    session.host = null;
-    disconnectResizeObserver(session);
-    clearFitTimers(session);
-    session.lastTouchedAt = Date.now();
-    pruneDetachedSessions();
-  },
-
-  syncTab(params: TerminalRuntimeSyncParams) {
-    const session = runtimeSessions.get(params.tabId);
-    if (!session) {
-      return;
-    }
-
-    const previousSnapshot = session.lastSnapshot;
-    const { themeChanged } = updateSessionState(session, params, { syncSnapshot: false });
-    const willResetSnapshot =
-      params.snapshot !== previousSnapshot && !params.snapshot.startsWith(previousSnapshot);
-    if (themeChanged || willResetSnapshot) {
-      scheduleFit(session);
-    }
-    syncSnapshot(session, params.snapshot);
-  },
-
-  setTheme(theme?: Theme | null) {
-    for (const session of runtimeSessions.values()) {
-      if (applyTerminalTheme(session, theme)) {
+      const previousSnapshot = session.lastSnapshot;
+      const { themeChanged } = updateSessionState(session, params, { syncSnapshot: false });
+      const willResetSnapshot =
+        params.snapshot !== previousSnapshot && !params.snapshot.startsWith(previousSnapshot);
+      if (themeChanged || willResetSnapshot) {
         scheduleFit(session);
       }
-    }
-  },
+      syncSnapshot(session, params.snapshot);
+    },
 
-  focusTab(tabId: string) {
-    const session = runtimeSessions.get(tabId);
-    if (!session) {
-      return;
-    }
+    setTheme(theme?: Theme | null) {
+      for (const session of runtimeSessions.values()) {
+        if (applyTerminalTheme(session, theme)) {
+          scheduleFit(session);
+        }
+      }
+    },
 
-    session.lastTouchedAt = Date.now();
-    if (session.isOpened) {
-      session.terminal.focus();
-    }
-  },
+    focusTab(tabId: string) {
+      const session = runtimeSessions.get(tabId);
+      if (!session) {
+        return;
+      }
 
-  resizeTab(tabId: string) {
-    const session = runtimeSessions.get(tabId);
-    if (!session) {
-      return;
-    }
+      session.lastTouchedAt = Date.now();
+      if (session.isOpened) {
+        session.terminal.focus();
+      }
+    },
 
-    scheduleFit(session);
-  },
+    resizeTab(tabId: string) {
+      const session = runtimeSessions.get(tabId);
+      if (!session) {
+        return;
+      }
 
-  searchTab(
-    tabId: string,
-    query: string,
-    direction: TerminalSearchDirection = 'next',
-    currentIndex?: number | null,
-    options?: { focusTerminal?: boolean }
-  ): TerminalSearchResult {
-    const session = runtimeSessions.get(tabId);
-    if (!session || !query.trim()) {
-      session?.terminal.clearSelection();
-      return { matchIndex: -1, matchCount: 0 };
-    }
+      scheduleFit(session);
+    },
 
-    const matches = findTerminalSearchMatches(session.terminal, query);
-    const nextIndex = getNextTerminalSearchIndex(matches.length, currentIndex, direction);
-    if (nextIndex === null) {
+    searchTab(
+      tabId: string,
+      query: string,
+      direction: TerminalSearchDirection = 'next',
+      currentIndex?: number | null,
+      options?: { focusTerminal?: boolean }
+    ): TerminalSearchResult {
+      const session = runtimeSessions.get(tabId);
+      if (!session || !query.trim()) {
+        session?.terminal.clearSelection();
+        return { matchIndex: -1, matchCount: 0 };
+      }
+
+      const matches = findTerminalSearchMatches(session.terminal, query);
+      const nextIndex = getNextTerminalSearchIndex(matches.length, currentIndex, direction);
+      if (nextIndex === null) {
+        session.terminal.clearSelection();
+        return { matchIndex: -1, matchCount: 0 };
+      }
+
+      selectTerminalSearchMatch(session.terminal, matches[nextIndex], options?.focusTerminal ?? true);
+      session.lastTouchedAt = Date.now();
+      return {
+        matchIndex: nextIndex,
+        matchCount: matches.length,
+      };
+    },
+
+    clearSearch(tabId: string) {
+      const session = runtimeSessions.get(tabId);
+      if (!session) {
+        return;
+      }
+
       session.terminal.clearSelection();
-      return { matchIndex: -1, matchCount: 0 };
-    }
+      session.terminal.focus();
+    },
 
-    selectTerminalSearchMatch(session.terminal, matches[nextIndex], options?.focusTerminal ?? true);
-    session.lastTouchedAt = Date.now();
-    return {
-      matchIndex: nextIndex,
-      matchCount: matches.length,
-    };
-  },
+    disposeAll() {
+      const sessions = [...runtimeSessions.values()];
+      runtimeSessions.clear();
+      for (const session of sessions) destroyRuntimeSession(session);
+    },
 
-  clearSearch(tabId: string) {
-    const session = runtimeSessions.get(tabId);
-    if (!session) {
-      return;
-    }
+    disposeTab(tabId: string) {
+      const session = runtimeSessions.get(tabId);
+      if (!session) {
+        return;
+      }
 
-    session.terminal.clearSelection();
-    session.terminal.focus();
-  },
+      runtimeSessions.delete(tabId);
+      destroyRuntimeSession(session);
+    },
+  };
 
-  disposeTab(tabId: string) {
-    const session = runtimeSessions.get(tabId);
-    if (!session) {
-      return;
-    }
-
-    runtimeSessions.delete(tabId);
-    destroyRuntimeSession(session);
-  },
 };
 
+export const terminalRuntime = createTerminalRuntime();
 export default terminalRuntime;

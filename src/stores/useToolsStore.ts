@@ -1,3 +1,4 @@
+import { type LifecycleContext } from '../services/lifecycleScope';
 import { assertUniqueMCPToolIds } from '../services/mcp/normalization';
 import { create } from 'zustand';
 import { services } from '../services';
@@ -171,7 +172,7 @@ interface ToolsStore {
   saving: boolean;
 
   // Actions
-  loadSettings: () => Promise<void>;
+  loadSettings: (lifecycle?: LifecycleContext) => Promise<void>;
   refreshMCPRuntimeSnapshot: () => Promise<void>;
   toggleTool: (toolId: string) => Promise<void>;
   toggleMCPServer: (serverId: string) => Promise<void>;
@@ -204,7 +205,8 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
   lastError: null,
   saving: false,
 
-  loadSettings: async () => {
+  loadSettings: async (lifecycle) => {
+    lifecycle?.assertActive();
     const hydrationVersion = settingsMutationVersion;
     set({ isLoading: true, lastError: null });
     try {
@@ -213,9 +215,11 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         services.getMCPServerSettings(),
         services.mcpRuntimeGetSnapshot().catch(() => null),
       ]);
+      lifecycle?.assertActive();
 
       const loadedTools = toolsDto.tools as unknown as Record<string, Tool>;
       const persistedChatStates = await loadChatModeToolSettings();
+      lifecycle?.assertActive();
       const chatToolStates: Record<string, boolean> = {};
       Object.values(loadedTools).forEach((tool) => {
         if (!isChatEligibleTool(tool)) return;
@@ -279,6 +283,7 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
         isLoading: false,
       });
     } catch (error) {
+      lifecycle?.assertActive();
       set({
         isLoading: false,
         lastError: toServiceError(error).message,

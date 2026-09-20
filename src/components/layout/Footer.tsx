@@ -1,3 +1,4 @@
+import { useViewLifetime } from '../../hooks/useViewLifetime';
 import { createWorkspaceSession, workspaceDefinitions } from '../../domains/shell/workspace';
 import { resolveWorkspaceGitContext } from '../../services/workspaceGitContext';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -779,13 +780,14 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   const [isConfiguringRemote, setIsConfiguringRemote] = useState(false);
   const [isSelectingFolder, setIsSelectingFolder] = useState(false);
 
-  const refreshRef = useRef<Promise<void> | null>(null);
+  const refreshRef = useRef<{ capture: typeof captureView; promise: Promise<void> } | null>(null);
   const focusedBranchRequestIdRef = useRef(0);
   const notificationCenterButtonRef = useRef<HTMLButtonElement>(null);
   const lastConflictToastAtRef = useRef(0);
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
   const footerMetadataSyncRef = useRef(footerMetadataSync);
 
+  const captureView = useViewLifetime(footerGitContextSignature(gitContext));
   const focusProjects = gitContext.candidates;
   const focusedProject = gitContext.project;
   const scopeProjects = useMemo<ScopedProject[]>(
@@ -814,20 +816,21 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       repositories: params.repositories ?? [],
     });
   }, []);
-  const createMacroSyncServiceForProjects = useCallback((projects: ScopedProject[]) =>
-    createMacroSyncService({
+  const createMacroSyncServiceForProjects = useCallback((projects: ScopedProject[]) => {
+    const current = captureView();
+    return createMacroSyncService({
       tauriIpc,
       getAppState: () => ({
         ...useAppStore.getState(),
-        setMetadataSyncStatus: setFooterMetadataSyncStatus,
+        setMetadataSyncStatus: (status) => {
+          if (current()) setFooterMetadataSyncStatus(status);
+        },
       }),
       toServiceError,
       resolveTargets: async () => projects.map((project) => ({ repoPath: project.path, projectId: project.id })),
-    }), [setFooterMetadataSyncStatus]);
-  const scopedMacroSyncService = useMemo(
-    () => createMacroSyncServiceForProjects(scopeProjects),
-    [createMacroSyncServiceForProjects, scopeProjects]
-  );
+    });
+  }, [setFooterMetadataSyncStatus, captureView]);
+
 
   const codeBehind = codeStatus.behind;
   const codeAhead = codeStatus.ahead;
@@ -928,6 +931,8 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   }, [canSelectFolder, isSelectingFolder, isTauriRuntime, setSelectedFolder, t]);
 
   const refreshCodeStatus = useCallback(async () => {
+    const current = captureView();
+    if (!current()) return;
     if (!isTauriRuntime || scopeProjects.length === 0) {
       setCodeStatus(DEFAULT_CODE_STATUS);
       return;
@@ -943,19 +948,21 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       }
     }));
 
+    if (!current()) return;
     setCodeStatus({
       branch: statuses[0]?.branch || detachedLabel,
       ahead: statuses.reduce((sum, status) => sum + status.ahead, 0),
       behind: statuses.reduce((sum, status) => sum + status.behind, 0),
     });
-  }, [isTauriRuntime, scopeProjects, t]);
+  }, [isTauriRuntime, scopeProjects, t, captureView]);
 
   const focusedProjectPath = focusedProject?.path ?? null;
 
   const refreshFocusedProjectBranch = useCallback(async () => {
+    const current = captureView();
     const requestId = ++focusedBranchRequestIdRef.current;
     if (!isTauriRuntime || !focusedProjectPath) {
-      if (requestId === focusedBranchRequestIdRef.current) setFocusedProjectBranch(null);
+      if (current() && requestId === focusedBranchRequestIdRef.current) setFocusedProjectBranch(null);
       return;
     }
 
@@ -963,15 +970,15 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     const detachedLabel = t('footer.sync.branchDetached', 'detached');
     try {
       const status = await tauriIpc.gitStatus(focusedProjectPath);
-      if (requestId === focusedBranchRequestIdRef.current) {
+      if (current() && requestId === focusedBranchRequestIdRef.current) {
         setFocusedProjectBranch(status.branch || detachedLabel);
       }
     } catch {
-      if (requestId === focusedBranchRequestIdRef.current) {
+      if (current() && requestId === focusedBranchRequestIdRef.current) {
         setFocusedProjectBranch(unavailableLabel);
       }
     }
-  }, [focusedProjectPath, isTauriRuntime, t]);
+  }, [focusedProjectPath, isTauriRuntime, t, captureView]);
 
   const readScopedCodeStatuses = useCallback(async (projects: ScopedProject[] = scopeProjects) => {
     const entries: PushPreflightCodeEntry[] = [];
@@ -1086,38 +1093,41 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   }, [scopeProjects]);
 
   const refreshMacroStatus = useCallback(async (ensure = false) => {
+    const current = captureView();
+    if (!current()) return null;
     if (!isTauriRuntime || !syncsMacroMetadata) {
       setMacroSnapshot(null);
       setFooterMetadataSync(DEFAULT_FOOTER_METADATA_SYNC);
       return null;
     }
-    const result = await scopedMacroSyncService.refreshMacroSyncStatus({ ensure });
-    if (result) {
+    const result = await createMacroSyncServiceForProjects(scopeProjects).refreshMacroSyncStatus({ ensure });
+    if (result && current()) {
       setMacroSnapshot(result);
     }
     return result;
-  }, [isTauriRuntime, scopedMacroSyncService, syncsMacroMetadata]);
+  }, [isTauriRuntime, createMacroSyncServiceForProjects, scopeProjects, syncsMacroMetadata, captureView]);
 
   const refreshFooterStatus = useCallback(async (options?: { ensureMacro?: boolean; showBusy?: boolean }) => {
-    if (refreshRef.current) return refreshRef.current;
+    const current = captureView();
+    if (!current()) return;
+    if (refreshRef.current?.capture === captureView) return refreshRef.current.promise;
     const run = (async () => {
       if (options?.showBusy) setIsRefreshing(true);
       try {
         await Promise.all([refreshCodeStatus(), refreshMacroStatus(Boolean(options?.ensureMacro))]);
       } finally {
-        if (options?.showBusy) setIsRefreshing(false);
+        if (current() && options?.showBusy) setIsRefreshing(false);
       }
     })().finally(() => {
-      if (refreshRef.current === run) refreshRef.current = null;
+      if (refreshRef.current?.promise === run) refreshRef.current = null;
     });
-    refreshRef.current = run;
+    refreshRef.current = { capture: captureView, promise: run };
     return run;
-  }, [refreshCodeStatus, refreshMacroStatus]);
+  }, [refreshCodeStatus, refreshMacroStatus, captureView]);
 
   useEffect(() => {
     let cancelled = false;
     const refreshCurrentScope = async () => {
-      if (refreshRef.current) await refreshRef.current;
       if (!cancelled) await refreshFooterStatus({ ensureMacro: true });
     };
     void refreshCurrentScope();
@@ -1364,7 +1374,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     if (!isTauriRuntime || syncAction || actionProjects.length === 0) return;
     const actionMacroSyncService = options?.projects
       ? createMacroSyncServiceForProjects(actionProjects)
-      : scopedMacroSyncService;
+      : createMacroSyncServiceForProjects(scopeProjects);
     const shouldSyncMetadata = actionProjects.some((project) => project.source === 'project');
     setSyncAction(action);
     lastMacroConflictActionRef.current = action;
@@ -1495,7 +1505,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       await refreshFooterStatus({ ensureMacro: action === 'fetch' });
       setSyncAction(null);
     }
-  }, [codeAhead, codeBehind, createMacroSyncServiceForProjects, describeMacroResultForToast, findDivergentCodeEntries, isDivergenceError, isTauriRuntime, metadataMissingUpstreamPolicy, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, runCodeDivergencePreflight, runPushPreflight, scopeProjects, scopedMacroSyncService, syncAction, t, buildCodeDivergenceEntryFromFailure]);
+  }, [codeAhead, codeBehind, createMacroSyncServiceForProjects, describeMacroResultForToast, findDivergentCodeEntries, isDivergenceError, isTauriRuntime, metadataMissingUpstreamPolicy, presentConflictIfNeeded, refreshFooterStatus, runCodeAction, runCodeDivergencePreflight, runPushPreflight, scopeProjects, syncAction, t, buildCodeDivergenceEntryFromFailure]);
 
   const macroConflictEntries = useMemo<ConflictResolutionEntry[]>(() => {
     const repositories = footerMetadataSync.repositories.length > 0 ? footerMetadataSync.repositories : scopeProjects.map((project) => ({
@@ -1552,7 +1562,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
 
   const handleRetryMacroSync = async () => {
     if (isMissingUpstreamResolution) {
-      const result = await scopedMacroSyncService.pushMacroMetadata();
+      const result = await createMacroSyncServiceForProjects(scopeProjects).pushMacroMetadata();
       if (result) {
         setMacroSnapshot(result);
         if (result.state !== 'pending' || result.reason !== 'missing_upstream') {
@@ -1592,6 +1602,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     choice: 'push_macro' | 'ignore_forever'
   ) => {
     if (!pushResolution || pushResolution.kind !== 'missing_upstream') return;
+    const current = captureView();
     const macroSyncService = createMacroSyncServiceForProjects(pushResolution.scopeProjects);
     setPushResolution(null);
     if (choice === 'ignore_forever') {
@@ -1600,7 +1611,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     }
 
     const result = await macroSyncService.pushMacroMetadata();
-    if (result) {
+    if (result && current()) {
       setMacroSnapshot(result);
     }
     await refreshFooterStatus({ showBusy: true });

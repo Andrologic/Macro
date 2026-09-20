@@ -1,3 +1,4 @@
+import type { LifecycleContext } from '../types/lifecycle';
 import type { AppMode } from '../types';
 import type { IconName } from '../types/icon';
 import { ContributionRegistry, type Contribution } from '../domains/shell/contributionRegistry';
@@ -161,19 +162,16 @@ const getVisiblePanelSlots = (options: {
   return slots;
 };
 
-const wait = (ms: number): Promise<'timeout'> =>
-  new Promise((resolve) => {
-    globalThis.setTimeout(() => resolve('timeout'), ms);
-  });
-
 export const preloadModePanels = async (
   mode: AppMode,
   options: {
     includeLeft?: boolean;
     includeRight?: boolean;
     timeoutMs?: number;
+    lifecycle?: LifecycleContext;
   } = {},
 ): Promise<ModePanelPreloadResult> => {
+  options.lifecycle?.assertActive();
   const loaders = getVisiblePanelSlots(options)
     .map((panel) => getModePanels(mode)[panel])
     .filter((loader): loader is ModePanelLoader => Boolean(loader));
@@ -192,14 +190,24 @@ export const preloadModePanels = async (
   ).then(() => 'done' as const);
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_PRELOAD_TIMEOUT_MS;
-  const result =
-    timeoutMs > 0 ? await Promise.race([preload, wait(timeoutMs)]) : await preload;
-
-  return {
-    loaded,
-    failed,
-    timedOut: result === 'timeout',
-  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let revoke: (() => void) | undefined;
+  try {
+    const interruptions = new Promise<'timeout' | 'stopped'>((resolve) => {
+      if (timeoutMs > 0) timer = setTimeout(() => resolve('timeout'), timeoutMs);
+      if (options.lifecycle) {
+        revoke = () => resolve('stopped');
+        options.lifecycle.signal.addEventListener('abort', revoke, { once: true });
+        if (!options.lifecycle.isActive()) revoke();
+      }
+    });
+    const result = await Promise.race([preload, interruptions]);
+    options.lifecycle?.assertActive();
+    return { loaded: [...loaded], failed: [...failed], timedOut: result === 'timeout' };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (revoke) options.lifecycle?.signal.removeEventListener('abort', revoke);
+  }
 };
 
 export const resetModePanelLoader = (loader: ModePanelLoader): void => {

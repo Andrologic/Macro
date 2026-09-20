@@ -1,3 +1,4 @@
+import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import { createTaskReviewWorkflow } from '../services/taskReviewWorkflow';
 import { createTaskMergeWorkflow } from '../services/taskMergeWorkflow';
 import { evolveMergeWorkflowRuntimeRepository, markMergeWorkflowRepositoryMerged } from '../services/taskRepositoryWorkflow';
@@ -1823,17 +1824,40 @@ const parseMissingStartRefError = (
   };
 };
 
-const ensureAppSync = () => {
-  if (appSyncUnsubscribe) return;
+let appSyncScope: ReturnType<typeof createLifecycleScope> | null = null;
+let appSyncRetirement: Promise<void> = Promise.resolve();
+const appSyncCleanupFailures: unknown[] = [];
+const stopAppSync = () => {
+  const retired = appSyncScope;
+  appSyncScope = null;
+  appSyncUnsubscribe = null;
+  if (retired) {
+    try { retired.stop(); } catch (error) { appSyncCleanupFailures.push(error); }
+    finally { appSyncRetirement = Promise.all([appSyncRetirement, retired.drain()]).then(() => undefined); }
+  }
+};
+
+const ensureAppSync = (lifecycle?: LifecycleContext): (() => void) => {
+  lifecycle?.assertActive();
+  if (appSyncUnsubscribe) {
+    const existing = appSyncScope;
+    return () => { if (appSyncScope === existing) stopAppSync(); };
+  }
+  const scope = createLifecycleScope();
+  appSyncScope = scope;
+  const stop = () => { if (appSyncScope === scope) stopAppSync(); };
+  lifecycle?.signal.addEventListener('abort', stop, { once: true });
+  scope.own(() => lifecycle?.signal.removeEventListener('abort', stop));
 
   appSyncUnsubscribe = useAppStore.subscribe((nextState, previousState) => {
+    if (!scope.isActive()) return;
     const strategyChanged =
       nextState.activeArchitectPlanId !== previousState.activeArchitectPlanId ||
       nextState.planNodes !== previousState.planNodes ||
       nextState.predictedBranches !== previousState.predictedBranches;
 
     if (strategyChanged) {
-      void useTaskStore.getState().refreshFromPlan();
+      void scope.track(useTaskStore.getState().refreshFromPlan({ lifecycle: scope })).catch(() => undefined);
       return;
     }
 
@@ -1880,9 +1904,11 @@ const ensureAppSync = () => {
     }
 
     if (nextState.selectedTaskId !== previousState.selectedTaskId && nextState.selectedTaskId) {
-      void useTaskStore.getState().activateTask(nextState.selectedTaskId);
+      void scope.track(useTaskStore.getState().activateTask(nextState.selectedTaskId, scope)).catch(() => undefined);
     }
   });
+  scope.own(appSyncUnsubscribe);
+  return stop;
 };
 
 const syncWorkspaceRoot = async (_path: string | null): Promise<void> => {
@@ -2065,14 +2091,18 @@ interface TaskStore {
   reservePlanWorktreeMutation: (planId: string) => boolean;
   releasePlanWorktreeMutation: (planId: string) => void;
   setTasks: (tasks: CatalogedImplementTask[]) => void;
-  initialize: () => Promise<void>;
-  initializeCritical: () => Promise<void>;
-  resumeAfterInitialize: () => Promise<void>;
+  initialize: (lifecycle?: LifecycleContext) => Promise<void>;
+  initializeCritical: (lifecycle?: LifecycleContext) => Promise<void>;
+  resumeAfterInitialize: (lifecycle?: LifecycleContext) => Promise<void>;
+  startAppSync: (lifecycle?: LifecycleContext) => () => void;
+  stopAppSync: () => void;
+  drainAppSync: () => Promise<void>;
   refreshFromPlan: (options?: {
+    lifecycle?: LifecycleContext;
     restoreSelection?: boolean;
     activateSelectedTask?: boolean;
   }) => Promise<void>;
-  activateTask: (taskId: string) => Promise<void>;
+  activateTask: (taskId: string, lifecycle?: LifecycleContext) => Promise<void>;
   createManualFeatureDraft: (params: {
     taskId: string;
     conversationId: string;
@@ -2725,34 +2755,55 @@ return ({
 
   setTasks: (tasks) => set({ tasks }),
 
-  initializeCritical: async () => {
-    ensureAppSync();
+  startAppSync: ensureAppSync,
+  stopAppSync,
+  drainAppSync: async () => {
+    await appSyncRetirement;
+    if (appSyncCleanupFailures.length) {
+      throw new AggregateError(appSyncCleanupFailures.splice(0), 'Failed to stop Task subscriptions.');
+    }
+  },
+
+  initializeCritical: async (lifecycle) => {
+    lifecycle?.assertActive();
+    if (!appSyncUnsubscribe) ensureAppSync(lifecycle);
     set({ isLoading: true, lastError: null });
     await get().refreshFromPlan({
+      lifecycle,
       restoreSelection: false,
       activateSelectedTask: false,
     });
+    lifecycle?.assertActive();
     set({ isLoading: false });
   },
 
-  resumeAfterInitialize: async () => {
+  resumeAfterInitialize: async (lifecycle) => {
+    lifecycle?.assertActive();
     try {
       await get().refreshFromPlan({
+        lifecycle,
         restoreSelection: true,
         activateSelectedTask: true,
       });
+      lifecycle?.assertActive();
     } catch (error) {
+      lifecycle?.assertActive();
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
     }
   },
 
-  initialize: async () => {
-    await get().initializeCritical();
-    await get().resumeAfterInitialize();
+  initialize: async (lifecycle) => {
+    lifecycle?.assertActive();
+    await get().initializeCritical(lifecycle);
+    lifecycle?.assertActive();
+    await get().resumeAfterInitialize(lifecycle);
+    lifecycle?.assertActive();
   },
 
   refreshFromPlan: async (options) => {
+    const lifecycle = options?.lifecycle;
+    lifecycle?.assertActive();
     const requestId = ++refreshRequestId;
     const appStateAtStart = useAppStore.getState();
     const selectionContextKey = `${appStateAtStart.selectedGroupId ?? ''}::${appStateAtStart.selectedProjectId ?? ''}`;
@@ -2769,13 +2820,18 @@ return ({
       const appStateBeforeRefresh = useAppStore.getState();
       const selectedTaskIdBeforeRefresh = appStateBeforeRefresh.selectedTaskId;
       await resumePlanLifecycleSagas();
+      lifecycle?.assertActive();
       if (!isCurrentRefresh()) return;
       let catalog = await services.listTasks();
+      lifecycle?.assertActive();
       if (!isCurrentRefresh()) return;
       const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
+      lifecycle?.assertActive();
       if (!isCurrentRefresh()) return;
       let shouldReloadCatalogAfterLinkedTaskRecovery = false;
       for (const pending of pendingLinkedTaskDeletions) {
+        lifecycle?.assertActive();
+        // Drain each admitted saga whole, including the lease, cleanup and error journal.
         if (!isCurrentRefresh()) return;
         const catalogTask = resolveTaskReference(catalog.tasks, pending.taskId);
         const taskStillExists = Boolean(catalogTask);
@@ -2783,6 +2839,7 @@ return ({
           shouldReloadCatalogAfterLinkedTaskRecovery = true;
           let recoverySaga = pending;
           await withTaskLifecycleLock(pending.taskId, async (taskLifecycleLeaseId) => {
+            lifecycle?.assertActive();
             const currentPending = (await loadLinkedTaskDeletionSagas()).find(
               (candidate) =>
                 candidate.taskId === pending.taskId &&
@@ -2799,6 +2856,7 @@ return ({
                   }) &&
                 (candidate.phase === 'draft_reverting' || candidate.phase === 'draft_reverted'),
             );
+            lifecycle?.assertActive();
             if (!currentPending) return;
             recoverySaga = currentPending;
             try {
@@ -2840,7 +2898,7 @@ return ({
                 updatedAt: new Date().toISOString(),
                 lastError: message,
               });
-              set({
+              if (lifecycle?.isActive() !== false) set({
                 lastError: `Le retour en brouillon reste en attente et sera repris automatiquement : ${message}`,
               });
             }
@@ -2856,7 +2914,7 @@ return ({
             updatedAt: new Date().toISOString(),
             lastError: message,
           });
-          set({ lastError: message });
+          if (lifecycle?.isActive() !== false) set({ lastError: message });
           continue;
         }
         if (pending.phase === 'prepared' && taskStillExists) {
@@ -2867,6 +2925,7 @@ return ({
           shouldReloadCatalogAfterLinkedTaskRecovery = true;
           let deletionRecoveryFailed = false;
           await withTaskLifecycleLock(pending.taskId, async (taskLifecycleLeaseId) => {
+            lifecycle?.assertActive();
             try {
               deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
               if (taskStillExists) {
@@ -2891,7 +2950,7 @@ return ({
                 updatedAt: new Date().toISOString(),
                 lastError: message,
               });
-              set({
+              if (lifecycle?.isActive() !== false) set({
                 lastError: `La suppression de la tâche reste en attente et sera reprise automatiquement : ${message}`,
               });
               deletionRecoveryFailed = true;
@@ -2928,11 +2987,14 @@ return ({
           });
         }
       }
+      lifecycle?.assertActive();
       if (shouldReloadCatalogAfterLinkedTaskRecovery) {
         catalog = await services.listTasks();
+        lifecycle?.assertActive();
         if (!isCurrentRefresh()) return;
       }
       const archivedTaskCleanupSagas = await loadArchivedTaskCleanupSagas();
+      lifecycle?.assertActive();
       if (!isCurrentRefresh()) return;
       const nextMergeWorkflowRuntimeByTaskId: Record<string, MergeWorkflowRuntimeState> =
         {};
@@ -3002,6 +3064,7 @@ return ({
         };
       });
       const publishedStandaloneTasks = await buildStandalonePublicationMap(tasks);
+      lifecycle?.assertActive();
       if (!isCurrentRefresh()) return;
       set({
         tasks,
@@ -3044,6 +3107,7 @@ return ({
           try {
             const contextKey = selectedGroupId || selectedProjectId;
             const context = contextKey ? await getLocalProjectContextState(contextKey) : null;
+            lifecycle?.assertActive();
             if (!isCurrentRefresh()) return;
             const candidateTaskId = context?.lastTaskId;
             if (candidateTaskId) {
@@ -3053,6 +3117,7 @@ return ({
               }
             }
           } catch {
+            lifecycle?.assertActive();
             // Ignore context restore failures here and keep fallback behavior.
           }
         }
@@ -3076,8 +3141,10 @@ return ({
       }
       if (activateSelectedTask && selectedTaskAfterRestore) {
         if (isCurrentRefresh()) {
-          void get().activateTask(selectedTaskAfterRestore);
-          void useChatStore.getState().ensureConversationForCurrentMode();
+          await get().activateTask(selectedTaskAfterRestore, lifecycle);
+          lifecycle?.assertActive();
+          await useChatStore.getState().ensureConversationForCurrentMode(lifecycle);
+          lifecycle?.assertActive();
         }
       } else if (
         restoreSelection &&
@@ -3086,16 +3153,19 @@ return ({
         (selectedTaskIdBeforeRefresh || tasks.length === 0)
       ) {
         if (!isCurrentRefresh()) return;
-        await useChatStore.getState().reapplySelectionForCurrentContext();
+        await useChatStore.getState().reapplySelectionForCurrentContext(lifecycle);
+        lifecycle?.assertActive();
       }
     } catch (error) {
+      lifecycle?.assertActive();
       if (!isCurrentRefresh()) return;
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message, publishedStandaloneTasks: {} });
     }
   },
 
-  activateTask: async (taskId) => {
+  activateTask: async (taskId, lifecycle) => {
+    lifecycle?.assertActive();
     const requestId = ++taskActivationRequestId;
     const appState = useAppStore.getState();
     const task = resolveTaskReference(get().tasks, taskId);
@@ -3131,6 +3201,7 @@ return ({
         lastError: null,
       });
       await syncWorkspaceRoot(null);
+      lifecycle?.assertActive();
       return;
     }
 
@@ -3154,6 +3225,7 @@ return ({
         activeWorkspacePathOverridesByProjectId: {},
       });
       await syncWorkspaceRoot(projectPath);
+      lifecycle?.assertActive();
       return;
     }
 
@@ -3177,6 +3249,7 @@ return ({
           mergeWorkspaceContext.activeWorkspacePathOverridesByProjectId,
       });
       await syncWorkspaceRoot(mergeWorkspaceContext.activeRepositoryPath || repoPath);
+      lifecycle?.assertActive();
       return;
     }
 
@@ -3195,6 +3268,7 @@ return ({
         lastError: message,
       });
       await syncWorkspaceRoot(null);
+      lifecycle?.assertActive();
       return;
     }
 
@@ -3203,6 +3277,7 @@ return ({
     let knownWorktree = primaryTarget
       ? await inspectTargetWorktreePath(executionTask, primaryTarget, get().branchWorktrees)
       : null;
+    lifecycle?.assertActive();
     if (!isCurrentTaskActivation()) return;
     if (!knownWorktree && primaryTarget && targetMode?.mode !== 'direct' && shouldRestoreExecutionWorkspace) {
       knownWorktree = await ensureTargetWorktreePath(
@@ -3210,6 +3285,7 @@ return ({
         primaryTarget,
         get().branchWorktrees,
       );
+      lifecycle?.assertActive();
     }
     if (!isCurrentTaskActivation()) return;
     if (knownWorktree) {
@@ -3231,6 +3307,7 @@ return ({
         });
       }
       await syncWorkspaceRoot(knownWorktree);
+      lifecycle?.assertActive();
       return;
     }
 
@@ -3247,6 +3324,7 @@ return ({
       activeWorkspacePathOverridesByProjectId: {},
     });
     await syncWorkspaceRoot(projectPath);
+    lifecycle?.assertActive();
   },
 
   createManualFeatureDraft: async (params) => {

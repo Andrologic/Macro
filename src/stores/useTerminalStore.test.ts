@@ -505,8 +505,10 @@ describe('useTerminalStore', () => {
     terminalInterruptMock.mockReset();
     terminalClearTabMock.mockReset();
     terminalCloseTabMock.mockReset();
+    terminalCloseTabMock.mockImplementation(async () => undefined);
     loadPreferenceMock.mockReset();
     savePreferenceMock.mockReset();
+    savePreferenceMock.mockImplementation(async () => undefined);
     resolveProjectExecutionContextMock.mockReset();
     listenMock.mockReset();
 
@@ -660,6 +662,57 @@ describe('useTerminalStore', () => {
         },
       })
     );
+  });
+
+  it('centralizes close for simultaneous callers and ignores a late reconnect DTO', async () => {
+    const { createTerminalStore } = await loadTerminalStore();
+    const port = { disposeTab: mock(() => undefined), disposeAll: mock(() => undefined) };
+    const store = createTerminalStore(port);
+    const tab = await store.getState().createManualTab();
+    let finishReconnect!: (dto: TerminalTabDto) => void;
+    let finishClose!: () => void;
+    terminalReconnectTabMock.mockImplementationOnce(() => new Promise((resolve) => { finishReconnect = resolve; }));
+    terminalCloseTabMock.mockImplementationOnce(() => new Promise((resolve) => { finishClose = () => resolve(undefined); }));
+    const reconnect = store.getState().reconnectTab(tab.id);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const close = store.getState().closeTab(tab.id);
+    expect(store.getState().closeTab(tab.id)).toBe(close);
+    eventHandlers['terminal:closed']?.({ payload: { tab_id: tab.id } });
+    finishClose();
+    await close;
+    finishReconnect(buildManualTabDto({ id: tab.id }));
+    await reconnect;
+    expect(terminalCloseTabMock).toHaveBeenCalledTimes(1);
+    expect(port.disposeTab).toHaveBeenCalledTimes(1);
+    expect(store.getState().tabs[tab.id]).toBeUndefined();
+    await store.getState().stopRuntime();
+  });
+
+  it('drains late listener acquisition and native work before restart without closing native tabs', async () => {
+    const { createTerminalStore } = await loadTerminalStore();
+    const releases: Array<ReturnType<typeof mock>> = [];
+    const registrations: Array<(release: () => void) => void> = [];
+    listenMock.mockImplementation(() => new Promise((resolve) => { registrations.push(resolve); }));
+    const port = { disposeTab: mock(() => undefined), disposeAll: mock(() => undefined) };
+    const store = createTerminalStore(port);
+    const starting = store.getState().initialize().catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(registrations).toHaveLength(3);
+    let drained = false;
+    const stopping = store.getState().stopRuntime().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    for (const resolve of registrations) {
+      const release = mock(() => undefined);
+      releases.push(release);
+      resolve(release);
+    }
+    await Promise.all([starting, stopping]);
+    await store.getState().stopRuntime();
+    expect(port.disposeAll).toHaveBeenCalledTimes(1);
+    for (const release of releases) expect(release).toHaveBeenCalledTimes(1);
+    expect(terminalCloseTabMock).not.toHaveBeenCalled();
+    expect(store.getState().initialized).toBe(false);
   });
 
   it('retries failed subscriptions after cleaning up partial registrations', async () => {

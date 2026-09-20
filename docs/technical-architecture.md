@@ -1475,3 +1475,51 @@ Ce document ne doit pas être mis à jour pour :
 - des ajustements purement visuels
 - des détails d'UX sans impact d'architecture
 - des idées produit non encore traduites en architecture cible
+
+## 20. Durées de vie des ressources frontend
+
+`LifecycleContext` exprime la validité d'un consommateur ; il ne remplace ni
+l'identité d'un tour Chat, ni les versions de mutation et identifiants de requête.
+`createLifecycleScope` révoque le contexte avant de libérer les ressources. Un
+handle acquis après cette révocation est libéré immédiatement, une seule fois.
+`track` et `drain` attendent les opérations déjà admises : arrêter un consommateur
+ne constitue pas un retour arrière d'une écriture durable.
+
+- **Application et bootstrap.** `applicationStartup`, consommé par `main.tsx`,
+  possède le pipeline de restauration, la configuration et les compositions.
+  Une génération HMR retirée ne peut ni lancer l'étape suivante, ni installer
+  les effets de configuration, ni rendre une application ou un écran de reprise.
+  La génération suivante attend le drainage de la précédente. Les ports Plans
+  restent installés jusqu'à la fin des opérations admises. Le bootstrap possède
+  son ordonnanceur différé et ses abonnements Task/Chat ; son redémarrage révoque
+  d'abord l'ancien contexte et attend ses effets avant de réhydrater.
+- **Sessions de domaine.** Les conversations, tâches et plans restent possédés
+  par leurs stores et runtimes. Monter ou retirer un panneau ne termine pas un
+  tour Chat ni une opération de métadonnées. Les captures immuables de Chat et
+  les leases et journaux des mutations gardent leur rôle. Une saga admise finit
+  son unité durable avant que son consommateur constate le retrait.
+- **Vues et opérations.** Les lectures du pied de page capturent la cible Git et
+  la génération de vue ; changer de cible permet une nouvelle lecture sans
+  attendre l'ancienne et sans recevoir son résultat. La dictée conserve son
+  identité d'opération après chaque préparation asynchrone de l'audio et avant
+  l'envoi au fournisseur. La fin d'une ancienne dictée ne réinitialise pas celle
+  du contexte suivant. Les nettoyages existants des fenêtres et de CodeMirror
+  restent en place, ainsi que la barrière globale de fermeture de page.
+- **Terminaux.** La composition injecte un port de rendu typé dans le store,
+  sans import du rendu depuis le store. Les fermetures locales et événements
+  natifs passent par une finalisation commune. Les réponses tardives ne peuvent
+  pas recréer un onglet fermé. L'arrêt frontend libère les listeners, timers,
+  observers et ressources xterm et attend les appels admis, sans fermer les PTY
+  natifs. Le détachement d'une vue conserve au plus six rendus détachés ; il
+  n'introduit aucune expiration de session native.
+- **Caches.** L'identité de la requête protège les publications des caches Plans
+  et panneaux après invalidation. Le registre des projets possède l'éviction
+  ciblée des caches Git frontend lorsqu'un projet disparaît ou change de chemin.
+  Ces règles décrivent la propriété des données ; elles ne constituent pas une
+  mesure de fuite mémoire ni une nouvelle politique de TTL.
+
+Cette frontière frontend ne rend pas annulable un IPC natif déjà envoyé.
+L'arrêt des watchers de fichiers de `src-tauri/src/fs/watcher.rs` et les courses
+entre reconnexion et fermeture natives nécessitent un contrat backend distinct.
+Le watcher de configuration de `src-tauri/src/config/watcher.rs` ne fournit pas
+ce contrat au watcher de fichiers.

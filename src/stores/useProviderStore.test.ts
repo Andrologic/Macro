@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { CopilotStatusDto } from '../services/tauriIpc';
 import { __testables as catalogTestables } from '../services/modelContextCatalog';
@@ -112,6 +113,7 @@ const aiDisconnectProviderAuthMock = mock(async (providerId: string) => ({
   auth_status: 'unauthenticated', auth_source: null, plan_type: null, account_label: null,
   token_expires_at: null, created_at: '', updated_at: '',
 }));
+const aiStartChatGptAuthMock = mock(async () => undefined);
 const aiProvisionMacroAiMock = mock(async () => ({
   providerId: 'macro-ai',
   modelId: 'macro-ai',
@@ -265,7 +267,7 @@ const loadProviderStore = async () => {
     aiCancelCopilotRuntimeDownload: aiCancelCopilotRuntimeDownloadMock,
     aiGetCopilotStatus: aiGetCopilotStatusMock,
     aiSyncProviderModels: aiSyncProviderModelsMock,
-    aiStartChatGptAuth: mock(async () => undefined),
+    aiStartChatGptAuth: aiStartChatGptAuthMock,
     aiCancelChatGptAuth: mock(async () => undefined),
     aiStartCopilotAuth: mock(async () => undefined),
     aiCancelCopilotAuth: mock(async () => undefined),
@@ -304,6 +306,62 @@ mock.module('../services/aiConfig', () => ({
 };
 
 describe('useProviderStore secret resolution', () => {
+  it('does not load configs after a provision already admitted at stop', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    const scope = createLifecycleScope();
+    let release!: () => void;
+    aiProvisionMacroAiMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { providerId: 'macro-ai', modelId: 'macro-ai', contextWindowTokens: 200_000, activatedNow: true };
+    });
+    const initializing = useProviderStore.getState().initialize(scope).catch((error: unknown) => error);
+    scope.stop();
+    release();
+    expect((await initializing).name).toBe('LifecycleStoppedError');
+    expect(listProviderConfigsMock).not.toHaveBeenCalled();
+    expect(listProviderModelsMock).not.toHaveBeenCalled();
+  });
+
+  it('settles cancellation during listener acquisition and never launches late auth', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', authStatus: 'unauthenticated' }] });
+    const unlisten = mock(() => undefined);
+    let completeAcquisition!: (release: () => void) => void;
+    listenMock.mockImplementationOnce(() => new Promise((resolve) => { completeAcquisition = resolve; }));
+    const auth = useProviderStore.getState().startChatGptAuth('chatgpt');
+    await useProviderStore.getState().cancelChatGptAuth('chatgpt');
+    await auth;
+    completeAcquisition(unlisten);
+    await flushAsyncWork();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+    expect(aiStartChatGptAuthMock).not.toHaveBeenCalled();
+    expect(useProviderStore.getState().authRequestIdsByProvider.chatgpt).toBeUndefined();
+    expect([...tauriEventHandlers.values()].flat()).toHaveLength(0);
+  });
+
+  for (const method of ['startChatGptAuth', 'startCopilotAuth', 'startCopilotRuntimeDownload'] as const) {
+    it(`releases partial and late listeners after acquisition failure: ${method}`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      const isChatGpt = method === 'startChatGptAuth';
+      const providerId = isChatGpt ? 'chatgpt' : 'copilot';
+      useProviderStore.setState({ providerConfigs: [{ ...copilotProviderConfig, id: providerId, providerType: providerId }] });
+      const earlyRelease = mock(() => undefined);
+      const lateRelease = mock(() => undefined);
+      let completeAcquisition!: (release: () => void) => void;
+      listenMock.mockImplementationOnce(async () => earlyRelease);
+      listenMock.mockImplementationOnce(() => new Promise((resolve) => { completeAcquisition = resolve; }));
+      listenMock.mockImplementationOnce(async () => { throw new Error('listener acquisition failed'); });
+      const operation = useProviderStore.getState()[method](providerId).catch((error: unknown) => error);
+      await flushAsyncWork();
+      expect((await operation).message).toContain('listener acquisition failed');
+      expect(earlyRelease).toHaveBeenCalledTimes(1);
+      completeAcquisition(lateRelease);
+      await flushAsyncWork();
+      expect(lateRelease).toHaveBeenCalledTimes(1);
+      expect(earlyRelease).toHaveBeenCalledTimes(1);
+    });
+  }
+
   beforeEach(() => {
     tauriAvailable = true;
     useAppStoreMock.setState({ mode: 'Chat' });
@@ -325,6 +383,7 @@ describe('useProviderStore secret resolution', () => {
     aiSyncProviderModelsMock.mockClear();
     aiDisconnectProviderAuthMock.mockClear();
     aiProvisionMacroAiMock.mockClear();
+    aiStartChatGptAuthMock.mockClear();
     aiDownloadCopilotRuntimeMock.mockImplementation(
       async (_params: { requestId: string; providerId?: string }) => undefined
     );

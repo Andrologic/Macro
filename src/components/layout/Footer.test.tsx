@@ -683,6 +683,30 @@ describe('Footer', () => {
     expect(gitFetchMock).toHaveBeenCalledWith({ repoPath: '/repo/web' });
   });
 
+  it('loads the next Git target without waiting for the old target and ignores its late status', async () => {
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    const oldReplies: Array<(value: GitStatusDto) => void> = [];
+    gitStatusMock.mockImplementation((path: string) => path === '/repo/api'
+      ? new Promise((resolve) => { oldReplies.push(resolve); })
+      : Promise.resolve(cloneGitStatus(gitStatusByPath[path]!)));
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    expect(oldReplies.length).toBeGreaterThan(0);
+    appState.selectedProjectId = 'project-b';
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    expect(container.textContent).toContain('feature-b');
+    await act(async () => {
+      oldReplies.forEach((resolve) => resolve(buildGitStatus('stale-branch', 90, 90)));
+    });
+    expect(container.textContent).toContain('feature-b');
+    expect(container.textContent).not.toContain('stale-branch');
+  });
+
   it('updates the Architect Git context synchronously when the selected project changes', async () => {
     appState.mode = 'Architect';
     appState.activeArchitectPlanId = null;

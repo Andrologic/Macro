@@ -1,3 +1,4 @@
+import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
 import { createChatToolExecution } from "../services/chatToolExecution";
 import { prepareAssistantStreamLaunch as prepareChatRequest } from "../services/chatRequestPreparation";
@@ -940,8 +941,8 @@ interface ChatStore {
     restoredTranscript: boolean;
     createdConversation: boolean;
   }>;
-  ensureConversationForCurrentMode: () => Promise<string | null>;
-  reapplySelectionForCurrentContext: () => Promise<void>;
+  ensureConversationForCurrentMode: (lifecycle?: LifecycleContext) => Promise<string | null>;
+  reapplySelectionForCurrentContext: (lifecycle?: LifecycleContext) => Promise<void>;
   renameConversation: (conversationId: string, title: string) => Promise<void>;
   togglePinConversation: (conversationId: string) => Promise<boolean>;
   deleteConversation: (
@@ -1064,9 +1065,12 @@ interface ChatStore {
     validGroupIds: string[],
     validProjectIds: string[],
   ) => void;
-  initialize: () => Promise<void>;
-  initializeCritical: () => Promise<void>;
-  resumeAfterInitialize: () => Promise<void>;
+  startSubscriptions: (lifecycle?: LifecycleContext) => () => void;
+  stopSubscriptions: () => void;
+  drainSubscriptions: () => Promise<void>;
+  initialize: (lifecycle?: LifecycleContext) => Promise<void>;
+  initializeCritical: (lifecycle?: LifecycleContext) => Promise<void>;
+  resumeAfterInitialize: (lifecycle?: LifecycleContext) => Promise<void>;
 }
 
 interface TranscriptComparableMessage {
@@ -1317,6 +1321,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
   let aiSelections = { ...EMPTY_AI_CONTEXT_SELECTIONS };
   let aiSelectionsLoaded = false;
   let composerContextRefsRevision = 0;
+  let subscriptionScope: ReturnType<typeof createLifecycleScope> | null = null;
+  let subscriptionRetirement: Promise<void> = Promise.resolve();
+  const subscriptionCleanupFailures: unknown[] = [];
+  const selectionPersistence = createLifecycleScope();
+  let archiveUnsubscribe: (() => void) | null = null;
   let providerSelectionUnsubscribe: (() => void) | null = null;
   let contextSelectionUnsubscribe: (() => void) | null = null;
   let taskAwaitingResponseSyncUnsubscribe: (() => void) | null = null;
@@ -2011,7 +2020,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const persistAiSelections = () => {
     if (!aiSelectionsLoaded) return;
-    void savePreference(PREF_KEYS.AI_CONTEXT_SELECTIONS, aiSelections);
+    void selectionPersistence.track(savePreference(PREF_KEYS.AI_CONTEXT_SELECTIONS, aiSelections));
   };
 
   const withSuppressedSelectionPersistence = async <T>(
@@ -2105,12 +2114,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return;
     }
 
-    void tauriIpc.updateConversationAISelection({
+    void selectionPersistence.track(tauriIpc.updateConversationAISelection({
       id: conversationId,
       providerId: selection.providerId,
       modelId: selection.modelId,
       reasoningEffort: nextReasoningEffort,
-    }).catch((error) => {
+    })).catch((error) => {
       console.warn(
         "Failed to persist conversation AI choice:",
         toServiceError(error).message,
@@ -2248,6 +2257,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const runAiSelectionRestore = async (params: {
+    lifecycle?: LifecycleContext;
     mode: AppMode;
     conversationId: string | null;
     preferredProviderId?: string | null;
@@ -2256,6 +2266,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     shouldShowResolving?: boolean;
     clearPendingArchitectPlanSwitchRequestId?: boolean;
   }): Promise<boolean> => {
+    const lifecycle = params.lifecycle;
+    lifecycle?.assertActive();
     const stateAtStart = get();
     if (stateAtStart.selectedConversationId !== params.conversationId ||
         useAppStore.getState().mode !== params.mode ||
@@ -2318,6 +2330,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
 
       await withSuppressedSelectionPersistence(async () => {
+        lifecycle?.assertActive();
         for (const step of resolutionPlan) {
           if (!isCurrentRequest()) {
             return;
@@ -2332,8 +2345,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   modelId: step.selection.modelId!,
                   reasoningEffort: step.selection.reasoningEffort ?? null,
                 },
-                { isActive: isCurrentRequest },
+                { isActive: isCurrentRequest, lifecycle },
               );
+            lifecycle?.assertActive();
 
             if (!isCurrentRequest()) {
               return;
@@ -2370,8 +2384,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   modelId: null,
                   reasoningEffort: null,
                 },
-                { isActive: isCurrentRequest },
+                { isActive: isCurrentRequest, lifecycle },
               );
+            lifecycle?.assertActive();
 
             if (!isCurrentRequest()) {
               return;
@@ -2420,8 +2435,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   modelId: null,
                   reasoningEffort: null,
                 },
-                { isActive: isCurrentRequest },
+                { isActive: isCurrentRequest, lifecycle },
               );
+            lifecycle?.assertActive();
 
             if (!isCurrentRequest()) {
               return;
@@ -2460,6 +2476,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         restoreMessage =
           "No available provider or model could be restored for this conversation.";
       });
+      lifecycle?.assertActive();
 
       if (!isCurrentRequest()) {
         return false;
@@ -2481,6 +2498,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       return appliedSelection !== null;
     } catch (error) {
+      lifecycle?.assertActive();
       const normalized = toServiceError(error);
       if (isCurrentRequest()) {
         set({
@@ -2560,12 +2578,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const ensureMessagesLoadedForConversation = async (
     conversationId: string,
+    lifecycle?: LifecycleContext,
   ): Promise<void> => {
+    lifecycle?.assertActive();
     if (!conversationId || deletedConversationIds.has(conversationId)) {
       return;
     }
     if (get().hydrationStatus === "hydrating") {
       await waitForHydration();
+      lifecycle?.assertActive();
     }
     const currentStatus =
       get().messageLoadStatusByConversationId[conversationId] ?? "idle";
@@ -2576,6 +2597,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       messageLoadPromisesByConversationId.get(conversationId);
     if (existingPromise) {
       await existingPromise;
+      lifecycle?.assertActive();
       return;
     }
     const stateBeforeLoad = get();
@@ -2618,6 +2640,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversations: get().conversations,
           },
         );
+        lifecycle?.assertActive();
         if (deletedConversationIds.has(conversationId)) {
           return;
         }
@@ -2626,6 +2649,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           loadedMessages,
         );
       } catch (error) {
+      lifecycle?.assertActive();
         set((state) => ({
           messageLoadStatusByConversationId: {
             ...state.messageLoadStatusByConversationId,
@@ -2640,6 +2664,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messageLoadPromisesByConversationId.set(conversationId, loadPromise);
     try {
       await loadPromise;
+      lifecycle?.assertActive();
     } finally {
       messageLoadPromisesByConversationId.delete(conversationId);
     }
@@ -2948,7 +2973,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const reconcileImplementAwaitingResponseTasks = async () => {
+  const reconcileImplementAwaitingResponseTasks = async (lifecycle?: LifecycleContext) => {
+    lifecycle?.assertActive();
     const state = get();
     const taskStore = useTaskStore.getState();
     const taskIdsToMark = new Set<string>();
@@ -3004,6 +3030,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (currentTask.status === "Pending") {
           await taskStore.startTask(taskId);
+          lifecycle?.assertActive();
         }
 
         const refreshedTask = taskStore.getTaskById(taskId);
@@ -3012,6 +3039,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         await taskStore.markTaskAwaitingResponse(taskId);
+        lifecycle?.assertActive();
       } finally {
         awaitingResponseReconciliationTaskIds.delete(taskId);
       }
@@ -3019,24 +3047,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const scheduleImplementAwaitingResponseReconciliation = () => {
+    const scope = subscriptionScope;
+    if (!scope?.isActive()) return;
     if (awaitingResponseReconciliationScheduled) {
       return;
     }
 
     awaitingResponseReconciliationScheduled = true;
     queueMicrotask(() => {
+      if (!scope.isActive()) return;
       awaitingResponseReconciliationScheduled = false;
-      void reconcileImplementAwaitingResponseTasks();
+      void scope.track(reconcileImplementAwaitingResponseTasks(scope)).catch(() => undefined);
     });
   };
 
-  const ensureTaskAwaitingResponseSync = () => {
+  const ensureTaskAwaitingResponseSync = (scope: ReturnType<typeof createLifecycleScope>) => {
     if (taskAwaitingResponseSyncUnsubscribe) {
       return;
     }
 
     taskAwaitingResponseSyncUnsubscribe = useTaskStore.subscribe(
       (nextState, previousState) => {
+        if (!scope.isActive()) return;
         if (nextState.tasks === previousState.tasks) {
           return;
         }
@@ -3124,11 +3156,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     return refreshedTask;
   };
 
-  const ensureProviderSelectionSync = () => {
+  const ensureProviderSelectionSync = (scope: ReturnType<typeof createLifecycleScope>) => {
     if (providerSelectionUnsubscribe) return;
 
     providerSelectionUnsubscribe = useProviderStore.subscribe(
       (nextState, previousState) => {
+        if (!scope.isActive()) return;
         if (!aiSelectionsLoaded) return;
 
         const providerChanged =
@@ -3150,13 +3183,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
           nextState.selectedProviderId &&
           !nextState.selectedModelId
         ) {
-          void runAiSelectionRestore({
+          void scope.track(runAiSelectionRestore({
+            lifecycle: scope,
             mode: appState.mode,
             conversationId: selectedConversationId,
             preferredProviderId: nextState.selectedProviderId,
             activeContextKey: get().activeContextKey,
             shouldShowResolving: true,
-          });
+          })).catch(() => undefined);
           return;
         }
 
@@ -3170,23 +3204,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         persistSelectionForContext(appState.mode, selectedConversationId);
         if ((providerChanged || modelChanged) && selectedConversationId) {
-          void maybeCompactConversationAfterModelSwitch({
+          void scope.track(maybeCompactConversationAfterModelSwitch({
             conversationId: selectedConversationId,
             previousProviderId: previousState.selectedProviderId,
             previousModelId: previousState.selectedModelId,
             nextProviderId: nextState.selectedProviderId,
             nextModelId: nextState.selectedModelId,
-          });
+          })).catch(() => undefined);
         }
       },
     );
   };
 
-  const ensureContextSelectionSync = () => {
+  const ensureContextSelectionSync = (scope: ReturnType<typeof createLifecycleScope>) => {
     if (contextSelectionUnsubscribe) return;
 
     contextSelectionUnsubscribe = useAppStore.subscribe(
       (nextState, previousState) => {
+        if (!scope.isActive()) return;
         const nextContextKey = buildChatContextKey(nextState);
         const previousContextKey = buildChatContextKey(previousState);
         if (nextContextKey === previousContextKey) {
@@ -3226,19 +3261,61 @@ export const useChatStore = create<ChatStore>((set, get) => {
           });
         }
 
-        void get().ensureConversationForCurrentMode();
+        void scope.track(get().ensureConversationForCurrentMode(scope)).catch(() => undefined);
       },
     );
   };
 
-  queueMicrotask(() => {
-    useConversationArchiveStore.subscribe((next, previous) => {
-      for (const conversationId of next.archivedConversationIds) {
-        if (!previous.archivedConversationIds.has(conversationId)) get().stopConversationStream(conversationId);
+  const stopSubscriptions = () => {
+    const retired = subscriptionScope;
+    if (!retired) return;
+    subscriptionScope = null;
+    providerSelectionUnsubscribe = null;
+    contextSelectionUnsubscribe = null;
+    taskAwaitingResponseSyncUnsubscribe = null;
+    archiveUnsubscribe = null;
+    awaitingResponseReconciliationScheduled = false;
+    // Invalidate request guards before any disposer can trigger a callback.
+    conversationResolutionGeneration += 1;
+    if (retired) {
+      try { retired.stop(); } catch (error) { subscriptionCleanupFailures.push(error); }
+      finally { subscriptionRetirement = Promise.all([subscriptionRetirement, retired.drain()]).then(() => undefined); }
+    }
+  };
+
+  const startSubscriptions = (lifecycle?: LifecycleContext): (() => void) => {
+    lifecycle?.assertActive();
+    if (subscriptionScope?.isActive()) {
+      const existing = subscriptionScope;
+      return () => { if (subscriptionScope === existing) stopSubscriptions(); };
+    }
+    const scope = createLifecycleScope();
+    subscriptionScope = scope;
+    const stop = () => { if (subscriptionScope === scope) stopSubscriptions(); };
+    lifecycle?.signal.addEventListener("abort", stop, { once: true });
+    scope.own(() => lifecycle?.signal.removeEventListener("abort", stop));
+    try {
+      ensureProviderSelectionSync(scope);
+      if (providerSelectionUnsubscribe) scope.own(providerSelectionUnsubscribe);
+      ensureContextSelectionSync(scope);
+      if (contextSelectionUnsubscribe) scope.own(contextSelectionUnsubscribe);
+      ensureTaskAwaitingResponseSync(scope);
+      if (taskAwaitingResponseSyncUnsubscribe) scope.own(taskAwaitingResponseSyncUnsubscribe);
+      archiveUnsubscribe = useConversationArchiveStore.subscribe((next, previous) => {
+        if (!scope.isActive()) return;
+        for (const conversationId of next.archivedConversationIds) {
+          if (!previous.archivedConversationIds.has(conversationId)) get().stopConversationStream(conversationId);
+        }
+      });
+      scope.own(archiveUnsubscribe);
+      return stop;
+    } catch (error) {
+      try { stop(); } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Failed to start Chat subscriptions.");
       }
-    });
-    ensureTaskAwaitingResponseSync();
-  });
+      throw error;
+    }
+  };
 
   const sanitizeAssistantContentForModel = (content: string): string => {
     return content
@@ -3507,7 +3584,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const getConversationCompactionState = async (
     conversationId: string,
+    lifecycle?: LifecycleContext,
   ): Promise<ConversationCompactionState | null> => {
+    lifecycle?.assertActive();
     if (conversationCompactionStateCache.has(conversationId)) {
       const cachedState =
         conversationCompactionStateCache.get(conversationId) ?? null;
@@ -3527,11 +3606,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     try {
       const record =
         await tauriIpc.dbGetConversationCompactionState(conversationId);
+      lifecycle?.assertActive();
       const state = record ? mapDbCompactionStateToState(record) : null;
       conversationCompactionStateCache.set(conversationId, state);
       publishPersistedCompactionStatusIfIdle(conversationId, state);
       return state;
     } catch (error) {
+      lifecycle?.assertActive();
       console.error("Failed to load conversation compaction state:", error);
       conversationCompactionStateCache.set(conversationId, null);
       return null;
@@ -5854,7 +5935,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
   const hydrateConversationToolboxStateIfAvailable = async (
     conversationId: string,
+    lifecycle?: LifecycleContext,
   ): Promise<void> => {
+    lifecycle?.assertActive();
     if (!tauriIpc.isTauriAvailable()) {
       return;
     }
@@ -5863,8 +5946,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     try {
       await waitForToolboxPersistence(conversationId);
+      lifecycle?.assertActive();
       const revisionBeforeRead = composerContextRefsRevision;
       const record = await tauriIpc.getConversationToolboxState(conversationId);
+      lifecycle?.assertActive();
       if (
         get().selectedConversationId !== conversationId ||
         composerContextRefsRevision !== revisionBeforeRead
@@ -5881,6 +5966,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       composerContextRefsRevision += 1;
       set({ composerContextRefs });
     } catch (error) {
+      lifecycle?.assertActive();
       console.warn("[chat] Failed to hydrate toolbox state:", error);
     }
   };
@@ -9669,10 +9755,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const repairArchitectPlanConversationScope = async (params: {
+    lifecycle?: LifecycleContext;
     conversationId: string;
     fallbackProjectId?: string | null;
     fallbackGroupId?: string | null;
   }): Promise<Conversation | null> => {
+    const lifecycle = params.lifecycle;
+    lifecycle?.assertActive();
     const appState = useAppStore.getState();
     const currentConversation =
       get().conversations.find(
@@ -9732,7 +9821,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           groupId: repairedGroupId,
           projectId: repairedProjectId,
         });
+        lifecycle?.assertActive();
       } catch (error) {
+      lifecycle?.assertActive();
         logArchitectTranscriptEvent(
           "warn",
           "architect_conversation_scope_repair_failed",
@@ -9792,12 +9883,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }) === "blank");
 
   const createConversationRecord = async (params: {
+    lifecycle?: LifecycleContext;
     title: string;
     taskId: string | null;
     projectId: string | null;
     groupId?: string | null;
     selectConversation?: boolean;
   }): Promise<Conversation> => {
+    const lifecycle = params.lifecycle;
+    lifecycle?.assertActive();
     const {
       title,
       taskId,
@@ -9849,11 +9943,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             existingConversation.id,
           );
           await runAiSelectionRestore({
+            lifecycle,
             mode,
             conversationId: existingConversation.id,
             activeContextKey: get().activeContextKey,
             shouldShowResolving: true,
           });
+          lifecycle?.assertActive();
         }
         return existingConversation;
       }
@@ -9873,8 +9969,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           modelId: initialAISelection?.modelId ?? null,
           reasoningEffort: initialAISelection?.reasoningEffort ?? null,
         });
+        lifecycle?.assertActive();
         newConversation = mapDbConversationToConversation(dbConversation);
       } catch (error) {
+      lifecycle?.assertActive();
         const normalized = toServiceError(error);
         set({ lastError: normalized.message });
         throw new Error(
@@ -9924,11 +10022,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
       persistSelectionForContext(mode, newConversation.id);
       await runAiSelectionRestore({
+            lifecycle,
         mode,
         conversationId: newConversation.id,
         activeContextKey: get().activeContextKey,
         shouldShowResolving: true,
       });
+      lifecycle?.assertActive();
     }
 
     return newConversation;
@@ -10118,7 +10218,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const importTranscriptSuffix = async (
     conversationId: string,
     transcript: TranscriptComparableMessage[],
+    lifecycle?: LifecycleContext,
   ): Promise<number> => {
+    lifecycle?.assertActive();
     if (transcript.length === 0) {
       return 0;
     }
@@ -10134,8 +10236,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             created_at: message.createdAt,
           })),
         );
+        lifecycle?.assertActive();
         return appendImportedMessagesToState(conversationId, imported);
       } catch (error) {
+      lifecycle?.assertActive();
         console.error("Failed to import architect transcript into DB:", error);
         throw error;
       }
@@ -10198,6 +10302,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const reconcileArchitectPlanConversation = async (params: {
+    lifecycle?: LifecycleContext;
     plan: ArchitectPlanRecord;
     targetBranch: string;
     fallbackProjectId?: string;
@@ -10215,6 +10320,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     restoredTranscript: boolean;
     createdConversation: boolean;
   }> => {
+    params.lifecycle?.assertActive();
+    // Drain this durable reconciliation as a whole, including its journal and
+    // compensation on domain failure. Frontend revocation is not a domain failure.
     const {
       plan,
       targetBranch,
@@ -10517,7 +10625,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     };
   };
 
-  const hydrateChatSnapshot = async (): Promise<void> => {
+  const hydrateChatSnapshot = async (lifecycle?: LifecycleContext): Promise<void> => {
+    lifecycle?.assertActive();
     const approvalVersionsAtHydration = new Map(approvalMutationVersions);
     conversationCompactionStateCache.clear();
     agentCodeCheckpointLoadPromisesByConversationId.clear();
@@ -10528,13 +10637,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
       loadedConversationIds,
       bootstrapError,
     } = await loadChatBootstrapSnapshot(chatPersistenceAdapters);
+    lifecycle?.assertActive();
     let replayRecoveryError: string | null = null;
 
     if (tauriIpc.isTauriAvailable()) {
       let restoredAnyReplay = false;
       for (const conversation of conversations) {
+        lifecycle?.assertActive();
+        // An admitted replay recovery retains its markers until the whole unit settles.
         const codeRecoveryKey = getAgentCodeReplayRecoveryKey(conversation.id);
         const codeRecoveryMarker = await tauriIpc.dbGetAppSetting(codeRecoveryKey);
+        lifecycle?.assertActive();
+
         let codeRecovery:
           | {
               phase: "pending" | "launched";
@@ -10564,11 +10678,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
             };
             if (codeRecovery.phase === "pending") {
               await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+
               await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+
               codeRecovery = null;
               replayRecoveryBlockedConversationIds.delete(conversation.id);
             }
           } catch (error) {
+
             replayRecoveryBlockedConversationIds.add(conversation.id);
             replayRecoveryError =
               "Replay recovery is pending for a conversation. Its code and transcript are preserved fail-closed; reload Macro to retry.";
@@ -10580,16 +10697,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             continue;
           }
         }
+        lifecycle?.assertActive();
         const marker = await tauriIpc.dbGetAppSetting(
           `conversationReplayRecovery:${conversation.id}`,
         );
+
+        lifecycle?.assertActive();
         if (!marker) {
           if (codeRecovery?.phase === "launched") {
             try {
               await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+
               await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+
               replayRecoveryBlockedConversationIds.delete(conversation.id);
             } catch (error) {
+
               replayRecoveryBlockedConversationIds.add(conversation.id);
               replayRecoveryError =
                 "Replay recovery is pending for a conversation. Its code is preserved fail-closed; reload Macro to retry.";
@@ -10628,6 +10751,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             sessionId,
             turnId,
           });
+
           if (!restored) {
             // A launched replay that has already persisted output (or lost the
             // race to a later turn) must win over the old snapshot. Finalizing
@@ -10636,15 +10760,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (recovery.phase === "launched") {
               if (codeRecovery?.phase === "launched") {
                 await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+
                 codeRecovery = null;
               }
               await tauriIpc.dbFinalizeConversationReplay({
                 conversationId: conversation.id,
                 replayId,
               });
+
               const remaining = await tauriIpc.dbGetAppSetting(
                 `conversationReplayRecovery:${conversation.id}`,
               );
+
               if (!remaining) {
                 replayRecoveryBlockedConversationIds.delete(conversation.id);
                 continue;
@@ -10654,21 +10781,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
           if (codeRecovery?.phase === "launched") {
             await recoverAgentCodeReplayPreview(codeRecovery.rollbackPreview);
+
             await tauriIpc.dbDeleteAppSetting(codeRecoveryKey);
+
             codeRecovery = null;
           }
           replayRecoveryBlockedConversationIds.delete(conversation.id);
           restoredAnyReplay = true;
         } catch (error) {
+
           replayRecoveryBlockedConversationIds.add(conversation.id);
           replayRecoveryError =
             "Replay recovery is pending for a conversation. Its transcript is preserved and editing is locked; reload Macro to retry.";
           console.error("Replay recovery is pending for conversation", conversation.id, error);
         }
       }
+      lifecycle?.assertActive();
       if (restoredAnyReplay) {
         ({ conversations, messages, loadedConversationIds, bootstrapError } =
           await loadChatBootstrapSnapshot(chatPersistenceAdapters));
+        lifecycle?.assertActive();
       }
     }
 
@@ -10682,7 +10814,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let pendingLinkedTaskDeletions;
     try {
       pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+      lifecycle?.assertActive();
     } catch (error) {
+      lifecycle?.assertActive();
       if (error instanceof LinkedConversationDeletionSagaCorruptionError) {
         error.recoverableConversationIds.forEach((conversationId) => {
           deletedConversationIds.add(conversationId);
@@ -10692,6 +10826,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     const completedPendingConversationDeletionIds = new Set<string>();
     for (const saga of pendingLinkedTaskDeletions) {
+      lifecycle?.assertActive();
+      // Deletion plus toolbox cleanup and journal removal are one durable unit.
       if (
         saga.ownerType === "plan" &&
         saga.phase === "plan_conversation_created"
@@ -10705,6 +10841,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         try {
           const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (lifecycle?.isActive() === false) break;
+
           if (plan?.conversationId === saga.conversationId) {
             await removeLinkedConversationDeletionSaga(
               saga.ownerType,
@@ -10712,18 +10850,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
               saga.targetBranch,
               getLinkedDeletionSagaGeneration(saga),
             );
+
             continue;
           }
           await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+
           await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+
           await removeLinkedConversationDeletionSaga(
             saga.ownerType,
             saga.ownerId,
             saga.targetBranch,
             getLinkedDeletionSagaGeneration(saga),
           );
+
           completedPendingConversationDeletionIds.add(saga.conversationId);
         } catch (error) {
+
           console.error(
             "Plan conversation creation cleanup remains pending",
             saga.conversationId,
@@ -10742,19 +10885,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
         try {
           const plan = await getArchitectPlan(saga.targetBranch, saga.ownerId);
+          if (lifecycle?.isActive() === false) break;
+
           if (plan && plan.status !== "deleted") {
             continue;
           }
           await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+
           await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+
           await removeLinkedConversationDeletionSaga(
             saga.ownerType,
             saga.ownerId,
             saga.targetBranch,
             getLinkedDeletionSagaGeneration(saga),
           );
+
           completedPendingConversationDeletionIds.add(saga.conversationId);
         } catch (error) {
+
           console.error("Plan conversation deletion remains pending", saga.conversationId, error);
         }
         continue;
@@ -10767,19 +10916,25 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
       try {
         await deletePersistedConversation(chatPersistenceAdapters, saga.conversationId);
+
         await deleteConversationToolboxStateIfAvailable(saga.conversationId);
+
         await removeLinkedConversationDeletionSaga(
           saga.ownerType,
           saga.ownerId,
           saga.targetBranch,
           getLinkedDeletionSagaGeneration(saga),
         );
+
         completedPendingConversationDeletionIds.add(saga.conversationId);
       } catch (error) {
+
         console.error("Plan conversation deletion remains pending", saga.conversationId, error);
       }
     }
+    lifecycle?.assertActive();
     pendingLinkedTaskDeletions = await loadLinkedConversationDeletionSagas();
+    lifecycle?.assertActive();
     const pendingConversationIds = new Set(
       pendingLinkedTaskDeletions
         .filter((saga) =>
@@ -10845,6 +11000,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const archivedConversationPreference = await loadPreference<unknown>(
       PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
     );
+    lifecycle?.assertActive();
     const archivedConversationIds = Array.isArray(archivedConversationPreference)
       ? new Set(
           archivedConversationPreference.filter(
@@ -10862,9 +11018,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     let toolApprovalRecoveryError: string | null = null;
     try {
       const recovery = await loadToolApprovalRecoveryMarkers();
+      lifecycle?.assertActive();
       markers = recovery.markers;
       toolApprovalRecoveryError = recovery.warning;
     } catch (error) {
+      lifecycle?.assertActive();
       // Preserve unknown/corrupt recovery data, while keeping chat accessible.
       toolApprovalRecoveryError = toServiceError(error).message;
     }
@@ -10874,6 +11032,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const task = conversation?.task_id ? useTaskStore.getState().getTaskById(conversation.task_id) : null;
         const eligible = conversation && !archivedConversationIds.has(conversationId) && task?.status !== "Completed";
         const transcript = eligible ? await loadConversationMessages(chatPersistenceAdapters, { conversationId, conversations }) : [];
+        lifecycle?.assertActive();
         if ((approvalMutationVersions.get(conversationId) ?? 0) !== (approvalVersionsAtHydration.get(conversationId) ?? 0)) continue;
         const restored = eligible ? restoreToolApprovalRecovery(marker, conversationId, transcript) : null;
         if (restored) {
@@ -10881,8 +11040,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           const existingIds = new Set(visibleMessages.map((message) => message.id));
           visibleMessages.push(...transcript.filter((message) => !existingIds.has(message.id)));
           loadedConversationIds.add(conversationId);
-        } else await persistToolApprovalRecovery(conversationId, null);
+        } else { await persistToolApprovalRecovery(conversationId, null); lifecycle?.assertActive(); }
       } catch (error) {
+        lifecycle?.assertActive();
         toolApprovalRecoveryError = toServiceError(error).message;
       }
     }
@@ -10936,7 +11096,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const resolveConversationForCurrentContext = async (
     requestId: number,
     contextKey: ChatContextKey,
+    lifecycle?: LifecycleContext,
   ): Promise<ResolvedConversationForContext> => {
+    lifecycle?.assertActive();
     const modeFallback = (
       conversationId: string | null,
     ): ResolvedConversationForContext => ({
@@ -11038,6 +11200,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
               scopedProjectIdsHint: activationScopedProjectIdsHint,
             },
           ));
+        lifecycle?.assertActive();
         const activationPayloadSource = sharedActivationPayload
           ? "app_store"
           : "service";
@@ -11073,10 +11236,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
             if (pendingConversationId) {
               await repairArchitectPlanConversationScope({
+            lifecycle,
                 conversationId: pendingConversationId,
                 fallbackProjectId,
                 fallbackGroupId,
               });
+              lifecycle?.assertActive();
               return activePlanResolution({
                 conversationId: pendingConversationId,
                 planId: activePlan.id,
@@ -11136,6 +11301,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 scopedProjectIdsHint: currentScopedProjectIds,
               },
             );
+            lifecycle?.assertActive();
             if (!isCurrentRequest()) return modeFallback(null);
             hasSharedConversation = plansSnapshot.plans.some(
               (candidate) =>
@@ -11144,6 +11310,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             );
           }
           const ensuredConversation = await reconcileArchitectPlanConversation({
+            lifecycle,
             plan: activePlan,
             targetBranch,
             fallbackProjectId: fallbackProjectId ?? undefined,
@@ -11157,6 +11324,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             replicaScopeKey: activationPayload?.replicaScopeKey,
             replicaProjectId: activationPayload?.replicaProjectId,
           });
+          lifecycle?.assertActive();
           if (!isCurrentRequest()) return modeFallback(null);
           if (ensuredConversation.conversationId) {
             logArchitectTranscriptEvent(
@@ -11183,6 +11351,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }
         }
       } catch (error) {
+        lifecycle?.assertActive();
         logArchitectTranscriptEvent(
           "warn",
           "architect_conversation_resolution_failed",
@@ -11200,6 +11369,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const localProjectContext = selectedGroupId
       ? await getLocalProjectContextState(selectedGroupId)
       : null;
+    lifecycle?.assertActive();
     if (!isCurrentRequest()) return modeFallback(null);
     state = get();
 
@@ -11239,6 +11409,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             PREF_KEYS.CHAT_ARCHIVED_CONVERSATION_IDS,
           )
         : null;
+    lifecycle?.assertActive();
     const archivedChatConversationIds = Array.isArray(
       archivedChatConversationPreference,
     )
@@ -11299,12 +11470,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? `Architect - ${globalProject.name}`
         : "Architect Session";
       const created = await createConversationRecord({
+            lifecycle,
         title,
         taskId: null,
         projectId: fallbackProjectId,
         groupId: selectedGroupId,
         selectConversation: false,
       });
+      lifecycle?.assertActive();
       if (!isCurrentRequest()) return modeFallback(null);
       return modeFallback(created.id);
     }
@@ -11322,12 +11495,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         )?.id ??
         selectedProjectId;
       const created = await createConversationRecord({
+            lifecycle,
         title: task ? `Task - ${task.title}` : "Task Session",
         taskId: selectedTaskId,
         projectId: projectId ?? null,
         groupId: selectedGroupId,
         selectConversation: false,
       });
+      lifecycle?.assertActive();
       if (!isCurrentRequest()) return modeFallback(null);
       return modeFallback(created.id);
     }
@@ -11346,12 +11521,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? `Repository review`
         : "Implement Session";
       const created = await createConversationRecord({
+            lifecycle,
         title: fallbackTitle,
         taskId: null,
         projectId: fallbackProjectId,
         groupId: selectedGroupId,
         selectConversation: false,
       });
+      lifecycle?.assertActive();
       if (!isCurrentRequest()) return modeFallback(null);
       return modeFallback(created.id);
     }
@@ -12113,9 +12290,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return ensuredConversation;
     },
 
-    ensureConversationForCurrentMode: async () => {
+    ensureConversationForCurrentMode: async (lifecycle) => {
+      lifecycle?.assertActive();
       const resolutionGeneration = conversationResolutionGeneration;
       await waitForHydration();
+      lifecycle?.assertActive();
       if (resolutionGeneration !== conversationResolutionGeneration) {
         return get().selectedConversationId;
       }
@@ -12131,6 +12310,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const localContext = appState.selectedGroupId
           ? await getLocalProjectContextState(appState.selectedGroupId)
           : null;
+        lifecycle?.assertActive();
         const currentAppState = useAppStore.getState();
         if (resolutionGeneration !== conversationResolutionGeneration ||
           currentAppState.mode !== contextBeforeRead.mode ||
@@ -12201,7 +12381,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const resolution = await resolveConversationForCurrentContext(
           requestId,
           contextKey,
+          lifecycle,
         );
+        lifecycle?.assertActive();
         if (!isCurrentRequest()) {
           return get().selectedConversationId;
         }
@@ -12227,10 +12409,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ) {
             const repairedConversation =
               await repairArchitectPlanConversationScope({
+            lifecycle,
                 conversationId,
                 fallbackProjectId: resolution.fallbackProjectId ?? null,
                 fallbackGroupId: resolution.fallbackGroupId ?? null,
               });
+            lifecycle?.assertActive();
             if (!isCurrentRequest()) {
               return get().selectedConversationId;
             }
@@ -12264,17 +12448,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             latestState.selectedConversationId,
             conversationId,
           );
-          await ensureMessagesLoadedForConversation(conversationId);
+          await ensureMessagesLoadedForConversation(conversationId, lifecycle);
+          lifecycle?.assertActive();
           await hydrateConversationCitationsIfAvailable(conversationId);
+          lifecycle?.assertActive();
           if (!isCurrentRequest()) {
             return get().selectedConversationId;
           }
-          await hydrateConversationToolboxStateIfAvailable(conversationId);
+          await hydrateConversationToolboxStateIfAvailable(conversationId, lifecycle);
+          lifecycle?.assertActive();
           if (!isCurrentRequest()) {
             return get().selectedConversationId;
           }
-          await getConversationCompactionState(conversationId);
+          await getConversationCompactionState(conversationId, lifecycle);
+          lifecycle?.assertActive();
           await runAiSelectionRestore({
+            lifecycle,
             mode,
             conversationId,
             requestId,
@@ -12282,6 +12471,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             shouldShowResolving,
             clearPendingArchitectPlanSwitchRequestId: true,
           });
+          lifecycle?.assertActive();
           return conversationId;
         }
 
@@ -12294,6 +12484,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           clearConversationSelection(mode);
         }
         await runAiSelectionRestore({
+            lifecycle,
           mode,
           conversationId: null,
           requestId,
@@ -12301,8 +12492,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
           shouldShowResolving,
           clearPendingArchitectPlanSwitchRequestId: true,
         });
+        lifecycle?.assertActive();
         return null;
       } catch (error) {
+        lifecycle?.assertActive();
         const normalized = toServiceError(error);
         if (isCurrentRequest()) {
           if (mode === "Architect" && useAppStore.getState().activeArchitectPlanId) {
@@ -12318,9 +12511,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    reapplySelectionForCurrentContext: async () => {
+    reapplySelectionForCurrentContext: async (lifecycle) => {
+      lifecycle?.assertActive();
       await waitForHydration();
-      await get().ensureConversationForCurrentMode();
+      lifecycle?.assertActive();
+      await get().ensureConversationForCurrentMode(lifecycle);
+      lifecycle?.assertActive();
     },
 
     renameConversation: async (conversationId, title) => {
@@ -14052,8 +14248,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    initializeCritical: async () => {
+    startSubscriptions,
+    stopSubscriptions,
+    drainSubscriptions: async () => {
+      await subscriptionRetirement;
+      await selectionPersistence.drain();
+      if (subscriptionCleanupFailures.length) {
+        throw new AggregateError(subscriptionCleanupFailures.splice(0), "Failed to stop Chat subscriptions.");
+      }
+    },
+
+    initializeCritical: async (lifecycle) => {
+      lifecycle?.assertActive();
       // Retire waiters, then drain in-flight writes before reading recovery data.
+      const retiredConversationIds = Object.keys(get().conversationRuntimeById);
       const retiredApprovalQueues = [...pendingToolApprovalQueues.values()];
       toolApprovalRuntimeEpoch += 1;
       for (const resolve of pendingToolApprovalResolvers.values()) resolve({ kind: "expired" });
@@ -14099,20 +14307,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messageLoadStatusByConversationId: {},
       });
       try {
-        await Promise.allSettled(retiredApprovalQueues);
-        aiSelections = normalizeAIContextSelections(
-          await loadPreference<PersistedAIContextSelections>(
-            PREF_KEYS.AI_CONTEXT_SELECTIONS,
-          ),
+        await Promise.allSettled([
+          ...retiredApprovalQueues,
+          ...retiredConversationIds.map((id) => turnRuntime.drain(id)),
+        ]);
+        lifecycle?.assertActive();
+        await get().drainSubscriptions();
+        lifecycle?.assertActive();
+        const storedSelections = await loadPreference<PersistedAIContextSelections>(
+          PREF_KEYS.AI_CONTEXT_SELECTIONS,
         );
+        lifecycle?.assertActive();
+        aiSelections = normalizeAIContextSelections(storedSelections);
         aiSelectionsLoaded = true;
-        ensureProviderSelectionSync();
-        ensureContextSelectionSync();
+        if (!subscriptionScope) startSubscriptions(lifecycle);
 
-        hydrationPromise = hydrateChatSnapshot();
+        hydrationPromise = hydrateChatSnapshot(lifecycle);
         await hydrationPromise;
+        lifecycle?.assertActive();
         hydrationPromise = null;
       } catch (error) {
+        lifecycle?.assertActive();
         hydrationPromise = null;
         const normalized = toServiceError(error);
         console.error("Failed to initialize chat store:", normalized.message);
@@ -14149,15 +14364,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         });
 
         aiSelectionsLoaded = true;
-        ensureProviderSelectionSync();
-        ensureContextSelectionSync();
+        if (!subscriptionScope) startSubscriptions(lifecycle);
       }
     },
 
-    resumeAfterInitialize: async () => {
+    resumeAfterInitialize: async (lifecycle) => {
+      lifecycle?.assertActive();
       try {
-        await get().ensureConversationForCurrentMode();
+        await get().ensureConversationForCurrentMode(lifecycle);
+        lifecycle?.assertActive();
       } catch (error) {
+        lifecycle?.assertActive();
         const normalized = toServiceError(error);
         console.error("Failed to resume chat context:", normalized.message);
         set({
@@ -14167,9 +14384,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    initialize: async () => {
-      await get().initializeCritical();
-      await get().resumeAfterInitialize();
+    initialize: async (lifecycle) => {
+      lifecycle?.assertActive();
+      await get().initializeCritical(lifecycle);
+      lifecycle?.assertActive();
+      await get().resumeAfterInitialize(lifecycle);
+      lifecycle?.assertActive();
     },
   };
 });
