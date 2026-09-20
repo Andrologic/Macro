@@ -1593,6 +1593,10 @@ ne constitue pas un retour arrière d'une écriture durable.
   observers et ressources xterm et attend les appels admis, sans fermer les PTY
   natifs. Le détachement d'une vue conserve au plus six rendus détachés ; il
   n'introduit aucune expiration de session native.
+  La composition d'entrée installe un port léger. Le renderer et xterm restent
+  chargés avec le panneau Terminal ; le premier attachement acquiert ce port.
+  Après l'arrêt de l'application, un attachement tardif est refusé avant toute
+  création xterm. Le nettoyage d'un onglet non rendu ne charge pas le renderer.
 - **Caches.** L'identité de la requête protège les publications des caches Plans
   et panneaux après invalidation. Le registre des projets possède l'éviction
   ciblée des caches Git frontend lorsqu'un projet disparaît ou change de chemin.

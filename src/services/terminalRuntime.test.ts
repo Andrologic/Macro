@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import type { Theme } from '../types/theme';
 import type { terminalRuntime as TerminalRuntime } from './terminalRuntime';
+import { terminalRenderingLifecycle } from './terminalRenderingLifecycle';
 
 const macroDarkTheme: Theme = {
   name: 'Macro Dark',
@@ -206,6 +207,7 @@ const loadTerminalRuntime = async (): Promise<typeof TerminalRuntime> => {
     openExternalUrl: mock(async () => undefined),
   }));
 
+  terminalRenderingLifecycle.install();
   const module = await import(`./terminalRuntime.ts?terminal-runtime-test=${importCounter}`);
   runtimes.push(module.terminalRuntime);
   return module.terminalRuntime;
@@ -463,6 +465,32 @@ describe('terminalRuntime', () => {
     expect(FakeTerminal.instances[2].disposeCount).toBe(0);
     runtime.disposeTab('partial');
     expect(FakeTerminal.instances[2].disposeCount).toBe(1);
+  });
+
+  it('rejects a late renderer attachment after application stop and permits the next owner', async () => {
+    const runtime = await loadTerminalRuntime();
+    const owner = terminalRenderingLifecycle.install();
+    const params = { tabId: 'owned', snapshot: '', hasLiveSession: true,
+      hostElement: buildHost(), onInput: () => undefined, onResize: () => undefined };
+    runtime.attachTab(params);
+    let release!: () => void;
+    const lateAttachment = new Promise<void>((resolve) => { release = resolve; })
+      .then(() => runtime.attachTab({ ...params, tabId: 'late' }));
+    owner.stop();
+    release();
+    await lateAttachment;
+    expect(FakeTerminal.instances).toHaveLength(1);
+    expect(FakeTerminal.instances[0].disposeCount).toBe(1);
+    expect(params.hostElement.children).toHaveLength(0);
+
+    const next = terminalRenderingLifecycle.install();
+    runtime.attachTab({ ...params, tabId: 'next' });
+    owner.stop();
+    expect(FakeTerminal.instances).toHaveLength(2);
+    expect(FakeTerminal.instances[1].disposeCount).toBe(0);
+    next.stop();
+    next.stop();
+    expect(FakeTerminal.instances[1].disposeCount).toBe(1);
   });
 
   it('keeps runtimes independent and ignores a detach from a previous host', async () => {

@@ -1,6 +1,8 @@
 import { Terminal, type ITerminalOptions } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { createLifecycleScope, type LifecycleScope } from './lifecycleScope';
+import type { TerminalLifecyclePort } from './terminalLifecycle';
+import { terminalRenderingLifecycle } from './terminalRenderingLifecycle';
 import type { Theme } from '../types/theme';
 import { openExternalUrl } from './externalUrlOpener';
 import {
@@ -490,7 +492,7 @@ const destroyRuntimeSession = (session: RuntimeSession) => {
   catch (error) { console.warn('Terminal rendering cleanup failed:', error); }
 };
 
-export const createTerminalRuntime = () => {
+export const createTerminalRuntime = (acquire?: (renderer: TerminalLifecyclePort) => boolean) => {
   const runtimeSessions = new Map<string, RuntimeSession>();
 
   const pruneDetachedSessions = () => {
@@ -522,8 +524,9 @@ export const createTerminalRuntime = () => {
     return session;
   };
 
-  return {
+  const runtime = {
     attachTab(params: TerminalRuntimeAttachParams) {
+      if (acquire && !acquire(runtime)) return;
       const session = getOrCreateRuntimeSession(params.tabId);
       try {
         updateSessionState(session, params, { syncSnapshot: false });
@@ -668,8 +671,8 @@ export const createTerminalRuntime = () => {
       destroyRuntimeSession(session);
     },
   };
-
+  return runtime;
 };
 
-export const terminalRuntime = createTerminalRuntime();
+export const terminalRuntime = createTerminalRuntime(terminalRenderingLifecycle.acquire);
 export default terminalRuntime;
