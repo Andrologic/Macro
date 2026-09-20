@@ -138,6 +138,10 @@ avec une temporisation progressive plafonnée à trente secondes. Ce délai est
 commun aux racines : une panne persistante peut donc retarder aussi le
 rechargement d'une racine saine. Le manager refuse de servir un document dont
 la racine a été remplacée avant le rafraîchissement de son cache.
+Une dégradation de maintenance apparaît dans un diagnostic dédié, consultable
+dans le snapshot. Son apparition et son rétablissement émettent
+`config://changed`, sans répéter un état inchangé ni effacer les avertissements
+issus des commandes workspace.
 Une racine résolue reste surveillée si le chargement d'un document échoue ; la
 maintenance réessaie ce chargement après correction du fichier. Une
 indisponibilité temporaire du dépôt ne retire pas sa racine désirée tant
@@ -147,9 +151,13 @@ snapshot frontend. Les opérations d'écriture revérifient l'identité de la
 racine après l'attente du verrou de fichier.
 Les propositions projet persistées lient leur identifiant d'approbation au
 chemin canonique et à l'identité du dossier. Un changement de racine renouvelle
-cet identifiant, même après redémarrage, en conservant le contenu proposé et
+cet identifiant, même si la nouvelle racine ne contient pas le document. Ce
+renouvellement persiste après redémarrage, en conservant le contenu proposé et
 la baseline approuvée. Les anciennes propositions sans ce lien demandent
 également une nouvelle approbation.
+Un seul journal de renouvellement par proposition permet de reprendre une
+écriture interrompue avant de réutiliser une liaison de racine. Il est supprimé
+après réussite ; une divergence bloque la reprise et conserve les données.
 
 Si la réconciliation échoue après une mutation du registre déjà persistée, la
 commande conserve son résultat métier. Un avertissement `ConfigDiagnostic`,

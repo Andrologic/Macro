@@ -89,6 +89,16 @@ impl ConfigWatcher {
                 signal_rx,
                 Duration::from_secs(2),
                 Duration::from_millis(250),
+                |errors| {
+                    let manager = &manager;
+                    let app = &app;
+                    async move {
+                        publish_maintenance_status(manager, errors, |document| {
+                            let _ = app.emit("config://changed", &document);
+                        })
+                        .await;
+                    }
+                },
                 |reload_requested| {
                     let manager = &manager;
                     let app = &app;
@@ -192,6 +202,18 @@ async fn refresh_project_state(
     (changed, errors)
 }
 
+async fn publish_maintenance_status(
+    manager: &ConfigManager,
+    errors: Vec<String>,
+    mut notify_changed: impl FnMut(ConfigDocument),
+) {
+    let message = (!errors.is_empty()).then(|| format!(
+        "La surveillance des configurations est dégradée : {}. Une nouvelle tentative est prévue automatiquement.",
+        errors.join(" ; ")
+    ));
+    notify_changed(manager.record_maintenance_diagnostic(message).await);
+}
+
 struct MaintenanceBackoff {
     failures: u32,
     next_attempt: tokio::time::Instant,
@@ -227,15 +249,18 @@ impl MaintenanceBackoff {
 // During failure cooldown, leave events pending in the coalescing watch channel:
 // even an error storm cannot wake this loop faster than its bounded periodic tick.
 // This shared budget can delay healthy roots too, by up to the 30-second cooldown.
-async fn maintain_subscriptions<F, Fut>(
+async fn maintain_subscriptions<F, Fut, R, ReportFuture>(
     state: Weak<ConfigWatcher>,
     mut signal_rx: watch::Receiver<u64>,
     retry_interval: Duration,
     debounce: Duration,
+    mut report_status: R,
     mut refresh_and_reload: F,
 ) where
     F: FnMut(bool) -> Fut,
     Fut: std::future::Future<Output = Vec<String>>,
+    R: FnMut(Vec<String>) -> ReportFuture,
+    ReportFuture: std::future::Future<Output = ()>,
 {
     let mut interval = tokio::time::interval(retry_interval);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -302,6 +327,7 @@ async fn maintain_subscriptions<F, Fut>(
         errors.sort();
         errors.dedup();
         if errors != last_errors {
+            report_status(errors.clone()).await;
             if errors.is_empty() {
                 tracing::info!("Maintenance du watcher de configuration rétablie");
             } else {
@@ -816,6 +842,7 @@ mod tests {
             rx,
             Duration::from_millis(50),
             Duration::from_millis(20),
+            |_| std::future::ready(()),
             move |reload_requested| {
                 let state = callback_state.upgrade().unwrap();
                 assert!(
@@ -866,6 +893,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maintenance_failure_and_recovery_are_queryable_and_notified_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("global"))
+            .await
+            .unwrap();
+        manager
+            .record_reconciliation_diagnostic(Some("registry warning".into()))
+            .await;
+        let (tx, rx) = watch::channel(0);
+        let state = Arc::new(ConfigWatcher {
+            state: Mutex::new(WatcherState::new(manager.root(), tx).unwrap()),
+        });
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let report_manager = manager.clone();
+        let task = tokio::spawn(maintain_subscriptions(
+            Arc::downgrade(&state),
+            rx,
+            Duration::from_millis(30),
+            Duration::ZERO,
+            move |errors| {
+                let manager = report_manager.clone();
+                let events_tx = events_tx.clone();
+                async move {
+                    publish_maintenance_status(&manager, errors, |document| {
+                        events_tx.send(document).unwrap();
+                    })
+                    .await;
+                }
+            },
+            |_| std::future::ready(Vec::new()),
+        ));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(events_rx.try_recv().is_err(), "healthy startup stays quiet");
+        let missing = temp.path().join("missing");
+        assert!(state.watch_project_root("project", &missing).is_err());
+        let degraded = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(degraded
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("project")));
+        assert_eq!(
+            manager.get_snapshot(&[]).await.unwrap().diagnostics.len(),
+            2
+        );
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert!(
+            events_rx.try_recv().is_err(),
+            "unchanged error is not repeated"
+        );
+        std::fs::create_dir(&missing).unwrap();
+        let recovered = tokio::time::timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.diagnostics.len(), 1);
+        assert_eq!(recovered.diagnostics[0].message, "registry warning");
+        assert_eq!(
+            manager.get_snapshot(&[]).await.unwrap().diagnostics.len(),
+            1
+        );
+        drop(state);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn quiet_and_failed_periodic_passes_do_not_reload_or_retain_state() {
         let global = tempfile::tempdir().unwrap();
         let missing_parent = tempfile::tempdir().unwrap();
@@ -884,6 +982,7 @@ mod tests {
             rx,
             Duration::from_millis(30),
             Duration::from_millis(10),
+            |_| std::future::ready(()),
             move |reload_requested| {
                 if reload_requested {
                     counter.fetch_add(1, Ordering::SeqCst);
@@ -920,6 +1019,7 @@ mod tests {
             rx,
             Duration::from_millis(40),
             Duration::ZERO,
+            |_| std::future::ready(()),
             move |reload_requested| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 if reload_requested {
@@ -1008,6 +1108,7 @@ mod tests {
                 rx,
                 Duration::from_millis(40),
                 Duration::ZERO,
+                |_| std::future::ready(()),
                 move |_| {
                     counter.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Vec::new())
