@@ -53,7 +53,7 @@ pub mod files {
 }
 
 pub mod chat {
-    pub use crate::ai::chatgpt::types::{
+    pub use crate::ai::types::{
         AiAuthCancelledEvent, AiAuthErrorEvent, AiAuthStartedEvent, AiAuthSuccessEvent,
         AiChatImageUrl, AiChatMessage, AiChatMessageContent, AiChatMessagePart, AiChatRequest,
         AiProjectMount, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
@@ -62,6 +62,9 @@ pub mod chat {
 }
 
 pub mod copilot {
+    pub use crate::ai::copilot::protocol::{
+        BridgeHealthResult, BridgeModelsResponse, BridgeSendEvent, BridgeToolResultMessage,
+    };
     pub use crate::ai::copilot::{
         CopilotAuthCancelledEvent, CopilotAuthCompleteEvent, CopilotAuthErrorEvent,
         CopilotAuthProgressEvent, CopilotDownloadCompleteEvent, CopilotDownloadErrorEvent,

@@ -1,0 +1,245 @@
+[
+  {
+    "name": "omitted optionals",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": ""
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": null,
+      "visible_content": null,
+      "interrupt": false,
+      "is_error": false,
+      "error_kind": null
+    },
+    "sdk_result_type": "success"
+  },
+  {
+    "name": "explicit nulls",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": null,
+      "visible_content": null,
+      "interrupt": null,
+      "is_error": null,
+      "error_kind": null
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": null,
+      "visible_content": null,
+      "interrupt": false,
+      "is_error": false,
+      "error_kind": null
+    },
+    "sdk_result_type": "success"
+  },
+  {
+    "name": "explicit false and empty strings",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "",
+      "visible_content": "",
+      "interrupt": false,
+      "is_error": false,
+      "error_kind": ""
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "",
+      "visible_content": "",
+      "interrupt": false,
+      "is_error": false,
+      "error_kind": ""
+    },
+    "sdk_result_type": "success"
+  },
+  {
+    "name": "business error permission",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "Tool execution refused.",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "permission"
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "Tool execution refused.",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "permission"
+    },
+    "sdk_result_type": "denied"
+  },
+  {
+    "name": "business error aborted",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "aborted"
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "aborted"
+    },
+    "sdk_result_type": "failure"
+  },
+  {
+    "name": "business error validation",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "validation"
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "validation"
+    },
+    "sdk_result_type": "failure"
+  },
+  {
+    "name": "business error execution",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "execution"
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "execution"
+    },
+    "sdk_result_type": "failure"
+  },
+  {
+    "name": "business error future_kind",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "future_kind"
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": "future_kind"
+    },
+    "sdk_result_type": "failure"
+  },
+  {
+    "name": "business error None",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": null
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": "retained context",
+      "visible_content": "",
+      "interrupt": true,
+      "is_error": true,
+      "error_kind": null
+    },
+    "sdk_result_type": "failure"
+  },
+  {
+    "name": "category without error flag",
+    "request": {
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "is_error": false,
+      "error_kind": "execution",
+      "interrupt": true
+    },
+    "payload": {
+      "type": "tool_result",
+      "request_id": " request:opaque ",
+      "tool_call_id": " call/opaque ",
+      "result": "",
+      "hidden_context": null,
+      "visible_content": null,
+      "interrupt": true,
+      "is_error": false,
+      "error_kind": "execution"
+    },
+    "sdk_result_type": "success"
+  }
+]

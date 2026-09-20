@@ -1,6 +1,6 @@
 import type { Citation } from "../types/citation";
 import type { AppMode, AgentType, ChatMessage, ContextFootprint, ContextCompactionKind, ProviderConfig, ReasoningEffort, MCPTool, MCPServer, ToolRiskLevel } from "../types";
-import type { StreamMessage } from "./streamingChat";
+import type { StreamMessage } from "./ai/contracts";
 import type { MacroToolRegistryEntry } from "../shared/macroToolRegistry";
 import type * as tauriIpc from "./tauriIpc";
 import type { ContextCompactionDecision } from "./contextCompaction";

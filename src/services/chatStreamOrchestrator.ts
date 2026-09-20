@@ -1,7 +1,7 @@
 import type {
   StreamCompletionResult,
   StreamingChatOptions,
-} from "./streamingChat";
+} from "./ai/contracts";
 
 type FrameHandle = number | ReturnType<typeof setTimeout>;
 
