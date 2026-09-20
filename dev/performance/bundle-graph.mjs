@@ -8,6 +8,8 @@ export function bundleGraph(bundle, root) {
     isEntry: chunk.isEntry,
     imports: chunk.imports,
     dynamicImports: chunk.dynamicImports,
+    importedBindings: chunk.importedBindings,
+    css: [...(chunk.viteMetadata?.importedCss ?? [])],
     bytes: Buffer.byteLength(chunk.code),
     gzipBytes: gzipSync(chunk.code, { level: 9 }).byteLength,
     modules: Object.entries(chunk.modules).map(([id, module]) => ({
