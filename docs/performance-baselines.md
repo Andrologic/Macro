@@ -473,7 +473,7 @@ Japanese and Korean chunks now measure 130,427, 145,514 and 131,089 bytes.
 
 Application code is deferred at calls that already return promises:
 `chatToolExecutionRuntime` loads on the first tool execution,
-`architectToolRuntime` on the first Architect tool, and
+`architectToolRuntime` on the first call to the Architect handler, and
 `streamingChatExecution` on the first streaming or non-streaming provider call.
 The latter emits a 37,564-byte chunk. These modules are absent from the emitted
 static startup closure; their imports are invoked by those operations, not by

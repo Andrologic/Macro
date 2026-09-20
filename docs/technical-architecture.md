@@ -494,7 +494,7 @@ propriétaire conserve sa compensation.
 `chatToolExecution` charge `chatToolExecutionRuntime` au premier appel d'outil.
 Ce runtime garde le routage et les contrôles de politique existants, notamment
 la vérification du propriétaire après le chargement. `deferredArchitectTool`
-charge le handler Architect au premier appel concerné et revérifie l'autorité
+charge le handler Architect au premier appel du port et revérifie l'autorité
 du tour avant ses effets. Les ports et le contexte restent ceux capturés par
 l'appelant ; ces façades n'ajoutent aucun propriétaire de workflow.
 
