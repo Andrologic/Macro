@@ -81,16 +81,22 @@ struct DurablePendingSensitiveChange {
     // Legacy project proposals have no binding and require a fresh approval ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project_root: Option<PendingRootBinding>,
+    // Ack and new consent ID are published in the same atomic pending write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_root_transition: Option<String>,
     approved_etag: String,
     all_changed_paths: Vec<String>,
     apply_modes: Vec<String>,
 }
 
-// One current renewal per proposal, removed after publishing the renewed ID.
+// The only transition authority: one current intent in private runtime storage.
+// Per-proposal acknowledgements make replay idempotent without a second journal.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct DurablePendingRootRenewal {
-    previous: DurablePendingSensitiveChange,
-    renewed: DurablePendingSensitiveChange,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableProjectRootTransition {
+    id: String,
+    project_id: String,
+    target: Option<PendingRootBinding>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -107,9 +113,14 @@ struct DurableConfigPublication {
 struct ConfigState {
     documents: BTreeMap<DocumentKey, StoredDocument>,
     project_roots: BTreeMap<String, PathBuf>,
+    // Resolved destinations requested by the registry, including roots not yet
+    // usable. Withdrawal removes this entry but keeps any consent transition.
+    desired_project_roots: BTreeMap<String, PathBuf>,
     project_identities: BTreeMap<String, Option<DirectoryIdentity>>,
     project_load_errors: BTreeMap<String, ConfigApiError>,
-    project_unavailable_observations: BTreeSet<String>,
+    // Cache the current intent, including an initial write that failed. The disk
+    // intent wins on recovery; this cache is never an alternative commit point.
+    project_transitions: BTreeMap<String, DurableProjectRootTransition>,
     reconciliation_diagnostic: Option<ConfigDiagnostic>,
     maintenance_diagnostic: Option<ConfigDiagnostic>,
     session_documents: BTreeMap<ConfigDocumentKind, Value>,
@@ -231,79 +242,85 @@ impl ConfigManager {
         let _references = self.mcp_runtime_authority.write().await;
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
-        self.retry_project_unavailability(project_id).await?;
         let projects_root = macro_metadata_root.join("projects");
-        fs::create_dir_all(&projects_root).map_err(|error| {
-            ConfigApiError::new(
-                "config.project.create_failed",
-                format!("Impossible de créer le dossier des projets : {error}"),
-            )
-        })?;
         let config_root = projects_root.join(project_id).join("config");
-        if !config_root.starts_with(&projects_root) {
-            return Err(ConfigApiError::new(
-                "config.project.path_escape",
-                "Le dossier de configuration du projet sort de la racine autorisée.",
-            ));
+        if !config_root.try_exists().map_err(|error| {
+            ConfigApiError::new("config.project.resolve_failed", error.to_string())
+        })? {
+            // Resolve the directory identity before requesting its binding. The
+            // registered root and every proposal remain unchanged until the intent
+            // is durable. No project document is loaded or locked here.
+            fs::create_dir_all(&config_root).map_err(|error| {
+                ConfigApiError::new(
+                    "config.project.create_failed",
+                    format!("Impossible de créer le dossier de configuration du projet : {error}"),
+                )
+            })?;
         }
-        fs::create_dir_all(&config_root).map_err(|error| {
-            ConfigApiError::new(
-                "config.project.create_failed",
-                format!("Impossible de créer le dossier de configuration du projet : {error}"),
-            )
-        })?;
-
         let config_root = config_root.canonicalize().map_err(|error| {
             ConfigApiError::new("config.project.resolve_failed", error.to_string())
         })?;
         let identity = DirectoryIdentity::read(&config_root)
             .map_err(|message| ConfigApiError::new("config.project.resolve_failed", message))?;
-        let same_root = {
-            let state = self.state.read().await;
-            state.project_roots.get(project_id) == Some(&config_root)
-                && state
-                    .project_identities
-                    .get(project_id)
-                    .and_then(Option::as_ref)
-                    == Some(&identity)
+        let binding = PendingRootBinding {
+            path: config_root.clone(),
+            identity,
         };
-        if same_root {
-            if !self
-                .state
-                .read()
-                .await
-                .project_load_errors
-                .contains_key(project_id)
-            {
-                return Ok(config_root);
-            }
-        } else {
-            self.unregister_project_root_inner(project_id).await;
-            let mut state = self.state.write().await;
-            state
-                .project_roots
-                .insert(project_id.to_string(), config_root.clone());
-            state
-                .project_identities
-                .insert(project_id.to_string(), Some(identity));
-        }
+        // Subscription intent is separate from activating configuration. Retain
+        // this resolved path even if the runtime gate or initial intent write fails.
+        self.state
+            .write()
+            .await
+            .desired_project_roots
+            .insert(project_id.to_string(), config_root.clone());
+        // The requested subscription can be A while the pending consent intent
+        // still targets B. Finish B before installing or loading A, including on
+        // startup; automatic refresh retains this latest requested destination.
+        self.resume_project_transition(project_id).await?;
+        let _transition = self
+            .prepare_project_root(project_id, Some(binding.clone()))
+            .await?;
+        self.install_project_root(project_id, &binding).await;
+        // Loading is idempotent, including same-root retries after partial loads.
         self.load_registered_project_documents(project_id, &config_root)
             .await?;
         Ok(config_root)
     }
 
-    /// Return the canonical root retained after registration resolved the directory,
-    /// even if loading its documents failed. This is a desired watcher subscription,
-    /// not proof that configuration is usable. Refresh retries failed loads; explicit
-    /// unregister/retain removal forgets this path. Creation/resolution failures do
-    /// not register a new path.
+    /// Return the latest resolved subscription requested by the registry, even
+    /// while an older consent transition blocks activation. Withdrawal hides the
+    /// request without erasing its unfinished transition or reopening the project.
     pub(crate) async fn desired_project_root(&self, project_id: &str) -> Option<PathBuf> {
         self.state
             .read()
             .await
-            .project_roots
+            .desired_project_roots
             .get(project_id)
             .cloned()
+    }
+
+    // Caller has completed any necessary transition and holds registration and
+    // the project gate. This helper never changes the desired subscription.
+    async fn install_project_root(&self, project_id: &str, binding: &PendingRootBinding) {
+        let same_root = {
+            let state = self.state.read().await;
+            state.project_roots.get(project_id) == Some(&binding.path)
+                && state
+                    .project_identities
+                    .get(project_id)
+                    .and_then(Option::as_ref)
+                    == Some(&binding.identity)
+        };
+        if !same_root {
+            self.unregister_project_root_inner(project_id).await;
+            let mut state = self.state.write().await;
+            state
+                .project_roots
+                .insert(project_id.to_string(), binding.path.clone());
+            state
+                .project_identities
+                .insert(project_id.to_string(), Some(binding.identity.clone()));
+        }
     }
 
     // Caller holds project_registration. Keep successful loads across retries so an
@@ -315,8 +332,6 @@ impl ConfigManager {
     ) -> Result<(), ConfigApiError> {
         let result = async {
             self.require_project_root_identity(project_id).await?;
-            self.renew_project_pending_roots(project_id, root, false)
-                .await?;
             for kind in ConfigDocumentKind::ALL
                 .into_iter()
                 .filter(|kind| kind.supports_project_scope())
@@ -333,7 +348,7 @@ impl ConfigManager {
                 }
                 let path = root.join(kind.file_name());
                 if path.exists() {
-                    self.load_document_from_path(kind, scope, path, false)
+                    self.load_document_from_path_locked(kind, scope, path, false)
                         .await?;
                 }
             }
@@ -354,19 +369,195 @@ impl ConfigManager {
         result
     }
 
-    // Caller holds project_registration. Renew every durable proposal before loading
-    // documents, including proposals whose JSON file is absent in the new root.
-    // Otherwise A -> empty B -> A can revive A's old approval ID. The pending store
-    // itself records the transition; no separate epoch or project sidecar is needed.
-    async fn renew_project_pending_roots(
+    // Lock order: MCP authority, registration, project intent file, local document,
+    // canonical document, runtime transaction, runtime publication files. Ordinary
+    // readers never resume an intent: they may already hold an MCP read guard.
+    async fn lock_project_access(
+        &self,
+        scope: &ConfigScope,
+    ) -> Result<Option<DocumentFileLock>, ConfigApiError> {
+        let ConfigScope::Project { project_id } = scope else {
+            return Ok(None);
+        };
+        validate_project_id(project_id)?;
+        self.require_no_project_transition(project_id).await?;
+        let guard =
+            lock_document_file_async(project_transition_path(self.root(), project_id)).await?;
+        self.require_no_project_transition(project_id).await?;
+        Ok(Some(guard))
+    }
+
+    async fn require_no_project_transition(&self, project_id: &str) -> Result<(), ConfigApiError> {
+        if self
+            .state
+            .read()
+            .await
+            .project_transitions
+            .contains_key(project_id)
+            || read_project_transition(self.root(), project_id)?.is_some()
+        {
+            return Err(ConfigApiError::new(
+                "config.project.transition_incomplete",
+                format!("La transition de configuration du projet {project_id} doit être terminée avant utilisation."),
+            ));
+        }
+        Ok(())
+    }
+
+    // Called only with registration held. Returning the gate lets the caller keep
+    // the root installation and document loads serialized with other processes.
+    async fn prepare_project_root(
         &self,
         project_id: &str,
-        root: &Path,
-        missing: bool,
-    ) -> Result<(), ConfigApiError> {
+        target: Option<PendingRootBinding>,
+    ) -> Result<DocumentFileLock, ConfigApiError> {
+        let result: Result<DocumentFileLock, ConfigApiError> = async {
+            self.resume_project_transition(project_id).await?;
+            let state = self.state.read().await;
+            let changed = state.project_roots.get(project_id).is_some_and(|path| {
+                target
+                    .as_ref()
+                    .map(|binding| (&binding.path, Some(&binding.identity)))
+                    != Some((
+                        path,
+                        state
+                            .project_identities
+                            .get(project_id)
+                            .and_then(Option::as_ref),
+                    ))
+                    && !(target.is_none()
+                        && state.project_identities.get(project_id) == Some(&None))
+            });
+            drop(state);
+            if changed || project_pending_needs_transition(self.root(), project_id, target.as_ref())
+            {
+                // Also capture startup rebinding before the gate: withdrawing the
+                // desired subscription must not erase this failed transition.
+                // Keep the requested target even if acquiring its runtime gate fails.
+                self.cache_project_transition(project_id, target.clone())
+                    .await;
+            }
+            let guard =
+                lock_document_file_async(project_transition_path(self.root(), project_id)).await?;
+            self.resume_project_transition_locked(project_id).await?;
+            // On startup there is no in-memory root. Compare all durable bindings,
+            // including proposals without a corresponding JSON in the target.
+            if project_pending_needs_transition(self.root(), project_id, target.as_ref()) {
+                self.cache_project_transition(project_id, target).await;
+                self.resume_project_transition_locked(project_id).await?;
+            }
+            Ok(guard)
+        }
+        .await;
+        if let Err(error) = &result {
+            self.state
+                .write()
+                .await
+                .project_load_errors
+                .insert(project_id.to_string(), error.clone());
+        }
+        result
+    }
+
+    async fn cache_project_transition(&self, project_id: &str, target: Option<PendingRootBinding>) {
+        self.state
+            .write()
+            .await
+            .project_transitions
+            .entry(project_id.to_string())
+            .or_insert_with(|| DurableProjectRootTransition {
+                id: Uuid::new_v4().to_string(),
+                project_id: project_id.to_string(),
+                target,
+            });
+    }
+
+    async fn resume_project_transition(&self, project_id: &str) -> Result<bool, ConfigApiError> {
+        let result = async {
+            if let Some(intent) = read_project_transition(self.root(), project_id)? {
+                self.state
+                    .write()
+                    .await
+                    .project_transitions
+                    .insert(project_id.to_string(), intent);
+            }
+            if !self
+                .state
+                .read()
+                .await
+                .project_transitions
+                .contains_key(project_id)
+            {
+                return Ok(false);
+            }
+            let _gate =
+                lock_document_file_async(project_transition_path(self.root(), project_id)).await?;
+            self.resume_project_transition_locked(project_id).await
+        }
+        .await;
+        if let Err(error) = &result {
+            self.state
+                .write()
+                .await
+                .project_load_errors
+                .insert(project_id.to_string(), error.clone());
+        }
+        result
+    }
+
+    // Caller holds registration and the project file gate. The persisted intent
+    // wins over both the requested root and cached observations until every ack is
+    // durable. Replaying it does not require the target directory to still exist.
+    async fn resume_project_transition_locked(
+        &self,
+        project_id: &str,
+    ) -> Result<bool, ConfigApiError> {
+        let intent = read_project_transition(self.root(), project_id)?.or(self
+            .state
+            .read()
+            .await
+            .project_transitions
+            .get(project_id)
+            .cloned());
+        let Some(intent) = intent else {
+            return Ok(false);
+        };
+        self.state
+            .write()
+            .await
+            .project_transitions
+            .insert(project_id.to_string(), intent.clone());
+        let intent_path = project_transition_path(self.root(), project_id);
+        // Rewrite on replay to retry a failed fsync as well as a failed initial write.
+        write_project_transition(&intent_path, &intent)?;
+        let previous_root = self
+            .state
+            .read()
+            .await
+            .project_roots
+            .get(project_id)
+            .cloned();
+        self.unregister_project_root_inner(project_id).await;
+        {
+            let mut state = self.state.write().await;
+            if let Some(binding) = &intent.target {
+                state
+                    .project_roots
+                    .insert(project_id.to_string(), binding.path.clone());
+                state
+                    .project_identities
+                    .insert(project_id.to_string(), Some(binding.identity.clone()));
+            } else if let Some(root) = previous_root {
+                state.project_roots.insert(project_id.to_string(), root);
+                state
+                    .project_identities
+                    .insert(project_id.to_string(), None);
+            }
+        }
         let scope = ConfigScope::Project {
             project_id: project_id.to_string(),
         };
+        let mut errors = Vec::new();
         for kind in ConfigDocumentKind::ALL
             .into_iter()
             .filter(|kind| kind.supports_project_scope())
@@ -375,47 +566,40 @@ impl ConfigManager {
                 kind,
                 scope: scope.clone(),
             };
-            let pending_path = pending_document_path(self.root(), &key);
-            if !pending_path.exists() && !pending_root_renewal_path(&pending_path).exists() {
-                continue;
-            }
-            let local_lock = self.document_lock(&key).await;
-            let _local_guard = local_lock.lock().await;
-            // Project operations take the root-document lock before the private
-            // pending lock. When the root is missing, use only the private lock:
-            // taking a root-document lock would recreate the project directory.
-            let _file_guard = if missing {
-                None
-            } else {
-                Some(lock_document_file_async(root.join(kind.file_name())).await?)
-            };
-            let _runtime_guards = lock_project_runtime_files(self.root(), &key).await?;
-            let binding = if missing {
-                // Absence was already observed by bootstrap or maintenance. Do
-                // not erase that observation if the directory is restored now.
-                None
-            } else {
-                self.pending_root_binding(&scope).await?
-            };
-            if let Err(error) = recover_pending_root_renewal(&pending_path, &key) {
-                if error.code == "config.runtime.read_failed" {
-                    let revocation =
-                        revoke_pending_without_journal(&pending_path, &key, binding.as_ref());
-                    return Err(journal_error_after_revocation(error, revocation));
+            let result = async {
+                let path = pending_document_path(self.root(), &key);
+                if !runtime_file_exists(&path)? {
+                    return Ok(());
                 }
-                return Err(error);
+                let local = self.document_lock(&key).await;
+                let _local = local.lock().await;
+                let _transaction = lock_project_pending_file(self.root(), &key).await?;
+                let _pending = lock_document_file_async(path.clone()).await?;
+                // Only private pending data is changed. In particular, no lock or
+                // directory creation in B, and no baseline/publication mutation.
+                acknowledge_project_transition(&path, &key, &intent)
             }
-            let mut pending = read_durable_pending(&pending_path)?;
-            require_pending_document(&key, pending.as_ref())?;
-            renew_pending_root_binding(&pending_path, &key, &mut pending, binding.as_ref())?;
+            .await;
+            if let Err(error) = result {
+                errors.push((kind, error));
+            }
         }
-        Ok(())
+        if !errors.is_empty() {
+            return Err(project_transition_errors(&scope, errors));
+        }
+        remove_file_if_exists(&intent_path)?;
+        sync_parent_directory(intent_path.parent().expect("runtime transition directory"))
+            .map_err(|message| {
+                ConfigApiError::new("config.project.transition.remove_failed", message)
+            })?;
+        let mut state = self.state.write().await;
+        state.project_transitions.remove(project_id);
+        state.project_load_errors.remove(project_id);
+        Ok(true)
     }
 
-    /// Record an absence already observed by workspace, even if the directory has
-    /// since returned. Purge runtime state immediately and retain the desired path.
-    /// Consent revocation is durable before success. Errors remain retryable before
-    /// register/refresh may reuse the directory. An unknown project is a no-op.
+    /// Persist an observed absence even if the directory has already returned.
+    /// An unknown project is a no-op. A failed intent or ack remains retryable.
     pub(crate) async fn observe_project_root_unavailable(
         &self,
         project_id: &str,
@@ -423,66 +607,33 @@ impl ConfigManager {
         let _references = self.mcp_runtime_authority.write().await;
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
-        let Some(root) = self
+        // Observations cannot reopen an explicitly removed project. Only register
+        // may resume a retained intent after unregister.
+        if !self
             .state
             .read()
             .await
-            .project_roots
-            .get(project_id)
-            .cloned()
-        else {
-            return Ok(());
-        };
-        self.unregister_project_root_inner(project_id).await;
+            .desired_project_roots
+            .contains_key(project_id)
         {
-            let mut state = self.state.write().await;
-            state.project_roots.insert(project_id.to_string(), root);
-            state
-                .project_identities
-                .insert(project_id.to_string(), None);
-            state
-                .project_unavailable_observations
-                .insert(project_id.to_string());
+            return Ok(());
         }
-        self.retry_project_unavailability(project_id).await
-    }
-
-    // Caller holds project_registration. Preserve the observation through errors:
-    // seeing the original inode again is not permission to discard a failed revoke.
-    async fn retry_project_unavailability(&self, project_id: &str) -> Result<(), ConfigApiError> {
-        let root = {
-            let state = self.state.read().await;
-            if !state.project_unavailable_observations.contains(project_id) {
-                return Ok(());
-            }
-            state
-                .project_roots
-                .get(project_id)
-                .cloned()
-                .expect("observed project retains its desired root")
-        };
-        let result = self
-            .renew_project_pending_roots(project_id, &root, true)
-            .await;
-        let mut state = self.state.write().await;
-        match &result {
-            Ok(()) => {
-                state.project_unavailable_observations.remove(project_id);
-                state.project_load_errors.remove(project_id);
-            }
-            Err(error) => {
-                state
-                    .project_load_errors
-                    .insert(project_id.to_string(), error.clone());
-            }
-        }
-        result
+        // Finish the older intent first; an error leaves this observation for the
+        // caller to retry, rather than acknowledging an unrecorded absence.
+        self.resume_project_transition(project_id).await?;
+        self.prepare_project_root(project_id, None).await?;
+        Ok(())
     }
 
     /// Forget runtime state only. Approved baselines, proposals and project files stay on disk.
     pub async fn unregister_project_root(&self, project_id: &str) {
         let _references = self.mcp_runtime_authority.write().await;
         let _registration = self.project_registration.lock().await;
+        self.state
+            .write()
+            .await
+            .desired_project_roots
+            .remove(project_id);
         self.unregister_project_root_inner(project_id).await;
     }
 
@@ -510,7 +661,6 @@ impl ConfigManager {
         state.project_roots.remove(project_id);
         state.project_identities.remove(project_id);
         state.project_load_errors.remove(project_id);
-        state.project_unavailable_observations.remove(project_id);
         state.documents.retain(|key, _| key.scope != scope);
         state
             .pending_changes
@@ -524,12 +674,13 @@ impl ConfigManager {
             .state
             .read()
             .await
-            .project_roots
+            .desired_project_roots
             .keys()
             .filter(|id| !project_ids.contains(*id))
             .cloned()
             .collect::<Vec<_>>();
         for id in removed {
+            self.state.write().await.desired_project_roots.remove(&id);
             self.unregister_project_root_inner(&id).await;
         }
     }
@@ -541,90 +692,103 @@ impl ConfigManager {
     pub(crate) async fn refresh_project_roots(&self) -> (bool, Vec<ConfigApiError>) {
         let _references = self.mcp_runtime_authority.write().await;
         let _registration = self.project_registration.lock().await;
-        let roots = self.state.read().await.project_roots.clone();
+        let project_ids = {
+            let state = self.state.read().await;
+            state
+                .desired_project_roots
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        };
         let mut changed = false;
         let mut errors = Vec::new();
-        for (project_id, root) in roots {
-            if let Err(error) = self.retry_project_unavailability(&project_id).await {
-                errors.push(error);
-                continue;
-            }
-            let scope = ConfigScope::Project {
-                project_id: project_id.clone(),
-            };
-            let identity = DirectoryIdentity::read(&root).ok();
-            let (same_identity, needs_retry, loaded_count) = {
+        for project_id in project_ids {
+            let before = {
                 let state = self.state.read().await;
                 (
-                    state.project_identities.get(&project_id) == Some(&identity),
-                    state.project_load_errors.contains_key(&project_id),
+                    state.project_roots.get(&project_id).cloned(),
+                    state.project_identities.get(&project_id).cloned(),
                     state
                         .documents
                         .keys()
-                        .filter(|key| key.scope == scope)
+                        .filter(|key| {
+                            key.scope
+                                == (ConfigScope::Project {
+                                    project_id: project_id.clone(),
+                                })
+                        })
                         .count(),
                 )
             };
-            if same_identity && !needs_retry {
-                continue;
-            }
-            if !same_identity {
-                changed = true;
-                self.unregister_project_root_inner(&project_id).await;
-                let mut state = self.state.write().await;
-                state.project_roots.insert(project_id.clone(), root.clone());
-                state
-                    .project_identities
-                    .insert(project_id.clone(), identity.clone());
-            }
-            if identity.is_none() {
-                self.state
-                    .write()
-                    .await
-                    .project_unavailable_observations
-                    .insert(project_id.clone());
-                match self.retry_project_unavailability(&project_id).await {
-                    Ok(()) => {
-                        self.state
-                            .write()
-                            .await
-                            .project_load_errors
-                            .remove(&project_id);
-                        errors.push(ConfigApiError::new(
+            let result = async {
+                let resumed = self.resume_project_transition(&project_id).await?;
+                let (root, previous_identity, needs_retry) = {
+                    let state = self.state.read().await;
+                    (
+                        state.desired_project_roots.get(&project_id).cloned(),
+                        state.project_identities.get(&project_id).cloned(),
+                        state.project_load_errors.contains_key(&project_id),
+                    )
+                };
+                let Some(root) = root else {
+                    return Ok(resumed);
+                };
+                let identity = DirectoryIdentity::read(&root).ok();
+                let same_root =
+                    self.state.read().await.project_roots.get(&project_id) == Some(&root);
+                if same_root
+                    && previous_identity == Some(identity.clone())
+                    && !needs_retry
+                    && !resumed
+                {
+                    return Ok(false);
+                }
+                let target = identity.clone().map(|identity| PendingRootBinding {
+                    path: root.clone(),
+                    identity,
+                });
+                let _gate = self
+                    .prepare_project_root(&project_id, target.clone())
+                    .await?;
+                if identity.is_none() {
+                    if previous_identity != Some(None) {
+                        return Err(ConfigApiError::new(
                             "config.project.root_missing",
                             format!(
                                 "La racine de configuration du projet {project_id} est absente."
                             ),
                         ));
                     }
-                    Err(error) => {
-                        self.state
-                            .write()
-                            .await
-                            .project_load_errors
-                            .insert(project_id.clone(), error.clone());
-                        errors.push(error);
-                    }
+                    return Ok(resumed);
                 }
-                continue;
+                self.install_project_root(&project_id, target.as_ref().expect("available root"))
+                    .await;
+                self.load_registered_project_documents(&project_id, &root)
+                    .await?;
+                Ok(true)
             }
-            match self
-                .load_registered_project_documents(&project_id, &root)
-                .await
-            {
-                Ok(()) => changed = true,
-                Err(error) => {
-                    let current_count = self
-                        .state
-                        .read()
-                        .await
+            .await;
+            let after = {
+                let state = self.state.read().await;
+                (
+                    state.project_roots.get(&project_id).cloned(),
+                    state.project_identities.get(&project_id).cloned(),
+                    state
                         .documents
                         .keys()
-                        .filter(|key| key.scope == scope)
-                        .count();
-                    changed |= current_count != loaded_count;
-                    errors.push(error);
-                }
+                        .filter(|key| {
+                            key.scope
+                                == (ConfigScope::Project {
+                                    project_id: project_id.clone(),
+                                })
+                        })
+                        .count(),
+                )
+            };
+            changed |= before != after;
+            match result {
+                Ok(recovered) => changed |= recovered,
+                Err(error) => errors.push(error),
             }
         }
         (changed, errors)
@@ -653,6 +817,7 @@ impl ConfigManager {
         let ConfigScope::Project { project_id } = scope else {
             return Ok(None);
         };
+        self.require_no_project_transition(project_id).await?;
         let state = self.state.read().await;
         let root = state.project_roots.get(project_id).ok_or_else(|| {
             ConfigApiError::new(
@@ -736,6 +901,19 @@ impl ConfigManager {
         path: PathBuf,
         fail_on_invalid_initial: bool,
     ) -> Result<(), ConfigApiError> {
+        let _project = self.lock_project_access(&scope).await?;
+        self.load_document_from_path_locked(kind, scope, path, fail_on_invalid_initial)
+            .await
+    }
+
+    // Caller owns the project gate, if applicable.
+    async fn load_document_from_path_locked(
+        &self,
+        kind: ConfigDocumentKind,
+        scope: ConfigScope,
+        path: PathBuf,
+        fail_on_invalid_initial: bool,
+    ) -> Result<(), ConfigApiError> {
         if let ConfigScope::Project { project_id } = &scope {
             validate_project_id(project_id)?;
         }
@@ -748,7 +926,6 @@ impl ConfigManager {
         let _file_guard = lock_document_file_async(path.clone()).await?;
         let _runtime_guards = lock_project_runtime_files(self.root(), &key).await?;
         let project_root = self.pending_root_binding(&key.scope).await?;
-        recover_pending_root_renewal(&pending_document_path(self.root(), &key), &key)?;
         recover_config_publication(self.root(), &key, &path)?;
         let raw = fs::read(&path).map_err(|error| {
             ConfigApiError::new(
@@ -850,12 +1027,7 @@ impl ConfigManager {
             }
         };
         require_pending_document(&key, durable_pending.as_ref())?;
-        renew_pending_root_binding(
-            &pending_path,
-            &key,
-            &mut durable_pending,
-            project_root.as_ref(),
-        )?;
+        require_pending_root_binding(durable_pending.as_ref(), project_root.as_ref())?;
         if validation.read_only {
             durable_pending = None;
             remove_file_if_exists(&pending_path)?;
@@ -908,6 +1080,7 @@ impl ConfigManager {
                             created_at: Utc::now().to_rfc3339(),
                         },
                         project_root,
+                        last_root_transition: None,
                         approved_etag,
                         all_changed_paths: changed_paths.clone(),
                         apply_modes: apply_modes_for_paths(kind, &changed_paths)
@@ -981,6 +1154,11 @@ impl ConfigManager {
     ) -> Result<(), ConfigApiError> {
         let _registration = self.project_registration.lock().await;
         validate_project_id(project_id)?;
+        let _project = self
+            .lock_project_access(&ConfigScope::Project {
+                project_id: project_id.to_string(),
+            })
+            .await?;
         self.require_current_project_root(project_id).await?;
         if !kind.supports_project_scope() {
             return Err(ConfigApiError::new(
@@ -1024,15 +1202,26 @@ impl ConfigManager {
                 })?;
             }
         }
-        self.load_document_from_path(kind, key.scope, path, true)
+        self.load_document_from_path_locked(kind, key.scope, path, true)
             .await
     }
 
     async fn lock_and_discover_project_documents(
         &self,
         project_ids: &[String],
-    ) -> Result<tokio::sync::MutexGuard<'_, ()>, ConfigApiError> {
+    ) -> Result<(tokio::sync::MutexGuard<'_, ()>, Vec<DocumentFileLock>), ConfigApiError> {
         let registration = self.project_registration.lock().await;
+        let mut gates = Vec::new();
+        for project_id in project_ids.iter().collect::<BTreeSet<_>>() {
+            if let Some(gate) = self
+                .lock_project_access(&ConfigScope::Project {
+                    project_id: project_id.clone(),
+                })
+                .await?
+            {
+                gates.push(gate);
+            }
+        }
         for project_id in project_ids {
             validate_project_id(project_id)?;
             self.require_current_project_root(project_id).await?;
@@ -1071,12 +1260,15 @@ impl ConfigManager {
                 }
                 let path = root.join(kind.file_name());
                 if path.exists() {
-                    self.load_document_from_path(kind, scope, path, false)
+                    self.load_document_from_path_locked(kind, scope, path, false)
                         .await?;
                 }
             }
         }
-        Ok(registration)
+        for project_id in project_ids {
+            self.require_current_project_root(project_id).await?;
+        }
+        Ok((registration, gates))
     }
 
     pub async fn get_document(
@@ -1086,6 +1278,10 @@ impl ConfigManager {
     ) -> Result<ConfigDocument, ConfigApiError> {
         if let ConfigScope::Project { project_id } = &scope {
             self.ensure_project_document(kind, project_id).await?;
+        }
+        let _project = self.lock_project_access(&scope).await?;
+        if let ConfigScope::Project { project_id } = &scope {
+            self.require_current_project_root(project_id).await?;
         }
         let key = DocumentKey { kind, scope };
         let state = self.state.read().await;
@@ -1216,6 +1412,7 @@ impl ConfigManager {
             kind: request.kind,
             scope: request.scope.clone(),
         };
+        let _project = self.lock_project_access(&key.scope).await?;
         let lock = self.document_lock(&key).await;
         let _guard = lock.lock().await;
         if let ConfigScope::Project { project_id } = &key.scope {
@@ -1383,6 +1580,7 @@ impl ConfigManager {
                 created_at: Utc::now().to_rfc3339(),
             },
             project_root,
+            last_root_transition: None,
             approved_etag: etag(&approved),
             all_changed_paths: changed_paths.clone(),
             apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
@@ -1556,6 +1754,7 @@ impl ConfigManager {
             None => None,
         };
         let key = DocumentKey { kind, scope };
+        let _project = self.lock_project_access(&key.scope).await?;
         let lock = self.document_lock(&key).await;
         let _guard = lock.lock().await;
         if let ConfigScope::Project { project_id } = &key.scope {
@@ -1766,6 +1965,7 @@ impl ConfigManager {
                 created_at: Utc::now().to_rfc3339(),
             },
             project_root,
+            last_root_transition: None,
             approved_etag: etag(&approved),
             all_changed_paths: changed_paths.clone(),
             apply_modes: apply_modes.iter().map(|mode| (*mode).to_string()).collect(),
@@ -1827,11 +2027,11 @@ impl ConfigManager {
         key: &DocumentKey,
         project_root: Option<&PendingRootBinding>,
     ) -> Result<(Value, Option<DurablePendingSensitiveChange>), ConfigApiError> {
-        let (approved, pending, renewed) = read_runtime_state(self.root(), key, project_root)?;
+        let (approved, pending) = read_runtime_state(self.root(), key, project_root)?;
         let active_pending = pending
             .as_ref()
             .filter(|pending| pending.pending.proposed_document != approved);
-        if renewed || active_pending.is_some() {
+        if active_pending.is_some() {
             let mut state = self.state.write().await;
             state.pending_changes.retain(|_, pending| {
                 pending.pending.document != key.kind || pending.pending.scope != key.scope
@@ -1864,6 +2064,7 @@ impl ConfigManager {
             kind: durable.pending.document,
             scope: durable.pending.scope.clone(),
         };
+        let _project = self.lock_project_access(&key.scope).await?;
         let local_lock = self.document_lock(&key).await;
         let _local_guard = local_lock.lock().await;
         if let ConfigScope::Project { project_id } = &key.scope {
@@ -1989,6 +2190,7 @@ impl ConfigManager {
             kind: durable.pending.document,
             scope: durable.pending.scope,
         };
+        let _project = self.lock_project_access(&key.scope).await?;
         let lock = self.document_lock(&key).await;
         let _guard = lock.lock().await;
         if let ConfigScope::Project { project_id } = &key.scope {
@@ -2059,11 +2261,17 @@ impl ConfigManager {
     }
 
     pub async fn list_pending_changes(&self) -> Vec<PendingSensitiveConfigChange> {
-        self.state
-            .read()
-            .await
+        let state = self.state.read().await;
+        state
             .pending_changes
             .values()
+            .filter(|pending| match &pending.pending.scope {
+                ConfigScope::User => true,
+                ConfigScope::Project { project_id } => {
+                    !state.project_transitions.contains_key(project_id)
+                        && matches!(read_project_transition(self.root(), project_id), Ok(None))
+                }
+            })
             .map(|pending| pending.pending.clone())
             .collect()
     }
@@ -2128,6 +2336,10 @@ impl ConfigManager {
     ) -> Result<PathBuf, ConfigApiError> {
         if let ConfigScope::Project { project_id } = scope {
             self.ensure_project_document(kind, project_id).await?;
+        }
+        let _project = self.lock_project_access(scope).await?;
+        if let ConfigScope::Project { project_id } = scope {
+            self.require_current_project_root(project_id).await?;
         }
         self.state
             .read()
@@ -2199,6 +2411,189 @@ fn publication_document_path(root: &Path, key: &DocumentKey) -> PathBuf {
         .join(key.kind.file_name())
 }
 
+// These replace the unreleased per-document root-renewal journals. Publication
+// journals still recover document writes. No shipped root-renewal format needs a
+// migration; development fixtures must be recreated when changing this protocol.
+fn project_transition_path(root: &Path, project_id: &str) -> PathBuf {
+    root.join(".runtime")
+        .join("project-transitions")
+        .join(format!("{project_id}.json"))
+}
+
+// A preliminary read records a known rebind even if the project gate is blocked.
+// The same check is repeated under that gate; errors are diagnosed for every
+// proposal only after a durable intent exists.
+fn project_pending_needs_transition(
+    root: &Path,
+    project_id: &str,
+    target: Option<&PendingRootBinding>,
+) -> bool {
+    let scope = ConfigScope::Project {
+        project_id: project_id.to_string(),
+    };
+    ConfigDocumentKind::ALL
+        .into_iter()
+        .filter(|kind| kind.supports_project_scope())
+        .any(|kind| {
+            let key = DocumentKey {
+                kind,
+                scope: scope.clone(),
+            };
+            match read_durable_pending(&pending_document_path(root, &key)) {
+                Ok(pending) => {
+                    pending.is_some_and(|pending| pending.project_root.as_ref() != target)
+                }
+                Err(_) => true,
+            }
+        })
+}
+
+fn runtime_file_exists(path: &Path) -> Result<bool, ConfigApiError> {
+    path.try_exists().map_err(|error| {
+        ConfigApiError::new(
+            "config.runtime.read_failed",
+            format!("Impossible de vérifier {} : {error}", path.display()),
+        )
+    })
+}
+
+fn read_project_transition(
+    root: &Path,
+    project_id: &str,
+) -> Result<Option<DurableProjectRootTransition>, ConfigApiError> {
+    let path = project_transition_path(root, project_id);
+    if !runtime_file_exists(&path)? {
+        return Ok(None);
+    }
+    let value = read_json_value(&path)?;
+    // Missing `target` is corruption, not an observed absence.
+    if value.get("target").is_none() {
+        return Err(ConfigApiError::new(
+            "config.project.transition.invalid",
+            "La cible de transition est absente.",
+        ));
+    }
+    let intent: DurableProjectRootTransition = serde_json::from_value(value).map_err(|error| {
+        ConfigApiError::new(
+            "config.project.transition.invalid",
+            format!("L’intention de transition est invalide : {error}"),
+        )
+    })?;
+    if intent.project_id != project_id
+        || Uuid::parse_str(&intent.id).is_err()
+        || intent
+            .target
+            .as_ref()
+            .is_some_and(|target| !target.path.is_absolute())
+    {
+        return Err(ConfigApiError::new(
+            "config.project.transition.invalid",
+            "L’intention ne correspond pas au projet ou à une racine absolue.",
+        ));
+    }
+    Ok(Some(intent))
+}
+
+// Caller owns the project gate. A failed write is never a successful transition,
+// including a failure before any proposal has been visited.
+fn write_project_transition(
+    path: &Path,
+    intent: &DurableProjectRootTransition,
+) -> Result<(), ConfigApiError> {
+    #[cfg(test)]
+    if path.with_extension("fail-write").exists() {
+        return Err(ConfigApiError::new(
+            "config.project.transition.write_failed",
+            "Échec injecté pendant l’écriture de l’intention projet.",
+        ));
+    }
+    let value = serde_json::to_value(intent).map_err(|error| {
+        ConfigApiError::new("config.project.transition.invalid", error.to_string())
+    })?;
+    let persist = || -> Result<(), String> {
+        atomic_write_json_locked(path, &value)?;
+        // The intent directory can be new. Persist its entry in .runtime and
+        // .runtime's entry in the existing config root before acknowledging it.
+        let runtime = path
+            .parent()
+            .and_then(Path::parent)
+            .expect("private runtime directory");
+        sync_parent_directory(runtime)?;
+        sync_parent_directory(runtime.parent().expect("configuration root"))
+    };
+    persist()
+        .map_err(|message| ConfigApiError::new("config.project.transition.write_failed", message))
+}
+
+fn acknowledge_project_transition(
+    path: &Path,
+    key: &DocumentKey,
+    intent: &DurableProjectRootTransition,
+) -> Result<(), ConfigApiError> {
+    let Some(mut pending) = read_durable_pending(path)? else {
+        return Ok(());
+    };
+    require_pending_document(key, Some(&pending))?;
+    let validation = validate_document(key.kind, &key.scope, &pending.pending.proposed_document);
+    if !validation.valid
+        || validation.read_only
+        || etag(&pending.pending.proposed_document) != pending.pending.proposed_etag
+    {
+        return Err(ConfigApiError::new(
+            "config.pending.invalid",
+            "La proposition à renouveler est invalide. Elle est conservée pour diagnostic.",
+        )
+        .with_diagnostics(validation.diagnostics));
+    }
+    if pending.last_root_transition.as_deref() == Some(intent.id.as_str()) {
+        if pending.project_root != intent.target {
+            return Err(ConfigApiError::new(
+                "config.project.transition.ack_conflict",
+                "L’acquittement ne correspond pas à la cible de transition.",
+            ));
+        }
+        // A previous rename may have succeeded before its directory fsync failed.
+        return sync_parent_directory(path.parent().expect("pending directory"))
+            .map_err(|message| ConfigApiError::new("config.pending.write_failed", message));
+    }
+    pending.pending.id = Uuid::new_v4().to_string();
+    pending.pending.created_at = Utc::now().to_rfc3339();
+    pending.project_root = intent.target.clone();
+    pending.last_root_transition = Some(intent.id.clone());
+    write_durable_pending(path, &pending)
+}
+
+fn project_transition_errors(
+    scope: &ConfigScope,
+    errors: Vec<(ConfigDocumentKind, ConfigApiError)>,
+) -> ConfigApiError {
+    let code = if errors.len() == 1 {
+        errors[0].1.code.as_str()
+    } else {
+        "config.project.transition_incomplete"
+    };
+    let message = errors
+        .iter()
+        .map(|(kind, error)| format!("{} : {}", kind.file_name(), error.message))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let diagnostics = errors
+        .iter()
+        .flat_map(|(kind, error)| {
+            std::iter::once(ConfigDiagnostic {
+                document: *kind,
+                scope: scope.clone(),
+                path: None,
+                code: error.code.clone(),
+                message: error.message.clone(),
+                severity: "error".into(),
+            })
+            .chain(error.diagnostics.clone())
+        })
+        .collect();
+    ConfigApiError::new(code, message).with_diagnostics(diagnostics)
+}
+
 fn read_json_value(path: &Path) -> Result<Value, ConfigApiError> {
     let bytes = fs::read(path).map_err(|error| {
         ConfigApiError::new(
@@ -2217,7 +2612,7 @@ fn read_json_value(path: &Path) -> Result<Value, ConfigApiError> {
 fn read_durable_pending(
     path: &Path,
 ) -> Result<Option<DurablePendingSensitiveChange>, ConfigApiError> {
-    if !path.exists() {
+    if !runtime_file_exists(path)? {
         return Ok(None);
     }
     let value = read_json_value(path)?;
@@ -2233,7 +2628,7 @@ fn read_runtime_state(
     root: &Path,
     key: &DocumentKey,
     project_root: Option<&PendingRootBinding>,
-) -> Result<(Value, Option<DurablePendingSensitiveChange>, bool), ConfigApiError> {
+) -> Result<(Value, Option<DurablePendingSensitiveChange>), ConfigApiError> {
     let approved = read_json_value(&approved_document_path(root, key)).map_err(|_| {
         ConfigApiError::new(
             "config.approved.invalid",
@@ -2250,11 +2645,10 @@ fn read_runtime_state(
     }
 
     let pending_path = pending_document_path(root, key);
-    let recovered = recover_pending_root_renewal(&pending_path, key)?;
-    let mut pending = read_durable_pending(&pending_path)?;
+    let pending = read_durable_pending(&pending_path)?;
     require_pending_document(key, pending.as_ref())?;
-    let renewed = renew_pending_root_binding(&pending_path, key, &mut pending, project_root)?;
-    Ok((approved, pending, recovered || renewed))
+    require_pending_root_binding(pending.as_ref(), project_root)?;
+    Ok((approved, pending))
 }
 
 fn require_pending_document(
@@ -2272,10 +2666,6 @@ fn require_pending_document(
     Ok(())
 }
 
-fn pending_root_renewal_path(path: &Path) -> PathBuf {
-    path.with_extension("root-renewal.json")
-}
-
 fn pending_value(pending: &DurablePendingSensitiveChange) -> Result<Value, ConfigApiError> {
     serde_json::to_value(pending).map_err(|error| {
         ConfigApiError::new(
@@ -2285,158 +2675,17 @@ fn pending_value(pending: &DurablePendingSensitiveChange) -> Result<Value, Confi
     })
 }
 
-fn validate_pending_root_renewal(
-    key: &DocumentKey,
-    renewal: &DurablePendingRootRenewal,
+fn require_pending_root_binding(
+    pending: Option<&DurablePendingSensitiveChange>,
+    project_root: Option<&PendingRootBinding>,
 ) -> Result<(), ConfigApiError> {
-    require_pending_document(key, Some(&renewal.previous))?;
-    require_pending_document(key, Some(&renewal.renewed))?;
-    let mut expected = renewal.previous.clone();
-    expected.pending.id = renewal.renewed.pending.id.clone();
-    expected.pending.created_at = renewal.renewed.pending.created_at.clone();
-    expected.project_root = renewal.renewed.project_root.clone();
-    let validation = validate_document(
-        key.kind,
-        &key.scope,
-        &renewal.renewed.pending.proposed_document,
-    );
-    if !matches!(key.scope, ConfigScope::Project { .. })
-        || renewal.previous.pending.id == renewal.renewed.pending.id
-        || Uuid::parse_str(&renewal.renewed.pending.id).is_err()
-        || renewal.previous.project_root == renewal.renewed.project_root
-        || pending_value(&expected)? != pending_value(&renewal.renewed)?
-        || etag(&renewal.renewed.pending.proposed_document) != renewal.renewed.pending.proposed_etag
-        || !validation.valid
-        || validation.read_only
-    {
+    if pending.is_some_and(|pending| pending.project_root.as_ref() != project_root) {
         return Err(ConfigApiError::new(
-            "config.pending.root_renewal.invalid",
-            "Le journal de renouvellement ne conserve pas une proposition valide pour ce document.",
+            "config.project.transition_required",
+            "La liaison de la proposition nécessite une transition du projet avant utilisation.",
         ));
     }
     Ok(())
-}
-
-// Caller holds the private pending lock. Recover before reading or comparing any
-// root binding. A failed publish preserves the old pending and the new ID here;
-// returning to the old root must first consume that new ID, even after a restart.
-fn recover_pending_root_renewal(path: &Path, key: &DocumentKey) -> Result<bool, ConfigApiError> {
-    let journal_path = pending_root_renewal_path(path);
-    if !journal_path.exists() {
-        return Ok(false);
-    }
-    let renewal: DurablePendingRootRenewal =
-        serde_json::from_value(read_json_value(&journal_path)?).map_err(|error| {
-            ConfigApiError::new(
-                "config.pending.root_renewal.invalid",
-                format!("Le journal de renouvellement est invalide : {error}"),
-            )
-        })?;
-    validate_pending_root_renewal(key, &renewal)?;
-    let current = read_durable_pending(path)?;
-    require_pending_document(key, current.as_ref())?;
-    let current_value = current.as_ref().map(pending_value).transpose()?;
-    if current_value.as_ref() != Some(&pending_value(&renewal.renewed)?) {
-        if current_value.as_ref() != Some(&pending_value(&renewal.previous)?) {
-            return Err(ConfigApiError::new("config.pending.root_renewal.conflict", "La demande sensible a changé depuis le renouvellement interrompu. Le journal est conservé."));
-        }
-        write_durable_pending(path, &renewal.renewed)?;
-    }
-    remove_file_if_exists(&journal_path)?;
-    Ok(true)
-}
-
-// A journal I/O failure must not erase an observed transition. This fallback is
-// only for I/O errors, never malformed/conflicting journal data. It changes only
-// consent identity in the existing pending file and leaves the journal untouched.
-fn revoke_pending_without_journal(
-    path: &Path,
-    key: &DocumentKey,
-    binding: Option<&PendingRootBinding>,
-) -> Result<(), ConfigApiError> {
-    let Some(previous) = read_durable_pending(path)? else {
-        return Ok(());
-    };
-    require_pending_document(key, Some(&previous))?;
-    if previous.project_root.as_ref() == binding {
-        return Ok(());
-    }
-    let mut renewed = previous.clone();
-    renewed.pending.id = Uuid::new_v4().to_string();
-    renewed.pending.created_at = Utc::now().to_rfc3339();
-    renewed.project_root = binding.cloned();
-    let renewal = DurablePendingRootRenewal { previous, renewed };
-    validate_pending_root_renewal(key, &renewal)?;
-    write_durable_pending(path, &renewal.renewed)
-}
-
-fn journal_error_after_revocation(
-    error: ConfigApiError,
-    revocation: Result<(), ConfigApiError>,
-) -> ConfigApiError {
-    match revocation {
-        Ok(()) => error,
-        Err(revocation) => ConfigApiError::new(
-            "config.pending.root_renewal.revocation_failed",
-            format!(
-                "{} La révocation durable a aussi échoué : {}",
-                error.message, revocation.message
-            ),
-        ),
-    }
-}
-
-// Caller has recovered any journal under the private pending lock. Record the
-// complete renewal before publishing it, then remove its single recovery journal.
-fn renew_pending_root_binding(
-    path: &Path,
-    key: &DocumentKey,
-    pending: &mut Option<DurablePendingSensitiveChange>,
-    project_root: Option<&PendingRootBinding>,
-) -> Result<bool, ConfigApiError> {
-    if let Some(pending) = pending {
-        if pending.project_root.as_ref() != project_root {
-            let mut renewed = pending.clone();
-            renewed.pending.id = Uuid::new_v4().to_string();
-            renewed.pending.created_at = Utc::now().to_rfc3339();
-            renewed.project_root = project_root.cloned();
-            let renewal = DurablePendingRootRenewal {
-                previous: pending.clone(),
-                renewed,
-            };
-            validate_pending_root_renewal(key, &renewal)?;
-            let journal_path = pending_root_renewal_path(path);
-            let value = serde_json::to_value(&renewal).map_err(|error| {
-                ConfigApiError::new("config.pending.serialize_failed", error.to_string())
-            })?;
-            if let Err(error) = write_pending_root_renewal(&journal_path, &value) {
-                let error = ConfigApiError::new(
-                    "config.pending.root_renewal.write_failed",
-                    format!("Impossible de journaliser le renouvellement : {error}"),
-                );
-                // The pending file is an independent atomic revocation target. Keep
-                // reporting the journal failure, but never revive the previous ID.
-                return Err(journal_error_after_revocation(
-                    error,
-                    write_durable_pending(path, &renewal.renewed),
-                ));
-            }
-            write_durable_pending(path, &renewal.renewed)?;
-            remove_file_if_exists(&journal_path)?;
-            *pending = renewal.renewed;
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn write_pending_root_renewal(path: &Path, value: &Value) -> Result<(), String> {
-    #[cfg(test)]
-    if path.with_extension("fail-write").exists() {
-        return Err("Échec injecté pendant l’écriture du journal de renouvellement.".into());
-    }
-    // The project transaction already protects this journal; no second lock.
-    atomic_write_json_locked(path, value)
 }
 
 fn write_durable_pending(
@@ -4056,6 +4305,870 @@ mod tests {
         assert_eq!(read_json_value(&path).unwrap(), json!({"probe": true}));
     }
 
+    async fn project_pending_pair(
+        manager: &ConfigManager,
+        metadata: &Path,
+    ) -> (PathBuf, Vec<(DocumentKey, DurablePendingSensitiveChange)>) {
+        let root = manager
+            .register_project_root("project", metadata.into())
+            .await
+            .unwrap();
+        let mut tools = sparse_document(ConfigDocumentKind::Tools);
+        tools["riskLevel"] = json!("strict");
+        let mut skills = sparse_document(ConfigDocumentKind::Skills);
+        skills["roots"] = json!({"project-skills": {"path": ".agents/skills"}});
+        atomic_write_json(&root.join("tools.json"), &tools).unwrap();
+        atomic_write_json(&root.join("skills.json"), &skills).unwrap();
+        manager.get_snapshot(&["project".into()]).await.unwrap();
+        let pending = [ConfigDocumentKind::Tools, ConfigDocumentKind::Skills]
+            .into_iter()
+            .map(|kind| {
+                let key = DocumentKey {
+                    kind,
+                    scope: ConfigScope::Project {
+                        project_id: "project".into(),
+                    },
+                };
+                let pending = read_durable_pending(&pending_document_path(manager.root(), &key))
+                    .unwrap()
+                    .unwrap();
+                (key, pending)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(manager.list_pending_changes().await.len(), 2);
+        (root, pending)
+    }
+
+    fn assert_proposal_content_preserved(
+        before: &DurablePendingSensitiveChange,
+        after: &DurablePendingSensitiveChange,
+    ) {
+        let mut expected = before.clone();
+        expected.pending.id = after.pending.id.clone();
+        expected.pending.created_at = after.pending.created_at.clone();
+        expected.project_root = after.project_root.clone();
+        expected.last_root_transition = after.last_root_transition.clone();
+        assert_eq!(
+            pending_value(&expected).unwrap(),
+            pending_value(after).unwrap(),
+            "only binding, consent ID, timestamp and current ack may change"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_destination_locks_and_obsolete_renewal_journals_do_not_block_revocation() {
+        for restart in [false, true] {
+            let (_temp, mut manager) = manager().await;
+            let metadata = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let (root, originals) = project_pending_pair(&manager, metadata.path()).await;
+            let destination_root = destination.path().join("projects/project/config");
+            fs::create_dir_all(destination_root.join("tools.json.lock")).unwrap();
+            // Exact obstruction from the old fallback reproduction. The unreleased
+            // per-proposal journal has no role in the project transition protocol.
+            fs::create_dir(
+                pending_document_path(manager.root(), &originals[0].0)
+                    .with_extension("root-renewal.json"),
+            )
+            .unwrap();
+            let baselines = originals
+                .iter()
+                .map(|(key, _)| fs::read(approved_document_path(manager.root(), key)).unwrap())
+                .collect::<Vec<_>>();
+            manager
+                .register_project_root("project", destination.path().into())
+                .await
+                .unwrap();
+            assert!(!project_transition_path(manager.root(), "project").exists());
+            assert!(manager.list_pending_changes().await.is_empty());
+            for ((key, original), baseline) in originals.iter().zip(&baselines) {
+                let renewed = read_durable_pending(&pending_document_path(manager.root(), key))
+                    .unwrap()
+                    .unwrap();
+                assert_ne!(renewed.pending.id, original.pending.id);
+                assert_proposal_content_preserved(original, &renewed);
+                assert_eq!(
+                    fs::read(approved_document_path(manager.root(), key)).unwrap(),
+                    *baseline
+                );
+                assert_eq!(
+                    read_json_value(&root.join(key.kind.file_name())).unwrap(),
+                    original.pending.proposed_document
+                );
+            }
+            if restart {
+                manager = ConfigManager::initialize(manager.root().to_path_buf())
+                    .await
+                    .unwrap();
+            }
+            manager
+                .register_project_root("project", metadata.path().into())
+                .await
+                .unwrap();
+            for (_, original) in &originals {
+                assert!(manager
+                    .accept_pending_change(&original.pending.id)
+                    .await
+                    .is_err());
+                assert!(manager
+                    .reject_pending_change(&original.pending.id, true)
+                    .await
+                    .is_err());
+            }
+            for renewed in manager.list_pending_changes().await {
+                manager.accept_pending_change(&renewed.id).await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn project_intent_survives_all_pending_lock_failures_and_direct_or_restart_return() {
+        for restart in [false, true] {
+            for first_lock in ["transaction.lock", "json.lock"] {
+                for block_second in [false, true] {
+                    let (_temp, mut manager) = manager().await;
+                    let metadata = tempfile::tempdir().unwrap();
+                    let destination = tempfile::tempdir().unwrap();
+                    let (_, originals) = project_pending_pair(&manager, metadata.path()).await;
+                    let paths = originals
+                        .iter()
+                        .map(|(key, _)| pending_document_path(manager.root(), key))
+                        .collect::<Vec<_>>();
+                    let baselines = originals
+                        .iter()
+                        .map(|(key, _)| {
+                            fs::read(approved_document_path(manager.root(), key)).unwrap()
+                        })
+                        .collect::<Vec<_>>();
+                    let first_obstruction = paths[0].with_extension(first_lock);
+                    if first_obstruction.exists() {
+                        fs::remove_file(&first_obstruction).unwrap();
+                    }
+                    fs::create_dir(&first_obstruction).unwrap();
+                    let second_obstruction = paths[1].with_extension("json.lock");
+                    if block_second {
+                        fs::remove_file(&second_obstruction).unwrap();
+                        fs::create_dir(&second_obstruction).unwrap();
+                    }
+                    let error = manager
+                        .register_project_root("project", destination.path().into())
+                        .await
+                        .unwrap_err();
+                    assert_eq!(error.diagnostics.len(), if block_second { 2 } else { 1 });
+                    assert_eq!(error.diagnostics[0].document, ConfigDocumentKind::Tools);
+                    if block_second {
+                        assert_eq!(error.diagnostics[1].document, ConfigDocumentKind::Skills);
+                    }
+                    let intent = read_project_transition(manager.root(), "project")
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        intent.target.as_ref().unwrap().path,
+                        destination
+                            .path()
+                            .join("projects/project/config")
+                            .canonicalize()
+                            .unwrap()
+                    );
+                    assert_eq!(
+                        manager.desired_project_root("project").await,
+                        intent.target.as_ref().map(|target| target.path.clone())
+                    );
+                    for (index, ((key, original), baseline)) in
+                        originals.iter().zip(&baselines).enumerate()
+                    {
+                        let after = read_durable_pending(&paths[index]).unwrap().unwrap();
+                        if index == 0 || block_second {
+                            assert_eq!(
+                                pending_value(&after).unwrap(),
+                                pending_value(original).unwrap()
+                            );
+                        } else {
+                            assert_ne!(after.pending.id, original.pending.id);
+                            assert_eq!(
+                                after.last_root_transition.as_deref(),
+                                Some(intent.id.as_str())
+                            );
+                        }
+                        assert_proposal_content_preserved(original, &after);
+                        assert_eq!(
+                            fs::read(approved_document_path(manager.root(), key)).unwrap(),
+                            *baseline
+                        );
+                    }
+                    if restart {
+                        manager = ConfigManager::initialize(manager.root().to_path_buf())
+                            .await
+                            .unwrap();
+                    }
+                    assert!(manager
+                        .register_project_root("project", metadata.path().into())
+                        .await
+                        .is_err());
+                    assert_eq!(
+                        read_project_transition(manager.root(), "project")
+                            .unwrap()
+                            .unwrap()
+                            .id,
+                        intent.id
+                    );
+                    assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+                    assert!(manager.get_snapshot(&[]).await.is_ok());
+                    for (_, original) in &originals {
+                        assert!(manager
+                            .accept_pending_change(&original.pending.id)
+                            .await
+                            .is_err());
+                    }
+                    fs::remove_dir(first_obstruction).unwrap();
+                    if block_second {
+                        fs::remove_dir(second_obstruction).unwrap();
+                    }
+                    manager
+                        .register_project_root("project", metadata.path().into())
+                        .await
+                        .unwrap();
+                    assert!(!project_transition_path(manager.root(), "project").exists());
+                    for (_, original) in &originals {
+                        assert!(manager
+                            .accept_pending_change(&original.pending.id)
+                            .await
+                            .is_err());
+                    }
+                    for pending in manager.list_pending_changes().await {
+                        manager.accept_pending_change(&pending.id).await.unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_initial_intent_blocks_reads_under_mcp_guard_and_retries_before_return() {
+        for fresh in [false, true] {
+            for (obstruction, refresh_first) in [
+                ("write", false),
+                ("write", true),
+                ("gate", false),
+                ("gate", true),
+            ] {
+                let (_temp, mut manager) = manager().await;
+                let metadata = tempfile::tempdir().unwrap();
+                let destination = tempfile::tempdir().unwrap();
+                let (root, originals) = project_pending_pair(&manager, metadata.path()).await;
+                if fresh {
+                    manager = ConfigManager::initialize(manager.root().to_path_buf())
+                        .await
+                        .unwrap();
+                }
+                manager
+                    .register_project_root("healthy", metadata.path().into())
+                    .await
+                    .unwrap();
+                let intent_path = project_transition_path(manager.root(), "project");
+                let failure = intent_path.with_extension(if obstruction == "write" {
+                    "fail-write"
+                } else {
+                    "json.lock"
+                });
+                if obstruction == "write" {
+                    fs::write(&failure, b"fail").unwrap();
+                } else {
+                    fs::remove_file(&failure).unwrap();
+                    fs::create_dir(&failure).unwrap();
+                }
+                assert!(manager
+                    .register_project_root("project", destination.path().into())
+                    .await
+                    .is_err());
+                assert!(
+                    !intent_path.exists(),
+                    "initial failure cannot claim durable success"
+                );
+                let destination_root = destination
+                    .path()
+                    .join("projects/project/config")
+                    .canonicalize()
+                    .unwrap();
+                assert_eq!(
+                    manager.desired_project_root("project").await,
+                    Some(destination_root.clone())
+                );
+                assert_eq!(
+                    manager
+                        .state
+                        .read()
+                        .await
+                        .project_roots
+                        .get("project")
+                        .cloned(),
+                    if fresh { None } else { Some(root) }
+                );
+                let authority = manager.lock_mcp_runtime_configuration().await;
+                let blocked = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+                    assert!(manager
+                        .get_document(ConfigDocumentKind::Tools, originals[0].0.scope.clone())
+                        .await
+                        .is_err());
+                    assert!(manager
+                        .path_for_scope(ConfigDocumentKind::Tools, &originals[0].0.scope)
+                        .await
+                        .is_err());
+                    assert!(manager.list_pending_changes().await.is_empty());
+                    assert!(manager.get_snapshot(&["healthy".into()]).await.is_ok());
+                    assert!(manager.get_snapshot(&[]).await.is_ok());
+                })
+                .await;
+                drop(authority);
+                blocked.expect("reads reject the intent without recursively taking MCP authority");
+                if !refresh_first {
+                    assert!(manager
+                        .register_project_root("project", metadata.path().into())
+                        .await
+                        .is_err());
+                }
+                for (key, original) in &originals {
+                    assert_eq!(
+                        pending_value(
+                            &read_durable_pending(&pending_document_path(manager.root(), key))
+                                .unwrap()
+                                .unwrap()
+                        )
+                        .unwrap(),
+                        pending_value(original).unwrap()
+                    );
+                    assert!(manager
+                        .accept_pending_change(&original.pending.id)
+                        .await
+                        .is_err());
+                }
+                if obstruction == "write" {
+                    fs::remove_file(failure).unwrap();
+                } else {
+                    fs::remove_dir(failure).unwrap();
+                }
+                if refresh_first {
+                    let (changed, errors) = manager.refresh_project_roots().await;
+                    assert!(changed);
+                    assert!(errors.is_empty());
+                    assert_eq!(
+                        manager.desired_project_root("project").await,
+                        Some(destination_root.clone())
+                    );
+                    assert_eq!(
+                        manager.state.read().await.project_roots.get("project"),
+                        Some(&destination_root)
+                    );
+                    assert!(!intent_path.exists());
+                    assert!(manager
+                        .get_snapshot(&["project".into()])
+                        .await
+                        .unwrap()
+                        .documents
+                        .iter()
+                        .all(|document| document.scope == ConfigScope::User));
+                    let (changed, errors) = manager.refresh_project_roots().await;
+                    assert!(!changed);
+                    assert!(errors.is_empty());
+                }
+                manager
+                    .register_project_root("project", metadata.path().into())
+                    .await
+                    .unwrap();
+                for (_, original) in &originals {
+                    assert!(manager
+                        .accept_pending_change(&original.pending.id)
+                        .await
+                        .is_err());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn project_transition_ack_and_cleanup_replay_keep_ids_stable() {
+        for restart in [false, true] {
+            let (_temp, mut manager) = manager().await;
+            let metadata = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let (_, originals) = project_pending_pair(&manager, metadata.path()).await;
+            let paths = originals
+                .iter()
+                .map(|(key, _)| pending_document_path(manager.root(), key))
+                .collect::<Vec<_>>();
+            let failure = paths[0].with_extension("fail-write");
+            fs::write(&failure, b"fail").unwrap();
+            assert!(manager
+                .register_project_root("project", destination.path().into())
+                .await
+                .is_err());
+            let intent = read_project_transition(manager.root(), "project")
+                .unwrap()
+                .unwrap();
+            let skills_ack = fs::read(&paths[1]).unwrap();
+            let intent_path = project_transition_path(manager.root(), "project");
+            let retry_failure = intent_path.with_extension("fail-write");
+            fs::write(&retry_failure, b"fail").unwrap();
+            fs::remove_file(failure).unwrap();
+            if restart {
+                manager = ConfigManager::initialize(manager.root().to_path_buf())
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                manager
+                    .register_project_root("project", metadata.path().into())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "config.project.transition.write_failed"
+            );
+            assert_eq!(
+                read_durable_pending(&paths[0]).unwrap().unwrap().pending.id,
+                originals[0].1.pending.id
+            );
+            assert_eq!(fs::read(&paths[1]).unwrap(), skills_ack);
+            fs::remove_file(retry_failure).unwrap();
+            let cleanup_failure = intent_path.with_extension("fail-remove");
+            fs::write(&cleanup_failure, b"fail").unwrap();
+            assert!(manager
+                .register_project_root("project", metadata.path().into())
+                .await
+                .is_err());
+            let tools_ack = fs::read(&paths[0]).unwrap();
+            for _ in 0..2 {
+                assert!(manager
+                    .register_project_root("project", metadata.path().into())
+                    .await
+                    .is_err());
+                assert_eq!(
+                    read_project_transition(manager.root(), "project")
+                        .unwrap()
+                        .unwrap()
+                        .id,
+                    intent.id
+                );
+                assert_eq!(fs::read(&paths[0]).unwrap(), tools_ack);
+                assert_eq!(fs::read(&paths[1]).unwrap(), skills_ack);
+                for (_, original) in &originals {
+                    assert!(manager
+                        .accept_pending_change(&original.pending.id)
+                        .await
+                        .is_err());
+                }
+            }
+            fs::remove_file(cleanup_failure).unwrap();
+            manager
+                .register_project_root("project", metadata.path().into())
+                .await
+                .unwrap();
+            for (key, original) in &originals {
+                assert_proposal_content_preserved(
+                    original,
+                    &read_durable_pending(&pending_document_path(manager.root(), key))
+                        .unwrap()
+                        .unwrap(),
+                );
+                assert!(manager
+                    .accept_pending_change(&original.pending.id)
+                    .await
+                    .is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn removing_project_with_blocked_intent_does_not_resurrect_it_on_refresh() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let (_, originals) = project_pending_pair(&manager, metadata.path()).await;
+        let failure =
+            pending_document_path(manager.root(), &originals[0].0).with_extension("fail-write");
+        fs::write(&failure, b"fail").unwrap();
+        assert!(manager
+            .register_project_root("project", destination.path().into())
+            .await
+            .is_err());
+        let intent_path = project_transition_path(manager.root(), "project");
+        let intent_bytes = fs::read(&intent_path).unwrap();
+        manager.unregister_project_root("project").await;
+        manager
+            .observe_project_root_unavailable("project")
+            .await
+            .unwrap();
+        assert!(manager.desired_project_root("project").await.is_none());
+        fs::remove_file(failure).unwrap();
+        manager
+            .observe_project_root_unavailable("project")
+            .await
+            .unwrap();
+        let (changed, errors) = manager.refresh_project_roots().await;
+        assert!(!changed);
+        assert!(errors.is_empty());
+        assert!(manager.desired_project_root("project").await.is_none());
+        assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+        assert_eq!(fs::read(&intent_path).unwrap(), intent_bytes);
+        manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        for (_, original) in &originals {
+            assert!(manager
+                .accept_pending_change(&original.pending.id)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_finishes_old_intent_then_loads_latest_requested_root() {
+        let (_temp, mut manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let (root_a, originals) = project_pending_pair(&manager, metadata.path()).await;
+        let failure =
+            pending_document_path(manager.root(), &originals[0].0).with_extension("fail-write");
+        fs::write(&failure, b"fail").unwrap();
+        assert!(manager
+            .register_project_root("project", destination.path().into())
+            .await
+            .is_err());
+        let intent_b = read_project_transition(manager.root(), "project")
+            .unwrap()
+            .unwrap();
+        let root_b = destination
+            .path()
+            .join("projects/project/config")
+            .canonicalize()
+            .unwrap();
+        assert_eq!(intent_b.target.as_ref().unwrap().path, root_b);
+        manager = ConfigManager::initialize(manager.root().to_path_buf())
+            .await
+            .unwrap();
+        assert!(manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .is_err());
+        assert_eq!(
+            manager.desired_project_root("project").await,
+            Some(root_a.clone())
+        );
+        assert_eq!(
+            read_project_transition(manager.root(), "project")
+                .unwrap()
+                .unwrap()
+                .id,
+            intent_b.id
+        );
+        assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+        fs::remove_file(failure).unwrap();
+        // No further bootstrap/register: maintenance must honor the requested A.
+        let (changed, errors) = manager.refresh_project_roots().await;
+        assert!(changed);
+        assert!(errors.is_empty());
+        assert_eq!(
+            manager.desired_project_root("project").await,
+            Some(root_a.clone())
+        );
+        assert_eq!(
+            manager.state.read().await.project_roots.get("project"),
+            Some(&root_a)
+        );
+        assert!(!project_transition_path(manager.root(), "project").exists());
+        assert_eq!(manager.list_pending_changes().await.len(), 2);
+        assert!(manager.get_snapshot(&["project".into()]).await.is_ok());
+        for (key, original) in &originals {
+            let renewed = read_durable_pending(&pending_document_path(manager.root(), key))
+                .unwrap()
+                .unwrap();
+            assert_eq!(renewed.project_root.as_ref().unwrap().path, root_a);
+            assert_proposal_content_preserved(original, &renewed);
+            assert!(manager
+                .accept_pending_change(&original.pending.id)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn withdrawn_startup_request_is_not_retried_until_explicit_registration() {
+        for retain in [false, true] {
+            for obstruction in ["write", "gate"] {
+                let (_temp, mut manager) = manager().await;
+                let metadata = tempfile::tempdir().unwrap();
+                let destination = tempfile::tempdir().unwrap();
+                let (_, originals) = project_pending_pair(&manager, metadata.path()).await;
+                manager = ConfigManager::initialize(manager.root().to_path_buf())
+                    .await
+                    .unwrap();
+                let intent_path = project_transition_path(manager.root(), "project");
+                let failure = intent_path.with_extension(if obstruction == "write" {
+                    "fail-write"
+                } else {
+                    "json.lock"
+                });
+                if obstruction == "write" {
+                    fs::write(&failure, b"fail").unwrap();
+                } else {
+                    fs::remove_file(&failure).unwrap();
+                    fs::create_dir(&failure).unwrap();
+                }
+                assert!(manager
+                    .register_project_root("project", destination.path().into())
+                    .await
+                    .is_err());
+                let target = destination
+                    .path()
+                    .join("projects/project/config")
+                    .canonicalize()
+                    .unwrap();
+                assert_eq!(manager.desired_project_root("project").await, Some(target));
+                assert!(manager.state.read().await.project_roots.is_empty());
+                let intent_id = manager.state.read().await.project_transitions["project"]
+                    .id
+                    .clone();
+                if retain {
+                    manager.retain_project_roots(&BTreeSet::new()).await;
+                } else {
+                    manager.unregister_project_root("project").await;
+                }
+                if obstruction == "write" {
+                    fs::remove_file(failure).unwrap();
+                } else {
+                    fs::remove_dir(failure).unwrap();
+                }
+                manager
+                    .observe_project_root_unavailable("project")
+                    .await
+                    .unwrap();
+                let (changed, errors) = manager.refresh_project_roots().await;
+                assert!(!changed);
+                assert!(errors.is_empty());
+                assert!(manager.desired_project_root("project").await.is_none());
+                assert!(manager.state.read().await.project_roots.is_empty());
+                assert_eq!(
+                    manager.state.read().await.project_transitions["project"].id,
+                    intent_id
+                );
+                assert!(
+                    !intent_path.exists(),
+                    "withdrawal must not publish the failed intent in the background"
+                );
+                manager
+                    .register_project_root("project", metadata.path().into())
+                    .await
+                    .unwrap();
+                for (_, original) in &originals {
+                    assert!(manager
+                        .accept_pending_change(&original.pending.id)
+                        .await
+                        .is_err());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn observed_absence_keeps_project_intent_until_every_proposal_is_revoked() {
+        for restart in [false, true] {
+            let (_temp, mut manager) = manager().await;
+            let metadata = tempfile::tempdir().unwrap();
+            let (root, originals) = project_pending_pair(&manager, metadata.path()).await;
+            let hidden = root.with_file_name("hidden-config");
+            fs::rename(&root, &hidden).unwrap();
+            // The watcher has already observed the removal; the directory returns
+            // before its callback is consumed by the manager.
+            fs::rename(&hidden, &root).unwrap();
+            let pending_path = pending_document_path(manager.root(), &originals[0].0);
+            let failure = pending_path.with_extension("fail-write");
+            fs::write(&failure, b"fail").unwrap();
+            assert!(manager
+                .observe_project_root_unavailable("project")
+                .await
+                .is_err());
+            let intent = read_project_transition(manager.root(), "project")
+                .unwrap()
+                .unwrap();
+            assert!(intent.target.is_none());
+            let skills =
+                read_durable_pending(&pending_document_path(manager.root(), &originals[1].0))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(
+                skills.last_root_transition.as_deref(),
+                Some(intent.id.as_str())
+            );
+            assert!(skills.project_root.is_none());
+            if restart {
+                manager = ConfigManager::initialize(manager.root().to_path_buf())
+                    .await
+                    .unwrap();
+            }
+            assert!(manager
+                .register_project_root("project", metadata.path().into())
+                .await
+                .is_err());
+            assert_eq!(
+                read_project_transition(manager.root(), "project")
+                    .unwrap()
+                    .unwrap()
+                    .id,
+                intent.id
+            );
+            fs::remove_file(failure).unwrap();
+            manager
+                .register_project_root("project", metadata.path().into())
+                .await
+                .unwrap();
+            for (key, original) in &originals {
+                let renewed = read_durable_pending(&pending_document_path(manager.root(), key))
+                    .unwrap()
+                    .unwrap();
+                assert_proposal_content_preserved(original, &renewed);
+                assert!(manager
+                    .accept_pending_change(&original.pending.id)
+                    .await
+                    .is_err());
+                assert!(manager
+                    .reject_pending_change(&original.pending.id, true)
+                    .await
+                    .is_err());
+                manager
+                    .accept_pending_change(&renewed.pending.id)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn same_root_restart_keeps_all_proposal_ids_and_bytes() {
+        let (_temp, mut manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let (_, originals) = project_pending_pair(&manager, metadata.path()).await;
+        let before = originals
+            .iter()
+            .map(|(key, _)| fs::read(pending_document_path(manager.root(), key)).unwrap())
+            .collect::<Vec<_>>();
+        for restart in [false, true] {
+            if restart {
+                manager = ConfigManager::initialize(manager.root().to_path_buf())
+                    .await
+                    .unwrap();
+            }
+            manager
+                .register_project_root("project", metadata.path().join("."))
+                .await
+                .unwrap();
+            let (changed, errors) = manager.refresh_project_roots().await;
+            assert!(!changed);
+            assert!(errors.is_empty());
+            for ((key, _), bytes) in originals.iter().zip(&before) {
+                assert_eq!(
+                    fs::read(pending_document_path(manager.root(), key)).unwrap(),
+                    *bytes
+                );
+            }
+            assert!(!project_transition_path(manager.root(), "project").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn corrupt_project_intent_or_ack_preserves_all_data_and_blocks_reuse() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let (_, originals) = project_pending_pair(&manager, metadata.path()).await;
+        let failure =
+            pending_document_path(manager.root(), &originals[0].0).with_extension("fail-write");
+        fs::write(&failure, b"fail").unwrap();
+        assert!(manager
+            .register_project_root("project", destination.path().into())
+            .await
+            .is_err());
+        fs::remove_file(failure).unwrap();
+        let intent_path = project_transition_path(manager.root(), "project");
+        let valid = fs::read(&intent_path).unwrap();
+        let pending_paths = originals
+            .iter()
+            .map(|(key, _)| pending_document_path(manager.root(), key))
+            .collect::<Vec<_>>();
+        let pending_bytes = pending_paths
+            .iter()
+            .map(|path| fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        for corruption in ["json", "project", "target", "id", "ack"] {
+            fs::write(&intent_path, &valid).unwrap();
+            for (path, bytes) in pending_paths.iter().zip(&pending_bytes) {
+                fs::write(path, bytes).unwrap();
+            }
+            let mut value: Value = serde_json::from_slice(&valid).unwrap();
+            match corruption {
+                "json" => fs::write(&intent_path, b"{").unwrap(),
+                "project" => {
+                    value["projectId"] = json!("other");
+                    atomic_write_json(&intent_path, &value).unwrap();
+                }
+                "target" => {
+                    value.as_object_mut().unwrap().remove("target");
+                    atomic_write_json(&intent_path, &value).unwrap();
+                }
+                "id" => {
+                    value["id"] = json!("invalid");
+                    atomic_write_json(&intent_path, &value).unwrap();
+                }
+                "ack" => {
+                    let mut ack = read_json_value(&pending_paths[1]).unwrap();
+                    ack["projectRoot"] =
+                        serde_json::to_value(&originals[1].1.project_root).unwrap();
+                    atomic_write_json(&pending_paths[1], &ack).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let before_intent = fs::read(&intent_path).unwrap();
+            let before_pending = pending_paths
+                .iter()
+                .map(|path| fs::read(path).unwrap())
+                .collect::<Vec<_>>();
+            assert!(manager
+                .register_project_root("project", metadata.path().into())
+                .await
+                .is_err());
+            assert_eq!(fs::read(&intent_path).unwrap(), before_intent);
+            // An invalid intent prevents all proposal processing; a conflicting ack
+            // leaves its own bytes untouched while other proposals are still visited.
+            for index in if corruption == "ack" { 1..2 } else { 0..2 } {
+                assert_eq!(
+                    fs::read(&pending_paths[index]).unwrap(),
+                    before_pending[index]
+                );
+            }
+            assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+            for (_, original) in &originals {
+                assert!(manager
+                    .accept_pending_change(&original.pending.id)
+                    .await
+                    .is_err());
+            }
+        }
+        fs::write(intent_path, valid).unwrap();
+        for (path, bytes) in pending_paths.iter().zip(&pending_bytes) {
+            fs::write(path, bytes).unwrap();
+        }
+        manager
+            .register_project_root("project", metadata.path().into())
+            .await
+            .unwrap();
+        for (_, original) in &originals {
+            assert!(manager
+                .accept_pending_change(&original.pending.id)
+                .await
+                .is_err());
+        }
+    }
+
     #[tokio::test]
     async fn empty_or_missing_root_round_trip_never_revives_an_old_approval() {
         for transition in ["register", "refresh", "missing"] {
@@ -4228,217 +5341,6 @@ mod tests {
             .await
             .unwrap();
         assert!(manager.accept_pending_change(&original.id).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn interrupted_root_renewal_recovers_before_returning_to_a_even_after_restart() {
-        for restart in [false, true] {
-            for failure_stage in ["publish", "cleanup"] {
-                let (_temp, mut manager) = manager().await;
-                let metadata = tempfile::tempdir().unwrap();
-                let other_metadata = tempfile::tempdir().unwrap();
-                let root = manager
-                    .register_project_root("project", metadata.path().into())
-                    .await
-                    .unwrap();
-                let mut tools = sparse_document(ConfigDocumentKind::Tools);
-                tools["riskLevel"] = json!("strict");
-                atomic_write_json(&root.join("tools.json"), &tools).unwrap();
-                manager.get_snapshot(&["project".into()]).await.unwrap();
-                let original = manager.list_pending_changes().await.pop().unwrap();
-                let key = DocumentKey {
-                    kind: ConfigDocumentKind::Tools,
-                    scope: original.scope.clone(),
-                };
-                let pending_path = pending_document_path(manager.root(), &key);
-                let journal_path = pending_root_renewal_path(&pending_path);
-                let approved_path = approved_document_path(manager.root(), &key);
-                let pending_before = fs::read(&pending_path).unwrap();
-                let baseline = fs::read(&approved_path).unwrap();
-                let failure = if failure_stage == "publish" {
-                    pending_path.with_extension("fail-write")
-                } else {
-                    journal_path.with_extension("fail-remove")
-                };
-                let error_code = if failure_stage == "publish" {
-                    "config.pending.write_failed"
-                } else {
-                    "config.runtime.remove_failed"
-                };
-                fs::write(&failure, b"fail").unwrap();
-                assert_eq!(
-                    manager
-                        .register_project_root("project", other_metadata.path().into())
-                        .await
-                        .unwrap_err()
-                        .code,
-                    error_code
-                );
-                let journal_bytes = fs::read(&journal_path).unwrap();
-                let renewal: DurablePendingRootRenewal =
-                    serde_json::from_slice(&journal_bytes).unwrap();
-                assert_eq!(renewal.previous.pending.id, original.id);
-                assert_ne!(renewal.renewed.pending.id, original.id);
-                assert_eq!(renewal.renewed.pending.proposed_document, tools);
-                if failure_stage == "publish" {
-                    assert_eq!(fs::read(&pending_path).unwrap(), pending_before);
-                } else {
-                    assert_eq!(
-                        read_durable_pending(&pending_path)
-                            .unwrap()
-                            .unwrap()
-                            .pending
-                            .id,
-                        renewal.renewed.pending.id
-                    );
-                }
-                let interrupted_pending = fs::read(&pending_path).unwrap();
-                if restart {
-                    let user_root = manager.root().to_path_buf();
-                    drop(manager);
-                    manager = ConfigManager::initialize(user_root).await.unwrap();
-                }
-                // Return directly to A, without any successful retry on B. Even
-                // though the old binding matches A, recovery must run first.
-                assert_eq!(
-                    manager
-                        .register_project_root("project", metadata.path().into())
-                        .await
-                        .unwrap_err()
-                        .code,
-                    error_code
-                );
-                assert!(manager.accept_pending_change(&original.id).await.is_err());
-                assert!(manager.get_snapshot(&["project".into()]).await.is_err());
-                assert_eq!(
-                    fs::read(&journal_path).unwrap(),
-                    journal_bytes,
-                    "retry must keep the journaled UUID stable"
-                );
-                assert_eq!(fs::read(&pending_path).unwrap(), interrupted_pending);
-                assert_eq!(fs::read(&approved_path).unwrap(), baseline);
-                fs::remove_file(failure).unwrap();
-                manager
-                    .register_project_root("project", metadata.path().into())
-                    .await
-                    .unwrap();
-                let renewed_a = manager.list_pending_changes().await.pop().unwrap();
-                assert_ne!(renewed_a.id, original.id);
-                assert_ne!(renewed_a.id, renewal.renewed.pending.id);
-                assert!(!journal_path.exists());
-                assert_eq!(fs::read(&approved_path).unwrap(), baseline);
-                assert_eq!(read_json_value(&root.join("tools.json")).unwrap(), tools);
-                assert!(manager.accept_pending_change(&original.id).await.is_err());
-                assert!(manager
-                    .reject_pending_change(&original.id, true)
-                    .await
-                    .is_err());
-                assert!(manager
-                    .accept_pending_change(&renewal.renewed.pending.id)
-                    .await
-                    .is_err());
-                manager.accept_pending_change(&renewed_a.id).await.unwrap();
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn corrupt_or_conflicting_root_renewal_journal_blocks_without_losing_data() {
-        let (_temp, manager) = manager().await;
-        let metadata = tempfile::tempdir().unwrap();
-        let other_metadata = tempfile::tempdir().unwrap();
-        let root = manager
-            .register_project_root("project", metadata.path().into())
-            .await
-            .unwrap();
-        let mut tools = sparse_document(ConfigDocumentKind::Tools);
-        tools["riskLevel"] = json!("strict");
-        atomic_write_json(&root.join("tools.json"), &tools).unwrap();
-        manager.get_snapshot(&["project".into()]).await.unwrap();
-        let original = manager.list_pending_changes().await.pop().unwrap();
-        let key = DocumentKey {
-            kind: ConfigDocumentKind::Tools,
-            scope: original.scope.clone(),
-        };
-        let pending_path = pending_document_path(manager.root(), &key);
-        let journal_path = pending_root_renewal_path(&pending_path);
-        let approved_path = approved_document_path(manager.root(), &key);
-        let baseline = fs::read(&approved_path).unwrap();
-        let before = read_json_value(&pending_path).unwrap();
-        let failure = pending_path.with_extension("fail-write");
-        fs::write(&failure, b"fail").unwrap();
-        assert!(manager
-            .register_project_root("project", other_metadata.path().into())
-            .await
-            .is_err());
-        let valid_journal = read_json_value(&journal_path).unwrap();
-        fs::remove_file(failure).unwrap();
-        for corruption in ["json", "scope", "document", "payload", "current", "missing"] {
-            atomic_write_json(&pending_path, &before).unwrap();
-            atomic_write_json(&journal_path, &valid_journal).unwrap();
-            let expected_code = match corruption {
-                "json" => {
-                    fs::write(&journal_path, b"{").unwrap();
-                    "config.runtime.invalid_json"
-                }
-                "scope" | "document" | "payload" => {
-                    let mut journal = valid_journal.clone();
-                    match corruption {
-                        "scope" => {
-                            journal["renewed"]["pending"]["scope"] =
-                                json!({ "type": "project", "projectId": "other" })
-                        }
-                        "document" => journal["renewed"]["pending"]["document"] = json!("git"),
-                        _ => {
-                            journal["renewed"]["pending"]["proposedDocument"]["riskLevel"] =
-                                json!("balanced")
-                        }
-                    }
-                    atomic_write_json(&journal_path, &journal).unwrap();
-                    if corruption == "payload" {
-                        "config.pending.root_renewal.invalid"
-                    } else {
-                        "config.pending.invalid"
-                    }
-                }
-                "current" => {
-                    let mut pending = before.clone();
-                    pending["pending"]["id"] = json!(Uuid::new_v4().to_string());
-                    atomic_write_json(&pending_path, &pending).unwrap();
-                    "config.pending.root_renewal.conflict"
-                }
-                "missing" => {
-                    fs::remove_file(&pending_path).unwrap();
-                    "config.pending.root_renewal.conflict"
-                }
-                _ => unreachable!(),
-            };
-            let journal_bytes = fs::read(&journal_path).unwrap();
-            let pending_bytes = fs::read(&pending_path).ok();
-            assert_eq!(
-                manager
-                    .register_project_root("project", metadata.path().into())
-                    .await
-                    .unwrap_err()
-                    .code,
-                expected_code,
-                "{corruption}"
-            );
-            assert!(manager.accept_pending_change(&original.id).await.is_err());
-            assert_eq!(fs::read(&journal_path).unwrap(), journal_bytes);
-            assert_eq!(fs::read(&pending_path).ok(), pending_bytes);
-            assert_eq!(fs::read(&approved_path).unwrap(), baseline);
-        }
-        atomic_write_json(&pending_path, &before).unwrap();
-        atomic_write_json(&journal_path, &valid_journal).unwrap();
-        manager
-            .register_project_root("project", metadata.path().into())
-            .await
-            .unwrap();
-        assert!(!journal_path.exists());
-        assert!(manager.accept_pending_change(&original.id).await.is_err());
-        assert_ne!(manager.list_pending_changes().await[0].id, original.id);
-        assert_eq!(fs::read(&approved_path).unwrap(), baseline);
     }
 
     #[tokio::test]
@@ -4724,146 +5626,6 @@ mod tests {
         assert_ne!(renewed.id, old.id);
         assert_eq!(renewed.proposed_document, tools);
         manager.accept_pending_change(&renewed.id).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn journal_io_failure_revokes_old_id_before_direct_return_or_restart_on_a() {
-        for journal_directory in [false, true] {
-            for restart in [false, true] {
-                let (_temp, mut manager) = manager().await;
-                let metadata = tempfile::tempdir().unwrap();
-                let other_metadata = tempfile::tempdir().unwrap();
-                let root = manager
-                    .register_project_root("project", metadata.path().into())
-                    .await
-                    .unwrap();
-                let mut tools = sparse_document(ConfigDocumentKind::Tools);
-                tools["riskLevel"] = json!("strict");
-                atomic_write_json(&root.join("tools.json"), &tools).unwrap();
-                manager.get_snapshot(&["project".into()]).await.unwrap();
-                let original = manager.list_pending_changes().await.pop().unwrap();
-                let key = DocumentKey {
-                    kind: ConfigDocumentKind::Tools,
-                    scope: original.scope.clone(),
-                };
-                let pending_path = pending_document_path(manager.root(), &key);
-                let approved_path = approved_document_path(manager.root(), &key);
-                let baseline = fs::read(&approved_path).unwrap();
-                let journal_path = pending_root_renewal_path(&pending_path);
-                let failure = journal_path.with_extension("fail-write");
-                let error_code = if journal_directory {
-                    fs::create_dir(&journal_path).unwrap();
-                    "config.runtime.read_failed"
-                } else {
-                    fs::write(&failure, b"fail").unwrap();
-                    "config.pending.root_renewal.write_failed"
-                };
-                assert_eq!(
-                    manager
-                        .register_project_root("project", other_metadata.path().into())
-                        .await
-                        .unwrap_err()
-                        .code,
-                    error_code
-                );
-                assert!(manager.get_snapshot(&["project".into()]).await.is_err());
-                let revoked = read_durable_pending(&pending_path).unwrap().unwrap();
-                assert_ne!(revoked.pending.id, original.id);
-                assert_eq!(
-                    revoked.pending.proposed_document,
-                    original.proposed_document
-                );
-                assert_eq!(fs::read(&approved_path).unwrap(), baseline);
-                let revoked_bytes = fs::read(&pending_path).unwrap();
-                if journal_directory {
-                    let (changed, errors) = manager.refresh_project_roots().await;
-                    assert!(!changed);
-                    assert_eq!(errors[0].code, error_code);
-                    assert_eq!(
-                        fs::read(&pending_path).unwrap(),
-                        revoked_bytes,
-                        "persistent I/O failure must not churn the fallback ID"
-                    );
-                    fs::remove_dir(&journal_path).unwrap();
-                } else {
-                    fs::remove_file(&failure).unwrap();
-                }
-                // Repair the journal, then return directly to A without successfully
-                // reloading B. Revocation must already be durable before a restart.
-                if restart {
-                    let user_root = manager.root().to_path_buf();
-                    drop(manager);
-                    manager = ConfigManager::initialize(user_root).await.unwrap();
-                }
-                manager
-                    .register_project_root("project", metadata.path().into())
-                    .await
-                    .unwrap();
-                assert!(manager.accept_pending_change(&original.id).await.is_err());
-                assert_eq!(fs::read(&approved_path).unwrap(), baseline);
-                let renewed = manager.list_pending_changes().await.pop().unwrap();
-                assert_ne!(renewed.id, original.id);
-                manager.accept_pending_change(&renewed.id).await.unwrap();
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn obsolete_journal_file_lock_cannot_prevent_revocation_on_return_to_a() {
-        for restart in [false, true] {
-            let (_temp, mut manager) = manager().await;
-            let metadata = tempfile::tempdir().unwrap();
-            let other_metadata = tempfile::tempdir().unwrap();
-            let root = manager
-                .register_project_root("project", metadata.path().into())
-                .await
-                .unwrap();
-            let mut tools = sparse_document(ConfigDocumentKind::Tools);
-            tools["riskLevel"] = json!("strict");
-            atomic_write_json(&root.join("tools.json"), &tools).unwrap();
-            manager.get_snapshot(&["project".into()]).await.unwrap();
-            let original = manager.list_pending_changes().await.pop().unwrap();
-            let key = DocumentKey {
-                kind: ConfigDocumentKind::Tools,
-                scope: original.scope.clone(),
-            };
-            let pending_path = pending_document_path(manager.root(), &key);
-            let approved_path = approved_document_path(manager.root(), &key);
-            let baseline = fs::read(&approved_path).unwrap();
-            let obstruction = pending_root_renewal_path(&pending_path).with_extension("json.lock");
-            fs::create_dir(&obstruction).unwrap();
-            manager
-                .register_project_root("project", other_metadata.path().into())
-                .await
-                .unwrap();
-            assert_ne!(
-                read_durable_pending(&pending_path)
-                    .unwrap()
-                    .unwrap()
-                    .pending
-                    .id,
-                original.id
-            );
-            if restart {
-                let user_root = manager.root().to_path_buf();
-                drop(manager);
-                manager = ConfigManager::initialize(user_root).await.unwrap();
-            }
-            manager
-                .register_project_root("project", metadata.path().into())
-                .await
-                .unwrap();
-            assert!(
-                obstruction.is_dir(),
-                "transaction protocol does not touch the obsolete lock"
-            );
-            assert_eq!(fs::read(&approved_path).unwrap(), baseline);
-            assert_eq!(read_json_value(&root.join("tools.json")).unwrap(), tools);
-            assert!(manager.accept_pending_change(&original.id).await.is_err());
-            let renewed = manager.list_pending_changes().await.pop().unwrap();
-            assert_ne!(renewed.id, original.id);
-            manager.accept_pending_change(&renewed.id).await.unwrap();
-        }
     }
 
     #[tokio::test]

@@ -143,12 +143,18 @@ dans le snapshot. Son apparition et son rétablissement émettent
 `config://changed`, sans répéter un état inchangé ni effacer les avertissements
 issus des commandes workspace.
 Une racine résolue reste surveillée si le chargement d'un document échoue ; la
-maintenance réessaie ce chargement après correction du fichier. Une
-indisponibilité temporaire du dépôt ne retire pas sa racine désirée tant
+maintenance réessaie ce chargement après correction du fichier. Le manager
+conserve séparément la racine demandée et la configuration activée, pour que
+les abonnements et les retries suivent le registre même pendant une transition
+bloquée. Le retrait explicite désactive ce désiré sans effacer une intention
+durable encore nécessaire lors d’un futur enregistrement. Une indisponibilité temporaire du dépôt ne retire pas sa racine désirée tant
 que le projet reste dans le registre. Une purge ou une récupération du cache
 émet aussi `config://changed` pour actualiser le
 snapshot frontend. Une absence observée par le bootstrap invalide aussi le
-consentement sans attendre la maintenance. Les opérations projet acquièrent
+consentement sans attendre la maintenance. Le watcher conserve les événements
+de suppression ou de déplacement de la racine jusqu’à leur transmission au
+manager, même si le dossier revient avant cette transmission. Une erreur native
+ou une demande de rescan seule ne constitue pas une preuve de disparition. Les opérations projet acquièrent
 leurs verrous de document, de transaction et de publication avant le contrôle
 final d'identité ; les écritures suivantes ne reprennent pas ces verrous.
 Les propositions projet persistées lient leur identifiant d'approbation au
@@ -157,15 +163,23 @@ cet identifiant, même si la nouvelle racine ne contient pas le document. Ce
 renouvellement persiste après redémarrage, en conservant le contenu proposé et
 la baseline approuvée. Les anciennes propositions sans ce lien demandent
 également une nouvelle approbation.
-Un seul journal de renouvellement par proposition permet de reprendre une
-écriture interrompue avant de réutiliser une liaison de racine. Il est supprimé
-après réussite ; une divergence bloque la reprise et conserve les données.
-Ce journal utilise le verrou de transaction des propositions, sans verrou de
-publication supplémentaire susceptible de bloquer après le contrôle d'identité.
-Si son écriture échoue, Macro tente la révocation directement dans la proposition.
-Si les deux écritures échouent, la configuration visée reste bloquée avec
-`config.pending.root_renewal.revocation_failed`. Aucune trace après redémarrage
-ne peut être garantie si le stockage refuse toute écriture durable.
+Une intention durable unique par projet, dans le stockage privé `.runtime`,
+impose la reprise d’une transition incomplète avant toute réutilisation de sa
+racine, y compris au retour au dossier initial ou après redémarrage. Elle est
+persistée avant le renouvellement des propositions. Chaque proposition reçoit
+atomiquement un nouvel identifiant et l’acquittement de cette intention. La
+reprise parcourt tous les types de documents projet, même si leur JSON est
+absent, et conserve les contenus proposés et les baselines. Une erreur sur une
+proposition ne dispense pas de traiter les suivantes. L’intention n’est retirée
+qu’après tous les acquittements durables ; une erreur conserve la configuration
+concernée indisponible et déclenche une nouvelle tentative.
+Ce protocole remplace les journaux intermédiaires de renouvellement par
+proposition. Les journaux de publication des documents restent indépendants.
+Le stockage ne conserve qu’une intention courante et un acquittement par
+proposition, sans historique croissant ni fichier annexe dans le projet.
+Si le stockage refuse toute écriture durable, Macro retourne une erreur et
+bloque la configuration concernée. Aucune trace après redémarrage ne peut être
+garantie dans ce cas.
 
 Si la réconciliation échoue après une mutation du registre déjà persistée, la
 commande conserve son résultat métier. Un avertissement `ConfigDiagnostic`,

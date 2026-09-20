@@ -1,7 +1,7 @@
 use super::manager::DirectoryIdentity;
 use super::{ConfigChangeSource, ConfigDocument, ConfigDocumentKind, ConfigManager, ConfigScope};
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -21,6 +21,7 @@ struct WatcherState {
     signal_tx: watch::Sender<u64>,
     roots: RootSubscriptions<RecommendedWatcher>,
     backend_errors: Arc<Mutex<BTreeMap<PathBuf, String>>>,
+    observed_absences: Arc<Mutex<BTreeSet<PathBuf>>>,
 }
 
 struct RootSubscriptions<W> {
@@ -99,12 +100,12 @@ impl ConfigWatcher {
                         .await;
                     }
                 },
-                |reload_requested| {
+                |reload_requested, observed_absences| {
                     let manager = &manager;
                     let app = &app;
                     async move {
                         let (changed_manager, mut errors) =
-                            refresh_project_state(manager, |document| {
+                            refresh_project_state(manager, observed_absences, |document| {
                                 let _ = app.emit("config://changed", &document);
                             })
                             .await;
@@ -183,13 +184,25 @@ impl ConfigWatcher {
 // directly when root refresh changes the cache, including an empty replacement.
 async fn refresh_project_state(
     manager: &ConfigManager,
+    observed_absences: Vec<String>,
     mut notify_changed: impl FnMut(ConfigDocument),
 ) -> (bool, Vec<String>) {
+    // Consume observed disappearances even if the same directory is already back.
+    // The manager retains failed transitions for retry before allowing reuse.
+    let observed = !observed_absences.is_empty();
+    let mut errors = Vec::new();
+    for project_id in observed_absences {
+        if let Err(error) = manager.observe_project_root_unavailable(&project_id).await {
+            errors.push(format!("{}: {}", error.code, error.message));
+        }
+    }
     let (changed, refresh_errors) = manager.refresh_project_roots().await;
-    let mut errors: Vec<String> = refresh_errors
-        .into_iter()
-        .map(|error| format!("{}: {}", error.code, error.message))
-        .collect();
+    let changed = changed || observed;
+    errors.extend(
+        refresh_errors
+            .into_iter()
+            .map(|error| format!("{}: {}", error.code, error.message)),
+    );
     if changed {
         match manager
             .get_document(ConfigDocumentKind::Runtime, ConfigScope::User)
@@ -257,7 +270,7 @@ async fn maintain_subscriptions<F, Fut, R, ReportFuture>(
     mut report_status: R,
     mut refresh_and_reload: F,
 ) where
-    F: FnMut(bool) -> Fut,
+    F: FnMut(bool, Vec<String>) -> Fut,
     Fut: std::future::Future<Output = Vec<String>>,
     R: FnMut(Vec<String>) -> ReportFuture,
     ReportFuture: std::future::Future<Output = ()>,
@@ -289,7 +302,7 @@ async fn maintain_subscriptions<F, Fut, R, ReportFuture>(
             tokio::time::sleep(debounce).await;
             signal_rx.borrow_and_update();
         }
-        let (revision, invalidated, mut errors) = {
+        let (revision, invalidated, observed_absences, mut errors) = {
             let Some(state) = state.upgrade() else {
                 return;
             };
@@ -325,6 +338,24 @@ async fn maintain_subscriptions<F, Fut, R, ReportFuture>(
                     .collect::<Vec<_>>(),
                 Err(_) => vec!["Project configuration watcher error lock poisoned".into()],
             };
+            let observed_absences = match locked.observed_absences.lock() {
+                Ok(mut pending) => {
+                    let roots = std::mem::take(&mut *pending);
+                    locked
+                        .roots
+                        .project_roots
+                        .iter()
+                        .filter_map(|(id, root)| {
+                            let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+                            roots.contains(&canonical).then(|| id.clone())
+                        })
+                        .collect()
+                }
+                Err(_) => {
+                    errors.push("Project configuration watcher observation lock poisoned".into());
+                    Vec::new()
+                }
+            };
             errors.extend(locked.reconcile().err());
             // Global status is independent of project aliases and is never pruned
             // with the requested project roots. A lost global watch stays invalid
@@ -338,13 +369,18 @@ async fn maintain_subscriptions<F, Fut, R, ReportFuture>(
                 })),
                 Err(_) => errors.push("Global configuration watcher error lock poisoned".into()),
             }
-            (locked.roots.revision, invalidated, errors)
+            (
+                locked.roots.revision,
+                invalidated,
+                observed_absences,
+                errors,
+            )
         };
         // Manager checks run after releasing the watcher mutex. They can request
         // reload when in-memory document identity changed, even on a quiet tick.
         let changed = revision != last_revision;
         last_revision = revision;
-        errors.extend(refresh_and_reload(event || changed).await);
+        errors.extend(refresh_and_reload(event || changed, observed_absences).await);
         errors.sort();
         errors.dedup();
         if errors != last_errors {
@@ -375,15 +411,14 @@ fn install_backend<W>(
 fn invalidates_root(root: &Path, result: &notify::Result<Event>) -> bool {
     match result {
         Err(_) => true,
-        Ok(event) => {
-            event.need_rescan()
-                || (matches!(
-                    event.kind,
-                    notify::EventKind::Remove(_)
-                        | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
-                ) && event.paths.iter().any(|path| root.starts_with(path)))
-        }
+        Ok(event) => event.need_rescan() || observes_root_absence(root, result),
     }
+}
+
+fn observes_root_absence(root: &Path, result: &notify::Result<Event>) -> bool {
+    matches!(result, Ok(event) if matches!(event.kind,
+        notify::EventKind::Remove(_) | notify::EventKind::Modify(notify::event::ModifyKind::Name(_)))
+        && event.paths.iter().any(|path| root.starts_with(path)))
 }
 
 fn record_backend_result(
@@ -392,7 +427,17 @@ fn record_backend_result(
     signal_tx: &watch::Sender<u64>,
     invalidated: &AtomicBool,
     backend_errors: &Mutex<BTreeMap<PathBuf, String>>,
+    observed_absences: Option<&Mutex<BTreeSet<PathBuf>>>,
 ) {
+    // This set outlives a backend and is consumed before reconciliation. Record
+    // before coalescing repeated invalidations: an Err may precede a Remove.
+    if observes_root_absence(root, &result) {
+        if let Some(observations) = observed_absences {
+            if let Ok(mut pending) = observations.lock() {
+                pending.insert(root.to_path_buf());
+            }
+        }
+    }
     if let Ok(mut errors) = backend_errors.lock() {
         match &result {
             Err(error) => {
@@ -423,6 +468,7 @@ fn make_backend(
     signal_tx: watch::Sender<u64>,
     invalidated: Arc<AtomicBool>,
     backend_errors: Arc<Mutex<BTreeMap<PathBuf, String>>>,
+    observed_absences: Option<Arc<Mutex<BTreeSet<PathBuf>>>>,
 ) -> Result<RecommendedWatcher, String> {
     let callback_root = root.to_path_buf();
     let backend = RecommendedWatcher::new(
@@ -433,6 +479,7 @@ fn make_backend(
                 &signal_tx,
                 &invalidated,
                 &backend_errors,
+                observed_absences.as_deref(),
             );
         },
         Config::default().with_poll_interval(Duration::from_millis(100)),
@@ -454,6 +501,7 @@ impl WatcherState {
             signal_tx.clone(),
             global_invalidated.clone(),
             global_backend_errors.clone(),
+            None,
         )?;
         Ok(Self {
             _global_watcher: global_watcher,
@@ -461,6 +509,7 @@ impl WatcherState {
             global_backend_errors,
             signal_tx,
             backend_errors,
+            observed_absences: Arc::new(Mutex::new(BTreeSet::new())),
             roots: RootSubscriptions {
                 project_roots: BTreeMap::new(),
                 subscriptions: BTreeMap::new(),
@@ -472,6 +521,7 @@ impl WatcherState {
     fn reconcile(&mut self) -> Result<(), String> {
         let signal_tx = &self.signal_tx;
         let backend_errors = &self.backend_errors;
+        let observed_absences = &self.observed_absences;
         let requested: std::collections::BTreeSet<_> = self
             .roots
             .project_roots
@@ -488,6 +538,7 @@ impl WatcherState {
                 signal_tx.clone(),
                 invalidated,
                 backend_errors.clone(),
+                Some(observed_absences.clone()),
             )
         })
     }
@@ -842,17 +893,169 @@ mod tests {
         std::fs::rename(&root, root.with_file_name("old-config")).unwrap();
         std::fs::create_dir(&root).unwrap();
         let mut notifications = Vec::new();
-        let (changed, errors) =
-            refresh_project_state(&manager, |document| notifications.push(document)).await;
+        let (changed, errors) = refresh_project_state(&manager, Vec::new(), |document| {
+            notifications.push(document)
+        })
+        .await;
         assert!(changed);
         assert!(errors.is_empty());
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].kind, ConfigDocumentKind::Runtime);
-        let (changed, errors) =
-            refresh_project_state(&manager, |document| notifications.push(document)).await;
+        let (changed, errors) = refresh_project_state(&manager, Vec::new(), |document| {
+            notifications.push(document)
+        })
+        .await;
         assert!(!changed);
         assert!(errors.is_empty());
         assert_eq!(notifications.len(), 1);
+    }
+
+    #[test]
+    fn only_root_disappearance_events_record_an_absence_even_after_invalidation() {
+        let root = Path::new("/project/config");
+        let (tx, _) = watch::channel(0);
+        let invalidated = AtomicBool::new(false);
+        let errors = Mutex::new(BTreeMap::new());
+        let observations = Mutex::new(BTreeSet::new());
+        let mut rescan = Event::new(notify::EventKind::Other);
+        rescan.attrs.set_flag(notify::event::Flag::Rescan);
+        for result in [
+            Err(notify::Error::generic("watch failure")),
+            Ok(rescan),
+            Ok(
+                Event::new(notify::EventKind::Remove(notify::event::RemoveKind::File))
+                    .add_path(root.join("tools.json")),
+            ),
+        ] {
+            record_backend_result(
+                root,
+                result,
+                &tx,
+                &invalidated,
+                &errors,
+                Some(&observations),
+            );
+            assert!(observations.lock().unwrap().is_empty());
+        }
+        for path in [root.to_path_buf(), root.parent().unwrap().to_path_buf()] {
+            for kind in [
+                notify::EventKind::Remove(notify::event::RemoveKind::Folder),
+                notify::EventKind::Modify(notify::event::ModifyKind::Name(
+                    notify::event::RenameMode::From,
+                )),
+            ] {
+                record_backend_result(
+                    root,
+                    Ok(Event::new(kind).add_path(path.clone())),
+                    &tx,
+                    &invalidated,
+                    &errors,
+                    Some(&observations),
+                );
+                assert!(observations.lock().unwrap().remove(root));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_absence_survives_backend_reinstallation_before_manager_refresh() {
+        use crate::config::{ConfigPatchRequest, JsonPatchOperation};
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("global"))
+            .await
+            .unwrap();
+        let root = manager
+            .register_project_root("project", temp.path().join("metadata"))
+            .await
+            .unwrap();
+        let scope = ConfigScope::Project {
+            project_id: "project".into(),
+        };
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, scope.clone())
+            .await
+            .unwrap();
+        let original = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/riskLevel".into(),
+                    from: None,
+                    value: Some(serde_json::json!("strict")),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .unwrap()
+            .pending_change
+            .unwrap();
+        let identity = DirectoryIdentity::read(&root).unwrap();
+        let (tx, rx) = watch::channel(0);
+        let state = Arc::new(ConfigWatcher {
+            state: Mutex::new(WatcherState::new(manager.root(), tx).unwrap()),
+        });
+        state.watch_project_root("project", &root).unwrap();
+        state.watch_project_root("removed", &root).unwrap();
+        // Deliver the native callback after the directory is already available
+        // with its original identity, then replace its backend before maintenance.
+        // No timing assumption about a platform's native event delivery is needed.
+        {
+            let locked = state.state.lock().unwrap();
+            let backend = locked.roots.subscriptions.get(&root).unwrap();
+            record_backend_result(
+                &root,
+                Ok(
+                    Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
+                        .add_path(root.clone()),
+                ),
+                &locked.signal_tx,
+                &backend.invalidated,
+                &locked.backend_errors,
+                Some(&locked.observed_absences),
+            );
+        }
+        state.watch_project_root("project", &root).unwrap();
+        state.unregister_project_root("removed").unwrap();
+        assert_eq!(DirectoryIdentity::read(&root).unwrap(), identity);
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let refresh_manager = manager.clone();
+        let task = tokio::spawn(maintain_subscriptions(
+            Arc::downgrade(&state),
+            rx,
+            Duration::from_millis(30),
+            Duration::ZERO,
+            |_| std::future::ready(()),
+            move |_, observations| {
+                assert!(observations.is_empty() || observations == vec!["project".to_string()]);
+                let manager = refresh_manager.clone();
+                let events = events_tx.clone();
+                async move {
+                    refresh_project_state(&manager, observations, |document| {
+                        events.send(document).unwrap();
+                    })
+                    .await
+                    .1
+                }
+            },
+        ));
+        let event = tokio::time::timeout(Duration::from_secs(3), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.kind, ConfigDocumentKind::Runtime);
+        assert!(manager.accept_pending_change(&original.id).await.is_err());
+        let renewed = manager.list_pending_changes().await.pop().unwrap();
+        assert_ne!(renewed.id, original.id);
+        assert_eq!(renewed.proposed_document, original.proposed_document);
+        manager.accept_pending_change(&renewed.id).await.unwrap();
+        drop(state);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]
@@ -878,7 +1081,7 @@ mod tests {
             Duration::from_millis(50),
             Duration::from_millis(20),
             |_| std::future::ready(()),
-            move |reload_requested| {
+            move |reload_requested, _| {
                 let state = callback_state.upgrade().unwrap();
                 assert!(
                     state.state.try_lock().is_ok(),
@@ -964,7 +1167,7 @@ mod tests {
                     .await;
                 }
             },
-            move |_| {
+            move |_, _| {
                 if inject_callback.load(Ordering::Acquire) {
                     let state = callback_state.upgrade().unwrap();
                     let locked = state.state.lock().unwrap();
@@ -979,6 +1182,7 @@ mod tests {
                         &locked.signal_tx,
                         &installed.invalidated,
                         &locked.backend_errors,
+                        Some(&locked.observed_absences),
                     );
                     count.fetch_add(1, Ordering::SeqCst);
                 }
@@ -1052,7 +1256,7 @@ mod tests {
                     .await;
                 }
             },
-            |_| std::future::ready(Vec::new()),
+            |_, _| std::future::ready(Vec::new()),
         ));
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert!(events_rx.try_recv().is_err(), "healthy startup stays quiet");
@@ -1113,7 +1317,7 @@ mod tests {
             Duration::from_millis(30),
             Duration::from_millis(10),
             |_| std::future::ready(()),
-            move |reload_requested| {
+            move |reload_requested, _| {
                 if reload_requested {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
@@ -1150,7 +1354,7 @@ mod tests {
             Duration::from_millis(40),
             Duration::ZERO,
             |_| std::future::ready(()),
-            move |reload_requested| {
+            move |reload_requested, _| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 if reload_requested {
                     reload_counter.fetch_add(1, Ordering::SeqCst);
@@ -1239,7 +1443,7 @@ mod tests {
                 Duration::from_millis(40),
                 Duration::ZERO,
                 |_| std::future::ready(()),
-                move |_| {
+                move |_, _| {
                     counter.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Vec::new())
                 },
