@@ -6,7 +6,7 @@ import {
   normalizeNativeProviderTools,
 } from './toolDefinitions';
 import {
-  activeStreamResourcesBySessionId,
+  type ActiveStreamResources,
   getStreamSessionId,
   createActiveStreamResources,
   pruneActiveStreamResources,
@@ -66,13 +66,13 @@ export const streamNativeTurnViaTauri = async (params: {
     result: string;
     hiddenContext?: string;
   }) => void;
-}): Promise<StreamingTurnResult> => {
+}, invocationResources?: ActiveStreamResources): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
     throw new Error(`${params.providerType} provider requires the desktop backend.`);
   }
 
   const sessionId = getStreamSessionId(params.sessionId);
-  const resources = createActiveStreamResources(sessionId);
+  const resources = invocationResources ?? createActiveStreamResources(sessionId);
   const requestId = createStreamingRequestId();
   resources.tauriRequestId = requestId;
   const allowedTools = new Set(params.allowedToolIds ?? []);
@@ -109,10 +109,9 @@ export const streamNativeTurnViaTauri = async (params: {
       settled = true;
       params.signal?.removeEventListener('abort', signalHandler);
       nativeUnlisteners.splice(0).forEach(disposeListener);
-      const activeResources = activeStreamResourcesBySessionId.get(sessionId);
-      if (activeResources && activeResources.tauriRequestId === requestId) {
-        activeResources.tauriRequestId = null;
-        pruneActiveStreamResources(sessionId);
+      if (resources.tauriRequestId === requestId) {
+        resources.tauriRequestId = null;
+        if (!invocationResources) pruneActiveStreamResources(sessionId, resources);
       }
       fn();
     };
@@ -124,7 +123,7 @@ export const streamNativeTurnViaTauri = async (params: {
       finish(() => reject(new DOMException('Aborted', 'AbortError')));
     };
 
-    resources.cancel = signalHandler;
+    if (!invocationResources) resources.cancel = signalHandler;
 
     if (params.signal?.aborted) {
       signalHandler();

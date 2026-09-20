@@ -3,6 +3,7 @@ import type { ReasoningEffort } from '../../types';
 import type { ToolCallingAdapter, StreamAccumulator } from './toolCallingLoop';
 import { streamNativeTurnViaTauri } from './nativeTurnTransport';
 import { classifyReasoningRejection } from './providerErrors';
+import type { ActiveStreamResources } from './streamResources';
 import type { ReasoningCompatibility } from './reasoningCompatibility';
 import { emitStreamTimeline } from './streamDiagnostics';
 import { formatToolTraceDetail } from './toolPresentation';
@@ -10,7 +11,7 @@ import { buildNativeReasoningVisibleTurnContent, buildAssistantProviderInputItem
 import { cloneProviderInputItems } from './jsonValues';
 import { devLogger } from '../../utils/devLogger';
 
-export function createNativeAdapter(options: StreamingChatOptions, accumulator: StreamAccumulator, reasoning: ReasoningCompatibility): ToolCallingAdapter {
+export function createNativeAdapter(options: StreamingChatOptions, accumulator: StreamAccumulator, reasoning: ReasoningCompatibility, resources?: ActiveStreamResources): ToolCallingAdapter {
   const { providerId, providerType, modelId } = options;
   let currentReasoningEffort = options.reasoningTransportMode === 'none' ? null : options.reasoningEffort;
   let didRetryWithoutReasoning = false;
@@ -54,7 +55,7 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
               accumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
               accumulator.addHiddenContextBlock(hiddenContext);
             },
-          });
+          }, resources);
           break;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);

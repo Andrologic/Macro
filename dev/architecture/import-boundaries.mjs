@@ -21,6 +21,13 @@ export const EXPLICITLY_FORBIDDEN_EDGES = Object.freeze([
     reason: 'Resolved in this lot by moving the shared prompt contract to src/domains/chat/prompts.ts.',
   }),
   Object.freeze({
+    id: 'streaming-execution-to-architect-chat',
+    from: 'src/services/streamingChatExecution.ts',
+    to: 'src/services/architectChat.ts',
+    owner: 'Chat',
+    reason: 'The deferred transport must use the shared chat prompt contract, like its public facade.',
+  }),
+  Object.freeze({
     id: 'architect-chat-to-plan-artifact-service',
     from: 'src/services/architectChat.ts',
     to: 'src/services/architectPlanArtifactService.ts',

@@ -9,10 +9,11 @@ import { createSseEventParser, extractSseData } from './sse';
 import { getValidToolCalls, hasCompleteToolCallBatch } from './toolCallProtocol';
 import { logStreamingDiagnostic, classifyProviderDiagnosticCategory, emitStreamTimeline } from './streamDiagnostics';
 import { getStreamSessionId, createActiveStreamResources, createStreamingRequestId, pruneActiveStreamResources } from './streamResources';
+import type { ActiveStreamResources } from './streamResources';
 import type { ReasoningCompatibility } from './reasoningCompatibility';
 import { devLogger } from '../../utils/devLogger';
 
-export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions, reasoning: ReasoningCompatibility) {
+export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions, reasoning: ReasoningCompatibility, resources?: ActiveStreamResources) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (sourceOptions.signal?.aborted) abort();
@@ -20,8 +21,8 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
   const options = { ...sourceOptions, signal: controller.signal };
   const { providerId, providerType, baseUrl, apiKey, modelId, reasoningEffort, reasoningTransportMode } = options;
   const sessionId = getStreamSessionId(options.sessionId);
-  const activeResources = createActiveStreamResources(sessionId);
-  activeResources.cancel = abort;
+  const activeResources = resources ?? createActiveStreamResources(sessionId);
+  if (!resources) activeResources.cancel = abort;
   const genericRequestId = createStreamingRequestId();
   const genericTimelineStartedAt = Date.now();
   const emitGenericTimeline = (phase: string) => emitStreamTimeline(options, {
@@ -504,7 +505,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
       void activeResources.reader?.cancel().catch(() => undefined);
       activeResources.reader = null;
       activeResources.stream = null;
-      pruneActiveStreamResources(sessionId, activeResources);
+      if (!resources) pruneActiveStreamResources(sessionId, activeResources);
     },
   };
 }

@@ -73,7 +73,7 @@ export function cancelStream(sessionId?: string): void {
       });
     }
     resources.tauriRequestId = null;
-    pruneActiveStreamResources(activeSessionId);
+    pruneActiveStreamResources(activeSessionId, resources);
   });
 }
 
