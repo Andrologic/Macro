@@ -68,6 +68,10 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       allowedToolIds: [...input.allowedToolIds],
       mcpServers: snapshotScopedMcpServers(input.mcpServers),
       mcpTools: structuredClone(input.mcpTools),
+      skillToolIds: [...input.skillToolIds],
+      runnableSkillToolIds: [...input.runnableSkillToolIds],
+      guidedToolRetry: structuredClone(input.guidedToolRetry),
+      webSearchOptions: structuredClone(input.webSearchOptions),
       abortController: input.abortController ?? new AbortController(),
     };
     const streamTurnId = getMessageTurnId(params.assistantMessage);
@@ -248,6 +252,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
 
       try {
         const streamLaunch = await ports.prepare({
+          turnCapabilities: params,
           conversationId: params.conversationId,
           replyToMessageId: params.replyToMessageId,
           userContent: params.userContent,

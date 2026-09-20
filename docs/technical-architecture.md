@@ -398,7 +398,10 @@ successeur et l'attente de fin suit les remplacements dus à la récupération.
 `chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
 asynchrones et transmet le contexte figé avec son signal d'annulation. La copie
 MCP conserve la clé opaque de génération backend via `mcp/runtimeSnapshot`.
-La récupération d'overflow réutilise le type d'agent capturé à l'envoi. Le contrôle
+La récupération d'overflow transmet les capacités capturées à la préparation :
+type d'agent, allowlist, catalogue et clé MCP, risque et réglages d'outils. Elle
+reconstruit le contexte compacté sans résoudre une nouvelle génération MCP ni
+relire les sélections de configuration du tour. Le contrôle
 de tentative accompagne aussi l'exécuteur pendant ses attentes, puis les ports
 Architect et terminal avant chaque nouvelle opération. Architect résout sa cible
 implicite à partir du plan et de la branche capturés ; ses projections UI ne

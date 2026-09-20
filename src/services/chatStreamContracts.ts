@@ -120,7 +120,15 @@ export interface AssistantStreamLaunch {
     };
 }
 
+/** Authority reused when compacting and restarting the same assistant turn. */
+export type ChatTurnCapabilities = Pick<AssistantStreamLaunch,
+  "allowedToolIds" | "riskLevel" | "scopedTurnConfiguration" | "mcpServers" | "mcpTools" |
+  "internalAgentProfile" | "skillToolIds" | "runnableSkillToolIds" | "guidedToolRetry" |
+  "showToolTraces" | "enableWebSearch" | "enableWebFetch" | "webSearchOptions" | "maxTurns"
+>;
+
 export interface PrepareAssistantStreamParams {
+    turnCapabilities?: ChatTurnCapabilities;
     conversationId: string;
     replyToMessageId: string;
     userContent: string;

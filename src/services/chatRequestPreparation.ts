@@ -1,3 +1,4 @@
+import { snapshotScopedMcpServers } from "./mcp/runtimeSnapshot";
 import { ChatTurnSupersededError } from "./chatTurnRuntime";
 import type {
   AgentType, AppMode, ChatMessage, ContextCompactionKind, ContextFootprint,
@@ -162,33 +163,36 @@ export const prepareAssistantStreamLaunch = async (
     try { return await pending; } finally { assertCurrent(); }
   };
   assertCurrent();
-  try {
-    await waitForCurrent(ports.tools.ensureLoaded());
-    const { lastError, hasInternalTools } = ports.tools.loadStatus();
-    if (lastError && !hasInternalTools) {
-      throw new Error(`Failed to load tool settings: ${lastError}`);
+  const captured = params.turnCapabilities;
+  if (!captured) {
+    try {
+      await waitForCurrent(ports.tools.ensureLoaded());
+      const { lastError, hasInternalTools } = ports.tools.loadStatus();
+      if (lastError && !hasInternalTools) {
+        throw new Error(`Failed to load tool settings: ${lastError}`);
+      }
+    } catch (error) {
+      if (error instanceof ChatTurnSupersededError) throw error;
+      const normalized = toServiceError(error);
+      throw new Error(normalized.message);
     }
-  } catch (error) {
-    if (error instanceof ChatTurnSupersededError) throw error;
-    const normalized = toServiceError(error);
-    throw new Error(normalized.message);
   }
 
-  const taskStatus = params.resolvedTaskId
+  const taskStatus = !captured && params.resolvedTaskId
     ? ports.tasks.find(params.resolvedTaskId)?.status ??
       null
     : null;
-  const internalAgentProfile = ports.policy.resolveInternalAgentProfile({
+  const internalAgentProfile = captured ? captured.internalAgentProfile ?? null : ports.policy.resolveInternalAgentProfile({
     mode: params.modeAtSend,
     taskStatus,
     overrideProfile: params.internalAgentProfile,
   });
-  const taskForToolScope = params.resolvedTaskId
+  const taskForToolScope = !captured && params.resolvedTaskId
     ? ports.tasks.find(params.resolvedTaskId)
     : undefined;
   const executionContext =
     params.executionContext ?? ports.context.executionContext(params.conversationId);
-  const scopedTurnConfiguration = params.scopedTurnConfigurationOverride !== undefined
+  const scopedTurnConfiguration = captured ? captured.scopedTurnConfiguration : params.scopedTurnConfigurationOverride !== undefined
     ? params.scopedTurnConfigurationOverride
     : await waitForCurrent(ports.configuration.loadScoped({
         projectIds: executionContext.projectIds,
@@ -196,87 +200,97 @@ export const prepareAssistantStreamLaunch = async (
         mode: params.modeAtSend,
       }));
   const riskLevel =
-    scopedTurnConfiguration?.riskLevel ?? await waitForCurrent(ports.configuration.loadRiskLevel());
-  const baseAllowedToolIds = await waitForCurrent(ports.tools.allowedForMode(
-    internalAgentProfile,
-    params.modeAtSend,
-    params.agentTypeAtSend,
-    {
-      supportsNativeToolCalling:
-        params.providerSupportsNativeToolCalling ??
-        ports.provider.supportsNativeToolCalling(),
-      providerConfig: params.providerConfig,
-      modelId: params.modelId,
-    },
-    riskLevel,
-    executionContext.focusedProjectId,
-  ));
-  let taskAllowedToolIds = baseAllowedToolIds;
-  if (params.modeAtSend === "Implement") {
-    taskAllowedToolIds = ports.tools.filterForImplementTask(
-      baseAllowedToolIds,
-      taskForToolScope,
-    );
-  } else if (params.modeAtSend === "Architect") {
-    taskAllowedToolIds = ports.tools.filterForArchitectPlan(
-      baseAllowedToolIds,
-      executionContext,
-    );
-  }
-  const toolsSnapshot = ports.tools.mcpSnapshot();
-  const providerSupportsNativeToolCalling =
-    params.providerSupportsNativeToolCalling ??
-    ports.provider.supportsNativeToolCalling();
-  const scopedMcpRuntime = scopedTurnConfiguration
-    ? await waitForCurrent(ports.tools.resolveScopedMcp(
-        scopedTurnConfiguration.mcpServers,
-        toolsSnapshot.servers,
-        { projectIds: scopedTurnConfiguration.projectIds },
-      ))
-    : {
-        // Compatibility path for runtimes without the scoped configuration
-        // API. Tool execution still acquires an authoritative backend key.
-        servers: toolsSnapshot.servers,
-        tools: toolsSnapshot.enabledTools(),
-        failures: [],
-      };
-  if (scopedMcpRuntime.failures.length > 0) {
-    const unavailableServers = scopedMcpRuntime.failures
-      .map((failure) => `${failure.serverId} (${failure.code})`)
-      .join(", ");
-    ports.tools.reportUnavailableMcpServers(scopedMcpRuntime.failures, unavailableServers);
-  }
-  const scopedMcpTools = scopedMcpRuntime.tools;
-  const injectableMcpToolIds = selectInjectableMCPToolIds({
-    enabledToolIds: scopedMcpTools.map((tool) => tool.id),
-    supportsNativeToolCalling: providerSupportsNativeToolCalling,
-    providerType: params.providerConfig.providerType,
-    mode: params.modeAtSend,
-    agentType: params.agentTypeAtSend ?? null,
-  });
-  const policyAllowedMcpToolIds = ports.configuration.restrictTools(
-    filterDeniedToolIdsForRiskLevel(
-      ports.policy.filterForInternalAgentProfile(
-        injectableMcpToolIds,
-        internalAgentProfile,
-      ),
-      riskLevel,
+    captured ? captured.riskLevel : scopedTurnConfiguration?.riskLevel ?? await waitForCurrent(ports.configuration.loadRiskLevel());
+  let allowedToolIds: string[];
+  let mcpTools: MCPTool[];
+  let mcpServers: MCPServer[];
+  if (captured) {
+    allowedToolIds = [...captured.allowedToolIds];
+    mcpTools = structuredClone(captured.mcpTools);
+    mcpServers = snapshotScopedMcpServers(captured.mcpServers);
+  } else {
+    const baseAllowedToolIds = await waitForCurrent(ports.tools.allowedForMode(
+      internalAgentProfile,
       params.modeAtSend,
-    ),
-    scopedTurnConfiguration,
-  );
-  const injectableMcpToolIdsSet = new Set(policyAllowedMcpToolIds);
-  const allowedToolIds = Array.from(new Set(ports.configuration.restrictTools(
-    [
-      ...taskAllowedToolIds.filter((toolId) => !isMCPToolId(toolId)),
-      ...policyAllowedMcpToolIds,
-    ],
-    scopedTurnConfiguration,
-  )));
-  const mcpTools = scopedMcpTools.filter((tool) =>
-    injectableMcpToolIdsSet.has(tool.id),
-  );
-  const showToolTraces = false;
+      params.agentTypeAtSend,
+      {
+        supportsNativeToolCalling:
+          params.providerSupportsNativeToolCalling ??
+          ports.provider.supportsNativeToolCalling(),
+        providerConfig: params.providerConfig,
+        modelId: params.modelId,
+      },
+      riskLevel,
+      executionContext.focusedProjectId,
+    ));
+    let taskAllowedToolIds = baseAllowedToolIds;
+    if (params.modeAtSend === "Implement") {
+      taskAllowedToolIds = ports.tools.filterForImplementTask(
+        baseAllowedToolIds,
+        taskForToolScope,
+      );
+    } else if (params.modeAtSend === "Architect") {
+      taskAllowedToolIds = ports.tools.filterForArchitectPlan(
+        baseAllowedToolIds,
+        executionContext,
+      );
+    }
+    const toolsSnapshot = ports.tools.mcpSnapshot();
+    const providerSupportsNativeToolCalling =
+      params.providerSupportsNativeToolCalling ??
+      ports.provider.supportsNativeToolCalling();
+    const scopedMcpRuntime = scopedTurnConfiguration
+      ? await waitForCurrent(ports.tools.resolveScopedMcp(
+          scopedTurnConfiguration.mcpServers,
+          toolsSnapshot.servers,
+          { projectIds: scopedTurnConfiguration.projectIds },
+        ))
+      : {
+          // Compatibility path for runtimes without the scoped configuration
+          // API. Tool execution still acquires an authoritative backend key.
+          servers: toolsSnapshot.servers,
+          tools: toolsSnapshot.enabledTools(),
+          failures: [],
+        };
+    if (scopedMcpRuntime.failures.length > 0) {
+      const unavailableServers = scopedMcpRuntime.failures
+        .map((failure) => `${failure.serverId} (${failure.code})`)
+        .join(", ");
+      ports.tools.reportUnavailableMcpServers(scopedMcpRuntime.failures, unavailableServers);
+    }
+    const scopedMcpTools = scopedMcpRuntime.tools;
+    const injectableMcpToolIds = selectInjectableMCPToolIds({
+      enabledToolIds: scopedMcpTools.map((tool) => tool.id),
+      supportsNativeToolCalling: providerSupportsNativeToolCalling,
+      providerType: params.providerConfig.providerType,
+      mode: params.modeAtSend,
+      agentType: params.agentTypeAtSend ?? null,
+    });
+    const policyAllowedMcpToolIds = ports.configuration.restrictTools(
+      filterDeniedToolIdsForRiskLevel(
+        ports.policy.filterForInternalAgentProfile(
+          injectableMcpToolIds,
+          internalAgentProfile,
+        ),
+        riskLevel,
+        params.modeAtSend,
+      ),
+      scopedTurnConfiguration,
+    );
+    const injectableMcpToolIdsSet = new Set(policyAllowedMcpToolIds);
+    allowedToolIds = Array.from(new Set(ports.configuration.restrictTools(
+      [
+        ...taskAllowedToolIds.filter((toolId) => !isMCPToolId(toolId)),
+        ...policyAllowedMcpToolIds,
+      ],
+      scopedTurnConfiguration,
+    )));
+    mcpTools = scopedMcpTools.filter((tool) =>
+      injectableMcpToolIdsSet.has(tool.id),
+    );
+    mcpServers = scopedMcpRuntime.servers;
+  }
+  const showToolTraces = captured?.showToolTraces ?? false;
   const skillPermissionSnapshot = ports.skills.createPermissionSnapshot(params.conversationId, params.replyToMessageId);
   const preparedRequest = await waitForCurrent(ports.context.prepareMessages(
     params.conversationId,
@@ -517,21 +531,21 @@ export const prepareAssistantStreamLaunch = async (
   });
   const fileToolContext = Array.from(fileToolContextByPath.values());
   const { enableWebSearch, enableWebFetch, webSearchOptions } =
-    ports.configuration.webSearch();
-  const guidedToolRetry = ports.tools.guidedRetry({
+    captured ?? ports.configuration.webSearch();
+  const guidedToolRetry = captured ? captured.guidedToolRetry : ports.tools.guidedRetry({
     userContent: params.userContent,
     allowedToolIds,
     supportsNativeToolCalling: params.providerSupportsNativeToolCalling,
     fileToolContext,
   });
-  const maxTurns = scopedTurnConfiguration?.maxTurns !== null
+  const maxTurns = captured ? captured.maxTurns : scopedTurnConfiguration?.maxTurns !== null
     && scopedTurnConfiguration?.maxTurns !== undefined
     ? normalizeChatMaxTurns(scopedTurnConfiguration.maxTurns)
     : normalizeChatMaxTurns(
         await waitForCurrent(ports.configuration.loadMaxTurns()),
       );
   const { skillToolIds, runnableSkillToolIds } =
-    ports.skills.toolIdsForRequest(
+    captured ?? ports.skills.toolIdsForRequest(
       allowedToolIds,
       preparedRequest.skillPermissionSnapshot,
     );
@@ -576,7 +590,7 @@ export const prepareAssistantStreamLaunch = async (
     enableWebFetch,
     webSearchOptions,
     mcpTools,
-    mcpServers: scopedMcpRuntime.servers,
+    mcpServers,
     skillToolIds,
     runnableSkillToolIds,
     guidedToolRetry,

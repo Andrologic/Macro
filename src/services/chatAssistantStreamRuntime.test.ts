@@ -647,3 +647,55 @@ test("send handles a synchronous diagnostic failure after the real runtime claim
   expect(h.owner.read(sending.input.conversationId)).toMatchObject({ phase: "error", lastError: "diagnostics failed after claim" });
   expect(h.calls).toHaveLength(0);
 });
+
+for (const changeGeneration of [false, true]) {
+  test(`overflow reuses captured tool authority with MCP generation change=${changeGeneration}`, async () => {
+    const mcp = await mcpFixture();
+    const h = setup();
+    const params = launch("a");
+    params.modeAtSend = "Chat";
+    params.allowedToolIds = ["read", "mcp__docs__read"];
+    params.mcpTools = mcp.scoped.tools;
+    params.mcpServers = mcp.scoped.servers;
+    params.riskLevel = "yolo";
+    params.maxTurns = 7;
+    params.providerSupportsNativeToolCalling = true;
+    const prep = chatRequestPreparationFixture();
+    prep.prepared.executionContext = params.executionContext;
+    // These ports represent settings changed after the first transport started.
+    prep.ports.tools.allowedForMode = mock(async () => ["write"]);
+    prep.ports.tools.resolveScopedMcp = mock((definitions, servers, options) =>
+      resolveScopedMcpRuntime(definitions, servers, { ...options, deps: mcp.deps }));
+    prep.ports.configuration.loadRiskLevel = async () => "balanced";
+    prep.ports.configuration.loadMaxTurns = async () => 1;
+    prep.ports.configuration.webSearch = () => ({ enableWebSearch: true, enableWebFetch: true, webSearchOptions: undefined });
+    prep.ports.skills.toolIdsForRequest = () => ({ skillToolIds: ["new-skill"], runnableSkillToolIds: [] });
+    h.prepare.mockImplementation(request => prepareAssistantStreamLaunch(request, prep.ports));
+    h.execute.mockImplementation((operation, name, args) => {
+      expect(operation.riskLevel).toBe("yolo");
+      return callScopedMcpTool(name, args, operation.mcpServers, {
+        projectIds: operation.executionContext.projectIds, signal: operation.signal, deps: mcp.deps,
+      });
+    });
+    const first = h.start(params);
+    if (changeGeneration) mcp.advance();
+    first.options.onError(new Error("maximum context length is 128000 tokens"));
+    await checkpoint();
+    expect(h.calls).toHaveLength(2);
+    const recovered = h.calls[1];
+    expect(recovered.options.allowedToolIds).toEqual(params.allowedToolIds);
+    expect(recovered.options.maxTurns).toBe(7);
+    expect(recovered.options.enableWebSearch).toBe(false);
+    expect(recovered.options.enableWebFetch).toBe(false);
+    expect(recovered.options.skillToolIds).toEqual([]);
+    expect(await recovered.options.onToolCall?.("mcp__docs__read", {}, "after-overflow")).toBe("ok");
+    recovered.options.onComplete(result("done"));
+    first.done.resolve();
+    recovered.done.resolve();
+    await h.owner.drain("a");
+    expect(mcp.calls).toEqual([1]);
+    expect(mcp.connects()).toBe(1);
+    expect(prep.ports.tools.resolveScopedMcp).not.toHaveBeenCalled();
+    expect(prep.ports.tools.allowedForMode).not.toHaveBeenCalled();
+  });
+}
