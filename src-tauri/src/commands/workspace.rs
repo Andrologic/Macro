@@ -355,6 +355,17 @@ async fn register_project_config_roots(
             workspace_path.join(project_path)
         };
         if !project_path.is_dir() {
+            // Preserve this observation before the repository can return with the
+            // same identity. A later timer must not mistake it for uninterrupted use.
+            if let Err(error) = config_manager
+                .observe_project_root_unavailable(&project.id)
+                .await
+            {
+                errors.push(format!(
+                    "Impossible d’invalider la configuration indisponible du projet {} : {} ({})",
+                    project.id, error.message, error.code
+                ));
+            }
             errors.push(format!(
                 "La racine du projet {} est absente : {}",
                 project.id,
@@ -2294,6 +2305,36 @@ mod tests {
         assert!(manager.get_snapshot(&["project".to_string()]).await.is_ok());
     }
 
+    async fn config_manager_test_pending(
+        manager: &ConfigManager,
+        project_id: &str,
+    ) -> crate::config::PendingSensitiveConfigChange {
+        let scope = ConfigScope::Project {
+            project_id: project_id.into(),
+        };
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, scope.clone())
+            .await
+            .unwrap();
+        manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/riskLevel".into(),
+                    from: None,
+                    value: Some(json!("strict")),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .unwrap()
+            .pending_change
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn config_roots_reconcile_complete_registry_and_preserve_removed_files() {
         let temp = tempfile::tempdir().unwrap();
@@ -2344,6 +2385,7 @@ mod tests {
             .await
             .unwrap();
         let bytes = std::fs::read(&config_path).unwrap();
+        let tools = config_manager_test_pending(&manager, &standalone.id).await;
         let config_root = config_path.parent().unwrap().to_path_buf();
         let unavailable_project = temp.path().join("unavailable-project");
         std::fs::rename(&standalone.path, &unavailable_project).unwrap();
@@ -2358,6 +2400,8 @@ mod tests {
         .unwrap();
         assert_eq!(bootstrap.standalone_projects[0].id, standalone.id);
         assert!(!diagnostic.diagnostics.is_empty());
+        assert!(manager.get_snapshot(&[grouped.id.clone()]).await.is_ok());
+        assert_eq!(watcher.subscribed_project_roots().len(), 2);
         assert_eq!(
             manager.desired_project_root(&standalone.id).await,
             Some(config_root.clone())
@@ -2366,13 +2410,14 @@ mod tests {
             watcher.desired_project_roots().get(&standalone.id),
             Some(&config_root)
         );
-        manager.refresh_project_roots().await;
         std::fs::rename(&unavailable_project, &standalone.path).unwrap();
+        assert!(manager.accept_pending_change(&tools.id).await.is_err());
         // Recovery uses the retained desired root, without another registry read.
         let (changed, errors) = manager.refresh_project_roots().await;
         assert!(changed);
         assert!(errors.is_empty());
         assert!(manager.get_snapshot(&[standalone.id.clone()]).await.is_ok());
+        assert!(manager.accept_pending_change(&tools.id).await.is_err());
         workspace::close_project(&workspace_path, &metadata, &standalone.id)
             .await
             .unwrap();

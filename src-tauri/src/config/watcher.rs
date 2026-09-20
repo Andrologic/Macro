@@ -304,7 +304,28 @@ async fn maintain_subscriptions<F, Fut, R, ReportFuture>(
                     .subscriptions
                     .values()
                     .any(|subscription| subscription.invalidated.load(Ordering::Acquire));
-            let mut errors = locked.reconcile().err().into_iter().collect::<Vec<_>>();
+            // Consume callback failures before reconciliation can replace their
+            // backend. A successful reinstall does not erase the observed outage.
+            let requested: std::collections::BTreeSet<_> = locked
+                .roots
+                .project_roots
+                .values()
+                .map(|root| root.canonicalize().unwrap_or_else(|_| root.clone()))
+                .collect();
+            let mut errors = match locked.backend_errors.lock() {
+                Ok(mut pending) => std::mem::take(&mut *pending)
+                    .into_iter()
+                    .filter(|(root, _)| requested.contains(root))
+                    .map(|(root, error)| {
+                        format!(
+                            "Project configuration watcher ({}): {error}",
+                            root.display()
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                Err(_) => vec!["Project configuration watcher error lock poisoned".into()],
+            };
+            errors.extend(locked.reconcile().err());
             // Global status is independent of project aliases and is never pruned
             // with the requested project roots. A lost global watch stays invalid
             // until this ConfigWatcher is replaced; project maintenance cannot fix it.
@@ -365,6 +386,37 @@ fn invalidates_root(root: &Path, result: &notify::Result<Event>) -> bool {
     }
 }
 
+fn record_backend_result(
+    root: &Path,
+    result: notify::Result<Event>,
+    signal_tx: &watch::Sender<u64>,
+    invalidated: &AtomicBool,
+    backend_errors: &Mutex<BTreeMap<PathBuf, String>>,
+) {
+    if let Ok(mut errors) = backend_errors.lock() {
+        match &result {
+            Err(error) => {
+                let message = error.to_string();
+                if errors.get(root) != Some(&message) {
+                    tracing::warn!(root = %root.display(), message = %message, "Erreur du watcher de configuration");
+                    errors.insert(root.to_path_buf(), message);
+                }
+            }
+            Ok(_) if !invalidated.load(Ordering::Acquire) => {
+                if errors.remove(root).is_some() {
+                    tracing::info!(root = %root.display(), "Watcher de configuration rétabli");
+                }
+            }
+            Ok(_) => {}
+        }
+    }
+    if invalidates_root(root, &result) && invalidated.swap(true, Ordering::AcqRel) {
+        return; // One wakeup per invalidated backend, including repeated errors.
+    }
+    // Errors/rescans must also wake the consumer, not just ordinary events.
+    signal_tx.send_modify(|generation| *generation = generation.wrapping_add(1));
+}
+
 fn make_backend(
     root: &Path,
     mode: RecursiveMode,
@@ -375,30 +427,13 @@ fn make_backend(
     let callback_root = root.to_path_buf();
     let backend = RecommendedWatcher::new(
         move |result: notify::Result<Event>| {
-            if let Ok(mut errors) = backend_errors.lock() {
-                match &result {
-                    Err(error) => {
-                        let message = error.to_string();
-                        if errors.get(&callback_root) != Some(&message) {
-                            tracing::warn!(root = %callback_root.display(), message = %message, "Erreur du watcher de configuration");
-                            errors.insert(callback_root.clone(), message);
-                        }
-                    }
-                    Ok(_) if !invalidated.load(Ordering::Acquire) => {
-                        if errors.remove(&callback_root).is_some() {
-                            tracing::info!(root = %callback_root.display(), "Watcher de configuration rétabli");
-                        }
-                    }
-                    Ok(_) => {}
-                }
-            }
-            if invalidates_root(&callback_root, &result)
-                && invalidated.swap(true, Ordering::AcqRel)
-            {
-                return; // One wakeup per invalidated backend, including repeated errors.
-            }
-            // Errors/rescans must also wake the consumer, not just ordinary events.
-            signal_tx.send_modify(|generation| *generation = generation.wrapping_add(1));
+            record_backend_result(
+                &callback_root,
+                result,
+                &signal_tx,
+                &invalidated,
+                &backend_errors,
+            );
         },
         Config::default().with_poll_interval(Duration::from_millis(100)),
     )
@@ -886,6 +921,101 @@ mod tests {
         .expect("new file was not observed automatically");
         drop(state);
         assert!(weak.upgrade().is_none());
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn asynchronous_project_failures_survive_successful_reinstallation_and_recover() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("global"))
+            .await
+            .unwrap();
+        let root = temp.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (tx, rx) = watch::channel(0);
+        let state = Arc::new(ConfigWatcher {
+            state: Mutex::new(WatcherState::new(manager.root(), tx).unwrap()),
+        });
+        state.watch_project_root("project", &root).unwrap();
+        let canonical = root.canonicalize().unwrap();
+        let inject = Arc::new(AtomicBool::new(true));
+        let inject_callback = inject.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = attempts.clone();
+        let weak = Arc::downgrade(&state);
+        let callback_state = weak.clone();
+        let report_manager = manager.clone();
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(maintain_subscriptions(
+            weak,
+            rx,
+            Duration::from_millis(30),
+            Duration::ZERO,
+            move |errors| {
+                let manager = report_manager.clone();
+                let event_tx = event_tx.clone();
+                async move {
+                    publish_maintenance_status(&manager, errors, |document| {
+                        event_tx.send(document).unwrap();
+                    })
+                    .await;
+                }
+            },
+            move |_| {
+                if inject_callback.load(Ordering::Acquire) {
+                    let state = callback_state.upgrade().unwrap();
+                    let locked = state.state.lock().unwrap();
+                    let installed = locked
+                        .roots
+                        .subscriptions
+                        .get(&canonical)
+                        .expect("installation succeeds before the asynchronous failure");
+                    record_backend_result(
+                        &canonical,
+                        Err(notify::Error::generic("asynchronous project failure")),
+                        &locked.signal_tx,
+                        &installed.invalidated,
+                        &locked.backend_errors,
+                    );
+                    count.fetch_add(1, Ordering::SeqCst);
+                }
+                std::future::ready(Vec::new())
+            },
+        ));
+        let degraded = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(degraded
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("asynchronous project failure")));
+        assert_eq!(
+            manager.get_snapshot(&[]).await.unwrap().diagnostics.len(),
+            1
+        );
+        wait_until(|| attempts.load(Ordering::SeqCst) >= 3).await;
+        assert!(
+            event_rx.try_recv().is_err(),
+            "repeated callback errors must not repeat the warning"
+        );
+        inject.store(false, Ordering::Release);
+        let recovered = tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(recovered.diagnostics.is_empty());
+        assert!(manager
+            .get_snapshot(&[])
+            .await
+            .unwrap()
+            .diagnostics
+            .is_empty());
+        assert_eq!(state.subscribed_project_roots().len(), 1);
+        drop(state);
         tokio::time::timeout(Duration::from_secs(2), task)
             .await
             .unwrap()

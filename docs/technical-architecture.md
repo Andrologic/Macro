@@ -147,8 +147,10 @@ maintenance réessaie ce chargement après correction du fichier. Une
 indisponibilité temporaire du dépôt ne retire pas sa racine désirée tant
 que le projet reste dans le registre. Une purge ou une récupération du cache
 émet aussi `config://changed` pour actualiser le
-snapshot frontend. Les opérations d'écriture revérifient l'identité de la
-racine après l'attente du verrou de fichier.
+snapshot frontend. Une absence observée par le bootstrap invalide aussi le
+consentement sans attendre la maintenance. Les opérations projet acquièrent
+leurs verrous de document, de transaction et de publication avant le contrôle
+final d'identité ; les écritures suivantes ne reprennent pas ces verrous.
 Les propositions projet persistées lient leur identifiant d'approbation au
 chemin canonique et à l'identité du dossier. Un changement de racine renouvelle
 cet identifiant, même si la nouvelle racine ne contient pas le document. Ce
@@ -158,6 +160,12 @@ la baseline approuvée. Les anciennes propositions sans ce lien demandent
 Un seul journal de renouvellement par proposition permet de reprendre une
 écriture interrompue avant de réutiliser une liaison de racine. Il est supprimé
 après réussite ; une divergence bloque la reprise et conserve les données.
+Ce journal utilise le verrou de transaction des propositions, sans verrou de
+publication supplémentaire susceptible de bloquer après le contrôle d'identité.
+Si son écriture échoue, Macro tente la révocation directement dans la proposition.
+Si les deux écritures échouent, la configuration visée reste bloquée avec
+`config.pending.root_renewal.revocation_failed`. Aucune trace après redémarrage
+ne peut être garantie si le stockage refuse toute écriture durable.
 
 Si la réconciliation échoue après une mutation du registre déjà persistée, la
 commande conserve son résultat métier. Un avertissement `ConfigDiagnostic`,
