@@ -1,9 +1,10 @@
 use super::*;
-use std::{fs, process::Command};
+use crate::core::process::background_command;
+use std::fs;
 use tempfile::TempDir;
 
 pub(super) fn git(path: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = background_command("git")
         .arg("-C")
         .arg(path)
         .args(args)
@@ -165,7 +166,7 @@ fn rejects_target_divergence_and_different_repository_with_matching_commits() {
     );
     assert!(validate_integrated_state(&repo, &integrated).is_err());
     let clone = TempDir::new().unwrap();
-    let output = Command::new("git")
+    let output = background_command("git")
         .args(["clone", "--quiet"])
         .arg(temp.path())
         .arg(clone.path())

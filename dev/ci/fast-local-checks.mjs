@@ -1,4 +1,5 @@
 import { dirname, posix } from 'node:path';
+import { isExtractedNativeFile } from '../architecture/extracted-boundaries.mjs';
 
 const LINTABLE_SCRIPT_PATTERN = /\.(?:[cm]?[jt]s|jsx|tsx)$/;
 const TEST_PATTERN = /\.test\.(?:ts|tsx)$/;
@@ -25,6 +26,17 @@ const UPDATER_PATTERNS = [
 const I18N_PATTERNS = [
   /^src\/i18n\//,
   /^dev\/i18n\//,
+];
+
+// The bridge imports shared tool definitions, generated IPC types and native
+// JSON fixtures. Include removals as well as existing files in this selection.
+const COPILOT_TYPECHECK_PATTERNS = [
+  /^copilot-bridge\//,
+  /^src\/shared\//,
+  /^src\/types\/generated\/ipc\//,
+  /^src-tauri\/src\/ai\/copilot\/fixtures\//,
+  /^(?:package\.json|bun\.lock|bunfig\.toml)$/,
+  /^dev\/ci\/.*\.mjs$/,
 ];
 
 // DTO dependencies can live in any Rust module, including deleted/renamed files.
@@ -152,11 +164,20 @@ export function planFastLocalChecks(paths, options = {}) {
   }
   if (normalized.some((path) =>
     path.startsWith('src/') || path === 'package.json' ||
+    isExtractedNativeFile(path) ||
     path.startsWith('dev/architecture/') || path === 'vite.config.ts')) {
     steps.push({
       name: 'Frontières des domaines',
       command: process.execPath,
       args: ['dev/architecture/import-boundaries.mjs', '--check'],
+      needsDependencies: true,
+    });
+  }
+  if (normalized.some((path) => matchesAny(path, COPILOT_TYPECHECK_PATTERNS))) {
+    steps.push({
+      name: 'Types du bridge Copilot',
+      command: process.execPath,
+      args: ['run', 'typecheck:copilot'],
       needsDependencies: true,
     });
   }

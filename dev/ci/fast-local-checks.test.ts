@@ -95,6 +95,7 @@ describe('fast local check selection', () => {
       'Binaires suivis autorisés',
       'Verrouillage des dépendances cohérent',
       'Workflows GitHub valides',
+      'Types du bridge Copilot',
     ]);
     expect(plan.steps[2]).toMatchObject({
       args: ['install', '--frozen-lockfile', '--lockfile-only', '--dry-run'],
@@ -107,6 +108,41 @@ describe('fast local check selection', () => {
       expect(plan.steps).toContainEqual(expect.objectContaining({
         args: ['dev/architecture/import-boundaries.mjs', '--check'],
       }));
+    }
+  });
+
+  test('routes extracted native modules to the boundary guard even when deleted', () => {
+    for (const path of [
+      'src-tauri/src/core/command_error.rs', 'src-tauri/src/core/db_state.rs',
+      'src-tauri/src/core/mcp_ids.rs', 'src-tauri/src/core/workspace_execution/nested/tool.rs',
+      'src-tauri/src/fs/operations.rs', 'src-tauri/src/fs/mutation_locks.rs',
+      'src-tauri/src/git/operations.rs', 'src-tauri/src/git/operations/workflow.rs',
+    ]) {
+      const plan = planFastLocalChecks([path], { exists: () => false });
+      const guards = plan.steps.filter((step) => step.args.includes('dev/architecture/import-boundaries.mjs'));
+      expect(guards).toHaveLength(1);
+      expect(guards[0]).toMatchObject({ args: ['dev/architecture/import-boundaries.mjs', '--check'], needsDependencies: true });
+    }
+    const unrelated = planFastLocalChecks(['src-tauri/src/core/diagnostics.rs']);
+    expect(unrelated.steps.some((step) => step.args.includes('dev/architecture/import-boundaries.mjs'))).toBe(false);
+  });
+
+  test('typechecks changed Copilot code, configuration and imported dependencies once', () => {
+    const paths = [
+      'copilot-bridge/src/protocol.ts', 'copilot-bridge/src/protocol.test.ts',
+      'copilot-bridge/tsconfig.json', 'src/shared/macroToolRegistry.ts', 'src/shared/toolOutputLimits.ts',
+      'src/types/generated/ipc/BridgeToolResultMessage.ts',
+      'src-tauri/src/ai/copilot/fixtures/tool-results.json',
+      'package.json', 'bun.lock', 'bunfig.toml', 'dev/ci/check-profiles.mjs',
+    ];
+    for (const changed of [...paths.map((path) => [path]), paths]) {
+      const plan = planFastLocalChecks(changed, { exists: () => false });
+      const checks = plan.steps.filter((step) => step.args.includes('typecheck:copilot'));
+      expect(checks).toHaveLength(1);
+      expect(checks[0]).toMatchObject({ command: process.execPath, args: ['run', 'typecheck:copilot'], needsDependencies: true });
+    }
+    for (const path of ['README.md', 'src/components/Panel.tsx', 'src-tauri/src/git/operations.rs']) {
+      expect(planFastLocalChecks([path]).steps.some((step) => step.args.includes('typecheck:copilot'))).toBe(false);
     }
   });
 

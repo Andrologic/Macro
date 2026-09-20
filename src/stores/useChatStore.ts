@@ -5294,7 +5294,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
     handlers: {
       configVirtualScope: handleConfigVirtualScopeToolCall,
-      skill: handleSkillToolCall,
+      // Resolve on invocation: Skills can import this store during module initialization.
+      skill: (...args) => handleSkillToolCall(...args),
       mcp: callScopedMcpTool,
       taskTodo: handleTaskTodoToolCall,
       taskArtifact: handleTaskArtifactToolCall,

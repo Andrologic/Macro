@@ -79,37 +79,6 @@
   "typeEdgeCount": 679,
   "runtimeSccEdges": [
     {
-      "from": "src/components/chat/composer/MentionChip.tsx",
-      "to": "src/components/chat/composer/MentionNode.tsx",
-      "kinds": [
-        "runtime",
-        "type"
-      ],
-      "lazy": false,
-      "hasEagerRuntime": true,
-      "hasLazyRuntime": false
-    },
-    {
-      "from": "src/components/chat/composer/MentionChip.tsx",
-      "to": "src/stores/useChatStore.ts",
-      "kinds": [
-        "runtime"
-      ],
-      "lazy": false,
-      "hasEagerRuntime": true,
-      "hasLazyRuntime": false
-    },
-    {
-      "from": "src/components/chat/composer/MentionNode.tsx",
-      "to": "src/components/chat/composer/MentionChip.tsx",
-      "kinds": [
-        "runtime"
-      ],
-      "lazy": false,
-      "hasEagerRuntime": true,
-      "hasLazyRuntime": false
-    },
-    {
       "from": "src/services/architectGitFlowService.ts",
       "to": "src/stores/useAppStore.ts",
       "kinds": [
@@ -699,37 +668,6 @@
   ],
   "eagerSccEdges": [
     {
-      "from": "src/components/chat/composer/MentionChip.tsx",
-      "to": "src/components/chat/composer/MentionNode.tsx",
-      "kinds": [
-        "runtime",
-        "type"
-      ],
-      "lazy": false,
-      "hasEagerRuntime": true,
-      "hasLazyRuntime": false
-    },
-    {
-      "from": "src/components/chat/composer/MentionChip.tsx",
-      "to": "src/stores/useChatStore.ts",
-      "kinds": [
-        "runtime"
-      ],
-      "lazy": false,
-      "hasEagerRuntime": true,
-      "hasLazyRuntime": false
-    },
-    {
-      "from": "src/components/chat/composer/MentionNode.tsx",
-      "to": "src/components/chat/composer/MentionChip.tsx",
-      "kinds": [
-        "runtime"
-      ],
-      "lazy": false,
-      "hasEagerRuntime": true,
-      "hasLazyRuntime": false
-    },
-    {
       "from": "src/services/architectGitFlowService.ts",
       "to": "src/stores/useAppStore.ts",
       "kinds": [
@@ -1128,10 +1066,6 @@
   ],
   "sccs": [
     [
-      "src/components/chat/composer/MentionChip.tsx",
-      "src/components/chat/composer/MentionNode.tsx"
-    ],
-    [
       "src/services/architectGitFlowService.ts",
       "src/services/architectPlanArtifactService.ts",
       "src/services/architectPlanRuntimeService.ts",
@@ -1159,10 +1093,6 @@
     ]
   ],
   "eagerSccs": [
-    [
-      "src/components/chat/composer/MentionChip.tsx",
-      "src/components/chat/composer/MentionNode.tsx"
-    ],
     [
       "src/services/architectGitFlowService.ts",
       "src/services/architectPlanArtifactService.ts",

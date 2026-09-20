@@ -1422,7 +1422,7 @@ mod tests {
     async fn quiet_and_failed_periodic_passes_do_not_reload_or_retain_state() {
         let global = tempfile::tempdir().unwrap();
         let missing_parent = tempfile::tempdir().unwrap();
-        let (tx, rx) = watch::channel(0);
+        let (tx, _backend_rx) = watch::channel(0);
         let state = Arc::new(ConfigWatcher {
             state: Mutex::new(WatcherState::new(global.path(), tx).unwrap()),
         });
@@ -1431,6 +1431,11 @@ mod tests {
             .is_err());
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = calls.clone();
+        let passes = Arc::new(AtomicUsize::new(0));
+        let pass_counter = passes.clone();
+        // This case exercises periodic maintenance without events. Native setup
+        // notifications must not turn it into an event-triggered reload test.
+        let (_quiet_tx, rx) = watch::channel(0);
         let weak = Arc::downgrade(&state);
         let task = tokio::spawn(maintain_subscriptions(
             weak.clone(),
@@ -1442,13 +1447,15 @@ mod tests {
                 if reload_requested {
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
+                pass_counter.fetch_add(1, Ordering::SeqCst);
                 std::future::ready(Vec::new())
             },
         ));
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        wait_until(|| passes.load(Ordering::SeqCst) >= 3).await;
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         state.unregister_project_root("missing").unwrap();
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        let completed_passes = passes.load(Ordering::SeqCst);
+        wait_until(|| passes.load(Ordering::SeqCst) >= completed_passes + 2).await;
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         drop(state);
         assert!(weak.upgrade().is_none());

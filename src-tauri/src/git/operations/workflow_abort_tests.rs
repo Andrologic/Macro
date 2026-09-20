@@ -1,6 +1,7 @@
 use super::super::tests::{database, fixture, git};
 use super::*;
-use std::{fs, process::Command};
+use crate::core::process::background_command;
+use std::fs;
 
 async fn abort_with_checkpoint_failure(rebase: bool, fail_intent: bool) {
     let (temp, repo, _) = fixture(true);
@@ -30,7 +31,7 @@ async fn abort_with_checkpoint_failure(rebase: bool, fail_intent: bool) {
         git(temp.path(), &["checkout", "feature"]);
         // Leave the recorded rebase interrupted, as if its child process died
         // while resolving a conflict, before the normal helper could abort it.
-        let output = Command::new("git")
+        let output = background_command("git")
             .arg("-C")
             .arg(temp.path())
             .args(["rebase", "--merge", "main"])

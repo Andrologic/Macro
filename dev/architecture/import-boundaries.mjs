@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, normalize, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
+import { chatBoundaryViolations, isExtractedNativeFile, nativeBoundaryViolations } from './extracted-boundaries.mjs';
 
 export const BASELINE_PATH = 'dev/architecture/import-boundaries.baseline.json';
 export const SOURCE_EXTENSIONS = Object.freeze(['.ts', '.tsx']);
@@ -82,7 +83,7 @@ function isSourceFile(path) {
   return SOURCE_EXTENSIONS.includes(extname(normalized)) && !EXCLUDED_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
-function sourceFileNames(rootDirectory) {
+function sourceFileNames(rootDirectory, sourceDirectory = 'src') {
   const files = [];
   const walk = (directory) => {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
@@ -97,13 +98,13 @@ function sourceFileNames(rootDirectory) {
       }
     }
   };
-  const sourceRoot = join(rootDirectory, 'src');
+  const sourceRoot = join(rootDirectory, sourceDirectory);
   if (existsSync(sourceRoot)) walk(sourceRoot);
   return sorted(files);
 }
 
 function gitSourceFileNames(rootDirectory, ref) {
-  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src'], {
+  const output = execFileSync('git', ['-C', rootDirectory, 'ls-tree', '-rz', ref, '--', 'src', 'src-tauri/src'], {
     encoding: 'utf8',
   });
   return sorted(output.split('\0').filter(Boolean).map((entry) => {
@@ -122,6 +123,7 @@ function createFilesystemReader(rootDirectory) {
   return {
     resolutionFiles,
     files: resolutionFiles.filter(isSourceFile),
+    nativeFiles: sourceFileNames(rootDirectory, 'src-tauri/src').filter(isExtractedNativeFile),
     read(path) {
       return readFileSync(join(rootDirectory, path), 'utf8');
     },
@@ -129,10 +131,12 @@ function createFilesystemReader(rootDirectory) {
 }
 
 function createGitReader(rootDirectory, ref) {
-  const resolutionFiles = gitSourceFileNames(rootDirectory, ref);
+  const allFiles = gitSourceFileNames(rootDirectory, ref);
+  const resolutionFiles = allFiles.filter((path) => path.startsWith('src/'));
   return {
     resolutionFiles,
     files: resolutionFiles.filter(isSourceFile),
+    nativeFiles: allFiles.filter(isExtractedNativeFile),
     read(path) {
       return readGitFile(rootDirectory, ref, path);
     },
@@ -144,6 +148,7 @@ export function createVirtualReader(sources) {
   return {
     resolutionFiles: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/'))),
     files: sorted([...normalizedSources.keys()].filter((path) => path.startsWith('src/') && isSourceFile(path))),
+    nativeFiles: sorted([...normalizedSources.keys()].filter(isExtractedNativeFile)),
     read(path) {
       const text = normalizedSources.get(normalizePath(path));
       if (text === undefined && path === 'package.json') return '{}';
@@ -330,6 +335,12 @@ function collectImports(path, text) {
     const kinds = [...(hasType ? ['type'] : []), ...(hasRuntime ? ['runtime'] : [])];
     if (kinds.length > 0) addImport(imports, entry.source, kinds, entry.line, entry.lazy);
   }
+  // The automatic JSX runtime adds a package import absent from source syntax.
+  for (const entry of runtimeEntries) {
+    if (!sourceEntries.some((source) => source.source === entry.source && source.lazy === entry.lazy)) {
+      addImport(imports, entry.source, ['runtime'], undefined, entry.lazy);
+    }
+  }
   return { diagnostics: [...diagnostics, ...sourceResult.unsupported], imports };
 }
 
@@ -470,6 +481,7 @@ function collectGraph(reader) {
   const edges = new Map();
   const diagnostics = [];
   const unresolved = [];
+  const externalImports = [];
   for (const from of reader.files) {
     const result = collectImports(from, reader.read(from));
     diagnostics.push(...result.diagnostics.map((message) => ({ file: from, message })));
@@ -486,7 +498,11 @@ function collectGraph(reader) {
         continue;
       }
       if (!to) {
-        if (localModulePath(from, importEntry.source, aliases) !== undefined && isTargetedModuleSpecifier(importEntry.source)) unresolved.push({ from, specifier: importEntry.source, line: importEntry.line });
+        if (localModulePath(from, importEntry.source, aliases) !== undefined) {
+          if (isTargetedModuleSpecifier(importEntry.source)) unresolved.push({ from, specifier: importEntry.source, line: importEntry.line });
+        } else {
+          externalImports.push({ from, specifier: importEntry.source, kinds: importEntry.kinds, line: importEntry.line });
+        }
         continue;
       }
       const key = pairKey(from, to);
@@ -509,7 +525,7 @@ function collectGraph(reader) {
     hasLazyRuntime: edge.hasLazyRuntime,
     lines: edge.lines.sort((left, right) => left.line - right.line),
   })).sort((left, right) => `${left.from}|${left.to}`.localeCompare(`${right.from}|${right.to}`));
-  return { edges: serializedEdges, diagnostics, unresolved };
+  return { edges: serializedEdges, externalImports, diagnostics, unresolved };
 }
 
 function edgeHasKind(edge, kind) {
@@ -671,6 +687,11 @@ export function analyzeReader(reader, sourceRef = 'worktree') {
     dynamicSccCount: dynamicSccs.length,
     violations,
     explicitForbiddenEdges,
+    extractedBoundaries: {
+      chat: chatBoundaryViolations(graph.edges, graph.externalImports),
+      native: nativeBoundaryViolations(reader),
+      nativeFiles: reader.nativeFiles ?? [],
+    },
     exceptions: exceptionsForReport(violations),
     diagnostics: graph.diagnostics.sort((left, right) => `${left.file}|${left.message}`.localeCompare(`${right.file}|${right.message}`)),
     unresolved: graph.unresolved.sort((left, right) => `${left.from}|${left.specifier}|${left.line}`.localeCompare(`${right.from}|${right.specifier}|${right.line}`)),
@@ -725,6 +746,10 @@ export function compareReports(baseline, current) {
   const resolvedExceptions = (baseline.exceptions ?? []).filter((exception) => !currentExceptionKeys.has(exceptionKey(exception)));
   const explicitForbiddenEdges = current.explicitForbiddenEdges;
   const newModelRuntimeEdges = newForbiddenEdges.filter((violation) => violation.rule === 'models-to-application' && violation.kind === 'runtime');
+  const extractedBoundaryViolations = [
+    ...(current.extractedBoundaries?.chat ?? []),
+    ...(current.extractedBoundaries?.native ?? []),
+  ];
   return {
     baseRef: baseline.baseRef,
     newForbiddenEdges,
@@ -733,7 +758,8 @@ export function compareReports(baseline, current) {
     newEagerSccs,
     explicitForbiddenEdges,
     resolvedExceptions,
-    passed: newForbiddenEdges.length === 0 && newSccs.length === 0 && newEagerSccs.length === 0 && explicitForbiddenEdges.length === 0 && current.diagnostics.length === 0 && current.unresolved.length === 0,
+    extractedBoundaryViolations,
+    passed: newForbiddenEdges.length === 0 && newSccs.length === 0 && newEagerSccs.length === 0 && explicitForbiddenEdges.length === 0 && extractedBoundaryViolations.length === 0 && current.diagnostics.length === 0 && current.unresolved.length === 0,
   };
 }
 
@@ -799,6 +825,8 @@ function formatText(report) {
     `Forbidden edges: ${report.violations.length} (${report.exceptions.length} baseline exceptions, ${report.explicitForbiddenEdges.length} explicitly forbidden)`,
     `Unresolved targeted modules: ${report.unresolved.length}`,
     `Transpile diagnostics: ${report.diagnostics.length}`,
+    `Extracted Chat boundary violations: ${report.extractedBoundaries.chat.length}`,
+    `Extracted native boundary violations: ${report.extractedBoundaries.native.length} (${report.extractedBoundaries.nativeFiles.length} files)`,
   ];
   if (report.comparison) {
     lines.push(`New forbidden edges: ${report.comparison.newForbiddenEdges.length}`);
@@ -814,6 +842,9 @@ function formatText(report) {
   };
   if (report.comparison) printViolations('New forbidden edges', report.comparison.newForbiddenEdges);
   printViolations('Explicitly forbidden edges', report.explicitForbiddenEdges);
+  for (const violation of [...report.extractedBoundaries.chat, ...report.extractedBoundaries.native]) {
+    lines.push(`  ${violation.from}${violation.line ? `:${violation.line}` : ''} -> ${violation.to} [${violation.rule}]${violation.path ? ` via ${violation.path.join(' -> ')}` : ''}`);
+  }
   if (report.unresolved.length > 0) {
     lines.push('Unresolved targeted modules:');
     for (const unresolved of report.unresolved) lines.push(`  ${unresolved.from}:${unresolved.line} -> ${unresolved.specifier}`);
