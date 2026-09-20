@@ -328,8 +328,8 @@ sont produits par une transformation Vite, hors de l'analyse TypeScript.
 Les règles de frontières des domaines gardent le même périmètre.
 
 Les nouveaux modules d'adaptation augmentent le nombre total d'arêtes,
-mais réduisent le groupe de modules chargés cycliquement. Le cycle séparé entre
-`MentionChip` et `MentionNode` reste attribué au lot Chat. La SCC statique restante
+mais réduisent le groupe de modules chargés cycliquement. Le contrat pur `mentionContract` supprime le cycle séparé entre
+`MentionChip` et `MentionNode`, sans changer les exports du nœud Lexical. La SCC statique restante
 unit encore les stores App, Chat, Tasks, Skills et Terminal aux services Architect,
 metadata, merge et worktrees ; ces extractions appartiennent aux lots suivants.
 Les notifications et i18n ne participent plus aux SCC, même avec les imports
@@ -368,12 +368,42 @@ Il gère notamment :
 
 - les conversations
 - les messages
-- le streaming
+- la projection du runtime de chaque conversation
 - les pièces jointes image
 - les références de contexte du composeur
 - la relation entre mode actif et conversation sélectionnée
 
-Le store porte aussi une partie de la logique d'orchestration entre chat et mode produit.
+Les cas d'usage `chatSend/sendMessage`, `chatRequestPreparation`,
+`chatAssistantStreamRuntime` et `chatAssistantPersistenceRuntime` coordonnent
+l'envoi, la préparation de la requête, le stream et la reprise
+après échec de sauvegarde. Ils reçoivent des ports typés et se testent sans React
+ni mock de store. L'adaptateur capture les sélections UI avant la première
+attente ; le runtime reçoit ensuite ce snapshot, ses dépendances et les
+opérations de projection séparément.
+
+`chatTurnRuntime` possède les identités de session, les promesses de stream,
+les instructions en attente et les propriétaires de persistance. Le record des
+phases reste unique, derrière un port de projection adossé au store. Le runtime
+ne maintient aucune seconde copie des messages ou de la sélection. Sa transition
+`beginCompletion` vers `persisting`, puis `releaseCompletion` ou `failCompletion`,
+forme le point de raccord des transports. `claimStream` attribue une identité
+de tentative distincte lors d'une récupération du même tour. Un stream remplacé ne libère pas son
+successeur et l'attente de fin suit les remplacements dus à la récupération.
+
+`chatStreamCompaction` garde le checkpoint provisoire d'un stream ;
+`chatStreamComposition` raccorde ses ports au tour capturé. Le dispatch `chatToolDispatch` valide l'identité avant et après les effets
+asynchrones et transmet le contexte figé avec son signal d'annulation.
+`chatToolExecution` route les appels et contrôle leur politique ;
+`chatToolApproval` coordonne leur approbation durable et `chatAgentTerminal`
+gère les sessions terminal de l'agent. Les ports raccordent les effets des
+autres domaines sans importer leurs stores. `chatPersistenceService` reste propriétaire
+des adaptateurs de persistance existants.
+
+Le store conserve la sélection, l'hydratation des conversations, les projections
+de messages et diagnostics, le compositeur, les questionnaires et les dialogues
+d'approbation. Les workflows de rejeu et checkpoints ainsi que les adaptateurs
+Architect/Implement restent une dette distincte de l'orchestration d'un envoi.
+Cette extraction ne supprime donc pas à elle seule la grande SCC historique.
 
 En mode Implement, l'en-tête de la conversation dérive le contexte visible de la tâche cataloguée sélectionnée. Il utilise `plan_title` et `branch_name` de cette tâche, puis résout les noms de projets depuis le registre déjà chargé. Une valeur absente n'est pas remplacée par une sélection globale et aucun état d'affichage durable n'est ajouté.
 
