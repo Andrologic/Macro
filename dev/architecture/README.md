@@ -11,6 +11,9 @@ Their direct runtime imports also cannot target the concrete Tauri IPC façade
 or domain wrappers (`services/ipc/*` except pure `*.types.ts` contracts), Tauri
 runtime bridge, HTTP, browser transport, dialog/window adapters, streaming,
 provider or composition adapters, or an `@tauri-apps/*` package.
+The explicit `AI_ADAPTERS` list also covers concrete generation, transport,
+cancellation, diagnostic and fallback-tool I/O modules under `services/ai`.
+The directory itself is allowed, including runtime codecs and type contracts.
 The existing TypeScript parser, transpiler and alias resolver determine these
 edges; type-only imports remain allowed. This is not a claim that every Chat
 dependency is transport-free: tool execution still reaches configuration

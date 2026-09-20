@@ -43,6 +43,10 @@ describe('extracted Chat runtime boundaries', () => {
       'src/services/ipc/filesystem.ts', 'src/services/ipc/ai.ts', 'src/services/ipc/runtime.ts',
       'src/services/tauriRuntimeBridge.ts', 'src/services/tauriHttp.ts',
       'src/services/browserRuntimeTransport.ts', 'src/services/tauriDialog.ts', 'src/services/tauriWindow.ts',
+      'src/services/ai/chatCompletionsAdapter.ts', 'src/services/ai/nativeAdapter.ts',
+      'src/services/ai/nativeTurnTransport.ts', 'src/services/ai/httpTransport.ts',
+      'src/services/ai/streamResources.ts', 'src/services/ai/streamDiagnostics.ts',
+      'src/services/ai/fallbackTools.ts',
       'src/services/providers/ipc.ts', 'src/services/providers/remote.ts',
       'src/composition/chatStreamComposition.ts',
     ];
@@ -96,6 +100,24 @@ describe('extracted Chat runtime boundaries', () => {
       entry, from: 'src/services/view.tsx', to: 'react/jsx-runtime',
     }));
     expect(compareReports(baseline, report).passed).toBe(false);
+  });
+
+  it('permits runtime AI codecs and type contracts beside the concrete adapters', () => {
+    for (const codec of ['chatCompletionsCodec', 'responsesCodec', 'copilotPromptCodec', 'jsonValues', 'sse']) {
+      const report = analyzeSources({
+        [entry]: `
+          import { decode } from './ai/${codec}';
+          import type { StreamingChatOptions } from './ai/contracts';
+          export const prepare = (options: StreamingChatOptions) => decode(options);
+        `,
+        [`src/services/ai/${codec}.ts`]: 'export const decode = (value: unknown) => value;',
+        'src/services/ai/contracts.ts': 'export interface StreamingChatOptions { modelId: string }',
+      });
+      expect(report.edges).toContainEqual(expect.objectContaining({
+        from: entry, to: `src/services/ai/${codec}.ts`, kinds: ['runtime'],
+      }));
+      expect(compareReports(baseline, report).passed).toBe(true);
+    }
   });
 });
 

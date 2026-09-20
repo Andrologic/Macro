@@ -12,7 +12,19 @@ export const CHAT_RUNTIME_ENTRIES = Object.freeze([
 
 const isUiPackage = (specifier) => /^(react|react-dom|zustand)(\/|$)/.test(specifier);
 const isNativePackage = (specifier) => specifier.startsWith('@tauri-apps/');
+// Concrete generation, cancellation, diagnostics and fallback-tool I/O only.
+// Contracts, codecs and orchestration in the same directory remain available.
+const AI_ADAPTERS = new Set([
+  'src/services/ai/chatCompletionsAdapter.ts',
+  'src/services/ai/nativeAdapter.ts',
+  'src/services/ai/nativeTurnTransport.ts',
+  'src/services/ai/httpTransport.ts',
+  'src/services/ai/streamResources.ts',
+  'src/services/ai/streamDiagnostics.ts',
+  'src/services/ai/fallbackTools.ts',
+]);
 const isConcreteAdapter = (path) =>
+  AI_ADAPTERS.has(path) ||
   path === 'src/services/tauriIpc.ts' ||
   path === 'src/services/tauriRuntimeBridge.ts' ||
   path === 'src/services/tauriHttp.ts' ||
