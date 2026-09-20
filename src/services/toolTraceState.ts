@@ -57,13 +57,11 @@ export const mergeToolTracesPreservingDeniedStatus = (
     const existingTrace = existingByToolCallId.get(trace.tool_call_id);
     if (!existingTrace) return trace;
 
-    if (
-      isProtectedToolTraceStatus(existingTrace.status) ||
-      (existingTrace.status === "done" && trace.status === "running")
-    ) {
+    const status = mergeToolTraceStatus(existingTrace.status, trace.status);
+    if (isProtectedToolTraceStatus(existingTrace.status) || status !== trace.status) {
       return {
         ...trace,
-        status: existingTrace.status,
+        status,
         completed_at_ms: existingTrace.completed_at_ms ?? trace.completed_at_ms,
       };
     }
