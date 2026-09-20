@@ -153,7 +153,9 @@ durable encore nécessaire lors d’un futur enregistrement. La demande est
 mémorisée avant toute création, résolution ou lecture d’identité du dossier.
 Une erreur à cette frontière utilise la même intention avec une cible
 indisponible et bloque l’ancienne configuration. Le chemin demandé permet une
-reprise lorsque le dossier redevient valide.
+reprise lorsque le dossier redevient valide. Le besoin de résoudre cette
+racine appartient à la demande elle-même ; une erreur de révocation peut changer
+le diagnostic sans effacer ce travail restant.
 Le chemin du dépôt fourni par le registre reste distinct de sa racine metadata.
 Son indisponibilité empêche de réactiver une racine metadata encore accessible.
 Si la destination metadata elle-même est inconnue, l’ancienne racine n’est plus
@@ -168,7 +170,9 @@ manager, même si le dossier revient avant cette transmission. Une erreur native
 ou une demande de rescan seule ne constitue pas une preuve de disparition.
 Les opérations projet acquièrent
 leurs verrous de document, de transaction et de publication avant le contrôle
-final d'identité ; les écritures suivantes ne reprennent pas ces verrous.
+final du chemin canonique et de l’identité ; les écritures suivantes ne
+reprennent pas ces verrous. Un déplacement masqué par un lien symbolique reste
+donc une transition, même si l’inode du dossier n’a pas changé.
 Les propositions projet persistées lient leur identifiant d'approbation au
 chemin canonique et à l'identité du dossier. Un changement de racine renouvelle
 cet identifiant, même si la nouvelle racine ne contient pas le document. Ce

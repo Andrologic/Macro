@@ -109,12 +109,19 @@ struct DurableConfigPublication {
     proposed_etag: String,
 }
 
+// Resolution is work owned by the request, not by the latest diagnostic.
+// It remains pending across failures while revoking the previous root.
+struct DesiredProjectRoot {
+    path: PathBuf,
+    needs_resolution: bool,
+}
+
 #[derive(Default)]
 struct ConfigState {
     documents: BTreeMap<DocumentKey, StoredDocument>,
     project_roots: BTreeMap<String, PathBuf>,
     // Destinations requested by the registry, canonicalized when available. Withdrawal removes this entry but keeps any consent transition.
-    desired_project_roots: BTreeMap<String, PathBuf>,
+    desired_project_roots: BTreeMap<String, DesiredProjectRoot>,
     // Registry locator and its availability are distinct from the metadata root.
     // An unresolved new repository must not reactivate the old metadata directory.
     project_repository_roots: BTreeMap<String, PathBuf>,
@@ -256,11 +263,13 @@ impl ConfigManager {
             .join("projects")
             .join(project_id)
             .join("config");
-        self.state
-            .write()
-            .await
-            .desired_project_roots
-            .insert(project_id.to_string(), requested.clone());
+        self.state.write().await.desired_project_roots.insert(
+            project_id.to_string(),
+            DesiredProjectRoot {
+                path: requested.clone(),
+                needs_resolution: true,
+            },
+        );
         let resolved = resolve_project_config_root(&requested);
         let binding = match resolved {
             Ok(binding) => binding,
@@ -284,11 +293,13 @@ impl ConfigManager {
             }
         };
         let config_root = binding.path.clone();
-        self.state
-            .write()
-            .await
-            .desired_project_roots
-            .insert(project_id.to_string(), config_root.clone());
+        self.state.write().await.desired_project_roots.insert(
+            project_id.to_string(),
+            DesiredProjectRoot {
+                path: config_root.clone(),
+                needs_resolution: false,
+            },
+        );
         // The requested subscription can be A while the pending consent intent
         // still targets B. Finish B before installing or loading A, including on
         // startup; automatic refresh retains this latest requested destination.
@@ -311,7 +322,10 @@ impl ConfigManager {
         if state.unresolved_project_repositories.contains(project_id) {
             return None;
         }
-        state.desired_project_roots.get(project_id).cloned()
+        state
+            .desired_project_roots
+            .get(project_id)
+            .map(|request| request.path.clone())
     }
 
     /// Record the registry's repository locator before resolving its metadata.
@@ -806,8 +820,8 @@ impl ConfigManager {
                 )
             };
             let result = async {
-                let retry_resolution = self.state.read().await.project_load_errors.get(&project_id)
-                    .is_some_and(|error| matches!(error.code.as_str(), "config.project.resolve_failed" | "config.project.create_failed"));
+                let retry_resolution = self.state.read().await.desired_project_roots.get(&project_id)
+                    .is_some_and(|request| request.needs_resolution);
                 let resumed = self.resume_project_transition(&project_id).await?;
                 if self.state.read().await.unresolved_project_repositories.contains(&project_id) {
                     return Err(ConfigApiError::new("config.project.resolution_pending",
@@ -821,7 +835,7 @@ impl ConfigManager {
                 let (root, previous_identity, needs_retry) = {
                     let state = self.state.read().await;
                     (
-                        state.desired_project_roots.get(&project_id).cloned(),
+                        state.desired_project_roots.get(&project_id).map(|request| request.path.clone()),
                         state.project_identities.get(&project_id).cloned(),
                         state.project_load_errors.contains_key(&project_id),
                     )
@@ -832,7 +846,7 @@ impl ConfigManager {
                 let (root, identity) = if retry_resolution {
                     match resolve_project_config_root(&root) {
                         Ok(binding) => {
-                            self.state.write().await.desired_project_roots.insert(project_id.clone(), binding.path.clone());
+                            self.state.write().await.desired_project_roots.insert(project_id.clone(), DesiredProjectRoot { path: binding.path.clone(), needs_resolution: false });
                             (binding.path, Some(binding.identity))
                         }
                         Err(error) => {
@@ -936,6 +950,12 @@ impl ConfigManager {
                 "La racine metadata du projet n’a pas encore été enregistrée.",
             )
         })?;
+        let canonical = root.canonicalize().map_err(|error| {
+            ConfigApiError::new("config.project.root_missing", error.to_string())
+        })?;
+        if &canonical != root {
+            return Err(ConfigApiError::new("config.project.root_changed", "La racine de configuration a changé. Son rechargement est nécessaire avant utilisation."));
+        }
         let identity = DirectoryIdentity::read(root)
             .map_err(|message| ConfigApiError::new("config.project.root_missing", message))?;
         if state
@@ -4589,6 +4609,271 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolution_retry_survives_pending_lock_failures_until_destination_is_created() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let (_, originals) = project_pending_pair(&manager, metadata.path()).await;
+        let requested = destination.path().join("projects/project/config");
+        fs::create_dir_all(requested.parent().unwrap()).unwrap();
+        fs::write(&requested, b"not a directory").unwrap();
+        let blocked_lock =
+            pending_document_path(manager.root(), &originals[0].0).with_extension("json.lock");
+        fs::remove_file(&blocked_lock).unwrap();
+        fs::create_dir(&blocked_lock).unwrap();
+        let baselines = originals
+            .iter()
+            .map(|(key, _)| fs::read(approved_document_path(manager.root(), key)).unwrap())
+            .collect::<Vec<_>>();
+        assert!(manager
+            .register_project_root("project", destination.path().into())
+            .await
+            .is_err());
+        for _ in 0..2 {
+            let (_, errors) = manager.refresh_project_roots().await;
+            assert!(errors
+                .iter()
+                .any(|error| error.code == "config.document.lock_failed"));
+            assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+        }
+        fs::remove_dir(&blocked_lock).unwrap();
+        fs::remove_file(&requested).unwrap();
+        let (changed, errors) = manager.refresh_project_roots().await;
+        assert!(changed);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            requested.is_dir(),
+            "the latest lock error must not erase pending resolution work"
+        );
+        assert!(manager.get_snapshot(&["project".into()]).await.is_ok());
+        for ((key, original), baseline) in originals.iter().zip(&baselines) {
+            let renewed = read_durable_pending(&pending_document_path(manager.root(), key))
+                .unwrap()
+                .unwrap();
+            assert_ne!(renewed.pending.id, original.pending.id);
+            assert_proposal_content_preserved(original, &renewed);
+            assert_eq!(
+                fs::read(approved_document_path(manager.root(), key)).unwrap(),
+                *baseline
+            );
+            assert!(manager
+                .accept_pending_change(&original.pending.id)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn composed_resolution_absence_round_trips_and_restart_preserve_consent_boundary() {
+        let (_temp, mut manager) = manager().await;
+        let metadata_a = tempfile::tempdir().unwrap();
+        let metadata_b = tempfile::tempdir().unwrap();
+        let repositories = tempfile::tempdir().unwrap();
+        let repository_a = repositories.path().join("a");
+        let repository_b = repositories.path().join("b");
+        fs::create_dir(&repository_a).unwrap();
+        fs::create_dir(&repository_b).unwrap();
+        manager
+            .request_project_repository("project", repository_a.clone())
+            .await
+            .unwrap();
+        let (_, originals) = project_pending_pair(&manager, metadata_a.path()).await;
+        let baselines = originals
+            .iter()
+            .map(|(key, _)| fs::read(approved_document_path(manager.root(), key)).unwrap())
+            .collect::<Vec<_>>();
+        let destination = metadata_b.path().join("projects/project/config");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&destination, b"blocked destination").unwrap();
+        let pending_lock =
+            pending_document_path(manager.root(), &originals[0].0).with_extension("json.lock");
+        fs::remove_file(&pending_lock).unwrap();
+        fs::create_dir(&pending_lock).unwrap();
+        assert!(manager
+            .request_project_repository("project", repository_b.clone())
+            .await
+            .is_err());
+        assert!(manager
+            .register_project_root("project", metadata_b.path().into())
+            .await
+            .is_err());
+        assert!(!manager.refresh_project_roots().await.1.is_empty());
+        let hidden_repository = repositories.path().join("hidden-b");
+        fs::rename(&repository_b, &hidden_repository).unwrap();
+        assert!(manager
+            .observe_project_root_unavailable("project")
+            .await
+            .is_err());
+        fs::remove_dir(&pending_lock).unwrap();
+        fs::remove_file(&destination).unwrap();
+        for _ in 0..2 {
+            assert!(!manager.refresh_project_roots().await.1.is_empty());
+            assert!(
+                !destination.exists(),
+                "an unavailable repository prevents metadata recreation"
+            );
+            assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+            for (_, original) in &originals {
+                assert!(manager
+                    .accept_pending_change(&original.pending.id)
+                    .await
+                    .is_err());
+            }
+        }
+        fs::rename(&hidden_repository, &repository_b).unwrap();
+        let (changed, errors) = manager.refresh_project_roots().await;
+        assert!(changed);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(destination.is_dir());
+        let mut obsolete_ids = originals
+            .iter()
+            .map(|(_, original)| original.pending.id.clone())
+            .collect::<Vec<_>>();
+        for (repository, metadata) in [
+            (&repository_a, metadata_a.path()),
+            (&repository_b, metadata_b.path()),
+            (&repository_a, metadata_a.path()),
+        ] {
+            for (key, _) in &originals {
+                obsolete_ids.push(
+                    read_durable_pending(&pending_document_path(manager.root(), key))
+                        .unwrap()
+                        .unwrap()
+                        .pending
+                        .id,
+                );
+            }
+            manager
+                .request_project_repository("project", repository.clone())
+                .await
+                .unwrap();
+            manager
+                .register_project_root("project", metadata.into())
+                .await
+                .unwrap();
+            assert!(manager.get_snapshot(&["project".into()]).await.is_ok());
+            for id in &obsolete_ids {
+                assert!(manager.accept_pending_change(id).await.is_err());
+            }
+            for ((key, original), baseline) in originals.iter().zip(&baselines) {
+                assert_proposal_content_preserved(
+                    original,
+                    &read_durable_pending(&pending_document_path(manager.root(), key))
+                        .unwrap()
+                        .unwrap(),
+                );
+                assert_eq!(
+                    fs::read(approved_document_path(manager.root(), key)).unwrap(),
+                    *baseline
+                );
+            }
+        }
+        let current_ids = manager
+            .list_pending_changes()
+            .await
+            .into_iter()
+            .map(|pending| pending.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(current_ids.len(), 2);
+        manager = ConfigManager::initialize(manager.root().to_path_buf())
+            .await
+            .unwrap();
+        manager
+            .request_project_repository("project", repository_a)
+            .await
+            .unwrap();
+        manager
+            .register_project_root("project", metadata_a.path().into())
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .list_pending_changes()
+                .await
+                .into_iter()
+                .map(|pending| pending.id)
+                .collect::<BTreeSet<_>>(),
+            current_ids
+        );
+        for id in obsolete_ids {
+            assert!(manager.accept_pending_change(&id).await.is_err());
+        }
+        for id in current_ids {
+            manager.accept_pending_change(&id).await.unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn canonical_move_behind_symlink_refuses_old_approval_before_refresh() {
+        let (_temp, manager) = manager().await;
+        let metadata = tempfile::tempdir().unwrap();
+        let (root, originals) = project_pending_pair(&manager, metadata.path()).await;
+        let identity = DirectoryIdentity::read(&root).unwrap();
+        let baselines = originals
+            .iter()
+            .map(|(key, _)| fs::read(approved_document_path(manager.root(), key)).unwrap())
+            .collect::<Vec<_>>();
+        let pending_bytes = originals
+            .iter()
+            .map(|(key, _)| fs::read(pending_document_path(manager.root(), key)).unwrap())
+            .collect::<Vec<_>>();
+        let moved = root.with_file_name("moved-config");
+        fs::rename(&root, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &root).unwrap();
+        assert_eq!(DirectoryIdentity::read(&root).unwrap(), identity);
+        assert_ne!(root.canonicalize().unwrap(), root);
+        assert!(manager.get_snapshot(&["project".into()]).await.is_err());
+        for ((key, original), bytes) in originals.iter().zip(&pending_bytes) {
+            assert_eq!(
+                manager
+                    .get_document(key.kind, key.scope.clone())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "config.project.root_changed"
+            );
+            assert!(manager
+                .accept_pending_change(&original.pending.id)
+                .await
+                .is_err());
+            assert!(manager
+                .reject_pending_change(&original.pending.id, true)
+                .await
+                .is_err());
+            assert_eq!(
+                fs::read(pending_document_path(manager.root(), key)).unwrap(),
+                *bytes
+            );
+        }
+        let (changed, errors) = manager.refresh_project_roots().await;
+        assert!(changed);
+        assert!(errors.is_empty());
+        for ((key, original), baseline) in originals.iter().zip(&baselines) {
+            let renewed = read_durable_pending(&pending_document_path(manager.root(), key))
+                .unwrap()
+                .unwrap();
+            assert_ne!(renewed.pending.id, original.pending.id);
+            assert_eq!(
+                renewed.project_root.as_ref().unwrap().path,
+                moved.canonicalize().unwrap()
+            );
+            assert_proposal_content_preserved(original, &renewed);
+            assert_eq!(
+                fs::read(approved_document_path(manager.root(), key)).unwrap(),
+                *baseline
+            );
+            assert!(manager
+                .accept_pending_change(&original.pending.id)
+                .await
+                .is_err());
+        }
+        for pending in manager.list_pending_changes().await {
+            manager.accept_pending_change(&pending.id).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn repository_availability_and_unknown_metadata_never_reactivate_old_root() {
         let (_temp, mut manager) = manager().await;
         let metadata = tempfile::tempdir().unwrap();
@@ -6104,121 +6389,139 @@ mod tests {
 
     #[tokio::test]
     async fn project_operations_revalidate_identity_after_waiting_for_the_file_lock() {
-        for operation in ["accept", "reject", "patch", "reload", "load"] {
-            for locked_file in ["document", "approved", "pending", "publication"] {
-                let (_temp, manager) = manager().await;
-                let metadata = tempfile::tempdir().unwrap();
-                let root = manager
-                    .register_project_root("project", metadata.path().into())
-                    .await
-                    .unwrap();
-                let scope = ConfigScope::Project {
-                    project_id: "project".into(),
-                };
-                let kind = ConfigDocumentKind::Tools;
-                let document = manager.get_document(kind, scope.clone()).await.unwrap();
-                let request = ConfigPatchRequest {
-                    kind,
-                    scope: scope.clone(),
-                    expected_etag: document.etag,
-                    patch: vec![JsonPatchOperation {
-                        op: "add".into(),
-                        path: "/riskLevel".into(),
-                        from: None,
-                        value: Some(json!("strict")),
-                    }],
-                    source: ConfigChangeSource::Agent,
-                };
-                let pending = if matches!(operation, "accept" | "reject") {
-                    manager
-                        .apply_patch(request.clone())
+        for preserve_identity in [false, true]
+            .into_iter()
+            .filter(|preserve| !*preserve || cfg!(unix))
+        {
+            for operation in ["accept", "reject", "patch", "reload", "load"] {
+                for locked_file in ["document", "approved", "pending", "publication"] {
+                    let (_temp, manager) = manager().await;
+                    let metadata = tempfile::tempdir().unwrap();
+                    let root = manager
+                        .register_project_root("project", metadata.path().into())
                         .await
-                        .unwrap()
-                        .pending_change
-                } else {
-                    None
-                };
-                let key = DocumentKey {
-                    kind,
-                    scope: scope.clone(),
-                };
-                let approved_path = approved_document_path(manager.root(), &key);
-                let pending_path = pending_document_path(manager.root(), &key);
-                let approved_before = fs::read(&approved_path).unwrap();
-                let pending_before = fs::read(&pending_path).ok();
-                let path = root.join(kind.file_name());
-                let document_before = fs::read(&path).unwrap();
-                let local_lock = manager.document_lock(&key).await;
-                let locked_path = match locked_file {
-                    "document" => path.clone(),
-                    "approved" => approved_path.clone(),
-                    "pending" => pending_path.clone(),
-                    "publication" => publication_document_path(manager.root(), &key),
-                    _ => unreachable!(),
-                };
-                let file_guard = lock_document_file(&locked_path).unwrap();
-                let action = async {
-                    match operation {
-                        "accept" => manager
-                            .accept_pending_change(&pending.as_ref().unwrap().id)
+                        .unwrap();
+                    let scope = ConfigScope::Project {
+                        project_id: "project".into(),
+                    };
+                    let kind = ConfigDocumentKind::Tools;
+                    let document = manager.get_document(kind, scope.clone()).await.unwrap();
+                    let request = ConfigPatchRequest {
+                        kind,
+                        scope: scope.clone(),
+                        expected_etag: document.etag,
+                        patch: vec![JsonPatchOperation {
+                            op: "add".into(),
+                            path: "/riskLevel".into(),
+                            from: None,
+                            value: Some(json!("strict")),
+                        }],
+                        source: ConfigChangeSource::Agent,
+                    };
+                    let pending = if matches!(operation, "accept" | "reject") {
+                        manager
+                            .apply_patch(request.clone())
                             .await
-                            .map(|_| ()),
-                        "reject" => manager
-                            .reject_pending_change(&pending.as_ref().unwrap().id, true)
-                            .await
-                            .map(|_| ()),
-                        "patch" => manager.apply_patch(request).await.map(|_| ()),
-                        "reload" => manager
-                            .reload(kind, scope.clone(), ConfigChangeSource::ExternalEditor)
-                            .await
-                            .map(|_| ()),
-                        "load" => {
-                            manager
-                                .load_document_from_path(kind, scope.clone(), path.clone(), false)
-                                .await
-                        }
+                            .unwrap()
+                            .pending_change
+                    } else {
+                        None
+                    };
+                    let key = DocumentKey {
+                        kind,
+                        scope: scope.clone(),
+                    };
+                    let approved_path = approved_document_path(manager.root(), &key);
+                    let pending_path = pending_document_path(manager.root(), &key);
+                    let approved_before = fs::read(&approved_path).unwrap();
+                    let pending_before = fs::read(&pending_path).ok();
+                    let path = root.join(kind.file_name());
+                    let document_before = fs::read(&path).unwrap();
+                    let local_lock = manager.document_lock(&key).await;
+                    let locked_path = match locked_file {
+                        "document" => path.clone(),
+                        "approved" => approved_path.clone(),
+                        "pending" => pending_path.clone(),
+                        "publication" => publication_document_path(manager.root(), &key),
                         _ => unreachable!(),
-                    }
-                };
-                tokio::pin!(action);
-                assert!(
-                    tokio::time::timeout(std::time::Duration::from_millis(20), &mut action)
-                        .await
-                        .is_err()
-                );
-                assert!(
-                    local_lock.try_lock().is_err(),
-                    "{operation} must hold its document mutex while waiting for the file lock"
-                );
-
-                fs::rename(&root, root.with_file_name("previous-config")).unwrap();
-                fs::create_dir(&root).unwrap();
-                // Identical JSON defeats an etag-only check after the directory changes.
-                fs::write(&path, &document_before).unwrap();
-                drop(file_guard);
-                let error = tokio::time::timeout(std::time::Duration::from_secs(1), &mut action)
+                    };
+                    let file_guard = lock_document_file(&locked_path).unwrap();
+                    let action = async {
+                        match operation {
+                            "accept" => manager
+                                .accept_pending_change(&pending.as_ref().unwrap().id)
+                                .await
+                                .map(|_| ()),
+                            "reject" => manager
+                                .reject_pending_change(&pending.as_ref().unwrap().id, true)
+                                .await
+                                .map(|_| ()),
+                            "patch" => manager.apply_patch(request).await.map(|_| ()),
+                            "reload" => manager
+                                .reload(kind, scope.clone(), ConfigChangeSource::ExternalEditor)
+                                .await
+                                .map(|_| ()),
+                            "load" => {
+                                manager
+                                    .load_document_from_path(
+                                        kind,
+                                        scope.clone(),
+                                        path.clone(),
+                                        false,
+                                    )
+                                    .await
+                            }
+                            _ => unreachable!(),
+                        }
+                    };
+                    tokio::pin!(action);
+                    assert!(tokio::time::timeout(
+                        std::time::Duration::from_millis(20),
+                        &mut action
+                    )
                     .await
-                    .expect("file lock released")
-                    .unwrap_err();
-                assert_eq!(
-                    error.code, "config.project.root_changed",
-                    "{operation}, {locked_file}"
-                );
-                assert_eq!(
-                    fs::read(&path).unwrap(),
-                    document_before,
-                    "{operation}, {locked_file}"
-                );
-                assert_eq!(
-                    fs::read(&approved_path).unwrap(),
-                    approved_before,
-                    "{operation}, {locked_file}"
-                );
-                assert_eq!(
-                    fs::read(&pending_path).ok(),
-                    pending_before,
-                    "{operation}, {locked_file}"
-                );
+                    .is_err());
+                    assert!(
+                        local_lock.try_lock().is_err(),
+                        "{operation} must hold its document mutex while waiting for the file lock"
+                    );
+
+                    let moved_root = root.with_file_name("previous-config");
+                    fs::rename(&root, &moved_root).unwrap();
+                    if preserve_identity {
+                        #[cfg(unix)]
+                        std::os::unix::fs::symlink(&moved_root, &root).unwrap();
+                    } else {
+                        fs::create_dir(&root).unwrap();
+                        // Identical JSON defeats an etag-only check after replacement.
+                        fs::write(&path, &document_before).unwrap();
+                    }
+                    drop(file_guard);
+                    let error =
+                        tokio::time::timeout(std::time::Duration::from_secs(1), &mut action)
+                            .await
+                            .expect("file lock released")
+                            .unwrap_err();
+                    assert_eq!(
+                        error.code, "config.project.root_changed",
+                        "{operation}, {locked_file}"
+                    );
+                    assert_eq!(
+                        fs::read(&path).unwrap(),
+                        document_before,
+                        "{operation}, {locked_file}"
+                    );
+                    assert_eq!(
+                        fs::read(&approved_path).unwrap(),
+                        approved_before,
+                        "{operation}, {locked_file}"
+                    );
+                    assert_eq!(
+                        fs::read(&pending_path).ok(),
+                        pending_before,
+                        "{operation}, {locked_file}"
+                    );
+                }
             }
         }
     }
