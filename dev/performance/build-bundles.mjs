@@ -18,7 +18,7 @@ try {
   await build({ ...resolved, root: fileURLToPath(root),
     configFile: false, logLevel: 'warn',
     plugins: [...(resolved.plugins ?? []), { name: 'performance-bundle-graph',
-      enforce: 'post', generateBundle(_, bundle) { graph = bundleGraph(bundle, fileURLToPath(root)); } }],
+      enforce: 'post', writeBundle(_, bundle) { graph = bundleGraph(bundle, fileURLToPath(root)); } }],
     build: { ...resolved.build, outDir: directory, emptyOutDir: true,
       terserOptions: { ...resolved.build?.terserOptions, maxWorkers: 2 } } });
   const output = execFileSync(process.execPath, ['--no-install', 'dev/performance/bundles.ts', join(directory, 'assets'), sha],
