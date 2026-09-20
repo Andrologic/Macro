@@ -244,6 +244,27 @@ describe('TypeScript import boundary analysis', () => {
     });
     expect(compareReports({ ...cycleBaseline, baseRef: 'base' }, newCycle).newSccs).toEqual([['src/a.ts', 'src/b.ts']]);
   });
+
+  it('rejects reintroducing the resolved mention cycle against the repository baseline', () => {
+    const baseline = JSON.parse(readFileSync(join(import.meta.dir, 'import-boundaries.baseline.json'), 'utf8'));
+    const chip = 'src/components/chat/composer/MentionChip.tsx';
+    const node = 'src/components/chat/composer/MentionNode.tsx';
+    const sources = {
+      [chip]: "import { MENTION_NODE_TYPE } from './mentionContract'; export const MentionChip = () => MENTION_NODE_TYPE;",
+      [node]: "import { MentionChip } from './MentionChip'; export const MentionNode = MentionChip;",
+      'src/components/chat/composer/mentionContract.ts': "export const MENTION_NODE_TYPE = 'mention';",
+    };
+    expect(compareReports(baseline, analyzeSources(sources)).passed).toBe(true);
+
+    const regressed = analyzeSources({
+      ...sources,
+      [chip]: "import { MentionNode } from './MentionNode'; export const MentionChip = () => MentionNode;",
+    });
+    const comparison = compareReports(baseline, regressed);
+    expect(comparison.newSccs).toEqual([[chip, node]]);
+    expect(comparison.newEagerSccs).toEqual([[chip, node]]);
+    expect(comparison.passed).toBe(false);
+  });
 });
 
 // This resolver loads Vite itself, never Macro's config, plugins, env files or server.

@@ -144,7 +144,9 @@ const gitBranchDeleteMock = mock(async (
 const gitWorkflowCleanupMock = mock(async (
   _params?: Parameters<typeof actualTauriIpc.gitWorkflowCleanup>[0],
 ) => undefined);
-const directCheckpointEnsureMock = mock(async () => 'checkpoint-head');
+const directCheckpointEnsureMock = mock(async (
+  _input: Parameters<typeof actualTauriIpc.directCheckpointEnsure>[0],
+) => 'checkpoint-head');
 const bindManualCheckpointMock = mock(async () => ({} as never));
 const setActiveRootMock = mock(async () => undefined);
 const directCheckpointResolveIdMock = mock(async () => 'task-checkpoint-0000000000000001');
@@ -5272,61 +5274,115 @@ describe('task startup lifecycle races', () => {
     services.listTasks = mock(async () => ({ tasks: [], plans: [], hasStandaloneTasks: false, source: 'empty' as const }));
   });
   afterEach(() => { services.listTasks = originalListTasks; });
-  it.each([false, true])('starts a real Architect direct target with durable binding; binding fails: %s', async (failBinding) => {
+  it.each([false, true])('starts a direct task through real Plans persistence; binding write fails: %s', async (failBinding) => {
     const plans = await import('../services/architectPlanService');
+    const { installArchitectPlanPorts } = await import('../services/architectPlanReadContext');
     const { deriveImplementTasksFromStrategy } = await import('../services/implementTaskDerivation');
-    const plan = { id: 'plan-direct', slug: 'direct', title: 'Direct', description: '', status: 'validated',
-      targetBranch: 'develop', projectId: 'project-1', projectIds: ['project-1'],
-      createdAt: '', updatedAt: '', predictedBranches: [],
-      nodes: [{ id: 'direct-task', title: 'Edit', type: 'task', status: 'pending', dependencies: [],
-        projectId: 'project-1', projectIds: ['project-1'], executionModesByProjectId: { 'project-1': 'direct' } }],
-    } as import('../services/architectPlanService').ArchitectPlanRecord;
-    const derived = deriveImplementTasksFromStrategy({ planId: plan.id, planSlug: plan.slug,
-      nodes: plan.nodes, predictedBranches: [] }).tasks[0];
-    const task = buildTask({ ...derived, task_source: 'architect', plan_id: plan.id, plan_storage_branch: 'develop' });
-    expect(task.execution_targets[0].executionMode).toBe('direct');
-    expect(task.execution_targets[0].checkpointId).toBeUndefined();
-    const getPlan = spyOn(plans, 'getArchitectPlan').mockImplementation(async () => plan);
-    let bound = false;
-    const updatePlan = spyOn(plans, 'updateArchitectPlan').mockImplementation(async (input) => {
-      if (input.directCheckpointBinding) {
-        if (failBinding) throw new Error('binding failed');
-        bound = true;
-        plan.nodes[0].directCheckpointIdsByProjectId = { 'project-1': input.directCheckpointBinding.checkpointId };
-      }
-      if (input.nodes) plan.nodes = input.nodes;
-      if (input.status) plan.status = input.status;
-      return plan;
+    const values = new Map<string, string>();
+    let rejectWrites = false;
+    let rejectedWrites = 0;
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (rejectWrites) {
+          rejectedWrites += 1;
+          throw new Error('Binding storage unavailable');
+        }
+        values.set(key, value);
+      },
+      removeItem: (key: string) => { values.delete(key); },
+      clear: () => values.clear(),
+      key: (index: number) => [...values.keys()][index] ?? null,
+      get length() { return values.size; },
+    };
+    const releasePlans = installArchitectPlanPorts({ localStorage: storage });
+    const project = {
+      id: 'project-1', name: 'Direct', mountName: 'direct', path: '/direct',
+      gitSetupState: 'not_git' as const, directEdit: true, status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+      metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] },
+    };
+    const service = plans.createArchitectPlanService({
+      tauri: { ...actualTauriIpc, isTauriAvailable: () => false },
+      getAppState: () => ({ standaloneProjects: [project], projectGroups: [], selectedGroupId: null, selectedProjectId: project.id }),
+      loadRegistrySnapshot: async () => ({
+        selectedGroupId: null, selectedProjectId: project.id,
+        scopedProjectIds: [project.id], actionableProjectIds: [project.id], readOnlyProjectIds: [],
+        actionableProjectIdSet: new Set([project.id]), readOnlyProjectIdSet: new Set<string>(),
+        validProjectIds: [project.id], validProjectIdSet: new Set([project.id]),
+        repoPathByProjectId: new Map([[project.id, project.path]]),
+        workspacePathByProjectId: new Map([[project.id, project.path]]),
+        gitFlowSettingsByProjectId: new Map(),
+        executionModeByProjectId: new Map([[project.id, 'direct' as const]]),
+        hasRegisteredProjects: true,
+      }),
     });
-    const mutatePlan = spyOn(plans, 'mutateArchitectPlanTaskStatus').mockImplementation(async (_input, deriveUpdate) => {
-      Object.assign(plan, deriveUpdate(plan));
-      return plan;
-    });
-    directCheckpointEnsureMock.mockClear();
-    directCheckpointEnsureMock.mockImplementation(async () => { expect(bound).toBe(true); return 'head'; });
-    bindManualCheckpointMock.mockClear();
+    const getPlan = spyOn(plans, 'getArchitectPlan').mockImplementation(service.getArchitectPlan);
+    const updatePlan = spyOn(plans, 'updateArchitectPlan').mockImplementation(service.updateArchitectPlan);
+    const mutatePlan = spyOn(plans, 'mutateArchitectPlanTaskStatus').mockImplementation(service.mutateArchitectPlanTaskStatus);
+    const originalGetProject = appStoreState.getProjectById;
     try {
+      const plan = await service.createArchitectPlan({
+        branchName: 'develop', planId: 'startup-direct', title: 'Direct startup', status: 'validated',
+        projectIds: [project.id],
+        nodes: [{ id: 'direct-task', title: 'Edit', type: 'task', status: 'pending', dependencies: [],
+          projectId: project.id, projectIds: [project.id], executionModesByProjectId: { [project.id]: 'direct' } }],
+      });
+      const readTasks = async () => {
+        // Discard the frontend cache so admission observes the storage port.
+        plans.clearArchitectPlanFrontendCaches();
+        const persisted = await service.getArchitectPlan('develop', plan.id);
+        if (!persisted) throw new Error('Persisted startup plan missing');
+        return deriveImplementTasksFromStrategy({ planId: persisted.id, planSlug: persisted.slug,
+          nodes: persisted.nodes, predictedBranches: persisted.predictedBranches }).tasks.map((derived) =>
+          buildTask({ ...derived, task_source: 'architect', plan_id: plan.id, plan_storage_branch: 'develop' }));
+      };
+      const [task] = await readTasks();
+      expect(task.execution_targets[0].executionMode).toBe('direct');
+      expect(task.execution_targets[0].checkpointId).toBeUndefined();
+      directCheckpointEnsureMock.mockClear();
+      let ensuredCheckpointId: string | undefined;
+      directCheckpointEnsureMock.mockImplementation(async (input: { checkpointId?: string }) => {
+        const [persistedTask] = await readTasks();
+        ensuredCheckpointId = input.checkpointId;
+        expect(input.checkpointId).toBeTruthy();
+        expect(persistedTask.execution_targets[0].checkpointId).toBe(input.checkpointId);
+        expect(persistedTask.status).toBe('Pending');
+        return 'head';
+      });
+      bindManualCheckpointMock.mockClear();
       const { useTaskStore } = await loadIsolatedTaskStore();
       appStoreState.selectedTaskId = task.id;
-      appStoreState.getProjectById = () => ({ id: 'project-1', name: 'Direct', path: '/direct',
-        gitSetupState: 'not_git', directEdit: true });
-      services.listTasks = mock(async () => ({ tasks: [task], plans: [], hasStandaloneTasks: false, source: 'architect' as const }));
+      appStoreState.getProjectById = () => project;
+      services.listTasks = mock(async () => ({ tasks: await readTasks(), plans: [], hasStandaloneTasks: false, source: 'architect' as const }));
       useTaskStore.setState({ tasks: [task], refreshFromPlan: async () => undefined });
+      rejectWrites = failBinding;
       await useTaskStore.getState().startTask(task.id);
+      const [persistedTask] = await readTasks();
       expect(bindManualCheckpointMock).not.toHaveBeenCalled();
+      expect(workspaceReleaseTaskLifecycleLockMock).toHaveBeenCalledTimes(1);
+      expect(workspaceReleaseTaskLifecycleLockMock).toHaveBeenCalledWith('task-lifecycle-lease');
       if (failBinding) {
+        expect(rejectedWrites).toBeGreaterThan(0);
         expect(directCheckpointEnsureMock).not.toHaveBeenCalled();
-        expect(useTaskStore.getState().lastError).toContain('binding failed');
+        expect(useTaskStore.getState().lastError).toContain('Binding storage unavailable');
+        expect(persistedTask.status).toBe('Pending');
+        expect(persistedTask.execution_targets[0].checkpointId).toBeUndefined();
+        expect(useTaskStore.getState().getTaskById(task.id)?.status).toBe('Pending');
       } else {
         expect(directCheckpointEnsureMock).toHaveBeenCalledTimes(1);
+        expect(useTaskStore.getState().lastError).toBeNull();
         expect(useTaskStore.getState().getTaskById(task.id)?.status).toBe('InProgress');
-        expect(plan.nodes[0].directCheckpointIdsByProjectId).toBeDefined();
+        expect(persistedTask.status).toBe('InProgress');
+        expect(persistedTask.execution_targets[0].checkpointId).toBe(ensuredCheckpointId);
       }
     } finally {
       getPlan.mockRestore();
       updatePlan.mockRestore();
       mutatePlan.mockRestore();
       directCheckpointEnsureMock.mockImplementation(async () => 'head');
+      appStoreState.getProjectById = originalGetProject;
+      releasePlans();
     }
   });
 
