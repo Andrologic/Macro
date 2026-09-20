@@ -1,3 +1,4 @@
+import { type LifecycleContext } from '../services/lifecycleScope';
 import { create } from 'zustand';
 import { ShortcutId } from '../shortcuts/catalog';
 import { normalizeBinding } from '../shortcuts/utils';
@@ -13,7 +14,7 @@ interface ShortcutsStore {
   promptHistoryNavigationMode: PromptHistoryNavigationMode;
   activeTurnSendBehavior: ActiveTurnSendBehavior;
   isLoaded: boolean;
-  initialize: () => Promise<void>;
+  initialize: (lifecycle?: LifecycleContext) => Promise<void>;
   setBinding: (id: ShortcutId, binding: string | null) => void;
   setPromptHistoryNavigationMode: (mode: PromptHistoryNavigationMode) => void;
   setActiveTurnSendBehavior: (behavior: ActiveTurnSendBehavior) => void;
@@ -51,7 +52,8 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
     activeTurnSendBehavior: 'steer',
     isLoaded: false,
 
-    initialize: async () => {
+    initialize: async (lifecycle) => {
+      lifecycle?.assertActive();
       const defaults = buildNormalizedDefaults();
       const hydrationVersion = mutationVersion;
       try {
@@ -60,6 +62,7 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
           loadPreference<string>(PREF_KEYS.PROMPT_HISTORY_NAV_MODE),
           loadPreference<string>(PREF_KEYS.ACTIVE_TURN_SEND_BEHAVIOR),
         ]);
+        lifecycle?.assertActive();
         if (hydrationVersion !== mutationVersion) {
           set({ isLoaded: true });
           return;
@@ -82,6 +85,7 @@ export const useShortcutsStore = create<ShortcutsStore>((set) => {
 
         set({ bindings: merged, promptHistoryNavigationMode, activeTurnSendBehavior, isLoaded: true });
       } catch {
+        lifecycle?.assertActive();
         if (hydrationVersion === mutationVersion) {
           set({ bindings: defaults, promptHistoryNavigationMode: 'contextual_arrows', isLoaded: true });
         } else {

@@ -1,5 +1,5 @@
 import type { FrozenToolCallContext } from "./chatStreamContracts";
-import type { ToolCallResolution } from "./streamingChat";
+import type { ToolCallResolution } from "./ai/contracts";
 import { normalizeArchitectToolId } from "./architectToolNames";
 import { normalizeLegacyToolExecutionResult } from "./toolResultNormalization";
 

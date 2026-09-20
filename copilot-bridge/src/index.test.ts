@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
+import type { ToolInvocation, ToolResultObject } from '@github/copilot-sdk';
+import nativeToolResults from '../../src-tauri/src/ai/copilot/fixtures/tool-results.json';
+import { BridgeControlChannel } from './controlChannel';
+import type { RelayToolResult } from './protocol';
 
 process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT = '1';
 
@@ -29,6 +34,55 @@ afterEach(() => {
 });
 
 describe('copilot bridge tool registration', () => {
+  it('carries Rust error metadata through the concrete channel to the SDK handler', async () => {
+    const { __testables } = await loadBridge();
+    const input = new PassThrough();
+    const channel = new BridgeControlChannel(input, () => {});
+    const recorded = mock((_result: RelayToolResult) => {});
+    input.write('{}\n');
+    const tools = __testables.buildMacroTools({
+      request_id: ' request:opaque ', model_id: 'synthetic', messages: [],
+      allowed_tool_ids: ['read_file'],
+    }, { controlChannel: channel, recordRelayResult: recorded }) as Array<{
+      name: string;
+      options: { handler: (args: Record<string, unknown>, invocation: ToolInvocation) => Promise<string | ToolResultObject> };
+    }>;
+    const handler = tools.find((tool) => tool.name === 'read_file')!.options.handler;
+    const invocation = {
+      sessionId: 'session', toolCallId: ' call/opaque ', toolName: 'read_file', arguments: {},
+    };
+    try {
+      for (const { payload, sdk_result_type: resultType } of nativeToolResults) {
+        if (resultType !== 'success' && resultType !== 'denied' && resultType !== 'failure') {
+          throw new Error(`Invalid fixture SDK result type: ${resultType}`);
+        }
+        const result = handler({ path: 'example.txt' }, invocation);
+        input.write(`${JSON.stringify(payload)}\n`);
+        await expect(result).resolves.toEqual({
+          textResultForLlm: payload.result, resultType,
+          ...(payload.is_error ? { error: payload.result } : {}),
+          toolTelemetry: { is_error: payload.is_error, error_kind: payload.error_kind },
+        });
+        expect(recorded).toHaveBeenLastCalledWith({
+          result: payload.result,
+          isError: payload.is_error,
+          errorKind: payload.error_kind,
+          interrupt: payload.interrupt,
+          hiddenContext: payload.hidden_context ?? undefined,
+          visibleContent: payload.visible_content ?? undefined,
+        });
+      }
+
+      // A closed control channel must reach the SDK's exception path, not success text.
+      channel.close();
+      recorded.mockClear();
+      await expect(handler({}, invocation)).rejects.toMatchObject({ code: 'tool_result_channel_closed' });
+      expect(recorded).not.toHaveBeenCalled();
+    } finally {
+      channel.close();
+    }
+  });
+
   it('normalizes the Copilot send timeout with room for tool and completion margins', async () => {
     const { __testables } = await loadBridge();
 

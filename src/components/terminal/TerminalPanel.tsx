@@ -414,7 +414,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ className }) => {
                     onClick={() =>
                       runAction(async () => {
                         await closeTab(tab.id);
-                        terminalRuntime.disposeTab(tab.id);
                       })
                     }
                     className={cn(

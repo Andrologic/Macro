@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 #[cfg(unix)]
@@ -62,9 +63,30 @@ const DEFAULT_UNIX_SHELL_FALLBACKS: [&str; 3] = ["/bin/zsh", "/bin/bash", "/bin/
 pub struct TerminalSessionStore {
     legacy_sessions: Arc<Mutex<HashMap<String, LegacyTerminalSessionRecord>>>,
     live_tabs: Arc<Mutex<HashMap<String, LiveTerminalSession>>>,
+    tab_lifecycles: Arc<StdMutex<HashMap<String, Arc<TerminalTabLifecycle>>>>,
+}
+
+#[derive(Default)]
+struct TerminalTabLifecycle {
+    operation: Mutex<()>,
+    persistence: Mutex<()>,
+    closed: AtomicBool,
+    close_pending: AtomicBool,
 }
 
 impl TerminalSessionStore {
+    fn tab_lifecycle(&self, tab_id: &str) -> Arc<TerminalTabLifecycle> {
+        let mut entries = self
+            .tab_lifecycles
+            .lock()
+            .expect("terminal lifecycle registry");
+        // Keep only admitted work/live runtimes and failed closes awaiting retry.
+        entries.retain(|_, entry| {
+            Arc::strong_count(entry) > 1 || entry.close_pending.load(Ordering::Acquire)
+        });
+        entries.entry(tab_id.to_owned()).or_default().clone()
+    }
+
     pub(crate) async fn live_tab_ids(&self) -> Vec<String> {
         let live_tabs = self.live_tabs.lock().await;
         live_tabs.keys().cloned().collect()
@@ -162,7 +184,8 @@ impl Drop for LiveTerminalSession {
 
 struct LiveTerminalRuntime {
     record: TerminalTabRecord,
-    persistence_lock: Arc<Mutex<()>>,
+    lifecycle: Arc<TerminalTabLifecycle>,
+    persistence_active: bool,
     scan_buffer: String,
     pending_command: Option<PendingCommand>,
     pending_output: String,
@@ -538,6 +561,53 @@ fn terminal_tab_to_dto(
 
 fn stored_tab_to_dto(record: &TerminalTabRecord, has_live_session: bool) -> TerminalTabDto {
     terminal_tab_to_dto(record, has_live_session, 0)
+}
+
+fn runtime_tab_snapshot(runtime: &LiveTerminalRuntime) -> CommandResult<TerminalTabDto> {
+    if runtime.lifecycle.closed.load(Ordering::Acquire) || runtime.record.status == "closed" {
+        // Keep the retained native owner reachable through Close after a UI reload.
+        let mut snapshot = terminal_tab_to_dto(&runtime.record, false, runtime.output_sequence);
+        snapshot.status = "closed".to_string();
+        snapshot.is_restored = false;
+        return Ok(snapshot);
+    }
+    Ok(terminal_tab_to_dto(
+        &runtime.record,
+        runtime.persistence_active,
+        runtime.output_sequence,
+    ))
+}
+
+fn current_runtime_tab(runtime: &LiveTerminalRuntime) -> CommandResult<TerminalTabDto> {
+    if !runtime.persistence_active || runtime.lifecycle.closed.load(Ordering::Acquire) {
+        return Err(command_error(
+            "Terminal session was retired; the admitted operation was not rolled back",
+        ));
+    }
+    Ok(terminal_tab_to_dto(
+        &runtime.record,
+        true,
+        runtime.output_sequence,
+    ))
+}
+
+// Called while holding the runtime mutex, which also serializes EOF retirement.
+fn publish_current_runtime_tab(
+    runtime: &LiveTerminalRuntime,
+    emit: impl FnOnce(&TerminalTabDto),
+) -> CommandResult<TerminalTabDto> {
+    let dto = current_runtime_tab(runtime)?;
+    emit(&dto);
+    Ok(dto)
+}
+
+fn emit_current_runtime_tab(
+    app: &AppHandle,
+    runtime: &LiveTerminalRuntime,
+) -> CommandResult<TerminalTabDto> {
+    publish_current_runtime_tab(runtime, |dto| {
+        let _ = app.emit("terminal:tab", dto);
+    })
 }
 
 async fn load_db_pool(pool: &State<'_, DbPool>) -> CommandResult<sqlx::SqlitePool> {
@@ -1489,10 +1559,36 @@ async fn persist_live_tab_record(
     db_pool: DbPool,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
 ) -> CommandResult<()> {
-    let persistence_lock = { runtime.lock().await.persistence_lock.clone() };
-    let _persistence_guard = persistence_lock.lock().await;
-    let record = { runtime.lock().await.record.clone() };
+    let lifecycle = { runtime.lock().await.lifecycle.clone() };
+    let _persistence_guard = lifecycle.persistence.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let record = {
+        let runtime = runtime.lock().await;
+        if !runtime.persistence_active {
+            return Ok(());
+        }
+        runtime.record.clone()
+    };
     if record.status == "closed" {
+        return Ok(());
+    }
+    persist_terminal_tab_record(db_pool, record).await
+}
+
+// EOF retires this runtime's persistence, independently from the next PTY for the same ID.
+async fn retire_live_tab_record(
+    db_pool: DbPool,
+    runtime: Arc<Mutex<LiveTerminalRuntime>>,
+) -> CommandResult<()> {
+    let (lifecycle, record) = {
+        let mut runtime = runtime.lock().await;
+        runtime.persistence_active = false;
+        (runtime.lifecycle.clone(), runtime.record.clone())
+    };
+    let _persistence = lifecycle.persistence.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) || record.status == "closed" {
         return Ok(());
     }
     persist_terminal_tab_record(db_pool, record).await
@@ -1547,6 +1643,10 @@ fn take_pending_output_batch(
     runtime: &mut LiveTerminalRuntime,
 ) -> Option<(String, TerminalTabRecord, u64)> {
     runtime.output_flush_scheduled = false;
+    if !runtime.persistence_active || runtime.lifecycle.closed.load(Ordering::Acquire) {
+        runtime.pending_output.clear();
+        return None;
+    }
     if runtime.pending_output.is_empty() {
         return None;
     }
@@ -1563,13 +1663,15 @@ async fn flush_live_output(
     db_pool: DbPool,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
 ) {
-    let maybe_batch = {
+    let emitted_record = {
         let mut runtime_guard = runtime.lock().await;
-        take_pending_output_batch(&mut runtime_guard)
+        take_pending_output_batch(&mut runtime_guard).map(|(data, record, sequence)| {
+            emit_output(&app_handle, &record, data, sequence);
+            record
+        })
     };
 
-    if let Some((data, record, sequence)) = maybe_batch {
-        emit_output(&app_handle, &record, data, sequence);
+    if let Some(record) = emitted_record {
         if let Err(error) = persist_live_tab_record(db_pool, runtime).await {
             tracing::error!(action = "terminal_output_persistence_failed", tab_id = %record.id, error = ?error);
         }
@@ -1737,8 +1839,11 @@ fn handle_live_output(
     let mut visible_output = String::new();
     let mut completed_exit_code: Option<i32> = None;
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
-    let (record, output_sequence, should_schedule_output_flush, should_force_output_flush) = {
+    let (should_schedule_output_flush, should_force_output_flush) = {
         let mut runtime_guard = runtime.blocking_lock();
+        if runtime_guard.lifecycle.closed.load(Ordering::Acquire) {
+            return;
+        }
         if let Some(mut pending) = runtime_guard.pending_command.take() {
             let extraction =
                 extract_pending_visible_output(&runtime_guard.scan_buffer, &chunk, &mut pending);
@@ -1777,12 +1882,7 @@ fn handle_live_output(
             runtime_guard.output_flush_scheduled = true;
         }
 
-        (
-            runtime_guard.record.clone(),
-            runtime_guard.output_sequence,
-            should_schedule_output_flush,
-            should_force_output_flush,
-        )
+        (should_schedule_output_flush, should_force_output_flush)
     };
 
     if should_schedule_output_flush {
@@ -1797,7 +1897,8 @@ fn handle_live_output(
     }
 
     if completed_exit_code.is_some() {
-        emit_tab_update_with_sequence(&app_handle, &record, true, output_sequence);
+        let guard = runtime.blocking_lock();
+        let _ = emit_current_runtime_tab(&app_handle, &guard);
     }
 
     if completed_exit_code.is_some() && visible_output.is_empty() {
@@ -1816,6 +1917,11 @@ fn handle_live_disconnect(
     tab_id: String,
     runtime: Arc<Mutex<LiveTerminalRuntime>>,
 ) {
+    let lifecycle = terminal_store.tab_lifecycle(&tab_id);
+    let _operation = lifecycle.operation.blocking_lock();
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return;
+    }
     let live_session = {
         let mut live_tabs = terminal_store.live_tabs.blocking_lock();
         let is_current_session = live_tabs
@@ -1846,10 +1952,36 @@ fn handle_live_disconnect(
     }
     let command_exit_code = is_command_process.then_some(exit_code);
 
+    let result = tauri::async_runtime::block_on(complete_live_disconnect(
+        db_pool,
+        runtime,
+        command_exit_code,
+        |pending_output, record, sequence| {
+            if let Some((data, record, sequence)) = pending_output {
+                emit_output(&app_handle, &record, data, sequence);
+            }
+            if let Some(record) = record {
+                emit_tab_update_with_sequence(&app_handle, &record, false, sequence);
+            }
+        },
+    ));
+    if let Err(error) = result {
+        tracing::error!(action = "terminal_tab_persistence_failed", error = ?error);
+    }
+}
+
+async fn complete_live_disconnect(
+    db_pool: DbPool,
+    runtime: Arc<Mutex<LiveTerminalRuntime>>,
+    command_exit_code: Option<i32>,
+    emit: impl FnOnce(Option<(String, TerminalTabRecord, u64)>, Option<TerminalTabRecord>, u64),
+) -> CommandResult<()> {
     let mut completion_tx: Option<oneshot::Sender<i32>> = None;
     let (pending_output_batch, maybe_record, output_sequence) = {
-        let mut runtime_guard = runtime.blocking_lock();
+        let mut runtime_guard = runtime.lock().await;
         let pending_output_batch = take_pending_output_batch(&mut runtime_guard);
+        // Revoke active returns before the disconnected event or any persistence wait.
+        runtime_guard.persistence_active = false;
         if runtime_guard.record.status == "closed" {
             (pending_output_batch, None, runtime_guard.output_sequence)
         } else if runtime_guard.mode == LiveTerminalMode::CommandProcess {
@@ -1882,22 +2014,17 @@ fn handle_live_disconnect(
         }
     };
 
-    if let Some((data, record, sequence)) = pending_output_batch {
-        emit_output(&app_handle, &record, data, sequence);
-    }
-
-    if let Some(record) = maybe_record {
-        emit_tab_update_with_sequence(&app_handle, &record, false, output_sequence);
-        persist_live_tab_record_in_background(db_pool, runtime);
-    }
-
+    emit(pending_output_batch, maybe_record, output_sequence);
+    // Preserve the admitted final write while active publication is already revoked.
+    let result = retire_live_tab_record(db_pool, runtime).await;
     if let Some(tx) = completion_tx {
         let _ = tx.send(130);
     }
+    result
 }
 
 async fn get_live_record(
-    terminal_store: &State<'_, TerminalSessionStore>,
+    terminal_store: &TerminalSessionStore,
     tab_id: &str,
 ) -> Option<TerminalTabRecord> {
     let runtime = {
@@ -1990,7 +2117,8 @@ async fn spawn_live_tab(
 
     let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
         record: record.clone(),
-        persistence_lock: Arc::new(Mutex::new(())),
+        lifecycle: terminal_store.tab_lifecycle(&record.id),
+        persistence_active: true,
         scan_buffer: String::new(),
         pending_command: None,
         pending_output: String::new(),
@@ -2148,7 +2276,8 @@ async fn spawn_command_tab(
 
     let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
         record: record.clone(),
-        persistence_lock: Arc::new(Mutex::new(())),
+        lifecycle: terminal_store.tab_lifecycle(&record.id),
+        persistence_active: true,
         scan_buffer: String::new(),
         pending_command: None,
         pending_output: String::new(),
@@ -2202,11 +2331,8 @@ async fn spawn_command_tab(
     Ok(terminal_tab_to_dto(&record, true, output_sequence))
 }
 
-async fn get_persisted_tab_record(
-    pool: &State<'_, DbPool>,
-    tab_id: &str,
-) -> CommandResult<TerminalTabRecord> {
-    let db_pool = load_db_pool(pool).await?;
+async fn get_persisted_tab_record(pool: &DbPool, tab_id: &str) -> CommandResult<TerminalTabRecord> {
+    let db_pool = pool.wait_until_ready().await?;
     repository::get_terminal_tab(&db_pool, tab_id)
         .await
         .map_err(|error| command_error(error.to_string()))?
@@ -2254,7 +2380,14 @@ pub async fn terminal_list_tabs(
     pool: State<'_, DbPool>,
     terminal_store: State<'_, TerminalSessionStore>,
 ) -> CommandResult<Vec<TerminalTabDto>> {
-    let db_pool = load_db_pool(&pool).await?;
+    list_terminal_tabs(&pool, &terminal_store).await
+}
+
+async fn list_terminal_tabs(
+    pool: &DbPool,
+    terminal_store: &TerminalSessionStore,
+) -> CommandResult<Vec<TerminalTabDto>> {
+    let db_pool = pool.wait_until_ready().await?;
     let stored_tabs = repository::list_terminal_tabs(&db_pool)
         .await
         .map_err(|error| command_error(error.to_string()))?;
@@ -2270,16 +2403,18 @@ pub async fn terminal_list_tabs(
     let mut live_records = HashMap::new();
     for (tab_id, runtime) in live_runtimes {
         let guard = runtime.lock().await;
-        live_records.insert(tab_id, guard.record.clone());
+        live_records.insert(tab_id, runtime_tab_snapshot(&guard).ok());
     }
 
     Ok(stored_tabs
         .into_iter()
-        .map(|record| {
-            if let Some(live_record) = live_records.get(&record.id) {
-                stored_tab_to_dto(live_record, true)
+        .filter_map(|record| {
+            if let Some(snapshot) = live_records.get(&record.id) {
+                snapshot.clone()
+            } else if record.status == "closed" {
+                None
             } else {
-                stored_tab_to_dto(&record, false)
+                Some(stored_tab_to_dto(&record, false))
             }
         })
         .collect())
@@ -2316,6 +2451,8 @@ pub async fn terminal_create_tab(
         session_cwd,
     );
 
+    let lifecycle = terminal_store.tab_lifecycle(&record.id);
+    let _operation = lifecycle.operation.lock().await;
     spawn_live_tab(app_handle, pool.inner().clone(), &terminal_store, record).await
 }
 
@@ -2360,6 +2497,8 @@ pub async fn terminal_start_command_tab(
     record.snapshot = format!("{}\r\n", trimmed_command);
     touch_terminal_tab_record(&mut record);
 
+    let lifecycle = terminal_store.tab_lifecycle(&record.id);
+    let _operation = lifecycle.operation.lock().await;
     spawn_command_tab(
         app_handle,
         pool.inner().clone(),
@@ -2377,14 +2516,40 @@ pub async fn terminal_reconnect_tab(
     terminal_store: State<'_, TerminalSessionStore>,
     tab_id: String,
 ) -> CommandResult<TerminalTabDto> {
-    if let Some(record) = get_live_record(&terminal_store, &tab_id).await {
+    reconnect_terminal_tab(&pool, &terminal_store, &tab_id, |record| {
+        spawn_live_tab(app_handle, pool.inner().clone(), &terminal_store, record)
+    })
+    .await
+}
+
+async fn reconnect_terminal_tab<F, Fut>(
+    pool: &DbPool,
+    terminal_store: &TerminalSessionStore,
+    tab_id: &str,
+    spawn: F,
+) -> CommandResult<TerminalTabDto>
+where
+    F: FnOnce(TerminalTabRecord) -> Fut,
+    Fut: std::future::Future<Output = CommandResult<TerminalTabDto>>,
+{
+    let lifecycle = terminal_store.tab_lifecycle(tab_id);
+    let _operation = lifecycle.operation.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return Err(command_error(format!(
+            "Terminal tab is closing: {}",
+            tab_id
+        )));
+    }
+    if let Some(record) = get_live_record(terminal_store, tab_id).await {
         return Ok(stored_tab_to_dto(&record, true));
     }
-
-    let mut record = get_persisted_tab_record(&pool, &tab_id).await?;
+    let mut record = get_persisted_tab_record(pool, tab_id).await?;
+    if record.status == "closed" {
+        return Err(command_error(format!("Terminal tab is closed: {}", tab_id)));
+    }
     record.status = "idle".to_string();
     touch_terminal_tab_record(&mut record);
-    spawn_live_tab(app_handle, pool.inner().clone(), &terminal_store, record).await
+    spawn(record).await
 }
 
 #[tauri::command]
@@ -2393,11 +2558,27 @@ pub async fn terminal_read_tab(
     terminal_store: State<'_, TerminalSessionStore>,
     tab_id: String,
 ) -> CommandResult<TerminalTabDto> {
-    if let Some(record) = get_live_record(&terminal_store, &tab_id).await {
-        return Ok(stored_tab_to_dto(&record, true));
-    }
+    read_terminal_tab(&pool, &terminal_store, &tab_id).await
+}
 
-    let record = get_persisted_tab_record(&pool, &tab_id).await?;
+async fn read_terminal_tab(
+    pool: &DbPool,
+    terminal_store: &TerminalSessionStore,
+    tab_id: &str,
+) -> CommandResult<TerminalTabDto> {
+    let runtime = {
+        let live_tabs = terminal_store.live_tabs.lock().await;
+        live_tabs.get(tab_id).map(|session| session.runtime.clone())
+    };
+    if let Some(runtime) = runtime {
+        return runtime_tab_snapshot(&*runtime.lock().await);
+    }
+    let record = get_persisted_tab_record(pool, tab_id).await?;
+    if record.status == "closed" {
+        return Err(command_error(
+            "Terminal tab is closed or awaiting close cleanup",
+        ));
+    }
     Ok(stored_tab_to_dto(&record, false))
 }
 
@@ -2410,6 +2591,15 @@ pub async fn terminal_update_tab_metadata(
     title: String,
     prompt_context: Option<TerminalPromptContext>,
 ) -> CommandResult<TerminalTabDto> {
+    let lifecycle = terminal_store.tab_lifecycle(&tab_id);
+    let _operation = lifecycle.operation.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return Err(command_error(format!(
+            "Terminal tab is closing: {}",
+            tab_id
+        )));
+    }
+
     let normalized_title = title.trim().to_string();
     if normalized_title.is_empty() {
         return Err(command_error("Terminal title cannot be empty"));
@@ -2537,6 +2727,7 @@ pub async fn terminal_execute_command(
     let db_pool_state = pool.inner().clone();
     let (completion_rx, should_flush_visible_command, rollback) = {
         let mut runtime_guard = runtime.lock().await;
+        current_runtime_tab(&runtime_guard)?;
         if runtime_guard.pending_command.is_some() {
             return Err(command_error(
                 "A managed command is already running in this terminal tab",
@@ -2574,6 +2765,9 @@ pub async fn terminal_execute_command(
 
     if let Err(error) = persist_live_tab_record(db_pool_state.clone(), runtime.clone()).await {
         let mut runtime_guard = runtime.lock().await;
+        if current_runtime_tab(&runtime_guard).is_err() {
+            return Err(error);
+        }
         runtime_guard.record = rollback.record;
         runtime_guard.pending_output = rollback.pending_output;
         runtime_guard.output_flush_scheduled = rollback.output_flush_scheduled;
@@ -2583,7 +2777,7 @@ pub async fn terminal_execute_command(
     }
     {
         let runtime_guard = runtime.lock().await;
-        emit_tab_update(&app_handle, &runtime_guard.record, true);
+        emit_current_runtime_tab(&app_handle, &runtime_guard)?;
     }
 
     if should_flush_visible_command {
@@ -2616,13 +2810,16 @@ pub async fn terminal_execute_command(
 
     if let Err(error) = write_result {
         let mut runtime_guard = runtime.lock().await;
+        if current_runtime_tab(&runtime_guard).is_err() {
+            return Err(error);
+        }
         runtime_guard.pending_command = None;
         runtime_guard.record.status = "idle".to_string();
         touch_terminal_tab_record(&mut runtime_guard.record);
         drop(runtime_guard);
         persist_live_tab_record(db_pool_state.clone(), runtime.clone()).await?;
         let runtime_guard = runtime.lock().await;
-        emit_tab_update(&app_handle, &runtime_guard.record, true);
+        let _ = emit_current_runtime_tab(&app_handle, &runtime_guard);
         return Err(error);
     }
 
@@ -2631,7 +2828,7 @@ pub async fn terminal_execute_command(
         .map_err(|_| command_error("Terminal command did not complete"))?;
 
     let runtime_guard = runtime.lock().await;
-    Ok(stored_tab_to_dto(&runtime_guard.record, true))
+    current_runtime_tab(&runtime_guard)
 }
 
 #[tauri::command]
@@ -2666,21 +2863,14 @@ pub async fn terminal_interrupt(
     let db_pool_state = pool.inner().clone();
     let maybe_completion = {
         let mut runtime_guard = runtime.lock().await;
+        current_runtime_tab(&runtime_guard)?;
         if runtime_guard.mode == LiveTerminalMode::CommandProcess {
             runtime_guard.record.status = "interrupting".to_string();
             touch_terminal_tab_record(&mut runtime_guard.record);
-            let dto =
-                terminal_tab_to_dto(&runtime_guard.record, true, runtime_guard.output_sequence);
             drop(runtime_guard);
             persist_live_tab_record(db_pool_state.clone(), runtime.clone()).await?;
             let runtime_guard = runtime.lock().await;
-            emit_tab_update_with_sequence(
-                &app_handle,
-                &runtime_guard.record,
-                true,
-                runtime_guard.output_sequence,
-            );
-            return Ok(dto);
+            return emit_current_runtime_tab(&app_handle, &runtime_guard);
         }
 
         let completion = runtime_guard
@@ -2691,21 +2881,15 @@ pub async fn terminal_interrupt(
         runtime_guard.record.status = "idle".to_string();
         runtime_guard.record.last_exit_code = Some(130);
         touch_terminal_tab_record(&mut runtime_guard.record);
-        let dto = stored_tab_to_dto(&runtime_guard.record, true);
-        (completion, dto)
+        completion
     };
 
     persist_live_tab_record(db_pool_state, runtime.clone()).await?;
-    {
-        let runtime_guard = runtime.lock().await;
-        emit_tab_update(&app_handle, &runtime_guard.record, true);
-    }
-
-    if let Some(completion) = maybe_completion.0 {
+    if let Some(completion) = maybe_completion {
         let _ = completion.send(130);
     }
-
-    Ok(maybe_completion.1)
+    let runtime_guard = runtime.lock().await;
+    emit_current_runtime_tab(&app_handle, &runtime_guard)
 }
 
 #[tauri::command]
@@ -2715,6 +2899,15 @@ pub async fn terminal_clear_tab(
     terminal_store: State<'_, TerminalSessionStore>,
     tab_id: String,
 ) -> CommandResult<TerminalTabDto> {
+    let lifecycle = terminal_store.tab_lifecycle(&tab_id);
+    let _operation = lifecycle.operation.lock().await;
+    if lifecycle.closed.load(Ordering::Acquire) {
+        return Err(command_error(format!(
+            "Terminal tab is closing: {}",
+            tab_id
+        )));
+    }
+
     if let Some(runtime) = {
         let live_tabs = terminal_store.live_tabs.lock().await;
         live_tabs
@@ -2842,9 +3035,26 @@ pub async fn terminal_close_tab(
     terminal_store: State<'_, TerminalSessionStore>,
     tab_id: String,
 ) -> CommandResult<()> {
+    close_terminal_tab(&pool, &terminal_store, &tab_id).await?;
+    let _ = app_handle.emit("terminal:closed", TerminalClosedEvent { tab_id });
+    Ok(())
+}
+
+async fn close_terminal_tab(
+    pool: &DbPool,
+    terminal_store: &TerminalSessionStore,
+    tab_id: &str,
+) -> CommandResult<()> {
+    let lifecycle = terminal_store.tab_lifecycle(tab_id);
+    let _operation = lifecycle.operation.lock().await;
+    lifecycle.close_pending.store(true, Ordering::Release);
+    lifecycle.closed.store(true, Ordering::Release);
+    // Drain writes admitted before the fence; later runtime writes observe closed.
+    let _persistence = lifecycle.persistence.lock().await;
+
     let live_session = {
         let mut live_tabs = terminal_store.live_tabs.lock().await;
-        live_tabs.remove(&tab_id)
+        live_tabs.remove(tab_id)
     };
 
     if let Some(session) = live_session {
@@ -2857,7 +3067,7 @@ pub async fn terminal_close_tab(
             )
         };
 
-        let (closed_record, persistence_lock) = {
+        let closed_record = {
             let mut runtime_guard = session.runtime.lock().await;
             runtime_guard.record.status = "closed".to_string();
             touch_terminal_tab_record(&mut runtime_guard.record);
@@ -2867,10 +3077,7 @@ pub async fn terminal_close_tab(
                 }
             }
             runtime_guard.pending_command = None;
-            (
-                runtime_guard.record.clone(),
-                runtime_guard.persistence_lock.clone(),
-            )
+            runtime_guard.record.clone()
         };
 
         if is_command_process {
@@ -2883,22 +3090,40 @@ pub async fn terminal_close_tab(
             );
         }
 
-        terminate_live_terminal_process(&session, &tab_id).await?;
-
-        let db_pool = load_db_pool(&pool).await?;
-        let _persistence_guard = persistence_lock.lock().await;
-        persist_terminal_tab_record(pool.inner().clone(), closed_record).await?;
-        repository::delete_terminal_tab(&db_pool, &tab_id)
+        // Persist the close intent before termination so a restart cannot reconnect it.
+        // Always attempt termination even if persistence fails. Drop remains the fallback.
+        let persistence_result = persist_terminal_tab_record(pool.clone(), closed_record).await;
+        let termination_result = terminate_live_terminal_process(&session, tab_id).await;
+        if let Err(error) = persistence_result.and(termination_result) {
+            // Keep the native owner available for a real termination retry.
+            // The lifecycle fence prevents reconnecting or persisting this session.
+            terminal_store
+                .live_tabs
+                .lock()
+                .await
+                .insert(tab_id.to_owned(), session);
+            return Err(error);
+        }
+        let db_pool = pool.wait_until_ready().await?;
+        repository::delete_terminal_tab(&db_pool, tab_id)
             .await
             .map_err(|error| command_error(error.to_string()))?;
     } else {
-        let db_pool = load_db_pool(&pool).await?;
-        repository::delete_terminal_tab(&db_pool, &tab_id)
+        let db_pool = pool.wait_until_ready().await?;
+        if let Some(mut record) = repository::get_terminal_tab(&db_pool, tab_id)
+            .await
+            .map_err(|error| command_error(error.to_string()))?
+        {
+            record.status = "closed".to_string();
+            touch_terminal_tab_record(&mut record);
+            persist_terminal_tab_record(pool.clone(), record).await?;
+        }
+        repository::delete_terminal_tab(&db_pool, tab_id)
             .await
             .map_err(|error| command_error(error.to_string()))?;
     }
 
-    let _ = app_handle.emit("terminal:closed", TerminalClosedEvent { tab_id });
+    lifecycle.close_pending.store(false, Ordering::Release);
     Ok(())
 }
 
@@ -3679,6 +3904,368 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    async fn terminal_lifecycle_fixture() -> (TempDir, DbPool, TerminalTabRecord) {
+        let temp = TempDir::new().unwrap();
+        let sql = crate::db::create_pool(&temp.path().join("terminal.db"))
+            .await
+            .unwrap();
+        let pool = DbPool::default();
+        pool.set_ready(sql);
+        let record = build_terminal_record(
+            "manual",
+            "project".into(),
+            None,
+            "Terminal".into(),
+            None,
+            ProjectTerminalTarget {
+                project_name: "Project".into(),
+                mount_name: "project".into(),
+                workspace_path: temp.path().to_owned(),
+            },
+            temp.path().to_owned(),
+        );
+        persist_terminal_tab_record(pool.clone(), record.clone())
+            .await
+            .unwrap();
+        (temp, pool, record)
+    }
+
+    #[tokio::test]
+    async fn lifecycle_close_waits_for_reconnect_admitted_before_its_persisted_read() {
+        let (_temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let reconnect = tokio::spawn({
+            let pool = pool.clone();
+            let store = store.clone();
+            let id = record.id.clone();
+            async move {
+                let persistence_pool = pool.clone();
+                reconnect_terminal_tab(&pool, &store, &id, |record| async move {
+                    entered_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    persist_terminal_tab_record(persistence_pool, record.clone()).await?;
+                    Ok(stored_tab_to_dto(&record, true))
+                })
+                .await
+            }
+        });
+        entered_rx.await.unwrap();
+        let mut close = Box::pin(close_terminal_tab(&pool, &store, &record.id));
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut close)
+            .await
+            .is_err());
+        release_tx.send(()).unwrap();
+        reconnect.await.unwrap().unwrap();
+        close.await.unwrap();
+        assert!(
+            repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let spawn_called = AtomicBool::new(false);
+        assert!(
+            reconnect_terminal_tab(&pool, &store, &record.id, |_| async {
+                spawn_called.store(true, Ordering::Release);
+                Err(command_error("unexpected spawn"))
+            })
+            .await
+            .is_err()
+        );
+        assert!(!spawn_called.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_close_drains_admitted_write_and_rejects_late_runtime_persistence() {
+        let (_temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let lifecycle = store.tab_lifecycle(&record.id);
+        let persistence = lifecycle.persistence.lock().await;
+        let close = tokio::spawn({
+            let pool = pool.clone();
+            let store = store.clone();
+            let id = record.id.clone();
+            async move { close_terminal_tab(&pool, &store, &id).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !lifecycle.closed.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!close.is_finished());
+        let mut admitted = record.clone();
+        admitted.snapshot = "admitted output".into();
+        touch_terminal_tab_record(&mut admitted);
+        persist_terminal_tab_record(pool.clone(), admitted)
+            .await
+            .unwrap();
+        drop(persistence);
+        close.await.unwrap().unwrap();
+        let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+            record: record.clone(),
+            lifecycle,
+            persistence_active: true,
+            scan_buffer: String::new(),
+            pending_command: None,
+            pending_output: "late".into(),
+            output_flush_scheduled: true,
+            shell_kind: ManagedShellKind::Posix,
+            mode: LiveTerminalMode::InteractiveShell,
+            output_sequence: 0,
+        }));
+        persist_live_tab_record(pool.clone(), runtime.clone())
+            .await
+            .unwrap();
+        assert!(take_pending_output_batch(&mut *runtime.lock().await).is_none());
+        assert!(
+            repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_eof_revokes_active_returns_before_its_event_and_persistence_wait() {
+        let (_temp, pool, mut record) = terminal_lifecycle_fixture().await;
+        record.last_exit_code = Some(0);
+        let lifecycle = Arc::new(TerminalTabLifecycle::default());
+        let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+            record: record.clone(),
+            lifecycle: lifecycle.clone(),
+            persistence_active: true,
+            scan_buffer: String::new(),
+            pending_command: None,
+            pending_output: "completed output".into(),
+            output_flush_scheduled: true,
+            shell_kind: ManagedShellKind::Posix,
+            mode: LiveTerminalMode::InteractiveShell,
+            output_sequence: 1,
+        }));
+        let persistence = lifecycle.persistence.lock().await;
+        let (emitted_tx, emitted_rx) = oneshot::channel();
+        let eof = tokio::spawn({
+            let pool = pool.clone();
+            let runtime = runtime.clone();
+            async move {
+                complete_live_disconnect(pool, runtime, None, |batch, record, _| {
+                    assert!(batch.is_some(), "admitted output is delivered");
+                    assert_eq!(record.unwrap().status, "disconnected");
+                    emitted_tx.send(()).unwrap();
+                })
+                .await
+            }
+        });
+        emitted_rx.await.unwrap();
+        assert!(!eof.is_finished(), "EOF still drains admitted persistence");
+        {
+            let guard = runtime.lock().await;
+            assert!(
+                current_runtime_tab(&guard).is_err(),
+                "a resumed command cannot return an active DTO"
+            );
+            let published = AtomicBool::new(false);
+            assert!(publish_current_runtime_tab(&guard, |_| published
+                .store(true, Ordering::Release))
+            .is_err());
+            assert!(!published.load(Ordering::Acquire));
+            assert!(
+                !runtime_tab_snapshot(&guard).unwrap().has_live_session,
+                "a reader retaining this owner sees it retired"
+            );
+        }
+        drop(persistence);
+        eof.await.unwrap().unwrap();
+        let persisted = repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.status, "disconnected");
+        assert_eq!(
+            persisted.last_exit_code,
+            Some(0),
+            "completed command was not rolled back"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_old_runtime_cannot_persist_after_reconnection() {
+        let (_temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
+            record: record.clone(),
+            lifecycle: store.tab_lifecycle(&record.id),
+            persistence_active: true,
+            scan_buffer: String::new(),
+            pending_command: None,
+            pending_output: String::new(),
+            output_flush_scheduled: false,
+            shell_kind: ManagedShellKind::Posix,
+            mode: LiveTerminalMode::InteractiveShell,
+            output_sequence: 0,
+        }));
+        let (release_tx, release_rx) = oneshot::channel();
+        let emitted = Arc::new(StdMutex::new(Vec::new()));
+        let late_write = tokio::spawn({
+            let pool = pool.clone();
+            let runtime = runtime.clone();
+            let emitted = emitted.clone();
+            async move {
+                release_rx.await.unwrap();
+                persist_live_tab_record(pool, runtime.clone())
+                    .await
+                    .unwrap();
+                let mut runtime = runtime.lock().await;
+                runtime.pending_output = "late output".into();
+                assert!(take_pending_output_batch(&mut runtime).is_none());
+                publish_current_runtime_tab(&runtime, |dto| {
+                    emitted.lock().unwrap().push(dto.id.clone())
+                })
+            }
+        });
+        {
+            let mut previous = runtime.lock().await;
+            previous.record.status = "disconnected".into();
+            touch_terminal_tab_record(&mut previous.record);
+        }
+        retire_live_tab_record(pool.clone(), runtime.clone())
+            .await
+            .unwrap();
+        let persistence_pool = pool.clone();
+        reconnect_terminal_tab(&pool, &store, &record.id, |mut next| async move {
+            next.snapshot = "new PTY".into();
+            persist_terminal_tab_record(persistence_pool, next.clone()).await?;
+            Ok(stored_tab_to_dto(&next, true))
+        })
+        .await
+        .unwrap();
+        // Simulate a command completion retaining the retired runtime. Its newer
+        // record counter alone would otherwise pass the SQL generation guard.
+        {
+            let mut previous = runtime.lock().await;
+            touch_terminal_tab_record(&mut previous.record);
+            touch_terminal_tab_record(&mut previous.record);
+        }
+        release_tx.send(()).unwrap();
+        assert!(late_write.await.unwrap().is_err());
+        assert!(
+            emitted.lock().unwrap().is_empty(),
+            "retired runtime cannot emit a tab or return a live DTO"
+        );
+        let current = repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.status, "idle");
+        assert_eq!(current.snapshot, "new PTY");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_failed_close_keeps_fence_until_retry_and_persists_intent_for_restart() {
+        let (_temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let sql = pool.ready_pool().unwrap();
+        sqlx::query("CREATE TRIGGER fail_terminal_delete BEFORE DELETE ON terminal_tabs BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END")
+            .execute(&sql).await.unwrap();
+        assert!(close_terminal_tab(&pool, &store, &record.id).await.is_err());
+        store.tab_lifecycle("unrelated");
+        assert!(store
+            .tab_lifecycle(&record.id)
+            .close_pending
+            .load(Ordering::Acquire));
+        assert_eq!(
+            repository::get_terminal_tab(&sql, &record.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "closed"
+        );
+        assert!(read_terminal_tab(&pool, &store, &record.id).await.is_err());
+        assert!(list_terminal_tabs(&pool, &store).await.unwrap().is_empty());
+        let restarted = TerminalSessionStore::default();
+        assert!(read_terminal_tab(&pool, &restarted, &record.id)
+            .await
+            .is_err());
+        assert!(list_terminal_tabs(&pool, &restarted)
+            .await
+            .unwrap()
+            .is_empty());
+        for instance in [&store, &TerminalSessionStore::default()] {
+            let spawned = AtomicBool::new(false);
+            assert!(
+                reconnect_terminal_tab(&pool, instance, &record.id, |_| async {
+                    spawned.store(true, Ordering::Release);
+                    Err(command_error("unexpected spawn"))
+                })
+                .await
+                .is_err()
+            );
+            assert!(!spawned.load(Ordering::Acquire));
+        }
+        sqlx::query("DROP TRIGGER fail_terminal_delete")
+            .execute(&sql)
+            .await
+            .unwrap();
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        store.tab_lifecycle("next");
+        assert_eq!(store.tab_lifecycles.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lifecycle_failed_close_preserves_native_owner_for_retry() {
+        let (temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let session = synthetic_live_session("sleep 30", temp.path());
+        {
+            let mut runtime = session.runtime.lock().await;
+            runtime.record = record.clone();
+            runtime.lifecycle = store.tab_lifecycle(&record.id);
+        }
+        store
+            .live_tabs
+            .lock()
+            .await
+            .insert(record.id.clone(), session);
+        let sql = pool.ready_pool().unwrap();
+        sqlx::query("CREATE TRIGGER fail_terminal_close BEFORE UPDATE ON terminal_tabs BEGIN SELECT RAISE(ABORT, 'injected close persistence failure'); END")
+            .execute(&sql).await.unwrap();
+        assert!(close_terminal_tab(&pool, &store, &record.id).await.is_err());
+        assert!(store.live_tabs.lock().await.contains_key(&record.id));
+        let snapshot = read_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        assert_eq!(snapshot.status, "closed");
+        assert!(!snapshot.has_live_session);
+        assert!(!snapshot.is_restored);
+        let listed = list_terminal_tabs(&pool, &store).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, record.id);
+        assert_eq!(listed[0].status, "closed");
+        assert!(!listed[0].has_live_session);
+        assert!(
+            reconnect_terminal_tab(&pool, &store, &record.id, |_| async {
+                panic!("failed close must not reconnect")
+            })
+            .await
+            .is_err()
+        );
+        sqlx::query("DROP TRIGGER fail_terminal_close")
+            .execute(&sql)
+            .await
+            .unwrap();
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        assert!(store.live_tabs.lock().await.is_empty());
+        assert!(repository::get_terminal_tab(&sql, &record.id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
     fn env_map(entries: &[(&str, &str)]) -> HashMap<String, String> {
         entries
             .iter()
@@ -3723,7 +4310,8 @@ mod tests {
             process_tree: StdMutex::new(tree),
             runtime: Arc::new(Mutex::new(LiveTerminalRuntime {
                 record,
-                persistence_lock: Arc::new(Mutex::new(())),
+                lifecycle: Arc::new(TerminalTabLifecycle::default()),
+                persistence_active: true,
                 scan_buffer: String::new(),
                 pending_command: None,
                 pending_output: String::new(),
@@ -4262,7 +4850,8 @@ mod tests {
         let writer = pty.master.take_writer().expect("terminal writer");
         let runtime = Arc::new(Mutex::new(LiveTerminalRuntime {
             record,
-            persistence_lock: Arc::new(Mutex::new(())),
+            lifecycle: Arc::new(TerminalTabLifecycle::default()),
+            persistence_active: true,
             scan_buffer: String::new(),
             pending_command: None,
             pending_output: String::new(),

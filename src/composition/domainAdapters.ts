@@ -29,13 +29,13 @@ export const projects: ProjectsQueries & ProjectsCommands = {
 export const tools: ToolsQueries & ToolsCommands = {
   enabledChatToolIds: () => useToolsStore.getState().getEnabledChatToolIds(),
   enabledMCPToolIds: () => useToolsStore.getState().getEnabledMCPToolIds(),
-  loadSettings: () => useToolsStore.getState().loadSettings(),
+  loadSettings: (context) => useToolsStore.getState().loadSettings(context),
   callMCPTool: (id, args) => useToolsStore.getState().callMCPTool(id, args),
 };
 export const providers: ProvidersQueries & ProvidersCommands = {
   providers: () => useProviderStore.getState().providers,
   models: (id) => useProviderStore.getState().modelsByProvider[id] ?? [],
-  loadProviderConfigs: () => useProviderStore.getState().loadProviderConfigs(),
+  loadProviderConfigs: (context) => useProviderStore.getState().loadProviderConfigs({ lifecycle: context }),
   selectProvider: (id) => useProviderStore.getState().selectProvider(id),
   selectModel: (id) => useProviderStore.getState().selectModel(id),
 };

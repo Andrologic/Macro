@@ -1,3 +1,4 @@
+import type { LifecycleContext } from '../types/lifecycle';
 import type { AIModel, AIProvider, ChatMessage, Conversation, PlanNode, Project, ProjectGroup, Task } from '../types';
 
 /** Public capabilities, independent from Zustand, transport DTOs and React. */
@@ -34,7 +35,7 @@ export interface ToolsQueries {
   enabledMCPToolIds(): readonly string[];
 }
 export interface ToolsCommands {
-  loadSettings(): Promise<void>;
+  loadSettings(context?: LifecycleContext): Promise<void>;
   callMCPTool(toolId: string, args: Record<string, unknown>): Promise<string>;
 }
 export interface ProvidersQueries {
@@ -42,7 +43,7 @@ export interface ProvidersQueries {
   models(providerId: string): readonly AIModel[];
 }
 export interface ProvidersCommands {
-  loadProviderConfigs(): Promise<void>;
+  loadProviderConfigs(context?: LifecycleContext): Promise<void>;
   selectProvider(providerId: string): void;
   selectModel(modelId: string): void;
 }

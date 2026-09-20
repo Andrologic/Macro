@@ -1,9 +1,11 @@
 # Performance baselines
 
-This is a measurement baseline, not an optimization or a release gate. No product
-code changes are required. Fixtures contain only generated text; the runner uses
-an in-memory SQLite database and never opens the application's data directory.
-No provider, network request, Git polling loop or native application is started.
+These developer runners separate synthetic JavaScript work, in-memory SQLite,
+native SQLx on disposable files, and production bundle output. Dated sections
+identify the measured revisions and limitations. Fixtures contain generated
+text only. No provider or ordinary application profile is opened. The bundle
+runner also applies the existing size budgets; a completed build can fail that
+gate.
 
 ## Reproduce the executed measurements
 
@@ -21,7 +23,14 @@ flag, UTC timestamp, OS, CPU, memory, Bun/SQLite versions, SQL/schema hashes,
 p50/p95/max and sample counts. Compare the same source, toolchain and fixture
 sizes. The bundle command builds the real Vite configuration into a fresh
 system temporary directory, limits Terser to two workers, reports raw and gzip-9
-JS/CSS sizes and content hashes, then removes that directory. It requires a clean worktree, including untracked
+JS/CSS sizes and content hashes, then removes that directory. It captures the
+final emitted chunk graph, deduplicated static JS closure and CSS links.
+The report distinguishes pre-minification module lengths from emitted sizes.
+It verifies every emitted locale default against its source JSON, records xterm
+CSS rules and checks that Mermaid/xterm JavaScript stays outside the static
+startup closure. Dynamic imports executed at startup and rendering are not
+inferred from this graph. The existing budget checker runs against this same
+temporary build; a budget or deferred-vendor failure returns exit code 1. It requires a clean worktree, including untracked
 files, and refuses ignored environment/source/public inputs. Commit the tooling
 before running this command. It does not build
 Rust or a desktop release. A standalone scanner is available for existing
@@ -133,8 +142,8 @@ For catalog experiments use 10 and 100 plans with 10 tasks each; record that
 these are a separate fixture from chat history. Keep project files in temporary
 repositories and clear their data after the experiment. Isolation must be
 established before launching the app; this protocol does not authorize opening
-an existing user database. Port 1436 is reserved for this lot if a browser driver
-is later added, but the current collector requires native Tauri.
+an existing user database. The QA browser launcher uses its configured ports 1422 and 1430. The current
+collector requires native Tauri and does not measure that browser bridge.
 
 In native development DevTools, manually import the module:
 
@@ -205,9 +214,13 @@ bun --no-install test dev/performance/native-sqlite.test.ts
 ```
 
 The command runs `cargo build --manifest-path src-tauri/Cargo.toml --example
-performance-sqlite --locked --offline -j 2`, using debug mode and
+performance-sqlite --locked --offline -j 1`, with explicit overrides
+`profile.dev.package.macro.debug=0`, `profile.test.package.macro.debug=0`,
+`profile.dev.incremental=false` and `profile.test.incremental=false`, plus
 `TAURI_CONFIG='{"bundle":{"externalBin":[]}}'`. Dependencies must already be
-available offline. It honors `CARGO_TARGET_DIR`; an existing compatible cache may
+available offline. These are the current comparison settings; the original
+16b numbers below used debug information and two build jobs. Compare only runs
+with matching settings. It honors `CARGO_TARGET_DIR`; an existing compatible cache may
 be shared with another local worktree. Cargo's lock is respected. Each build embeds a fresh invocation nonce and the source fingerprint via
 compile-time environment variables. The measured executable is copied into a private temporary directory before execution, so a
 later build using that cache cannot replace the running benchmark. Before
@@ -331,3 +344,148 @@ no browser/Chrome automation available or computer use. A future desktop capture
 must use the separate `com.macro.desktop.qa.*` identifier and
 `MACRO_TAURI_BROWSER_CONFIG` isolation from `DEVELOPMENT.md`; `MACRO_CONFIG_DIR`
 alone is insufficient. Existing browser bridge ports remain 1422/1430.
+
+## Integrated comparison, phase 16c
+
+Measured 2026-09-20 on the same Darwin 27 arm64/M5 machine, Bun 1.3.14,
+Rust/Cargo 1.98.1. All installed direct dependencies matched their pinned
+versions. The worktree used a private copy of dependencies and Vite caches.
+The historical reference is `2d41e57e`, with only the new measurement adapter
+committed as `4622f45c`. The integrated product base is `1715979a`.
+The JS, native and diagnostics series below ran at `57986ada`.
+
+Each timing cell is the median of the three process-level p50 / p95 values,
+in milliseconds. It is not a percentile over pooled samples. Every process
+used 10 warmups and 100 observations per case. No samples or outliers were
+removed. The native candidate's second process overlapped a 0.268-second CSS
+verification; its report was retained as non-comparable and the entire process
+was repeated before inspecting its values. The replacement is used below.
+No clock discrepancy above one second occurred. These were sequential jobs on
+a shared machine, with load averages recorded; they are not idle-machine or
+cold-disk measurements.
+
+| Elements | Historical chat items | Integrated chat items | Historical search | Integrated search |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 0.020 / 0.037 | 0.017 / 0.030 | 0.209 / 0.422 | 0.137 / 0.352 |
+| 1,000 | 0.145 / 0.169 | 0.101 / 0.115 | 2.017 / 2.618 | 1.663 / 2.355 |
+| 10,000 | 1.150 / 2.176 | 0.973 / 1.871 | 19.183 / 21.282 | 15.520 / 20.009 |
+
+| Elements | Historical Bun read | Integrated Bun read | Historical insert/rollback | Integrated insert/rollback |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 0.088 / 0.101 | 0.061 / 0.071 | 0.012 / 0.016 | 0.008 / 0.013 |
+| 1,000 | 0.821 / 0.944 | 0.573 / 0.757 | 0.012 / 0.014 | 0.010 / 0.012 |
+| 10,000 | 7.835 / 9.276 | 5.904 / 7.549 | 0.012 / 0.013 | 0.008 / 0.019 |
+
+These JavaScript paths were not optimized by the chunk corrections. The lower
+values are observations under varying scheduling/JIT/GC conditions, not an
+attributed product speedup. Bun SQLite remained version 3.54.0.
+
+Both native revisions were rebuilt with the explicit reduced profile above,
+one Cargo job, locked offline dependencies and the same shared target cache.
+Their executables passed the compiled source/nonce handshake before measuring
+owned databases. SQLite remained 3.46.0, WAL, synchronous NORMAL, foreign keys
+on, migrations 1/3/4/5. Both self-tests passed. Every process verified counts,
+content, metadata, integrity, reopened appends and fixture cleanup.
+
+| Elements | Historical SQLx read | Integrated SQLx read | Historical commit | Integrated commit |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 1.137 / 1.227 | 1.268 / 1.419 | 0.380 / 0.506 | 0.440 / 0.594 |
+| 1,000 | 12.482 / 17.223 | 12.319 / 16.133 | 0.549 / 0.959 | 0.543 / 0.800 |
+| 10,000 | 129.238 / 158.624 | 128.489 / 157.722 | 1.357 / 1.663 | 1.341 / 1.888 |
+
+The 10,000-row native read medians span 127.730–129.765 ms historically and
+127.332–129.343 ms in the integrated series. No large read improvement is
+established. Small-input commit/read differences and tail variation need
+controlled follow-up before defining a regression threshold. These values
+include repository work, not IPC or UI latency.
+
+### Diagnostic snapshot cost
+
+Run `bun --no-install dev/performance/chat-diagnostics.ts` on a clean tree.
+This calls the real `createAssistantStreamRuntime` and `createChatTurnRuntime`.
+Synthetic ports return an already ordered array. The first diagnostics callback
+records its time and throws a sentinel synchronously, before any transport,
+persistence or provider operation. All unused ports throw if reached.
+
+The total sizes include one empty assistant placeholder; the other messages
+contain 256 ASCII content bytes. Nested cases add one tool trace, one provider
+input item with nested text/metadata, and nested provider turn output per history
+message. Fixture creation and ownership setup are outside timing. Allocation
+and GC during the product call remain inside. Mutation checks after timing
+verify that content, tool traces and nested provider data are independent of
+the source. The separate TypeScript check includes this developer file because
+the ordinary frontend typecheck covers only `src`.
+
+| Total messages | Simple copy p50 / p95 | Nested copy p50 / p95 | Nested start-to-record p50 / p95 |
+| ---: | ---: | ---: | ---: |
+| 100 | 0.095 / 0.109 | 0.929 / 1.101 | 0.939 / 1.126 |
+| 1,000 | 0.936 / 1.139 | 9.471 / 10.782 | 9.488 / 10.795 |
+| 10,000 | 9.370 / 12.495 | 98.958 / 124.055 | 98.994 / 124.086 |
+
+Copy timing runs from the `ordered` port to the first `record` callback;
+start-to-record also includes the authority snapshots. The long nested history
+is costly in this Bun experiment. It does not establish WebView interaction
+latency, and no snapshot was weakened to improve these numbers.
+
+### Remaining measurement boundaries
+
+Navigation, visual readiness, React/RAF streaming, terminal painting and real
+frontend catalog invalidation fanout were not exercised. No authorized browser
+driver was available. No native browser bridge was launched for this comparison;
+its WebSocket/WebView/RPC path would be a separate transport experiment, not a
+replacement for visual measurements. The native SQLite results above do not
+fill those gaps. The raw reports, command logs, exit codes, clock/load records,
+source/binary/lockfile fingerprints and superseded experiments are kept outside
+Git, without ordinary user data.
+
+### Final bundle correction
+
+The final production bundle was measured at `661f3fa5`. The integrated baseline
+bundle at `9451ddc6` has the product sources of `1715979a`; its intervening
+commits add measurement tooling only. All values below are emitted bytes.
+
+| Metric | Historical `4622f45c` | Integrated before correction `9451ddc6` | Corrected `661f3fa5` |
+| --- | ---: | ---: | ---: |
+| Entry JavaScript | 1,453,296 | 1,502,512 | 1,421,689 |
+| Static JavaScript closure | 2,766,814 | 2,816,030 | 1,769,333 |
+| Static JavaScript closure, gzip | 718,013 | 733,518 | 479,164 |
+| All emitted JS/CSS | 9,194,607 | 9,257,128 | 9,129,770 |
+| All emitted JS/CSS, gzip | 2,603,171 | 2,633,615 | 2,596,077 |
+| Existing budget failures | Entry, fr, ko, ja | Entry, fr, ko, ja | None |
+
+The entry limit remains 1,425,000 bytes, leaving 3,311 bytes of margin. Every
+other existing budget is unchanged and passes. This margin is small; subsequent
+work must keep checking the fixed gate. The entry shrank by 80,823 bytes and its
+static JS closure by 1,046,697 bytes against the integrated baseline. The closure
+is deduplicated, includes shared chunks, and excludes dynamic imports. It is
+not a browser waterfall or a navigation latency measurement.
+
+The Vite preload helper now lives in the existing eager utility chunk instead
+of pulling Mermaid into startup. The xterm CSS import remains in `main.tsx`,
+but CSS no longer assigns the terminal JS vendor to the startup closure.
+Comparison through the same CSS transforms found all 33 canonical xterm rules
+unchanged among 36 emitted rules, including three application overrides. This
+checks declarations, not visual layout or cascade order in the WebView.
+
+Locale JSON is emitted as default object literals without named exports. All
+12 compiled default objects were deep-compared with their source JSON. French,
+Japanese and Korean chunks now measure 130,427, 145,514 and 131,089 bytes.
+
+Application code is deferred at calls that already return promises:
+`chatToolExecutionRuntime` loads on the first tool execution,
+`architectToolRuntime` on the first call to the Architect handler, and
+`streamingChatExecution` on the first streaming or non-streaming provider call.
+The latter emits a 37,564-byte chunk. These modules are absent from the emitted
+static startup closure; their imports are invoked by those operations, not by
+application initialization. No new always-eager application chunk hides entry
+bytes. The build guard checks these three modules as well as Mermaid and xterm.
+The transport facade retains synchronous estimators, captures provider mode and
+callbacks before loading, and reserves cancellation in the existing session
+registry. The detailed lifetime contract is in `technical-architecture.md`.
+
+The JS/native/diagnostics timing series above remain tied to `57986ada`.
+Their measured product paths did not change with these lazy-loading corrections;
+the timing values are not measurements of first-send module loading. That latency
+requires a browser measurement. Focused transport tests cover delayed loading,
+cancellation without an external signal, reentrant and same-session successors,
+reasoning capture, retry after module failure, HTTP readers and native listeners.

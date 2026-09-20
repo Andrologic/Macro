@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import {
   REMOTE_UNSUPPORTED_IN_REMOTE_MODE,
@@ -744,6 +745,29 @@ describe('getPlanActivationCandidateTask', () => {
 });
 
 describe('useTaskStore refreshFromPlan selection reconciliation', () => {
+  it('does not continue catalog recovery after the bootstrap owner stops', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const list = spyOn(services, 'listTasks').mockImplementationOnce(async () => {
+      entered();
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { tasks: [], plans: [], hasStandaloneTasks: false, source: 'workspace' } as never;
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const scope = createLifecycleScope();
+    const loading = useTaskStore.getState().initializeCritical(scope).catch((error: unknown) => error);
+    await reading;
+    const previousSettingsReads = dbGetAppSettingMock.mock.calls.length;
+    scope.stop();
+    release();
+    expect((await loading).name).toBe('LifecycleStoppedError');
+    expect(dbGetAppSettingMock.mock.calls.length).toBe(previousSettingsReads);
+    expect(useTaskStore.getState().lastSuccessfulCatalogLoad).toBeNull();
+    await useTaskStore.getState().drainAppSync();
+    list.mockRestore();
+  });
+
   it('keeps the newest refresh and selection when an older context resolves last', async () => {
     const originalListTasks = services.listTasks;
     const resolvers: Array<(catalog: Awaited<ReturnType<typeof services.listTasks>>) => void> = [];
@@ -2314,7 +2338,9 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
-  it('finishes an interrupted direct return to draft before removing its checkpoint', async () => {
+  for (const interruption of ['none', 'stop', 'failure-after-stop'] as const) {
+  it(`finishes or journals an admitted draft recovery: ${interruption}`, async () => {
+    const scope = createLifecycleScope();
     const task = buildStandaloneTask({
       id: 'manual-task-direct-revert-recovery',
       task_source: 'standalone',
@@ -2358,8 +2384,10 @@ describe('useTaskStore merge workflow review loading', () => {
       }]),
     );
     const recoveryOrder: string[] = [];
-    workspaceRevertManualFeatureToDraftMock.mockImplementation(async () => {
+    workspaceRevertManualFeatureToDraftMock.mockImplementationOnce(async () => {
       recoveryOrder.push('task');
+      if (interruption !== 'none') scope.stop();
+      if (interruption === 'failure-after-stop') throw new Error('admitted revert failed');
       return {} as never;
     });
     directCheckpointRemoveMock.mockImplementation(async () => {
@@ -2376,15 +2404,21 @@ describe('useTaskStore merge workflow review loading', () => {
 
     try {
       const { useTaskStore } = await loadIsolatedTaskStore();
-      await useTaskStore.getState().refreshFromPlan({
+      const recovery = scope.track(useTaskStore.getState().refreshFromPlan({
+        lifecycle: scope,
         restoreSelection: false,
         activateSelectedTask: false,
-      });
+      }));
+      if (interruption === 'none') await recovery;
+      else await expect(recovery).rejects.toThrow('The resource owner has stopped.');
+      await scope.drain();
+      expect(services.listTasks).toHaveBeenCalledTimes(interruption === 'none' ? 2 : 1);
     } finally {
       services.listTasks = originalListTasks;
     }
 
-    expect(recoveryOrder).toEqual(['task', 'checkpoint']);
+    expect(recoveryOrder).toEqual(interruption === 'failure-after-stop' ? ['task'] : ['task', 'checkpoint']);
+    expect(workspaceReleaseTaskLifecycleLockMock).toHaveBeenCalled();
     expect(workspaceRevertManualFeatureToDraftMock).toHaveBeenCalledWith({
       taskId: task.id,
       conversationId: task.conversation_id,
@@ -2393,8 +2427,15 @@ describe('useTaskStore merge workflow review loading', () => {
       taskLifecycleLeaseId: 'task-lifecycle-lease',
     });
     expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
-    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+    const journal = JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]');
+    if (interruption === 'failure-after-stop') {
+      expect(journal).toHaveLength(1);
+      expect(journal[0].lastError).toBe('admitted revert failed');
+      expect(journal[0].phase).toBe('draft_reverting');
+    } else expect(journal).toEqual([]);
   });
+
+  }
 
   it('publishes the catalog reloaded after recovering a task-deleting saga', async () => {
     const task = buildStandaloneTask({

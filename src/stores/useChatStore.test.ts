@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalRecovery.scenarios';
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type {
@@ -2042,9 +2043,16 @@ const registerUseChatStoreMocks = async () => {
 
 };
 
+const chatSubscriptionDisposers = new Set<() => void>();
+afterEach(() => {
+  for (const stop of chatSubscriptionDisposers) stop();
+  chatSubscriptionDisposers.clear();
+});
 const loadChatStore = async () => {
   importCounter += 1;
-  return import(`./useChatStore.ts?test=${importCounter}`);
+  const module = await import(`./useChatStore.ts?test=${importCounter}`);
+  chatSubscriptionDisposers.add(module.useChatStore.getState().startSubscriptions());
+  return module;
 };
 
 const waitForToolboxPersistence = async () => {
@@ -2962,6 +2970,50 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('stops hydration before replay recovery or publication after a delayed snapshot', async () => {
+    const { useChatStore } = await loadChatStore();
+    tauriAvailable = true;
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    getChatBootstrapSnapshotMock.mockImplementationOnce(async () => {
+      entered();
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { conversations: [], messages_by_conversation_id: {} };
+    });
+    const scope = createLifecycleScope();
+    const loading = useChatStore.getState().initializeCritical(scope).catch((error: unknown) => error);
+    await reading;
+    const previousSettingsReads = dbGetAppSettingMock.mock.calls.length;
+    scope.stop();
+    release();
+    expect((await loading).name).toBe('LifecycleStoppedError');
+    expect(dbGetAppSettingMock.mock.calls.length).toBe(previousSettingsReads);
+    expect(useChatStore.getState().hydrationStatus).toBe('hydrating');
+  });
+
+  it('owns subscriptions across stop and restart without aborting an admitted Chat turn', async () => {
+    const { useChatStore } = await loadChatStore();
+    const controller = new AbortController();
+    useChatStore.setState({ conversationRuntimeById: {
+      'owned-turn': { phase: 'streaming', sessionId: 'session', turnId: 'turn', assistantMessageId: 'assistant', abortController: controller, lastError: null },
+    } });
+    const first = useChatStore.getState().startSubscriptions();
+    first();
+    first();
+    expect(controller.signal.aborted).toBe(false);
+    expect(appStoreSubscribers.size).toBe(0);
+    expect(taskStoreSubscribers.size).toBe(0);
+    const second = useChatStore.getState().startSubscriptions();
+    first();
+    expect(appStoreSubscribers.size).toBe(1);
+    expect(taskStoreSubscribers.size).toBe(1);
+    second();
+    await useChatStore.getState().drainSubscriptions();
+    expect(appStoreSubscribers.size).toBe(0);
+    expect(controller.signal.aborted).toBe(false);
   });
 
   it('keeps rejected native preference writes observable and retryable in the chat harness', async () => {

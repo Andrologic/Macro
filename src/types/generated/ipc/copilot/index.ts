@@ -1,3 +1,9 @@
+export type { AiToolTrace } from '../AiToolTrace';
+export type { BridgeHealthResult } from '../BridgeHealthResult';
+export type { BridgeModelRecord } from '../BridgeModelRecord';
+export type { BridgeModelsResponse } from '../BridgeModelsResponse';
+export type { BridgeSendEvent } from '../BridgeSendEvent';
+export type { BridgeToolResultMessage } from '../BridgeToolResultMessage';
 export type { CopilotAuthCancelledEvent } from '../CopilotAuthCancelledEvent';
 export type { CopilotAuthCompleteEvent } from '../CopilotAuthCompleteEvent';
 export type { CopilotAuthErrorEvent } from '../CopilotAuthErrorEvent';

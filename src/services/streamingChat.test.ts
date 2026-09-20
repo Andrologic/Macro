@@ -1,3 +1,67 @@
+import { stripContinuationOverlap, shouldRetryMissingRequiredTool } from './ai/completionRecovery';
+import { hasMeaningfulVisibleAssistantText, summarizeProviderTextPresence, shouldRetryArchitectPostToolResponse } from './ai/streamDiagnostics';
+import { stripThinkingBlocksForModel, resolveChatCompletionProviderProfile, normalizeToolCallIdForProvider, finalizeDanglingToolCallsForChatCompletions, normalizeChatCompletionMessageSequence, buildChatCompletionMessages, validateChatCompletionMessageSequence, buildAssistantChatCompletionProviderItem, buildToolChatCompletionProviderItem, chatCompletionMessagesHaveToolHistory, applyToolsToChatCompletionsRequest } from './ai/chatCompletionsCodec';
+import { serializeCopilotConversationPrompt, estimateCopilotSerializedPayloadTokens } from './ai/copilotPromptCodec';
+import { buildChatGptProviderTurnState, buildFunctionCallOutputProviderInputItem, extractVisibleTextFromProviderInputItems, buildChatGptVisibleTurnContent, getMissingChatGptVisibleTurnSuffix, isEmptyTerminalChatGptTurn, compactToolResultForChatGptModelContext } from './ai/responsesCodec';
+import { createStreamAccumulator } from './ai/streamAccumulator';
+import { collectAllowedTools } from './ai/toolDefinitions';
+import { getActiveStreamingSessionIds } from './ai/streamResources';
+import { readStreamChunkWithIdleTimeout } from './ai/httpTransport';
+import { extractSseData, createSseEventParser } from './ai/sse';
+import { classifyReasoningRejection, isReasoningUnsupportedError, isReasoningReplayRequiredError, isContextOverflowError, classifyProviderError } from './ai/providerErrors';
+import { getToolCallLoopKey, isRepeatedToolCallLoop } from './ai/toolCallRunner';
+import { isToolInterruptResolution, normalizeToolCallResolution } from './ai/toolCallResolution';
+import { formatToolTraceDetail, buildToolContextBlock } from './ai/toolPresentation';
+import { applyReasoningToChatCompletionsRequest, shouldRequestProviderReasoning } from './providerProtocolProfiles';
+
+const __testables = {
+  applyReasoningToChatCompletionsRequest,
+  applyToolsToChatCompletionsRequest,
+  buildAssistantChatCompletionProviderItem,
+  buildChatCompletionMessages,
+  buildChatGptProviderTurnState,
+  buildChatGptVisibleTurnContent,
+  buildFunctionCallOutputProviderInputItem,
+  buildToolChatCompletionProviderItem,
+  buildToolContextBlock,
+  chatCompletionMessagesHaveToolHistory,
+  classifyProviderError,
+  classifyReasoningRejection,
+  collectAllowedTools,
+  compactToolResultForChatGptModelContext,
+  createStreamAccumulator,
+  createSseEventParser,
+  estimateCopilotSerializedPayloadTokens,
+  extractVisibleTextFromProviderInputItems,
+  extractSseData,
+  finalizeDanglingToolCallsForChatCompletions,
+  formatToolTraceDetail,
+  getActiveStreamingSessionIds,
+  getMissingChatGptVisibleTurnSuffix,
+  getToolCallLoopKey,
+  hasMeaningfulVisibleAssistantText,
+  isContextOverflowError,
+  isEmptyTerminalChatGptTurn,
+  isReasoningReplayRequiredError,
+  isReasoningUnsupportedError,
+  isRepeatedToolCallLoop,
+  isToolInterruptResolution,
+  normalizeChatCompletionMessageSequence,
+  normalizeToolCallIdForProvider,
+  normalizeToolCallResolution,
+  readStreamChunkWithIdleTimeout,
+  resolveChatCompletionProviderCapabilities: resolveChatCompletionProviderProfile,
+  resolveChatCompletionProviderProfile,
+  serializeCopilotConversationPrompt,
+  shouldRetryArchitectPostToolResponse,
+  shouldRetryMissingRequiredTool,
+  shouldRequestProviderReasoning,
+  stripThinkingBlocksForModel,
+  stripContinuationOverlap,
+  summarizeProviderTextPresence,
+  validateChatCompletionMessageSequence,
+};
+
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ChatMessage } from '../types';
 import { buildCompactedMessagesForRequest } from './contextCompaction';
@@ -10,6 +74,7 @@ import type {
 
 let streamingChatImportCounter = 0;
 const actualTauriIpc = await import('./tauriIpc');
+const actualWebSearch = await import('./webSearch');
 
 const loadStreamingChat = async (
   fetchImpl?: ReturnType<typeof mock>,
@@ -17,9 +82,16 @@ const loadStreamingChat = async (
     invokeImpl?: ReturnType<typeof mock>;
     listenImpl?: ReturnType<typeof mock>;
     forceTauriAvailable?: boolean;
+    webSearchImpl?: typeof actualWebSearch.webSearch;
+    webFetchImpl?: typeof actualWebSearch.fetchWebPage;
   }
 ) => {
   mock.restore();
+  mock.module('./webSearch', () => ({
+    ...actualWebSearch,
+    webSearch: options?.webSearchImpl ?? actualWebSearch.webSearch,
+    fetchWebPage: options?.webFetchImpl ?? actualWebSearch.fetchWebPage,
+  }));
   const invokeImpl = options?.invokeImpl ?? mock(async () => undefined);
   const actualCore = await import('@tauri-apps/api/core');
   const actualEvent = await import('@tauri-apps/api/event');
@@ -142,7 +214,10 @@ const loadStreamingChat = async (
   }));
 
   streamingChatImportCounter += 1;
-  return import(`./streamingChat.ts?test=${streamingChatImportCounter}`);
+  return {
+    ...await import(`./streamingChat.ts?test=${streamingChatImportCounter}`),
+    __testables,
+  };
 };
 
 const asObjectSchema = (
@@ -285,7 +360,7 @@ describe('streamingChat native request ownership', () => {
     expect(cancelledRequestIds).toEqual([requestIds[1]]);
 
     emit('ai:done', { request_id: requestIds[1], output_text: 'second', tool_calls: [] });
-    void second;
+    await second;
   });
 });
 
@@ -4103,4 +4178,211 @@ describe('streamingChat tool rendering helpers', () => {
     });
   });
 
+});
+
+
+describe('streamingChat shared tool batch cancellation', () => {
+  for (const transport of ['native', 'http'] as const) {
+    for (const toolName of ['web_search', 'web_fetch'] as const) {
+      it(`cancels ${toolName} fallback on ${transport} without publishing late output or another turn`, async () => {
+        const controller = new AbortController();
+        const callbacks = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+        const toolCall = { id: 'web-call', type: 'function', function: { name: toolName, arguments: JSON.stringify(toolName === 'web_search' ? { query: 'query' } : { url: 'https://example.invalid' }) } };
+        let providerCalls = 0;
+        let seenSignal: AbortSignal | undefined;
+        const invokeImpl = mock(async (command: string, payload?: { request?: { request_id: string } }) => {
+          if (command === 'ai_stream_chat') {
+            providerCalls += 1;
+            queueMicrotask(() => callbacks.get('ai:done')?.({ payload: { request_id: payload?.request?.request_id, output_text: '', tool_calls: [toolCall], completion_reason: 'completed' } }));
+          }
+        });
+        const fetchImpl = mock(async () => {
+          providerCalls += 1;
+          return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, ...toolCall }] }, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
+        });
+        const { streamChat } = await loadStreamingChat(fetchImpl, {
+          invokeImpl,
+          forceTauriAvailable: transport === 'native',
+          listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+            callbacks.set(name, callback);
+            return () => { callbacks.delete(name); };
+          }),
+          webSearchImpl: async (_query, options) => {
+            seenSignal = options?.signal;
+            controller.abort();
+            await Promise.resolve();
+            return [{ title: 'late-result', url: 'https://example.invalid', snippet: 'late-result' }];
+          },
+          webFetchImpl: async (_url, signal) => {
+            seenSignal = signal;
+            controller.abort();
+            await Promise.resolve();
+            return { title: 'late-result', url: 'https://example.invalid', content: 'late-result', snippet: 'late-result' };
+          },
+        });
+        const completed: StreamCompletionResult[] = [];
+        const onResult = mock(() => undefined);
+        const onError = mock(() => undefined);
+        await streamChat({
+          providerId: 'fixture', providerType: transport === 'native' ? 'chatgpt' : 'openai',
+          baseUrl: 'https://example.invalid', apiKey: 'fixture-key', modelId: 'fixture',
+          messages: [{ role: 'user', content: 'Inspect the page' }], allowedToolIds: [toolName],
+          webSearchOptions: { configured: true }, signal: controller.signal,
+          onToken: () => undefined, onComplete: (result: StreamCompletionResult) => completed.push(result), onError, onToolResult: onResult,
+        });
+        expect(seenSignal?.aborted).toBe(true);
+        expect(providerCalls).toBe(1);
+        expect(onResult).not.toHaveBeenCalled();
+        expect(onError).not.toHaveBeenCalled();
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.hiddenContext ?? '').not.toContain('late-result');
+      });
+    }
+  }
+});
+
+describe('streamingChat transport lifetime', () => {
+  it('keeps the newer HTTP reader cancellable after an older same-session stream finishes', async () => {
+    const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const cancelled: number[] = [];
+    let bothStarted!: () => void;
+    const started = new Promise<void>((resolve) => { bothStarted = resolve; });
+    const fetchImpl = mock(async () => {
+      const index = streams.length;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+          if (streams.length === 2) bothStarted();
+        },
+        cancel() { cancelled.push(index); },
+      }));
+    });
+    const { streamChat, cancelStream } = await loadStreamingChat(fetchImpl);
+    const completed: StreamCompletionResult[] = [];
+    const errors: Error[] = [];
+    const options = {
+      sessionId: 'overlapping-http', providerId: 'custom', providerType: 'custom',
+      modelId: 'model', baseUrl: 'https://example.invalid', messages: [],
+      onToken: () => undefined,
+      onComplete: (result: StreamCompletionResult) => completed.push(result),
+      onError: (error: Error) => errors.push(error),
+    };
+    const first = streamChat(options);
+    const second = streamChat(options);
+    await started;
+    streams[0].enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"first"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+    await first;
+    cancelStream('overlapping-http');
+    await second;
+    expect(cancelled).toContain(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(completed).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+
+  it('discards a live native tool resolution after its provider turn has completed', async () => {
+    const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    let requestId = '';
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    let resolveTool!: (value: string) => void;
+    const tool = new Promise<string>((resolve) => { resolveTool = resolve; });
+    const submit = mock(async () => undefined);
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        listeners.set(name, callback);
+        return () => listeners.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id?: string } }) => {
+        if (command === 'ai_stream_chat') {
+          requestId = params.request!.request_id!;
+          started();
+        }
+        if (command === 'ai_submit_tool_result') await submit();
+      }),
+    });
+    const results: string[] = [];
+    const traces: unknown[] = [];
+    const run = streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'model', messages: [],
+      allowedToolIds: ['read'], onToolCall: () => tool,
+      onToolResult: (_name: string, result: string) => results.push(result),
+      onToolTracesUpdate: (value: unknown) => traces.push(value),
+      onToken: () => undefined, onComplete: () => undefined,
+      onError: (error: Error) => { throw error; },
+    });
+    await ready;
+    listeners.get('ai:tool-request')!({ payload: { request_id: requestId, tool_call_id: 'late-call', tool_name: 'read', args: { path: 'README.md' } } });
+    listeners.get('ai:done')!({ payload: { request_id: requestId, output_text: 'done', tool_calls: [] } });
+    await run;
+    const finishedTraceCount = traces.length;
+    resolveTool('late-result');
+    await tool;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(submit).not.toHaveBeenCalled();
+    expect(results).toEqual([]);
+    expect(traces).toHaveLength(finishedTraceCount);
+  });
+});
+
+describe('streamingChat partial native listener setup', () => {
+  it('disposes immediate and late acquisitions once without touching a successor', async () => {
+    const disposers: Array<ReturnType<typeof mock>> = [];
+    const callbacks: Array<{ name: string; callback: (event: { payload: Record<string, unknown> }) => void }> = [];
+    const late: Array<() => void> = [];
+    let failSetup!: (error: Error) => void;
+    let successorReady!: () => void;
+    const ready = new Promise<void>((resolve) => { successorReady = resolve; });
+    let successorId = '';
+    const cancel = mock(() => undefined);
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock((name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        const index = callbacks.length;
+        callbacks.push({ name, callback });
+        const dispose = mock(() => undefined);
+        disposers.push(dispose);
+        if (index === 2) return new Promise<() => void>((_resolve, reject) => { failSetup = reject; });
+        if (index > 2 && index < 6) return new Promise<() => void>((resolve) => { late.push(() => resolve(dispose)); });
+        return Promise.resolve(dispose);
+      }),
+      invokeImpl: mock(async (command: string, params: { request?: { request_id: string } }) => {
+        if (command === 'ai_cancel_stream') cancel();
+        if (command === 'ai_stream_chat') {
+          successorId = params.request!.request_id;
+          successorReady();
+        }
+      }),
+    });
+    const controller = new AbortController();
+    const errors: Error[] = [];
+    const completed = mock(() => undefined);
+    const options = {
+      sessionId: 'listener-race', providerId: 'copilot', providerType: 'copilot', modelId: 'model',
+      messages: [], onToken: () => undefined, onComplete: completed,
+      onError: (error: Error) => errors.push(error),
+    };
+    const first = streamChat({ ...options, signal: controller.signal });
+    const successor = streamChat(options);
+    await ready;
+    failSetup(new Error('listener setup failed'));
+    await first;
+    expect(errors.map((error) => error.message)).toEqual(['listener setup failed']);
+    expect(disposers[0]).toHaveBeenCalledTimes(1);
+    expect(disposers[1]).toHaveBeenCalledTimes(1);
+    for (const dispose of disposers.slice(3)) expect(dispose).not.toHaveBeenCalled();
+    for (const resolve of late) resolve();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    for (const index of [0, 1, 3, 4, 5]) expect(disposers[index]).toHaveBeenCalledTimes(1);
+    for (const dispose of disposers.slice(6)) expect(dispose).not.toHaveBeenCalled();
+    controller.abort();
+    expect(cancel).not.toHaveBeenCalled();
+    callbacks.slice(6).find(({ name }) => name === 'ai:done')!.callback({
+      payload: { request_id: successorId, output_text: 'successor', tool_calls: [] },
+    });
+    await successor;
+    expect(completed).toHaveBeenCalledTimes(1);
+    for (const index of [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11]) expect(disposers[index]).toHaveBeenCalledTimes(1);
+  });
 });

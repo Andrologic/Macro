@@ -1,3 +1,4 @@
+import { createLifecycleScope, type LifecycleScope } from './services/lifecycleScope';
 import React, { useEffect, useRef, Suspense, lazy, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Header } from "./components/layout/Header";
@@ -148,7 +149,7 @@ const StartupErrorScreen: React.FC<{
 // APP COMPONENT
 // =============================================================================
 
-const App: React.FC = () => {
+const App: React.FC<{ application?: LifecycleScope }> = ({ application }) => {
   const { t } = useTranslation();
   const platformChrome = getPlatformChromeState();
   const titleBarLayout = getTitleBarLayout(platformChrome);
@@ -168,6 +169,19 @@ const App: React.FC = () => {
   } | null>(null);
   const [bootstrapRetryKey, setBootstrapRetryKey] = useState(0);
   const appBootstrapRef = useRef<AppBootstrapController | null>(null);
+  const viewOwnerRef = useRef<LifecycleScope | null>(null);
+  const retryPendingRef = useRef(false);
+  useEffect(() => {
+    const owner = createLifecycleScope();
+    viewOwnerRef.current = owner;
+    const stop = () => owner.stop();
+    application?.signal.addEventListener('abort', stop, { once: true });
+    if (application?.isActive() === false) stop();
+    return () => {
+      stop();
+      application?.signal.removeEventListener('abort', stop);
+    };
+  }, [application]);
 
   const [
     isLeftOpen,
@@ -207,11 +221,16 @@ const App: React.FC = () => {
   const resizeActiveLeftPanel = workspaceView?.leftWidthPreference === "architect" ? setArchitectLeftPanelWidth : setLeftPanelWidth;
 
   useEffect(() => {
-    void useConversationArchiveStore.getState().hydrateArchivedConversationIds();
-    void import("./stores/useViewFilterStore").then(({ useViewFilterStore }) =>
-      useViewFilterStore.getState().hydrate(),
-    );
-  }, [bootstrapRetryKey]);
+    const archiveHydration = useConversationArchiveStore.getState().hydrateArchivedConversationIds(application);
+    void (application?.track(archiveHydration) ?? archiveHydration);
+    const owner = viewOwnerRef.current;
+    const filters = import("./stores/useViewFilterStore").then(({ useViewFilterStore, waitForViewFilterPersistence }) => {
+      if (application ? !application.isActive() : !owner?.isActive()) return;
+      application?.own(() => { void application.track(waitForViewFilterPersistence()); });
+      return useViewFilterStore.getState().hydrate(application);
+    });
+    void (application?.track(filters) ?? filters);
+  }, [bootstrapRetryKey, application]);
 
   // Ref to track panels that were auto-collapsed during resize
   const autoCollapseRef = useRef<{ left: boolean; right: boolean }>({
@@ -311,9 +330,8 @@ const App: React.FC = () => {
         setBootstrapImportError(null);
         const { appBootstrap } = await import("./services/appBootstrap");
 
-        if (cancelled) {
-          return;
-        }
+        if (cancelled || application?.isActive() === false) return;
+        application?.own(() => { void application.track(appBootstrap.stop()); });
 
         appBootstrapRef.current = appBootstrap;
         setInitStatus(appBootstrap.getSnapshot());
@@ -345,9 +363,11 @@ const App: React.FC = () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [bootstrapRetryKey]);
+  }, [bootstrapRetryKey, application]);
 
   const handleStartupRetry = () => {
+    const owner = viewOwnerRef.current;
+    if (!owner?.isActive() || retryPendingRef.current) return;
     setBootstrapImportError(null);
     setInitStatus(INITIAL_BOOTSTRAP_SNAPSHOT);
     const controller = appBootstrapRef.current;
@@ -356,15 +376,19 @@ const App: React.FC = () => {
       return;
     }
 
-    void (async () => {
+    retryPendingRef.current = true;
+    const retry = (async () => {
       if (isTauriAvailable()) {
         const databaseStatus = await getDatabaseInitializationStatus();
+        if (!owner.isActive()) return;
         if (databaseStatus.status === "failed") {
           await retryDatabaseInitialization();
         }
       }
+      if (!owner.isActive()) return;
       await controller.restart();
     })().catch((error) => {
+      if (!owner.isActive()) return;
       console.error("Failed to restart app bootstrap:", error);
       setBootstrapImportError({
         message:
@@ -374,7 +398,8 @@ const App: React.FC = () => {
         details:
           error instanceof Error ? error.stack || error.message : String(error),
       });
-    });
+    }).finally(() => { retryPendingRef.current = false; });
+    void (application?.track(retry) ?? retry);
   };
 
   const lastRecoveryToastKeyRef = useRef<string | null>(null);

@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   loadPersistedPreference,
@@ -50,6 +51,16 @@ describe('useViewFilterStore', () => {
 
   afterEach(() => {
     removeTauriRuntimeMock();
+  });
+
+  it('does not publish filters after application retirement and can retry', async () => {
+    const owner = createLifecycleScope();
+    const pending = useViewFilterStore.getState().hydrate(owner);
+    owner.stop();
+    await pending;
+    expect(useViewFilterStore.getState().isHydrated).toBe(false);
+    await useViewFilterStore.getState().hydrate();
+    expect(useViewFilterStore.getState().isHydrated).toBe(true);
   });
 
   it('hydrates the durable filters after an in-memory restart', async () => {

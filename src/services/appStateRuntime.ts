@@ -4,8 +4,9 @@ let appStateGetter: AppStateGetter<unknown> | null = null;
 
 export const registerAppStateGetter = <TState>(
   getter: AppStateGetter<TState>,
-): void => {
+ ): (() => void) => {
   appStateGetter = getter as AppStateGetter<unknown>;
+  return () => { if (appStateGetter === getter) appStateGetter = null; };
 };
 
 export const getRegisteredAppState = async <TState>(): Promise<TState> => {

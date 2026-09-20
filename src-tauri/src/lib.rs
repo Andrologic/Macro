@@ -1030,12 +1030,14 @@ pub fn run() {
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            fs::watcher::shutdown_watcher(app_handle);
         }
         tauri::RunEvent::Exit => {
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            fs::watcher::shutdown_watcher(app_handle);
         }
         _ => {}
     });

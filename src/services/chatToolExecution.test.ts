@@ -6,6 +6,7 @@ import type { ScopedTurnConfiguration } from "./configurationClient";
 import type { TerminalSessionDto } from "./tauriIpc";
 import { EMPTY_CONVERSATION_RUNTIME } from "../domains/chat/runtimeState";
 import { handleArchitectToolCall } from "./architectToolRuntime";
+import { handleDeferredArchitectToolCall } from "./deferredArchitectTool";
 import type { ArchitectPlanRecord } from "./architectPlanService";
 import { createChatTurnRuntime } from "./chatTurnRuntime";
 import { createChatToolDispatch } from "./chatToolDispatch";
@@ -33,7 +34,7 @@ const terminalSession: TerminalSessionDto = {
   timed_out: false, output_truncated: false, updated_at: "2026-01-01T00:00:00Z",
 };
 
-function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo") {
+function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo", loadRuntime?: Parameters<typeof createChatToolExecution>[1]) {
   const abort = new AbortController();
   const operation: FrozenToolCallContext = {
     conversationId: "conversation", sessionId: "session", turnId: "turn", assistantMessageId: "assistant",
@@ -115,7 +116,7 @@ function setup(tool = "read", riskLevel: ToolRiskLevel = "yolo") {
     },
   };
   saveRecovery.mockImplementation(async (_id, approval) => { events.push(approval ? "marker:open" : "marker:closed"); });
-  const execute = createChatToolExecution(ports);
+  const execute = createChatToolExecution(ports, loadRuntime);
   const run = (args: Record<string, unknown> = {}) => execute(operation, tool, args, "call");
   const resolve = (decision: PendingToolApprovalResolution) => {
     const resolver = ports.approvals.resolvers.get("conversation::call");
@@ -349,7 +350,7 @@ describe("agent terminal isolation", () => {
   });
 });
 
-function architectFixture() {
+function architectFixture(loadRuntime?: Parameters<typeof handleDeferredArchitectToolCall>[1]) {
   const f = setup("plan_update");
   f.operation.mode = "Architect";
   f.operation.architectPlanAtSend = { planId: "plan-a", targetBranch: "branch-a" };
@@ -369,7 +370,7 @@ function architectFixture() {
   const preview = mock(() => {});
   const ensure = mock(async () => ({ conversationId: "conversation", restoredTranscript: false, createdConversation: false }));
   const refresh = mock(async () => {});
-  f.ports.handlers.architect = params => handleArchitectToolCall({
+  f.ports.handlers.architect = params => handleDeferredArchitectToolCall({
     ...params,
     planService: {
       createArchitectPlan: async () => plan, getArchitectPlan: getPlan, updateArchitectPlan: update,
@@ -393,7 +394,7 @@ function architectFixture() {
     }),
     getTaskState: () => ({ tasks: [], refreshFromPlan: refresh }),
     ensureArchitectConversationForPlan: ensure,
-  });
+  }, loadRuntime);
   return { ...f, plan, getPlan, update, activate, preview, ensure, refresh,
     select: (branch: string) => { selectedBranch = branch; } };
 }
@@ -500,4 +501,57 @@ test("a tool suspended in an old attempt cannot execute after the same turn is r
   gate.resolve(true);
   expect(await pending).toMatchObject({ errorKind: "aborted" });
   expect(f.executor.executeWorkspaceTool).not.toHaveBeenCalled();
+});
+
+
+test("deferred tool code rechecks the real owner before acquiring IO", async () => {
+  const gate = deferred<typeof import("./chatToolExecutionRuntime")>();
+  const f = setup("read", "yolo", () => gate.promise);
+  const pending = f.run();
+  expect(f.ports.policy.isSourceToolEnabled).not.toHaveBeenCalled();
+  f.runtime.sessionId = "successor";
+  gate.resolve(await import("./chatToolExecutionRuntime"));
+  expect(await pending).toMatchObject({ errorKind: "aborted" });
+  expect(f.events).toEqual([]);
+  expect(f.executor.executeWorkspaceTool).not.toHaveBeenCalled();
+});
+
+test("deferred tool code preserves approval ports and original execution context", async () => {
+  const gate = deferred<typeof import("./chatToolExecutionRuntime")>();
+  const f = setup("read", "yolo", () => gate.promise);
+  const pending = f.run({ path: "synthetic.txt" });
+  gate.resolve(await import("./chatToolExecutionRuntime"));
+  expect(await pending).toBe("workspace result");
+  expect(f.executor.executeWorkspaceTool).toHaveBeenCalledTimes(1);
+  expect(f.ports.policy.isSourceToolEnabled).toHaveBeenCalled();
+});
+
+test("deferred Architect code refuses an obsolete captured turn before any IO", async () => {
+  const gate = deferred<{ handleArchitectToolCall: typeof handleArchitectToolCall }>();
+  const load = mock(() => gate.promise);
+  const f = architectFixture(load);
+  const pending = f.run({ plan_id: "plan-a", description: "pending" });
+  await checkpoint();
+  expect(load).toHaveBeenCalledTimes(1);
+  f.runtime.sessionId = "successor";
+  gate.resolve({ handleArchitectToolCall });
+  expect(await pending).toMatchObject({ errorKind: "aborted" });
+  expect(f.getPlan).not.toHaveBeenCalled();
+  expect(f.update).not.toHaveBeenCalled();
+  expect(f.activate).not.toHaveBeenCalled();
+});
+
+test("selection changes during Architect loading keep the captured branch", async () => {
+  const gate = deferred<{ handleArchitectToolCall: typeof handleArchitectToolCall }>();
+  const load = mock(() => gate.promise);
+  const f = architectFixture(load);
+  const pending = f.run({ plan_id: "plan-a", description: "pending" });
+  await checkpoint();
+  expect(load).toHaveBeenCalledTimes(1);
+  f.select("branch-b");
+  gate.resolve({ handleArchitectToolCall });
+  await pending;
+  expect(f.update.mock.calls[0]?.[0].branchName).toBe("branch-a");
+  expect(f.activate).not.toHaveBeenCalled();
+  expect(f.ensure).not.toHaveBeenCalled();
 });
