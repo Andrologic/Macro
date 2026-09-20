@@ -620,6 +620,93 @@ describe('Footer', () => {
     mock.restore();
   });
 
+  it('clears busy state when the Git target changes during a refresh', async () => {
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    macroStatusByPath = {
+      '/repo/api': buildMissingUpstreamMacroStatus(),
+      '/repo/web': buildMacroStatus(0, 0),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByText(container!, 'Resolve')?.click(); });
+    await flushAsyncWork();
+    expect(findButtonByText(container!, 'Push @macro')).not.toBeNull();
+    const replies: Array<(status: GitStatusDto) => void> = [];
+    gitStatusMock.mockImplementation((path: string) => path === '/repo/api'
+      ? new Promise((resolve) => { replies.push(resolve); })
+      : Promise.resolve(cloneGitStatus(gitStatusByPath[path]!)));
+    act(() => { findButtonByText(container!, 'Push @macro')?.click(); });
+    await flushAsyncWork();
+    expect(replies.length).toBeGreaterThan(0);
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(true);
+    appState.selectedProjectId = 'project-b';
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    expect(container.textContent).toContain('feature-b');
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(false);
+    await act(async () => {
+      replies.forEach((resolve) => resolve(buildGitStatus('main-a', 0, 0)));
+    });
+    await flushAsyncWork();
+    expect(findButtonByIcon(container!, 'refresh-cw')?.disabled).toBe(false);
+  });
+
+  it('keeps the current conflict dialog when an old target retry finishes', async () => {
+    appState.activeArchitectPlanId = null;
+    appState.visibleArchitectPlans = [];
+    macroStatusByPath = {
+      '/repo/api': {
+        ...buildMacroStatus(5, 4),
+        state: 'conflict',
+        reason: 'merge_conflict',
+        next_action: 'resolve_conflict',
+        conflicted_files: ['plan.json'],
+      },
+      '/repo/web': buildMissingUpstreamMacroStatus(),
+      '/repo/docs': buildMacroStatus(0, 0),
+    };
+    const { Footer } = await loadFooter();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    act(() => { findButtonByText(container!, 'Resolve')?.click(); });
+    await flushAsyncWork();
+    expect(container.querySelector('[data-testid="conflict-panel"]')).not.toBeNull();
+
+    appState.selectedProjectId = 'project-b';
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    const panel = container.querySelector<HTMLDivElement>('[data-testid="conflict-panel"]');
+    expect(panel).not.toBeNull();
+    expect(findButtonByText(panel!, 'Push @macro')).not.toBeNull();
+    let releasePush!: (result: MacroBranchSyncDto) => void;
+    macroBranchPushMock.mockImplementationOnce(() => new Promise<MacroBranchSyncDto>((resolve) => {
+      releasePush = resolve;
+    }));
+    act(() => { findButtonByText(panel!, 'Push @macro')?.click(); });
+    await flushAsyncWork();
+    expect(macroBranchPushMock).toHaveBeenCalledWith({ workspacePath: '/repo/web' });
+
+    appState.selectedProjectId = 'project-a';
+    await act(async () => { root?.render(<Footer />); });
+    await flushAsyncWork();
+    expect(findButtonByText(container!, 'Retry sync')).not.toBeNull();
+    const currentPushCount = findButtonByIcon(container!, 'arrow-up')?.textContent;
+    await act(async () => { releasePush(buildMacroStatus(0, 0)); });
+    await flushAsyncWork();
+    expect(container.querySelector('[data-testid="conflict-panel"]')).not.toBeNull();
+    expect(findButtonByText(container!, 'Retry sync')).not.toBeNull();
+    expect(findButtonByIcon(container!, 'arrow-up')?.textContent).toBe(currentPushCount);
+  });
+
   it('exposes the notification center relationship to assistive technology', async () => {
     const { Footer } = await loadFooter();
     container = document.createElement('div');

@@ -763,6 +763,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   const isNotificationCenterOpen = useNotificationCenterStore((state) => state.isCenterOpen);
   const setNotificationCenterOpen = useNotificationCenterStore((state) => state.setCenterOpen);
 
+  const captureView = useViewLifetime(footerGitContextSignature(gitContext));
   const [codeStatus, setCodeStatus] = useState(DEFAULT_CODE_STATUS);
   const [focusedProjectBranch, setFocusedProjectBranch] = useState<string | null>(null);
   const [macroSnapshot, setMacroSnapshot] = useState<tauriIpc.MacroBranchSyncDto | null>(null);
@@ -770,7 +771,8 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     DEFAULT_FOOTER_METADATA_SYNC
   );
   const [syncAction, setSyncAction] = useState<FooterSyncAction | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshingView, setRefreshingView] = useState<typeof captureView | null>(null);
+  const isRefreshing = refreshingView === captureView;
   const [showConflictModal, setShowConflictModal] = useState(false);
   const [codeDivergenceResolution, setCodeDivergenceResolution] =
     useState<CodeDivergenceResolution | null>(null);
@@ -787,7 +789,6 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   const lastMacroConflictActionRef = useRef<MacroConflictContext | null>(null);
   const footerMetadataSyncRef = useRef(footerMetadataSync);
 
-  const captureView = useViewLifetime(footerGitContextSignature(gitContext));
   const focusProjects = gitContext.candidates;
   const focusedProject = gitContext.project;
   const scopeProjects = useMemo<ScopedProject[]>(
@@ -1112,11 +1113,11 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
     if (!current()) return;
     if (refreshRef.current?.capture === captureView) return refreshRef.current.promise;
     const run = (async () => {
-      if (options?.showBusy) setIsRefreshing(true);
+      if (options?.showBusy) setRefreshingView(() => captureView);
       try {
         await Promise.all([refreshCodeStatus(), refreshMacroStatus(Boolean(options?.ensureMacro))]);
       } finally {
-        if (current() && options?.showBusy) setIsRefreshing(false);
+        if (current() && options?.showBusy) setRefreshingView((previous) => previous === captureView ? null : previous);
       }
     })().finally(() => {
       if (refreshRef.current?.promise === run) refreshRef.current = null;
@@ -1561,9 +1562,10 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
   };
 
   const handleRetryMacroSync = async () => {
+    const current = captureView();
     if (isMissingUpstreamResolution) {
       const result = await createMacroSyncServiceForProjects(scopeProjects).pushMacroMetadata();
-      if (result) {
+      if (current() && result) {
         setMacroSnapshot(result);
         if (result.state !== 'pending' || result.reason !== 'missing_upstream') {
           setShowConflictModal(false);
@@ -1579,7 +1581,7 @@ const FooterContent: React.FC<FooterContentProps> = React.memo(({
       return;
     }
     await refreshFooterStatus({ ensureMacro: true, showBusy: true });
-    if (footerMetadataSyncRef.current.state !== 'conflict') setShowConflictModal(false);
+    if (current() && footerMetadataSyncRef.current.state !== 'conflict') setShowConflictModal(false);
   };
 
   const continuePushAfterMissingUpstreamChoice = async (

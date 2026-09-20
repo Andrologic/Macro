@@ -1374,6 +1374,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
         lifecycle?.assertActive();
+        if (!isCurrent()) return get().modelsByProvider[providerId] || [];
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1520,6 +1521,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
         lifecycle?.assertActive();
+        if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1741,6 +1743,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
         lifecycle?.assertActive();
+        if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
 
         const { selectedProviderId, selectedModelId } = get();
         if (selectedProviderId === providerId && selectedModelId) {
@@ -1830,6 +1833,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       }));
       await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
       lifecycle?.assertActive();
+      if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
 
       return models;
     } catch (error) {

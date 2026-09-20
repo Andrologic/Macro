@@ -87,7 +87,7 @@ const updateProviderSettingsMock = mock(async (_params: {
   filterFreeModels?: boolean;
   copilotSendTimeoutMs?: number | null;
 }): Promise<void> => undefined);
-const listProviderModelsMock = mock(async () => []);
+const listProviderModelsMock = mock(async (): Promise<ReturnType<typeof dbModel>[]> => []);
 const upsertProviderModelsMock = mock(async () => []);
 const aiDownloadCopilotRuntimeMock = mock(
   async (_params: { requestId: string; providerId?: string }) => undefined
@@ -306,6 +306,40 @@ mock.module('../services/aiConfig', () => ({
 };
 
 describe('useProviderStore secret resolution', () => {
+  it('preserves new transport model selection after an old catalog wait', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    await useProviderStore.getState().loadProviderConfigs();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const catalog = mock(async (): Promise<void> => undefined);
+    catalog.mockImplementationOnce(() => pending);
+    useProviderStore.setState({
+      selectedProviderId: 'provider-openai',
+      selectedModelId: 'old-model',
+      refreshLoadedModelContextCatalog: catalog,
+    });
+    listProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'old-model'),
+    ]);
+    const old = useProviderStore.getState().loadProviderModels('provider-openai');
+    await flushAsyncWork();
+    expect(catalog).toHaveBeenCalledTimes(1);
+    await useProviderStore.getState().updateProviderConfig('provider-openai', {
+      baseUrl: 'https://replacement.invalid/v1',
+    });
+    listProviderModelsMock.mockImplementationOnce(async () => [
+      dbModel('provider-openai', 'new-model'),
+    ]);
+    await useProviderStore.getState().loadProviderModels('provider-openai');
+    useProviderStore.getState().selectModel('new-model');
+    expect(useProviderStore.getState().selectedModelId).toBe('new-model');
+    release();
+    await old;
+    expect(useProviderStore.getState().modelsByProvider['provider-openai']
+      .map((model: { id: string }) => model.id)).toEqual(['new-model']);
+    expect(useProviderStore.getState().selectedModelId).toBe('new-model');
+  });
+
   it('does not load configs after a provision already admitted at stop', async () => {
     const { useProviderStore } = await loadProviderStore();
     const scope = createLifecycleScope();

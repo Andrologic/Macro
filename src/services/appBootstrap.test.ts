@@ -467,7 +467,7 @@ describe('appBootstrap ownership', () => {
     }));
     const starting = controller.ensureStarted();
     const preloadContext = await entered.promise;
-    expect(preloadContext).toBe(initializationContext);
+    expect(initializationContext).toBe(preloadContext);
     await controller.stop();
     await starting;
     expect(preloadContext.signal.aborted).toBe(true);
