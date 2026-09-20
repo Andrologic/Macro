@@ -1387,14 +1387,47 @@ La surface complète reste supportée par le desktop local via Tauri IPC.
 
 ### 15.1 Chat streaming
 
-Le streaming des réponses IA est géré côté frontend par un service dédié.
+`streamingChat.ts` conserve la façade publique et choisit le transport. Les
+types métier purs sont dans `services/ai/contracts.ts`. `toolCallingLoop.ts`
+possède les tours, le rejeu, le compactage inter-tours, le steering, les limites
+et les interruptions. `nativeAdapter.ts` et `chatCompletionsAdapter.ts` lui
+fournissent un tour et sa projection dans le format du fournisseur. Les codecs
+Responses, Chat Completions et Copilot gardent leurs représentations propres.
 
-Cette couche s'occupe de :
+`toolCallRunner.ts` applique la validation Macro, l'allowlist et l'ordre du lot
+séquentiel, puis délègue les effets au callback métier du Chat. Une chaîne vide
+est un résultat explicite. Le repli historique `read_file` conserve l'identifiant
+de l'appel et accepte le résultat structuré de `read`. Les replis web partagent
+`fallbackTools.ts` et le signal de la tentative. Les demandes vivantes Copilot
+réutilisent la validation et la normalisation sans attendre la fin du stream.
+Le lot séquentiel refuse les questionnaires multiples ; le relais vivant
+accepte le premier, puis refuse les suivants.
 
-- envoyer le contexte conversationnel
-- recevoir les tokens ou chunks
-- mettre à jour la conversation en cours
-- annuler un stream si nécessaire
+`streamAccumulator.ts` garde l'ordre d'insertion des traces et leur contexte
+visible/caché. La priorité des statuts protégés vient de `toolTraceState.ts`.
+L'approbation, la persistance et l'identité de tentative restent aux modules
+Chat. Chaque transport nettoie ses propres ressources, y compris les listeners
+acquis après un échec partiel, sans toucher à celles d'une requête suivante.
+
+Les DTO IA communs sont définis dans `src-tauri/src/ai/types.rs`, avec le chemin
+ChatGPT historique réexporté. Les contrats du processus Copilot sont dans
+`ai/copilot/protocol.rs`. Le payload `tool_result` réellement sérialisé fournit
+le type du décodeur bridge via le générateur Config/IPC commun. Le décodeur
+vérifie encore les valeurs et les deux identifiants à l'exécution. Le bridge
+conserve `is_error` et `error_kind` jusqu'au résultat SDK, où un refus devient
+`denied` et une erreur devient `failure`. Une panne du canal rejette l'appel.
+`bun run typecheck:copilot` vérifie tous ses modules avec le SDK installé ; les
+efforts de raisonnement hors de son contrat sont refusés explicitement.
+Le test du catalogue Copilot conserve aussi la liste des outils `config_*`,
+`skill_*` et `task_*` annoncés mais encore refusés par son exécuteur. Ce raccord
+de contrat ne leur ajoute aucune route d'exécution.
+
+Les profils de capacités techniques suivent le type de fournisseur configuré,
+comme le dispatch natif. L'identifiant sert de repli quand ce type est absent ;
+l'URL OpenCode ne spécialise qu'un transport OpenAI compatible. Une matrice de
+fixtures partagée vérifie cette précédence en TypeScript et Rust. Ces capacités
+n'accordent aucun droit d'outil et restent distinctes des profils de protocole
+de raisonnement et des capacités capturées du tour Chat.
 
 Les transports conservent la cause de fin fournie par le modèle. Une fin par
 limite de sortie devient `length`, y compris quand Responses la signale par

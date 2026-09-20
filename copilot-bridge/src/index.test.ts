@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ToolInvocation, ToolResultObject } from '@github/copilot-sdk';
+import nativeToolResults from '../../src-tauri/src/ai/copilot/fixtures/tool-results.json';
 import { BridgeControlChannel } from './controlChannel';
 import type { RelayToolResult } from './protocol';
 
@@ -40,7 +41,7 @@ describe('copilot bridge tool registration', () => {
     const recorded = mock((_result: RelayToolResult) => {});
     input.write('{}\n');
     const tools = __testables.buildMacroTools({
-      request_id: ' request:original ', model_id: 'synthetic', messages: [],
+      request_id: ' request:opaque ', model_id: 'synthetic', messages: [],
       allowed_tool_ids: ['read_file'],
     }, { controlChannel: channel, recordRelayResult: recorded }) as Array<{
       name: string;
@@ -48,29 +49,27 @@ describe('copilot bridge tool registration', () => {
     }>;
     const handler = tools.find((tool) => tool.name === 'read_file')!.options.handler;
     const invocation = {
-      sessionId: 'session', toolCallId: ' call:original ', toolName: 'read_file', arguments: {},
+      sessionId: 'session', toolCallId: ' call/opaque ', toolName: 'read_file', arguments: {},
     };
     try {
-      for (const [isError, errorKind, resultType] of [
-        [false, null, 'success'], [true, 'permission', 'denied'],
-        [true, 'aborted', 'failure'], [true, 'validation', 'failure'],
-        [true, 'execution', 'failure'], [true, 'future_kind', 'failure'],
-        [true, null, 'failure'], [false, 'execution', 'success'],
-      ] as const) {
+      for (const { payload, sdk_result_type: resultType } of nativeToolResults) {
+        if (resultType !== 'success' && resultType !== 'denied' && resultType !== 'failure') {
+          throw new Error(`Invalid fixture SDK result type: ${resultType}`);
+        }
         const result = handler({ path: 'example.txt' }, invocation);
-        input.write(`${JSON.stringify({
-          type: 'tool_result', request_id: ' request:original ', tool_call_id: invocation.toolCallId,
-          result: '', is_error: isError, error_kind: errorKind, interrupt: true,
-          hidden_context: 'retained context', visible_content: '',
-        })}\n`);
+        input.write(`${JSON.stringify(payload)}\n`);
         await expect(result).resolves.toEqual({
-          textResultForLlm: '', resultType,
-          ...(isError ? { error: '' } : {}),
-          toolTelemetry: { is_error: isError, error_kind: errorKind },
+          textResultForLlm: payload.result, resultType,
+          ...(payload.is_error ? { error: payload.result } : {}),
+          toolTelemetry: { is_error: payload.is_error, error_kind: payload.error_kind },
         });
         expect(recorded).toHaveBeenLastCalledWith({
-          result: '', isError, errorKind, interrupt: true,
-          hiddenContext: 'retained context', visibleContent: '',
+          result: payload.result,
+          isError: payload.is_error,
+          errorKind: payload.error_kind,
+          interrupt: payload.interrupt,
+          hiddenContext: payload.hidden_context ?? undefined,
+          visibleContent: payload.visible_content ?? undefined,
         });
       }
 

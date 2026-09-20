@@ -2,6 +2,7 @@ import {
   CopilotClient,
   defineTool,
   type ModelInfo,
+  type SessionConfig,
   type PermissionRequest,
   type PermissionRequestResult,
   type Tool,
@@ -16,7 +17,6 @@ import path from 'node:path';
 import {
   filterCopilotSupportedToolIds,
   getMacroToolRegistryEntry,
-  type JsonSchema,
 } from '../../src/shared/macroToolRegistry';
 import {
   BridgeError,
@@ -102,7 +102,7 @@ interface CopilotSessionEventState {
   thinkingOpen: boolean;
 }
 
-const emitJson = (payload: JsonRecord): void => {
+const emitJson = (payload: JsonRecord | BridgeHealthResult): void => {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 };
 
@@ -1451,6 +1451,23 @@ const executeCopilotMacroTool = async (
   );
 };
 
+const isToolArgumentObject = (value: unknown): value is JsonRecord =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const parseSdkReasoningEffort = (value: unknown): SessionConfig['reasoningEffort'] => {
+  if (value === undefined || value === null || value === '') return undefined;
+  switch (value) {
+    case 'low': return 'low';
+    case 'medium': return 'medium';
+    case 'high': return 'high';
+    case 'xhigh': return 'xhigh';
+    default: throw new BridgeError(
+      'invalid_reasoning_effort',
+      'Invalid reasoning_effort value. Supported values: low, medium, high, xhigh.',
+    );
+  }
+};
+
 const buildMacroTools = (
   request: BridgeSendRequest,
   options?: {
@@ -1467,12 +1484,15 @@ const buildMacroTools = (
     .map((entry) =>
       defineTool(entry.id, {
         description: entry.description,
-        parameters: entry.parameters as JsonSchema & { type: 'object' },
+        parameters: entry.parameters,
         ...(entry.copilot?.overridesBuiltInTool === true
           ? { overridesBuiltInTool: true }
           : {}),
-        handler: async (args: JsonRecord, invocation: ToolInvocation) => {
+        handler: async (args: unknown, invocation: ToolInvocation) => {
           try {
+            if (!isToolArgumentObject(args)) {
+              throw new BridgeError('invalid_tool_arguments', 'Tool arguments must be an object.');
+            }
             return await executeCopilotMacroTool(
               request,
               context,
@@ -1583,17 +1603,18 @@ const handleSend = async (): Promise<void> => {
       );
     }
 
+    const reasoningEffort = parseSdkReasoningEffort(request.reasoning_effort);
     const { system, prompt } = serializeConversationPrompt(request.messages);
     const toolTraces = new Map<string, ToolTraceSnapshot>();
     const hiddenContextBlocks: string[] = [];
     const eventState = createCopilotSessionEventState();
-    let interruptResult: RelayToolResult | null = null;
+    const relayState: { interruptResult: RelayToolResult | null } = { interruptResult: null };
     const recordRelayResult = (result: RelayToolResult) => {
       if (result.hiddenContext?.trim()) {
         hiddenContextBlocks.push(result.hiddenContext.trim());
       }
       if (result.interrupt) {
-        interruptResult = result;
+        relayState.interruptResult = result;
       }
     };
     const tools = buildMacroTools(request, {
@@ -1610,7 +1631,7 @@ const handleSend = async (): Promise<void> => {
 
       const session = await client.createSession({
         model: request.model_id,
-        ...(request.reasoning_effort ? { reasoningEffort: request.reasoning_effort } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         workingDirectory:
           normalizePath(request.workspace_path) ||
           normalizePath(request.default_workspace_path) ||
@@ -1662,8 +1683,8 @@ const handleSend = async (): Promise<void> => {
     emitJson({
       type: 'done',
       content:
-        interruptResult?.interrupt && interruptResult.visibleContent != null
-          ? interruptResult.visibleContent
+        relayState.interruptResult?.interrupt && relayState.interruptResult.visibleContent != null
+          ? relayState.interruptResult.visibleContent
           : eventState.finalContent,
       reasoning_summary: getCopilotReasoningSummary(eventState),
       hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
@@ -1697,6 +1718,7 @@ const main = async (): Promise<void> => {
 };
 
 export const __testables = {
+  parseSdkReasoningEffort,
   buildMacroTools,
   closeCopilotThinkingBlock,
   classifyCopilotWarningCompletionReason,

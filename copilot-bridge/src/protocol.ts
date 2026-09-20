@@ -1,3 +1,5 @@
+import type { BridgeToolResultMessage as NativeBridgeToolResultMessage } from '../../src/types/generated/ipc/BridgeToolResultMessage';
+
 export type JsonRecord = Record<string, unknown>;
 
 export interface BridgeProjectMount {
@@ -62,18 +64,20 @@ export type BridgeToolRequestMessage = {
   args: JsonRecord;
 };
 
-export interface BridgeToolResultMessage {
-  type: 'tool_result';
-  request_id: string;
-  tool_call_id: string;
-  result?: string;
-  hidden_context?: string | null;
-  visible_content?: string | null;
-  interrupt?: boolean;
-  is_error?: boolean;
-  error_kind?: string | null;
-  error?: string;
-}
+// Older senders may omit payload fields or send a channel error. Keep that
+// compatibility at the decoder boundary while deriving field types from Rust.
+type HistoricalToolResultField =
+  | 'result'
+  | 'hidden_context'
+  | 'visible_content'
+  | 'interrupt'
+  | 'is_error'
+  | 'error_kind';
+
+export type BridgeToolResultMessage =
+  Omit<NativeBridgeToolResultMessage, HistoricalToolResultField>
+  & Partial<Pick<NativeBridgeToolResultMessage, HistoricalToolResultField>>
+  & { error?: string };
 
 export interface RelayToolResult {
   result: string;

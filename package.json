@@ -74,6 +74,7 @@
     "architecture:check": "bun dev/architecture/import-boundaries.mjs --check",
     "architecture:report": "bun dev/architecture/import-boundaries.mjs",
     "typecheck": "bun node_modules/typescript/bin/tsc --noEmit",
+    "typecheck:copilot": "bun node_modules/typescript/bin/tsc -p copilot-bridge/tsconfig.json",
     "lint": "bun node_modules/eslint/bin/eslint.js . --ext .ts,.tsx",
     "update": "bun update",
     "test": "bun dev/run-tests.mjs",

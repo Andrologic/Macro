@@ -147,6 +147,10 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::copilot::CopilotAuthErrorEvent>("copilot")?;
     registry.add::<ipc_contracts::copilot::CopilotToolRequestEvent>("copilot")?;
     registry.add::<ipc_contracts::copilot::CopilotToolResultRequest>("copilot")?;
+    registry.add::<ipc_contracts::copilot::BridgeHealthResult>("copilot")?;
+    registry.add::<ipc_contracts::copilot::BridgeModelsResponse>("copilot")?;
+    registry.add::<ipc_contracts::copilot::BridgeSendEvent>("copilot")?;
+    registry.add::<ipc_contracts::copilot::BridgeToolResultMessage>("copilot")?;
     registry.add::<ipc_contracts::provider::MacroAiProvisioningStatus>("provider")?;
     registry.add::<ipc_contracts::skills::SkillProjectRootDto>("skills")?;
     registry.add::<ipc_contracts::skills::SkillTemplateCreateRequest>("skills")?;

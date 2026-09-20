@@ -29,7 +29,7 @@
         "chat"
       ],
       "name": "AiAuthCancelledEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiAuthCancelledEvent",
+      "origin": "macro_lib::ai::types::AiAuthCancelledEvent",
       "path": "AiAuthCancelledEvent.ts"
     },
     {
@@ -37,7 +37,7 @@
         "chat"
       ],
       "name": "AiAuthErrorEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiAuthErrorEvent",
+      "origin": "macro_lib::ai::types::AiAuthErrorEvent",
       "path": "AiAuthErrorEvent.ts"
     },
     {
@@ -45,7 +45,7 @@
         "chat"
       ],
       "name": "AiAuthStartedEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiAuthStartedEvent",
+      "origin": "macro_lib::ai::types::AiAuthStartedEvent",
       "path": "AiAuthStartedEvent.ts"
     },
     {
@@ -53,7 +53,7 @@
         "chat"
       ],
       "name": "AiAuthSuccessEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiAuthSuccessEvent",
+      "origin": "macro_lib::ai::types::AiAuthSuccessEvent",
       "path": "AiAuthSuccessEvent.ts"
     },
     {
@@ -61,7 +61,7 @@
         "chat"
       ],
       "name": "AiChatImageUrl",
-      "origin": "macro_lib::ai::chatgpt::types::AiChatImageUrl",
+      "origin": "macro_lib::ai::types::AiChatImageUrl",
       "path": "AiChatImageUrl.ts"
     },
     {
@@ -69,7 +69,7 @@
         "chat"
       ],
       "name": "AiChatMessage",
-      "origin": "macro_lib::ai::chatgpt::types::AiChatMessage",
+      "origin": "macro_lib::ai::types::AiChatMessage",
       "path": "AiChatMessage.ts"
     },
     {
@@ -77,7 +77,7 @@
         "chat"
       ],
       "name": "AiChatMessageContent",
-      "origin": "macro_lib::ai::chatgpt::types::AiChatMessageContent",
+      "origin": "macro_lib::ai::types::AiChatMessageContent",
       "path": "AiChatMessageContent.ts"
     },
     {
@@ -85,7 +85,7 @@
         "chat"
       ],
       "name": "AiChatMessagePart",
-      "origin": "macro_lib::ai::chatgpt::types::AiChatMessagePart",
+      "origin": "macro_lib::ai::types::AiChatMessagePart",
       "path": "AiChatMessagePart.ts"
     },
     {
@@ -93,7 +93,7 @@
         "chat"
       ],
       "name": "AiChatRequest",
-      "origin": "macro_lib::ai::chatgpt::types::AiChatRequest",
+      "origin": "macro_lib::ai::types::AiChatRequest",
       "path": "AiChatRequest.ts"
     },
     {
@@ -109,7 +109,7 @@
         "chat"
       ],
       "name": "AiProjectMount",
-      "origin": "macro_lib::ai::chatgpt::types::AiProjectMount",
+      "origin": "macro_lib::ai::types::AiProjectMount",
       "path": "AiProjectMount.ts"
     },
     {
@@ -117,7 +117,7 @@
         "chat"
       ],
       "name": "AiStreamChunkEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiStreamChunkEvent",
+      "origin": "macro_lib::ai::types::AiStreamChunkEvent",
       "path": "AiStreamChunkEvent.ts"
     },
     {
@@ -125,7 +125,7 @@
         "chat"
       ],
       "name": "AiStreamDoneEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiStreamDoneEvent",
+      "origin": "macro_lib::ai::types::AiStreamDoneEvent",
       "path": "AiStreamDoneEvent.ts"
     },
     {
@@ -133,7 +133,7 @@
         "chat"
       ],
       "name": "AiStreamErrorEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiStreamErrorEvent",
+      "origin": "macro_lib::ai::types::AiStreamErrorEvent",
       "path": "AiStreamErrorEvent.ts"
     },
     {
@@ -141,7 +141,7 @@
         "chat"
       ],
       "name": "AiStreamTimelineEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiStreamTimelineEvent",
+      "origin": "macro_lib::ai::types::AiStreamTimelineEvent",
       "path": "AiStreamTimelineEvent.ts"
     },
     {
@@ -149,7 +149,7 @@
         "chat"
       ],
       "name": "AiStreamToolTraceEvent",
-      "origin": "macro_lib::ai::chatgpt::types::AiStreamToolTraceEvent",
+      "origin": "macro_lib::ai::types::AiStreamToolTraceEvent",
       "path": "AiStreamToolTraceEvent.ts"
     },
     {
@@ -157,7 +157,7 @@
         "chat"
       ],
       "name": "AiToolCall",
-      "origin": "macro_lib::ai::chatgpt::types::AiToolCall",
+      "origin": "macro_lib::ai::types::AiToolCall",
       "path": "AiToolCall.ts"
     },
     {
@@ -165,15 +165,16 @@
         "chat"
       ],
       "name": "AiToolCallFunction",
-      "origin": "macro_lib::ai::chatgpt::types::AiToolCallFunction",
+      "origin": "macro_lib::ai::types::AiToolCallFunction",
       "path": "AiToolCallFunction.ts"
     },
     {
       "families": [
-        "chat"
+        "chat",
+        "copilot"
       ],
       "name": "AiToolTrace",
-      "origin": "macro_lib::ai::chatgpt::types::AiToolTrace",
+      "origin": "macro_lib::ai::types::AiToolTrace",
       "path": "AiToolTrace.ts"
     },
     {
@@ -215,6 +216,46 @@
       "name": "BackupStatusCode",
       "origin": "macro_lib::local_backup::BackupStatusCode",
       "path": "BackupStatusCode.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeHealthResult",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeHealthResult",
+      "path": "BridgeHealthResult.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeModelRecord",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeModelRecord",
+      "path": "BridgeModelRecord.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeModelsResponse",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeModelsResponse",
+      "path": "BridgeModelsResponse.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeSendEvent",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeSendEvent",
+      "path": "BridgeSendEvent.ts"
+    },
+    {
+      "families": [
+        "copilot"
+      ],
+      "name": "BridgeToolResultMessage",
+      "origin": "macro_lib::ai::copilot::protocol::BridgeToolResultMessage",
+      "path": "BridgeToolResultMessage.ts"
     },
     {
       "families": [
@@ -301,7 +342,7 @@
         "copilot"
       ],
       "name": "CopilotAuthCancelledEvent",
-      "origin": "macro_lib::ai::copilot::CopilotAuthCancelledEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotAuthCancelledEvent",
       "path": "CopilotAuthCancelledEvent.ts"
     },
     {
@@ -309,7 +350,7 @@
         "copilot"
       ],
       "name": "CopilotAuthCompleteEvent",
-      "origin": "macro_lib::ai::copilot::CopilotAuthCompleteEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotAuthCompleteEvent",
       "path": "CopilotAuthCompleteEvent.ts"
     },
     {
@@ -317,7 +358,7 @@
         "copilot"
       ],
       "name": "CopilotAuthErrorEvent",
-      "origin": "macro_lib::ai::copilot::CopilotAuthErrorEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotAuthErrorEvent",
       "path": "CopilotAuthErrorEvent.ts"
     },
     {
@@ -325,7 +366,7 @@
         "copilot"
       ],
       "name": "CopilotAuthProgressEvent",
-      "origin": "macro_lib::ai::copilot::CopilotAuthProgressEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotAuthProgressEvent",
       "path": "CopilotAuthProgressEvent.ts"
     },
     {
@@ -333,7 +374,7 @@
         "copilot"
       ],
       "name": "CopilotDownloadCompleteEvent",
-      "origin": "macro_lib::ai::copilot::CopilotDownloadCompleteEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotDownloadCompleteEvent",
       "path": "CopilotDownloadCompleteEvent.ts"
     },
     {
@@ -341,7 +382,7 @@
         "copilot"
       ],
       "name": "CopilotDownloadErrorEvent",
-      "origin": "macro_lib::ai::copilot::CopilotDownloadErrorEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotDownloadErrorEvent",
       "path": "CopilotDownloadErrorEvent.ts"
     },
     {
@@ -349,7 +390,7 @@
         "copilot"
       ],
       "name": "CopilotDownloadProgressEvent",
-      "origin": "macro_lib::ai::copilot::CopilotDownloadProgressEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotDownloadProgressEvent",
       "path": "CopilotDownloadProgressEvent.ts"
     },
     {
@@ -357,7 +398,7 @@
         "copilot"
       ],
       "name": "CopilotStatus",
-      "origin": "macro_lib::ai::copilot::CopilotStatus",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotStatus",
       "path": "CopilotStatus.ts"
     },
     {
@@ -365,7 +406,7 @@
         "copilot"
       ],
       "name": "CopilotToolRequestEvent",
-      "origin": "macro_lib::ai::copilot::CopilotToolRequestEvent",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotToolRequestEvent",
       "path": "CopilotToolRequestEvent.ts"
     },
     {
@@ -373,7 +414,7 @@
         "copilot"
       ],
       "name": "CopilotToolResultRequest",
-      "origin": "macro_lib::ai::copilot::CopilotToolResultRequest",
+      "origin": "macro_lib::ai::copilot::protocol::CopilotToolResultRequest",
       "path": "CopilotToolResultRequest.ts"
     },
     {

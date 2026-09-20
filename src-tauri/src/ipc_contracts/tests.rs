@@ -124,3 +124,51 @@ fn flattened_review_fields_match_the_wire_contract() {
     );
     assert!(!declaration.contains("snapshot:"), "{declaration}");
 }
+
+#[test]
+fn common_ai_request_preserves_text_parts_and_input_defaults() {
+    use super::chat::{AiChatMessageContent, AiChatRequest};
+    let request: AiChatRequest = serde_json::from_value(json!({
+        "request_id": "request", "provider_id": "provider", "model_id": "model",
+        "messages": [
+            { "role": "user", "content": "text" },
+            { "role": "user", "content": [
+                { "type": "text", "text": "caption" },
+                { "type": "image_url", "image_url": { "url": "https://example.invalid/image.png" } }
+            ] }
+        ]
+    }))
+    .unwrap();
+    assert!(request.tools.is_empty());
+    assert!(request.allowed_tool_ids.is_empty());
+    assert!(request.project_mounts.is_empty());
+    assert!(request.reasoning_effort.is_none());
+    assert!(
+        matches!(&request.messages[0].content, AiChatMessageContent::Text(text) if text == "text")
+    );
+    assert!(
+        matches!(&request.messages[1].content, AiChatMessageContent::Parts(parts) if parts.len() == 2)
+    );
+    let wire = serde_json::to_value(request).unwrap();
+    assert_eq!(wire["messages"][0]["content"], "text");
+    assert_eq!(
+        wire["messages"][1]["content"][1]["image_url"]["url"],
+        "https://example.invalid/image.png"
+    );
+    assert!(wire["messages"][0].get("provider_turn_state").is_none());
+}
+
+#[test]
+fn common_ai_trace_keeps_nullable_detail_and_omitted_execution_fields() {
+    use super::chat::AiToolTrace;
+    let trace: AiToolTrace = serde_json::from_value(json!({
+        "tool_call_id": "call", "tool_name": "read", "status": "future_status"
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(trace).unwrap(),
+        json!({
+            "tool_call_id": "call", "tool_name": "read", "status": "future_status", "detail": null
+        })
+    );
+}
