@@ -1,33 +1,22 @@
-/** repositoryInstructions IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+RepositoryInstructionIssue as NativeRepositoryInstructionIssueDto,
+RepositoryInstructionLoadResult as NativeRepositoryInstructionLoadResultDto,
+RepositoryInstructionProjectInput as NativeRepositoryInstructionProjectInputDto,
+RepositoryInstructionSource as NativeRepositoryInstructionSourceDto
+} from '../../types/generated/ipc';
+import type { OmitFields, OptionalFields } from './compatibility.types';
 
-export interface RepositoryInstructionProjectInputDto {
-  projectId: string;
-  projectName: string;
-  rootPath: string;
-  scopePath?: string | null;
-}
+/** repositoryInstructions IPC contracts and explicit frontend adaptations of generated native bindings. */
 
-export interface RepositoryInstructionSourceDto {
-  projectId: string;
-  projectName: string;
-  sourcePath: string;
-  relativePath: string;
-  depth: number;
-  sizeBytes: number;
-  content: string;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type RepositoryInstructionProjectInputDto = OptionalFields<NativeRepositoryInstructionProjectInputDto, "scopePath">;
 
-export interface RepositoryInstructionIssueDto {
-  projectId: string;
-  code: string;
-  sourcePath?: string | null;
-  message: string;
-}
+export type RepositoryInstructionSourceDto = NativeRepositoryInstructionSourceDto;
 
-export interface RepositoryInstructionLoadResultDto {
-  sources: RepositoryInstructionSourceDto[];
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type RepositoryInstructionIssueDto = OptionalFields<NativeRepositoryInstructionIssueDto, "sourcePath">;
+
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type RepositoryInstructionLoadResultDto = OmitFields<NativeRepositoryInstructionLoadResultDto, "issues"> & {
   issues: RepositoryInstructionIssueDto[];
-  totalBytes: number;
-  fileLimit: number;
-  byteLimit: number;
-}
+};

@@ -1,41 +1,65 @@
-/** git IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+DirectReviewSnapshotDto as NativeDirectReviewSnapshotDto,
+GitAvailableTaskBranchDto as NativeGitAvailableTaskBranchDto,
+GitAvailableWorktreeDto as NativeGitAvailableWorktreeDto,
+GitBranch as NativeGitBranchDto,
+GitBranchesDto as NativeGitBranchesDto,
+GitBranchWorktreeEnsureDto as NativeGitBranchWorktreeEnsureDto,
+GitBranchWorktreeInspectionDto as NativeGitBranchWorktreeInspectionDto,
+GitBranchWorktreeRemoveDto as NativeGitBranchWorktreeRemoveDto,
+GitConflictFileDto as NativeGitConflictFileDto,
+GitConflictFileSideDto as NativeGitConflictFileSideDto,
+GitFilePairDto as NativeGitFilePairDto,
+GitFileStatus as NativeGitFileStatus,
+GitGuardedMergeStateDto as NativeGitGuardedMergeStateDto,
+GitLogPageDto as NativeGitLogPageDto,
+GitMergeCheckDto as NativeGitMergeCheckDto,
+GitPreparedBranchSyncDto as NativeGitPreparedBranchSyncDto,
+GitRebaseCheckDto as NativeGitRebaseCheckDto,
+GitRemoteDto as NativeGitRemoteDto,
+GitReviewChangeDto as NativeGitReviewChangeDto,
+GitReviewDiffHunkDto as NativeGitReviewDiffHunkDto,
+GitReviewDiffLineDto as NativeGitReviewDiffLineDto,
+GitReviewFileDto as NativeGitReviewFileDto,
+GitReviewParsedDiffDto as NativeGitReviewParsedDiffDto,
+GitReviewSnapshotDto as NativeGitReviewSnapshotDto,
+GitStartMergeResolutionDto as NativeGitStartMergeResolutionDto,
+GitStatusDto as NativeGitStatusDto,
+GitSyncDto as NativeGitSyncDto,
+GitTaskStartPointsDto as NativeGitTaskStartPointsDto,
+GitWorkflowSessionDto as NativeGitWorkflowSessionDto,
+GitWorkflowSessionIdentity as NativeGitWorkflowSessionIdentity,
+GitWorktreeEnsureDto as NativeGitWorktreeEnsureDto,
+GitWorktreeInspectionDto as NativeGitWorktreeInspectionDto,
+GitWorktreeRemoveDto as NativeGitWorktreeRemoveDto
+} from '../../types/generated/ipc';
+import type { OmitFields, OptionalFields } from './compatibility.types';
+
+/** git IPC contracts and explicit frontend adaptations of generated native bindings. */
 
 import type { GitCommit } from "../../types";
 
-export interface GitFileStatus {
-  path: string;
-  status: string;
-  old_path?: string | null;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitFileStatus = OptionalFields<NativeGitFileStatus, "old_path">;
 
-export interface GitStatusDto {
-  branch: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitStatusDto = OptionalFields<OmitFields<NativeGitStatusDto,
+  | "head_commit"
+  | "staged_files"
+  | "unstaged_files"
+  | "untracked_files"
+>, "conflicted_files" | "merge_in_progress"> & {
   head_commit: GitCommit | null;
   staged_files: GitFileStatus[];
   unstaged_files: GitFileStatus[];
   untracked_files: GitFileStatus[];
-  conflicted_files?: string[];
-  merge_in_progress?: boolean;
   conflictedFiles: string[];
   mergeInProgress: boolean;
-  is_clean: boolean;
-  has_origin: boolean;
-  has_upstream: boolean;
-  ahead: number;
-  behind: number;
-}
+};
 
-export interface GitBranchDto {
-  name: string;
-  is_head: boolean;
-  commit: string;
-}
+export type GitBranchDto = NativeGitBranchDto;
 
-export interface GitBranchesDto {
-  local: GitBranchDto[];
-  remote: GitBranchDto[];
-  current: string | null;
-}
+export type GitBranchesDto = NativeGitBranchesDto;
 
 export type GitWorktreeInspectionStatus =
   | "absent"
@@ -46,232 +70,104 @@ export type GitWorktreeInspectionStatus =
 
 export type GitWorktreeEnsureStatus = "created" | "reused" | "repaired";
 
-export interface GitWorktreeInspectionDto {
-  taskId: string;
-  worktreePath: string;
-  branchName: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitWorktreeInspectionDto = OmitFields<NativeGitWorktreeInspectionDto, "status"> & {
   status: GitWorktreeInspectionStatus;
-  isDirty: boolean | null;
-}
+};
 
-export interface GitAvailableWorktreeDto {
-  name: string;
-  path: string;
-  branchName: string;
-  isDirty: boolean;
-}
+export type GitAvailableWorktreeDto = NativeGitAvailableWorktreeDto;
 
-export interface GitAvailableTaskBranchDto {
-  name: string;
-  commit: string;
-}
+export type GitAvailableTaskBranchDto = NativeGitAvailableTaskBranchDto;
 
-export interface GitTaskStartPointsDto {
-  worktrees: GitAvailableWorktreeDto[];
-  branches: GitAvailableTaskBranchDto[];
-}
+export type GitTaskStartPointsDto = NativeGitTaskStartPointsDto;
 
-export interface GitWorktreeEnsureDto {
-  createdByThisCall?: boolean;
-  taskId: string;
-  worktreePath: string;
-  branchName: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitWorktreeEnsureDto = OptionalFields<OmitFields<NativeGitWorktreeEnsureDto, "status">, "createdByThisCall"> & {
   status: GitWorktreeEnsureStatus;
-}
+};
 
-export interface GitWorktreeRemoveDto {
-  taskId: string;
-  worktreePath: string;
-  removedPath: boolean;
-  prunedRegistration: boolean;
-  alreadyAbsent: boolean;
-}
+export type GitWorktreeRemoveDto = NativeGitWorktreeRemoveDto;
 
-export interface GitBranchWorktreeInspectionDto {
-  worktreeKey: string;
-  worktreePath: string;
-  branchName: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitBranchWorktreeInspectionDto = OmitFields<NativeGitBranchWorktreeInspectionDto, "status"> & {
   status: GitWorktreeInspectionStatus;
-  isDirty: boolean | null;
-}
+};
 
-export interface GitBranchWorktreeEnsureDto {
-  worktreeKey: string;
-  worktreePath: string;
-  branchName: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitBranchWorktreeEnsureDto = OmitFields<NativeGitBranchWorktreeEnsureDto, "status"> & {
   status: GitWorktreeEnsureStatus;
-}
+};
 
-export interface GitBranchWorktreeRemoveDto {
-  worktreeKey: string;
-  worktreePath: string;
-  removedPath: boolean;
-  prunedRegistration: boolean;
-  alreadyAbsent: boolean;
-}
+export type GitBranchWorktreeRemoveDto = NativeGitBranchWorktreeRemoveDto;
 
-export interface GitSyncDto {
-  branch: string;
-  remote: string;
-  output: string;
-}
+export type GitSyncDto = NativeGitSyncDto;
 
-export interface GitPreparedBranchSyncDto {
-  targetCommit: string;
-}
+export type GitPreparedBranchSyncDto = NativeGitPreparedBranchSyncDto;
 
-export interface GitRemoteDto {
-  remote: string;
-  url: string;
-}
+export type GitRemoteDto = NativeGitRemoteDto;
 
-export interface GitMergeCheckDto {
-  mergeable: boolean;
-  conflictFiles: string[];
-  hasChanges: boolean;
-  ahead?: number;
-  behind?: number;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitMergeCheckDto = OptionalFields<NativeGitMergeCheckDto, "ahead" | "behind">;
 
-export interface GitGuardedMergeStateDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitGuardedMergeStateDto = OmitFields<NativeGitGuardedMergeStateDto, "status"> & {
   status: "pending" | "integrated";
-  targetCommit: string;
-}
+};
 
-export interface GitRebaseCheckDto {
-  rebaseable: boolean;
-  conflictFiles: string[];
-  output: string;
-}
+export type GitRebaseCheckDto = NativeGitRebaseCheckDto;
 
-export interface GitFilePairDto {
-  headExists: boolean;
-  headContent: string;
-  indexExists: boolean;
-  indexContent: string;
-  worktreeExists: boolean;
-  worktreeContent: string;
-  originalContent: string;
-  modifiedContent: string;
-}
+export type GitFilePairDto = NativeGitFilePairDto;
 
-export interface GitReviewDiffLineDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitReviewDiffLineDto = OmitFields<NativeGitReviewDiffLineDto, "type"> & {
   type: "context" | "added" | "removed";
-  content: string;
-  oldLineNumber: number | null;
-  newLineNumber: number | null;
-}
+};
 
-export interface GitReviewDiffHunkDto {
-  header: string;
-  oldStart: number;
-  oldCount: number;
-  newStart: number;
-  newCount: number;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitReviewDiffHunkDto = OmitFields<NativeGitReviewDiffHunkDto, "lines"> & {
   lines: GitReviewDiffLineDto[];
-}
+};
 
-export interface GitReviewParsedDiffDto {
-  originalContent: string;
-  modifiedContent: string;
-  additions: number;
-  deletions: number;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitReviewParsedDiffDto = OmitFields<NativeGitReviewParsedDiffDto, "hunks"> & {
   hunks: GitReviewDiffHunkDto[];
-}
+};
 
-export interface GitReviewChangeDto {
-  path: string;
-  status: "added" | "modified" | "deleted" | string;
-  additions: number;
-  deletions: number;
-  hasPendingVisibleChange: boolean;
-  hasValidatedStage: boolean;
-  validatedRemovedLineNumbers: number[];
-  validatedAddedLineNumbers: number[];
-  isBinary: boolean;
-  tooLarge: boolean;
-  requiresHydration: boolean;
-  originalContent: string;
-  indexContent: string;
-  modifiedContent: string;
-  language: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitReviewChangeDto = OmitFields<NativeGitReviewChangeDto, "hunks"> & {
   hunks: GitReviewDiffHunkDto[];
-}
+};
 
-export interface GitReviewSnapshotDto {
-  branch: string;
-  stagedPaths: string[];
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitReviewSnapshotDto = OmitFields<NativeGitReviewSnapshotDto, "changes"> & {
   changes: GitReviewChangeDto[];
-  conflictedFiles: string[];
-  mergeInProgress: boolean;
-  isClean: boolean;
-}
+};
 
-export interface DirectReviewSnapshotDto extends GitReviewSnapshotDto {
-  hasAcceptedChanges: boolean;
-  snapshotId: string;
-  restoreRevisions: Record<string, string>;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DirectReviewSnapshotDto = OmitFields<NativeDirectReviewSnapshotDto, "changes"> & {
+  changes: GitReviewChangeDto[];
+};
 
-export interface GitReviewFileDto {
-  path: string;
-  status: "added" | "modified" | "deleted" | string;
-  headExists: boolean;
-  indexExists: boolean;
-  worktreeExists: boolean;
-  headContent: string;
-  indexContent: string;
-  worktreeContent: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitReviewFileDto = OmitFields<NativeGitReviewFileDto, "pendingDiff" | "fullDiff"> & {
   pendingDiff: GitReviewParsedDiffDto;
   fullDiff: GitReviewParsedDiffDto;
-  hasValidatedStage: boolean;
-  validatedRemovedLineNumbers: number[];
-  validatedAddedLineNumbers: number[];
-  isBinary: boolean;
-  tooLarge: boolean;
-  language: string;
-}
+};
 
-export interface GitStartMergeResolutionDto {
-  status: "merged" | "conflicted" | string;
-  conflictFiles: string[];
-  output: string;
-}
+export type GitStartMergeResolutionDto = NativeGitStartMergeResolutionDto;
 
-export interface GitConflictFileSideDto {
-  exists: boolean;
-  content: string;
-  sizeBytes: number;
-  isBinary: boolean;
-  tooLarge: boolean;
-}
+export type GitConflictFileSideDto = NativeGitConflictFileSideDto;
 
-export interface GitConflictFileDto {
-  path: string;
-  base: GitConflictFileSideDto;
-  ours: GitConflictFileSideDto;
-  theirs: GitConflictFileSideDto;
-  worktree: GitConflictFileSideDto;
-  isBinary: boolean;
-  tooLarge: boolean;
-}
+export type GitConflictFileDto = NativeGitConflictFileDto;
 
-export interface GitLogPageDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitLogPageDto = OmitFields<NativeGitLogPageDto, "commits"> & {
   commits: GitCommit[];
-  revision: string;
-}
+};
 
-export interface GitWorkflowSessionIdentity {
-  taskId: string;
-  sessionId: string;
-  sourceBranch: string;
-  targetBranch: string;
-}
+export type GitWorkflowSessionIdentity = NativeGitWorkflowSessionIdentity;
 
-export interface GitWorkflowSessionDto extends GitWorkflowSessionIdentity {
-  sourceCommit: string;
-  targetCommit: string;
-  integratedCommit: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type GitWorkflowSessionDto = OmitFields<NativeGitWorkflowSessionDto, "status"> & {
   status: 'prepared' | 'conflicted' | 'integrated' | 'aborted';
-  output: string;
-}
+};

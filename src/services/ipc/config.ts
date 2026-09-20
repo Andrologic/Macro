@@ -1,3 +1,4 @@
+import type { OmitFields } from './compatibility.types';
 /** config IPC wrappers and frontend adapters. */
 
 import type {
@@ -148,7 +149,7 @@ export async function configAgentValidate(input: {
 }
 
 export async function configAgentPatch(
-  request: Omit<ConfigPatchRequest, 'source'>,
+  request: OmitFields<ConfigPatchRequest, 'source'>,
 ): Promise<ConfigPatchResult> {
   return invoke<ConfigPatchResult>('config_patch', {
     request: { ...request, source: 'agent' },

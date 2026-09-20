@@ -1,3 +1,4 @@
+import type { OmitFields } from './compatibility.types';
 /** git IPC wrappers and frontend adapters. */
 
 import type {
@@ -33,7 +34,7 @@ import type {
 } from "./git.types";
 
 const normalizeGitStatus = (
-  status: Omit<GitStatusDto, "conflictedFiles" | "mergeInProgress">,
+  status: OmitFields<GitStatusDto, "conflictedFiles" | "mergeInProgress">,
 ): GitStatusDto => {
   const conflictedFiles = status.conflicted_files ?? [];
   const mergeInProgress = status.merge_in_progress ?? false;
@@ -49,7 +50,7 @@ const normalizeGitStatus = (
 
 export async function gitStatus(repoPath: string): Promise<GitStatusDto> {
   const status = await invoke<
-    Omit<GitStatusDto, "conflictedFiles" | "mergeInProgress">
+    OmitFields<GitStatusDto, "conflictedFiles" | "mergeInProgress">
   >("git_status", { repoPath });
   return normalizeGitStatus(status);
 }

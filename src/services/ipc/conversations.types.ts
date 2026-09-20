@@ -1,221 +1,137 @@
-/** conversations IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+ArchitectPlanConversationSyncRecord as NativeDbArchitectPlanConversationSync,
+ChatBootstrapSnapshot as NativeDbChatBootstrapSnapshot,
+ChatSnapshot as NativeDbChatSnapshot,
+Conversation as NativeDbConversation,
+ConversationCitation as NativeDbConversationCitation,
+ConversationCompactionStateRecord as NativeDbConversationCompactionState,
+ConversationToolboxStateRecord as NativeDbConversationToolboxState,
+ImportMessageInput as NativeDbImportMessageInput,
+InsertConversationCompactionEventInput as NativeDbInsertConversationCompactionEventInput,
+Message as NativeDbMessage,
+UpsertArchitectPlanConversationSyncInput as NativeDbUpsertArchitectPlanConversationSyncInput,
+UpsertConversationCitationInput as NativeDbUpsertConversationCitationInput,
+UpsertConversationCompactionStateInput as NativeDbUpsertConversationCompactionStateInput,
+UpsertConversationToolboxStateInput as NativeDbUpsertConversationToolboxStateInput,
+MessageSearchPage as NativeMessageSearchPage,
+MessageSearchResult as NativeMessageSearchResult
+} from '../../types/generated/ipc';
+import type { OmitFields, OptionalFields } from './compatibility.types';
+
+/** conversations IPC contracts and explicit frontend adaptations of generated native bindings. */
 
 import type {
-  AppMode,
-  ChatCompletionReason,
+AppMode,
+ChatCompletionReason,
 } from "../../types";
 
-export interface DbConversation {
-  id: string;
-  title: string;
-  description: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbConversation = OmitFields<NativeDbConversation, "scope_mode"> & {
   scope_mode: AppMode;
-  task_id: string | null;
-  group_id: string | null;
-  project_id: string | null;
-  provider_id: string | null;
-  model_id: string | null;
-  reasoning_effort: string | null;
-  created_at: string;
-  updated_at: string;
-  last_message: string | null;
-  message_count: number;
-  is_pinned: boolean;
-}
+};
 
-export interface DbMessage {
-  id: string;
-  conversation_id: string;
-  turn_id?: string | null;
-  role: string;
-  content: string;
-  created_at: string;
-  token_count: number | null;
-  tool_traces_json: string | null;
-  hidden_context: string | null;
-  provider_input_items_json: string | null;
-  provider_turn_state_json: string | null;
-  context_refs_json?: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbMessage = OptionalFields<OmitFields<NativeDbMessage, "completion_reason">, "turn_id" | "context_refs_json"> & {
   completion_reason?: ChatCompletionReason | null;
-}
+};
 
-export interface DbConversationCitation {
-  id: string;
-  conversation_id: string;
-  message_id: string;
-  type: string;
-  scope: string;
-  source: string;
-  title: string;
-  snippet: string | null;
-  content: string | null;
-  url: string | null;
-  favicon: string | null;
-  path: string | null;
-  language: string | null;
-  size_bytes: number | null;
-  kind: string | null;
-  reason: string | null;
-  created_at: string;
-  updated_at: string;
-}
+export type DbConversationCitation = NativeDbConversationCitation;
 
-export interface DbUpsertConversationCitationInput {
-  id: string;
-  conversation_id: string;
-  message_id: string;
-  type: string;
-  scope: string;
-  source: string;
-  title: string;
-  snippet?: string | null;
-  content?: string | null;
-  url?: string | null;
-  favicon?: string | null;
-  path?: string | null;
-  language?: string | null;
-  size_bytes?: number | null;
-  kind?: string | null;
-  reason?: string | null;
-  timestamp?: string | null;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbUpsertConversationCitationInput = OptionalFields<NativeDbUpsertConversationCitationInput,
+  | "snippet"
+  | "content"
+  | "url"
+  | "favicon"
+  | "path"
+  | "language"
+  | "size_bytes"
+  | "kind"
+  | "reason"
+  | "timestamp"
+>;
 
-export interface DbConversationToolboxState {
-  conversation_id: string;
-  composer_context_refs_json: string;
-  created_at: string;
-  updated_at: string;
-}
+export type DbConversationToolboxState = NativeDbConversationToolboxState;
 
-export interface DbUpsertConversationToolboxStateInput {
-  conversation_id: string;
-  composer_context_refs_json: string;
-  timestamp?: string | null;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbUpsertConversationToolboxStateInput = OptionalFields<NativeDbUpsertConversationToolboxStateInput, "timestamp">;
 
-export interface DbConversationCompactionState {
-  conversation_id: string;
-  up_to_message_id: string;
-  summary_text: string;
-  tool_digest_json: string;
-  used_source_passage_ids_json: string;
-  interesting_source_passage_ids_json: string;
-  estimated_tokens_before: number;
-  estimated_tokens_after: number;
-  fingerprint: string;
-  version: number;
-  pruned_tool_context_message_ids_json?: string | null;
-  reserved_tokens?: number | null;
-  footprint_before_json?: string | null;
-  footprint_after_json?: string | null;
-  degraded_reason?: string | null;
-  compaction_kind?: string | null;
-  compaction_pass?: string | null;
-  summary_format_version?: number | null;
-  summary_source?: string | null;
-  policy_version?: number | null;
-  fingerprint_inputs_json?: string | null;
-  source_hashes_json?: string | null;
-  model_context_window_tokens?: number | null;
-  provider_id?: string | null;
-  model_id?: string | null;
-  checkpoint_health?: string | null;
-  last_trigger?: string | null;
-  created_at: string;
-  updated_at: string;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbConversationCompactionState = OptionalFields<NativeDbConversationCompactionState,
+  | "pruned_tool_context_message_ids_json"
+  | "reserved_tokens"
+  | "footprint_before_json"
+  | "footprint_after_json"
+  | "degraded_reason"
+  | "compaction_kind"
+  | "compaction_pass"
+  | "summary_format_version"
+  | "summary_source"
+  | "policy_version"
+  | "fingerprint_inputs_json"
+  | "source_hashes_json"
+  | "model_context_window_tokens"
+  | "provider_id"
+  | "model_id"
+  | "checkpoint_health"
+  | "last_trigger"
+>;
 
-export interface DbImportMessageInput {
-  id: string;
-  turn_id?: string | null;
-  role: string;
-  content: string;
-  created_at: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbImportMessageInput = OptionalFields<OmitFields<NativeDbImportMessageInput, "completion_reason">, "turn_id"> & {
   completion_reason?: ChatCompletionReason | null;
-}
+};
 
-export interface DbChatSnapshot {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbChatSnapshot = OmitFields<NativeDbChatSnapshot, "conversations" | "messages"> & {
   conversations: DbConversation[];
   messages: DbMessage[];
-}
+};
 
-export interface DbChatBootstrapSnapshot {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbChatBootstrapSnapshot = OmitFields<NativeDbChatBootstrapSnapshot, "conversations" | "messages_by_conversation_id"> & {
   conversations: DbConversation[];
   messages_by_conversation_id: Record<string, DbMessage[] | undefined>;
-}
+};
 
-export interface DbArchitectPlanConversationSync {
-  conversation_id: string;
-  plan_id: string;
-  target_branch: string;
-  transcript_revision: string | null;
-  message_count: number;
-  updated_at: string;
-}
+export type DbArchitectPlanConversationSync = NativeDbArchitectPlanConversationSync;
 
-export interface DbUpsertArchitectPlanConversationSyncInput {
-  conversation_id: string;
-  plan_id: string;
-  target_branch: string;
-  transcript_revision?: string | null;
-  message_count: number;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbUpsertArchitectPlanConversationSyncInput = OptionalFields<NativeDbUpsertArchitectPlanConversationSyncInput, "transcript_revision">;
 
-export interface DbUpsertConversationCompactionStateInput {
-  conversation_id: string;
-  up_to_message_id: string;
-  summary_text: string;
-  tool_digest_json: string;
-  used_source_passage_ids_json: string;
-  interesting_source_passage_ids_json: string;
-  estimated_tokens_before: number;
-  estimated_tokens_after: number;
-  fingerprint: string;
-  version: number;
-  pruned_tool_context_message_ids_json?: string | null;
-  reserved_tokens?: number | null;
-  footprint_before_json?: string | null;
-  footprint_after_json?: string | null;
-  degraded_reason?: string | null;
-  compaction_kind?: string | null;
-  compaction_pass?: string | null;
-  summary_format_version?: number | null;
-  summary_source?: string | null;
-  policy_version?: number | null;
-  fingerprint_inputs_json?: string | null;
-  source_hashes_json?: string | null;
-  model_context_window_tokens?: number | null;
-  provider_id?: string | null;
-  model_id?: string | null;
-  checkpoint_health?: string | null;
-  last_trigger?: string | null;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbUpsertConversationCompactionStateInput = OptionalFields<NativeDbUpsertConversationCompactionStateInput,
+  | "pruned_tool_context_message_ids_json"
+  | "reserved_tokens"
+  | "footprint_before_json"
+  | "footprint_after_json"
+  | "degraded_reason"
+  | "compaction_kind"
+  | "compaction_pass"
+  | "summary_format_version"
+  | "summary_source"
+  | "policy_version"
+  | "fingerprint_inputs_json"
+  | "source_hashes_json"
+  | "model_context_window_tokens"
+  | "provider_id"
+  | "model_id"
+  | "checkpoint_health"
+  | "last_trigger"
+>;
 
-export interface DbInsertConversationCompactionEventInput {
-  conversation_id: string;
-  trigger: string;
-  provider_id?: string | null;
-  model_id?: string | null;
-  model_context_window_tokens?: number | null;
-  tokens_before?: number | null;
-  tokens_after?: number | null;
-  status: string;
-  error_code?: string | null;
-  reason?: string | null;
-  metadata_json?: string | null;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DbInsertConversationCompactionEventInput = OptionalFields<NativeDbInsertConversationCompactionEventInput,
+  | "provider_id"
+  | "model_id"
+  | "model_context_window_tokens"
+  | "tokens_before"
+  | "tokens_after"
+  | "error_code"
+  | "reason"
+  | "metadata_json"
+>;
 
-export interface MessageSearchResult {
-  messageId: string;
-  conversationId: string;
-  conversationTitle: string;
-  conversationDescription: string | null;
-  role: string;
-  snippet: string;
-  createdAt: string;
-}
+export type MessageSearchResult = NativeMessageSearchResult;
 
-export interface MessageSearchPage {
-  results: MessageSearchResult[];
-  nextOffset: number | null;
-}
+export type MessageSearchPage = NativeMessageSearchPage;

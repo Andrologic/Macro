@@ -1,13 +1,19 @@
-/** mcp IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+McpCallToolResponse as NativeMCPCallToolResponseDto,
+McpDiscoverToolsResponse as NativeMCPDiscoverToolsResponseDto
+} from '../../types/generated/ipc';
+import type { OmitFields, OptionalFields } from './compatibility.types';
+
+/** mcp IPC contracts and explicit frontend adaptations of generated native bindings. */
 
 import type { MCPTool } from "../../types";
 
-export interface MCPDiscoverToolsResponseDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type MCPDiscoverToolsResponseDto = OmitFields<NativeMCPDiscoverToolsResponseDto, "tools"> & {
   tools: MCPTool[];
-}
+};
 
-export interface MCPCallToolResponseDto {
-  content: string;
-  isError?: boolean;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type MCPCallToolResponseDto = OptionalFields<OmitFields<NativeMCPCallToolResponseDto, "rawResult">, "isError"> & {
   rawResult?: unknown;
-}
+};

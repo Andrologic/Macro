@@ -244,8 +244,8 @@ fn owned_staged_deletion_survives_completion_and_receipt_recovery() {
     journal.session.source_commit = git(temp.path(), &["rev-parse", "feature"]);
     start_merge_resolution_repo(&repo, "feature", "main").unwrap();
     verify_conflict_session(&repo, &journal, &identity(&journal)).unwrap();
-    super::super::accept_git_conflict_side(&repo, temp.path(), Path::new("file.txt"), "theirs")
-        .unwrap();
+    // Resolve the source-side deletion in the fixture without a command-adapter dependency.
+    git(temp.path(), &["rm", "--force", "--", "file.txt"]);
     assert!(!temp.path().join("file.txt").exists());
     complete_merge_repo(&repo).unwrap();
     let recovered = inspect_or_recover(&repo, &journal).unwrap();

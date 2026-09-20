@@ -1,15 +1,15 @@
-/** workspaceTools IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+ToolModePolicyResult as NativeToolModePolicyDto,
+ToolValidationResult as NativeToolValidationResultDto
+} from '../../types/generated/ipc';
+import type { OptionalFields } from './compatibility.types';
 
-export interface ToolValidationResultDto {
-  allowed: boolean;
-  reason?: string | null;
-  enforce_macro_only_writes: boolean;
-}
+/** workspaceTools IPC contracts and explicit frontend adaptations of generated native bindings. */
 
-export interface ToolModePolicyDto {
-  allowed_tool_ids: string[];
-  enforce_macro_only_writes: boolean;
-  capabilities?: string[];
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type ToolValidationResultDto = OptionalFields<NativeToolValidationResultDto, "reason">;
+
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type ToolModePolicyDto = OptionalFields<NativeToolModePolicyDto, "capabilities">;
 
 export type WorkspaceScope = "default" | "metadata" | "direct";

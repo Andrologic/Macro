@@ -1,4 +1,8 @@
-/** diagnostics IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+DiagnosticReportPreview as NativeAppDiagnosticReportPreviewDto
+} from '../../types/generated/ipc';
+
+/** diagnostics IPC contracts and explicit frontend adaptations of generated native bindings. */
 
 export type FrontendLogLevel = "debug" | "info" | "warn" | "error";
 
@@ -8,8 +12,4 @@ export interface FrontendLogParams {
   message: string;
 }
 
-export interface AppDiagnosticReportPreviewDto {
-  reportId: string;
-  suggestedFileName: string;
-  content: string;
-}
+export type AppDiagnosticReportPreviewDto = NativeAppDiagnosticReportPreviewDto;

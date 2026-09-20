@@ -1,69 +1,45 @@
-/** filesystem IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+DirEntryDto as NativeFsDirEntryDto,
+FileContentDto as NativeFsFileContentDto,
+FileStatsDto as NativeFsFileStatsDto,
+WriteResultDto as NativeFsWriteResultDto,
+WorkspaceFileSearchResultDto as NativeWorkspaceFileSearchResultDto,
+WorkspaceFileSearchRootDto as NativeWorkspaceFileSearchRootDto
+} from '../../types/generated/ipc';
+import type { OptionalFields } from './compatibility.types';
 
-export interface FsFileContentDto {
-  content: string;
-  language: string;
-  is_binary: boolean;
-  size: number;
-  encoding: string;
-  revision?: string;
-  unix_mode?: number;
-}
+/** filesystem IPC contracts and explicit frontend adaptations of generated native bindings. */
 
-export interface FsDirEntryDto {
-  path: string;
-  relative_path: string;
-  name: string;
-  kind: string;
-  size?: number | null;
-  modified?: string | null;
-  created?: string | null;
-  language?: string | null;
-  is_hidden: boolean;
-  is_readonly: boolean;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type FsFileContentDto = OptionalFields<NativeFsFileContentDto, "revision">;
 
-export interface WorkspaceFileSearchRootDto {
-  project_id?: string | null;
-  project_name?: string | null;
-  workspace_path: string;
-  mount_name?: string | null;
-  is_focused: boolean;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type FsDirEntryDto = OptionalFields<NativeFsDirEntryDto,
+  | "size"
+  | "modified"
+  | "created"
+  | "language"
+>;
 
-export interface WorkspaceFileSearchResultDto {
-  id: string;
-  path: string;
-  relative_path: string;
-  project_id?: string | null;
-  project_name?: string | null;
-  language?: string | null;
-  size_bytes?: number | null;
-  modified?: string | null;
-  is_focused: boolean;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceFileSearchRootDto = OptionalFields<NativeWorkspaceFileSearchRootDto, "project_id" | "project_name" | "mount_name">;
 
-export interface FsFileStatsDto {
-  path: string;
-  name: string;
-  kind: string;
-  size: number;
-  created?: string | null;
-  modified: string;
-  accessed?: string | null;
-  permissions: string;
-  language?: string | null;
-  is_readonly: boolean;
-  is_hidden: boolean;
-  is_symlink: boolean;
-  symlink_target?: string | null;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceFileSearchResultDto = OptionalFields<NativeWorkspaceFileSearchResultDto,
+  | "project_id"
+  | "project_name"
+  | "language"
+  | "size_bytes"
+  | "modified"
+>;
 
-export interface FsWriteResultDto {
-  path: string;
-  bytes_written: number;
-  created: boolean;
-  skipped: boolean;
-  revision?: string;
-  unix_mode?: number;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type FsFileStatsDto = OptionalFields<NativeFsFileStatsDto,
+  | "created"
+  | "accessed"
+  | "language"
+  | "symlink_target"
+>;
+
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type FsWriteResultDto = OptionalFields<NativeFsWriteResultDto, "revision">;

@@ -1,4 +1,9 @@
-/** metadataSync IPC DTOs. Kept separate for generated Rust binding integration. */
+import type { OmitFields } from './compatibility.types';
+import type {
+MacroBranchSyncDto as NativeMacroBranchSyncDto
+} from '../../types/generated/ipc';
+
+/** metadataSync IPC contracts and explicit frontend adaptations of generated native bindings. */
 
 export type MacroSyncState = "clean" | "pending" | "failed" | "conflict";
 
@@ -24,20 +29,9 @@ export type MacroSyncNextAction =
   | "configure_auth"
   | "retry";
 
-export interface MacroBranchSyncDto {
-  branch: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type MacroBranchSyncDto = OmitFields<NativeMacroBranchSyncDto, "state" | "reason" | "next_action"> & {
   state: MacroSyncState;
-  worktree_path: string;
-  is_dirty: boolean;
-  has_origin: boolean;
-  has_upstream: boolean;
-  ahead: number;
-  behind: number;
-  conflicted_files: string[];
-  committed: boolean;
-  commit_hash: string | null;
   reason: MacroSyncReason | null;
   next_action: MacroSyncNextAction | null;
-  output: string | null;
-  error: string | null;
-}
+};

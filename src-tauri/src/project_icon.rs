@@ -69,6 +69,7 @@ static HREF_PROPERTY_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct ProjectIconDto {
     pub data_url: String,
     pub source_path: String,
@@ -77,6 +78,7 @@ pub struct ProjectIconDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct ProjectIconResolutionDto {
     pub project_id: String,
     pub icon: Option<ProjectIconDto>,

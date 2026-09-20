@@ -59,6 +59,7 @@ struct Request {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct BackupStatus {
     // Legacy messages remain readable as diagnostics after an upgrade.
     #[serde(default)]
@@ -72,6 +73,7 @@ pub struct BackupStatus {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub enum BackupStatusCode {
     Exported,
     Restored,

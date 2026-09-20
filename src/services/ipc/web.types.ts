@@ -1,20 +1,17 @@
-/** web IPC DTOs. Kept separate for generated Rust binding integration. */
+import type { OmitFields } from './compatibility.types';
+import type {
+WebFetchResourceDto as NativeNativeWebFetchResource,
+WebSearchResultDto as NativeNativeWebSearchResult,
+WebSearchSecretStatus as NativeWebSearchSecretStatus
+} from '../../types/generated/ipc';
 
-export interface WebSearchSecretStatus {
+/** web IPC contracts and explicit frontend adaptations of generated native bindings. */
+
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WebSearchSecretStatus = OmitFields<NativeWebSearchSecretStatus, "provider"> & {
   provider: 'tavily' | 'brave';
-  hasSecret: boolean;
-  secretRef: string;
-}
+};
 
-export interface NativeWebSearchResult {
-  url: string;
-  title: string;
-  snippet: string;
-  score: number;
-}
+export type NativeWebSearchResult = NativeNativeWebSearchResult;
 
-export interface NativeWebFetchResource {
-  url: string;
-  contentType: string | null;
-  bodyBase64: string;
-}
+export type NativeWebFetchResource = NativeNativeWebFetchResource;

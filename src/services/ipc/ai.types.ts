@@ -1,80 +1,118 @@
-/** ai IPC DTOs. Kept separate for generated Rust binding integration. */
+import type { OmitFields } from './compatibility.types';
+import type {
+AiAuthCancelledEvent as NativeAiAuthCancelledEvent,
+AiAuthErrorEvent as NativeAiAuthErrorEvent,
+AiAuthStartedEvent as NativeAiAuthStartedEvent,
+AiAuthSuccessEvent as NativeAiAuthSuccessEvent,
+AiChatMessage as NativeAiChatMessage,
+AiChatMessageContent as NativeAiChatMessageContent,
+AiChatImageUrl as NativeAiChatMessageImageUrl,
+AiChatMessagePart as NativeAiChatMessagePart,
+AiStreamChunkEvent as NativeAiStreamChunkEvent,
+AiStreamDoneEvent as NativeAiStreamDoneEvent,
+AiStreamErrorEvent as NativeAiStreamErrorEvent,
+AiStreamTimelineEvent as NativeAiStreamTimelineEvent,
+AiStreamToolTraceEvent as NativeAiStreamToolTraceEvent,
+AiToolCall as NativeAiToolCall,
+CopilotToolRequestEvent as NativeAiToolRequestEvent,
+CopilotAuthCancelledEvent as NativeCopilotAuthCancelledEvent,
+CopilotAuthCompleteEvent as NativeCopilotAuthCompleteEvent,
+CopilotAuthErrorEvent as NativeCopilotAuthErrorEvent,
+CopilotAuthProgressEvent as NativeCopilotAuthProgressEvent,
+CopilotDownloadCompleteEvent as NativeCopilotDownloadCompleteEvent,
+CopilotDownloadErrorEvent as NativeCopilotDownloadErrorEvent,
+CopilotDownloadProgressEvent as NativeCopilotDownloadProgressEvent,
+CopilotStatus as NativeCopilotStatusDto,
+DevProviderOverrideConfig as NativeDevProviderOverrideConfig,
+DevProviderOverridesFile as NativeDevProviderOverridesFile,
+MacroAiProvisioningStatus as NativeMacroAiProvisioningStatusDto
+} from '../../types/generated/ipc';
+
+/** ai IPC contracts and explicit frontend adaptations of generated native bindings. */
 
 import type {
-  ChatCompletionReason,
-  ProviderTurnState,
-  ToolTrace,
+ChatCompletionReason,
+ProviderTurnState,
+ToolTrace,
 } from "../../types";
 
-export interface MacroAiProvisioningStatusDto {
-  providerId: string;
-  modelId: string;
-  contextWindowTokens: number;
-  activatedNow: boolean;
-}
+export type MacroAiProvisioningStatusDto = NativeMacroAiProvisioningStatusDto;
 
-export interface DevProviderOverrideConfig {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DevProviderOverrideConfig = OmitFields<NativeDevProviderOverrideConfig,
+  | "name"
+  | "providerType"
+  | "apiKey"
+  | "baseUrl"
+  | "isLocal"
+> & {
   name?: string;
   providerType?: string;
   apiKey?: string;
   baseUrl?: string;
   isLocal?: boolean;
-}
+};
 
-export interface DevProviderOverridesFile {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type DevProviderOverridesFile = OmitFields<NativeDevProviderOverridesFile, "providers"> & {
   providers?: Record<string, DevProviderOverrideConfig>;
-}
+};
 
-export interface AiChatMessageImageUrl {
-  url: string;
-}
+export type AiChatMessageImageUrl = NativeAiChatMessageImageUrl;
 
-export interface AiChatMessagePart {
-  type: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type AiChatMessagePart = OmitFields<NativeAiChatMessagePart, "text" | "image_url"> & {
   text?: string;
   image_url?: AiChatMessageImageUrl;
-}
+};
 
-export type AiChatMessageContent = string | AiChatMessagePart[];
+// Text follows the native union; image/text parts keep the frontend omission rules.
+export type AiChatMessageContent = Extract<NativeAiChatMessageContent, string> | AiChatMessagePart[];
 
-export interface AiChatMessage {
-  role: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type AiChatMessage = OmitFields<NativeAiChatMessage,
+  | "content"
+  | "tool_calls"
+  | "tool_call_id"
+  | "provider_input_items"
+  | "provider_turn_state"
+> & {
   content: AiChatMessageContent;
   tool_calls?: AiToolCall[];
   tool_call_id?: string;
   provider_input_items?: unknown[];
   provider_turn_state?: ProviderTurnState;
-}
+};
 
-export interface AiToolCall {
-  id: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type AiToolCall = OmitFields<NativeAiToolCall, "type"> & {
   type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
+};
 
-export interface AiStreamChunkEvent {
-  request_id: string;
-  delta: string;
-}
+export type AiStreamChunkEvent = NativeAiStreamChunkEvent;
 
-export interface AiStreamToolTraceEvent {
-  request_id: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type AiStreamToolTraceEvent = OmitFields<NativeAiStreamToolTraceEvent, "tool_trace"> & {
   tool_trace: ToolTrace;
-}
+};
 
-export interface AiToolRequestEvent {
-  request_id: string;
-  tool_call_id: string;
-  tool_name: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type AiToolRequestEvent = OmitFields<NativeAiToolRequestEvent, "args"> & {
   args: Record<string, unknown>;
-}
+};
 
-export interface AiStreamDoneEvent {
-  request_id: string;
-  output_text: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type AiStreamDoneEvent = OmitFields<NativeAiStreamDoneEvent,
+  | "tool_calls"
+  | "response_id"
+  | "output_items"
+  | "provider_input_items"
+  | "provider_turn_state"
+  | "reasoning_summary"
+  | "tool_traces"
+  | "hidden_context"
+  | "completion_reason"
+> & {
   tool_calls: AiToolCall[];
   response_id?: string | null;
   output_items?: unknown[] | null;
@@ -84,45 +122,22 @@ export interface AiStreamDoneEvent {
   tool_traces?: ToolTrace[] | null;
   hidden_context?: string | null;
   completion_reason?: ChatCompletionReason | null;
-}
+};
 
-export interface AiStreamErrorEvent {
-  request_id: string;
-  message: string;
-}
+export type AiStreamErrorEvent = NativeAiStreamErrorEvent;
 
-export interface AiStreamTimelineEvent {
-  request_id: string;
-  provider_id: string;
-  provider_type: string;
-  phase: string;
-  elapsed_ms: number;
-}
+export type AiStreamTimelineEvent = NativeAiStreamTimelineEvent;
 
-export interface AiAuthStartedEvent {
-  request_id: string;
-  provider_id: string;
-}
+export type AiAuthStartedEvent = NativeAiAuthStartedEvent;
 
-export interface AiAuthSuccessEvent {
-  request_id: string;
-  provider_id: string;
-}
+export type AiAuthSuccessEvent = NativeAiAuthSuccessEvent;
 
-export interface AiAuthCancelledEvent {
-  request_id: string;
-  provider_id: string;
-}
+export type AiAuthCancelledEvent = NativeAiAuthCancelledEvent;
 
-export interface AiAuthErrorEvent {
-  request_id: string;
-  provider_id: string;
-  code: string;
-  message: string;
-}
+export type AiAuthErrorEvent = NativeAiAuthErrorEvent;
 
-export interface CopilotStatusDto {
-  ok: boolean;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type CopilotStatusDto = OmitFields<NativeCopilotStatusDto, "runtime_source" | "runtime_status"> & {
   runtime_source: "managed" | "system" | "none";
   runtime_status:
     | "ready"
@@ -130,62 +145,22 @@ export interface CopilotStatusDto {
     | "downloading"
     | "update_required"
     | "error";
-  runtime_version: string | null;
-  min_cli_version: string;
-  auth_status: string;
-  auth_source: string | null;
-  account_label: string | null;
-  status_message: string | null;
-  error_code: string | null;
-  error_message: string | null;
-}
+};
 
-export interface CopilotDownloadProgressEvent {
-  request_id: string;
-  provider_id: string;
-  phase: string;
-  message: string;
-  downloaded_bytes: number;
-  total_bytes: number | null;
-}
+export type CopilotDownloadProgressEvent = NativeCopilotDownloadProgressEvent;
 
-export interface CopilotDownloadCompleteEvent {
-  request_id: string;
-  provider_id: string;
-  runtime_version: string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type CopilotDownloadCompleteEvent = OmitFields<NativeCopilotDownloadCompleteEvent, "runtime_source" | "status"> & {
   runtime_source: "managed" | "system" | "none";
   status?: CopilotStatusDto;
-}
+};
 
-export interface CopilotDownloadErrorEvent {
-  request_id: string;
-  provider_id: string;
-  code: string;
-  message: string;
-}
+export type CopilotDownloadErrorEvent = NativeCopilotDownloadErrorEvent;
 
-export interface CopilotAuthProgressEvent {
-  request_id: string;
-  provider_id: string;
-  phase: string;
-  message: string;
-  verification_url: string | null;
-  user_code: string | null;
-}
+export type CopilotAuthProgressEvent = NativeCopilotAuthProgressEvent;
 
-export interface CopilotAuthCompleteEvent {
-  request_id: string;
-  provider_id: string;
-}
+export type CopilotAuthCompleteEvent = NativeCopilotAuthCompleteEvent;
 
-export interface CopilotAuthCancelledEvent {
-  request_id: string;
-  provider_id: string;
-}
+export type CopilotAuthCancelledEvent = NativeCopilotAuthCancelledEvent;
 
-export interface CopilotAuthErrorEvent {
-  request_id: string;
-  provider_id: string;
-  code: string;
-  message: string;
-}
+export type CopilotAuthErrorEvent = NativeCopilotAuthErrorEvent;

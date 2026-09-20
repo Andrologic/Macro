@@ -1,18 +1,22 @@
-/** skills IPC DTOs. Kept separate for generated Rust binding integration. */
+import type { OmitFields } from './compatibility.types';
+import type {
+SkillDetailResponse as NativeSkillDetailResponseDto,
+SkillListResponse as NativeSkillListResponseDto,
+SkillResourceReadResponse as NativeSkillResourceReadResponseDto
+} from '../../types/generated/ipc';
+
+/** skills IPC contracts and explicit frontend adaptations of generated native bindings. */
 
 import type { SkillManifest } from "../../types";
 
-export interface SkillListResponseDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type SkillListResponseDto = OmitFields<NativeSkillListResponseDto, "skills"> & {
   skills: SkillManifest[];
-}
+};
 
-export interface SkillDetailResponseDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type SkillDetailResponseDto = OmitFields<NativeSkillDetailResponseDto, "skill"> & {
   skill: SkillManifest;
-  body: string;
-}
+};
 
-export interface SkillResourceReadResponseDto {
-  skillId: string;
-  path: string;
-  content: string;
-}
+export type SkillResourceReadResponseDto = NativeSkillResourceReadResponseDto;

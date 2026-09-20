@@ -1,8 +1,11 @@
-/** config IPC DTOs. Kept separate for generated Rust binding integration. */
+import type { OmitFields } from './compatibility.types';
+import type {
+OrphanSecretDto as NativeOrphanSecretDto
+} from '../../types/generated/ipc';
 
-export interface OrphanSecretDto {
-  id: string;
-  namespace: string;
+/** config IPC contracts and explicit frontend adaptations of generated native bindings. */
+
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type OrphanSecretDto = OmitFields<NativeOrphanSecretDto, "secretType"> & {
   secretType: 'apiKey' | 'chatgptSession';
-  secretRef: string;
-}
+};

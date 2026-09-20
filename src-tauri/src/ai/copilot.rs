@@ -167,7 +167,7 @@ struct ManagedRuntimeMetadata {
     binary_sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotStatus {
     pub ok: bool,
     pub runtime_source: String,
@@ -182,7 +182,7 @@ pub struct CopilotStatus {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotDownloadProgressEvent {
     pub request_id: String,
     pub provider_id: String,
@@ -192,7 +192,7 @@ pub struct CopilotDownloadProgressEvent {
     pub total_bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotDownloadCompleteEvent {
     pub request_id: String,
     pub provider_id: String,
@@ -201,7 +201,7 @@ pub struct CopilotDownloadCompleteEvent {
     pub status: CopilotStatus,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotDownloadErrorEvent {
     pub request_id: String,
     pub provider_id: String,
@@ -209,7 +209,7 @@ pub struct CopilotDownloadErrorEvent {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotAuthProgressEvent {
     pub request_id: String,
     pub provider_id: String,
@@ -219,19 +219,19 @@ pub struct CopilotAuthProgressEvent {
     pub user_code: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotAuthCompleteEvent {
     pub request_id: String,
     pub provider_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotAuthCancelledEvent {
     pub request_id: String,
     pub provider_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotAuthErrorEvent {
     pub request_id: String,
     pub provider_id: String,
@@ -239,7 +239,7 @@ pub struct CopilotAuthErrorEvent {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct CopilotToolRequestEvent {
     pub request_id: String,
     pub tool_call_id: String,
@@ -247,7 +247,7 @@ pub struct CopilotToolRequestEvent {
     pub args: Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
 pub struct CopilotToolResultRequest {
     pub request_id: String,
     pub tool_call_id: String,

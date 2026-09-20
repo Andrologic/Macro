@@ -1,298 +1,222 @@
-/** workspace IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+DebugResetProjectReportDto as NativeDebugResetProjectReportDto,
+ProjectIconDto as NativeProjectIconDto,
+ProjectIconResolutionDto as NativeProjectIconResolutionDto,
+ProjectRegistryDiagnosticsDto as NativeProjectRegistryDiagnosticsDto,
+ProjectRegistryRepairReportDto as NativeProjectRegistryRepairReportDto,
+WorkspaceArchitectChatMessageDto as NativeWorkspaceArchitectChatMessageDto,
+WorkspaceArchitectPlanActivationHeadDto as NativeWorkspaceArchitectPlanActivationHeadDto,
+WorkspaceArchitectPlanListDto as NativeWorkspaceArchitectPlanListDto,
+WorkspaceArchitectPlanRecordDto as NativeWorkspaceArchitectPlanRecordDto,
+WorkspaceArchitectPlanReplicaDto as NativeWorkspaceArchitectPlanReplicaDto,
+WorkspaceArchitectPlanRuntimeStatusDto as NativeWorkspaceArchitectPlanRuntimeStatusDto,
+WorkspaceArchitectPlanSummaryDto as NativeWorkspaceArchitectPlanSummaryDto,
+WorkspaceArchitectPlanTranscriptDto as NativeWorkspaceArchitectPlanTranscriptDto,
+WorkspaceBootstrapDto as NativeWorkspaceBootstrapDto,
+ManualFeatureDto as NativeWorkspaceManualFeatureDto,
+WorkspaceTaskExecutionTargetDto as NativeWorkspaceManualFeatureExecutionTargetDto,
+ManualFeatureMergeWorkflowDto as NativeWorkspaceManualFeatureMergeWorkflowDto,
+ManualFeatureMergeWorkflowRepositoryDto as NativeWorkspaceManualFeatureMergeWorkflowRepositoryDto,
+WorkspaceMetadataDto as NativeWorkspaceMetadataDto,
+WorkspaceMetadataRecoveryHintDto as NativeWorkspaceMetadataRecoveryHintDto,
+WorkspaceMetadataRecoveryReportDto as NativeWorkspaceMetadataRecoveryReportDto,
+WorkspaceProjectRegistryReconcileReportDto as NativeWorkspaceProjectRegistryReconcileReportDto,
+WorkspaceProjectRegistryReconcileSkippedDto as NativeWorkspaceProjectRegistryReconcileSkippedDto
+} from '../../types/generated/ipc';
+import type { OmitFields, OptionalFields } from './compatibility.types';
+
+/** workspace IPC contracts and explicit frontend adaptations of generated native bindings. */
 
 import type {
-  Plan,
-  PlanNode,
-  PredictedBranch,
-  Project,
-  ProjectGroup,
+Plan,
+PlanNode,
+PredictedBranch,
+Project,
+ProjectGroup,
 } from "../../types";
 import type { GitWorkflowSessionDto } from "./git.types";
 
-export interface ProjectRegistryRepairReportDto {
-  duplicate_paths_removed: number;
-  empty_groups_removed: number;
-  singleton_groups_migrated?: number;
-  removed_synthetic_groups: number;
-  removed_synthetic_projects: number;
-  mount_names_assigned: number;
-  removed_group_ids: string[];
-  removed_project_ids: string[];
-  current_plan_project_ids_removed: number;
-  current_plan_tasks_removed: number;
-  current_plan_task_targets_removed: number;
-  plan_nodes_removed: number;
-  predicted_branches_removed: number;
-  git_flow_settings_auto_updated: number;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules; exposes the existing public view. */
+export type ProjectRegistryRepairReportDto = OptionalFields<OmitFields<NativeProjectRegistryRepairReportDto, "manual_features_removed" | "manual_feature_targets_removed" | "project_access_states_updated">, "singleton_groups_migrated">;
 
-export interface ProjectRegistryDiagnosticsDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type ProjectRegistryDiagnosticsDto = OmitFields<NativeProjectRegistryDiagnosticsDto,
+  | "rawStandaloneProjects"
+  | "rawProjectGroups"
+  | "sanitizedStandaloneProjects"
+  | "sanitizedProjectGroups"
+  | "repairReport"
+> & {
   rawStandaloneProjects?: Project[];
   rawProjectGroups: ProjectGroup[];
   sanitizedStandaloneProjects?: Project[];
   sanitizedProjectGroups: ProjectGroup[];
-  rawGroupCount: number;
-  rawProjectCount: number;
-  sanitizedGroupCount: number;
-  sanitizedProjectCount: number;
   repairReport: ProjectRegistryRepairReportDto;
-}
+};
 
-export interface WorkspaceMetadataRecoveryHintDto {
-  projectId: string;
-  groupId: string | null;
-  name: string;
-  path: string;
-}
+export type WorkspaceMetadataRecoveryHintDto = NativeWorkspaceMetadataRecoveryHintDto;
 
-export interface WorkspaceMetadataRecoveryReportDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceMetadataRecoveryReportDto = OptionalFields<OmitFields<NativeWorkspaceMetadataRecoveryReportDto, "status">, "restoredCommit" | "message"> & {
   status:
     | "none"
     | "restored_from_history"
     | "reconstructed_from_hints"
     | "blocked_dirty"
     | "blocked_conflict";
-  restoredCommit?: string | null;
-  pullAttempted: boolean;
-  pullSucceeded: boolean;
-  message?: string | null;
-}
+};
 
-export interface WorkspaceProjectRegistryReconcileSkippedDto {
-  projectId?: string | null;
-  path: string;
-  reason: string;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceProjectRegistryReconcileSkippedDto = OptionalFields<NativeWorkspaceProjectRegistryReconcileSkippedDto, "projectId">;
 
-export interface WorkspaceProjectRegistryReconcileReportDto {
-  status: "unchanged" | "reconciled" | string;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceProjectRegistryReconcileReportDto = OmitFields<NativeWorkspaceProjectRegistryReconcileReportDto, "discoveredProjects" | "addedProjects" | "skippedProjects"> & {
   discoveredProjects: Project[];
   addedProjects: Project[];
   skippedProjects: WorkspaceProjectRegistryReconcileSkippedDto[];
-  duplicatePaths: string[];
-  invalidPaths: string[];
-}
+};
 
-export interface WorkspaceBootstrapDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceBootstrapDto = OmitFields<NativeWorkspaceBootstrapDto,
+  | "plan"
+  | "standaloneProjects"
+  | "projectGroups"
+  | "planNodes"
+  | "predictedBranches"
+> & {
   plan: Plan | null;
   standaloneProjects: Project[];
   projectGroups: ProjectGroup[];
   planNodes: PlanNode[];
   predictedBranches: PredictedBranch[];
-}
+};
 
-export interface ProjectIconDto {
-  dataUrl: string;
-  sourcePath: string;
-  revision: string;
-}
+export type ProjectIconDto = NativeProjectIconDto;
 
-export interface ProjectIconResolutionDto {
-  projectId: string;
-  icon: ProjectIconDto | null;
-}
+export type ProjectIconResolutionDto = NativeProjectIconResolutionDto;
 
-export interface WorkspaceArchitectPlanReplicaDto {
-  scopeKey: string;
-  projectId: string | null;
-  repoPath: string | null;
-  workspacePath: string | null;
-  source: "local" | "project" | "workspace" | string;
-  updatedAt?: string | null;
-  missing?: boolean;
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceArchitectPlanReplicaDto = OptionalFields<NativeWorkspaceArchitectPlanReplicaDto, "updatedAt" | "missing">;
 
-export interface WorkspaceArchitectPlanSummaryDto {
-  id: string;
-  slug: string;
-  title: string;
-  label?: string | null;
-  description: string;
-  planKind?: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceArchitectPlanSummaryDto = OptionalFields<OmitFields<NativeWorkspaceArchitectPlanSummaryDto, "gitFlowPlan" | "executionModesByProjectId" | "replicas">,
+  | "label"
+  | "planKind"
+  | "archivedAt"
+  | "archivedFromStatus"
+  | "deletedAt"
+  | "targetBranchesByProjectId"
+  | "conversationId"
+  | "projectId"
+  | "projectIds"
+  | "contextProjectIds"
+  | "predictedBranchCount"
+  | "chatMessageCount"
+  | "expectedProjectIds"
+  | "availableProjectIds"
+  | "missingProjectIds"
+  | "replicationState"
+  | "revision"
+  | "hasReplicaDivergence"
+> & {
   gitFlowPlan?: unknown;
-  status: string;
-  archivedAt?: string | null;
-  archivedFromStatus?: string | null;
-  deletedAt?: string | null;
-  targetBranch: string;
-  targetBranchesByProjectId?: Record<string, string> | null;
   executionModesByProjectId?: Record<string, "git" | "direct"> | null;
-  conversationId?: string | null;
-  projectId?: string | null;
-  projectIds?: string[];
-  contextProjectIds?: string[];
-  createdAt: string;
-  updatedAt: string;
-  nodeCount: number;
-  predictedBranchCount?: number | null;
-  chatMessageCount?: number | null;
-  expectedProjectIds?: string[];
-  availableProjectIds?: string[];
-  missingProjectIds?: string[];
-  replicationState?: string | null;
-  revision?: number | null;
   replicas?: WorkspaceArchitectPlanReplicaDto[];
-  hasReplicaDivergence?: boolean;
-}
+};
 
-export interface WorkspaceArchitectPlanRecordDto {
-  id: string;
-  slug: string;
-  title: string;
-  label?: string | null;
-  description: string;
-  planKind?: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceArchitectPlanRecordDto = OptionalFields<OmitFields<NativeWorkspaceArchitectPlanRecordDto,
+  | "gitFlowPlan"
+  | "executionModesByProjectId"
+  | "nodes"
+  | "predictedBranches"
+  | "replicas"
+>,
+  | "label"
+  | "planKind"
+  | "archivedAt"
+  | "archivedFromStatus"
+  | "deletedAt"
+  | "targetBranchesByProjectId"
+  | "conversationId"
+  | "projectId"
+  | "projectIds"
+  | "contextProjectIds"
+  | "expectedProjectIds"
+  | "availableProjectIds"
+  | "missingProjectIds"
+  | "replicationState"
+  | "revision"
+  | "hasReplicaDivergence"
+> & {
   gitFlowPlan?: unknown;
-  status: string;
-  archivedAt?: string | null;
-  archivedFromStatus?: string | null;
-  deletedAt?: string | null;
-  targetBranch: string;
-  targetBranchesByProjectId?: Record<string, string> | null;
   executionModesByProjectId?: Record<string, "git" | "direct"> | null;
-  conversationId?: string | null;
-  projectId?: string | null;
-  projectIds?: string[];
-  contextProjectIds?: string[];
-  createdAt: string;
-  updatedAt: string;
   nodes: PlanNode[];
   predictedBranches: PredictedBranch[];
-  expectedProjectIds?: string[];
-  availableProjectIds?: string[];
-  missingProjectIds?: string[];
-  replicationState?: string | null;
-  revision?: number | null;
   replicas?: WorkspaceArchitectPlanReplicaDto[];
-  hasReplicaDivergence?: boolean;
-}
+};
 
-export interface WorkspaceArchitectPlanRuntimeStatusDto {
-  branchName: string;
-  branchGeneration: number;
-  branchStamp: string;
-  planCount: number;
-  scopeCount: number;
-  rebuilt: boolean;
-}
+export type WorkspaceArchitectPlanRuntimeStatusDto = NativeWorkspaceArchitectPlanRuntimeStatusDto;
 
-export interface WorkspaceArchitectPlanListDto {
-  activePlanId: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceArchitectPlanListDto = OptionalFields<OmitFields<NativeWorkspaceArchitectPlanListDto, "plans">, "runtimeStatus"> & {
   plans: WorkspaceArchitectPlanSummaryDto[];
-  runtimeStatus?: WorkspaceArchitectPlanRuntimeStatusDto | null;
-}
+};
 
-export interface WorkspaceArchitectPlanActivationHeadDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceArchitectPlanActivationHeadDto = OptionalFields<OmitFields<NativeWorkspaceArchitectPlanActivationHeadDto, "plan">, "replicaScopeKey" | "replicaProjectId"> & {
   plan: WorkspaceArchitectPlanRecordDto;
-  conversationId: string | null;
-  sharedConversation: boolean;
-  targetBranch: string;
-  replicaScopeKey?: string | null;
-  replicaProjectId?: string | null;
-  resolutionMode: string;
-  chatTranscriptRevision: string | null;
-  chatMessageCount: number;
-}
+};
 
-export interface WorkspaceArchitectChatMessageDto {
-  id: string;
-  role: "user" | "assistant" | string;
-  content: string;
-  createdAt: string;
-}
+export type WorkspaceArchitectChatMessageDto = NativeWorkspaceArchitectChatMessageDto;
 
-export interface WorkspaceArchitectPlanTranscriptDto {
-  planId: string;
-  targetBranch: string;
-  replicaScopeKey?: string | null;
-  replicaProjectId?: string | null;
-  transcriptRevision: string | null;
-  messageCount: number;
-  messages: WorkspaceArchitectChatMessageDto[];
-}
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceArchitectPlanTranscriptDto = OptionalFields<NativeWorkspaceArchitectPlanTranscriptDto, "replicaScopeKey" | "replicaProjectId">;
 
-export interface WorkspaceMetadataDto {
-  workspace_path: string;
-  metadata_path: string;
-  project_count: number;
-}
+export type WorkspaceMetadataDto = NativeWorkspaceMetadataDto;
 
-export interface WorkspaceManualFeatureExecutionTargetDto {
-  projectId: string;
-  branchName: string;
-  targetBranchName?: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceManualFeatureExecutionTargetDto = OptionalFields<OmitFields<NativeWorkspaceManualFeatureExecutionTargetDto, "executionMode" | "executionKind">,
+  | "targetBranchName"
+  | "checkpointId"
+  | "baseCommitHash"
+  | "repoPath"
+> & {
   executionMode?: 'git' | 'direct' | null;
   executionKind?: 'worktree' | 'repository_root' | null;
-  checkpointId?: string | null;
-  baseCommitHash?: string | null;
-  worktreeKey: string;
-  repoPath?: string | null;
-}
+};
 
-export interface WorkspaceManualFeatureMergeWorkflowRepositoryDto {
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceManualFeatureMergeWorkflowRepositoryDto = OptionalFields<OmitFields<NativeWorkspaceManualFeatureMergeWorkflowRepositoryDto, "workflowSession" | "repositoryRootPath" | "mergeStrategy">,
+  | "integrationWorktreePath"
+  | "mergeInProgress"
+  | "hadChangesAtStart"
+  | "mergeAppliedAt"
+  | "blockingKind"
+  | "blockingReason"
+  | "conflictFiles"
+  | "dirtyFiles"
+  | "ahead"
+  | "behind"
+  | "isSourcePublished"
+  | "recommendedAction"
+  | "availableActions"
+> & {
   workflowSession?: GitWorkflowSessionDto;
   repositoryRootPath?: string | null;
-  integrationWorktreePath?: string | null;
-  mergeInProgress?: boolean;
-  id: string;
-  projectId: string;
-  repoPath: string;
-  sourceBranchName: string;
-  targetBranchName: string;
-  state: string;
-  hadChangesAtStart?: boolean;
-  mergeAppliedAt?: string | null;
-  blockingKind?: string | null;
-  blockingReason?: string | null;
-  conflictFiles?: string[];
-  dirtyFiles?: Array<{ path: string; status: string; area: string }>;
-  ahead?: number;
-  behind?: number;
-  isSourcePublished?: boolean;
   mergeStrategy?: string;
-  recommendedAction?: string | null;
-  availableActions?: string[];
-}
+};
 
-export interface WorkspaceManualFeatureMergeWorkflowDto {
-  kind: string;
-  phase: string;
-  taskStatus: string;
-  startedAt: string;
-  updatedAt: string;
-  lastLoadedAt?: string | null;
-  message?: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceManualFeatureMergeWorkflowDto = OptionalFields<OmitFields<NativeWorkspaceManualFeatureMergeWorkflowDto, "repositories">, "lastLoadedAt" | "message"> & {
   repositories: WorkspaceManualFeatureMergeWorkflowRepositoryDto[];
-}
+};
 
-export interface WorkspaceManualFeatureDto {
-  id: string;
-  conversationId: string;
-  draft: boolean;
-  title: string;
-  description: string;
-  status: string;
-  featureSlug: string | null;
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type WorkspaceManualFeatureDto = OmitFields<NativeWorkspaceManualFeatureDto, "taskKind" | "executionTargets" | "mergeWorkflow"> & {
   taskKind: 'feature' | 'bugfix' | 'hotfix' | 'direct' | null;
-  branchName: string | null;
-  archivedAt: string | null;
-  archiveReason: string | null;
-  mergedAt: string | null;
-  baseBranch: string;
-  projectIds: string[];
-  contextProjectIds: string[];
   executionTargets: WorkspaceManualFeatureExecutionTargetDto[];
   mergeWorkflow?: WorkspaceManualFeatureMergeWorkflowDto | null;
-  createdAt: string;
-  updatedAt: string;
-}
+};
 
-export interface DebugResetProjectReportDto {
-  projectId: string;
-  projectName: string;
-  removedRegistryEntry: boolean;
-  removedTaskWorktrees: number;
-  removedMetadataWorktree: boolean;
-  removedMacroBranch: boolean;
-  warnings: string[];
-}
+export type DebugResetProjectReportDto = NativeDebugResetProjectReportDto;

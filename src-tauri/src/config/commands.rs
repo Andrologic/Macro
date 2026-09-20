@@ -16,6 +16,7 @@ const EVENT_RESTART: &str = "config://restart-required";
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct OrphanSecretDto {
     pub id: String,
     pub namespace: String,
@@ -120,6 +121,7 @@ pub async fn config_list_orphan_secrets(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct DeleteOrphanSecretRequest {
     id: String,
     secret_type: String,

@@ -1,6 +1,5 @@
 import { dirname, posix } from 'node:path';
 
-const TYPESCRIPT_PATTERN = /\.(?:ts|tsx)$/;
 const LINTABLE_SCRIPT_PATTERN = /\.(?:[cm]?[jt]s|jsx|tsx)$/;
 const TEST_PATTERN = /\.test\.(?:ts|tsx)$/;
 const RUST_PATTERN = /\.rs$/;
@@ -28,6 +27,18 @@ const I18N_PATTERNS = [
   /^dev\/i18n\//,
 ];
 
+// DTO dependencies can live in any Rust module, including deleted/renamed files.
+// Keep this conservative without compiling Rust for unrelated frontend changes.
+const GENERATED_CONTRACT_PATTERNS = [
+  /^src-tauri\/.*\.rs$/,
+  /^src-tauri\/(?:Cargo\.toml|Cargo\.lock|build\.rs)$/,
+  /^src-tauri\/examples\/generate_config\//,
+  /^src-tauri\/config-schemas\//,
+  /^src\/types\/generated\/(?:config|ipc)\//,
+  /^(?:Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|package\.json)$/,
+  /^dev\/ci\/.*\.mjs$/,
+];
+
 export function normalizePath(path) {
   return path.replace(/^\.\//, '').replaceAll('\\', '/');
 }
@@ -46,7 +57,7 @@ export function selectLintFiles(paths, exists = () => true) {
 }
 
 function sourceKeys(path) {
-  const normalized = normalizePath(path).replace(/\.(?:ts|tsx)$/, '');
+  const normalized = normalizePath(path).replace(/\.(?:[cm]?[jt]s|jsx|tsx)$/, '');
   const keys = new Set([normalized]);
   if (normalized.endsWith('/index')) {
     keys.add(normalized.slice(0, -'/index'.length));
@@ -80,11 +91,11 @@ export function selectRelatedTestFiles({
   const availableTests = normalizePaths(testFiles).filter((path) => exists(path));
   const availableSet = new Set(availableTests);
   const selected = new Set(changed.filter((path) => TEST_PATTERN.test(path) && availableSet.has(path)));
-  const changedSources = changed.filter((path) => TYPESCRIPT_PATTERN.test(path) && !TEST_PATTERN.test(path));
+  const changedSources = changed.filter((path) => LINTABLE_SCRIPT_PATTERN.test(path) && !TEST_PATTERN.test(path));
   const changedKeys = new Set(changedSources.flatMap((path) => [...sourceKeys(path)]));
 
   for (const source of changedSources) {
-    const withoutExtension = source.replace(/\.(?:ts|tsx)$/, '');
+    const withoutExtension = source.replace(/\.(?:[cm]?[jt]s|jsx|tsx)$/, '');
     for (const candidate of [`${withoutExtension}.test.ts`, `${withoutExtension}.test.tsx`]) {
       if (availableSet.has(candidate)) {
         selected.add(candidate);
@@ -171,6 +182,25 @@ export function planFastLocalChecks(paths, options = {}) {
       command: 'cargo',
       args: ['fmt', '--manifest-path', 'src-tauri/Cargo.toml', '--', '--check'],
     });
+  }
+
+  if (normalized.some((path) => matchesAny(path, GENERATED_CONTRACT_PATTERNS))) {
+    steps.push({
+      name: 'Préparer le sidecar pour les contrats natifs',
+      command: process.execPath,
+      args: ['run', 'build:ai-runtime'],
+      needsDependencies: true,
+    });
+    for (const domain of ['config', 'ipc']) {
+      steps.push({
+        name: `Contrats générés ${domain}`,
+        command: 'cargo',
+        args: [
+          'run', '--manifest-path', 'src-tauri/Cargo.toml', '--locked', '--jobs', '2',
+          '--example', 'generate_config', '--', '--domain', domain, '--check',
+        ],
+      });
+    }
   }
 
   return { paths: normalized, lintFiles, testFiles, steps };

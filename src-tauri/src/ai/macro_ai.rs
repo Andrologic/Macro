@@ -58,6 +58,7 @@ struct BootstrapError {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct MacroAiProvisioningStatus {
     pub provider_id: String,
     pub model_id: String,

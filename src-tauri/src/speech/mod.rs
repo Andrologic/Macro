@@ -18,6 +18,7 @@ pub struct TranscriptionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct TranscriptionResult {
     pub text: String,
     pub language: Option<String>,

@@ -1,19 +1,15 @@
-/** updates IPC DTOs. Kept separate for generated Rust binding integration. */
+import type { OmitFields } from './compatibility.types';
+import type {
+AppUpdateSnapshot as NativeNativeAppUpdateSnapshotDto,
+StagedUpdateManifest as NativeNativeStagedUpdateDto
+} from '../../types/generated/ipc';
 
-export interface NativeStagedUpdateDto {
-  currentVersion: string;
-  version: string;
-  date: string | null;
-  notes: string;
-  target: string;
-  sha256: string;
-  packageSize: number;
-  phase: 'staged' | 'activating' | 'failed';
-  activationAttempts: number;
-  error: string | null;
-}
+/** updates IPC contracts and explicit frontend adaptations of generated native bindings. */
 
-export interface NativeAppUpdateSnapshotDto {
-  currentVersion: string;
+/** Frontend compatibility: exposes the existing public view. */
+export type NativeStagedUpdateDto = OmitFields<NativeNativeStagedUpdateDto, "generation" | "packageFile" | "signature">;
+
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type NativeAppUpdateSnapshotDto = OmitFields<NativeNativeAppUpdateSnapshotDto, "update"> & {
   update: NativeStagedUpdateDto | null;
-}
+};

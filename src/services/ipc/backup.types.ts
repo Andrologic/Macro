@@ -1,9 +1,9 @@
-/** backup IPC DTOs. Kept separate for generated Rust binding integration. */
+import type {
+BackupStatus as NativeLocalBackupStatus
+} from '../../types/generated/ipc';
+import type { OptionalFields } from './compatibility.types';
 
-export interface LocalBackupStatus {
-  code?: 'exported' | 'restored' | 'rolledBack' | 'failed' | 'invalidRequest' | null;
-  path?: string | null;
-  /** Raw diagnostic, including messages written by earlier versions. */
-  message: string;
-  browser: Record<string, string> | null;
-}
+/** backup IPC contracts and explicit frontend adaptations of generated native bindings. */
+
+/** Frontend compatibility: preserves adapted fields and omission rules. */
+export type LocalBackupStatus = OptionalFields<NativeLocalBackupStatus, "code" | "path">;
