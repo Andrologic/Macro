@@ -1,5 +1,16 @@
+import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
+import { createChatToolExecution } from "../services/chatToolExecution";
+import { prepareAssistantStreamLaunch as prepareChatRequest } from "../services/chatRequestPreparation";
+import { retryAssistantPersistence } from "../services/chatAssistantPersistenceRuntime";
+import { sendMessage as sendChatMessage } from "../services/chatSend/sendMessage";
+import type { ChatSendSnapshot } from "../services/chatSend/contracts";
+import { composeChatStreamCompaction } from "../composition/chatStreamComposition";
+import { cloneProviderInputItems, cloneStreamMessage, normalizeMessagesForProviderContext, shouldCountProviderInputItemsForContext } from "../services/chatStreamCompactionMessages";
+import { createChatTurnRuntime, ChatTurnSupersededError } from "../services/chatTurnRuntime";
+import { createAssistantStreamRuntime } from "../services/chatAssistantStreamRuntime";
+import type { PrepareAssistantStreamParams, FrozenToolCallContext, StreamContextDiagnosticsBaseline } from "../services/chatStreamContracts";
 import { create } from "zustand";
-import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers, sameApprovalExecutionScope } from "../services/toolApprovalRecovery";
+import { persistToolApprovalRecovery, restoreToolApprovalRecovery, loadToolApprovalRecoveryMarkers } from "../services/toolApprovalRecovery";
 import {
   AppMode,
   AgentType,
@@ -23,7 +34,6 @@ import {
   CompactionPass,
   CompactionSummarySource,
   MCPTool,
-  MCPServer,
   PendingToolApproval,
   PersistedContextReference,
   PlanNode,
@@ -43,7 +53,6 @@ import { toServiceError } from "../services/contracts/errors";
 import { isAppShutdownGateActive } from "../services/appShutdownGate";
 import i18n from "../i18n";
 import {
-  extractContextLimitTokensFromErrorLike,
   isContextOverflowErrorLike,
 } from "../services/contextOverflow";
 import { providerHasCredentials, useProviderStore } from "./useProviderStore";
@@ -52,16 +61,15 @@ import type { Citation, SourcePassageKind } from "./useCitationsStore";
 import { useConversationArchiveStore } from "./useConversationArchiveStore";
 import {
   cancelStream,
+  streamChat,
   sendChatNonStreaming,
   estimateCopilotSerializedPayloadTokens,
   estimateChatCompletionSerializedPayloadTokens,
   type LiveStreamContextSnapshot,
   type StreamCompletionResult,
   type StreamMessage,
-  type StreamTimelinePhase,
   type ToolCallResolution,
 } from "../services/streamingChat";
-import { normalizeLegacyToolExecutionResult } from "../services/toolResultNormalization";
 import {
   buildExplicitSkillsInstruction,
   buildSkillCatalogInstruction,
@@ -70,24 +78,15 @@ import {
   getSkillToolIdsForRequest,
   handleSkillToolCall,
 } from "../services/skills/chatIntegration";
-import {
-  runAssistantStream,
-  type ChatStreamTokenControls,
-} from "../services/chatStreamOrchestrator";
-import { createChatStreamLifecycleRuntime } from "../services/chatStreamLifecycleRuntime";
 import { formatConversationFilePage, readConversationFileBody } from "../services/conversationFileTool";
 import {
   buildSpilledToolResultPreview,
   shouldSpillToolResult,
 } from "../services/toolResultArtifacts";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
-import { handleConfigToolCall } from "../services/configToolIntegration";
+
 import { handleConfigVirtualScopeToolCall } from "../services/configVirtualScope";
-import {
-  fetchWebPage,
-  formatSearchResultsAsContext,
-  webSearch,
-} from "../services/webSearch";
+
 import { useToolsStore } from "./useToolsStore";
 import { useSkillsStore, type SkillTurnPreparation } from "./useSkillsStore";
 import { useAppStore } from "./useAppStore";
@@ -106,10 +105,7 @@ import {
   savePreference,
 } from "../services/preferences";
 import { loadMetadataModelConfig } from "../services/metadataModelPreference";
-import {
-  type ChatMaxTurnsPreference,
-  normalizeChatMaxTurns,
-} from "../services/chatTurnLimits";
+import { type ChatMaxTurnsPreference } from "../services/chatTurnLimits";
 import { useTerminalStore } from "./useTerminalStore";
 import { devLogger } from "../utils/devLogger";
 import {
@@ -121,7 +117,6 @@ import {
   applyScopedToolRestrictions,
   loadScopedTurnConfiguration,
   resolveScopedModelSelection,
-  type ScopedTurnConfiguration,
 } from "../services/configurationClient";
 import {
   type ArchitectPlanActivationPayload,
@@ -152,7 +147,7 @@ import {
   isCanonicalArchitectPlan,
 } from "../services/architectPlanPresentation";
 import { buildArchitectPlanToolFollowUpInstruction } from "../services/architectChat";
-import { normalizeArchitectToolId } from "../services/architectToolNames";
+
 import { selectInjectableMCPToolIds } from "../services/mcp";
 import { isMCPToolId } from "../services/mcpToolNames";
 import { notify } from "../components/ui/toastService";
@@ -184,12 +179,7 @@ import {
   putTaskArtifact,
   resolveTaskArtifactTarget,
 } from "../services/architectPlanArtifactService";
-import {
-  buildToolRiskLevelSystemInstruction,
-  DEFAULT_TOOL_RISK_LEVEL,
-  evaluateToolSecurity,
-  filterDeniedToolIdsForRiskLevel,
-} from "../services/toolSecurityPolicy";
+import { buildToolRiskLevelSystemInstruction, DEFAULT_TOOL_RISK_LEVEL, filterDeniedToolIdsForRiskLevel } from "../services/toolSecurityPolicy";
 import {
   createAssistantPlaceholderMessage,
   createUserMessage,
@@ -248,41 +238,16 @@ import {
   getPlanExecutionModesByProjectId,
   resolvePlanProjectExecutionMode,
 } from "../services/planExecutionModes";
-import {
-  buildQuestionnaireResponseArtifacts,
-  buildQuestionnaireResponseProviderInputItems,
-  buildQuestionnaireHiddenContextBlock,
-  DEFAULT_QUESTIONNAIRE_INTRO,
-  findFirstUnansweredQuestionStepIndex,
-  resolveActiveConversationQuestionnaire,
-  validateQuestionToolArgs,
-} from "../services/chatQuestionnaires";
-import {
-  buildContextTooLargeErrorMessage,
-  buildManualCompactionRequiredErrorMessage,
-  buildCompactedMessagesForRequest,
-  COMPACTED_CONVERSATION_STATE_MARKER,
-  estimateBlockableTokensForStreamMessages,
-  estimateConversationFootprint,
-  isBlockableContextOverUsableBudget,
-  isContextFootprintOverUsableBudget,
-  type ContextBudgetPolicy,
-  type ContextCompactionDecision,
-  type ManualCompactionSkipReason,
-  type MaybeCompactConversationResult,
-  type SummaryGenerationInput,
-} from "../services/contextCompaction";
+import { buildQuestionnaireResponseArtifacts, buildQuestionnaireResponseProviderInputItems, findFirstUnansweredQuestionStepIndex, resolveActiveConversationQuestionnaire } from "../services/chatQuestionnaires";
+import { buildCompactedMessagesForRequest, COMPACTED_CONVERSATION_STATE_MARKER, estimateConversationFootprint, isBlockableContextOverUsableBudget, type ContextBudgetPolicy, type ManualCompactionSkipReason, type MaybeCompactConversationResult, type SummaryGenerationInput } from "../services/contextCompaction";
 import { fingerprintImageSource } from "../services/contextTokenEstimation";
 import {
   buildAppliedCompactionAuditDetails,
   buildCompactionDecisionAuditMetadata,
-  consolidateCompletedAssistantTurnCompaction,
   getCompactionBoundaryForMode,
-  isSyntheticCompactionBoundaryState,
   runContextCompactionOrchestration,
-  type PendingToolBoundaryCompaction,
 } from "../services/contextCompactionOrchestrator";
-import { shouldProactivelyCompactContext } from "../services/contextCompactionPlanner";
+
 import {
   buildCompactionActivityStatus,
   getCompactionEventTrigger,
@@ -350,7 +315,6 @@ import {
   type RepositoryInstructionDiagnosticSource,
 } from "./chat/chatContextDiagnostics";
 import {
-  assistantTurnRequiresUserReply,
   buildAssistantMessagePresentation,
   buildUserMessagePresentation,
   mapDbConversationToConversation,
@@ -443,12 +407,6 @@ const LOCKED_AGENT_TOOL_IDS = [
   "skill_read_resource",
   "skill_run_script",
 ] as const;
-const AGENT_TERMINAL_TOOL_IDS = new Set([
-  "terminal_create_session",
-  "terminal_run",
-  "terminal_read",
-  "terminal_kill",
-]);
 const ARCHITECT_STRATEGY_MUTATION_TOOL_IDS = new Set([
   "strategy_generate",
   "strategy_update",
@@ -458,31 +416,6 @@ const assistantTurnContextByMessageId = new Map<
   string,
   { conversationId: string; mode: AppMode; agentType: AgentType | null }
 >();
-
-const shouldCountProviderInputItemsForContext = (
-  providerType?: string | null,
-): boolean => providerType !== "copilot";
-
-const normalizeMessagesForProviderContext = (
-  providerType: string | null | undefined,
-  messages: StreamMessage[],
-): StreamMessage[] => {
-  if (providerType !== "copilot") {
-    return messages;
-  }
-
-  return messages.map((message) => ({
-    role: message.role,
-    content: message.content,
-    ...(Array.isArray(message.content) &&
-    message.content.some((part) => part.type === "image_url") &&
-    message.image_metadata
-      ? { image_metadata: message.image_metadata.map((metadata) => ({ ...metadata })) }
-      : {}),
-    ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
-    ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
-  }));
-};
 
 const estimateSerializedPayloadTokensForProvider = (params: {
   messages: StreamMessage[];
@@ -522,37 +455,6 @@ const chatPersistenceAdapters: ChatPersistenceAdapters = {
   randomIdSuffix: () => Math.random().toString(36).slice(2, 8),
 };
 const LIVE_CONTEXT_DIAGNOSTICS_THROTTLE_MS = 1000;
-const GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS = new Set(["git_add", "git_commit"]);
-const GIT_STAGE_COMMIT_CHALLENGE_MESSAGE =
-  "Do not stage or commit unless the user explicitly asked for it in this task. Re-read the latest user instruction. If the user did explicitly ask to stage/commit, call this tool again; otherwise stop and ask for confirmation.";
-const TOOL_EXECUTION_ABORTED_RESULT: ToolCallResolution = {
-  kind: "result",
-  result: "Tool execution aborted",
-  isError: true,
-  errorKind: "aborted",
-  toString: () => "Tool execution aborted",
-};
-
-const toolFailure = (
-  result: string,
-  errorKind: "execution" | "permission" | "validation" = "execution",
-): ToolCallResolution => ({
-  kind: "result",
-  result,
-  isError: true,
-  errorKind,
-  toString: () => result,
-});
-let terminalToolExecutionCounter = 0;
-const createTerminalToolExecutionId = (): string => {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  terminalToolExecutionCounter += 1;
-  return `terminal-tool-${Date.now()}-${terminalToolExecutionCounter}`;
-};
-const IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE =
-  "Plan mode is read-only. This assistant turn cannot edit files, update todos, run terminal commands, stage, commit, checkout, merge, reset, or stash. Inspect the repo and produce a concrete implementation plan instead.";
 const IMPLEMENT_PLAN_SYSTEM_INSTRUCTION =
   "Plan mode is read-only. Do not edit files, update todos, run mutating terminal commands, stage, commit, checkout, merge, reset, stash, or claim changes were made. Use tools to inspect the repo, ask blocking questions when needed, then end with a concrete implementation plan. If the user asks you to implement while still in Plan, produce an implementation plan instead of applying it.";
 const IMPLEMENT_BUILD_AFTER_PLAN_SYSTEM_INSTRUCTION =
@@ -658,37 +560,6 @@ interface LiveContextDiagnosticsRefreshState {
   lastStartedAt: number;
 }
 
-interface StreamContextDiagnosticsBaseline {
-  sessionId: string;
-  conversationId: string;
-  assistantMessageId: string;
-  modeAtSend: AppMode;
-  providerId: string;
-  providerType: string;
-  baseUrl: string;
-  modelId: string;
-  modelContextWindowTokens: number;
-  inputLimitTokens?: number;
-  outputLimitTokens?: number;
-  contextLimitSource?: ContextFootprint["contextLimitSource"];
-  isContextLimitAuthoritative?: boolean;
-  contextLimitConfidence?: ContextFootprint["contextLimitConfidence"];
-  contextLimitWarning?: string;
-  allowedToolIds: string[];
-  toolDefinitions: MacroToolRegistryEntry[];
-  messagesForRequest: StreamMessage[];
-  orderedMessages: ChatMessage[];
-  citations: Citation[];
-  repositoryInstructionSources: RepositoryInstructionDiagnosticSource[];
-  repositoryInstructionIssues: tauriIpc.RepositoryInstructionIssueDto[];
-  compactionDecision?: ContextCompactionDecision;
-}
-
-type StreamContextDiagnosticsBaselineSeed = Omit<
-  StreamContextDiagnosticsBaseline,
-  "sessionId" | "assistantMessageId" | "orderedMessages"
->;
-
 interface LiveStreamDiagnosticsPayload {
   systemMessage: string;
   preparedMessages: StreamMessage[];
@@ -701,69 +572,6 @@ const isProviderContextOverflowError = (error: unknown): boolean => {
   return isContextOverflowErrorLike(error);
 };
 
-const OVERFLOW_RECOVERY_FAILURE_MESSAGE =
-  "The selected model still rejected this conversation after an aggressive compaction pass. Macro kept your message; continue with a larger-context model or compact manually before retrying.";
-
-const streamContentToPlainText = (content: StreamMessage["content"]): string => {
-  if (typeof content === "string") return content;
-  return content
-    .map((part) =>
-      part.type === "text"
-        ? part.text
-        : part.type === "image_url"
-          ? "[image attachment]"
-          : "",
-    )
-    .filter(Boolean)
-    .join("\n");
-};
-
-const splitSystemAndPreparedStreamMessages = (
-  messages: StreamMessage[],
-): { systemMessage: string; preparedMessages: StreamMessage[] } => {
-  const first = messages[0];
-  if (first?.role === "system" && typeof first.content === "string") {
-    return {
-      systemMessage: first.content,
-      preparedMessages: messages.slice(1),
-    };
-  }
-  return {
-    systemMessage: "",
-    preparedMessages: messages,
-  };
-};
-
-const buildSyntheticOrderedMessagesForStreamRequest = (params: {
-  conversationId: string;
-  taskId: string;
-  messages: StreamMessage[];
-}): ChatMessage[] => {
-  const timestampBase = Date.now();
-  return params.messages.map((message, index) => {
-    const role: ChatMessage["role"] =
-      message.role === "assistant" || message.role === "tool" || message.role === "system"
-        ? "assistant"
-        : "user";
-    const label =
-      message.role === "tool"
-        ? "Tool result"
-        : message.role === "system"
-          ? "System instruction"
-          : "";
-    const content = streamContentToPlainText(message.content);
-    return {
-      id: `stream-boundary-${index}`,
-      task_id: params.taskId,
-      conversation_id: params.conversationId,
-      role,
-      content: label ? `[${label}]\n${content}` : content,
-      timestamp: new Date(timestampBase + index).toISOString(),
-      provider_input_items: message.provider_input_items,
-      provider_turn_state: message.provider_turn_state,
-    };
-  });
-};
 
 const getConversationFallbackTitle = (content: string): string => {
   const cleaned = content.replace(/\s+/g, " ").trim();
@@ -946,26 +754,6 @@ interface ChatSendCancelledResult {
   assistantMessageId: null;
 }
 
-/**
- * Values captured for one assistant generation.  Tool calls must not infer
- * their target from whichever conversation, task, or project happens to be
- * selected when the provider responds.
- */
-interface FrozenToolCallContext {
-  conversationId: string;
-  sessionId: string;
-  turnId: string;
-  assistantMessageId: string;
-  mode: AppMode;
-  agentType: AgentType | null;
-  taskId: string;
-  executionContext: ProjectExecutionContext;
-  scopedTurnConfiguration: ScopedTurnConfiguration | null;
-  allowedToolIds: readonly string[];
-  mcpServers: readonly MCPServer[];
-  riskLevel: ToolRiskLevel;
-  signal: AbortSignal;
-}
 
 const scopedModelPreferenceKeys = (
   mode: AppMode,
@@ -1010,12 +798,6 @@ interface ArchitectPlanNamingRecoveryState {
   isSubmitting: boolean;
   error: string | null;
 }
-
-type PendingToolApprovalResolution =
-  | { kind: "allow_once" }
-  | { kind: "allow_conversation" }
-  | { kind: "expired" }
-  | { kind: "deny"; reason?: string };
 
 type ConversationMessageLoadStatus = "idle" | "loading" | "ready" | "error";
 
@@ -1545,15 +1327,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const deletedConversationIds = new Set<string>();
   const replayRecoveryBlockedConversationIds = new Set<string>();
   const pendingConversationDeletionIds = new Set<string>();
-  const latestConversationSessionIdByConversationId = new Map<string, string>();
-  const pendingSteersByConversationId = new Map<string, StreamMessage[]>();
+  const turnRuntime = createChatTurnRuntime({
+    state: {
+      read: (id) => getConversationRuntimeSnapshot(get().conversationRuntimeById, id),
+      project: (id, runtime, options) => set(state => ({
+        ...buildConversationRuntimePatch(state, id, runtime),
+        ...(options && "globalLastError" in options ? { lastError: options.globalLastError ?? null } : {}),
+      })),
+      isDeleted: (id) => deletedConversationIds.has(id),
+    },
+    cancelTransport: cancelStream,
+    settled: (id) => { void drainQueuedSubmissions(id); },
+  });
   const queuedSubmissionsByConversationId = new Map<string, ComposerSubmissionPayload[]>();
   const drainingQueuedConversationIds = new Set<string>();
   const toolboxPersistenceTailsByConversationId = new Map<string, Promise<void>>();
-  const completionPersistenceOwnersByConversationId = new Map<
-    string,
-    { sessionId: string; turnId: string | null; assistantMessageId: string }
-  >();
   const contextDiagnosticsRequestIds = new Map<string, number>();
   const liveContextDiagnosticsRefreshByConversationId = new Map<
     string,
@@ -1591,10 +1379,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   >();
   const launchedAgentCodeReplayConversationIds = new Set<string>();
-  const activeAssistantStreamPromisesByConversationId = new Map<
-    string,
-    Promise<void>
-  >();
   let toolResultArtifactSequence = 0;
 
   const clearPendingAgentCodeReplay = (conversationId: string): void => {
@@ -1617,19 +1401,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     conversationId: string,
   ): Promise<void> => {
     stopConversationRuntimeLocally(conversationId);
-    const activeStream = activeAssistantStreamPromisesByConversationId.get(
-      conversationId,
-    );
-    if (activeStream) {
-      try {
-        await activeStream;
-      } catch (error) {
-        console.warn(
-          "Assistant stream failed while preparing conversation deletion:",
-          error,
-        );
-      }
-    }
+    try { await turnRuntime.drain(conversationId); }
+    catch (error) { console.warn("Assistant stream failed while preparing conversation deletion:", error); }
     await forceRollbackPendingAgentCodeReplay(conversationId);
     clearPendingAgentCodeReplay(conversationId);
   };
@@ -2914,71 +2687,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
             message.persistence_state === "retrying"),
       );
 
-  const assertConversationRuntimeAvailableForSend = (conversationId: string) => {
-    if (
-      deletedConversationIds.has(conversationId) ||
-      !get().conversations.some((conversation) => conversation.id === conversationId)
-    ) {
-      throw buildSendError("This conversation is no longer available.");
-    }
-    if (hasUnsavedAssistantResponse(conversationId)) {
-      throw buildSendError(
-        "Save or delete the unsaved assistant response before sending another message.",
-      );
-    }
-    const runtime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
-    if (isConversationRuntimeActive(runtime)) {
-      throw buildSendError(
-        "This conversation is already running. Wait for it to finish before sending again.",
-      );
-    }
-  };
+  const assertConversationRuntimeAvailableForSend = (conversationId: string) =>
+    turnRuntime.assertCanSend(conversationId, {
+      available: get().conversations.some(conversation => conversation.id === conversationId),
+      hasUnsavedResponse: hasUnsavedAssistantResponse(conversationId),
+    });
 
-  const transferConversationSessionOwnership = (
-    previousConversationId: string,
-    materializedConversationId: string,
-    sessionId: string,
-  ): boolean => {
-    if (deletedConversationIds.has(materializedConversationId)) {
-      return false;
-    }
-    if (
-      latestConversationSessionIdByConversationId.get(previousConversationId) !==
-      sessionId
-    ) {
-      return false;
-    }
-    const materializedOwner = latestConversationSessionIdByConversationId.get(
-      materializedConversationId,
-    );
-    if (materializedOwner && materializedOwner !== sessionId) {
-      return false;
-    }
-    latestConversationSessionIdByConversationId.set(
-      materializedConversationId,
-      sessionId,
-    );
-    latestConversationSessionIdByConversationId.delete(previousConversationId);
-    return true;
-  };
-
-  const setConversationRuntime = (
-    conversationId: string,
-    runtime: ConversationRuntimeState | null,
-    options?: {
-      globalLastError?: string | null;
-    },
-  ) => {
-    set((state) => ({
-      ...buildConversationRuntimePatch(state, conversationId, runtime),
-      ...(options && "globalLastError" in options
-        ? { lastError: options.globalLastError ?? null }
-        : {}),
-    }));
-  };
+  const setConversationRuntime = turnRuntime.set;
 
   const markAssistantPersistenceFailure = (params: {
     assistantMessage: ChatMessage;
@@ -3140,57 +2855,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const updateConversationRuntimeIfSessionMatches = (
-    conversationId: string,
-    sessionId: string,
-    updater: (
-      currentRuntime: ConversationRuntimeState,
-    ) => ConversationRuntimeState | null,
-  ): boolean => {
-    let didMatch = false;
-    set((state) => {
-      const currentRuntime = state.conversationRuntimeById[conversationId];
-      if (!currentRuntime || currentRuntime.sessionId !== sessionId) {
-        return state;
-      }
-      didMatch = true;
-      return buildConversationRuntimePatch(
-        state,
-        conversationId,
-        updater(currentRuntime),
-      );
-    });
-    return didMatch;
-  };
-
-  const abortAndClearPreparingRuntimeIfSessionMatches = (
-    conversationId: string,
-    sessionId: string,
-    turnId: string,
-    abortController: AbortController,
-  ): void => {
-    const runtime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
-    if (
-      runtime.phase !== "preparing" ||
-      runtime.sessionId !== sessionId ||
-      runtime.turnId !== turnId ||
-      runtime.abortController !== abortController
-    ) {
-      return;
-    }
-    abortController.abort();
-    if (latestConversationSessionIdByConversationId.get(conversationId) === sessionId) {
-      latestConversationSessionIdByConversationId.delete(conversationId);
-    }
-    updateConversationRuntimeIfSessionMatches(
-      conversationId,
-      sessionId,
-      () => null,
-    );
-  };
+  const updateConversationRuntimeIfSessionMatches = turnRuntime.update;
 
   const getLiveContextDiagnosticsRefreshState = (
     conversationId: string,
@@ -3246,39 +2911,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   const stopConversationRuntimeLocally = (conversationId: string) => {
-    const runtime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
     clearConversationSecurityState(conversationId);
     clearLiveStreamContextEstimate(conversationId);
-    if (!isConversationRuntimeActive(runtime)) {
-      return;
-    }
-    if (
-      runtime.phase === "persisting" &&
-      !deletedConversationIds.has(conversationId)
-    ) {
-      return;
-    }
-
-    if (runtime.abortController) {
-      runtime.abortController.abort();
-    }
-    if (runtime.sessionId) {
-      cancelStream(runtime.sessionId);
-    }
-
-    setConversationRuntime(
-      conversationId,
-      {
-        ...runtime,
-        phase: "idle",
-        abortController: null,
-        lastError: null,
-      },
-      { globalLastError: null },
-    );
+    turnRuntime.stop(conversationId);
   };
 
   const stopActiveStreamsForCompletedTasks = (
@@ -4260,13 +3895,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
     forceCompaction?: boolean;
     forcePrune?: boolean;
     displayAfterMessageId?: string | null;
+    isCurrent?: () => boolean;
   }) => {
+    const assertCurrent = () => {
+      if (params.isCurrent && !params.isCurrent()) throw new ChatTurnSupersededError();
+    };
+    const waitForCurrentCompaction = async <T>(pending: Promise<T>): Promise<T> => {
+      try { return await pending; } finally { assertCurrent(); }
+    };
+    assertCurrent();
     const toolDefinitions = getToolDefinitionsForIds(params.allowedToolIds);
     const previousCompactionStatus =
       get().conversationCompactionStatusById[params.conversationId] ?? null;
-    const currentCompactionState = await getConversationCompactionState(
+    const currentCompactionState = await waitForCurrentCompaction(getConversationCompactionState(
       params.conversationId,
-    );
+    ));
     const completionReason = [...params.orderedMessages]
       .reverse()
       .find((message) => message.role === "assistant")
@@ -4293,7 +3936,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       params.modelId,
       params.providerConfig.providerType,
     );
-    const budgetPolicy = await loadContextBudgetPolicy();
+    const budgetPolicy = await waitForCurrentCompaction(loadContextBudgetPolicy());
     const conversation = get().conversations.find(
       (candidate) => candidate.id === params.conversationId,
     );
@@ -4323,7 +3966,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       ReturnType<typeof runContextCompactionOrchestration>
     >;
     try {
-      orchestration = await runContextCompactionOrchestration({
+      orchestration = await waitForCurrentCompaction(runContextCompactionOrchestration({
         boundary: getCompactionBoundaryForMode(params.mode),
         mode: params.mode,
         systemMessage: params.systemMessage,
@@ -4347,6 +3990,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         estimateSerializedPayloadTokens,
         countProviderInputItems,
         onCompactionStarted: () => {
+          assertCurrent();
           markConversationCompactionStarted(
             params.conversationId,
             params.mode,
@@ -4362,11 +4006,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             params.reasoningEffort,
             input,
           ),
-      });
+      }));
     } catch (error) {
+      assertCurrent();
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
@@ -4389,7 +4034,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: "compaction_error",
           completionReason,
         }),
-      });
+      }));
       throw error;
     }
 
@@ -4402,7 +4047,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         kind: params.mode,
         footprintAfter: orchestration.preflightFootprint,
       });
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
@@ -4426,7 +4071,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: "latest_boundary_payload_too_large",
           completionReason,
         }),
-      });
+      }));
       throw buildSendError(orchestration.errorMessage);
     }
     if (orchestration.outcome === "manual_required") {
@@ -4442,7 +4087,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           reason: "manual_compaction_required",
         },
       });
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
@@ -4469,7 +4114,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           result: "auto_compaction_disabled",
           completionReason,
         }),
-      });
+      }));
       throw buildSendError(orchestration.errorMessage);
     }
 
@@ -4481,7 +4126,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (result.manualSkip) {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger: getCompactionEventTrigger(params.mode),
         providerId: params.providerId,
@@ -4506,7 +4151,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           completionReason,
           ...appliedAuditDetails,
         }),
-      });
+      }));
       return result;
     }
     if (orchestration.shouldPersistCompaction) {
@@ -4517,8 +4162,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
           params.mode,
         );
       }
-      await persistConversationCompactionState(result.compactionState);
-      await recordConversationCompactionEvent({
+      await waitForCurrentCompaction(persistConversationCompactionState(result.compactionState));
+      await waitForCurrentCompaction(recordConversationCompactionEvent({
         conversationId: params.conversationId,
         trigger:
           result.compactionState?.lastTrigger ??
@@ -4549,7 +4194,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           completionReason,
           ...appliedAuditDetails,
         }),
-      });
+      }));
     } else if (orchestration.hasCompaction) {
       completeLatestSessionCompactionEvent(
         params.conversationId,
@@ -4562,7 +4207,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     } else if (orchestration.hadCompaction && params.mode !== "blocking") {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
-      await deleteConversationCompactionState(params.conversationId);
+      await waitForCurrentCompaction(deleteConversationCompactionState(params.conversationId));
     } else {
       clearLatestRunningSessionCompactionEvent(params.conversationId, params.mode);
       setConversationCompactionStatus(params.conversationId, statusBeforeNewCompaction);
@@ -5503,26 +5148,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const shouldChallengeGitStageCommitToolCall = (
-    conversationId: string,
-    assistantTurnId: string | null,
-    assistantMessageId: string,
-    toolName: string,
-  ): boolean => {
-    if (!GIT_STAGE_COMMIT_CHALLENGE_TOOL_IDS.has(toolName)) {
-      return false;
-    }
-
-    const turnKey = assistantTurnId || assistantMessageId;
-    const challengeKey = `${conversationId}::${turnKey}::${toolName}`;
-    if (gitStageCommitChallengesByAssistantTurn.has(challengeKey)) {
-      return false;
-    }
-
-    gitStageCommitChallengesByAssistantTurn.add(challengeKey);
-    return true;
-  };
-
   const rememberAssistantTurnContext = (
     assistantMessageId: string,
     conversationId: string,
@@ -5536,791 +5161,99 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const handleToolCall = async (
-    operation: FrozenToolCallContext,
-    toolName: string,
-    args: Record<string, unknown>,
-    toolCallId?: string,
-  ): Promise<ToolCallResolution | string | void> => {
-    const {
-      conversationId,
-      assistantMessageId,
-      mode: modeAtSend,
-      agentType: agentTypeAtSend,
-      taskId: taskIdAtSend,
-      signal,
-    } = operation;
-    const isCurrentOperation = () => {
-      const runtime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById,
-        conversationId,
-      );
-      return !signal.aborted &&
-        runtime.sessionId === operation.sessionId &&
-        runtime.turnId === operation.turnId &&
-        runtime.assistantMessageId === assistantMessageId &&
-        runtime.phase === "streaming";
-    };
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    const normalizedToolName = normalizeArchitectToolId(toolName);
-    const assistantTurnId = operation.turnId;
-
-    if (!operation.allowedToolIds.includes(normalizedToolName)) {
-      return toolFailure(
-        `Tool ${normalizedToolName} is not available for this turn.`,
-        "permission",
-      );
-    }
-
-    if (
-      applyScopedToolRestrictions(
-        [normalizedToolName],
-        operation.scopedTurnConfiguration,
-      ).length === 0
-    ) {
-      return toolFailure(
-        `Tool ${normalizedToolName} is disabled for this turn's project scope.`,
-        "permission",
-      );
-    }
-
-    if (
-      modeAtSend === "Implement" &&
-      agentTypeAtSend === "plan" &&
-      !isToolAllowedForImplementAgent("plan", normalizedToolName)
-    ) {
-      if (toolCallId) {
-        updateAssistantToolTraceStatus(
-          assistantMessageId,
-          toolCallId,
-          "denied",
-        );
-      }
-      return toolFailure(IMPLEMENT_PLAN_TOOL_DENIAL_MESSAGE, "permission");
-    }
-
-    if (
-      !isMCPToolId(normalizedToolName) &&
-      !(await isSourceToolEnabled(
-        normalizedToolName,
-        modeAtSend,
-        agentTypeAtSend,
-      ))
-    ) {
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      return toolFailure(
-        `Tool ${normalizedToolName} is disabled for the current mode.`,
-        "permission",
-      );
-    }
-
-    let executionContext = operation.executionContext;
-    let executionMcpServers = operation.mcpServers;
-    let executionMcpProjectIds = operation.scopedTurnConfiguration?.projectIds ?? executionContext.projectIds;
-    const riskLevel = operation.riskLevel;
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    let approvalScope: string | null = null;
-    if (
-      normalizedToolName === "write" ||
-      normalizedToolName === "edit" ||
-      normalizedToolName === "delete" ||
-      normalizedToolName === "apply_patch" ||
-      normalizedToolName === "git_add" ||
-      normalizedToolName === "git_commit" ||
-      normalizedToolName === "git_checkout" ||
-      normalizedToolName === "git_merge" ||
-      normalizedToolName === "git_reset" ||
-      normalizedToolName === "git_stash"
-    ) {
-      const workspaceToolExecutor = await import(
-        "../services/workspaceToolExecutor"
-      );
-      approvalScope = workspaceToolExecutor.resolveMutatingToolApprovalScope(
-        normalizedToolName,
-        args,
-        {
-          workspacePath: executionContext.workspacePath,
-          defaultWorkspacePath: executionContext.defaultWorkspacePath,
-          projectId: executionContext.projectId,
-          focusedProjectId: executionContext.focusedProjectId,
-          groupId: executionContext.groupId,
-          projectMounts: executionContext.projectMounts,
-          virtualRootEnabled: executionContext.virtualRootEnabled,
-          workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
+  const handleToolCall = createChatToolExecution({
+    runtime: {
+      read: (id) => getConversationRuntimeSnapshot(get().conversationRuntimeById, id),
+      messages: (id) => get().getConversationMessages(id),
+      updateTrace: updateAssistantToolTraceStatus,
+      persistPartial: (message) => persistAssistantPartialStreamResult(message),
+    },
+    approvals: {
+      get epoch() { return toolApprovalRuntimeEpoch; },
+      resolvers: pendingToolApprovalResolvers,
+      mutationVersions: approvalMutationVersions,
+      challenges: gitStageCommitChallengesByAssistantTurn,
+      serialize: serializeToolApproval,
+      pending: (id) => get().pendingToolApprovalByConversationId[id],
+      publish: (id, value, expected) => set((state) => {
+        if (expected && state.pendingToolApprovalByConversationId[id] !== expected) return state;
+        const next = { ...state.pendingToolApprovalByConversationId };
+        if (value) next[id] = value;
+        else delete next[id];
+        return { pendingToolApprovalByConversationId: next };
+      }),
+      grants: (id) => get().conversationApprovalGrantsByConversationId[id] ?? [],
+      writeGrants: (id, grants) => set((state) => ({
+        conversationApprovalGrantsByConversationId: {
+          ...state.conversationApprovalGrantsByConversationId,
+          [id]: grants,
         },
-      );
-    }
-    const securityEvaluation = evaluateToolSecurity(normalizedToolName, args, {
-      mode: modeAtSend,
-      riskLevel,
-      workspacePath: executionContext.workspacePath,
-      defaultWorkspacePath: executionContext.defaultWorkspacePath,
-      projectMounts: executionContext.projectMounts,
-      approvalScope,
-      grants:
-        get().conversationApprovalGrantsByConversationId[conversationId] ?? [],
-    });
-
-    if (securityEvaluation.decision === "deny") {
-      if (toolCallId) {
-        updateAssistantToolTraceStatus(
-          assistantMessageId,
-          toolCallId,
-          "denied",
-        );
-      }
-      return toolFailure(
-        securityEvaluation.denialReason ?? `Tool ${normalizedToolName} was denied by policy.`,
-        "permission",
-      );
-    }
-
-    if (
-      shouldChallengeGitStageCommitToolCall(
-        conversationId,
-        assistantTurnId,
-        assistantMessageId,
-        normalizedToolName,
-      )
-    ) {
-      if (toolCallId) {
-        updateAssistantToolTraceStatus(
-          assistantMessageId,
-          toolCallId,
-          "denied",
-        );
-      }
-      return toolFailure(GIT_STAGE_COMMIT_CHALLENGE_MESSAGE, "permission");
-    }
-
-    if (securityEvaluation.decision === "ask") {
-      const approvalEpoch = toolApprovalRuntimeEpoch;
-      const resolvedToolCallId =
-        toolCallId ??
-        `${normalizedToolName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const mcpApprovalTool = executionMcpServers.flatMap((server) => server.tools ?? [])
-        .find((tool) => tool.id === normalizedToolName);
-      const pendingApproval: PendingToolApproval = {
-        ...(mcpApprovalTool ? { mcpIdentity: { serverId: mcpApprovalTool.serverId, toolName: mcpApprovalTool.name } } : {}),
-        conversationId,
-        assistantMessageId,
-        toolCallId: resolvedToolCallId,
-        toolId: normalizedToolName,
-        actionGroup: securityEvaluation.normalizedCall.actionGroup,
-        riskLevel,
-        isDestructive: securityEvaluation.normalizedCall.isDestructive,
-        summary: securityEvaluation.normalizedCall.summary,
-        detail: securityEvaluation.normalizedCall.detail,
-        args,
-        rememberKey: securityEvaluation.normalizedCall.rememberKey,
-        canApproveForConversation:
-          securityEvaluation.normalizedCall.canApproveForConversation,
-      };
-
-      const resolution = await serializeToolApproval(
-        conversationId,
-        async () => {
-          if (!isCurrentOperation()) {
-            return Promise.resolve<PendingToolApprovalResolution>({ kind: "expired" });
-          }
-          if (get().pendingToolApprovalByConversationId[conversationId]?.recoveryState === "interrupted") {
-            return { kind: "deny", reason: "Resolve the interrupted tool request before continuing." } as PendingToolApprovalResolution;
-          }
-          // Persist the transcript first. The recovery marker contains identifiers only.
-          updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "pending_approval", { tool_name: normalizedToolName, detail: pendingApproval.detail });
-          const assistantMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
-          try {
-            if (assistantMessage) await persistAssistantPartialStreamResult(assistantMessage);
-            await persistToolApprovalRecovery(conversationId, pendingApproval);
-          } catch (error) {
-            if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-            updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "denied");
-            const closedMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
-            try {
-              if (closedMessage) await persistAssistantPartialStreamResult(closedMessage);
-            } catch {
-              // Persistence is unavailable; retain an explicit recovery action in this session.
-              set((state) => ({ pendingToolApprovalByConversationId: {
-                ...state.pendingToolApprovalByConversationId,
-                [conversationId]: { ...pendingApproval, recoveryState: "interrupted", canApproveForConversation: false },
-              } }));
-            }
-            throw error;
-          }
-          if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-          if (!isCurrentOperation()) {
-            await persistToolApprovalRecovery(conversationId, null);
-            return { kind: "deny" } as PendingToolApprovalResolution;
-          }
-          approvalMutationVersions.set(conversationId, (approvalMutationVersions.get(conversationId) ?? 0) + 1);
-          let revoked: PendingToolApprovalResolution | null = null;
-          return new Promise<PendingToolApprovalResolution>((resolve) => {
-            pendingToolApprovalResolvers.set(
-              getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId),
-              (decision) => {
-                // A refusal offered while persistence is pending remains effective.
-                if (decision.kind === "deny" || decision.kind === "expired") revoked = decision;
-                resolve(decision);
-              },
-            );
-            set((state) => ({
-              pendingToolApprovalByConversationId: {
-                ...state.pendingToolApprovalByConversationId,
-                [conversationId]: pendingApproval,
-              },
-            }));
-          }).then(async (result) => {
-            try {
-              if (result.kind === "expired" || approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-              if (result.kind !== "deny" && isCurrentOperation()) {
-                const revalidate = async (): Promise<PendingToolApprovalResolution> => {
-                  const currentExecutionContext = resolveConversationExecutionContext(conversationId);
-                  const currentConfiguration = await loadScopedTurnConfiguration({
-                    projectIds: currentExecutionContext.projectIds,
-                    focusProjectId: currentExecutionContext.focusedProjectId,
-                    mode: modeAtSend,
-                  });
-                  if (operation.scopedTurnConfiguration && !currentConfiguration) {
-                    throw new Error("The current project tool policy could not be verified.");
-                  }
-                  const currentRiskLevel = currentConfiguration?.riskLevel ?? await loadToolRiskLevelPreference();
-                  let currentToolEnabled = applyScopedToolRestrictions([normalizedToolName], currentConfiguration).length > 0;
-                  if (isMCPToolId(normalizedToolName)) {
-                    const toolsState = useToolsStore.getState();
-                    const currentMcpRuntime = currentConfiguration
-                      ? await resolveScopedMcpRuntime(currentConfiguration.mcpServers, toolsState.mcpServers ?? [], { projectIds: currentConfiguration.projectIds })
-                      : { servers: toolsState.mcpServers ?? [], tools: toolsState.getEnabledMCPTools() };
-                    currentToolEnabled = currentToolEnabled && currentMcpRuntime.tools.some((tool) =>
-                      tool.id === normalizedToolName && tool.name === mcpApprovalTool?.name && tool.serverId === mcpApprovalTool?.serverId);
-                    executionMcpServers = currentMcpRuntime.servers;
-                    executionMcpProjectIds = currentConfiguration?.projectIds ?? currentExecutionContext.projectIds;
-                  } else {
-                    currentToolEnabled = currentToolEnabled && await isSourceToolEnabled(normalizedToolName, modeAtSend, agentTypeAtSend);
-                  }
-                  if (!isCurrentOperation()) return { kind: "deny" } as PendingToolApprovalResolution;
-                  if (currentRiskLevel !== riskLevel || !currentToolEnabled ||
-                      !sameApprovalExecutionScope(currentExecutionContext, executionContext)) {
-                    return { kind: "deny", reason: "The tool policy or workspace changed while approval was pending. Inspect the current context and request approval again." } as PendingToolApprovalResolution;
-                  }
-
-                  return result;
-                };
-                result = await revalidate();
-              }
-              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-              // Close the durable trace before dropping its only recovery action.
-              updateAssistantToolTraceStatus(assistantMessageId, resolvedToolCallId, "denied");
-              const closedMessage = get().getConversationMessages(conversationId).find((message) => message.id === assistantMessageId);
-              if (closedMessage) await persistAssistantPartialStreamResult(closedMessage);
-              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-              await persistToolApprovalRecovery(conversationId, null);
-              set((state) => {
-                if (state.pendingToolApprovalByConversationId[conversationId] !== pendingApproval) return state;
-                const next = { ...state.pendingToolApprovalByConversationId };
-                delete next[conversationId];
-                return { pendingToolApprovalByConversationId: next };
-              });
-              return revoked ?? result;
-            } catch (error) {
-              if (approvalEpoch !== toolApprovalRuntimeEpoch) return { kind: "expired" } as PendingToolApprovalResolution;
-              set((state) => state.pendingToolApprovalByConversationId[conversationId] !== pendingApproval ? state : ({ pendingToolApprovalByConversationId: {
-                ...state.pendingToolApprovalByConversationId,
-                [conversationId]: { ...pendingApproval, recoveryState: "interrupted", canApproveForConversation: false },
-              } }));
-              throw error;
-            } finally {
-              if (approvalEpoch === toolApprovalRuntimeEpoch) pendingToolApprovalResolvers.delete(getPendingToolApprovalResolverKey(conversationId, resolvedToolCallId));
-            }
-          });
-        },
-      );
-
-      if (resolution.kind === "expired") return TOOL_EXECUTION_ABORTED_RESULT;
-      if (resolution.kind === "deny") {
-        if (toolCallId) {
-          updateAssistantToolTraceStatus(
-            assistantMessageId,
-            resolvedToolCallId,
-            "denied",
-          );
-        }
-        const denialPrefix = `Tool ${normalizedToolName} was denied by the user.`;
-        return toolFailure(
-          resolution.reason?.trim()
-            ? `${denialPrefix} User reason: ${resolution.reason.trim()}`
-            : denialPrefix,
-          "permission",
-        );
-      }
-
-      if (!isCurrentOperation()) {
-        if (toolCallId) {
-          updateAssistantToolTraceStatus(
-            assistantMessageId,
-            resolvedToolCallId,
-            "denied",
-          );
-        }
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-
-
-      if (
-        resolution.kind === "allow_conversation" &&
-        pendingApproval.canApproveForConversation !== false
-      ) {
-        set((state) => {
-          const currentGrants =
-            state.conversationApprovalGrantsByConversationId[conversationId] ??
-            [];
-          if (
-            currentGrants.some(
-              (grant) =>
-                grant.toolId === pendingApproval.toolId &&
-                grant.rememberKey === pendingApproval.rememberKey,
-            )
-          ) {
-            return state;
-          }
-          return {
-            conversationApprovalGrantsByConversationId: {
-              ...state.conversationApprovalGrantsByConversationId,
-              [conversationId]: [
-                ...currentGrants,
-                {
-                  toolId: pendingApproval.toolId,
-                  rememberKey: pendingApproval.rememberKey,
-                  createdAt: new Date().toISOString(),
-                },
-              ],
-            },
-          };
-        });
-      }
-
-      if (toolCallId) {
-        updateAssistantToolTraceStatus(
-          assistantMessageId,
-          resolvedToolCallId,
-          "running",
-        );
-      }
-    }
-
-    if (normalizedToolName === "question") {
-      const questionnaire = validateQuestionToolArgs(args);
-      return {
-        kind: "interrupt",
-        result: `Questionnaire queued for the user with ${questionnaire.questions.length} question(s).`,
-        visibleContent: questionnaire.intro || DEFAULT_QUESTIONNAIRE_INTRO,
-        hiddenContext: buildQuestionnaireHiddenContextBlock(questionnaire),
-      };
-    }
-
-    if (normalizedToolName === "web_search") {
-      const query = typeof args.query === "string" ? args.query.trim() : "";
-      if (!query) return "Missing query for web_search.";
-      const { enableWebSearch, webSearchOptions } = getStreamingWebSearchConfig();
-      if (
-        !enableWebSearch ||
-        (!webSearchOptions?.configured &&
-          !webSearchOptions?.tavilyApiKey &&
-          !webSearchOptions?.braveApiKey)
-      ) {
-        return "Web search is not configured for this provider.";
-      }
-      const results = await webSearch(query, { ...webSearchOptions, signal });
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      if (results.length > 0) {
-        useCitationsStore
-          .getState()
-          .addWebCitations(results, assistantMessageId, conversationId);
-      }
-      return formatSearchResultsAsContext(results);
-    }
-
-    if (normalizedToolName === "web_fetch") {
-      const url = typeof args.url === "string" ? args.url.trim() : "";
-      if (!url) return "Missing URL for web_fetch.";
-      const { enableWebFetch } = getStreamingWebSearchConfig();
-      if (!enableWebFetch) {
-        return "Web fetch is disabled for this provider.";
-      }
-      const fetched = await fetchWebPage(url, signal);
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      useCitationsStore.getState().addCitation({
-        type: "web",
-        scope: "context",
-        source: fetched.url,
-        title: fetched.title,
-        snippet: fetched.snippet,
-        content: fetched.content,
-        url: fetched.url,
-        favicon: fetched.favicon,
-        messageId: assistantMessageId,
-        conversationId,
-      });
-      return `TITLE: ${fetched.title}\nURL: ${fetched.url}\n\n${fetched.content}`;
-    }
-
-    if (normalizedToolName === "read_file") {
-      return readConversationFileContext(conversationId, args);
-    }
-
-    const configToolResult = await handleConfigToolCall(normalizedToolName, args);
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    if (configToolResult !== undefined) {
-      return configToolResult;
-    }
-
-    const configVirtualScopeResult = await handleConfigVirtualScopeToolCall(
-      normalizedToolName,
-      args,
-    );
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    if (configVirtualScopeResult !== undefined) {
-      return configVirtualScopeResult;
-    }
-
-    const skillToolResult = await handleSkillToolCall(
-      normalizedToolName,
-      args,
-      conversationId,
-    );
-    if (!isCurrentOperation()) {
-      return TOOL_EXECUTION_ABORTED_RESULT;
-    }
-    if (skillToolResult !== undefined) {
-      return skillToolResult;
-    }
-
-    if (isMCPToolId(normalizedToolName)) {
-      const result = await callScopedMcpTool(
-        normalizedToolName,
-        args,
-        executionMcpServers,
-        {
-          projectIds: executionMcpProjectIds,
-          signal,
-        },
-      );
-      return isCurrentOperation() ? result : TOOL_EXECUTION_ABORTED_RESULT;
-    }
-
-    if (normalizedToolName === "mark_source_passage") {
-      const title = typeof args.title === "string" ? args.title.trim() : "";
-      const passage = typeof args.passage === "string" ? args.passage.trim() : "";
-      if (!title || !passage) {
-        return "Missing title or passage for mark_source_passage.";
-      }
-      if (!(await isSourcePassagePresentInConversationContext(conversationId, passage))) {
-        return "Error executing tool mark_source_passage: passage is not present in any read source content.";
-      }
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      const kind = normalizeSourcePassageKind(args.kind) || "used";
-      const citationId = useCitationsStore.getState().addSourcePassage({
-        conversationId,
-        messageId: assistantMessageId,
-        title,
-        passage,
-        source: typeof args.source === "string" ? args.source : undefined,
-        url: typeof args.url === "string" ? args.url : undefined,
-        kind,
-        reason: typeof args.reason === "string" ? args.reason : undefined,
-      });
-      return `Source passage marked successfully (citation_id=${citationId}, kind=${kind}).`;
-    }
-
-    if (normalizedToolName === "read_sources") {
-      return await readConversationSources(conversationId, args);
-    }
-
-    if (normalizedToolName === "edit_source_passage") {
-      return editConversationSource(conversationId, args);
-    }
-
-    const taskTodoToolResult = await handleTaskTodoToolCall(
-      conversationId,
-      normalizedToolName,
-      args,
-    );
-    if (taskTodoToolResult !== undefined) {
-      return taskTodoToolResult;
-    }
-
-    const taskArtifactToolResult = await handleTaskArtifactToolCall(
-      conversationId,
-      normalizedToolName,
-      args,
-    );
-    if (taskArtifactToolResult !== undefined) {
-      return taskArtifactToolResult;
-    }
-
-    const architectToolResult = await handleArchitectToolCall({
-      assistantMessageId,
-      toolName: normalizedToolName,
-      args,
-      planService: {
-        createArchitectPlan,
-        getArchitectPlan,
-        getGitFlowBaseBranch,
-        isArchitectPlanSlugAvailable,
-        isArchitectPlanSlugMutable,
-        listArchitectPlans,
-        resolvePlanProjectContextId,
-        resolveTargetBranch,
-        updateArchitectPlan,
+      })),
+    },
+    policy: {
+      isPlanReplicaDivergence: isArchitectPlanReplicaDivergenceError,
+      resolveMcpRuntime: resolveScopedMcpRuntime,
+      webConfig: getStreamingWebSearchConfig,
+      isSourceToolEnabled,
+      executionContext: resolveConversationExecutionContext,
+      loadRiskLevel: loadToolRiskLevelPreference,
+      mcpRuntime: () => {
+        const tools = useToolsStore.getState();
+        return { servers: tools.mcpServers ?? [], tools: tools.getEnabledMCPTools() };
       },
-      strategyService: {
-        prepareStrategyMutationPreview,
-        applyStrategyMutationPreview,
-        guardDeps: {
+    },
+    sources: {
+      readFile: readConversationFileContext,
+      readSources: readConversationSources,
+      editSource: editConversationSource,
+      containsPassage: isSourcePassagePresentInConversationContext,
+      addWebCitations: (...args) => useCitationsStore.getState().addWebCitations(...args),
+      addCitation: (citation) => useCitationsStore.getState().addCitation(citation),
+      addSourcePassage: (passage) => useCitationsStore.getState().addSourcePassage(passage),
+    },
+    handlers: {
+      configVirtualScope: handleConfigVirtualScopeToolCall,
+      skill: handleSkillToolCall,
+      mcp: callScopedMcpTool,
+      taskTodo: handleTaskTodoToolCall,
+      taskArtifact: handleTaskArtifactToolCall,
+      architect: (params) => handleArchitectToolCall({
+        ...params,
+        planService: {
+          createArchitectPlan,
           getArchitectPlan,
+          getGitFlowBaseBranch,
+          isArchitectPlanSlugAvailable,
+          isArchitectPlanSlugMutable,
+          listArchitectPlans,
+          resolvePlanProjectContextId,
+          resolveTargetBranch,
           updateArchitectPlan,
-          provisionPlanBranches,
         },
-      },
-      getAppState: () => useAppStore.getState(),
-      getTaskState: () => useTaskStore.getState(),
-      ensureArchitectConversationForPlan: get().ensureArchitectConversationForPlan,
-    }).catch((error) => {
-      if (!isArchitectPlanReplicaDivergenceError(error)) {
-        throw error;
-      }
-
-      return [
-        `Plan metadata replica issue for plan ${error.divergence.planId}: ${error.message}`,
-        '',
-        'Structured context:',
-        JSON.stringify(
-          {
-            error: 'architect_plan_replica_divergence',
-            plan_id: error.divergence.planId,
-            branch_name: error.divergence.branchName,
-            reason: error.divergence.reason,
-            repair_action: 'repair_metadata',
-            replicas: error.divergence.replicas,
-          },
-          null,
-          2
-        ),
-      ].join('\n');
-    });
-
-    if (architectToolResult !== undefined) {
-      return architectToolResult;
-    }
-
-    if (AGENT_TERMINAL_TOOL_IDS.has(normalizedToolName)) {
-      const serializeAgentTerminalSession = <T extends object>(session: T) => {
-        const agentSession = { ...session } as Record<string, unknown>;
-        delete agentSession.project_id;
-        delete agentSession.project_name;
-        delete agentSession.mount_name;
-        delete agentSession.workspace_path;
-        return JSON.stringify(agentSession, null, 2);
-      };
-      const readAgentTerminalSession = async (sessionId: string) => {
-        const terminalStore = useTerminalStore.getState();
-        const session =
-          terminalStore.sessions[sessionId] ??
-          (await terminalStore.readSession(sessionId));
-        if (session.project_id) {
-          return {
-            session,
-            error: "This session belongs to the manual project terminal and is unavailable to the agent terminal tool.",
-          };
-        }
-        return { session, error: null };
-      };
-
-      if (normalizedToolName === "terminal_create_session") {
-        const session = await useTerminalStore.getState().createSession({
-          projectId: null,
-          cwd: typeof args.cwd === "string" ? args.cwd : null,
-        });
-        return serializeAgentTerminalSession(session);
-      }
-
-      const sessionId =
-        typeof args.session_id === "string" ? args.session_id.trim() : "";
-      if (!sessionId) {
-        return `Missing session_id argument for ${normalizedToolName}.`;
-      }
-
-      const agentSession = await readAgentTerminalSession(sessionId);
-      if (agentSession.error) {
-        return `Error executing ${normalizedToolName}: ${agentSession.error}`;
-      }
-
-      if (normalizedToolName === "terminal_run") {
-        const command = typeof args.command === "string" ? args.command : "";
-        if (!command.trim()) {
-          return "Missing command argument for terminal_run.";
-        }
-        const executionId = createTerminalToolExecutionId();
-        const runPromise = useTerminalStore.getState().runCommand({
-          sessionId,
-          command,
-          executionId,
-          timeoutMs:
-            typeof args.timeout_ms === "number"
-              ? Math.min(1_800_000, Math.max(1, Math.floor(args.timeout_ms)))
-              : null,
-        });
-        const abortListener = () => {
-          void useTerminalStore
-            .getState()
-            .killSession(sessionId, executionId)
-            .catch(() => undefined);
-        };
-        signal.addEventListener("abort", abortListener, { once: true });
-        if (signal.aborted) abortListener();
-        try {
-          const session = await runPromise;
-          return serializeAgentTerminalSession(session);
-        } finally {
-          signal.removeEventListener("abort", abortListener);
-        }
-      }
-
-      if (normalizedToolName === "terminal_read") {
-        return serializeAgentTerminalSession(agentSession.session);
-      }
-
-      const session = await useTerminalStore.getState().killSession(sessionId);
-      return serializeAgentTerminalSession(session);
-    }
-
-    if (
-      normalizedToolName === "list" ||
-      normalizedToolName === "read" ||
-      normalizedToolName === "write" ||
-      normalizedToolName === "edit" ||
-      normalizedToolName === "delete" ||
-      normalizedToolName === "apply_patch" ||
-      normalizedToolName === "glob" ||
-      normalizedToolName === "grep" ||
-      normalizedToolName === "ast_grep" ||
-      normalizedToolName.startsWith("git_")
-    ) {
-      const workspaceToolExecutor = await import(
-        "../services/workspaceToolExecutor"
-      );
-      const mode = modeAtSend;
-      let promotedProjectIdsForTool: string[] = [];
-
-      if (mode === "Implement") {
-        const promotionRequest = resolveContextPromotionRequest({
-          conversationId,
-          executionContext,
-          selectedTaskId: taskIdAtSend,
-          toolName: normalizedToolName,
-          args,
-          resolveExplicitMutatingToolProjectTargets:
-            workspaceToolExecutor.resolveExplicitMutatingToolProjectTargets,
-        });
-
-        if (promotionRequest.unavailableResult) {
-          return promotionRequest.unavailableResult;
-        }
-
-        if (promotionRequest.task && promotionRequest.projectIds.length > 0) {
-          const promotion = await useTaskStore
-            .getState()
-            .promoteTaskContextProjects(promotionRequest.task.id, promotionRequest.projectIds, {
-              triggerTool: normalizedToolName,
-            });
-          promotedProjectIdsForTool = promotion?.promotedProjectIds || [];
-          // The promotion result is the only permitted scope change during an
-          // operation. Derive it from the frozen snapshot, never from the
-          // current project selection.
-          executionContext = {
-            ...operation.executionContext,
-            actionableProjectIds: Array.from(
-              new Set([
-                ...operation.executionContext.actionableProjectIds,
-                ...promotedProjectIdsForTool,
-              ]),
-            ),
-            contextProjectIds: operation.executionContext.contextProjectIds.filter(
-              (projectId) => !promotedProjectIdsForTool.includes(projectId),
-            ),
-            projectMounts: operation.executionContext.projectMounts.map(
-              (mount) =>
-                promotedProjectIdsForTool.includes(mount.projectId)
-                  ? { ...mount, isReadOnly: false }
-                  : mount,
-            ),
-          };
-          if (!isCurrentOperation()) {
-            return TOOL_EXECUTION_ABORTED_RESULT;
-          }
-        }
-      }
-
-      const withPromotionNotice = (result: string): string => {
-        if (promotedProjectIdsForTool.length === 0) {
-          return result;
-        }
-        return `[macro_scope_promotion] ${JSON.stringify({
-          promoted_project_ids: promotedProjectIdsForTool,
-          retried_tool: normalizedToolName,
-        })}\n${result}`;
-      };
-
-      const result = await workspaceToolExecutor.executeWorkspaceTool(
-        normalizedToolName,
-        args,
-        mode,
-        {
-          signal,
-          workspacePath: executionContext.workspacePath,
-          defaultWorkspacePath: executionContext.defaultWorkspacePath,
-          projectId: executionContext.projectId,
-          focusedProjectId: executionContext.focusedProjectId,
-          groupId: executionContext.groupId,
-          projectMounts: executionContext.projectMounts,
-          virtualRootEnabled: executionContext.virtualRootEnabled,
-          workspacePathsByProjectId: executionContext.workspacePathsByProjectId,
-          invocationId: toolCallId
-            ? `${conversationId}:${assistantTurnId}:${toolCallId}`
-            : undefined,
-          onCodeCheckpoint: async (checkpoint) => {
-            await recordAgentCodeCheckpoint({
-              conversationId,
-              turnId: assistantTurnId,
-              assistantMessageId,
-              toolCallId,
-              toolName: checkpoint.toolName,
-              files: checkpoint.files,
-            });
-          },
+        strategyService: {
+          prepareStrategyMutationPreview,
+          applyStrategyMutationPreview,
+          guardDeps: { getArchitectPlan, updateArchitectPlan, provisionPlanBranches },
         },
-      );
-      if (!isCurrentOperation()) {
-        return TOOL_EXECUTION_ABORTED_RESULT;
-      }
-      return result === undefined ? result : withPromotionNotice(result);
-    }
-  };
+        getAppState: () => useAppStore.getState(),
+        getTaskState: () => useTaskStore.getState(),
+        ensureArchitectConversationForPlan: get().ensureArchitectConversationForPlan,
+      }),
+    },
+    terminal: {
+      cachedSession: (id) => useTerminalStore.getState().sessions[id],
+      createSession: (params) => useTerminalStore.getState().createSession(params),
+      readSession: (id) => useTerminalStore.getState().readSession(id),
+      runCommand: (params) => useTerminalStore.getState().runCommand(params),
+      killSession: (id, executionId) => useTerminalStore.getState().killSession(id, executionId),
+    },
+    workspace: {
+      executor: () => import("../services/workspaceToolExecutor"),
+      resolvePromotion: resolveContextPromotionRequest,
+      promote: (id, projects, options) => useTaskStore.getState().promoteTaskContextProjects(id, projects, options),
+      recordCheckpoint: recordAgentCodeCheckpoint,
+    },
+  });
 
   const spillToolResultWithArtifact = async (
     operation: Pick<FrozenToolCallContext, "conversationId" | "assistantMessageId">,
@@ -6432,36 +5365,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const state = get();
     return getConversationMessagesFromState(state, conversationId);
   };
-
-  const cloneProviderInputItems = (
-    items?: unknown[] | null,
-  ): unknown[] | undefined => {
-    if (!Array.isArray(items) || items.length === 0) {
-      return undefined;
-    }
-
-    return items.map((item) =>
-      item && typeof item === "object"
-        ? JSON.parse(JSON.stringify(item))
-        : item,
-    );
-  };
-
-  const cloneStreamMessage = (message: StreamMessage): StreamMessage => ({
-    ...message,
-    content: Array.isArray(message.content)
-      ? message.content.map((part) =>
-          part.type === "image_url"
-            ? {
-                type: "image_url" as const,
-                image_url: { ...part.image_url },
-              }
-            : { ...part },
-        )
-      : message.content,
-    provider_input_items: cloneProviderInputItems(message.provider_input_items),
-    image_metadata: message.image_metadata?.map((metadata) => ({ ...metadata })),
-  });
 
   const getImageContextMetadata = (images: MessageImageAttachment[]) =>
     images.map((image) => ({
@@ -9424,474 +8327,89 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const prepareAssistantStreamLaunch = async (params: {
-    conversationId: string;
-    replyToMessageId: string;
-    userContent: string;
-    resolvedTaskId: string;
-    modeAtSend: AppMode;
-    agentTypeAtSend?: AgentType | null;
-    providerId: string;
-    modelId: string;
-    reasoningEffort?: ReasoningEffort | null;
-    providerConfig: NonNullable<
-      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
-    >;
-    internalAgentProfile?: InternalAgentProfile | null;
-    executionContext?: ProjectExecutionContext;
-    scopedTurnConfigurationOverride?: ScopedTurnConfiguration | null;
-    providerSupportsNativeToolCalling?: boolean;
-    compactionMode?: ContextCompactionKind;
-    forceCompaction?: boolean;
-    forcePrune?: boolean;
-    compactionDisplayAfterMessageId?: string | null;
-  }) => {
-    try {
-      await ensureToolsLoaded();
-      const toolsState = useToolsStore.getState();
-      const toolLoadError =
-        typeof toolsState.lastError === "string" ? toolsState.lastError : null;
-      if (
-        toolLoadError &&
-        Object.keys(toolsState.internalTools).length === 0
-      ) {
-        throw buildSendError(`Failed to load tool settings: ${toolLoadError}`);
-      }
-    } catch (error) {
-      const normalized = toServiceError(error);
-      throw buildSendError(normalized.message);
-    }
-
-    const taskStatus = params.resolvedTaskId
-      ? useTaskStore.getState().getTaskById(params.resolvedTaskId)?.status ??
-        null
-      : null;
-    const internalAgentProfile = resolveInternalAgentProfile({
-      mode: params.modeAtSend,
-      taskStatus,
-      overrideProfile: params.internalAgentProfile,
-    });
-    const taskForToolScope = params.resolvedTaskId
-      ? useTaskStore.getState().getTaskById(params.resolvedTaskId)
-      : undefined;
-    const executionContext =
-      params.executionContext ?? resolveConversationExecutionContext(params.conversationId);
-    const scopedTurnConfiguration = params.scopedTurnConfigurationOverride !== undefined
-      ? params.scopedTurnConfigurationOverride
-      : await loadScopedTurnConfiguration({
-          projectIds: executionContext.projectIds,
-          focusProjectId: executionContext.focusedProjectId,
-          mode: params.modeAtSend,
-        });
-    const riskLevel =
-      scopedTurnConfiguration?.riskLevel ?? await loadToolRiskLevelPreference();
-    const baseAllowedToolIds = await getAllowedToolIdsForCurrentMode(
-      internalAgentProfile,
-      params.modeAtSend,
-      params.agentTypeAtSend,
-      {
-        supportsNativeToolCalling:
-          params.providerSupportsNativeToolCalling ??
-          useProviderStore.getState().selectedSupportsNativeToolCalling(),
-        providerConfig: params.providerConfig,
-        modelId: params.modelId,
+  const prepareAssistantStreamLaunch = (params: PrepareAssistantStreamParams) => {
+    const capturedRuntime = turnRuntime.read(params.conversationId);
+    const isCurrent = () => (capturedRuntime.phase === "preparing" || capturedRuntime.phase === "overflow_recovery") &&
+      turnRuntime.read(params.conversationId) === capturedRuntime &&
+      !capturedRuntime.abortController?.signal.aborted && !deletedConversationIds.has(params.conversationId);
+    return prepareChatRequest(params, {
+      isCurrent,
+      tasks: { find: (id) => useTaskStore.getState().getTaskById(id) },
+      policy: {
+        resolveInternalAgentProfile,
+        filterForInternalAgentProfile: filterToolIdsForInternalAgentProfile,
       },
-      riskLevel,
-      executionContext.focusedProjectId,
-    );
-    let taskAllowedToolIds = baseAllowedToolIds;
-    if (params.modeAtSend === "Implement") {
-      taskAllowedToolIds = filterToolIdsForImplementTask(
-        baseAllowedToolIds,
-        taskForToolScope,
-      );
-    } else if (params.modeAtSend === "Architect") {
-      taskAllowedToolIds = filterToolIdsForArchitectPlan(
-        baseAllowedToolIds,
-        executionContext,
-      );
-    }
-    const toolsState = useToolsStore.getState();
-    const providerSupportsNativeToolCalling =
-      params.providerSupportsNativeToolCalling ??
-      useProviderStore.getState().selectedSupportsNativeToolCalling();
-    const scopedMcpRuntime = scopedTurnConfiguration
-      ? await resolveScopedMcpRuntime(
-          scopedTurnConfiguration.mcpServers,
-          toolsState.mcpServers ?? [],
-          { projectIds: scopedTurnConfiguration.projectIds },
-        )
-      : {
-          // Compatibility path for runtimes without the scoped configuration
-          // API. Tool execution still acquires an authoritative backend key.
-          servers: toolsState.mcpServers ?? [],
-          tools: toolsState.getEnabledMCPTools(),
-          failures: [],
-        };
-    if (scopedMcpRuntime.failures.length > 0) {
-      const unavailableServers = scopedMcpRuntime.failures
-        .map((failure) => `${failure.serverId} (${failure.code})`)
-        .join(", ");
-      devLogger.warn("Scoped MCP servers are unavailable", {
-        failures: scopedMcpRuntime.failures,
-      });
-      notify.warning(i18n.t(
-        "notifications.mcpServersUnavailable",
-        "Some MCP servers are unavailable",
-      ), {
-        description: unavailableServers,
-      });
-    }
-    const scopedMcpTools = scopedMcpRuntime.tools;
-    const injectableMcpToolIds = selectInjectableMCPToolIds({
-      enabledToolIds: scopedMcpTools.map((tool) => tool.id),
-      supportsNativeToolCalling: providerSupportsNativeToolCalling,
-      providerType: params.providerConfig.providerType,
-      mode: params.modeAtSend,
-      agentType: params.agentTypeAtSend ?? null,
-    });
-    const policyAllowedMcpToolIds = applyScopedToolRestrictions(
-      filterDeniedToolIdsForRiskLevel(
-        filterToolIdsForInternalAgentProfile(
-          injectableMcpToolIds,
-          internalAgentProfile,
-        ),
-        riskLevel,
-        params.modeAtSend,
-      ),
-      scopedTurnConfiguration,
-    );
-    const injectableMcpToolIdsSet = new Set(policyAllowedMcpToolIds);
-    const allowedToolIds = Array.from(new Set(applyScopedToolRestrictions(
-      [
-        ...taskAllowedToolIds.filter((toolId) => !isMCPToolId(toolId)),
-        ...policyAllowedMcpToolIds,
-      ],
-      scopedTurnConfiguration,
-    )));
-    const mcpTools = scopedMcpTools.filter((tool) =>
-      injectableMcpToolIdsSet.has(tool.id),
-    );
-    const showToolTraces = false;
-    const skillPermissionSnapshot = useSkillsStore
-      .getState()
-      .createSkillPermissionSnapshot(params.conversationId, params.replyToMessageId);
-    const preparedRequest = await prepareMessagesForRequest(
-      params.conversationId,
-      allowedToolIds,
-      internalAgentProfile,
-      params.modeAtSend,
-      params.agentTypeAtSend,
-      params.replyToMessageId,
-      skillPermissionSnapshot,
-      executionContext,
-      riskLevel,
-    );
-    set((state) => {
-      const nextFeedback = { ...state.skillTurnFeedbackByMessageId };
-      if (preparedRequest.skillTurnFeedback) {
-        nextFeedback[preparedRequest.skillTurnFeedback.messageId] =
-          preparedRequest.skillTurnFeedback;
-      } else {
-        delete nextFeedback[params.replyToMessageId];
-      }
-      return { skillTurnFeedbackByMessageId: nextFeedback };
-    });
-    const toolDefinitions = getToolDefinitionsForIds(allowedToolIds, mcpTools);
-    await useProviderStore
-      .getState()
-      .ensureSelectedModelContextMetadata(
-        params.providerId,
-        params.modelId,
-        "pre_send",
-      );
-    const { footprintFields } = getSelectedModelContext(
-      params.providerId,
-      params.modelId,
-      params.providerConfig.providerType,
-    );
-    const budgetPolicy = await loadContextBudgetPolicy();
-    const preparedMessagesForContext = normalizeMessagesForProviderContext(
-      params.providerConfig.providerType,
-      preparedRequest.preparedMessages,
-    );
-    const countProviderInputItems = shouldCountProviderInputItemsForContext(
-      params.providerConfig.providerType,
-    );
-    const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-      estimateSerializedPayloadTokensForProvider({
-        messages,
-        providerType: params.providerConfig.providerType,
-        providerId: params.providerId,
-        baseUrl: params.providerConfig.baseUrl,
-        modelId: params.modelId,
-      });
-    const initialFootprint = estimateConversationFootprint({
-      systemMessage: preparedRequest.systemMessage,
-      preparedMessages: preparedMessagesForContext,
-      orderedMessages: preparedRequest.orderedMessages,
-      citations: preparedRequest.citations,
-      toolDefinitions,
-      ...footprintFields,
-      providerType: params.providerConfig.providerType,
-      providerId: params.providerId,
-      baseUrl: params.providerConfig.baseUrl,
-      modelId: params.modelId,
-      estimateSerializedPayloadTokens,
-      countProviderInputItems,
-      mode: params.compactionMode ?? "blocking",
-      budgetPolicy,
-    });
-    const markSafetyPrestreamCompacting = (footprintAfter: ContextFootprint) => {
-      const previousStatus =
-        get().conversationCompactionStatusById[params.conversationId] ?? null;
-      setConversationCompactionStatus(params.conversationId, {
-        ...previousStatus,
-        phase: "safety_compacting",
-        updatedAt: new Date().toISOString(),
-        kind: "safety_prestream",
-        footprintAfter,
-      });
-    };
-    const compactPreparedRequest = (
-      overrides: Partial<{
-        mode: ContextCompactionKind;
-        forceCompaction: boolean;
-        forcePrune: boolean;
-      }> = {},
-    ) =>
-      compactConversationMessages({
-        conversationId: params.conversationId,
-        providerId: params.providerId,
-        modelId: params.modelId,
-        reasoningEffort: params.reasoningEffort,
-        providerConfig: params.providerConfig,
-        allowedToolIds,
-        systemMessage: preparedRequest.systemMessage,
-        preparedMessages: preparedRequest.preparedMessages,
-        orderedMessages: preparedRequest.orderedMessages,
-        citations: preparedRequest.citations,
-        mode: overrides.mode ?? params.compactionMode ?? "blocking",
-        forceCompaction: overrides.forceCompaction ?? params.forceCompaction,
-        forcePrune: overrides.forcePrune ?? params.forcePrune,
-        displayAfterMessageId:
-          params.compactionDisplayAfterMessageId ?? params.replyToMessageId,
-      });
-    const autoCompactionEnabled = budgetPolicy.auto !== false;
-    let needsSafetyPrestream =
-      autoCompactionEnabled &&
-      !params.compactionMode &&
-      shouldProactivelyCompactContext({
-        boundary: "pre_send",
-        footprint: initialFootprint,
-      });
-    let compactedRequest: MaybeCompactConversationResult;
-    if (needsSafetyPrestream) {
-      markSafetyPrestreamCompacting(initialFootprint);
-      compactedRequest = await compactPreparedRequest({
-        mode: "safety_prestream",
-        forcePrune: true,
-      });
-    } else {
-      compactedRequest = await compactPreparedRequest();
-      needsSafetyPrestream =
-        autoCompactionEnabled &&
-        !params.compactionMode &&
-        shouldProactivelyCompactContext({
-          boundary: "pre_send",
-          footprint: compactedRequest.footprintAfter,
-        });
-      if (needsSafetyPrestream) {
-        markSafetyPrestreamCompacting(compactedRequest.footprintAfter);
-        compactedRequest = await compactPreparedRequest({
-          mode: "safety_prestream",
-          forcePrune: true,
-        });
-      }
-    }
-    if (
-      compactedRequest.decision === "hard_stop" ||
-      isBlockableContextOverUsableBudget(compactedRequest.footprintAfter)
-    ) {
-      const latestUserContextTokens =
-        compactedRequest.footprintAfter.latestUserBlockableTokens ??
-        compactedRequest.footprintAfter.latestUserContextTokens ??
-        0;
-      const latestRequestTooLarge =
-        latestUserContextTokens > 0 &&
-        latestUserContextTokens >= compactedRequest.footprintAfter.usableContextTokens;
-      const autoCompactionBlocked =
-        !autoCompactionEnabled &&
-        !params.compactionMode &&
-        isContextFootprintOverUsableBudget(compactedRequest.footprintAfter) &&
-        !latestRequestTooLarge;
-      const blockedFootprint: ContextFootprint = autoCompactionBlocked
-        ? {
-            ...compactedRequest.footprintAfter,
-            reason: "manual_compaction_required",
+      tools: {
+        ensureLoaded: ensureToolsLoaded,
+        loadStatus: () => {
+          const tools = useToolsStore.getState();
+          return {
+            lastError: typeof tools.lastError === "string" ? tools.lastError : null,
+            hasInternalTools: Object.keys(tools.internalTools).length > 0,
+          };
+        },
+        mcpSnapshot: () => {
+          const tools = useToolsStore.getState();
+          return { servers: tools.mcpServers ?? [], enabledTools: () => tools.getEnabledMCPTools() };
+        },
+        allowedForMode: getAllowedToolIdsForCurrentMode,
+        filterForImplementTask: filterToolIdsForImplementTask,
+        filterForArchitectPlan: filterToolIdsForArchitectPlan,
+        resolveScopedMcp: resolveScopedMcpRuntime,
+        reportUnavailableMcpServers: (failures, description) => {
+          devLogger.warn("Scoped MCP servers are unavailable", { failures });
+          notify.warning(i18n.t(
+            "notifications.mcpServersUnavailable",
+            "Some MCP servers are unavailable",
+          ), { description });
+        },
+        definitions: getToolDefinitionsForIds,
+        guidedRetry: buildGuidedToolRetryPolicy,
+      },
+      configuration: {
+        loadScoped: loadScopedTurnConfiguration,
+        restrictTools: applyScopedToolRestrictions,
+        loadRiskLevel: loadToolRiskLevelPreference,
+        loadMaxTurns: () => loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
+        webSearch: getStreamingWebSearchConfig,
+      },
+      skills: {
+        createPermissionSnapshot: (conversationId, turnId) =>
+          useSkillsStore.getState().createSkillPermissionSnapshot(conversationId, turnId),
+        publishFeedback: (replyToMessageId, feedback) => set((state) => {
+          const nextFeedback = { ...state.skillTurnFeedbackByMessageId };
+          if (feedback) {
+            nextFeedback[feedback.messageId] = feedback;
+          } else {
+            delete nextFeedback[replyToMessageId];
           }
-        : compactedRequest.footprintAfter;
-      setConversationCompactionStatus(params.conversationId, {
-        phase:
-          (needsSafetyPrestream || autoCompactionBlocked) && !latestRequestTooLarge
-            ? "needs_manual_compaction"
-            : "too_large",
-        updatedAt: new Date().toISOString(),
-        reason: blockedFootprint.reason,
-        kind: needsSafetyPrestream || autoCompactionBlocked
-          ? "safety_prestream"
-          : params.compactionMode ?? "blocking",
-        footprintAfter: blockedFootprint,
-      });
-      await recordConversationCompactionEvent({
-        conversationId: params.conversationId,
-        trigger: needsSafetyPrestream || autoCompactionBlocked
-          ? "safety_prestream"
-          : getCompactionEventTrigger(params.compactionMode ?? "blocking"),
-        providerId: params.providerId,
-        modelId: params.modelId,
-        modelContextWindowTokens: blockedFootprint.modelContextWindowTokens,
-        tokensBefore: compactedRequest.footprintBefore.totalEstimatedTokens,
-        tokensAfter: blockedFootprint.totalEstimatedTokens,
-        status: autoCompactionBlocked ? "skipped" : "blocked",
-        reason: blockedFootprint.reason,
-        metadata: buildCompactionDecisionAuditMetadata({
-          providerId: params.providerId,
-          providerType: params.providerConfig.providerType,
-          modelId: params.modelId,
-          trigger: needsSafetyPrestream || autoCompactionBlocked
-            ? "safety_prestream"
-            : getCompactionEventTrigger(params.compactionMode ?? "blocking"),
-          status: autoCompactionBlocked ? "skipped" : "blocked",
-          footprintBefore: compactedRequest.footprintBefore,
-          footprintAfter: blockedFootprint,
-          footprintFields,
-          budgetPolicy,
-          reason: blockedFootprint.reason,
-          result: autoCompactionBlocked
-            ? "auto_compaction_disabled"
-            : "context_too_large",
-          completionReason:
-            [...preparedRequest.orderedMessages]
-              .reverse()
-              .find((message) => message.role === "assistant")
-              ?.completion_reason ?? null,
-          ...buildAppliedCompactionAuditDetails({
-            result: compactedRequest,
-          }),
+          return { skillTurnFeedbackByMessageId: nextFeedback };
         }),
-      });
-      throw buildSendError(
-        autoCompactionBlocked
-          ? buildManualCompactionRequiredErrorMessage(blockedFootprint)
-          : buildContextTooLargeErrorMessage(blockedFootprint),
-      );
-    }
-    const fileRefToolContext = preparedRequest.orderedMessages
-      .flatMap((message) => message.context_refs ?? [])
-      .filter(isFileContextRef)
-      .map((ref) => {
-        const path = getFileRefPath(ref);
-        return {
-          title: ref.title,
-          source: path,
-          path,
-          snippet: undefined,
-          content: undefined,
-        };
-      });
-    const fileToolContextByPath = new Map<string, {
-      title: string;
-      source: string;
-      path?: string;
-      snippet?: string;
-      content?: string;
-    }>();
-    useCitationsStore
-      .getState()
-      .getConversationContextCitations(params.conversationId)
-      .filter((c) => c.type === "file" || c.type === "document")
-      .forEach((c) => {
-        const item = {
-        title: c.title,
-        source: c.source,
-        path: c.path,
-        snippet: c.snippet,
-        content: c.content,
-        };
-        fileToolContextByPath.set(c.path || c.source || c.title, item);
-      });
-    fileRefToolContext.forEach((item) => {
-      if (!fileToolContextByPath.has(item.path)) {
-        fileToolContextByPath.set(item.path, item);
-      }
+        toolIdsForRequest: getSkillToolIdsForRequest,
+      },
+      context: {
+        executionContext: resolveConversationExecutionContext,
+        prepareMessages: prepareMessagesForRequest,
+        citations: (id) => useCitationsStore.getState().getConversationContextCitations(id),
+        fileRefPath: getFileRefPath,
+      },
+      provider: {
+        supportsNativeToolCalling: () => useProviderStore.getState().selectedSupportsNativeToolCalling(),
+        ensureContextMetadata: (providerId, modelId, reason) =>
+          useProviderStore.getState().ensureSelectedModelContextMetadata(providerId, modelId, reason),
+        modelContext: getSelectedModelContext,
+        estimateSerializedPayloadTokens: estimateSerializedPayloadTokensForProvider,
+      },
+      compaction: {
+        loadBudgetPolicy: loadContextBudgetPolicy,
+        status: (id) => get().conversationCompactionStatusById[id],
+        setStatus: setConversationCompactionStatus,
+        compact: params => compactConversationMessages({ ...params, isCurrent }),
+        recordEvent: recordConversationCompactionEvent,
+      },
+      persistence: { providerInputItems: persistProviderInputItemsForMessage },
     });
-    const fileToolContext = Array.from(fileToolContextByPath.values());
-    const { enableWebSearch, enableWebFetch, webSearchOptions } =
-      getStreamingWebSearchConfig();
-    const guidedToolRetry = buildGuidedToolRetryPolicy({
-      userContent: params.userContent,
-      allowedToolIds,
-      supportsNativeToolCalling: params.providerSupportsNativeToolCalling,
-      fileToolContext,
-    });
-    const maxTurns = scopedTurnConfiguration?.maxTurns !== null
-      && scopedTurnConfiguration?.maxTurns !== undefined
-      ? normalizeChatMaxTurns(scopedTurnConfiguration.maxTurns)
-      : normalizeChatMaxTurns(
-          await loadPreference<ChatMaxTurnsPreference>(PREF_KEYS.CHAT_MAX_TURNS),
-        );
-    const { skillToolIds, runnableSkillToolIds } =
-      getSkillToolIdsForRequest(
-        allowedToolIds,
-        preparedRequest.skillPermissionSnapshot,
-      );
 
-    await persistProviderInputItemsForMessage(
-      params.replyToMessageId,
-      preparedRequest.persistableProviderInputItemsByMessageId[params.replyToMessageId],
-    );
-
-    return {
-      allowedToolIds,
-      riskLevel,
-      scopedTurnConfiguration,
-      showToolTraces,
-      messagesForRequest: compactedRequest.messages,
-      contextDiagnosticsBaselineSeed: {
-        conversationId: params.conversationId,
-        modeAtSend: params.modeAtSend,
-        providerId: params.providerId,
-        providerType: params.providerConfig.providerType,
-        baseUrl: params.providerConfig.baseUrl ?? "",
-        modelId: params.modelId,
-        ...footprintFields,
-        allowedToolIds,
-        toolDefinitions: getToolDefinitionsForIds(allowedToolIds, mcpTools),
-        messagesForRequest: compactedRequest.messages.map(cloneStreamMessage),
-        citations: preparedRequest.citations.map(cloneCitationForDiagnostics),
-        repositoryInstructionSources:
-          preparedRequest.repositoryInstructionContext.sources.map(
-            toRepositoryInstructionDiagnosticSource,
-          ),
-        repositoryInstructionIssues:
-          preparedRequest.repositoryInstructionContext.issues.map((issue) => ({ ...issue })),
-        compactionDecision: compactedRequest.decision,
-      } satisfies StreamContextDiagnosticsBaselineSeed,
-      executionContext: preparedRequest.executionContext,
-      fileToolContext,
-      internalAgentProfile,
-      enableWebSearch,
-      enableWebFetch,
-      webSearchOptions,
-      mcpTools,
-      mcpServers: scopedMcpRuntime.servers,
-      skillToolIds,
-      runnableSkillToolIds,
-      guidedToolRetry,
-      maxTurns,
-      compactionDecision: compactedRequest.decision,
-    };
   };
 
   const removeEmptyAssistantPlaceholderFromState = (
@@ -9953,35 +8471,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     options?: { setSendState?: boolean },
   ) => {
     const normalized = toServiceError(error);
-    let applied = false;
-    set((state) => {
-      const currentRuntime = state.conversationRuntimeById[conversationId];
-      if (
-        !currentRuntime ||
-        currentRuntime.sessionId !== sessionId ||
-        !isConversationRuntimeActive(currentRuntime)
-      ) {
-        return state;
-      }
-      applied = true;
-      return {
-        ...(assistantMessageId
-          ? removeEmptyAssistantPlaceholderFromState(state, assistantMessageId)
-          : {}),
-        ...buildConversationRuntimePatch(state, conversationId, {
-          phase: "error",
-          sessionId,
-          turnId: currentRuntime.turnId ?? null,
-          assistantMessageId: null,
-          abortController: null,
-          lastError: normalized.message,
-          lastErrorOrigin: "macro",
-          lastErrorDisplayTarget: "composer",
-        }),
-        lastError: normalized.message,
+    const applied = turnRuntime.failLaunch(conversationId, sessionId, normalized.message);
+    if (applied) {
+      set(state => ({
+        ...(assistantMessageId ? removeEmptyAssistantPlaceholderFromState(state, assistantMessageId) : {}),
         ...(options?.setSendState ? { sendState: "error" as const } : {}),
-      };
-    });
+      }));
+    }
     return { error: normalized, applied };
   };
 
@@ -10292,7 +8788,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         removeEmptyAssistantPlaceholderFromState(state, placeholderMessageId),
       );
       if (
-        latestConversationSessionIdByConversationId.get(
+        turnRuntime.latestSession(
           params.conversationId,
         ) !== params.sessionId
       ) {
@@ -10434,6 +8930,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       return true;
     } catch (error) {
+      if (error instanceof ChatTurnSupersededError && !isCurrentPreparation()) return false;
       if (params.manualFeatureDraftRecovery) {
         await rollbackManualFeatureDraftAfterFailedLaunch(
           params.manualFeatureDraftRecovery,
@@ -10958,1242 +9455,85 @@ export const useChatStore = create<ChatStore>((set, get) => {
     });
   };
 
-  const startAssistantStream = (params: {
-    architectPlanAtSend?: { planId: string; targetBranch: string };
-    sessionId: string;
-    assistantMessage: ChatMessage;
-    conversationId: string;
-    replyToMessageId: string;
-    userContent: string;
-    modeAtSend: AppMode;
-    agentTypeAtSend?: AgentType | null;
-    resolvedTaskId: string;
-    selectedProviderId: string;
-    selectedModelId: string;
-    selectedReasoningEffort?: ReasoningEffort | null;
-    providerConfig: NonNullable<
-      ReturnType<typeof useProviderStore.getState>["providerConfigs"][number]
-    >;
-    internalAgentProfile?: InternalAgentProfile | null;
-    messagesForRequest: StreamMessage[];
-    contextDiagnosticsBaselineSeed: StreamContextDiagnosticsBaselineSeed;
-    executionContext: ProjectExecutionContext;
-    providerSupportsNativeToolCalling?: boolean;
-    fileToolContext: Array<{
-      title: string;
-      source: string;
-      path?: string;
-      snippet?: string;
-      content?: string;
-    }>;
-    allowedToolIds: string[];
-    riskLevel: ToolRiskLevel;
-    scopedTurnConfiguration: ScopedTurnConfiguration | null;
-    guidedToolRetry?: {
-      requiredToolNames: string[];
-      retrySystemPrompt: string;
-      maxRetries?: number;
-    };
-    showToolTraces: boolean;
-    enableWebSearch: boolean;
-    enableWebFetch: boolean;
-    webSearchOptions: ReturnType<
-      typeof getStreamingWebSearchConfig
-    >["webSearchOptions"];
-    mcpTools: MCPTool[];
-    mcpServers: MCPServer[];
-    skillToolIds: string[];
-    runnableSkillToolIds: string[];
-    maxTurns: ChatMaxTurnsPreference;
-    abortController?: AbortController;
-    compactionDecision?: ContextCompactionDecision;
-    overflowRecoveryAttempted?: boolean;
-    replayRecovery?: {
-      replayId: string;
-      onProgress: () => Promise<void>;
-      onFailedBeforeProgress: () => Promise<void>;
-    };
-  }) => {
-    const streamTurnId = getMessageTurnId(params.assistantMessage);
-    const abortController = params.abortController ?? new AbortController();
-    if (abortController.signal.aborted) {
-      return;
-    }
-    const preparationRuntime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      params.conversationId,
-    );
-    if (
-      preparationRuntime.phase !== "preparing" ||
-      preparationRuntime.sessionId !== params.sessionId ||
-      preparationRuntime.turnId !== streamTurnId ||
-      preparationRuntime.assistantMessageId !== params.assistantMessage.id ||
-      preparationRuntime.abortController !== abortController
-    ) {
-      return;
-    }
-    const shouldAcceptStreamUpdate = (): boolean => {
-      const runtime = getConversationRuntimeSnapshot(
-        get().conversationRuntimeById,
-        params.conversationId,
-      );
-      return (
-        runtime.phase === "streaming" &&
-        runtime.sessionId === params.sessionId &&
-        runtime.assistantMessageId === params.assistantMessage.id &&
-        runtime.turnId === streamTurnId
-      );
-    };
-    setConversationRuntime(
-      params.conversationId,
-      {
-        phase: "streaming",
-        sessionId: params.sessionId,
-        turnId: streamTurnId,
-        assistantMessageId: params.assistantMessage.id,
-        abortController,
-        lastError: null,
+  const createStreamCompaction = composeChatStreamCompaction({
+    policy: {
+      loadBudget: loadContextBudgetPolicy,
+      summarize: (turn, input) => generateCompactionSummary(turn.providerConfig, turn.selectedProviderId,
+        turn.selectedModelId, turn.selectedReasoningEffort, input),
+      estimate: (turn, messages) => estimateSerializedPayloadTokensForProvider({
+        messages, providerType: turn.providerConfig.providerType, providerId: turn.selectedProviderId,
+        baseUrl: turn.providerConfig.baseUrl, modelId: turn.selectedModelId,
+      }),
+      footprint: turn => getSelectedModelContext(turn.selectedProviderId, turn.selectedModelId, turn.providerConfig.providerType).footprintFields,
+      tools: turn => getToolDefinitionsForIds(turn.allowedToolIds, turn.mcpTools),
+    },
+    read: {
+      status: id => get().conversationCompactionStatusById[id] ?? null,
+      request: turn => prepareMessagesForRequest(turn.conversationId, turn.allowedToolIds,
+        turn.internalAgentProfile, turn.modeAtSend, turn.agentTypeAtSend, undefined, undefined,
+        turn.executionContext, turn.riskLevel),
+    },
+    projection: {
+      markConversationCompactionStarted, clearLatestRunningSessionCompactionEvent,
+      setConversationCompactionStatus, completeLatestSessionCompactionEvent,
+      info: message => devLogger.info(message),
+    },
+    persistence: { persistConversationCompactionState, recordConversationCompactionEvent },
+  });
+
+  const { start: startAssistantStream } = createAssistantStreamRuntime({
+    owner: turnRuntime,
+    transport: streamChat,
+    isDeleted: (id) => deletedConversationIds.has(id),
+    messages: {
+      get: id => findChatMessageInState(get(), id) ?? undefined,
+      ordered: getOrderedConversationMessages,
+      append: (id, chunk) => get().appendToMessage(id, chunk),
+      fields: (id, fields) => get().updateMessageFields(id, fields),
+      content: (id, content) => get().updateMessageContent(id, content),
+      completed: (id, content) => set(state => ({
+        conversations: state.conversations.map(conversation => conversation.id === id ? {
+          ...conversation, last_message: content.slice(0, 100) + (content.length > 100 ? "..." : ""),
+          updated_at: new Date().toISOString(),
+        } : conversation),
+      })),
+      removeEmpty: id => set(state => removeEmptyAssistantPlaceholderFromState(state, id)),
+    },
+    persistence: {
+      adapters: chatPersistenceAdapters,
+      complete: (...args) => persistAssistantStreamResult(...args),
+      partial: message => persistAssistantPartialStreamResult(message),
+      failed: markAssistantPersistenceFailure,
+      sync: async (mode, conversationId, architectPlan) => {
+        await syncMacroMetadataAfterStreamService({ mode, conversationId, architectPlan, trigger: "send" });
       },
-      { globalLastError: null },
-    );
-    const deleteEmptyAssistantMessageFromDb = async () => {
-      if (
-        latestConversationSessionIdByConversationId.get(
-          params.conversationId,
-        ) !== params.sessionId
-      ) {
-        return;
-      }
-      try {
-        await deletePersistedMessagesAfter(
-          chatPersistenceAdapters,
-          params.conversationId,
-          params.replyToMessageId,
-        );
-      } catch (error) {
-        console.warn("Failed to delete empty assistant message after stream error:", error);
-      }
-    };
-    const contextDiagnosticsBaseline: StreamContextDiagnosticsBaseline = {
-      ...params.contextDiagnosticsBaselineSeed,
-      sessionId: params.sessionId,
-      assistantMessageId: params.assistantMessage.id,
-      orderedMessages: getOrderedConversationMessages(
-        params.conversationId,
-      ).map(cloneChatMessageForDiagnostics),
-    };
-    recordLiveStreamContextEstimate({
-      conversationId: params.conversationId,
-      sessionId: params.sessionId,
-      assistantMessageId: params.assistantMessage.id,
-      leading: true,
-      baseline: contextDiagnosticsBaseline,
-      snapshot: {
-        version: 0,
-        visibleContent: params.assistantMessage.content,
-        visibleContentLength: params.assistantMessage.content.length,
-        toolTraces: params.assistantMessage.tool_traces ?? [],
-        hiddenContext: params.assistantMessage.hidden_context,
-        providerInputItems: params.assistantMessage.provider_input_items,
-        providerTurnState: params.assistantMessage.provider_turn_state,
-      },
-    });
-    let pendingToolBoundaryCompaction: PendingToolBoundaryCompaction | null = null;
-    let replayRecoveryFinalized = false;
-    const finalizeReplayRecoveryAfterProgress = () => {
-      if (!params.replayRecovery || replayRecoveryFinalized) return;
-      replayRecoveryFinalized = true;
-      void (async () => {
-        await params.replayRecovery!.onProgress();
-        await tauriIpc.dbFinalizeConversationReplay({
-          conversationId: params.conversationId,
-          replayId: params.replayRecovery!.replayId,
-        });
-      })().catch((error) => {
-        console.error("Replay recovery finalization remains pending", error);
-      });
-    };
-
-    const maybeMarkImplementTaskFailedAfterStreamError = async () => {
-      if (
-        abortController.signal.aborted ||
-        params.modeAtSend !== "Implement" ||
-        !params.resolvedTaskId
-      ) {
-        return;
-      }
-
-      const task = useTaskStore.getState().getTaskById(params.resolvedTaskId);
-      if (!task || task.status === "Completed") {
-        return;
-      }
-
-      try {
-        await useTaskStore.getState().markTaskFailed(params.resolvedTaskId);
-      } catch (error) {
-        console.warn("Failed to mark task as failed after stream error:", error);
-      }
-    };
-
-    let providerOverflowLimitRecorded = false;
-    const recordProviderContextOverflowLimit = async (error: Error) => {
-      if (providerOverflowLimitRecorded || !isProviderContextOverflowError(error)) {
-        return;
-      }
-      const learnedContextLimit =
-        extractContextLimitTokensFromErrorLike(error);
-      if (!learnedContextLimit) {
-        return;
-      }
-      providerOverflowLimitRecorded = true;
-      try {
-        await useProviderStore
-          .getState()
-          .recordProviderModelContextOverflowLimit(
-            params.selectedProviderId,
-            params.selectedModelId,
-            learnedContextLimit,
-          );
-      } catch (persistError) {
-        console.warn(
-          "Failed to persist provider context overflow limit:",
-          persistError,
-        );
-      }
-    };
-
-    const tryRecoverFromOverflow = async (
-      error: Error,
-      tokenControls: ChatStreamTokenControls,
-    ): Promise<boolean> => {
-      if (
-        params.overflowRecoveryAttempted ||
-        abortController.signal.aborted ||
-        !shouldAcceptStreamUpdate() ||
-        !isProviderContextOverflowError(error)
-      ) {
-        return false;
-      }
-
-      await recordProviderContextOverflowLimit(error);
-      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
-        return true;
-      }
-      tokenControls.flushNow();
-      const assistantMessage = get().messages.find(
-        (message) => message.id === params.assistantMessage.id,
-      );
-      const hasPartialAssistantProgress = Boolean(
-        assistantMessage &&
-          (assistantMessage.content.trim().length > 0 ||
-            (assistantMessage.tool_traces?.length ?? 0) > 0),
-      );
-      if (hasPartialAssistantProgress) {
-        return false;
-      }
-
-      tokenControls.dispose();
-      clearLiveStreamContextEstimate(params.conversationId);
-      setConversationCompactionStatus(params.conversationId, {
-        phase: "recovering_overflow",
-        updatedAt: new Date().toISOString(),
-        kind: "stream_overflow",
-        recoveredFromOverflow: true,
-      });
-      updateConversationRuntimeIfSessionMatches(
-        params.conversationId,
-        params.sessionId,
-        () => ({
-          phase: "overflow_recovery",
-          sessionId: params.sessionId,
-          turnId: streamTurnId,
-          assistantMessageId: params.assistantMessage.id,
-          abortController,
-          lastError: null,
-        }),
-      );
-
-      try {
-        const streamLaunch = await prepareAssistantStreamLaunch({
-          conversationId: params.conversationId,
-          replyToMessageId: params.replyToMessageId,
-          userContent: params.userContent,
-          resolvedTaskId: params.resolvedTaskId,
-          modeAtSend: params.modeAtSend,
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          reasoningEffort: params.selectedReasoningEffort,
-          providerConfig: params.providerConfig,
-          internalAgentProfile: params.internalAgentProfile,
-          executionContext: params.executionContext,
-          scopedTurnConfigurationOverride: params.scopedTurnConfiguration,
-          providerSupportsNativeToolCalling:
-            params.providerSupportsNativeToolCalling,
-          compactionMode: "stream_overflow",
-          forceCompaction: true,
-          forcePrune: true,
-          compactionDisplayAfterMessageId: params.assistantMessage.id,
-        });
-
-        const runtimeAfterCompaction = getConversationRuntimeSnapshot(
-          get().conversationRuntimeById,
-          params.conversationId,
-        );
-        if (
-          runtimeAfterCompaction.phase !== "overflow_recovery" ||
-          runtimeAfterCompaction.sessionId !== params.sessionId ||
-          runtimeAfterCompaction.turnId !== streamTurnId ||
-          runtimeAfterCompaction.assistantMessageId !== params.assistantMessage.id ||
-          runtimeAfterCompaction.abortController !== abortController ||
-          abortController.signal.aborted
-        ) {
-          return true;
-        }
-
-        const currentStatus =
-          get().conversationCompactionStatusById[params.conversationId];
-        setConversationCompactionStatus(params.conversationId, {
-          ...currentStatus,
-          phase: "compacted",
-          updatedAt: new Date().toISOString(),
-          kind: "stream_overflow",
-          recoveredFromOverflow: true,
-        });
-
-        updateConversationRuntimeIfSessionMatches(
-          params.conversationId,
-          params.sessionId,
-          (runtime) =>
-            runtime.phase === "overflow_recovery" &&
-            runtime.turnId === streamTurnId &&
-            runtime.assistantMessageId === params.assistantMessage.id
-              ? {
-                  phase: "preparing",
-                  sessionId: params.sessionId,
-                  turnId: streamTurnId,
-                  assistantMessageId: params.assistantMessage.id,
-                  abortController,
-                  lastError: null,
-                }
-              : runtime,
-        );
-        startAssistantStream({
-          ...params,
-          messagesForRequest: streamLaunch.messagesForRequest,
-          contextDiagnosticsBaselineSeed:
-            streamLaunch.contextDiagnosticsBaselineSeed,
-          executionContext: streamLaunch.executionContext,
-          providerSupportsNativeToolCalling:
-            params.providerSupportsNativeToolCalling,
-          fileToolContext: streamLaunch.fileToolContext,
-          allowedToolIds: streamLaunch.allowedToolIds,
-          riskLevel: streamLaunch.riskLevel,
-          scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
-          skillToolIds: streamLaunch.skillToolIds,
-          runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
-          guidedToolRetry: streamLaunch.guidedToolRetry,
-          showToolTraces: streamLaunch.showToolTraces,
-          enableWebSearch: streamLaunch.enableWebSearch,
-          enableWebFetch: streamLaunch.enableWebFetch,
-          webSearchOptions: streamLaunch.webSearchOptions,
-          mcpTools: streamLaunch.mcpTools,
-          mcpServers: streamLaunch.mcpServers,
-          internalAgentProfile: streamLaunch.internalAgentProfile,
-          maxTurns: streamLaunch.maxTurns,
-          compactionDecision: streamLaunch.compactionDecision,
-          overflowRecoveryAttempted: true,
-        });
-        return true;
-      } catch (recoveryError) {
-        const normalized = toServiceError(recoveryError);
-        const message =
-          normalized.message || OVERFLOW_RECOVERY_FAILURE_MESSAGE;
-        setConversationCompactionStatus(params.conversationId, {
-          phase: "too_large",
-          updatedAt: new Date().toISOString(),
-          reason: "hard_stop_ratio",
-          kind: "stream_overflow",
-          recoveredFromOverflow: true,
-        });
-        await maybeMarkImplementTaskFailedAfterStreamError();
-        set((state) => {
-          const currentRuntime =
-            state.conversationRuntimeById[params.conversationId];
-          if (!currentRuntime || currentRuntime.sessionId !== params.sessionId) {
-            return state;
-          }
-          return {
-            ...removeEmptyAssistantPlaceholderFromState(
-              state,
-              params.assistantMessage.id,
-            ),
-            ...buildConversationRuntimePatch(state, params.conversationId, {
-              phase: "error",
-              sessionId: params.sessionId,
-              turnId: streamTurnId,
-              assistantMessageId: null,
-              abortController: null,
-              lastError: message,
-              lastErrorOrigin: "macro",
-              lastErrorDisplayTarget: "composer",
-            }),
-            lastError: message,
-            sendState: "error",
-          };
-        });
-        await deleteEmptyAssistantMessageFromDb();
-        return true;
-      }
-    };
-
-    const compactFollowUpMessagesBeforeProviderRequest = async (request: {
-      messages: StreamMessage[];
-      turnCount: number;
-      toolResultCount: number;
-    }): Promise<{ messages: StreamMessage[]; compacted?: boolean } | void> => {
-      if (
-        abortController.signal.aborted ||
-        !shouldAcceptStreamUpdate() ||
-        request.toolResultCount <= 0
-      ) {
-        return;
-      }
-
-      const { systemMessage, preparedMessages } =
-        splitSystemAndPreparedStreamMessages(request.messages);
-      if (preparedMessages.length < 3) {
-        return;
-      }
-
-      const orderedMessages = buildSyntheticOrderedMessagesForStreamRequest({
-        conversationId: params.conversationId,
-        taskId: params.resolvedTaskId,
-        messages: preparedMessages,
-      });
-      const { footprintFields } = getSelectedModelContext(
-        params.selectedProviderId,
-        params.selectedModelId,
-        params.providerConfig.providerType,
-      );
-      const budgetPolicy = await loadContextBudgetPolicy();
-      const toolDefinitions = getToolDefinitionsForIds(
-        params.allowedToolIds,
-        params.mcpTools,
-      );
-      const preparedMessagesForContext = normalizeMessagesForProviderContext(
-        params.providerConfig.providerType,
-        preparedMessages,
-      );
-      const countProviderInputItems = shouldCountProviderInputItemsForContext(
-        params.providerConfig.providerType,
-      );
-      const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-        estimateSerializedPayloadTokensForProvider({
-          messages,
-          providerType: params.providerConfig.providerType,
-          providerId: params.selectedProviderId,
-          baseUrl: params.providerConfig.baseUrl,
-          modelId: params.selectedModelId,
-        });
-      const footprint = estimateConversationFootprint({
-        systemMessage,
-        preparedMessages: preparedMessagesForContext,
-        orderedMessages,
-        citations: contextDiagnosticsBaseline.citations,
-        toolDefinitions,
-        ...footprintFields,
-        providerType: params.providerConfig.providerType,
-        providerId: params.selectedProviderId,
-        baseUrl: params.providerConfig.baseUrl,
-        modelId: params.selectedModelId,
-        estimateSerializedPayloadTokens,
-        countProviderInputItems,
-        mode: "safety_prestream",
-        budgetPolicy,
-      });
-      const latestToolBatchMessages =
-        request.toolResultCount > 0
-          ? preparedMessagesForContext.slice(-request.toolResultCount)
-          : [];
-      const latestToolBatchTokens = estimateBlockableTokensForStreamMessages(
-        latestToolBatchMessages,
-        {
-          countProviderInputItems,
-          context: {
-            providerType: params.providerConfig.providerType,
-            providerId: params.selectedProviderId,
-            baseUrl: params.providerConfig.baseUrl,
-            modelId: params.selectedModelId,
-          },
-        },
-      );
-      const previousStatus =
-        get().conversationCompactionStatusById[params.conversationId] ?? null;
-
-      let result: MaybeCompactConversationResult;
-      let orchestration: Awaited<
-        ReturnType<typeof runContextCompactionOrchestration>
-      >;
-      try {
-        orchestration = await runContextCompactionOrchestration({
-          boundary: "post_tool_batch",
-          mode: "safety_prestream",
-          systemMessage,
-          preparedMessages: preparedMessagesForContext,
-          orderedMessages,
-          citations: contextDiagnosticsBaseline.citations,
-          toolDefinitions,
-          footprintFields,
-          providerId: params.selectedProviderId,
-          providerType: params.providerConfig.providerType,
-          baseUrl: params.providerConfig.baseUrl,
-          modelId: params.selectedModelId,
-          projectIdentity: params.executionContext.focusedProjectId
-            ? `project:${params.executionContext.focusedProjectId}`
-            : params.executionContext.groupId
-              ? `group:${params.executionContext.groupId}`
-              : `conversation:${params.conversationId}`,
-          estimateSerializedPayloadTokens,
-          countProviderInputItems,
-          budgetPolicy,
-          latestBoundaryPayloadTokens: latestToolBatchTokens,
-          buildForceCompaction: true,
-          forcePrune: true,
-          syntheticBoundary: true,
-          onCompactionStarted: () => {
-            markConversationCompactionStarted(
-              params.conversationId,
-              "safety_prestream",
-              previousStatus,
-              params.assistantMessage.id,
-            );
-          },
-          generateSummary: (input) =>
-            generateCompactionSummary(
-              params.providerConfig,
-              params.selectedProviderId,
-              params.selectedModelId,
-              params.selectedReasoningEffort,
-              input,
-            ),
-        });
-      } catch (error) {
-        if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
-          return;
-        }
-        clearLatestRunningSessionCompactionEvent(
-          params.conversationId,
-          "safety_prestream",
-        );
-        setConversationCompactionStatus(params.conversationId, previousStatus);
-        await recordConversationCompactionEvent({
-          conversationId: params.conversationId,
-          trigger: "safety_prestream",
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          modelContextWindowTokens: footprint.modelContextWindowTokens,
-          tokensBefore: footprint.totalEstimatedTokens,
-          tokensAfter: footprint.totalEstimatedTokens,
-          status: "failed",
-          errorCode: isProviderContextOverflowError(error)
-            ? "context_overflow"
-            : "tool_boundary_compaction_error",
-          reason: toServiceError(error).message,
-          metadata: buildCompactionDecisionAuditMetadata({
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            trigger: "safety_prestream",
-            status: "failed",
-            footprint,
-            footprintFields,
-            budgetPolicy,
-            reason: toServiceError(error).message,
-            result: "tool_boundary_compaction_error",
-          }),
-        });
-        throw error;
-      }
-      if (abortController.signal.aborted || !shouldAcceptStreamUpdate()) {
-        return;
-      }
-      if (orchestration.outcome === "blocked") {
-        throw buildSendError(orchestration.errorMessage);
-      }
-      if (orchestration.outcome === "manual_required") {
-        throw buildSendError(orchestration.errorMessage);
-      }
-      if (orchestration.evaluation.decision !== "compact") {
-        return;
-      }
-      result = orchestration.result;
-
-      if (
-        result.decision === "hard_stop" ||
-        isBlockableContextOverUsableBudget(result.footprintAfter)
-      ) {
-        clearLatestRunningSessionCompactionEvent(
-          params.conversationId,
-          "safety_prestream",
-        );
-        setConversationCompactionStatus(params.conversationId, {
-          phase: "too_large",
-          updatedAt: new Date().toISOString(),
-          reason: result.footprintAfter.reason,
-          kind: "safety_prestream",
-          footprintAfter: result.footprintAfter,
-        });
-        await recordConversationCompactionEvent({
-          conversationId: params.conversationId,
-          trigger: "safety_prestream",
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          modelContextWindowTokens: result.footprintAfter.modelContextWindowTokens,
-          tokensBefore: result.footprintBefore.totalEstimatedTokens,
-          tokensAfter: result.footprintAfter.totalEstimatedTokens,
-          status: "blocked",
-          reason: result.footprintAfter.reason,
-          metadata: buildCompactionDecisionAuditMetadata({
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            trigger: "safety_prestream",
-            status: "blocked",
-            footprintBefore: result.footprintBefore,
-            footprintAfter: result.footprintAfter,
-            footprintFields,
-            budgetPolicy,
-            reason: result.footprintAfter.reason,
-            result: "tool_boundary_context_too_large",
-            ...buildAppliedCompactionAuditDetails({
-              result,
-              syntheticBoundary: true,
-            }),
-          }),
-        });
-        throw buildSendError(buildContextTooLargeErrorMessage(result.footprintAfter));
-      }
-
-      if (result.compactionState) {
-        if (isSyntheticCompactionBoundaryState(result.compactionState)) {
-          pendingToolBoundaryCompaction = {
-            conversationId: params.conversationId,
-            assistantMessageId: params.assistantMessage.id,
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            createdAt: new Date().toISOString(),
-            compactionState: result.compactionState,
-            footprintBefore: result.footprintBefore,
-            footprintAfter: result.footprintAfter,
-            messages: result.messages.map(cloneStreamMessage),
-            pruning: result.pruning,
-          };
-        }
-        completeLatestSessionCompactionEvent(
-          params.conversationId,
-          result.compactionState,
-          "safety_prestream",
-        );
-        setConversationCompactionStatus(
-          params.conversationId,
-          resolveCompactionStatusFromState(result.compactionState),
-        );
-      } else {
-        clearLatestRunningSessionCompactionEvent(
-          params.conversationId,
-          "safety_prestream",
-        );
-        setConversationCompactionStatus(params.conversationId, previousStatus);
-      }
-
-      await recordConversationCompactionEvent({
-        conversationId: params.conversationId,
-        trigger: "safety_prestream",
-        providerId: params.selectedProviderId,
-        modelId: params.selectedModelId,
-        modelContextWindowTokens: result.footprintAfter.modelContextWindowTokens,
-        tokensBefore: result.footprintBefore.totalEstimatedTokens,
-        tokensAfter: result.footprintAfter.totalEstimatedTokens,
-        status: result.degraded ? "degraded" : "success",
-        reason: result.footprintAfter.reason,
-        metadata: buildCompactionDecisionAuditMetadata({
-          providerId: params.selectedProviderId,
-          providerType: params.providerConfig.providerType,
-          modelId: params.selectedModelId,
-          trigger: "safety_prestream",
-          status: result.degraded ? "degraded" : "success",
-          footprintBefore: result.footprintBefore,
-          footprintAfter: result.footprintAfter,
-          footprintFields,
-          budgetPolicy,
-          reason: result.footprintAfter.reason,
-          result: "tool_boundary_compaction",
-          ...buildAppliedCompactionAuditDetails({
-            result,
-            syntheticBoundary: true,
-          }),
-        }),
-      });
-
-      return {
-        messages: result.messages,
-        compacted: Boolean(result.compactionState),
-      };
-    };
-
-    const consolidatePendingToolBoundaryCompactionAfterPersistence = async () => {
-      const pending = pendingToolBoundaryCompaction;
-      pendingToolBoundaryCompaction = null;
-      if (!pending) {
-        return;
-      }
-      const stillOwnsCompletionConsolidation = (): boolean => {
-        const owner = completionPersistenceOwnersByConversationId.get(
-          params.conversationId,
-        );
-        return (
-          !deletedConversationIds.has(params.conversationId) &&
-          latestConversationSessionIdByConversationId.get(
-            params.conversationId,
-          ) === params.sessionId &&
-          owner?.sessionId === params.sessionId &&
-          owner.turnId === streamTurnId &&
-          owner.assistantMessageId === params.assistantMessage.id
-        );
-      };
-      if (!stillOwnsCompletionConsolidation()) {
-        return;
-      }
-
-      const { footprintFields } = getSelectedModelContext(
-        params.selectedProviderId,
-        params.selectedModelId,
-        params.providerConfig.providerType,
-      );
-      const budgetPolicy = await loadContextBudgetPolicy();
-      if (!stillOwnsCompletionConsolidation()) {
-        return;
-      }
-      const preparedRequest = await prepareMessagesForRequest(
-        params.conversationId,
-        params.allowedToolIds,
-        params.internalAgentProfile,
-        params.modeAtSend,
-        params.agentTypeAtSend,
-        undefined,
-        undefined,
-        params.executionContext,
-        params.riskLevel,
-      );
-      if (!stillOwnsCompletionConsolidation()) {
-        return;
-      }
-      const toolDefinitions = getToolDefinitionsForIds(
-        params.allowedToolIds,
-        params.mcpTools,
-      );
-      const preparedMessagesForContext = normalizeMessagesForProviderContext(
-        params.providerConfig.providerType,
-        preparedRequest.preparedMessages,
-      );
-      const countProviderInputItems = shouldCountProviderInputItemsForContext(
-        params.providerConfig.providerType,
-      );
-      const estimateSerializedPayloadTokens = (messages: StreamMessage[]) =>
-        estimateSerializedPayloadTokensForProvider({
-          messages,
-          providerType: params.providerConfig.providerType,
-          providerId: params.selectedProviderId,
-          baseUrl: params.providerConfig.baseUrl,
-          modelId: params.selectedModelId,
-        });
-      const consolidation = await consolidateCompletedAssistantTurnCompaction({
-        pending,
-        systemMessage: preparedRequest.systemMessage,
-        preparedMessages: preparedMessagesForContext,
-        orderedMessages: preparedRequest.orderedMessages,
-        citations: preparedRequest.citations,
-        toolDefinitions,
-        footprintFields,
-        providerId: params.selectedProviderId,
-        providerType: params.providerConfig.providerType,
-        baseUrl: params.providerConfig.baseUrl,
-        modelId: params.selectedModelId,
-        projectIdentity: params.executionContext.focusedProjectId
-          ? `project:${params.executionContext.focusedProjectId}`
-          : params.executionContext.groupId
-            ? `group:${params.executionContext.groupId}`
-            : `conversation:${params.conversationId}`,
-        budgetPolicy,
-        estimateSerializedPayloadTokens,
-        countProviderInputItems,
-        generateSummary: (input) =>
-          generateCompactionSummary(
-            params.providerConfig,
-            params.selectedProviderId,
-            params.selectedModelId,
-            params.selectedReasoningEffort,
-            input,
-          ),
-      });
-      if (!stillOwnsCompletionConsolidation()) {
-        return;
-      }
-
-      if (consolidation.outcome === "consolidated") {
-        if (
-          consolidation.shouldPersistCompaction &&
-          consolidation.result.compactionState
-        ) {
-          await persistConversationCompactionState(
-            consolidation.result.compactionState,
-          );
-        }
-        await recordConversationCompactionEvent({
-          conversationId: params.conversationId,
-          trigger:
-            consolidation.result.compactionState?.lastTrigger ??
-            "safety_prestream",
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          modelContextWindowTokens:
-            consolidation.result.footprintAfter.modelContextWindowTokens,
-          tokensBefore: consolidation.result.footprintBefore.totalEstimatedTokens,
-          tokensAfter: consolidation.result.footprintAfter.totalEstimatedTokens,
-          status: consolidation.result.degraded ? "degraded" : "success",
-          reason: consolidation.result.footprintAfter.reason,
-          metadata: buildCompactionDecisionAuditMetadata({
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            trigger:
-              consolidation.result.compactionState?.lastTrigger ??
-              "safety_prestream",
-            status: consolidation.result.degraded ? "degraded" : "success",
-            footprintBefore: consolidation.result.footprintBefore,
-            footprintAfter: consolidation.result.footprintAfter,
-            footprintFields,
-            budgetPolicy,
-            reason: consolidation.result.footprintAfter.reason,
-            result: "tool_boundary_consolidation",
-            completionReason:
-              [...preparedRequest.orderedMessages]
-                .reverse()
-                .find((message) => message.role === "assistant")
-                ?.completion_reason ?? null,
-            ...buildAppliedCompactionAuditDetails({
-              result: {
-                ...consolidation.result,
-                pruning:
-                  consolidation.result.pruning.elements.length > 0
-                    ? consolidation.result.pruning
-                    : pending.pruning,
-              },
-              previousCheckpoint: pending.compactionState,
-            }),
-          }),
-        });
-        return;
-      }
-
-      if (consolidation.outcome === "failed") {
-        const footprint =
-          consolidation.preflightFootprint ?? pending.footprintAfter;
-        await recordConversationCompactionEvent({
-          conversationId: params.conversationId,
-          trigger: "safety_prestream",
-          providerId: params.selectedProviderId,
-          modelId: params.selectedModelId,
-          modelContextWindowTokens: footprint.modelContextWindowTokens,
-          tokensBefore: pending.footprintBefore.totalEstimatedTokens,
-          tokensAfter: footprint.totalEstimatedTokens,
-          status: "failed",
-          errorCode: "tool_boundary_consolidation_failed",
-          reason: consolidation.reason,
-          metadata: buildCompactionDecisionAuditMetadata({
-            providerId: params.selectedProviderId,
-            providerType: params.providerConfig.providerType,
-            modelId: params.selectedModelId,
-            trigger: "safety_prestream",
-            status: "failed",
-            footprintBefore: pending.footprintBefore,
-            footprintAfter: footprint,
-            footprintFields,
-            budgetPolicy,
-            reason: consolidation.reason,
-            result: "tool_boundary_consolidation_failed",
-          }),
-        });
-      }
-
-      devLogger.info(
-        `Tool-boundary compaction consolidation ${consolidation.outcome} conversation=${params.conversationId} reason=${consolidation.reason}`,
-      );
-    };
-
-    const streamLifecycle = createChatStreamLifecycleRuntime({
-      stream: {
-        conversationId: params.conversationId,
-        sessionId: params.sessionId,
-        turnId: streamTurnId,
-        assistantMessageId: params.assistantMessage.id,
-        modeAtSend: params.modeAtSend,
-        resolvedTaskId: params.resolvedTaskId,
-        providerContext: {
-          providerId: params.selectedProviderId,
-          providerType: params.providerConfig.providerType,
-          baseUrl: params.providerConfig.baseUrl ?? "",
-          modelId: params.selectedModelId,
-        },
-      },
-      adapters: {
-        shouldAcceptStreamUpdate,
-        isAbortSignalAborted: () => abortController.signal.aborted,
-        appendTokenChunk: (messageId, tokenChunk) => {
-          if (tokenChunk.length > 0) finalizeReplayRecoveryAfterProgress();
-          get().appendToMessage(messageId, tokenChunk);
-        },
-        getAssistantMessage: (messageId) =>
-          get().messages.find((message) => message.id === messageId),
-        updateMessageFields: (messageId, fields) => {
-          get().updateMessageFields(messageId, fields);
-        },
-        updateMessageContent: (messageId, content) => {
-          get().updateMessageContent(messageId, content);
-        },
-        markProviderReachable: (providerId, modelId) => {
-          useProviderStore
-            .getState()
-            .markProviderReachable(providerId, { modelId });
-        },
-        getTaskStatus: (taskId) =>
-          useTaskStore.getState().getTaskById(taskId)?.status ?? null,
-        markTaskAwaitingResponse: (taskId) =>
-          useTaskStore.getState().markTaskAwaitingResponse(taskId),
-        assistantTurnRequiresUserReply,
-        updateConversationAfterCompletion: (conversationId, visibleContent) => {
-          completionPersistenceOwnersByConversationId.set(conversationId, {
-            sessionId: params.sessionId,
-            turnId: streamTurnId,
-            assistantMessageId: params.assistantMessage.id,
-          });
-          set((state) => ({
-            conversations: state.conversations.map((conv) =>
-              conv.id === conversationId
-                ? {
-                    ...conv,
-                    last_message:
-                      visibleContent.slice(0, 100) +
-                      (visibleContent.length > 100 ? "..." : ""),
-                    updated_at: new Date().toISOString(),
-                  }
-                : conv,
-            ),
-          }));
-          updateConversationRuntimeIfSessionMatches(
-            conversationId,
-            params.sessionId,
-            (runtime) => ({
-              ...runtime,
-              phase: "persisting",
-              abortController: null,
-              lastError: null,
-              lastErrorOrigin: null,
-              lastErrorDisplayTarget: null,
-            }),
-          );
-        },
-        clearLiveStreamContextEstimate,
-        refreshConversationContextDiagnostics: (
-          conversationId,
-          providerContext,
-        ) =>
-          refreshConversationContextDiagnostics(conversationId, {
-            mode: "full",
-            providerContext: {
-              providerId: providerContext.providerId,
-              providerType: providerContext.providerType,
-              baseUrl: providerContext.baseUrl ?? "",
-              modelId: providerContext.modelId,
-            },
-          }),
-        persistAssistantStreamResult,
-        persistAssistantPartialStreamResult,
-        consolidatePendingToolBoundaryCompactionAfterPersistence,
-        syncMacroMetadataAfterStream: async (mode, conversationId) => {
-          await syncMacroMetadataAfterStreamService({
-            mode,
-            conversationId,
-            trigger: "send",
-            architectPlan: params.architectPlanAtSend,
-          });
-        },
-        setCompletionPersistenceError: ({
-          conversationId,
-          sessionId,
-          turnId,
-          assistantMessageId,
-          message,
-        }) => {
-          const currentRuntime = getConversationRuntimeSnapshot(
-            get().conversationRuntimeById,
-            conversationId,
-          );
-          const completionOwner =
-            completionPersistenceOwnersByConversationId.get(conversationId);
-          if (
-            completionOwner?.sessionId !== sessionId ||
-            completionOwner.turnId !== turnId ||
-            completionOwner.assistantMessageId !== assistantMessageId ||
-            currentRuntime.phase !== "persisting" ||
-            currentRuntime.sessionId !== sessionId ||
-            currentRuntime.turnId !== turnId ||
-            currentRuntime.assistantMessageId !== assistantMessageId
-          ) {
-            return;
-          }
-          completionPersistenceOwnersByConversationId.delete(conversationId);
-          const assistantMessage = findChatMessageInState(
-            get(),
-            assistantMessageId,
-          );
-          if (!assistantMessage || assistantMessage.role !== "assistant") {
-            return;
-          }
-          markAssistantPersistenceFailure({
-            assistantMessage,
-            message,
-            sessionId,
-            turnId,
-          });
-        },
-        clearCompletionPersistenceOwnership: ({
-          conversationId,
-          sessionId,
-          turnId,
-          assistantMessageId,
-        }) => {
-          const completionOwner =
-            completionPersistenceOwnersByConversationId.get(conversationId);
-          if (
-            completionOwner?.sessionId === sessionId &&
-            completionOwner.turnId === turnId &&
-            completionOwner.assistantMessageId === assistantMessageId
-          ) {
-            completionPersistenceOwnersByConversationId.delete(conversationId);
-            updateConversationRuntimeIfSessionMatches(
-              conversationId,
-              sessionId,
-              (runtime) =>
-                runtime.phase === "persisting" &&
-                runtime.turnId === turnId &&
-                runtime.assistantMessageId === assistantMessageId
-                  ? null
-                  : runtime,
-            );
-          }
-        },
-        maybeMarkImplementTaskFailedAfterStreamError,
-        tryRecoverFromOverflow,
-        removeEmptyAssistantPlaceholder: (assistantMessageId) => {
-          set((state) =>
-            removeEmptyAssistantPlaceholderFromState(
-              state,
-              assistantMessageId,
-            ),
-          );
-        },
-        deleteEmptyAssistantMessageFromDb,
-        recoverReplayBeforeProgress: params.replayRecovery
-          ? params.replayRecovery.onFailedBeforeProgress
-          : undefined,
-        setStreamErrorState: ({
-          presentation,
-          assistantMessageId,
-        }) => {
-          if (
-            deletedConversationIds.has(params.conversationId) ||
-            latestConversationSessionIdByConversationId.get(
-              params.conversationId,
-            ) !== params.sessionId
-          ) {
-            return;
-          }
-          setConversationRuntime(params.conversationId, {
-            phase: "error",
-            sessionId: params.sessionId,
-            turnId: streamTurnId,
-            assistantMessageId,
-            abortController: null,
-            lastError: presentation.message,
-            lastErrorOrigin: presentation.origin,
-            lastErrorDisplayTarget: presentation.displayTarget,
-          });
-          set(
-            presentation.displayTarget === "composer"
-              ? { lastError: presentation.message, sendState: "error" }
-              : { sendState: "error" },
-          );
-        },
-        warn: (message, error) => {
-          console.warn(message, error);
-        },
-        info: (message) => {
-          devLogger.info(message);
-        },
-      },
-    });
-
-    const streamPromise = runAssistantStream({
-      conversationId: params.conversationId,
-      mode: params.modeAtSend,
-      internalAgentProfile: params.internalAgentProfile,
-      providerId: params.selectedProviderId,
-      providerType: params.providerConfig.providerType,
-      baseUrl: params.providerConfig.baseUrl,
-      apiKey: params.providerConfig.apiKey,
-      modelId: params.selectedModelId,
-      reasoningEffort: params.selectedReasoningEffort,
-      messages: params.messagesForRequest,
-      fileToolContext: params.fileToolContext,
-      allowedToolIds: params.allowedToolIds,
-      copilotSendTimeoutMs:
-        params.providerConfig.providerType === "copilot"
-          ? (useProviderStore.getState().providerSettingsById?.[params.selectedProviderId]
-              ?.copilotSendTimeoutMs ?? null)
-          : null,
-      workspacePath: params.executionContext.workspacePath,
-      defaultWorkspacePath: params.executionContext.defaultWorkspacePath,
-      projectMounts: params.executionContext.projectMounts,
-      virtualRootEnabled: params.executionContext.virtualRootEnabled,
-      focusedProjectId: params.executionContext.focusedProjectId,
-      guidedToolRetry: params.guidedToolRetry,
-      showToolTraces: params.showToolTraces,
-      enableWebSearch: params.enableWebSearch,
-      enableWebFetch: params.enableWebFetch,
-      webSearchOptions: params.webSearchOptions,
-      mcpTools: params.mcpTools,
-      skillToolIds: params.skillToolIds,
-      runnableSkillToolIds: params.runnableSkillToolIds,
-      maxTurns: params.maxTurns,
-      sessionId: params.sessionId,
-      signal: abortController.signal,
-      lifecycle: streamLifecycle,
-      onToolTracesUpdate: (toolTraces: ToolTrace[]) => {
-        if (!shouldAcceptStreamUpdate()) {
-          return;
-        }
-        if (toolTraces.length > 0) {
-          finalizeReplayRecoveryAfterProgress();
-        }
-        get().updateMessageFields(params.assistantMessage.id, {
-          tool_traces: toolTraces,
-        });
-      },
-      onBeforeFollowUpRequest: async (request) => {
-        const compacted = await compactFollowUpMessagesBeforeProviderRequest(request);
-        const compactedMessages = Array.isArray(compacted)
-          ? compacted
-          : compacted?.messages ?? request.messages;
-        const pendingSteers = pendingSteersByConversationId.get(params.conversationId) ?? [];
-        if (pendingSteers.length === 0) {
-          return compactedMessages;
-        }
-        pendingSteersByConversationId.delete(params.conversationId);
-        return [...compactedMessages, ...pendingSteers];
-      },
-      consumePendingSteers: () => {
-        const pending = pendingSteersByConversationId.get(params.conversationId) ?? [];
-        pendingSteersByConversationId.delete(params.conversationId);
-        return pending;
-      },
-      onLiveContextUpdate: (snapshot) => {
-        if (!shouldAcceptStreamUpdate()) {
-          return;
-        }
-        recordLiveStreamContextEstimate({
-          conversationId: params.conversationId,
-          sessionId: params.sessionId,
-          assistantMessageId: params.assistantMessage.id,
-          snapshot,
-        });
-      },
-      onTimeline: (event) => {
-        devLogger.info("Provider stream timeline", {
-          requestId: event.request_id,
-          providerId: event.provider_id,
-          providerType: event.provider_type,
-          phase: event.phase,
-          elapsedMs: event.elapsed_ms,
-        });
-      },
-      onToolCall: async (toolName, args, toolCallId) => {
-        finalizeReplayRecoveryAfterProgress();
-        const operation: FrozenToolCallContext = {
-          conversationId: params.conversationId,
-          sessionId: params.sessionId,
-          turnId: streamTurnId,
-          assistantMessageId: params.assistantMessage.id,
-          mode: params.modeAtSend,
-          agentType: params.agentTypeAtSend ?? null,
-          taskId: params.resolvedTaskId,
-          executionContext: params.executionContext,
-          scopedTurnConfiguration: params.scopedTurnConfiguration,
-          allowedToolIds: params.allowedToolIds,
-          mcpServers: params.mcpServers,
-          riskLevel: params.riskLevel,
-          signal: abortController.signal,
-        };
-        let resolution: ToolCallResolution | string | void;
-        try {
-          resolution = await handleToolCall(
-            operation,
-            toolName,
-            args,
-            toolCallId,
-          );
-        } catch (error) {
-          throw await buildBoundedToolCallError(
-            operation,
-            normalizeArchitectToolId(toolName),
-            toolCallId,
-            error,
-          );
-        }
-        const preservedResolution = await preserveLargeToolResult(
-          operation,
-          normalizeArchitectToolId(toolName),
-          toolCallId,
-          resolution,
-        );
-        return normalizeLegacyToolExecutionResult(
-          normalizeArchitectToolId(toolName),
-          preservedResolution,
-        );
-      },
-    });
-    activeAssistantStreamPromisesByConversationId.set(
-      params.conversationId,
-      streamPromise,
-    );
-    const releaseStreamPromise = () => {
-      pendingSteersByConversationId.delete(params.conversationId);
-      if (
-        activeAssistantStreamPromisesByConversationId.get(
-          params.conversationId,
-        ) === streamPromise
-      ) {
-        activeAssistantStreamPromisesByConversationId.delete(
-          params.conversationId,
-        );
-      }
-      queueMicrotask(() => {
-        void drainQueuedSubmissions(params.conversationId);
-      });
-    };
-    void streamPromise.then(releaseStreamPromise, releaseStreamPromise);
-  };
+    },
+    tasks: {
+      status: id => useTaskStore.getState().getTaskById(id)?.status,
+      failed: id => useTaskStore.getState().markTaskFailed(id),
+      awaitingResponse: id => useTaskStore.getState().markTaskAwaitingResponse(id),
+    },
+    provider: {
+      reachable: (id, modelId) => useProviderStore.getState().markProviderReachable(id, { modelId }),
+      recordOverflowLimit: (id, modelId, limit) => useProviderStore.getState().recordProviderModelContextOverflowLimit(id, modelId, limit),
+      copilotTimeout: id => useProviderStore.getState().providerSettingsById?.[id]?.copilotSendTimeoutMs ?? null,
+    },
+    diagnostics: {
+      record: recordLiveStreamContextEstimate,
+      clear: clearLiveStreamContextEstimate,
+      refresh: (id, providerContext) => refreshConversationContextDiagnostics(id, {
+        mode: "full", providerContext: { ...providerContext, baseUrl: providerContext.baseUrl ?? "" },
+      }),
+    },
+    prepare: prepareAssistantStreamLaunch,
+    compaction: {
+      status: id => get().conversationCompactionStatusById[id],
+      setStatus: setConversationCompactionStatus,
+      create: createStreamCompaction,
+    },
+    tools: { execute: handleToolCall, preserve: preserveLargeToolResult, boundError: buildBoundedToolCallError },
+    replay: { finalize: params => tauriIpc.dbFinalizeConversationReplay(params) },
+  });
 
   const persistAssistantPartialStreamResult = async (
     assistantMessage: ChatMessage,
@@ -14372,8 +11712,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       Object.keys(get().conversationRuntimeById).forEach((conversationId) => {
         stopConversationRuntimeLocally(conversationId);
       });
-      latestConversationSessionIdByConversationId.clear();
-      completionPersistenceOwnersByConversationId.clear();
+      turnRuntime.reset();
       set({
         ...buildMessageState([]),
         messageLoadStatusByConversationId: {},
@@ -15102,8 +12441,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       deletedConversationIds.add(conversationId);
       pendingConversationDeletionIds.add(conversationId);
-      latestConversationSessionIdByConversationId.delete(conversationId);
-      completionPersistenceOwnersByConversationId.delete(conversationId);
+      turnRuntime.forget(conversationId);
       let deletionSagaGeneration: string;
       stopConversationRuntimeLocally(conversationId);
       try {
@@ -15188,8 +12526,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       uniqueIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);
         pendingConversationDeletionIds.add(conversationId);
-        latestConversationSessionIdByConversationId.delete(conversationId);
-        completionPersistenceOwnersByConversationId.delete(conversationId);
+        turnRuntime.forget(conversationId);
         stopConversationRuntimeLocally(conversationId);
       });
       const deletionSagaGenerations = new Map<string, string>();
@@ -15289,8 +12626,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     completeLinkedTaskConversationDeletion: async (conversationId) => {
       deletedConversationIds.add(conversationId);
-      latestConversationSessionIdByConversationId.delete(conversationId);
-      completionPersistenceOwnersByConversationId.delete(conversationId);
+      turnRuntime.forget(conversationId);
       stopConversationRuntimeLocally(conversationId);
       try {
         await prepareConversationReplayForDeletion(conversationId);
@@ -15880,9 +13216,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           ? { image_metadata: getImageContextMetadata(payload.images) }
           : {}),
       };
-      const pending = pendingSteersByConversationId.get(payload.conversationId) ?? [];
-      pending.push(steerMessage);
-      pendingSteersByConversationId.set(payload.conversationId, pending);
+      turnRuntime.enqueueSteer(payload.conversationId, steerMessage);
       let userMessage: ChatMessage;
       try {
         userMessage = await buildUserMessageForSend({
@@ -15893,10 +13227,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           contextRefs,
         });
       } catch (error) {
-        const remaining = (pendingSteersByConversationId.get(payload.conversationId) ?? [])
-          .filter((message) => message !== steerMessage);
-        if (remaining.length > 0) pendingSteersByConversationId.set(payload.conversationId, remaining);
-        else pendingSteersByConversationId.delete(payload.conversationId);
+        turnRuntime.removeSteer(payload.conversationId, steerMessage);
         throw error;
       }
       get().addMessage(userMessage);
@@ -15909,594 +13240,115 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (isAppShutdownGateActive()) {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
-      let {
-        conversationId,
-        content,
-        taskId,
-        images,
-        internalAgentProfile,
-        hiddenContext,
-        providerInputItems,
-        contextRefs: contextRefsOverride,
-      } = payload;
-      const contextRefsForMessage = contextRefsOverride ?? persistableContextRefs(get().composerContextRefs);
-      const shouldClearComposerContextRefs = contextRefsOverride === undefined;
-      const composerContextRefsRevisionAtSend = composerContextRefsRevision;
-      let activeSessionId: string | null = null;
-      let activeTurnId: string | null = null;
-      let assistantMessageId: string | null = null;
-      let launchError: unknown = null;
-      // Capture every mutable selection before the first await.  This is the
-      // operation boundary; later continuations are fenced by its session and
-      // controller instead of consulting the current UI selection.
-      const appStateAtSend = useAppStore.getState();
-      const providerState = useProviderStore.getState();
-      const modeAtSend = appStateAtSend.mode;
-      const agentTypeAtSend =
-        modeAtSend === "Implement" ? appStateAtSend.agentType : null;
-      const activeArchitectPlanIdAtSend = appStateAtSend.activeArchitectPlanId;
-      const architectPlanAtSend =
-        modeAtSend === "Architect" && activeArchitectPlanIdAtSend
-          ? {
-              planId: activeArchitectPlanIdAtSend,
-              targetBranch: resolveTargetBranch(
-                appStateAtSend.activePlanContext?.targetBranch,
-              ),
+      // Capture UI selections synchronously before the use case can suspend.
+      const app = useAppStore.getState();
+      const provider = useProviderStore.getState();
+      const chat = get();
+      const mode = app.mode;
+      const snapshot: ChatSendSnapshot = {
+        mode,
+        agentType: mode === "Implement" ? app.agentType : null,
+        architectPlan: mode === "Architect" && app.activeArchitectPlanId
+          ? { planId: app.activeArchitectPlanId, targetBranch: resolveTargetBranch(app.activePlanContext?.targetBranch) }
+          : undefined,
+        conversationTaskId: chat.conversations.find((conversation) => conversation.id === payload.conversationId)?.task_id ?? null,
+        selectedTaskId: mode === "Implement" ? (app.selectedTaskId ?? "") : "",
+        executionContext: resolveConversationExecutionContext(payload.conversationId),
+        composerContextRefs: persistableContextRefs(chat.composerContextRefs),
+        composerRevision: composerContextRefsRevision,
+        provider: {
+          selectedProviderId: provider.selectedProviderId,
+          selectedModelId: provider.selectedModelId,
+          selectedReasoningEffort: provider.selectedReasoningEffort,
+          isLoading: provider.isLoading,
+          providerConfigs: provider.providerConfigs.map((config) => ({ ...config })),
+        },
+      };
+      return sendChatMessage(payload, snapshot, {
+        owner: turnRuntime,
+        messages: {
+          persistence: chatPersistenceAdapters,
+          ensureLoaded: ensureMessagesLoadedForConversation,
+          list: getOrderedConversationMessages,
+          hasInterruptedApproval: (id) => get().pendingToolApprovalByConversationId[id]?.recoveryState === "interrupted",
+          clearApprovalRecovery: (id) => persistToolApprovalRecovery(id, null),
+        },
+        preparation: {
+          assertCanSend: assertConversationRuntimeAvailableForSend,
+          isDeleted: (id) => deletedConversationIds.has(id),
+          createSessionId: createConversationSessionId,
+          createTurnId: createConversationTurnId,
+          hasPendingArchitectConversation: (id) => pendingArchitectConversationDetailsById.has(id),
+          materializeArchitectConversation: materializePendingArchitectConversationIfNeeded,
+          bindArchitectConversation: bindPendingArchitectConversationIfNeeded,
+          syncArchitectMetadata: syncArchitectMetadataFromDb,
+          generateMetadata: maybeGenerateConversationMetadata,
+        },
+        configuration: {
+          load: loadScopedTurnConfiguration,
+          selectScoped: (config, captured, profile) => resolveScopedModelSelection(
+            config, scopedModelPreferenceKeys(captured.mode, captured.agentType, profile),
+          ),
+          hasAuthSession: providerHasAuthSession,
+          resolveApiKey: provider.resolveProviderApiKey,
+          supportsNativeToolCalling: (providerId, modelId) =>
+            typeof provider.supportsNativeToolCalling === "function"
+              ? provider.supportsNativeToolCalling(providerId, modelId)
+              : provider.selectedSupportsNativeToolCalling(),
+        },
+        tasks: {
+          read: (id) => useTaskStore.getState().getTaskById(id),
+          finalizeDraft: maybeFinalizeManualFeatureDraftForAssistantRequest,
+          assertReady: assertImplementTaskReadyForSend,
+          assertExecutionContextReady: assertStandaloneTaskExecutionContextReady,
+          rollbackDraft: rollbackManualFeatureDraftAfterFailedLaunch,
+          beginLaunch: beginStandaloneTaskLaunch,
+          setLaunchStep: setStandaloneTaskLaunchStep,
+          completeLaunch: completeStandaloneTaskLaunch,
+          readLaunch: (id) => get().standaloneTaskLaunchByConversationId[id],
+          failLaunch: failStandaloneTaskLaunch,
+        },
+        projection: {
+          persistSelection: persistSelectionForContext,
+          publishUser: (message, context) => {
+            get().addMessage(message);
+            if (context.images?.length) get().setMessageImages(message.id, context.images);
+            for (const ref of context.contextRefs?.filter(isFileContextRef) ?? []) {
+              const path = getFileRefPath(ref);
+              useCitationsStore.getState().addCitation({
+                type: "file", scope: "context", source: path, title: ref.title, path,
+                messageId: message.id, conversationId: message.conversation_id,
+              });
             }
-          : undefined;
-      const providerSelectionAtSend = {
-        selectedProviderId: providerState.selectedProviderId,
-        selectedModelId: providerState.selectedModelId,
-        selectedReasoningEffort: providerState.selectedReasoningEffort,
-        isLoading: providerState.isLoading,
-        providerConfigs: providerState.providerConfigs.map((provider) => ({
-          ...provider,
-        })),
-        resolveProviderApiKey: providerState.resolveProviderApiKey,
-        supportsNativeToolCalling: (providerId: string, modelId: string) =>
-          typeof providerState.supportsNativeToolCalling === "function"
-            ? providerState.supportsNativeToolCalling(providerId, modelId)
-            : providerState.selectedSupportsNativeToolCalling(),
-      };
-      const conversationAtSend = get().conversations.find(
-        (conversation) => conversation.id === conversationId,
-      );
-      const conversationTaskIdAtSend = conversationAtSend?.task_id ?? null;
-      const selectedTaskIdAtSend =
-        modeAtSend === "Implement" ? (appStateAtSend.selectedTaskId ?? "") : "";
-      const resolvedTaskIdAtSend =
-        modeAtSend === "Chat"
-          ? ""
-          : (taskId ?? conversationTaskIdAtSend ?? selectedTaskIdAtSend);
-      const executionContextAtSend = resolveConversationExecutionContext(conversationId);
-      const preparationAbortController = new AbortController();
-      const cancelledResult = (): ChatSendCancelledResult => ({
-        status: "cancelled",
-        conversationId,
-        turnId: activeTurnId ?? "",
-        userMessageId: null,
-        assistantMessageId: null,
-      });
-      const isCurrentPreparation = () => {
-        const runtime = getConversationRuntimeSnapshot(
-          get().conversationRuntimeById,
-          conversationId,
-        );
-        return !deletedConversationIds.has(conversationId) &&
-          !preparationAbortController.signal.aborted &&
-          runtime.sessionId === activeSessionId &&
-          runtime.turnId === activeTurnId &&
-          runtime.phase === "preparing";
-      };
-      const sendTimelineStartedAt = Date.now();
-      const emitSendTimeline = (phase: StreamTimelinePhase | string, context?: Record<string, unknown>) => {
-        devLogger.info("Provider stream timeline", {
-          requestId: activeSessionId,
-          phase,
-          elapsedMs: Date.now() - sendTimelineStartedAt,
-          ...context,
-        });
-      };
-
-      try {
-        assertConversationRuntimeAvailableForSend(conversationId);
-        activeSessionId = createConversationSessionId();
-        activeTurnId = createConversationTurnId();
-        latestConversationSessionIdByConversationId.set(
-          conversationId,
-          activeSessionId,
-        );
-        emitSendTimeline("send_requested", { conversationId });
-        setConversationRuntime(
-          conversationId,
-          {
-            phase: "preparing",
-            sessionId: activeSessionId,
-            turnId: activeTurnId,
-            assistantMessageId: null,
-            abortController: preparationAbortController,
-            lastError: null,
+            if (context.clearComposerRevision !== undefined) {
+              clearComposerContextRefsIfRevisionMatches(message.conversation_id, context.clearComposerRevision);
+            }
           },
-          { globalLastError: null },
-        );
-        await ensureMessagesLoadedForConversation(conversationId);
-        const currentPreparingRuntime = getConversationRuntimeSnapshot(
-          get().conversationRuntimeById,
-          conversationId,
-        );
-        if (
-          preparationAbortController.signal.aborted ||
-          deletedConversationIds.has(conversationId) ||
-          currentPreparingRuntime.sessionId !== activeSessionId ||
-          currentPreparingRuntime.turnId !== activeTurnId
-        ) {
-          return cancelledResult();
-        }
-        emitSendTimeline("messages_ready", { conversationId });
-        if (modeAtSend === "Architect" && !architectPlanAtSend) {
-          throw buildSendError("Select a plan before sending an Architect message.");
-        }
-
-        const previousConversationId = conversationId;
-        const hasPendingArchitectConversation =
-          pendingArchitectConversationDetailsById.has(conversationId);
-        if (hasPendingArchitectConversation) {
-          conversationId =
-            await materializePendingArchitectConversationIfNeeded(conversationId);
-        }
-        if (
-          preparationAbortController.signal.aborted ||
-          deletedConversationIds.has(previousConversationId)
-        ) {
-          return cancelledResult();
-        }
-        if (hasPendingArchitectConversation && conversationId !== previousConversationId) {
-          if (
-            !transferConversationSessionOwnership(
-              previousConversationId,
-              conversationId,
-              activeSessionId,
-            )
-          ) {
-            abortAndClearPreparingRuntimeIfSessionMatches(
-              previousConversationId,
-              activeSessionId,
-              activeTurnId,
-              preparationAbortController,
-            );
-            return cancelledResult();
-          }
-          setConversationRuntime(previousConversationId, null);
-          setConversationRuntime(
-            conversationId,
-            {
-              phase: "preparing",
-              sessionId: activeSessionId,
-              turnId: activeTurnId,
-              assistantMessageId: null,
-              abortController: preparationAbortController,
-              lastError: null,
-            },
-            { globalLastError: null },
-          );
-        }
-        const scopedTurnConfigurationAtSend = await loadScopedTurnConfiguration({
-          projectIds: executionContextAtSend.projectIds,
-          focusProjectId: executionContextAtSend.focusedProjectId,
-          mode: modeAtSend,
-        });
-        if (!isCurrentPreparation()) {
-          return cancelledResult();
-        }
-        const scopedModelSelection = resolveScopedModelSelection(
-          scopedTurnConfigurationAtSend,
-          scopedModelPreferenceKeys(modeAtSend, agentTypeAtSend, internalAgentProfile),
-        );
-        const selectedProviderId = scopedModelSelection?.providerId
-          ?? providerSelectionAtSend.selectedProviderId;
-        const selectedModelId = scopedModelSelection?.modelId
-          ?? providerSelectionAtSend.selectedModelId;
-        const selectedReasoningEffort = scopedModelSelection
-          ? scopedModelSelection.reasoningEffort
-          : providerSelectionAtSend.selectedReasoningEffort;
-        const { providerConfigs } = providerSelectionAtSend;
-        persistSelectionForContext(modeAtSend, conversationId);
-
-        if (providerSelectionAtSend.isLoading) {
-          throw buildSendError("Provider settings are still loading.");
-        }
-
-        if (!selectedProviderId || !selectedModelId) {
-          throw buildSendError(
-            "Select a provider and model before sending a message.",
-          );
-        }
-
-        const providerConfig = providerConfigs.find(
-          (p) => p.id === selectedProviderId,
-        );
-        if (!providerConfig || !providerConfig.isEnabled) {
-          throw buildSendError(
-            scopedModelSelection
-              ? "The model configured for this project uses an unavailable provider."
-              : "Provider configuration not found.",
-          );
-        }
-        const resolvedApiKey =
-          providerConfig.isLocal || providerHasAuthSession(providerConfig)
-            ? providerConfig.apiKey
-            : await providerSelectionAtSend.resolveProviderApiKey(selectedProviderId);
-        if (!isCurrentPreparation()) {
-          return cancelledResult();
-        }
-        const providerConfigForUse = {
-          ...providerConfig,
-          apiKey: resolvedApiKey,
-          apiKeyLoaded:
-            providerConfig.apiKeyLoaded || resolvedApiKey !== undefined,
-        };
-
-        const resolvedTaskId = resolvedTaskIdAtSend;
-        let taskForSend = resolvedTaskIdAtSend
-          ? useTaskStore.getState().getTaskById(resolvedTaskId)
-          : undefined;
-        let finalizedManualFeatureDraft = false;
-        let manualFeatureDraftRecovery: ManualFeatureDraftRecovery | null = null;
-        let userMessage: ChatMessage | null = null;
-        let userMessageCountBeforeSend = getOrderedConversationMessages(
-          conversationId,
-        ).filter((message) => message.role === "user").length;
-        const publishUserMessage = (message: ChatMessage) => {
-          get().addMessage(message);
-          if (images && images.length > 0) {
-            get().setMessageImages(message.id, images);
-          }
-          for (const ref of contextRefsForMessage?.filter(isFileContextRef) ?? []) {
-            const path = getFileRefPath(ref);
-            useCitationsStore.getState().addCitation({
-              type: "file",
-              scope: "context",
-              source: path,
-              title: ref.title,
-              path,
-              messageId: message.id,
-              conversationId,
-            });
-          }
-          if (shouldClearComposerContextRefs) {
-            clearComposerContextRefsIfRevisionMatches(
-              conversationId,
-              composerContextRefsRevisionAtSend,
-            );
-          }
-        };
-
-        const isFirstManualFeatureMessage =
-          modeAtSend === "Implement" &&
-          Boolean(resolvedTaskId) &&
-          taskForSend?.task_source === "standalone" &&
-          taskForSend.standalone_kind === "manual_feature" &&
-          taskForSend.draft === true &&
-          userMessageCountBeforeSend === 0;
-
-        if (isFirstManualFeatureMessage) {
-          userMessage = await buildUserMessageForSend({
-            conversationId,
-            turnId: activeTurnId,
-            taskId: resolvedTaskId,
-            content,
-            hiddenContext,
-            providerInputItems,
-            contextRefs: contextRefsForMessage,
-          });
-          publishUserMessage(userMessage);
-          beginStandaloneTaskLaunch({
-            conversationId,
-            taskId: resolvedTaskId,
-            userMessageId: userMessage.id,
-            sessionId: activeSessionId,
-          });
-        }
-
-        if (modeAtSend === "Implement" && resolvedTaskId) {
-          if (
-            taskForSend?.task_source === "standalone" &&
-            taskForSend.standalone_kind === "manual_feature" &&
-            taskForSend.draft === true
-          ) {
-            manualFeatureDraftRecovery =
-              await maybeFinalizeManualFeatureDraftForAssistantRequest({
-                conversationId,
-                taskId: resolvedTaskId,
-                userContent: content,
-                providerId: selectedProviderId,
-                providerType: providerConfigForUse.providerType,
-                baseUrl: providerConfigForUse.baseUrl,
-                apiKey: providerConfigForUse.apiKey,
-                modelId: selectedModelId,
-                reasoningEffort: selectedReasoningEffort,
-                onStep: (step) => {
-                  if (activeSessionId) {
-                    setStandaloneTaskLaunchStep(
-                      conversationId,
-                      activeSessionId,
-                      step,
-                    );
-                  }
-                },
-              });
-            if (!isCurrentPreparation()) {
-              return cancelledResult();
-            }
-            finalizedManualFeatureDraft = manualFeatureDraftRecovery !== null;
-          }
-
-          taskForSend =
-            (await assertImplementTaskReadyForSend(resolvedTaskId)) ??
-            taskForSend;
-          if (!isCurrentPreparation()) {
-            return cancelledResult();
-          }
-          assertStandaloneTaskExecutionContextReady(taskForSend);
-          if (isFirstManualFeatureMessage && activeSessionId) {
-            setStandaloneTaskLaunchStep(
-              conversationId,
-              activeSessionId,
-              "starting_agent",
-            );
-          }
-        }
-
-        if (!userMessage) {
-          userMessageCountBeforeSend = getOrderedConversationMessages(
-            conversationId,
-          ).filter((message) => message.role === "user").length;
-          userMessage = await buildUserMessageForSend({
-            conversationId,
-            turnId: activeTurnId,
-            taskId: resolvedTaskId,
-            content,
-            hiddenContext,
-            providerInputItems,
-            contextRefs: contextRefsForMessage,
-          });
-        }
-        const persistedUserMessage = userMessage;
-        if (get().pendingToolApprovalByConversationId[conversationId]?.recoveryState === "interrupted") {
-          await persistToolApprovalRecovery(conversationId, null).catch((error) => set({ toolApprovalRecoveryError: toServiceError(error).message }));
-          clearConversationSecurityState(conversationId);
-        }
-        const sentWithoutAssistantResult = () => ({
-          status: "sent" as const,
-          conversationId,
-          turnId: activeTurnId ?? "",
-          userMessageId: persistedUserMessage.id,
-          assistantMessageId: null,
-        });
-        if (!isCurrentPreparation()) {
-          if (!isFirstManualFeatureMessage) {
-            publishUserMessage(persistedUserMessage);
-          }
-          return sentWithoutAssistantResult();
-        }
-
-        if (!isFirstManualFeatureMessage) {
-          publishUserMessage(persistedUserMessage);
-        }
-
-        if (userMessageCountBeforeSend === 0 && !finalizedManualFeatureDraft) {
-          let skipMetadataGeneration = false;
-          const architectPlan = architectPlanAtSend;
-          if (architectPlan) {
-            const bindingSucceeded =
-              await bindPendingArchitectConversationIfNeeded({
-                architectPlan,
-                conversationId,
-              });
-            if (!bindingSucceeded) {
-              skipMetadataGeneration = true;
-            } else {
-              await syncArchitectMetadataFromDb({
-                branchName: architectPlan.targetBranch,
-                planId: architectPlan.planId,
-                conversationId,
-                reason: "metadata_prefix",
-              });
-            }
-          }
-
-          if (!skipMetadataGeneration) {
-            void maybeGenerateConversationMetadata({
-              conversationId,
-              firstUserContent: content,
-              providerId: selectedProviderId,
-              providerType: providerConfigForUse.providerType,
-              baseUrl: providerConfigForUse.baseUrl,
-              apiKey: providerConfigForUse.apiKey,
-              modelId: selectedModelId,
-              reasoningEffort: selectedReasoningEffort,
-              architectPlan,
-            });
-          }
-        }
-
-        try {
-          const streamLaunch = await prepareAssistantStreamLaunch({
-            conversationId,
-            replyToMessageId: persistedUserMessage.id,
-            userContent: content,
-            resolvedTaskId,
-            modeAtSend,
-            agentTypeAtSend,
-            providerId: selectedProviderId,
-            modelId: selectedModelId,
-            reasoningEffort: selectedReasoningEffort,
-            providerConfig: providerConfigForUse,
-            internalAgentProfile,
-            executionContext: executionContextAtSend,
-            scopedTurnConfigurationOverride: scopedTurnConfigurationAtSend,
-            providerSupportsNativeToolCalling:
-              providerSelectionAtSend.supportsNativeToolCalling(
-                selectedProviderId,
-                selectedModelId,
-              ),
-          });
-          if (!isCurrentPreparation()) {
-            return sentWithoutAssistantResult();
-          }
-          emitSendTimeline("compaction_done", {
-            conversationId,
-            providerId: selectedProviderId,
-            providerType: providerConfigForUse.providerType,
-          });
-
-          const assistantMessage = await buildAssistantMessageForSend({
-            conversationId,
-            turnId: activeTurnId,
-            taskId: resolvedTaskId,
-          });
-          if (!isCurrentPreparation()) {
-            if (
-              latestConversationSessionIdByConversationId.get(
-                conversationId,
-              ) === activeSessionId
-            ) {
-              await deletePersistedMessagesAfter(
-                chatPersistenceAdapters,
-                conversationId,
-                persistedUserMessage.id,
-              ).catch(() => undefined);
-            }
-            return sentWithoutAssistantResult();
-          }
-          rememberAssistantTurnContext(
-            assistantMessage.id,
-            conversationId,
-            modeAtSend,
-            agentTypeAtSend,
-          );
-          assistantMessageId = assistantMessage.id;
-          get().addMessage(assistantMessage);
-          setConversationRuntime(
-            conversationId,
-            {
-              phase: "preparing",
-              sessionId: activeSessionId,
-              turnId: activeTurnId,
-              assistantMessageId: assistantMessage.id,
-              abortController: preparationAbortController,
-              lastError: null,
-            },
-            { globalLastError: null },
-          );
-
-          emitSendTimeline("provider_stream_start_requested", {
-            conversationId,
-            providerId: selectedProviderId,
-            providerType: providerConfigForUse.providerType,
-          });
-          startAssistantStream({
-            sessionId: activeSessionId,
-            assistantMessage,
-            conversationId,
-            replyToMessageId: persistedUserMessage.id,
-            userContent: content,
-            modeAtSend,
-            architectPlanAtSend,
-            agentTypeAtSend,
-            resolvedTaskId,
-            selectedProviderId,
-            selectedModelId,
-            selectedReasoningEffort,
-            providerConfig: providerConfigForUse,
-            internalAgentProfile: streamLaunch.internalAgentProfile,
-            messagesForRequest: streamLaunch.messagesForRequest,
-            contextDiagnosticsBaselineSeed:
-              streamLaunch.contextDiagnosticsBaselineSeed,
-            executionContext: executionContextAtSend,
-            providerSupportsNativeToolCalling:
-              providerSelectionAtSend.supportsNativeToolCalling(
-                selectedProviderId,
-                selectedModelId,
-              ),
-            fileToolContext: streamLaunch.fileToolContext,
-            allowedToolIds: streamLaunch.allowedToolIds,
-            riskLevel: streamLaunch.riskLevel,
-            scopedTurnConfiguration: streamLaunch.scopedTurnConfiguration,
-            skillToolIds: streamLaunch.skillToolIds,
-            runnableSkillToolIds: streamLaunch.runnableSkillToolIds,
-            guidedToolRetry: streamLaunch.guidedToolRetry,
-            showToolTraces: streamLaunch.showToolTraces,
-            enableWebSearch: streamLaunch.enableWebSearch,
-            enableWebFetch: streamLaunch.enableWebFetch,
-            webSearchOptions: streamLaunch.webSearchOptions,
-            mcpTools: streamLaunch.mcpTools,
-            mcpServers: streamLaunch.mcpServers,
-            maxTurns: streamLaunch.maxTurns,
-            compactionDecision: streamLaunch.compactionDecision,
-            abortController: preparationAbortController,
-          });
-          if (isFirstManualFeatureMessage && activeSessionId) {
-            completeStandaloneTaskLaunch(conversationId, activeSessionId);
-          }
-        } catch (error) {
-          launchError = error;
-          if (manualFeatureDraftRecovery) {
-            await rollbackManualFeatureDraftAfterFailedLaunch(
-              manualFeatureDraftRecovery,
-            );
-          }
-          throw error;
-        }
-
-        if (!activeTurnId) {
-          throw buildSendError("Conversation turn was not created before sending.");
-        }
-
-        return {
-          status: "sent",
-          conversationId,
-          turnId: activeTurnId,
-          userMessageId: persistedUserMessage.id,
-          assistantMessageId,
-        };
-      } catch (error) {
-        const normalized = toServiceError(error);
-        if (activeSessionId) {
-          const launch =
-            get().standaloneTaskLaunchByConversationId[conversationId];
-          if (launch?.sessionId === activeSessionId) {
-            const retryTask = useTaskStore.getState().getTaskById(launch.taskId);
-            failStandaloneTaskLaunch({
-              conversationId,
-              sessionId: activeSessionId,
-              error: normalized.message,
-              canRetry: retryTask?.draft === true,
-            });
-          }
-        }
-        if (preparationAbortController.signal.aborted) {
-          return cancelledResult();
-        }
-        if (activeSessionId) {
-          const result = applyAssistantLaunchError(
-            conversationId,
-            activeSessionId,
-            assistantMessageId,
-            normalized,
-            { setSendState: true },
-          );
-          if (!result.applied) {
-            if (launchError) {
-              throw normalized;
-            }
-            return cancelledResult();
-          }
-        } else {
-          set({ sendState: "error", lastError: normalized.message });
-        }
-        throw normalized;
-      }
+          publishAssistant: (message, capturedMode, capturedAgent) => {
+            rememberAssistantTurnContext(message.id, message.conversation_id, capturedMode, capturedAgent);
+            get().addMessage(message);
+          },
+          clearSecurity: clearConversationSecurityState,
+          approvalRecoveryError: (message) => set({ toolApprovalRecoveryError: message }),
+          launchError: (id, session, assistantId, error) =>
+            applyAssistantLaunchError(id, session, assistantId, error, { setSendState: true }),
+          sendError: (message) => set({ sendState: "error", lastError: message }),
+          timeline: (phase, context) => devLogger.info("Provider stream timeline", { phase, ...context }),
+        },
+        stream: {
+          prepare: prepareAssistantStreamLaunch,
+          start: (request, launch) => startAssistantStream({
+            ...launch,
+            ...request,
+            // The profile is resolved during preparation; the execution scope is captured at send.
+            internalAgentProfile: launch.internalAgentProfile,
+            executionContext: snapshot.executionContext,
+            selectedProviderId: request.providerId,
+            selectedModelId: request.modelId,
+            selectedReasoningEffort: request.reasoningEffort,
+          }),
+        },
+      });
     },
 
     stopConversationStream: (conversationId) => {
@@ -16515,59 +13367,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       setConversationRuntime(conversationId, null);
     },
 
-    retryAssistantPersistence: async (messageId) => {
-      const assistantMessage = findChatMessageInState(get(), messageId);
-      if (
-        !assistantMessage ||
-        assistantMessage.role !== "assistant" ||
-        assistantMessage.persistence_state !== "failed"
-      ) {
-        throw buildSendError("This assistant response is not waiting to be saved.");
-      }
-
-      get().updateMessageFields(messageId, {
-        persistence_state: "retrying",
-      });
-      try {
-        await persistAssistantCompletionResult(chatPersistenceAdapters, {
-          assistantMessageId: messageId,
-          persistedAssistant: assistantMessage,
-          result: {
-            visibleContent: assistantMessage.content,
-            hiddenContext: assistantMessage.hidden_context,
-            providerInputItems: assistantMessage.provider_input_items,
-            providerTurnState: assistantMessage.provider_turn_state,
-            toolTraces: assistantMessage.tool_traces ?? [],
-            completionReason: assistantMessage.completion_reason,
-          },
-        });
-      } catch (error) {
-        const normalized = toServiceError(error);
-        const message = normalized.message.startsWith(
-          "Failed to save assistant response:",
-        )
-          ? normalized.message
-          : `Failed to save assistant response: ${normalized.message}`;
-        const displayedMessage = markAssistantPersistenceFailure({
-          assistantMessage,
-          message,
-        });
-        throw buildSendError(displayedMessage);
-      }
-
-      removeUnsavedAssistantResponseFromStorage(messageId);
-      get().updateMessageFields(messageId, {
-        persistence_state: undefined,
-        persistence_error: undefined,
-      });
-      clearAssistantPersistenceError(
-        assistantMessage.conversation_id,
-        messageId,
-      );
-      queueMicrotask(() => {
-        void drainQueuedSubmissions(assistantMessage.conversation_id);
-      });
-    },
+    retryAssistantPersistence: (messageId) => retryAssistantPersistence(messageId, {
+      persistence: chatPersistenceAdapters,
+      messages: {
+        read: id => findChatMessageInState(get(), id),
+        patch: (id, fields) => get().updateMessageFields(id, fields),
+        failed: markAssistantPersistenceFailure,
+      },
+      recovery: {
+        removeSavedCopy: removeUnsavedAssistantResponseFromStorage,
+        clearError: clearAssistantPersistenceError,
+        resumeQueue: id => { void drainQueuedSubmissions(id); },
+      },
+    }),
 
     deleteUnsavedAssistantResponse: async (messageId) => {
       const assistantMessage = findChatMessageInState(get(), messageId);
@@ -16886,7 +13698,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         taskAtEdit.standalone_kind === "manual_feature" &&
         taskAtEdit.draft === true;
       assertConversationRuntimeAvailableForSend(conversationId);
-      latestConversationSessionIdByConversationId.set(conversationId, sessionId);
+      turnRuntime.rememberSession(conversationId, sessionId);
       setConversationRuntime(
         conversationId,
         {
@@ -16928,7 +13740,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           conversationId,
         );
         const ownsReplayFence =
-          latestConversationSessionIdByConversationId.get(conversationId) === sessionId &&
+          turnRuntime.latestSession(conversationId) === sessionId &&
           runtime.sessionId === sessionId &&
           runtime.turnId === turnId;
         if (!ownsReplayFence) return;
@@ -16947,7 +13759,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             conversationId,
           );
           if (
-            latestConversationSessionIdByConversationId.get(conversationId) !== sessionId ||
+            turnRuntime.latestSession(conversationId) !== sessionId ||
             latestRuntime.sessionId !== sessionId ||
             latestRuntime.turnId !== turnId
           ) {
@@ -17250,8 +14062,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       Object.values(get().conversationRuntimeById).forEach((runtime) => {
         runtime?.abortController?.abort();
       });
-      latestConversationSessionIdByConversationId.clear();
-      completionPersistenceOwnersByConversationId.clear();
+      turnRuntime.reset();
       deletedConversationIds.clear();
       pendingConversationDeletionIds.forEach((conversationId) => {
         deletedConversationIds.add(conversationId);

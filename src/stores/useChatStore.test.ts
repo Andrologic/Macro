@@ -16,6 +16,7 @@ import {
   type ArchitectPlanStatus,
 } from '../services/architectPlanService';
 import { createDeferred } from '../test-utils/deferred';
+import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
 import { registerArchitectLifecycleScenarios } from './__tests__/architectLifecycle.scenarios';
@@ -2693,9 +2694,12 @@ export type UseChatStoreScenarioContext = typeof useChatStoreScenarioContext;
 
 describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
+  let releasePlanRuntimePorts: (() => void) | undefined;
 
   beforeEach(async () => {
     await registerUseChatStoreMocks();
+    // Isolated stores bypass main.tsx, which installs Plans ports before bootstrap.
+    releasePlanRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById: appState.getProjectById });
     localStorageMock = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
       localStorage: localStorageMock,
@@ -2931,6 +2935,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   afterEach(() => {
+    releasePlanRuntimePorts?.();
+    releasePlanRuntimePorts = undefined;
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,

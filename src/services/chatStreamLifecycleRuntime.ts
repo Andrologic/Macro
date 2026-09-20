@@ -29,6 +29,7 @@ export interface ChatStreamLifecycleRuntimeParams {
 export interface ChatStreamLifecycleRuntimeAdapters {
   shouldAcceptStreamUpdate: () => boolean;
   isAbortSignalAborted: () => boolean;
+  isTurnCurrent?: () => boolean;
   appendTokenChunk: (messageId: string, chunk: string) => void;
   getAssistantMessage: (messageId: string) => ChatMessage | undefined;
   updateMessageFields: (
@@ -278,6 +279,24 @@ export const createChatStreamLifecycleRuntime = (params: {
     return false;
   };
 
+  const persistAbortedTurn = async (tokenControls: ChatStreamTokenControls) => {
+      tokenControls.flushNow();
+      const assistantMessage = adapters.getAssistantMessage(
+        stream.assistantMessageId,
+      );
+      if (assistantMessage && hasAssistantProgress(assistantMessage)) {
+        await persistPartialAssistantSafely(
+          assistantMessage,
+          "Failed to persist partial assistant response after abort:",
+        );
+      } else {
+        adapters.removeEmptyAssistantPlaceholder(stream.assistantMessageId);
+        await adapters.deleteEmptyAssistantMessageFromDb();
+        await adapters.recoverReplayBeforeProgress?.();
+      }
+      tokenControls.dispose();
+  };
+
   return {
     appendTokenChunk: (tokenChunk: string) => {
       if (!adapters.shouldAcceptStreamUpdate()) {
@@ -352,7 +371,7 @@ export const createChatStreamLifecycleRuntime = (params: {
       );
 
       const persisted = await persistAssistantStreamResultAndConsolidate(result);
-      if (persisted) {
+      if (persisted && (adapters.isTurnCurrent?.() ?? true)) {
         void adapters.syncMacroMetadataAfterStream(
           stream.modeAtSend,
           stream.conversationId,
@@ -361,23 +380,7 @@ export const createChatStreamLifecycleRuntime = (params: {
       tokenControls.dispose();
     },
 
-    onAbort: async (tokenControls: ChatStreamTokenControls) => {
-      tokenControls.flushNow();
-      const assistantMessage = adapters.getAssistantMessage(
-        stream.assistantMessageId,
-      );
-      if (assistantMessage && hasAssistantProgress(assistantMessage)) {
-        await persistPartialAssistantSafely(
-          assistantMessage,
-          "Failed to persist partial assistant response after abort:",
-        );
-      } else {
-        adapters.removeEmptyAssistantPlaceholder(stream.assistantMessageId);
-        await adapters.deleteEmptyAssistantMessageFromDb();
-        await adapters.recoverReplayBeforeProgress?.();
-      }
-      tokenControls.dispose();
-    },
+    onAbort: persistAbortedTurn,
 
     onError: async (error: Error, tokenControls: ChatStreamTokenControls) => {
       if (
@@ -388,15 +391,24 @@ export const createChatStreamLifecycleRuntime = (params: {
         return;
       }
 
-      if (await adapters.tryRecoverFromOverflow(error, tokenControls)) {
+      const recovered = await adapters.tryRecoverFromOverflow(error, tokenControls);
+      if (adapters.isAbortSignalAborted()) {
+        await persistAbortedTurn(tokenControls);
         return;
       }
+      if (recovered) return;
 
+      if (adapters.isAbortSignalAborted() || !adapters.shouldAcceptStreamUpdate()) return;
       tokenControls.flushNow();
       tokenControls.dispose();
       adapters.clearLiveStreamContextEstimate(stream.conversationId);
       await adapters.maybeMarkImplementTaskFailedAfterStreamError();
 
+      if (adapters.isAbortSignalAborted()) {
+        await persistAbortedTurn(tokenControls);
+        return;
+      }
+      if (!adapters.shouldAcceptStreamUpdate()) return;
       const assistantMessage = adapters.getAssistantMessage(
         stream.assistantMessageId,
       );
@@ -415,6 +427,7 @@ export const createChatStreamLifecycleRuntime = (params: {
         await adapters.recoverReplayBeforeProgress?.();
       }
 
+      if (adapters.isAbortSignalAborted() || !(adapters.isTurnCurrent?.() ?? true)) return;
       adapters.setStreamErrorState({
         presentation: errorPresentation,
         assistantMessageId: resolveErrorAssistantMessageId({

@@ -1,8 +1,8 @@
+import { bindMcpRuntimeKey, readMcpRuntimeKey } from "./mcp/runtimeSnapshot";
 import { assertUniqueMCPToolIds } from './mcp/normalization';
 import type { MCPServer, MCPTool } from '../types';
 import type {
   MCPCatalogDto,
-  MCPRuntimeKey,
   MCPRuntimeSelector,
   MCPRuntimeServerSnapshot,
 } from './contracts/serviceProvider';
@@ -102,9 +102,6 @@ const normalizeProjectScope = (projectIds?: readonly string[]): string[] =>
 const selectorCacheKey = (serverId: string, projectIds: readonly string[]): string =>
   JSON.stringify([serverId, projectIds]);
 
-const runtimeKey = Symbol('scopedMcpRuntimeKey');
-type RuntimeBoundMcpServer = MCPServer & { [runtimeKey]?: MCPRuntimeKey };
-
 // Only in-flight connects are deduplicated. Completed runtime keys stay bound
 // to the resolved turn objects; the backend remains the sole catalog cache.
 const pendingConnectionsByConnector = new WeakMap<
@@ -180,11 +177,6 @@ const toRuntimeServer = (id: string, definition: Record<string, unknown>): MCPSe
     config: { enabled: definition.enabled === true },
   });
 
-const bindRuntimeKey = (server: MCPServer, key: MCPRuntimeKey): RuntimeBoundMcpServer => {
-  Object.defineProperty(server, runtimeKey, { value: key, enumerable: false });
-  return server;
-};
-
 let operationCounter = 0;
 const createOperationId = (): string => {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -224,7 +216,7 @@ export const resolveScopedMcpRuntime = async (
         assertUniqueMCPToolIds(catalog.tools);
         const online = normalizeMCPServer({ ...server, status: 'online', tools: catalog.tools });
         return {
-          server: bindRuntimeKey(
+          server: bindMcpRuntimeKey(
             { ...online, tools: normalizeMCPServerTools(online) },
             catalog.key,
           ),
@@ -270,7 +262,7 @@ export const callScopedMcpTool = async (
 
     if (options.signal?.aborted) throw abortError();
 
-    let lease = (server as RuntimeBoundMcpServer)[runtimeKey];
+    let lease = readMcpRuntimeKey(server);
     if (lease && options.projectIds !== undefined) {
       const leaseProjectIds = normalizeProjectScope(lease.projectIds);
       if (JSON.stringify(leaseProjectIds) !== JSON.stringify(projectIds)) {
