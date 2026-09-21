@@ -243,7 +243,9 @@ const commitMetadataTargets = async (
     trigger: 'explicit_checkpoint',
     workspacePaths,
     message,
-  });
+  }, beforeEffect ? { tauri: { ...tauriIpc, macroBranchCommitIfDirty: async args => {
+    await beforeEffect(); return tauriIpc.macroBranchCommitIfDirty(args);
+  } } } : undefined);
 };
 
 export const commitManualFeatureMetadata = async (

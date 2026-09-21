@@ -1,6 +1,6 @@
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
-import { getTaskLifecycleCapabilities, useTaskStore } from '../../stores/useTaskStore';
+import { getTaskLifecycleCapabilities, getTaskCommandTargets, useTaskStore } from '../../stores/useTaskStore';
 import { getServiceRuntimeCapabilities } from '../index';
 import { getArchitectPlan, getGitFlowBaseBranch, resolveTargetBranch } from '../architectPlanService';
 import { listVisibleTaskArtifacts, readVisibleTaskArtifactContent, taskArtifactContentHash } from '../architectPlanArtifactService';
@@ -90,20 +90,21 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
       const store = useTaskStore.getState();
       const capabilities = getServiceRuntimeCapabilities();
       const lifecycle = getTaskLifecycleCapabilities(task, store.publishedStandaloneTasks[task.id] ?? false);
-      const projectIds = [...new Set([task.project_id, ...(task.project_ids ?? []), ...(task.execution_targets ?? []).map(target => target.projectId)])].filter(Boolean);
+      const commandTargets = getTaskCommandTargets(task);
+      const projectIds = commandTargets.map(target => target.projectId);
       const projects = projectIds.map(id => useAppStore.getState().getProjectById(id));
       if (projects.length > 32) return fail('resource_limit');
       const registry = await loadTaskProjectCommandRegistry(projectIds);
       const configured = projects.map(project => project ? { project, settings: getTaskProjectCommand(registry, project.path) } : null);
-      const commands = configured.flatMap(entry => {
+      const setupCommands = configured.flatMap((entry, index) => {
         if (!entry?.settings) return [];
-        const target = task.execution_targets?.find(target => target.projectId === entry.project.id);
+        const target = commandTargets[index];
         const setup = target?.executionMode === 'direct' ? '' : entry.settings.worktreeSetupCommand?.trim();
         return [
           ...(setup ? [{ project_id: entry.project.id, project_name: text(`${entry.project.name} (setup)`), command: text(setup) }] : []),
-          ...(entry.settings.command ? [{ project_id: entry.project.id, project_name: text(entry.project.name), command: text(entry.settings.command) }] : []),
         ];
       });
+      const commands = [...setupCommands, ...configured.flatMap(entry => entry?.settings?.command ? [{ project_id: entry.project.id, project_name: text(entry.project.name), command: text(entry.settings.command) }] : [])];
       if (commands.length > 32) return fail('resource_limit');
       const conversation = useChatStore.getState().conversations.find(c => c.task_id === task.id || c.id === task.conversation_id);
       const runtime = conversation ? useChatStore.getState().getConversationRuntime(conversation.id) : null;
@@ -128,13 +129,17 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
       const reservation = reservePilotAction({ taskId: task.id, conversationId: task.conversation_id ?? undefined });
       try {
         if (action === 'delete' && task.conversation_id) useChatStore.getState().assertPilotConversationDeletionReady(task.conversation_id, reservation.token);
-        const commandProjectIds = [...new Set([task.project_id, ...(task.project_ids ?? []), ...(task.execution_targets ?? []).map(target => target.projectId)])].filter(Boolean);
+        const projectIds = [...new Set([task.project_id, ...(task.project_ids ?? []), ...(task.execution_targets ?? []).map(target => target.projectId)])];
+        const projectScope = () => stableJson(projectIds.map(id => { const project = useAppStore.getState().getProjectById(id); return project ? { id, path: project.path, directEdit: project.directEdit, gitSetupState: project.gitSetupState } : { id }; }));
+        const expectedProjectScope = projectScope();
+        const assertProjectScope = () => { if (projectScope() !== expectedProjectScope) fail('stale_revision'); };
+        const commandProjectIds = getTaskCommandTargets(task).map(target => target.projectId);
         const commandRegistry = action === 'run_commands' ? stableJson(await loadTaskProjectCommandRegistry(commandProjectIds)) : null;
         const options = { signal, pilotActionToken: reservation.token, beforeEffect: async () => {
           if (signal?.aborted) return fail('unavailable');
-          assertPilotReservationCurrent(reservation);
+          assertPilotReservationCurrent(reservation); assertProjectScope();
           if (commandRegistry !== null && stableJson(await loadTaskProjectCommandRegistry(commandProjectIds)) !== commandRegistry) return fail('stale_revision');
-          await beforeEffect(); assertPilotReservationCurrent(reservation);
+          await beforeEffect(); assertPilotReservationCurrent(reservation); assertProjectScope();
         } };
         const store = useTaskStore.getState();
         if (action === 'rename') await store.renameTask(task.id, title!, options);

@@ -110,3 +110,16 @@ test('enforces the shared body budget across distinct items and keeps rejected r
   expect(accepted).toBeGreaterThan(0); expect(accepted).toBeLessThan(9);
   await expect(s.read('task.artifact.read', { ref, snapshot_id: page.page.snapshot_id, item_id: 'artifact:0', offset_bytes: 16384 })).resolves.toBeDefined();
 });
+
+test('source loss invalidations advance revisions before a source becomes available again', async () => {
+  const s = setup(); await s.host.initialize();
+  const before = await s.read('task.get', { ref }) as ContentTaskDetails;
+  const originalLoad = s.deps.source.load;
+  s.deps.source.load = async () => { throw new Error('not_found'); };
+  await s.host.observe(policy);
+  const invalidation = s.events.at(-1)!;
+  expect(invalidation.revision).toBeGreaterThan(before.revision);
+  s.deps.source.load = originalLoad;
+  const restored = await s.read('task.get', { ref }) as ContentTaskDetails;
+  expect(restored.revision).toBeGreaterThan(invalidation.revision);
+});

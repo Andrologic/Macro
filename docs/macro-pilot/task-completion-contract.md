@@ -130,8 +130,8 @@ that pending state; no action reports success for partial cleanup. Revision and
 receipt metadata are bounded to 2,000 records each and 1 MiB combined. At that
 limit the host rejects new records explicitly instead of forgetting idempotency.
 
-`commands` is an ordered confirmation list, including configured setup commands
-before run commands. A project can appear more than once; clients must display
+`commands` is an ordered confirmation list, including all configured setup commands in execution-target order, followed
+by all run commands in the same order. A project can appear more than once; clients must display
 all entries rather than deduplicate by project ID. Setup entries use a readable
 `(setup)` suffix in `project_name`. If any command is withheld or truncated,
 `run_commands` is unavailable. There are at most 32 total command entries.

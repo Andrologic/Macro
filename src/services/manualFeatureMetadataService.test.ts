@@ -217,4 +217,22 @@ describe('manualFeatureMetadataService', () => {
     }
     expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
   });
+  it('reauthorizes each project metadata commit and stops after revocation', async () => {
+    const saved = appState.getProjectById;
+    const projects = ['project-1', 'project-2'].map((id, index) => ({ ...appState.project, id, path: `/synthetic/project-${index}`, name: id }));
+    appState.getProjectById = id => projects.find(project => project.id === id);
+    const { registerAppStateGetter } = await import('./appStateRuntime');
+    registerAppStateGetter(() => ({ standaloneProjects: projects, projectGroups: [] }));
+    let revoked = false;
+    macroBranchCommitIfDirtyMock.mockImplementation(async () => { revoked = true; });
+    try {
+      const { commitManualFeatureMetadata } = await loadService();
+      await expect(commitManualFeatureMetadata({ id: 'task:fixture', standalone_kind: 'manual_feature', project_id: 'project-1',
+        project_ids: ['project-1', 'project-2'], execution_targets: [], base_branch: 'develop' }, 'Fixture commit', async () => {
+        if (revoked) throw new Error('authorization revoked');
+      })).rejects.toThrow('authorization revoked');
+      expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+    } finally { appState.getProjectById = saved; }
+  });
+
 });

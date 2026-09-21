@@ -320,4 +320,18 @@ describe('runWorktreeSetupCommand', () => {
     expect((await settled).message).toContain('removed');
   });
 
+  it('cancels a Pilot subscriber without cancelling the shared local setup', async () => {
+    const started = waitForNextStart();
+    const params = commandParams('shared setup');
+    const local = runWorktreeSetupCommand(params);
+    await started;
+    const controller = new AbortController();
+    const joined = runWorktreeSetupCommand({ ...params, signal: controller.signal }).catch(error => error);
+    controller.abort();
+    expect((await joined).message).toContain('cancelled');
+    expect(startWorktreeSetupCommandTab).toHaveBeenCalledTimes(1);
+    publishTab('setup-tab-1', { status: 'completed', hasLiveSession: false, lastExitCode: 0 });
+    await expect(local).resolves.toMatchObject({ failed: false });
+  });
+
 });

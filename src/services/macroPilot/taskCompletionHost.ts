@@ -99,7 +99,11 @@ export class TaskCompletionHost {
     catch {
       // An inaccessible source invalidates all its captures, without exposing why.
       for (const [id, item] of this.captures) if (item.key === capture.key) this.captures.delete(id);
-      await this.emit(capture.kind, capture.ref, capture.revision + 1);
+      const next = structuredClone(this.journal);
+      const revision = (next.records[capture.key]?.revision ?? capture.revision) + 1;
+      next.records[capture.key] = { hash: await sha(['unavailable', capture.key, revision]), revision };
+      await this.emit(capture.kind, capture.ref, revision);
+      await this.save(next);
     }
   }
   private binding(delivery: ContentDelivery, kind: CaptureKind, ref: CaptureRef) {

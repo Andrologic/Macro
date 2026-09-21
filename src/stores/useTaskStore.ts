@@ -265,6 +265,9 @@ const getExecutionTargets = (task: CatalogedImplementTask): TaskExecutionTarget[
   }];
 };
 
+/** Ordered execution targets shared by command confirmation and execution. */
+export const getTaskCommandTargets = getExecutionTargets;
+
 const getPrimaryExecutionTarget = (task: CatalogedImplementTask): TaskExecutionTarget | null => {
   return getExecutionTargets(task)[0] || null;
 };

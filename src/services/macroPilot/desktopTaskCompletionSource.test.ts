@@ -7,7 +7,7 @@ let configured: { command: string; worktreeSetupCommand: string } | undefined;
 let messages: DbMessage[] = []; let artifactCalls = 0; let configCalls = 0; let visible = true;
 const project = { id: 'project:demo', name: 'Demo', path: '/synthetic/demo' };
 mock.module('../../stores/useAppStore', () => ({ useAppStore: { getState: () => ({ getProjectById: () => project }) } }));
-mock.module('../../stores/useTaskStore', () => ({ useTaskStore: { getState: () => ({ tasks: [task], publishedStandaloneTasks: {} }) }, getTaskLifecycleCapabilities: () => ({ canRename: true }) }));
+mock.module('../../stores/useTaskStore', () => ({ useTaskStore: { getState: () => ({ tasks: [task], publishedStandaloneTasks: {}, renameTask: async (_id: string, _title: string, options: { beforeEffect(): Promise<void> }) => options.beforeEffect() }) }, getTaskLifecycleCapabilities: () => ({ canRename: true }), getTaskCommandTargets: () => [{ projectId: task.project_id }, { projectId: 'project:second' }] }));
 mock.module('../../stores/useChatStore', () => ({ useChatStore: { getState: () => ({ conversations: [] }) } }));
 mock.module('../index', () => ({ getServiceRuntimeCapabilities: () => ({ taskMutation: true, taskProjectCommands: true }) }));
 mock.module('../architectPlanService', () => ({ getArchitectPlan: async () => ({ id: 'plan:demo', nodes: [], status: 'validated' }), getGitFlowBaseBranch: () => 'develop', resolveTargetBranch: (s: string) => s }));
@@ -54,11 +54,18 @@ test('confirmation lists setup before run and unsafe setup removes run availabil
   const savedDraft = task.draft; task.draft = false;
   try {
     let loaded = await source.load('task', taskRef, policy);
-    expect(loaded.task!.commands.map(command => command.command)).toEqual([{ content_state: 'complete', text: 'echo setup' }, { content_state: 'complete', text: 'echo run' }]);
+    expect(loaded.task!.commands.map(command => command.command)).toEqual([{ content_state: 'complete', text: 'echo setup' }, { content_state: 'complete', text: 'echo setup' }, { content_state: 'complete', text: 'echo run' }, { content_state: 'complete', text: 'echo run' }]);
     expect(loaded.task!.actions).toContain('run_commands');
     configured.worktreeSetupCommand = 'echo secret-demo';
     loaded = await source.load('task', taskRef, policy);
     expect(loaded.task!.commands[0].command.content_state).toBe('withheld');
     expect(loaded.task!.actions).not.toContain('run_commands');
   } finally { task.draft = savedDraft; }
+});
+
+test('a project relocated while authorizing cannot receive a task mutation', async () => {
+  const saved = project.path;
+  try {
+    await expect(source.execute(taskRef, 'rename', 'New title', async () => { project.path = '/synthetic/relocated'; })).rejects.toThrow('stale_revision');
+  } finally { project.path = saved; }
 });

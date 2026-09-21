@@ -80,7 +80,15 @@ export const runWorktreeSetupCommand = async (
   const key = setupCommandKey({ ...params, command: trimmedCommand });
   const existing = inFlightSetupCommands.get(key);
   if (existing) {
-    return existing;
+    if (!params.signal) return existing;
+    return new Promise<WorktreeSetupCommandResult>((resolve, reject) => {
+      const signal = params.signal!;
+      const abort = () => { signal.removeEventListener('abort', abort); reject(new Error('Setup command wait cancelled.')); };
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) { abort(); return; }
+      existing.then(result => { signal.removeEventListener('abort', abort); resolve(result); },
+        error => { signal.removeEventListener('abort', abort); reject(error); });
+    });
   }
 
   const runPromise = (async () => {
