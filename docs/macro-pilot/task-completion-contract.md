@@ -94,3 +94,27 @@ After rendering and confirming a successful task capture:
 
 The relay authorizes the delivery using the existing execute-before handshake.
 Relays and clients validate request/response correlation with `validateExchange`.
+
+## Addendum 1: cards and action authorization
+
+`task.cards.list {instance_id, continuation?}` belongs to `task-details-1` and
+returns a bounded page of `taskCard`. A card contains all descriptive fields of
+`taskDetails` plus its task reference, but excludes snapshot ID, revision,
+expiry, action availability and configured commands. Mobile uses this operation
+for its task list, including description, plan/feature badges, draft and
+finalization/merge state. It does not call `task.get` per row. One desktop catalog
+read produces each page; no per-task plan, history or command-configuration read
+is required. `tasks.changed` invalidates these pages for the instance. Bodies,
+command preparation and mutations still require explicit detail reads.
+
+Permissions are operation-specific and checked twice by the relay: at submission
+and at every producer execute-before authorization. Reads require `supervise`.
+Rename, archive and delete require `respond`. Running configured commands requires
+both `respond` and `approve_tools`. `supervise` alone cannot mutate a task.
+
+For task.action, the desktop sends `required_permissions` in the existing
+authorize envelope. The relay independently derives the required set from the
+stored immutable request, checks the live grant, and returns `granted_permissions`
+in the authorized envelope. The desktop refuses effects unless that response
+contains every required permission. A legacy relay that omits these fields cannot
+execute task actions. Client-supplied permission claims are never authority.

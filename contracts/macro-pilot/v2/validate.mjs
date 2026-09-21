@@ -50,7 +50,7 @@ export function validateMessage(message) {
     reject(page.offset + result.items.length > page.total, 'page exceeds total');
     reject((page.next_cursor === null) !== (page.offset + result.items.length === page.total), 'cursor does not match remaining items');
     reject(result.items.length === 0 && page.next_cursor !== null, 'empty nonterminal page');
-    const identities = result.items.map((item) => item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id);
+    const identities = result.items.map((item) => item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id);
     reject(new Set(identities).size !== identities.length, 'duplicate page identities');
     result.items.forEach((item, index) => {
       if ('position' in item) reject(item.position !== page.offset + index, 'noncontiguous positions');
@@ -125,7 +125,7 @@ export function validateExchange(request, response) {
       const body = request.body;
       const result = response.result;
       const expectedSnapshot = body.snapshot_id ?? body.continuation?.snapshot_id;
-      if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
+      if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.cards.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
       if (request.operation === 'diff.read') reject(body.file_id !== result.file_id || body.offset_bytes !== result.offset_bytes, 'file or byte offset mismatch');
       if (result.page && !body.continuation) reject(result.page.offset !== 0, 'initial page starts after zero');
       if (request.operation === 'conversations.list') {
@@ -134,7 +134,8 @@ export function validateExchange(request, response) {
       if (request.operation === 'projects.list') {
         for (const item of result.items) reject(item.instance_id !== body.instance_id, 'project instance mismatch');
       }
-      if (request.operation === 'task.get') reject(JSON.stringify(body.ref) !== JSON.stringify(result.ref), 'task reference mismatch');
+      if (request.operation === 'task.get') reject(['instance_id', 'workspace_id', 'task_id'].some(key => body.ref[key] !== result.ref[key]), 'task reference mismatch');
+      if (request.operation === 'task.cards.list') for (const item of result.items) reject(item.ref.instance_id !== body.instance_id, 'task catalog instance mismatch');
       if (['task.artifact.read', 'conversation.tool.read'].includes(request.operation)) reject(body.item_id !== result.item_id || body.offset_bytes !== result.offset_bytes, 'item or offset mismatch');
       if ('expected_revision' in body) reject(result.revision !== body.expected_revision + 1, 'mutation revision mismatch');
       if (request.operation === 'account.get') reject(result.account_id !== request.account_id, 'account result mismatch');
@@ -164,7 +165,7 @@ export function validatePageContinuation(previous, next) {
   }
   if (previous.account_id !== next.account_id || previous.operation !== next.operation) errors.push('page scope changed');
   if (a.next_cursor === null || b.offset !== a.offset + previous.result.items.length) errors.push('page continuation gap');
-  const identity = (item) => item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id;
+  const identity = (item) => item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id;
   const seen = new Set(previous.result.items.map(identity));
   if (next.result.items.some((item) => seen.has(identity(item)))) errors.push('repeated page identity');
   return { valid: errors.length === 0, errors };
