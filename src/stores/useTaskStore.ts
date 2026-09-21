@@ -1874,6 +1874,7 @@ const ensureTaskExecutionTargetsReady = async (
   } catch (error) {
     for (const target of rollbackTargets.reverse()) {
       try {
+        await options?.beforeEffect?.();
         await tauriIpc.gitWorktreeRemove({
           repoPath: target.repoPath,
           taskId: target.worktreeKey,

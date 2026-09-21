@@ -3286,6 +3286,40 @@ describe('useTaskStore task command terminal lifecycle', () => {
     };
   });
 
+  it('does not roll back a prepared worktree after Pilot authorization is revoked', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const { useGitStore } = await import('./useGitStore');
+    const originalCreate = useGitStore.getState().createWorktree;
+    const originalProject = appStoreState.getProjectById;
+    appStoreState.getProjectById = projectId => ({ ...originalProject(projectId)!, id: projectId });
+    const originalInspect = gitWorktreeInspectMock.getMockImplementation()!;
+    let revoked = false;
+    const created: string[] = [];
+    const task = buildStandaloneTask({ id: 'task-rollback', draft: false, status: 'InProgress',
+      project_ids: ['project-1', 'project-2'], execution_targets: ['project-1', 'project-2'].map(projectId => ({
+        projectId, executionMode: 'git', branchName: 'feature/rollback', worktreeKey: projectId, repoPath: '/repos/web',
+      })) });
+    useTaskStore.setState({ tasks: [task], branchWorktrees: {}, taskCommandRuns: {}, lastError: null });
+    gitWorktreeInspectMock.mockImplementation(async params => ({ taskId: params.taskId, worktreePath: '', branchName: params.branchName ?? null, status: 'absent', isDirty: false }));
+    useGitStore.setState({ createWorktree: async (projectId, worktreeKey, branchName) => {
+      created.push(projectId); revoked = true;
+      return { taskId: worktreeKey, worktreePath: '/synthetic/created', branchName, status: 'created' };
+    } });
+    gitWorktreeRemoveMock.mockClear();
+    const reservation = reservePilotAction({ taskId: task.id });
+    try {
+      await useTaskStore.getState().runTaskCommands(task.id, { pilotActionToken: reservation.token,
+        beforeEffect: async () => { if (revoked) throw new Error('authorization revoked'); } });
+      expect(useTaskStore.getState().lastError).toContain('authorization revoked');
+      expect(created).toEqual(['project-1']);
+      expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
+    } finally {
+      reservation.release(); useGitStore.setState({ createWorktree: originalCreate });
+      appStoreState.getProjectById = originalProject;
+      gitWorktreeInspectMock.mockImplementation(originalInspect);
+    }
+  });
+
   it('keeps the command run visible after launching a task terminal', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
 

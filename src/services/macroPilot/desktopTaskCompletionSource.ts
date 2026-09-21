@@ -14,6 +14,7 @@ import type { ConversationCaptures } from './conversationCaptures';
 import type { ContentTaskRef, ContentTool } from './contentProtocol';
 import { exportDetailText, type TaskCompletionSource, type DetailRef, type TaskAction } from './taskCompletionHost';
 import { stableJson } from './protocol';
+import { getTaskBusinessId, toTaskRuntimeId } from '../durableIdentity';
 import { utf8Bytes } from './conversationText';
 const fail = (code: string): never => { throw new Error(code); };
 
@@ -72,7 +73,9 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
         const branchName = resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
         const plan = await getArchitectPlan(branchName, task.plan_id);
         if (!plan || plan.status === 'deleted') return fail('content_unavailable');
-        const target = { branchName, plan, task };
+        const nodeIds = new Map(plan.nodes.map(node => [toTaskRuntimeId({ branchName, planId: plan.id, nodeId: node.id }), node.id]));
+        const artifactTask = { ...task, id: getTaskBusinessId(task), dependencies: task.dependencies.map(id => nodeIds.get(id) ?? id) };
+        const target = { branchName, plan, task: artifactTask };
         const artifacts = await listVisibleTaskArtifacts({ ...target, includeOwn: true, includeInherited: true });
         if (artifacts.length > 2000) return fail('resource_limit');
         const ids = new Map(artifacts.map(artifact => [pilotTaskId(`artifact/${artifact.id}`), artifact.id]));

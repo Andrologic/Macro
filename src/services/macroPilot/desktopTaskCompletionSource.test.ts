@@ -1,6 +1,7 @@
 import { beforeEach, expect, mock, test } from 'bun:test';
+import { pilotTaskId } from './taskIdentity';
 import type { DbMessage } from '../tauriIpc';
-const task = { id: 'task:demo', project_id: 'project:demo', project_ids: ['project:demo'], task_source: 'architect', plan_id: 'plan:demo',
+const task = { id: 'task:v1:develop:plan%3Ademo:child', node_id: 'child', dependencies: ['task:v1:develop:plan%3Ademo:parent'], project_id: 'project:demo', project_ids: ['project:demo'], task_source: 'architect', plan_id: 'plan:demo',
   plan_storage_branch: 'develop', title: 'Synthetic task', description: 'Card description', status: 'Pending', draft: true,
   plan_title: 'Demo plan', feature_slug: null, merged_at: null, archived_at: null };
 let configured: { command: string; worktreeSetupCommand: string } | undefined;
@@ -10,16 +11,16 @@ mock.module('../../stores/useAppStore', () => ({ useAppStore: { getState: () => 
 mock.module('../../stores/useTaskStore', () => ({ useTaskStore: { getState: () => ({ tasks: [task], publishedStandaloneTasks: {}, renameTask: async (_id: string, _title: string, options: { beforeEffect(): Promise<void> }) => options.beforeEffect() }) }, getTaskLifecycleCapabilities: () => ({ canRename: true }), getTaskCommandTargets: () => [{ projectId: task.project_id }, { projectId: 'project:second' }] }));
 mock.module('../../stores/useChatStore', () => ({ useChatStore: { getState: () => ({ conversations: [] }) } }));
 mock.module('../index', () => ({ getServiceRuntimeCapabilities: () => ({ taskMutation: true, taskProjectCommands: true }) }));
-mock.module('../architectPlanService', () => ({ getArchitectPlan: async () => ({ id: 'plan:demo', nodes: [], status: 'validated' }), getGitFlowBaseBranch: () => 'develop', resolveTargetBranch: (s: string) => s }));
+mock.module('../architectPlanService', () => ({ getArchitectPlan: async () => ({ id: 'plan:demo', nodes: [{ id: 'child', dependencies: ['parent'] }, { id: 'parent', dependencies: [] }], status: 'validated' }), getGitFlowBaseBranch: () => 'develop', resolveTargetBranch: (s: string) => s }));
 mock.module('../architectPlanArtifactService', () => ({
-  listVisibleTaskArtifacts: async () => { artifactCalls++; return [{ id: 'artifact:demo', title: 'Visible artifact', summary: 'Summary', visibility: 'inherited', contentType: 'text', contentHash: 'hash' }]; },
+  listVisibleTaskArtifacts: async (params: { task: { id: string; dependencies: string[] } }) => { expect(params.task.id).toBe(task.node_id); expect(params.task.dependencies).toEqual(['parent']); artifactCalls++; return [{ id: 'artifact:demo', title: 'Visible artifact', summary: 'Summary', visibility: 'inherited', contentType: 'text', contentHash: 'hash' }]; },
   readVisibleTaskArtifactContent: async () => { artifactCalls++; return { content: 'Actual artifact text', artifact: { contentHash: 'hash' } }; },
   taskArtifactContentHash: () => 'hash',
 }));
 mock.module('../taskProjectCommands', () => ({ loadTaskProjectCommandRegistry: async () => { configCalls++; return {}; }, getTaskProjectCommand: () => configured }));
 mock.module('../tauriIpc', () => ({ listMessages: async () => messages }));
 const { desktopTaskCompletionSource } = await import('./desktopTaskCompletionSource');
-const taskRef = { instance_id: 'instance:demo', workspace_id: 'workspace:demo', task_id: 'task:demo' };
+const taskRef = { instance_id: 'instance:demo', workspace_id: 'workspace:demo', task_id: pilotTaskId(task.id) };
 const conversationRef = { instance_id: taskRef.instance_id, kind: 'conversation' as const, conversation_id: 'chat:demo' };
 const captures = { refreshCatalogMetadata: async () => ({ refs: visible ? [conversationRef] : [] }) };
 const source = desktopTaskCompletionSource(taskRef.instance_id, taskRef.workspace_id, captures as never);
@@ -68,4 +69,11 @@ test('a project relocated while authorizing cannot receive a task mutation', asy
   try {
     await expect(source.execute(taskRef, 'rename', 'New title', async () => { project.path = '/synthetic/relocated'; })).rejects.toThrow('stale_revision');
   } finally { project.path = saved; }
+});
+
+test('finalization artifact visibility receives business dependency IDs', async () => {
+  const saved = { task_source: task.task_source, node_id: task.node_id };
+  task.task_source = 'plan_finalization'; task.node_id = 'finalization';
+  try { await source.load('artifacts', taskRef, policy); expect(artifactCalls).toBe(1); }
+  finally { Object.assign(task, saved); }
 });
