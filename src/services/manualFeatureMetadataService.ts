@@ -7,6 +7,7 @@ import {
 } from './macroMetadataCoordinator';
 import { resolveProjectExecutionMode } from './projectExecutionMode';
 import { filterNonWslProjectPaths } from './wslPaths';
+import { toServiceError } from './contracts/errors';
 
 const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
@@ -86,28 +87,23 @@ const deleteMetadataRootIfPresent = async (
   target: MetadataWorkspaceTarget,
   beforeEffect?: () => Promise<void>,
 ): Promise<void> => {
-  try {
-    const exists = await tauriIpc.fsExists(metadataRoot, {
-      workspaceScope: target.workspaceScope,
-      workspacePath: target.workspacePath,
-    });
-    if (!exists) {
-      return;
-    }
-  } catch {
-    return;
-  }
+  const exists = await tauriIpc.fsExists(metadataRoot, {
+    workspaceScope: target.workspaceScope,
+    workspacePath: target.workspacePath,
+  });
+  if (!exists) return;
 
+  await beforeEffect?.();
   try {
-    await beforeEffect?.();
     await tauriIpc.fsDelete({
       path: metadataRoot,
       recursive: true,
       workspaceScope: target.workspaceScope,
       workspacePath: target.workspacePath,
     });
-  } catch {
-    // Treat missing or concurrently removed legacy metadata as already cleaned up.
+  } catch (error) {
+    // Only a concurrently removed root counts as successful cleanup.
+    if (toServiceError(error).code !== 'FilesystemNotFound') throw error;
   }
 };
 

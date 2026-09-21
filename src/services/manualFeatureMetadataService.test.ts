@@ -235,4 +235,27 @@ describe('manualFeatureMetadataService', () => {
     } finally { appState.getProjectById = saved; }
   });
 
+  it.each(['exists', 'delete', 'authorization'])('propagates %s failures during metadata cleanup', async stage => {
+    fsExistsMock.mockImplementation(async () => true);
+    const failure = new Error(`${stage} denied`);
+    if (stage === 'exists') fsExistsMock.mockImplementation(async () => { throw failure; });
+    if (stage === 'delete') fsDeleteMock.mockImplementation(async () => { throw failure; });
+    const { removeManualFeatureMetadata } = await loadService();
+    await expect(removeManualFeatureMetadata({ id: 'task-1', base_branch: 'develop', project_id: 'project-1',
+      project_ids: ['project-1'], standalone_kind: 'manual_feature', execution_targets: [] }, async () => {
+      if (stage === 'authorization') throw failure;
+    })).rejects.toThrow(`${stage} denied`);
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+    if (stage !== 'delete') expect(fsDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts only a typed missing-file error when a metadata root disappears during deletion', async () => {
+    fsExistsMock.mockImplementation(async () => true);
+    fsDeleteMock.mockImplementation(async () => { throw { code: 'FilesystemNotFound', message: 'Already removed' }; });
+    const { removeManualFeatureMetadata } = await loadService();
+    await removeManualFeatureMetadata({ id: 'task-1', base_branch: 'develop', project_id: 'project-1',
+      project_ids: ['project-1'], standalone_kind: 'manual_feature', execution_targets: [] });
+    expect(fsDeleteMock).toHaveBeenCalledTimes(2);
+  });
+
 });
