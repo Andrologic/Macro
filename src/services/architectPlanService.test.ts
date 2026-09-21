@@ -970,6 +970,12 @@ describe('architectPlanService', () => {
     };
     seedLegacyPlan(storage, legacyExpectedOnlyPlan);
 
+    const storageSnapshot = () => Array.from({ length: storage.length }, (_, index) => storage.key(index)!).sort().map(key => [key, storage.getItem(key)]);
+    const beforeRead = storageSnapshot();
+    const snapshot = await service.readArchitectPlanSnapshot(branchName, legacyExpectedOnlyPlan.id);
+    expect(snapshot?.projectIds).toEqual(['web']);
+    expect(storageSnapshot()).toEqual(beforeRead);
+
     const hydratedLegacy = await service.getArchitectPlan(branchName, legacyExpectedOnlyPlan.id);
     expect(hydratedLegacy?.projectIds).toEqual(['web']);
     expect(hydratedLegacy?.contextProjectIds).toEqual(['docs']);
@@ -1672,6 +1678,12 @@ describe('architectPlanService', () => {
       registrySnapshot,
       filesByWorkspacePath,
     });
+    const beforeReadFiles = JSON.stringify(filesByWorkspacePath);
+    const beforeReadSettings = [...appSettings];
+    expect(await service.readArchitectPlanSnapshot(branchName, 'unrelated-missing-plan')).toBeNull();
+    await service.readArchitectPlanSnapshot(branchName, 'mixed-recovery-plan');
+    expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeReadFiles);
+    expect([...appSettings]).toEqual(beforeReadSettings);
     await service.listArchitectPlans(branchName, true, true);
 
     expect(JSON.parse(

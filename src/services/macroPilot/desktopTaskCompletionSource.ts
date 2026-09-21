@@ -2,7 +2,7 @@ import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { getTaskLifecycleCapabilities, getTaskCommandTargets, useTaskStore } from '../../stores/useTaskStore';
 import { getServiceRuntimeCapabilities } from '../index';
-import { getArchitectPlan, getGitFlowBaseBranch, resolveTargetBranch } from '../architectPlanService';
+import { readArchitectPlanSnapshot, getGitFlowBaseBranch, resolveTargetBranch } from '../architectPlanService';
 import { listVisibleTaskArtifacts, readVisibleTaskArtifactContent, taskArtifactContentHash } from '../architectPlanArtifactService';
 import { getTaskProjectCommand, loadTaskProjectCommandRegistry } from '../taskProjectCommands';
 import { isToolTrace } from '../toolTraceState';
@@ -71,7 +71,7 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
       if (kind === 'artifacts') {
         if (!task.plan_id || !['architect', 'plan_finalization'].includes(task.task_source)) return { fingerprint: task, items: [], read: async () => null };
         const branchName = resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
-        const plan = await getArchitectPlan(branchName, task.plan_id);
+        const plan = await readArchitectPlanSnapshot(branchName, task.plan_id);
         if (!plan || plan.status === 'deleted') return fail('content_unavailable');
         const nodeIds = new Map(plan.nodes.map(node => [toTaskRuntimeId({ branchName, planId: plan.id, nodeId: node.id }), node.id]));
         const artifactTask = { ...task, id: getTaskBusinessId(task), dependencies: task.dependencies.map(id => nodeIds.get(id) ?? id) };

@@ -20,6 +20,10 @@ must be upgraded before this extension is enabled.
 
 ## References and reads
 
+Pilot artifact reads use an existing plan snapshot without replaying pending
+mutation journals or automatically repairing plan replicas. Recovery and repair
+remain desktop workflows; a read permission cannot authorize these writes.
+
 Task references contain `instance_id`, `workspace_id`, and the existing opaque
 Pilot `task_id`. Conversation references reuse v2 `conversationRef`. Desktop
 selection never substitutes for a supplied reference.

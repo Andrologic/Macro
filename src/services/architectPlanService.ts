@@ -4935,6 +4935,21 @@ export const isArchitectPlanSlugAvailable = async (params: {
   );
 };
 
+/** Read existing replicas without journal recovery or automatic metadata repair. */
+export const readArchitectPlanSnapshot = async (
+  branchName: string,
+  planId: string,
+  deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies(),
+): Promise<ArchitectPlanRecord | null> => {
+  const normalizedBranch = normalizeBranchName(branchName);
+  assertGitFlowTargetBranch(normalizedBranch);
+  const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
+  const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
+    registrySnapshot, disableAutoHeal: true,
+  }, deps);
+  return replicaSet?.canonical.plan || null;
+};
+
 export const getArchitectPlan = async (
   branchName: string,
   planId: string,
