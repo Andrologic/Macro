@@ -658,6 +658,8 @@ pub fn run() {
             commands::db_delete_conversations_by_ids,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::pilot_tools::pilot_tool_traces_list,
+            commands::pilot_tools::pilot_tool_trace_read,
             commands::db_search_messages,
             commands::db_create_message,
             commands::db_import_messages,

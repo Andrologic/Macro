@@ -137,24 +137,30 @@ export class TaskCompletionHost {
       next.receipts[key] = { digest, revision, state: 'pending' };
       await this.save(next);
       let firstEffect = true;
-      await this.deps.source.execute(body.ref, body.action, body.title, async () => {
-        await authorize();
-        // The source's reservation guards subsequent effects against retargeting.
-        // The first effect must still match the captured pre-mutation revision.
-        if (firstEffect) {
-          await this.current(delivery, body.snapshot_id, 'task', body.ref, policy);
-          await authorize(); firstEffect = false;
-        }
-      });
-      if (firstEffect) return fail('content_unavailable');
-      const finalSource = body.action === 'delete' ? null : await this.deps.source.load('task', body.ref, policy);
-      const finalHash = finalSource ? await sha([finalSource.fingerprint, finalSource.task, finalSource.items, policy]) : await sha(['deleted', body.ref, revision]);
-      const done = structuredClone(this.journal); done.receipts[key].state = 'applied';
-      done.records[capture.key] = { hash: finalHash, revision };
-      await this.emit('task', body.ref, revision);
-      await this.save(done);
-      for (const [id, c] of this.captures) if (stableJson(c.ref) === stableJson(body.ref)) this.captures.delete(id);
-      return { outcome: 'applied', revision };
+      try {
+        await this.deps.source.execute(body.ref, body.action, body.title, async () => {
+          await authorize();
+          // The source's reservation guards subsequent effects against retargeting.
+          // The first effect must still match the captured pre-mutation revision.
+          if (firstEffect) {
+            await this.current(delivery, body.snapshot_id, 'task', body.ref, policy);
+            await authorize(); firstEffect = false;
+          }
+        });
+        if (firstEffect) return fail('content_unavailable');
+        const finalSource = body.action === 'delete' ? null : await this.deps.source.load('task', body.ref, policy);
+        const finalHash = finalSource ? await sha([finalSource.fingerprint, finalSource.task, finalSource.items, policy]) : await sha(['deleted', body.ref, revision]);
+        const done = structuredClone(this.journal); done.receipts[key].state = 'applied';
+        done.records[capture.key] = { hash: finalHash, revision };
+        await this.emit('task', body.ref, revision);
+        await this.save(done);
+        for (const [id, c] of this.captures) if (stableJson(c.ref) === stableJson(body.ref)) this.captures.delete(id);
+        return { outcome: 'applied', revision };
+      } catch {
+        // A durable intent exists; any subsequent failure is uncertain, even if
+        // its underlying error normally describes a retryable refusal.
+        return fail('conflict');
+      }
     }
     if (request.operation === 'task.artifact.read' || request.operation === 'conversation.tool.read') {
       const { ref, snapshot_id, item_id, offset_bytes } = request.body;

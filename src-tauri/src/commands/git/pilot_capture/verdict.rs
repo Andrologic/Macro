@@ -88,8 +88,8 @@ pub async fn commit(
 
 #[cfg(all(test, unix))]
 mod tests {
+    use super::super::core::{create, PilotCaptureSource};
     use super::*;
-    use crate::core::{create, PilotCaptureSource};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 

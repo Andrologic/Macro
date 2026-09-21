@@ -331,6 +331,7 @@ const resolveWorkspacePaths = async (params: {
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   allowFallbackPaths?: boolean;
+  existingMetadataOnly?: boolean;
 }): Promise<ArtifactWorkspaceTarget[]> => {
   const appState = useAppStore.getState();
   const knownProjectIds = collectKnownProjectIds({
@@ -361,7 +362,7 @@ const resolveWorkspacePaths = async (params: {
       workspacePath: projectPath,
       workspaceScope: params.executionModesByProjectId?.[projectId] === 'direct'
         ? 'direct'
-        : METADATA_WORKSPACE_SCOPE,
+        : params.existingMetadataOnly ? 'metadata_existing' : METADATA_WORKSPACE_SCOPE,
     }];
   });
   if (registeredTargets.length > 0) {
@@ -383,7 +384,7 @@ const resolveWorkspacePaths = async (params: {
   }
   const fallbackScope = projectIds.length > 0 && projectIds.every(
     (projectId) => params.executionModesByProjectId?.[projectId] === 'direct'
-  ) ? 'direct' : METADATA_WORKSPACE_SCOPE;
+  ) ? 'direct' : params.existingMetadataOnly ? 'metadata_existing' : METADATA_WORKSPACE_SCOPE;
   return filterNonWslProjectPaths(
     unique([...(params.repoPaths || []), ...replicaRepoPaths, activeRoot]),
   ).map((workspacePath) => ({ workspacePath, workspaceScope: fallbackScope }));
@@ -499,6 +500,7 @@ export const readPlanTaskArtifactIndex = async (params: {
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
+  existingMetadataOnly?: boolean;
 }): Promise<PlanTaskArtifactIndex> => {
   if (!tauriIpc.isTauriAvailable()) {
     return emptyArtifactIndex(params.planId);
@@ -799,11 +801,13 @@ export const listVisibleTaskArtifacts = async (params: {
   task: CatalogedImplementTask;
   includeInherited?: boolean;
   includeOwn?: boolean;
+  existingMetadataOnly?: boolean;
 }): Promise<VisiblePlanTaskArtifact[]> => {
   const index = await readPlanTaskArtifactIndex({
     branchName: params.branchName,
     planId: params.plan.id,
     ...getPlanWorkspaceHints(params.plan),
+    existingMetadataOnly: params.existingMetadataOnly,
   });
   const visibleTaskIds = resolveVisiblePlanTaskIds({
     plan: params.plan,
@@ -910,11 +914,13 @@ export const readVisibleTaskArtifactContent = async (params: {
   plan: ArchitectPlanRecord;
   task: CatalogedImplementTask;
   artifactId: string;
+  existingMetadataOnly?: boolean;
 }): Promise<{ artifact: VisiblePlanTaskArtifact; content: string }> => {
   const artifacts = await listVisibleTaskArtifacts({
     branchName: params.branchName,
     plan: params.plan,
     task: params.task,
+    existingMetadataOnly: params.existingMetadataOnly,
   });
   const artifact = artifacts.find((candidate) => candidate.id === sanitizeId(params.artifactId));
   if (!artifact) {
@@ -922,6 +928,7 @@ export const readVisibleTaskArtifactContent = async (params: {
   }
   const workspaceTargets = await resolveWorkspacePaths({
     ...getPlanWorkspaceHints(params.plan),
+    existingMetadataOnly: params.existingMetadataOnly,
   });
   for (const target of workspaceTargets) {
     const content = await readTextAtWorkspace(target, artifact.path);

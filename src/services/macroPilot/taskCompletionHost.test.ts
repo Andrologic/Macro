@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { ContentHost } from './contentHost';
 import { TaskCompletionHost, type TaskCompletionSource } from './taskCompletionHost';
 import type { ContentDelivery, ContentEvent, ContentTaskDetails, ContentTaskRef } from './contentProtocol';
 const ref: ContentTaskRef = { instance_id: 'instance:demo', workspace_id: 'workspace:demo', task_id: 'task:demo' };
@@ -6,7 +7,7 @@ const policy = { revision: 'visible-1', secrets: ['secret-demo'] };
 const text = (text: string) => ({ content_state: 'complete' as const, text });
 function setup() {
   let persisted: string | null = null; let version = 1; let calls = 0; let clock = 0;
-  let changeOnEffect = true; let body = 'é'.repeat(10000); let effectFailure = false;
+  let changeOnEffect = true; let body = 'é'.repeat(10000); let effectFailure: string | null = null;
   const events: ContentEvent['change'][] = [];
   const task: Omit<ContentTaskDetails, 'ref' | 'snapshot_id' | 'revision' | 'expires_at'> = {
     title: text('Demo'), description: text('Synthetic description'), source: 'standalone', status: 'Pending', draft: false,
@@ -16,7 +17,7 @@ function setup() {
   const source: TaskCompletionSource = { cards: async () => [{ ...task, ref }], load: async kind => ({ fingerprint: version,
     ...(kind === 'task' ? { task } : { items: Array.from({ length: 51 }, (_, position) => ({ artifact_id: `artifact:${position}`, position,
       title: text('Artifact'), summary: text('Demo'), visibility: 'own' as const, content_type: 'text' })), read: async () => body }),
-  }), execute: async (_ref, _action, _title, beforeEffect) => { await beforeEffect(); calls++; if (effectFailure) throw new Error('unavailable'); if (changeOnEffect) version++; } };
+  }), execute: async (_ref, _action, _title, beforeEffect) => { await beforeEffect(); calls++; if (effectFailure) throw new Error(effectFailure); if (changeOnEffect) version++; } };
   const deps = { source, storage: { load: async () => persisted, compareAndSwap: async (old: string | null, next: string) => {
     if (old !== persisted) return false; persisted = next; return true;
   } }, now: () => clock, emit: async (change: ContentEvent['change']) => { events.push(change); } };
@@ -27,7 +28,7 @@ function setup() {
   }) as ContentDelivery;
   const read = (operation: string, body: unknown, session?: string) => host.handle(delivery(operation, body, session), policy, async () => {});
   return { host, deps, read, events, calls: () => calls, change: () => version++, setBody: (s: string) => { body = s; },
-    expire: () => { clock = 300001; }, unchangedEffect: () => { changeOnEffect = false; }, failEffect: () => { effectFailure = true; }, persisted: () => persisted };
+    expire: () => { clock = 300001; }, unchangedEffect: () => { changeOnEffect = false; }, failEffect: (code = 'unavailable') => { effectFailure = code; }, persisted: () => persisted };
 }
 test('pages and UTF-8 details are bound to scope, revision, policy and expiry', async () => {
   const s = setup(); await s.host.initialize();
@@ -66,11 +67,13 @@ test('actions reauthorize before effects and retain idempotence across restart',
   expect(await s.read('task.action', body)).toEqual({ outcome: 'duplicate', revision: 2 }); expect(s.calls()).toBe(1);
   await expect(s.read('task.action', { ...body, title: 'Other' })).rejects.toThrow('conflict');
 });
-test('a failed consumed action cannot execute again', async () => {
-  const s = setup(); await s.host.initialize(); s.failEffect();
+test.each(['content_unavailable', 'forbidden', 'stale_revision'])('partial effects followed by %s require inspection, never a fresh retry', async code => {
+  const s = setup(); await s.host.initialize(); s.failEffect(code);
   const capture = await s.read('task.get', { ref }) as ContentTaskDetails;
   const body = { ref, snapshot_id: capture.snapshot_id, expected_revision: capture.revision, idempotency_key: 'action:demo', action: 'rename', confirmation: 'confirm_task_action', title: 'New' };
-  await expect(s.read('task.action', body)).rejects.toThrow('unavailable');
+  await expect(s.read('task.action', body)).rejects.toThrow('conflict');
+  expect(s.calls()).toBe(1);
+  expect(Object.values(JSON.parse(s.persisted()!).receipts)[0]).toMatchObject({ state: 'pending' });
   await expect(s.read('task.action', body)).rejects.toThrow('conflict'); expect(s.calls()).toBe(1);
 });
 test('cards are paged separately from command and detail preparation', async () => {
@@ -86,7 +89,7 @@ test('revoked authorization at the effect boundary consumes the key without runn
     account_id: 'account:demo', source_session_id: 'session:demo', expires_at: '2030-01-01T00:00:00Z',
     request: { contract_version: '2.0', type: 'request', request_id: 'request:demo', account_id: 'account:demo', operation: 'task.action', body } } as ContentDelivery;
   let checks = 0;
-  await expect(s.host.handle(delivery, policy, async () => { if (++checks > 1) throw new Error('forbidden'); })).rejects.toThrow('forbidden');
+  await expect(s.host.handle(delivery, policy, async () => { if (++checks > 1) throw new Error('forbidden'); })).rejects.toThrow('conflict');
   expect(s.calls()).toBe(0);
   await expect(s.read('task.action', body)).rejects.toThrow('conflict');
 });
@@ -122,4 +125,29 @@ test('source loss invalidations advance revisions before a source becomes availa
   s.deps.source.load = originalLoad;
   const restored = await s.read('task.get', { ref }) as ContentTaskDetails;
   expect(restored.revision).toBeGreaterThan(invalidation.revision);
+});
+
+test('a post-action policy change is a conflict at the transport boundary', async () => {
+  const s = setup(); let changedPolicy = false; let hostJournal: string | null = null;
+  const original = s.deps.source.execute;
+  s.deps.source.execute = async (...args) => { await original(...args); changedPolicy = true; };
+  const host = new ContentHost({ accountId: 'account:demo', instanceId: ref.instance_id, signal: new AbortController().signal,
+    conversations: { clear: () => {} } as never, reviews: {} as never,
+    storage: { load: async () => hostJournal, compareAndSwap: async (old, next) => { if (old !== hostJournal) return false; hostJournal = next; return true; } },
+    commitReview: async () => false, reviewRefs: async () => [], resolveReview: async () => { throw new Error('unused'); },
+    policy: async () => ({ revision: 'visible-1', secrets: changedPolicy ? ['new-policy-secret'] : [] }),
+    taskCompletion: { source: s.deps.source, storage: s.deps.storage }, now: () => 0,
+  });
+  await host.initialize();
+  const request = (operation: string, body: unknown) => ({ transport_version: '2.0', type: 'delivery', request_id: 'request:demo',
+    instance_id: ref.instance_id, account_id: 'account:demo', source_session_id: 'session:demo', expires_at: '2030-01-01T00:00:00Z',
+    request: { contract_version: '2.0', type: 'request', request_id: 'request:demo', account_id: 'account:demo', operation, body } });
+  const authorize = async () => new Date(5000).toISOString();
+  const get = await host.handle(request('task.get', { ref }), authorize);
+  const capture = (get.response as { result: ContentTaskDetails }).result;
+  const result = await host.handle(request('task.action', { ref, snapshot_id: capture.snapshot_id, expected_revision: capture.revision,
+    idempotency_key: 'action:policy-change', action: 'rename', title: 'Renamed', confirmation: 'confirm_task_action' }), authorize);
+  expect(s.calls()).toBe(1);
+  expect(result.response).toMatchObject({ type: 'error', code: 'conflict', retryable: false });
+  expect(Object.values(JSON.parse(s.persisted()!).receipts)[0]).toMatchObject({ state: 'applied' });
 });

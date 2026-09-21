@@ -279,6 +279,7 @@ export class ContentHost {
       const guard = () => { this.check(); if (this.now() >= deadline || this.now() >= Date.parse(delivery.expires_at)) failure('unavailable'); };
       const authorizeNow = async () => { this.check(); deadline = Date.parse(await authorize(delivery)); if (!Number.isFinite(deadline) || deadline > this.now() + 10_000 || deadline > Date.parse(delivery.expires_at)) failure('unavailable'); guard(); };
       let response: unknown;
+      let completedTaskAction = false;
       try {
         if (Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
         await this.policy();
@@ -287,6 +288,7 @@ export class ContentHost {
         if (TASK_COMPLETION_OPERATIONS.has(request.operation)) {
           if (!this.taskCompletion) failure('content_unavailable');
           result = await this.taskCompletion!.handle(delivery, await this.policy(), async () => { await authorizeNow(); await this.policy(); guard(); if (readingPolicy !== this.policyKey) failure('snapshot_expired'); });
+          completedTaskAction = request.operation === 'task.action';
           await authorizeNow();
         } else if (request.operation === 'review.verdict') {
           const { ref, snapshot_id, idempotency_key, expected_revision, verdict } = request.body;
@@ -342,7 +344,7 @@ export class ContentHost {
         if (!deadline) await authorizeNow(); else guard();
         const nativeCode = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
         const codes = new Set(['content_unavailable', 'not_found', 'validation_failed', 'snapshot_expired', 'stale_revision', 'resource_limit', 'conflict']);
-        const code = error instanceof ContentHostError || error instanceof ConversationCaptureError ? error.code : codes.has(nativeCode) ? nativeCode : 'unavailable';
+        const code = completedTaskAction ? 'conflict' : error instanceof ContentHostError || error instanceof ConversationCaptureError ? error.code : codes.has(nativeCode) ? nativeCode : 'unavailable';
         response = { contract_version: '2.0', type: 'error', request_id: request.request_id, account_id: request.account_id, operation: request.operation, code, retryable: code === 'unavailable' };
         if (!validateContentResponse(request, response)) failure('unavailable');
       }

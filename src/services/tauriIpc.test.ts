@@ -1336,3 +1336,15 @@ describe("Pilot native credential IPC", () => {
     }
   });
 });
+
+describe('Pilot trace IPC errors', () => {
+  it('preserves controlled native errors and hides database diagnostics', async () => {
+    const ipc = await loadTauriIpc();
+    invokeMock.mockRejectedValueOnce({ message: 'resource_limit' });
+    await expect(ipc.pilotToolTracesList('conversation')).rejects.toThrow('resource_limit');
+    invokeMock.mockRejectedValueOnce({ message: 'stale_revision' });
+    await expect(ipc.pilotToolTraceRead({ conversationId: 'conversation', messageId: 'message', traceIndex: 0, expectedRevision: 1 })).rejects.toThrow('stale_revision');
+    invokeMock.mockRejectedValueOnce({ message: 'database error with private diagnostics' });
+    await expect(ipc.pilotToolTracesList('conversation')).rejects.toThrow('unavailable');
+  });
+});

@@ -1683,8 +1683,9 @@ describe('architectPlanService', () => {
       filesByWorkspacePath,
     });
     const readPaths: string[] = [];
+    const readScopes: Array<{ operation: string; workspaceScope?: WorkspaceScope }> = [];
     filesByWorkspacePath['/repos/docs']['branches/develop/plans/mixed-recovery-plan/artifacts/large.txt'] = 'Large artifact body';
-    service = await loadArchitectPlanService({ tauriAvailable: true, appSettings, workspaceRoot: '/repos/docs', registrySnapshot, filesByWorkspacePath, readPaths });
+    service = await loadArchitectPlanService({ tauriAvailable: true, appSettings, workspaceRoot: '/repos/docs', registrySnapshot, filesByWorkspacePath, readPaths, workspaceScopeCalls: readScopes });
     const beforeReadFiles = JSON.stringify(filesByWorkspacePath);
     const beforeReadSettings = [...appSettings];
     expect(await service.readArchitectPlanSnapshot(branchName, 'unrelated-missing-plan')).toBeNull();
@@ -1692,6 +1693,7 @@ describe('architectPlanService', () => {
     expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeReadFiles);
     expect([...appSettings]).toEqual(beforeReadSettings);
     expect(readPaths.some(path => path.includes('/artifacts/') || path.endsWith('/chat.jsonl'))).toBe(false);
+    expect(readScopes.filter(call => call.operation === 'read').every(call => call.workspaceScope === 'direct' || call.workspaceScope === 'metadata_existing')).toBe(true);
     await expect(service.updateArchitectPlan({ branchName, planId: 'mixed-recovery-plan', description: 'Guarded update',
       beforeEffect: async () => { throw new Error('authorization revoked'); },
     })).rejects.toThrow('authorization revoked');

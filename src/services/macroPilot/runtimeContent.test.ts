@@ -44,6 +44,15 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   if (command === 'db_list_conversations') return structuredClone(conversations);
   if (command === 'db_get_conversation') return structuredClone(conversations.find(c => c.id === args.id) ?? null);
   if (command === 'db_list_messages') { if (messagesUnavailable) throw 'unavailable'; await messageWait; return structuredClone(messages.filter(message => message.conversation_id === args.conversationId)); }
+  if (command === 'pilot_tool_traces_list') return { revision: 1, traces: messages.filter(message => message.conversation_id === args.conversationId && message.role === 'assistant').flatMap(message =>
+    (JSON.parse(message.tool_traces_json || '[]') as Array<{ tool_call_id: string; tool_name: string; status: string; detail?: string }>).map((trace, trace_index) => ({
+      message_id: message.id, trace_index, tool_call_id: trace.tool_call_id, tool_name: trace.tool_name, status: trace.status,
+      has_detail: Boolean(trace.detail), detail_bytes: new TextEncoder().encode(trace.detail || '').length,
+    }))) };
+  if (command === 'pilot_tool_trace_read') {
+    const message = messages.find(message => message.id === args.messageId && message.conversation_id === args.conversationId)!;
+    return { revision: 1, detail: JSON.parse(message.tool_traces_json!)[Number(args.traceIndex)].detail || '' };
+  }
   if (command === 'pilot_review_commit') {
     const input = args.input as { snapshotId: string; key: string; expectedValueJson: string | null; valueJson: string };
     beforeFresh?.();
@@ -535,7 +544,10 @@ it('serves cards and public tool details through authenticated deliveries withou
     expect(cards).toMatchObject({ type: 'response', result: { items: [{ description: { text: 'Description on the card' }, draft: true, feature: { text: 'demo-feature' } }] } });
     expect(nativeCalls).not.toContain('configuration_get_snapshot');
     const toolRef = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+    const transcriptReads = nativeCalls.filter(command => command === 'db_list_messages').length;
     const listed = await h.deliver(request('conversation.tools.list', { ref: toolRef }));
+    expect(nativeCalls.filter(command => command === 'db_list_messages')).toHaveLength(transcriptReads);
+    expect(nativeCalls).not.toContain('pilot_tool_trace_read');
     if (listed.type !== 'response' || listed.operation !== 'conversation.tools.list') throw Error('tools');
     expect(listed.result.items).toHaveLength(1);
     expect(JSON.stringify(listed)).not.toContain('private'); expect(JSON.stringify(listed)).not.toContain('README.md');

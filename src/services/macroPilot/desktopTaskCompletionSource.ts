@@ -5,8 +5,7 @@ import { getServiceRuntimeCapabilities } from '../index';
 import { readArchitectPlanSnapshot, getGitFlowBaseBranch, resolveTargetBranch } from '../architectPlanService';
 import { listVisibleTaskArtifacts, readVisibleTaskArtifactContent, taskArtifactContentHash } from '../architectPlanArtifactService';
 import { getTaskProjectCommand, loadTaskProjectCommandRegistry } from '../taskProjectCommands';
-import { isToolTrace } from '../toolTraceState';
-import { listMessages } from '../tauriIpc';
+import { pilotToolTracesList, pilotToolTraceRead } from '../tauriIpc';
 import { desktopPilotTasks } from './desktopTaskCatalog';
 import { findPilotTask, pilotTaskId } from './taskIdentity';
 import { assertPilotReservationCurrent, reservePilotAction } from './actionReservations';
@@ -15,7 +14,6 @@ import type { ContentTaskRef, ContentTool } from './contentProtocol';
 import { exportDetailText, type TaskCompletionSource, type DetailRef, type TaskAction } from './taskCompletionHost';
 import { stableJson } from './protocol';
 import { getTaskBusinessId, toTaskRuntimeId } from '../durableIdentity';
-import { utf8Bytes } from './conversationText';
 const fail = (code: string): never => { throw new Error(code); };
 
 export function desktopTaskCompletionSource(instanceId: string, workspaceId: string, conversations: ConversationCaptures, signal?: AbortSignal): TaskCompletionSource {
@@ -41,31 +39,24 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
         if (!('conversation_id' in ref) || ref.instance_id !== instanceId) return fail('not_found');
         const catalog = await conversations.refreshCatalogMetadata();
         if (!catalog.refs.some(candidate => stableJson(candidate) === stableJson(ref))) return fail('not_found');
-        const messages = await listMessages(ref.conversation_id);
-        const items: ContentTool[] = []; const details = new Map<string, string>();
-        let sourceBytes = 0;
-        for (const message of messages) {
-          // tool_traces_json is the structured, visible desktop trace model.
-          // Neither display parsing nor provider replay is a source for tools.
-          if (message.role !== 'assistant' || !message.tool_traces_json) continue;
-          sourceBytes += utf8Bytes(message.tool_traces_json);
-          if (sourceBytes > 8 * 1024 * 1024) return fail('resource_limit');
-          let traces: unknown;
-          try { traces = JSON.parse(message.tool_traces_json); } catch { return fail('content_unavailable'); }
-          if (!Array.isArray(traces) || traces.some(trace => !isToolTrace(trace))) return fail('content_unavailable');
-          for (const trace of traces) {
-            if (!isToolTrace(trace) || (trace.detail !== undefined && typeof trace.detail !== 'string')) return fail('content_unavailable');
-            const traceId = pilotTaskId(`trace/${JSON.stringify([message.id, trace.tool_call_id])}`);
-            if (details.has(traceId)) return fail('content_unavailable');
-            details.set(traceId, trace.detail ?? '');
-            items.push({ trace_id: traceId, message_id: pilotTaskId(message.id), position: items.length,
-              tool_name: text(trace.tool_name), status: trace.status, has_detail: Boolean(trace.detail) });
-            if (items.length > 2000) return fail('resource_limit');
-          }
+        const metadata = await pilotToolTracesList(ref.conversation_id);
+        const items: ContentTool[] = [];
+        const details = new Map<string, { messageId: string; traceIndex: number }>();
+        for (const trace of metadata.traces) {
+          const traceId = pilotTaskId(`trace/${JSON.stringify([trace.message_id, trace.tool_call_id])}`);
+          if (details.has(traceId)) return fail('content_unavailable');
+          details.set(traceId, { messageId: trace.message_id, traceIndex: trace.trace_index });
+          items.push({ trace_id: traceId, message_id: pilotTaskId(trace.message_id), position: items.length,
+            tool_name: text(trace.tool_name), status: trace.status, has_detail: trace.has_detail });
         }
         const current = await conversations.refreshCatalogMetadata();
         if (!current.refs.some(candidate => stableJson(candidate) === stableJson(ref))) return fail('not_found');
-        return { fingerprint: [items, [...details]], items, read: async id => details.get(id) ?? null };
+        return { fingerprint: [metadata.revision, metadata.traces], items, read: async id => {
+          const target = details.get(id); if (!target) return null;
+          const result = await pilotToolTraceRead({ conversationId: ref.conversation_id, ...target, expectedRevision: metadata.revision });
+          if (result.revision !== metadata.revision) return fail('stale_revision');
+          return result.detail;
+        } };
       }
       const task = taskFor(ref);
       if (kind === 'artifacts') {
@@ -75,7 +66,7 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
         if (!plan || plan.status === 'deleted') return fail('content_unavailable');
         const nodeIds = new Map(plan.nodes.map(node => [toTaskRuntimeId({ branchName, planId: plan.id, nodeId: node.id }), node.id]));
         const artifactTask = { ...task, id: getTaskBusinessId(task), dependencies: task.dependencies.map(id => nodeIds.get(id) ?? id) };
-        const target = { branchName, plan, task: artifactTask };
+        const target = { branchName, plan, task: artifactTask, existingMetadataOnly: true };
         const artifacts = await listVisibleTaskArtifacts({ ...target, includeOwn: true, includeInherited: true });
         if (artifacts.length > 2000) return fail('resource_limit');
         const ids = new Map(artifacts.map(artifact => [pilotTaskId(`artifact/${artifact.id}`), artifact.id]));

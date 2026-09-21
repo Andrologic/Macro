@@ -1558,6 +1558,10 @@ const getProjectMetadataScopes = (
 const getScopeWorkspaceScope = (scope: ArchitectMetadataScope): tauriIpc.WorkspaceScope =>
   scope.workspaceScope ?? METADATA_WORKSPACE_SCOPE;
 
+const existingMetadataScope = (scope: ArchitectMetadataScope): ArchitectMetadataScope => ({
+  ...scope, workspaceScope: getScopeWorkspaceScope(scope) === 'metadata' ? 'metadata_existing' : getScopeWorkspaceScope(scope),
+});
+
 const getWorkspaceFallbackScope = async (): Promise<ArchitectMetadataScope | null> => {
   if (!tauriIpc.isTauriAvailable()) {
     return null;
@@ -3839,6 +3843,7 @@ const loadPlanReplicaSet = async (
     allowDivergence?: boolean;
     disableAutoHeal?: boolean;
     metadataOnly?: boolean;
+    existingMetadataOnly?: boolean;
     registrySnapshot?: ValidProjectRegistrySnapshot | null;
   },
   deps?: ResolvedArchitectPlanServiceDependencies
@@ -3857,12 +3862,15 @@ const loadPlanReplicaSet = async (
     registrySnapshot: resolvedRegistrySnapshot,
     deps: resolvedDeps,
   });
-  const scopes = persistedDirectPlan?.scopes ?? await resolveMetadataScopes(
+  const resolvedScopes = persistedDirectPlan?.scopes ?? await resolveMetadataScopes(
     undefined,
     { includeAllKnown: true },
     resolvedRegistrySnapshot,
     resolvedDeps
   );
+  const scopes = resolvedScopes.map(scope => options?.metadataOnly || options?.existingMetadataOnly
+    ? existingMetadataScope(scope)
+    : scope);
   const snapshotDiagnosticsRaw: Array<ArchitectPlanReplicaSnapshotDiagnostics | null> = await Promise.all(
     scopes.map(async (scope) => {
       const planResult = await readPlanAtScopeWithDiagnostics(
@@ -5180,7 +5188,7 @@ export const updateArchitectPlan = async (input: {
   await input.beforeEffect?.();
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
-    registrySnapshot, disableAutoHeal: Boolean(input.beforeEffect),
+    registrySnapshot, disableAutoHeal: Boolean(input.beforeEffect), existingMetadataOnly: Boolean(input.beforeEffect),
   }, deps);
   if (!replicaSet) {
     throwPlanMetadataMissing(normalizedBranch, safeId);
@@ -5374,14 +5382,14 @@ export const updateArchitectPlan = async (input: {
   }
   const candidate = candidateResult.plan;
 
-  const targetScopes = await ensurePlanScopes(
+  const targetScopes = (await ensurePlanScopes(
     candidate.expectedProjectIds || candidate.projectIds || [],
     registrySnapshot,
     deps,
     getPlanExecutionModes(candidate, registrySnapshot),
-  );
+  )).map(scope => input.beforeEffect ? existingMetadataScope(scope) : scope);
   const existingScopes = dedupeScopes([
-    ...replicaSet.expectedScopes,
+    ...replicaSet.expectedScopes.map(scope => input.beforeEffect ? existingMetadataScope(scope) : scope),
     ...replicaSet.snapshots.map((snapshot) => snapshot.scope),
   ]);
   const targetScopeKeys = new Set(targetScopes.map((scope) => scope.scopeKey));

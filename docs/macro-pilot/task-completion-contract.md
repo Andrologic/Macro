@@ -148,3 +148,19 @@ across captures even though desktop retains their hashes rather than their text.
 A successful action advances the persisted task revision even when it leaves task
 metadata unchanged. Cancelling the producer lifecycle settles setup waits and
 releases their subscriptions; an already launched native command is not replayed.
+
+Once the desktop persists a pending action intent, every failure is returned as
+`conflict`, including a later authorization or stale-revision error. Clients must
+keep the uncertain intent and require desktop inspection; they must not retry
+the partial action under a new idempotency key.
+
+Native metadata reads use the `metadata_existing` filesystem scope. It resolves
+only an existing metadata location and never initializes, repairs or migrates
+`@macro`. Direct-project reads retain their existing `.macro` scope. Tool history
+uses bounded native metadata projections and reads one requested detail; message
+content, hidden context and provider replay are not selected into IPC.
+The native trace projection rejects a message whose trace JSON exceeds 16 MiB
+before JSON parsing. It returns at most 2,000 metadata entries with a 1 MiB
+aggregate field budget. Each requested detail is limited to 1 MiB. A persisted
+conversation revision changes with trace content, identity, ordering or ownership,
+so equal-length edits invalidate earlier detail requests.
