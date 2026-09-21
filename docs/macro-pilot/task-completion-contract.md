@@ -10,8 +10,9 @@ Consumers offer `capabilities: ["task-details-1", "task-actions-1"]` in instance
 negotiation. Producers advertise only supported capabilities in their v2 poll.
 Relays select the intersection and dispatch these operations only after selection.
 ACCOUNT negotiation never selects these instance capabilities. Legacy peers omit
-this field and continue using the original v2 operations and v1 commands. A relay
-that rejects the extended poll must be upgraded before this extension is enabled.
+this field and continue using the original v2 operations and v1 commands. On HTTP 400/422 rejection of the extended poll, the desktop retries without
+capabilities for that producer lifecycle. Existing v2 reads continue; the relay
+must be upgraded before this extension is enabled.
 
 `task-details-1` enables `task.get`, `task.artifacts.list`, `task.artifact.read`,
 `conversation.tools.list`, and `conversation.tool.read`. `task-actions-1` enables
@@ -118,3 +119,13 @@ stored immutable request, checks the live grant, and returns `granted_permission
 in the authorized envelope. The desktop refuses effects unless that response
 contains every required permission. A legacy relay that omits these fields cannot
 execute task actions. Client-supplied permission claims are never authority.
+
+## Runtime recovery limits
+
+Interrupted Pilot actions leave consumed receipts and guarded recovery journals.
+A desktop restart does not replay their deletion or plan-replication effects.
+They require desktop inspection. Conversation deletion with pending code replay
+is unavailable until that replay is resolved locally. The local journals retain
+that pending state; no action reports success for partial cleanup. Revision and
+receipt metadata are bounded to 2,000 records each and 1 MiB combined. At that
+limit the host rejects new records explicitly instead of forgetting idempotency.

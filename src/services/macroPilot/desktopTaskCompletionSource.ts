@@ -1,0 +1,141 @@
+import { useAppStore } from '../../stores/useAppStore';
+import { useChatStore } from '../../stores/useChatStore';
+import { getTaskLifecycleCapabilities, useTaskStore } from '../../stores/useTaskStore';
+import { getServiceRuntimeCapabilities } from '../index';
+import { getArchitectPlan, getGitFlowBaseBranch, resolveTargetBranch } from '../architectPlanService';
+import { listVisibleTaskArtifacts, readVisibleTaskArtifactContent, taskArtifactContentHash } from '../architectPlanArtifactService';
+import { getTaskProjectCommand, loadTaskProjectCommandRegistry } from '../taskProjectCommands';
+import { isToolTrace } from '../toolTraceState';
+import { listMessages } from '../tauriIpc';
+import { desktopPilotTasks } from './desktopTaskCatalog';
+import { findPilotTask, pilotTaskId } from './taskIdentity';
+import { assertPilotReservationCurrent, reservePilotAction } from './actionReservations';
+import type { ConversationCaptures } from './conversationCaptures';
+import type { ContentTaskRef, ContentTool } from './contentProtocol';
+import { exportDetailText, type TaskCompletionSource, type DetailRef, type TaskAction } from './taskCompletionHost';
+import { stableJson } from './protocol';
+import { utf8Bytes } from './conversationText';
+const fail = (code: string): never => { throw new Error(code); };
+
+export function desktopTaskCompletionSource(instanceId: string, workspaceId: string, conversations: ConversationCaptures): TaskCompletionSource {
+  const taskFor = (ref: DetailRef) => {
+    if (ref.instance_id !== instanceId || !('workspace_id' in ref) || ref.workspace_id !== workspaceId || !('task_id' in ref)) return fail('not_found');
+    const task = findPilotTask(desktopPilotTasks(), ref.task_id);
+    if (!task || !useAppStore.getState().getProjectById(task.project_id)) return fail('not_found');
+    return task;
+  };
+  return {
+    cards: async policy => desktopPilotTasks().map(task => ({
+      ref: { instance_id: instanceId, workspace_id: workspaceId, task_id: pilotTaskId(task.id) },
+      title: exportDetailText(task.title, policy), description: exportDetailText(task.description, policy),
+      source: task.task_source, status: task.status, draft: task.draft,
+      plan_title: task.plan_title ? exportDetailText(task.plan_title, policy) : null,
+      feature: task.feature_slug ? exportDetailText(task.feature_slug, policy) : null,
+      task_kind: task.task_kind ?? null, archived: Boolean(task.archived_at), merged: Boolean(task.merged_at),
+      finalization: task.task_source === 'plan_finalization', merge_state: task.merge_workflow_summary?.phase ?? null,
+    })),
+    load: async (kind, ref, policy) => {
+      const text = (value: string) => exportDetailText(value, policy);
+      if (kind === 'tools') {
+        if (!('conversation_id' in ref) || ref.instance_id !== instanceId) return fail('not_found');
+        const catalog = await conversations.refreshCatalogMetadata();
+        if (!catalog.refs.some(candidate => stableJson(candidate) === stableJson(ref))) return fail('not_found');
+        const messages = await listMessages(ref.conversation_id);
+        const items: ContentTool[] = []; const details = new Map<string, string>();
+        let sourceBytes = 0;
+        for (const message of messages) {
+          // tool_traces_json is the structured, visible desktop trace model.
+          // Neither display parsing nor provider replay is a source for tools.
+          if (message.role !== 'assistant' || !message.tool_traces_json) continue;
+          sourceBytes += utf8Bytes(message.tool_traces_json);
+          if (sourceBytes > 8 * 1024 * 1024) return fail('resource_limit');
+          let traces: unknown;
+          try { traces = JSON.parse(message.tool_traces_json); } catch { return fail('content_unavailable'); }
+          if (!Array.isArray(traces) || traces.some(trace => !isToolTrace(trace))) return fail('content_unavailable');
+          for (const trace of traces) {
+            if (!isToolTrace(trace) || (trace.detail !== undefined && typeof trace.detail !== 'string')) return fail('content_unavailable');
+            const traceId = pilotTaskId(`trace/${JSON.stringify([message.id, trace.tool_call_id])}`);
+            if (details.has(traceId)) return fail('content_unavailable');
+            details.set(traceId, trace.detail ?? '');
+            items.push({ trace_id: traceId, message_id: pilotTaskId(message.id), position: items.length,
+              tool_name: text(trace.tool_name), status: trace.status, has_detail: Boolean(trace.detail) });
+            if (items.length > 2000) return fail('resource_limit');
+          }
+        }
+        const current = await conversations.refreshCatalogMetadata();
+        if (!current.refs.some(candidate => stableJson(candidate) === stableJson(ref))) return fail('not_found');
+        return { fingerprint: [items, [...details]], items, read: async id => details.get(id) ?? null };
+      }
+      const task = taskFor(ref);
+      if (kind === 'artifacts') {
+        if (!task.plan_id || !['architect', 'plan_finalization'].includes(task.task_source)) return { fingerprint: task, items: [], read: async () => null };
+        const branchName = resolveTargetBranch(task.plan_storage_branch || task.plan_target_branch || getGitFlowBaseBranch());
+        const plan = await getArchitectPlan(branchName, task.plan_id);
+        if (!plan || plan.status === 'deleted') return fail('content_unavailable');
+        const target = { branchName, plan, task };
+        const artifacts = await listVisibleTaskArtifacts({ ...target, includeOwn: true, includeInherited: true });
+        if (artifacts.length > 2000) return fail('resource_limit');
+        const ids = new Map(artifacts.map(artifact => [pilotTaskId(`artifact/${artifact.id}`), artifact.id]));
+        return { fingerprint: [task, artifacts], items: artifacts.map((artifact, position) => ({
+          artifact_id: pilotTaskId(`artifact/${artifact.id}`), position, title: text(artifact.title), summary: text(artifact.summary),
+          visibility: artifact.visibility, content_type: artifact.contentType,
+        })), read: async id => {
+          const artifactId = ids.get(id); if (!artifactId) return null;
+          if (stableJson(taskFor(ref)) !== stableJson(task)) return fail('stale_revision');
+          const result = await readVisibleTaskArtifactContent({ ...target, artifactId });
+          if (taskArtifactContentHash(result.content) !== result.artifact.contentHash) return fail('stale_revision');
+          return result.content;
+        } };
+      }
+      const store = useTaskStore.getState();
+      const capabilities = getServiceRuntimeCapabilities();
+      const lifecycle = getTaskLifecycleCapabilities(task, store.publishedStandaloneTasks[task.id] ?? false);
+      const projectIds = [...new Set([task.project_id, ...(task.project_ids ?? []), ...(task.execution_targets ?? []).map(target => target.projectId)])].filter(Boolean);
+      const projects = projectIds.map(id => useAppStore.getState().getProjectById(id));
+      if (projects.length > 32) return fail('resource_limit');
+      const registry = await loadTaskProjectCommandRegistry(projectIds);
+      const configured = projects.map(project => project ? { project, settings: getTaskProjectCommand(registry, project.path) } : null);
+      const commands = configured.flatMap(entry => entry?.settings?.command ? [{ project_id: entry.project.id, project_name: text(entry.project.name), command: text(entry.settings.command) }] : []);
+      const conversation = useChatStore.getState().conversations.find(c => c.task_id === task.id || c.id === task.conversation_id);
+      const runtime = conversation ? useChatStore.getState().getConversationRuntime(conversation.id) : null;
+      const busy = runtime && !['idle', 'error'].includes(runtime.phase);
+      const actions: TaskAction[] = [];
+      if (!busy && capabilities.taskMutation) {
+        if (lifecycle.canRename) actions.push('rename');
+        if (lifecycle.canArchive) actions.push('archive');
+        if (lifecycle.canDelete) actions.push('delete');
+      }
+      if (!busy && capabilities.taskProjectCommands && !task.draft && !task.archived_at && task.task_source !== 'plan_finalization' &&
+        configured.length && configured.every(entry => entry?.settings?.command.trim()) && commands.every(command => command.command.content_state === 'complete')) actions.push('run_commands');
+      return { fingerprint: [task, configured, busy, capabilities, lifecycle], task: {
+        title: text(task.title), description: text(task.description), source: task.task_source, status: task.status,
+        draft: task.draft, plan_title: task.plan_title ? text(task.plan_title) : null, feature: task.feature_slug ? text(task.feature_slug) : null,
+        task_kind: task.task_kind ?? null, archived: Boolean(task.archived_at), merged: Boolean(task.merged_at),
+        finalization: task.task_source === 'plan_finalization', merge_state: task.merge_workflow_summary?.phase ?? null, actions, commands,
+      } };
+    },
+    execute: async (ref: ContentTaskRef, action, title, beforeEffect) => {
+      const task = taskFor(ref);
+      const reservation = reservePilotAction({ taskId: task.id, conversationId: task.conversation_id ?? undefined });
+      try {
+        if (action === 'delete' && task.conversation_id) useChatStore.getState().assertPilotConversationDeletionReady(task.conversation_id, reservation.token);
+        const commandProjectIds = [...new Set([task.project_id, ...(task.project_ids ?? []), ...(task.execution_targets ?? []).map(target => target.projectId)])].filter(Boolean);
+        const commandRegistry = action === 'run_commands' ? stableJson(await loadTaskProjectCommandRegistry(commandProjectIds)) : null;
+        const options = { pilotActionToken: reservation.token, beforeEffect: async () => {
+          assertPilotReservationCurrent(reservation);
+          if (commandRegistry !== null && stableJson(await loadTaskProjectCommandRegistry(commandProjectIds)) !== commandRegistry) return fail('stale_revision');
+          await beforeEffect(); assertPilotReservationCurrent(reservation);
+        } };
+        const store = useTaskStore.getState();
+        if (action === 'rename') await store.renameTask(task.id, title!, options);
+        else if (action === 'archive') await store.archiveTask(task.id, options);
+        else if (action === 'delete') await store.deleteTask(task.id, options);
+        else {
+          const result = await store.runTaskCommands(task.id, options);
+          if (!result || result.status !== 'completed') return fail('content_unavailable');
+        }
+        if (useTaskStore.getState().lastError) return fail('content_unavailable');
+      } finally { reservation.release(); }
+    },
+  };
+}

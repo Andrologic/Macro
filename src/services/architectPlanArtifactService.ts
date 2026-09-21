@@ -161,7 +161,7 @@ const unique = (items: Array<string | null | undefined>): string[] =>
     ),
   );
 
-const hashString = (value: string): string => {
+export const taskArtifactContentHash = (value: string): string => {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
@@ -423,7 +423,7 @@ const writeTextAtWorkspace = async (
 
 const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
   count: index.artifacts.length,
-  indexHash: hashString(stableSerialize(index.artifacts.map((artifact) => ({
+  indexHash: taskArtifactContentHash(stableSerialize(index.artifacts.map((artifact) => ({
     id: artifact.id,
     taskId: artifact.taskId,
     kind: artifact.kind,
@@ -436,8 +436,8 @@ const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
     supersedes: artifact.supersedes,
     updatedAt: artifact.updatedAt,
   })))),
-  contentHash: hashString(index.artifacts.map((artifact) => artifact.contentHash).sort().join('\n')),
-  reviewHash: hashString(stableSerialize((index.reviews || []).map((review) => ({
+  contentHash: taskArtifactContentHash(index.artifacts.map((artifact) => artifact.contentHash).sort().join('\n')),
+  reviewHash: taskArtifactContentHash(stableSerialize((index.reviews || []).map((review) => ({
     artifactId: review.artifactId,
     taskId: review.taskId,
     validatedAt: review.validatedAt,
@@ -1291,7 +1291,7 @@ const putTaskArtifactInternal = async ({
     summary,
     contentType,
     path,
-    contentHash: hashString(normalizedContent),
+    contentHash: taskArtifactContentHash(normalizedContent),
     createdAt: previous?.createdAt || now,
     updatedAt: now,
     createdBy,

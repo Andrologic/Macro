@@ -1164,7 +1164,8 @@ interface ChatStore {
     },
   ) => Promise<void>;
   deleteChatConversations: (conversationIds: string[]) => Promise<void>;
-  completeLinkedTaskConversationDeletion: (conversationId: string) => Promise<boolean>;
+  assertPilotConversationDeletionReady: (conversationId: string, token: symbol) => void;
+  completeLinkedTaskConversationDeletion: (conversationId: string, options?: { pilotActionToken?: symbol; beforeEffect?: () => Promise<void> }) => Promise<boolean>;
   markAsRead: (conversationId: string) => void;
   getConversationByTask: (taskId: string) => Conversation | undefined;
   getConversationMessages: (conversationId: string) => ChatMessage[];
@@ -13142,6 +13143,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
     const completedPendingConversationDeletionIds = new Set<string>();
     for (const saga of pendingLinkedTaskDeletions) {
+      if (saga.requiresPilotAuthorization) continue;
       if (
         saga.ownerType === "plan" &&
         saga.phase === "plan_conversation_created"
@@ -14986,7 +14988,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     },
 
-    completeLinkedTaskConversationDeletion: async (conversationId) => {
+    assertPilotConversationDeletionReady: (conversationId, token) => {
+      assertPilotConversationActionAllowed(conversationId, token);
+      if (activeAssistantStreamPromisesByConversationId.has(conversationId) ||
+          pendingAgentCodeReplayRollbacksByConversationId.has(conversationId) ||
+          pendingAgentCodeReplayMarkersByConversationId.has(conversationId) ||
+          replayRecoveryBlockedConversationIds.has(conversationId)) throw new Error('content_unavailable');
+    },
+
+    completeLinkedTaskConversationDeletion: async (conversationId, options) => {
+      const authorize = async () => {
+        assertPilotConversationActionAllowed(conversationId, options?.pilotActionToken);
+        await options?.beforeEffect?.();
+        assertPilotConversationActionAllowed(conversationId, options?.pilotActionToken);
+      };
+      await authorize();
+      if (options?.pilotActionToken) get().assertPilotConversationDeletionReady(conversationId, options.pilotActionToken);
       deletedConversationIds.add(conversationId);
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
@@ -15005,7 +15022,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       applyLocalConversationRemoval([conversationId]);
 
       try {
+        await authorize();
         await deletePersistedConversation(chatPersistenceAdapters, conversationId);
+        await authorize();
         await deleteConversationToolboxStateIfAvailable(conversationId);
         await hydrateSelectedConversationAfterRemoval([conversationId]);
         return true;

@@ -1,3 +1,4 @@
+import { TaskCompletionHost, TASK_COMPLETION_OPERATIONS, type TaskCompletionSource } from './taskCompletionHost';
 import { ConversationCaptures, ConversationCaptureError, type ConversationRef } from './conversationCaptures';
 import { type TextPolicy, utf8Bytes } from './conversationText';
 import { createReviewCaptureService, type ReviewCaptureInfo, type ReviewCaptureRequest, type ReviewCaptureSource } from './reviewCapture';
@@ -24,6 +25,7 @@ export interface ContentHostDependencies {
   reviewRefs(): Promise<ContentReviewRef[]>;
   resolveReview(ref: ContentReviewRef): Promise<ReviewTarget>;
   policy(): Promise<TextPolicy>;
+  taskCompletion?: { source: TaskCompletionSource; storage: KernelStorage };
   now?: () => number;
 }
 const failure = (code: ContentError['code']): never => { throw new ContentHostError(code); };
@@ -43,8 +45,13 @@ export class ContentHost {
   private replies = new Map<string, { digest: string; expires: number; response: unknown }>();
   private policyKey: string | null = null;
   private reviewOffset = 0;
+  private readonly taskCompletion?: TaskCompletionHost;
   private readonly now: () => number;
-  constructor(private readonly deps: ContentHostDependencies) { this.now = deps.now ?? Date.now; }
+  constructor(private readonly deps: ContentHostDependencies) {
+    this.now = deps.now ?? Date.now;
+    if (deps.taskCompletion) this.taskCompletion = new TaskCompletionHost({ ...deps.taskCompletion, now: this.now,
+      emit: async change => { const next = structuredClone(this.state); this.event(next, change); await this.save(next); } });
+  }
   async validateConversationSendTarget(ref: ConversationRef, expectedRevision: number): Promise<void> {
     return this.serial(async () => {
       await this.policy();
@@ -82,6 +89,7 @@ export class ContentHost {
       next.stream = crypto.randomUUID(); next.sequence = 0; next.outbox = [];
       next.projects = 0; next.conversations = 0;
       await this.save(next);
+      await this.taskCompletion?.initialize();
     });
   }
   private async save(next: Journal, commit = (previous: string | null, value: string) => this.deps.storage.compareAndSwap(previous, value)): Promise<void> {
@@ -106,7 +114,7 @@ export class ContentHost {
     const policy = await this.deps.policy(); this.check();
     const key = await hash(policy); this.check();
     if (this.policyKey !== null && key !== this.policyKey) {
-      this.deps.conversations.clear(); this.replies.clear();
+      this.deps.conversations.clear(); this.replies.clear(); this.taskCompletion?.clear();
       const snapshots = [...this.snapshots.values()]; this.snapshots.clear();
       await Promise.all(snapshots.map(snapshot => this.deps.reviews.release(snapshot.info.snapshot_id).catch(() => undefined)));
     }
@@ -154,6 +162,7 @@ export class ContentHost {
         next.refs = conversations.refs;
       }
       if (stableJson(next) !== stableJson(this.state)) await this.save(next);
+      await this.taskCompletion?.observe(await this.policy());
       // Discover local reviews without a remote read. A bounded rotating batch
       // prevents a large task catalog from monopolizing the producer.
       const refs = new Map((await this.deps.reviewRefs()).map(ref => [stableJson(ref), ref]));
@@ -261,7 +270,7 @@ export class ContentHost {
       if (!validateContentMessage(input) || input.type !== 'delivery') failure('validation_failed');
       const delivery = input as ContentDelivery; const request = delivery.request;
       if (delivery.account_id !== this.deps.accountId || delivery.instance_id !== this.deps.instanceId ||
-        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || !operations.has(request.operation)) failure('validation_failed');
+        request.account_id !== delivery.account_id || request.request_id !== delivery.request_id || (!operations.has(request.operation) && !TASK_COMPLETION_OPERATIONS.has(request.operation))) failure('validation_failed');
       const body = request.body as { instance_id?: string; ref?: { instance_id: string } };
       if ((body.instance_id ?? body.ref?.instance_id) !== this.deps.instanceId) failure('validation_failed');
       const replyKey = await hash([delivery.account_id, delivery.source_session_id, delivery.request_id]);
@@ -275,7 +284,11 @@ export class ContentHost {
         await this.policy();
         const readingPolicy = this.policyKey;
         let result: unknown;
-        if (request.operation === 'review.verdict') {
+        if (TASK_COMPLETION_OPERATIONS.has(request.operation)) {
+          if (!this.taskCompletion) failure('content_unavailable');
+          result = await this.taskCompletion!.handle(delivery, await this.policy(), async () => { await authorizeNow(); await this.policy(); guard(); if (readingPolicy !== this.policyKey) failure('snapshot_expired'); });
+          await authorizeNow();
+        } else if (request.operation === 'review.verdict') {
           const { ref, snapshot_id, idempotency_key, expected_revision, verdict } = request.body;
           const receiptKey = await hash([delivery.account_id, delivery.source_session_id, idempotency_key]);
           const digest = await hash(request.body); const receipt = this.state.receipts[receiptKey];
@@ -319,7 +332,7 @@ export class ContentHost {
         if (readingPolicy !== this.policyKey) failure('snapshot_expired');
         response = { contract_version: '2.0', type: 'response', request_id: request.request_id, account_id: request.account_id, operation: request.operation, result };
         if (!validateContentResponse(request, response)) failure('content_unavailable');
-        if (request.operation !== 'review.verdict') {
+        if (request.operation !== 'review.verdict' && !TASK_COMPLETION_OPERATIONS.has(request.operation)) {
           this.replies.set(replyKey, { digest: requestDigest, expires: Math.min(Date.parse(delivery.expires_at), this.now() + 300_000), response });
           if (this.memoryBytes() + utf8Bytes(this.persisted ?? '') * 2 > CONTENT_BUDGET.host) { this.replies.delete(replyKey); failure('resource_limit'); }
         }
@@ -328,7 +341,7 @@ export class ContentHost {
         // No cached body or controlled error is emitted without current authorization.
         if (!deadline) await authorizeNow(); else guard();
         const nativeCode = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-        const codes = new Set(['content_unavailable', 'not_found', 'validation_failed', 'snapshot_expired', 'stale_revision', 'resource_limit']);
+        const codes = new Set(['content_unavailable', 'not_found', 'validation_failed', 'snapshot_expired', 'stale_revision', 'resource_limit', 'conflict']);
         const code = error instanceof ContentHostError || error instanceof ConversationCaptureError ? error.code : codes.has(nativeCode) ? nativeCode : 'unavailable';
         response = { contract_version: '2.0', type: 'error', request_id: request.request_id, account_id: request.account_id, operation: request.operation, code, retryable: code === 'unavailable' };
         if (!validateContentResponse(request, response)) failure('unavailable');
@@ -352,7 +365,7 @@ export class ContentHost {
     }
   }
   async dispose(): Promise<void> {
-    this.disposed = true; this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear();
-    await this.deps.reviews.dispose(); await this.tail;
+    this.disposed = true; this.taskCompletion?.clear(); this.deps.conversations.clear(); this.snapshots.clear(); this.replies.clear();
+    await this.deps.reviews.dispose(); await this.tail; this.taskCompletion?.clear();
   }
 }

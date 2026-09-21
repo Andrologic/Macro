@@ -591,6 +591,11 @@ const getExecutionTargetsWithRepoPaths = (
     .filter((target): target is TaskExecutionTarget & { repoPath: string } => Boolean(target));
 };
 
+export interface TaskPilotMutationOptions {
+  pilotActionToken?: symbol;
+  beforeEffect?: () => Promise<void>;
+}
+
 const assertLifecycleGitTargetsSafe = async (
   targets: Array<TaskExecutionTarget & { repoPath: string }>,
   worktreePaths: Record<string, string>,
@@ -614,6 +619,7 @@ const assertLifecycleGitTargetsSafe = async (
 
 const resumeLinkedTaskGitCleanup = async (
   saga: LinkedTaskDeletionSaga,
+  beforeEffect?: () => Promise<void>,
 ): Promise<LinkedTaskDeletionSaga> => {
   if (!Array.isArray(saga.executionTargets)) {
     throw new Error(
@@ -631,6 +637,7 @@ const resumeLinkedTaskGitCleanup = async (
             'Le journal de suppression ne contient pas l’identifiant du checkpoint direct.',
           );
         }
+        await beforeEffect?.();
         await tauriIpc.directCheckpointRemove({
           taskId: current.taskId,
           checkpointId: target.checkpointId,
@@ -645,6 +652,7 @@ const resumeLinkedTaskGitCleanup = async (
               : candidate,
           ),
         };
+        await beforeEffect?.();
         await upsertLinkedTaskDeletionSaga(current);
       }
       continue;
@@ -659,6 +667,7 @@ const resumeLinkedTaskGitCleanup = async (
       let inspection = await inspectWorktree();
       if (inspection.status !== 'absent') {
         try {
+          await beforeEffect?.();
           await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
@@ -681,6 +690,7 @@ const resumeLinkedTaskGitCleanup = async (
             : candidate,
         ),
       };
+      await beforeEffect?.();
       await upsertLinkedTaskDeletionSaga(current);
     }
     const updatedTarget = current.executionTargets?.find(
@@ -693,6 +703,7 @@ const resumeLinkedTaskGitCleanup = async (
         );
       if (await branchExists()) {
         try {
+          await beforeEffect?.();
           await tauriIpc.gitBranchDelete({
             repoPath: updatedTarget.repoPath,
             branchName: updatedTarget.branchName,
@@ -713,6 +724,7 @@ const resumeLinkedTaskGitCleanup = async (
             : candidate,
         ),
       };
+      await beforeEffect?.();
       await upsertLinkedTaskDeletionSaga(current);
     }
   }
@@ -1828,6 +1840,7 @@ const ensureTaskExecutionTargetsReady = async (
           repoPath: target.repoPath,
           worktreePath: target.worktreePath,
           command: setupCommand,
+          beforeEffect: options?.beforeEffect,
         });
         if (setupResult.failed) {
           notify.warning(
@@ -1953,10 +1966,15 @@ interface TaskStore {
   deleteManualFeatureDraft: (taskId: string) => Promise<void>;
   createMissingBaseBranch: (issue: TaskMissingBaseBranchIssue) => Promise<void>;
   clearMissingBaseBranchIssue: () => void;
-  renameTask: (taskId: string, title: string) => Promise<void>;
-  archiveTask: (taskId: string, options?: { reason?: string | null; mergedAt?: string | null }) => Promise<void>;
+  renameTask: (taskId: string, title: string, options?: TaskPilotMutationOptions) => Promise<void>;
+  archiveTask: (taskId: string, options?: {
+    reason?: string | null;
+    mergedAt?: string | null;
+    pilotActionToken?: symbol;
+    beforeEffect?: () => Promise<void>;
+  }) => Promise<void>;
   restoreTask: (taskId: string) => Promise<void>;
-  deleteTask: (taskId: string) => Promise<void>;
+  deleteTask: (taskId: string, options?: TaskPilotMutationOptions) => Promise<void>;
   reopenTask: (taskId: string) => Promise<void>;
   startTask: (
     taskId: string,
@@ -1973,7 +1991,7 @@ interface TaskStore {
   ) => Promise<{ task: CatalogedImplementTask; promotedProjectIds: string[] } | null>;
   startReview: (taskId: string) => Promise<void>;
   requestTaskChanges: (taskId: string) => Promise<void>;
-  runTaskCommands: (taskId: string) => Promise<TaskCommandRunResult | null>;
+  runTaskCommands: (taskId: string, options?: TaskPilotMutationOptions) => Promise<TaskCommandRunResult | null>;
   cancelTaskCommands: (taskId: string) => Promise<void>;
   handleTaskCommandTerminalClosed: (tabId: string) => void;
   loadMergeWorkflowReview: (taskId: string, options?: { force?: boolean }) => Promise<MergeWorkflowRuntimeState | null>;
@@ -2144,13 +2162,15 @@ const persistTaskStatusToArchitectPlan = async (
 
 const syncManualFeatureTaskMetadata = async (
   task: CatalogedImplementTask | undefined,
-  setError?: (message: string | null) => void
+  setError?: (message: string | null) => void,
+  beforeEffect?: () => Promise<void>,
 ): Promise<void> => {
   if (!task || !isManualStandaloneTask(task)) {
     return;
   }
   try {
-    await syncManualFeatureMetadataFromTask(task);
+    await beforeEffect?.();
+    await syncManualFeatureMetadataFromTask(task, beforeEffect);
   } catch (error) {
     const normalized = toServiceError(error);
     setError?.(normalized.message);
@@ -2160,14 +2180,16 @@ const syncManualFeatureTaskMetadata = async (
 const commitManualFeatureTaskMetadata = async (
   task: CatalogedImplementTask | undefined,
   message: string,
-  setError?: (message: string | null) => void
+  setError?: (message: string | null) => void,
+  beforeEffect?: () => Promise<void>,
 ): Promise<void> => {
   if (!task || !isManualStandaloneTask(task)) {
     return;
   }
 
   try {
-    await commitManualFeatureMetadata(task, message);
+    await beforeEffect?.();
+    await commitManualFeatureMetadata(task, message, beforeEffect);
   } catch (error) {
     const normalized = toServiceError(error);
     setError?.(normalized.message);
@@ -2593,6 +2615,44 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
   };
 
+  const createPilotTaskEffectGuard = (
+    taskId: string,
+    expectedTask: CatalogedImplementTask,
+    options?: TaskPilotMutationOptions,
+    expectedExecutionContext?: string,
+  ): (() => Promise<void>) => {
+    const pilotGuardEnabled = Boolean(options?.pilotActionToken);
+    const expectedBusinessTaskId = getTaskBusinessId(expectedTask);
+    const scope = (task: CatalogedImplementTask) => JSON.stringify({
+      source: task.task_source, plan: task.plan_id, storage: task.plan_storage_branch,
+      target: task.plan_target_branch, project: task.project_id, projects: task.project_ids,
+      targets: task.execution_targets, conversation: task.conversation_id,
+    });
+    const expectedScope = scope(expectedTask);
+    return async () => {
+      assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
+      await options?.beforeEffect?.();
+      assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
+      if (!pilotGuardEnabled) return;
+      const currentTask = get().getTaskById(taskId);
+      if (!currentTask || getTaskBusinessId(currentTask) !== expectedBusinessTaskId) {
+        throw new Error('The Pilot task target changed before the effect was applied.');
+      }
+      if (scope(currentTask) !== expectedScope || (expectedExecutionContext && expectedExecutionContext !== JSON.stringify(getExecutionTargetsWithRepoPaths(currentTask)))) {
+        throw new Error('The Pilot task execution target changed before the effect was applied.');
+      }
+    };
+  };
+
+  const authorizePilotEffect = async (
+    taskId: string,
+    options?: TaskPilotMutationOptions,
+  ): Promise<void> => {
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
+    await options?.beforeEffect?.();
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
+  };
+
   const setTaskCommandCancellationFailure = (params: {
     taskId: string;
     tabId: string;
@@ -2788,6 +2848,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
       if (!isCurrentRefresh()) return;
       for (const pending of pendingLinkedTaskDeletions) {
+        if (pending.requiresPilotAuthorization) continue;
         if (!isCurrentRefresh()) return;
         const catalogTask = resolveTaskReference(catalog.tasks, pending.taskId);
         const taskStillExists = Boolean(catalogTask);
@@ -3484,8 +3545,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     set({ missingBaseBranchIssue: null });
   },
 
-  renameTask: async (taskId, title) => {
-    assertPilotTaskActionAllowed(taskId);
+  renameTask: async (taskId, title, options) => {
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     set({ lastError: null });
     assertTaskMutationRuntime('renameTask');
 
@@ -3500,9 +3561,17 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    const authorizeEffect = createPilotTaskEffectGuard(
+      taskId,
+      task,
+      options,
+      JSON.stringify(getExecutionTargetsWithRepoPaths(task)),
+    );
+
     try {
       if (isManualStandaloneTask(task)) {
         if (!tauriIpc.isTauriAvailable()) {
+          if (options?.pilotActionToken) throw new Error('content_unavailable');
           set({
             tasks: get().tasks.map((candidate) =>
               candidate.id === taskId ? { ...candidate, title: nextTitle } : candidate
@@ -3511,12 +3580,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           return;
         }
 
+        await authorizeEffect();
         await tauriIpc.workspaceRenameManualFeature({ taskId, title: nextTitle });
         await get().refreshFromPlan();
         await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId });
         await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
           set({ lastError: message });
-        });
+        }, options?.pilotActionToken ? () => authorizePilotEffect(taskId, options) : undefined);
         return;
       }
 
@@ -3531,14 +3601,18 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         return;
       }
 
+      const businessTaskId = getTaskBusinessId(task);
       const nextPlanNodes = (plan.nodes || []).map((node) =>
-        node.id === taskId ? { ...node, title: nextTitle } : node
+        node.id === businessTaskId ? { ...node, title: nextTitle } : node
       );
+      await authorizeEffect();
       await updateArchitectPlan({
         branchName: targetBranch,
         planId: plan.id,
         nodes: nextPlanNodes,
         setActive: false,
+        beforeEffect: options?.pilotActionToken ? authorizeEffect : undefined,
+        expectedRevision: options?.pilotActionToken ? plan.revision : undefined,
       });
 
       const appState = useAppStore.getState();
@@ -3556,7 +3630,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   archiveTask: async (taskId, options) => {
-    assertPilotTaskActionAllowed(taskId);
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     set({ lastError: null });
     assertTaskMutationRuntime('archiveTask');
 
@@ -3584,6 +3658,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return;
     }
 
+    const authorizeEffect = createPilotTaskEffectGuard(
+      taskId,
+      task,
+      options,
+      JSON.stringify(getExecutionTargetsWithRepoPaths(task)),
+    );
+
     try {
       const executionTargets = getExecutionTargetsWithRepoPaths(task);
       executionTargets
@@ -3596,12 +3677,14 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           !isRepositoryRootTarget(target),
       );
       await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
+      await authorizeEffect();
       await tauriIpc.workspaceArchiveManualFeature({
         taskId,
         reason: options?.reason ?? null,
         mergedAt: options?.mergedAt ?? null,
       });
       for (const target of gitTargets) {
+        await authorizeEffect();
         await tauriIpc.gitWorktreeRemove({
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
@@ -3611,6 +3694,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
         const branches = await tauriIpc.gitBranchList(target.repoPath);
         if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+          await authorizeEffect();
           await tauriIpc.gitBranchDelete({
             repoPath: target.repoPath,
             branchName: target.branchName,
@@ -3650,15 +3734,18 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       await get().refreshFromPlan();
+      await authorizePilotEffect(taskId, options);
       await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
         set({ lastError: message });
-      });
+        }, options?.pilotActionToken ? () => authorizePilotEffect(taskId, options) : undefined);
+      await authorizePilotEffect(taskId, options);
       await commitManualFeatureTaskMetadata(
         get().getTaskById(taskId) ?? task,
         `chore(metadata): archive manual feature ${taskId}`,
         (message) => {
           set({ lastError: message });
-        }
+        },
+        options?.pilotActionToken ? () => authorizePilotEffect(taskId, options) : undefined,
       );
     } catch (error) {
       const normalized = toServiceError(error);
@@ -3704,8 +3791,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
   },
 
-  deleteTask: async (taskId) => {
-    assertPilotTaskActionAllowed(taskId);
+  deleteTask: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     set({ lastError: null });
     assertTaskMutationRuntime('deleteTask');
 
@@ -3732,6 +3819,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       set({ lastError: getTaskCommandMutationBlockedMessage('delete') });
       return;
     }
+
+    const authorizeEffect = createPilotTaskEffectGuard(
+      taskId,
+      task,
+      options,
+      JSON.stringify(getExecutionTargetsWithRepoPaths(task)),
+    );
 
     let linkedConversationSaga: LinkedTaskDeletionSaga | null = null;
     try {
@@ -3787,6 +3881,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       );
       linkedConversationSaga = {
             taskId: task.id,
+            ...(options?.pilotActionToken ? { requiresPilotAuthorization: true } : {}),
             conversationId: task.conversation_id ?? '',
             phase: 'prepared' as const,
             draft: task.draft,
@@ -3831,26 +3926,36 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             updatedAt: new Date().toISOString(),
           };
       if (linkedConversationSaga) {
+        await authorizeEffect();
         await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
         linkedConversationSaga = {
           ...linkedConversationSaga,
           phase: 'task_deleting',
           updatedAt: new Date().toISOString(),
         };
+        await authorizeEffect();
         await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
         if (task.draft) {
+          await authorizeEffect();
           await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
         } else {
+          await authorizeEffect();
           await tauriIpc.workspaceDeleteManualFeature(taskId);
         }
-        linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
+        linkedConversationSaga = await resumeLinkedTaskGitCleanup(
+          linkedConversationSaga,
+          () => authorizePilotEffect(taskId, options),
+        );
       } else {
         if (task.draft) {
+          await authorizeEffect();
           await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
         } else {
+          await authorizeEffect();
           await tauriIpc.workspaceDeleteManualFeature(taskId);
         }
         for (const target of gitTargets) {
+          await authorizeEffect();
           await tauriIpc.gitWorktreeRemove({
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
@@ -3859,6 +3964,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           });
           const branches = branchSnapshots.get(target.worktreeKey) ?? { local: [] };
           if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
+            await authorizeEffect();
             await tauriIpc.gitBranchDelete({
               repoPath: target.repoPath,
               branchName: target.branchName,
@@ -3867,6 +3973,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           }
         }
         for (const target of directTargets) {
+          await authorizeEffect();
           await tauriIpc.directCheckpointRemove({
             taskId,
             checkpointId: directCheckpointIds.get(target.worktreeKey)!,
@@ -3906,19 +4013,22 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         };
         let sagaPersistenceError: unknown = null;
         try {
+          await authorizePilotEffect(taskId, options);
           await upsertLinkedTaskDeletionSaga(taskDeletedSaga);
           linkedConversationSaga = taskDeletedSaga;
         } catch (error) {
           sagaPersistenceError = error;
         }
         linkedConversationCleanupCompleted = task.conversation_id
-          ? await useChatStore
+          ? (await authorizePilotEffect(taskId, options), await useChatStore
               .getState()
-              .completeLinkedTaskConversationDeletion(task.conversation_id)
+              .completeLinkedTaskConversationDeletion(task.conversation_id, options))
           : true;
         if (linkedConversationCleanupCompleted && !sagaPersistenceError) {
+          await authorizePilotEffect(taskId, options);
           await removeLinkedTaskDeletionSaga(task.id, taskDeletedSaga.targetBranch);
         } else if (!linkedConversationCleanupCompleted) {
+          await authorizePilotEffect(taskId, options);
           await upsertLinkedTaskDeletionSaga({
             ...taskDeletedSaga,
             lastError: useChatStore.getState().lastError ?? undefined,
@@ -3931,7 +4041,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       try {
-        await removeManualFeatureMetadata(task);
+        await authorizePilotEffect(taskId, options);
+        await removeManualFeatureMetadata(
+          task,
+          options?.pilotActionToken ? () => authorizePilotEffect(taskId, options) : undefined,
+        );
       } catch (error) {
         const normalized = toServiceError(error);
         set({ lastError: normalized.message });
@@ -4264,7 +4378,8 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     await get().setTaskStatus(taskId, 'InProgress');
   },
 
-  runTaskCommands: async (taskId) => {
+  runTaskCommands: async (taskId, options) => {
+    assertPilotTaskActionAllowed(taskId, options?.pilotActionToken);
     if (isAppShutdownGateActive()) {
       set({ lastError: tTask('shutdown.closing', 'Macro is closing.') });
       return null;
@@ -4328,6 +4443,13 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       return null;
     }
 
+    const authorizeEffect = createPilotTaskEffectGuard(
+      taskId,
+      task,
+      options,
+      JSON.stringify(getExecutionTargetsWithRepoPaths(task)),
+    );
+
     set({ lastError: null });
     let keepCommandRunVisible = false;
     let totalCount = 0;
@@ -4358,16 +4480,36 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }));
 
     try {
-      const executionTask = retargetTaskForCurrentAppScope(task);
+      const executionTask = options?.pilotActionToken
+        ? task
+        : retargetTaskForCurrentAppScope(task);
+      await authorizeEffect();
       const registry = await loadTaskProjectCommandRegistry(
         getExecutionTargets(executionTask).map((target) => target.projectId),
       );
+      const expectedCommandRegistry = JSON.stringify(registry);
+      const authorizeConfiguredEffect = async (): Promise<void> => {
+        await authorizeEffect();
+        if (!options?.pilotActionToken) return;
+        const currentRegistry = await loadTaskProjectCommandRegistry(
+          getExecutionTargets(executionTask).map((target) => target.projectId),
+        );
+        if (JSON.stringify(currentRegistry) !== expectedCommandRegistry) {
+          throw new Error('The configured task command changed before the effect was applied.');
+        }
+      };
+      await authorizeConfiguredEffect();
       const { createdWorktrees, preparedTargets } = await ensureTaskExecutionTargetsReady(
         task,
         get().branchWorktrees,
         registry,
+        {
+          ...(options?.pilotActionToken ? { beforeEffect: authorizeConfiguredEffect } : {}),
+          preserveTaskScope: Boolean(options?.pilotActionToken),
+        },
       );
 
+      await authorizeConfiguredEffect();
       set((state) => ({
         branchWorktrees: {
           ...state.branchWorktrees,
@@ -4434,6 +4576,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             target.projectName,
           taskLabel: task.title,
         });
+        await authorizeConfiguredEffect();
         const tab = await terminalStore.startTaskCommandTab({
           taskId,
           projectId: target.projectId,
@@ -4442,6 +4585,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           command: commandEntry.command,
           reveal: commandEntry.openTerminalOnRun,
           promptContext: displayMetadata.promptContext,
+          ...(options?.pilotActionToken ? { beforeEffect: authorizeConfiguredEffect } : {}),
         });
 
         const runAfterTerminalCreation = get().taskCommandRuns[taskId];

@@ -31,6 +31,10 @@ export function validateMessage(message) {
     }
   }
   walk(message);
+  if (['negotiate', 'negotiated', 'poll'].includes(message.type)) {
+    reject(message.type === 'negotiated' && !message.instance_id && (message.capabilities ?? []).length > 0, 'account cannot select instance capabilities');
+    reject((message.capabilities ?? []).includes('task-actions-1') && !(message.capabilities ?? []).includes('task-details-1'), 'task actions require details capability');
+  }
   if (message.type === 'accepted') reject(message.exchange_id !== message.request_id, 'exchange identity mismatch');
   if (message.type === 'delivery') {
     reject(message.request_id !== message.request.request_id || message.account_id !== message.request.account_id, 'delivery correlation mismatch');

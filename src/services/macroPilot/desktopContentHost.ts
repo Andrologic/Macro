@@ -1,3 +1,4 @@
+import { desktopTaskCompletionSource } from './desktopTaskCompletionSource';
 import { desktopPilotTasks } from './desktopTaskCatalog';
 import { pilotTaskId, findPilotTask } from './taskIdentity';
 import { gitBranchList, pilotContentPolicy, pilotReviewCommit, dbGetAppSetting, dbCompareAndSwapAppSetting, workspaceGetBootstrap } from '../tauriIpc';
@@ -72,9 +73,14 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
       branches.local.find(branch => branch.name === target.branchName)?.commit !== revision.head_sha) throw new Error('stale_revision');
     return { repoPath, source: { kind: 'commits', base_sha: revision.base_sha, head_sha: revision.head_sha }, branches: { base: target.targetBranchName, head: target.branchName! } };
   };
-  return new ContentHost({ accountId, instanceId, signal,
-    conversations: new ConversationCaptures({ instanceId, workspaceId, source: desktopConversationCaptureSource(),
-      storage: conversationCaptureStorage(configurationId, instanceId), policy: () => policy, quotaBytes: CONTENT_BUDGET.conversations }),
+  const conversations = new ConversationCaptures({ instanceId, workspaceId, source: desktopConversationCaptureSource(),
+      storage: conversationCaptureStorage(configurationId, instanceId), policy: () => policy, quotaBytes: CONTENT_BUDGET.conversations });
+  const taskKey = `${key}:task-completion:1`;
+  return new ContentHost({ accountId, instanceId, signal, conversations,
+    taskCompletion: { source: desktopTaskCompletionSource(instanceId, workspaceId, conversations), storage: {
+      load: async () => (await dbGetAppSetting(taskKey))?.value_json ?? null,
+      compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: taskKey, expectedValueJson: previous, valueJson: next })).applied,
+    } },
     reviews: createReviewCaptureService(), resolveReview,
     reviewRefs: async () => {
       const tasks = desktopPilotTasks();

@@ -37,6 +37,7 @@ export interface LinkedConversationDeletionSaga {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+  requiresPilotAuthorization?: boolean;
 }
 
 export interface LinkedTaskDeletionSaga {
@@ -51,6 +52,7 @@ export interface LinkedTaskDeletionSaga {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+  requiresPilotAuthorization?: boolean;
 }
 
 export class LinkedConversationDeletionSagaCorruptionError extends Error {
@@ -203,6 +205,7 @@ export const loadLinkedTaskDeletionSagas = async (): Promise<LinkedTaskDeletionS
           createdAt: saga.createdAt,
           updatedAt: saga.updatedAt,
           lastError: saga.lastError,
+          requiresPilotAuthorization: saga.requiresPilotAuthorization,
         }]
       : [],
   );

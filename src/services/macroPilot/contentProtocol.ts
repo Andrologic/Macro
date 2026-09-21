@@ -29,11 +29,11 @@ export type ContentPageContinuationContext = {
 };
 
 type PageResult = { page: { snapshot_id: string; next_cursor: string | null }; items: Array<{
-  message_id?: string; file_id?: string; session_id?: string; project_id?: string;
-  ref?: { conversation_id: string };
+  trace_id?: string; artifact_id?: string; message_id?: string; file_id?: string; session_id?: string; project_id?: string;
+  ref?: { conversation_id?: string; task_id?: string };
 }> };
 const identity = (item: PageResult['items'][number]): string =>
-  (item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id)!;
+  (item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id)!;
 
 /** Adjacent pages plus optional cursor ownership and identities from the full capture. */
 export function validatePageContinuation(previous: unknown, next: unknown, context?: ContentPageContinuationContext): ContentValidation {

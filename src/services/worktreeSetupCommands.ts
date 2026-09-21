@@ -8,6 +8,7 @@ interface RunWorktreeSetupCommandParams {
   repoPath: string;
   worktreePath: string;
   command: string;
+  beforeEffect?: () => Promise<void>;
 }
 
 export interface WorktreeSetupCommandResult {
@@ -98,6 +99,7 @@ export const runWorktreeSetupCommand = async (
         taskLabel: params.taskTitle,
         branchLabel: null,
       },
+      beforeEffect: params.beforeEffect,
     });
 
     const finalTab = await waitForSetupTab(tab.id);

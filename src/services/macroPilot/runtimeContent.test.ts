@@ -521,3 +521,27 @@ it.skipIf(!process.env.PILOT_CAPTURE_BRIDGE)('uses real native Git captures thro
     expect(Object.values(CONTENT_BUDGET).reduce((a, b) => a + b, 0)).toBeLessThan(64 * 1024 * 1024);
   } finally { await h.runtime.stop(); lines.close(); child.stdin.end(); child.kill(); await rm(dir, { recursive: true, force: true }); }
 });
+
+it('serves cards and public tool details through authenticated deliveries without loading each task', async () => {
+  taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'Pending', task_source: 'standalone', title: 'Demo task',
+    description: 'Description on the card', draft: true, plan_title: null, feature_slug: 'demo-feature', task_kind: 'feature', execution_targets: [] }];
+  messages.push({ ...messages[0], id: 'message:tools', role: 'assistant', content: '<think>private reasoning</think>',
+    hidden_context: 'hidden replay', provider_turn_state_json: '{"private":"provider replay"}',
+    tool_traces_json: JSON.stringify([{ tool_call_id: 'call:demo', tool_name: 'read_file', status: 'done', detail: 'README.md' }]) });
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const cards = await h.deliver(request('task.cards.list', { instance_id: instanceId }));
+    expect(cards).toMatchObject({ type: 'response', result: { items: [{ description: { text: 'Description on the card' }, draft: true, feature: { text: 'demo-feature' } }] } });
+    expect(nativeCalls).not.toContain('configuration_get_snapshot');
+    const toolRef = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+    const listed = await h.deliver(request('conversation.tools.list', { ref: toolRef }));
+    if (listed.type !== 'response' || listed.operation !== 'conversation.tools.list') throw Error('tools');
+    expect(listed.result.items).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain('private'); expect(JSON.stringify(listed)).not.toContain('README.md');
+    const detail = await h.deliver(request('conversation.tool.read', { ref: toolRef, snapshot_id: listed.result.page.snapshot_id,
+      item_id: listed.result.items[0].trace_id, offset_bytes: 0 }));
+    expect(detail).toMatchObject({ type: 'response', result: { content: { text: 'README.md' } } });
+    expect(h.requests.some(item => item.body.type === 'poll' && (item.body.capabilities as string[] | undefined)?.includes('task-details-1'))).toBe(true);
+  } finally { await h.runtime.stop(); }
+});

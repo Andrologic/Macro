@@ -132,6 +132,7 @@ interface TerminalStore extends TerminalVisibilityState {
     command: string;
     reveal: boolean;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
+    beforeEffect?: () => Promise<void>;
   }) => Promise<TerminalTab>;
   startWorktreeSetupCommandTab: (params: {
     taskId: string;
@@ -140,6 +141,7 @@ interface TerminalStore extends TerminalVisibilityState {
     title: string;
     command: string;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
+    beforeEffect?: () => Promise<void>;
   }) => Promise<TerminalTab>;
   syncTerminalDisplayMetadata: (params?: { taskId?: string | null }) => Promise<void>;
   reconnectTab: (tabId: string) => Promise<TerminalTab>;
@@ -1347,10 +1349,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return tab;
     },
 
-    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext }) => {
+    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext, beforeEffect }) => {
       await get().initialize();
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
+      await beforeEffect?.();
       const dto = await tauriIpc.terminalStartCommandTab({
         kind: 'task',
         projectId: resolvedProjectId,
@@ -1365,10 +1368,11 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return tab;
     },
 
-    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext }) => {
+    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext, beforeEffect }) => {
       await get().initialize();
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
+      await beforeEffect?.();
       const dto = await tauriIpc.terminalStartCommandTab({
         kind: 'worktree_setup',
         projectId: resolvedProjectId,

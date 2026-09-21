@@ -3822,3 +3822,33 @@ describe('useTaskStore task preparation safety', () => {
   });
 
 });
+
+describe('Pilot task lifecycle authorization', () => {
+  it('refuses a revoked draft deletion before writing a saga or deleting the task', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const task = buildStandaloneTask({ standalone_kind: 'manual_feature', draft: true, conversation_id: null });
+    useTaskStore.setState({ tasks: [task], lastError: null });
+    workspaceDeleteManualFeatureDraftMock.mockClear(); dbSetAppSettingMock.mockClear();
+    const reservation = reservePilotAction({ taskId: task.id });
+    try {
+      await expect(useTaskStore.getState().deleteTask(task.id, {
+        pilotActionToken: reservation.token, beforeEffect: async () => { throw new Error('authorization revoked'); },
+      })).rejects.toThrow('authorization revoked');
+      expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+      expect(dbSetAppSettingMock).not.toHaveBeenCalled();
+    } finally { reservation.release(); }
+  });
+  it('rechecks an execution target after authorization before renaming', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const task = buildStandaloneTask({ standalone_kind: 'manual_feature', draft: true });
+    useTaskStore.setState({ tasks: [task], lastError: null });
+    const reservation = reservePilotAction({ taskId: task.id });
+    try {
+      await expect(useTaskStore.getState().renameTask(task.id, 'Renamed fixture', {
+        pilotActionToken: reservation.token, beforeEffect: async () => {
+          useTaskStore.setState({ tasks: [{ ...task, execution_targets: [{ projectId: 'other-project', repoPath: '/synthetic/other', branchName: 'feature/other', executionKind: 'worktree', worktreeKey: 'other' }] }] });
+        },
+      })).rejects.toThrow('execution target changed');
+    } finally { reservation.release(); }
+  });
+});

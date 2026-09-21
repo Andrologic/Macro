@@ -2455,7 +2455,8 @@ const enqueueArchitectPlanCreation = async <T>(
 const syncPlanTaskMetadataAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
-  plan: ArchitectPlanRecord
+  plan: ArchitectPlanRecord,
+  beforeEffect?: () => Promise<void>,
 ): Promise<void> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return;
   const normalizedBranch = normalizeBranchName(branchName);
@@ -2480,15 +2481,17 @@ const syncPlanTaskMetadataAtScope = async (
       existingTaskEntries
         .filter((entry) => entry.kind === 'dir' || entry.kind === 'directory')
         .filter((entry) => !activeTaskIds.has(entry.name))
-        .map((entry) =>
-          tauriIpc.fsDelete({
+        .map(async (entry) => {
+          await beforeEffect?.();
+          return tauriIpc.fsDelete({
             path: getTaskPlannedPath(normalizedBranch, normalizedPlan.id, entry.name),
             workspaceScope: getScopeWorkspaceScope(scope),
             workspacePath: scope.workspacePath,
-          }).catch(() => undefined)
-        )
+          }).catch(() => undefined);
+        })
     );
-  } catch {
+  } catch (error) {
+    if (beforeEffect) throw error;
     // Ignore missing task directories and keep planned metadata writes best-effort.
   }
 
@@ -2497,7 +2500,8 @@ const syncPlanTaskMetadataAtScope = async (
       writeTextFileAtScope(
         scope,
         getTaskPlannedPath(normalizedBranch, normalizedPlan.id, node.id),
-        buildTaskPlannedMarkdown(normalizedPlan, node)
+        buildTaskPlannedMarkdown(normalizedPlan, node),
+        beforeEffect,
       )
     )
   );
@@ -2524,7 +2528,8 @@ const readJsonFileAtScope = async <T>(
 const writeJsonFileAtScope = async (
   scope: ArchitectMetadataScope,
   path: string,
-  value: unknown
+  value: unknown,
+  beforeEffect?: () => Promise<void>,
 ): Promise<boolean> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return false;
   const content = JSON.stringify(value, null, 2);
@@ -2532,6 +2537,7 @@ const writeJsonFileAtScope = async (
   if (typeof existing === 'string' && areSerializedContentsEqual(existing, content)) {
     return false;
   }
+  await beforeEffect?.();
   await tauriIpc.fsWriteFile({
     path,
     content,
@@ -2564,13 +2570,15 @@ const readTextFileAtScope = async (
 const writeTextFileAtScope = async (
   scope: ArchitectMetadataScope,
   path: string,
-  content: string
+  content: string,
+  beforeEffect?: () => Promise<void>,
 ): Promise<boolean> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return false;
   const existing = await readTextFileAtScope(scope, path);
   if (typeof existing === 'string' && areSerializedContentsEqual(existing, content)) {
     return false;
   }
+  await beforeEffect?.();
   await tauriIpc.fsWriteFile({
     path,
     content,
@@ -2723,14 +2731,15 @@ const readIndexAtScope = async (
 const writeIndexAtScope = async (
   scope: ArchitectMetadataScope,
   branchName: string,
-  index: ArchitectPlanIndex
+  index: ArchitectPlanIndex,
+  beforeEffect?: () => Promise<void>,
 ): Promise<boolean> => {
   const normalized = normalizeBranchName(branchName);
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     return writeLocalIndex(normalized, index);
   }
 
-  return writeJsonFileAtScope(scope, getIndexPath(normalized), index);
+  return writeJsonFileAtScope(scope, getIndexPath(normalized), index, beforeEffect);
 };
 
 const normalizePlanRecordForBranch = (
@@ -2949,6 +2958,7 @@ const writePlanAtScope = async (
   registrySnapshot?: ValidProjectRegistrySnapshot | null,
   options?: {
     chatMessages?: ArchitectPlanChatMessage[];
+    beforeEffect?: () => Promise<void>;
   }
 ): Promise<void> => {
   const normalized = normalizeBranchName(branchName);
@@ -2974,21 +2984,22 @@ const writePlanAtScope = async (
   };
 
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
+    await options?.beforeEffect?.();
     writeLocalPlan(normalized, normalizedPlan);
     return;
   }
 
   const safeId = sanitizeId(normalizedPlan.id);
-  await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), normalizedPlan);
-  await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(normalizedPlan, registrySnapshot));
-  await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan);
+  await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), normalizedPlan, options?.beforeEffect);
+  await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(normalizedPlan, registrySnapshot), options?.beforeEffect);
+  await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan, options?.beforeEffect);
   const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
   const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
     plan: normalizedPlan,
     chatMessages,
     registrySnapshot,
   }));
-  await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest);
+  await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest, options?.beforeEffect);
 };
 
 const writePlanChatAtScope = async (
@@ -3057,6 +3068,7 @@ interface ArchitectPlanReplicaMutationTarget {
 }
 
 interface ArchitectPlanReplicaMutationPayload {
+  requiresPilotAuthorization?: boolean;
   targets: ArchitectPlanReplicaMutationTarget[];
   commitMessage: string;
 }
@@ -3233,14 +3245,17 @@ const getRegistryWorkspaceKey = (
 const applyArchitectPlanReplicaMutation = async (
   entry: ArchitectPlanMutationJournalEntry<ArchitectPlanReplicaMutationPayload>,
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
+  beforeEffect?: () => Promise<void>,
 ): Promise<void> => {
   for (const target of entry.payload.targets) {
+    await beforeEffect?.();
     if (target.action === 'upsert' && target.plan) {
       if (target.replacePlanDirectory) {
         await removePlanAtScope(target.scope, entry.branchName, entry.planId);
       }
       await writePlanAtScope(target.scope, entry.branchName, target.plan, registrySnapshot, {
         chatMessages: target.chatMessages,
+        beforeEffect,
       });
       if (target.chatMessages) {
         await writePlanChatAtScope(
@@ -3267,7 +3282,8 @@ const applyArchitectPlanReplicaMutation = async (
     } else if (target.action === 'remove') {
       await removePlanAtScope(target.scope, entry.branchName, entry.planId);
     }
-    await writeIndexAtScope(target.scope, entry.branchName, target.index);
+    await beforeEffect?.();
+    await writeIndexAtScope(target.scope, entry.branchName, target.index, beforeEffect);
   }
 };
 
@@ -3311,6 +3327,7 @@ const recoverArchitectPlanReplicaMutationsUnlocked = async (
         );
         continue;
       }
+      if (entry.payload.requiresPilotAuthorization) throw new Error('Pilot metadata mutation requires desktop inspection before recovery.');
       const scopesBelongToWorkspace = entry.payload.targets.every((target) => {
         if (target.scope.source === 'local') return true;
         const root = normalizeProjectRegistryPath(target.scope.workspacePath || target.scope.repoPath);
@@ -3372,10 +3389,15 @@ const runArchitectPlanReplicaMutation = async (params: {
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined;
   deps: ResolvedArchitectPlanServiceDependencies;
   commitMessage: string;
+  beforeEffect?: () => Promise<void>;
 }): Promise<void> => {
   const workspaceKey = await resolveReplicaWorkspaceKey(params.deps, params.registrySnapshot, params.targets);
   await withReplicaTransactionLock(workspaceKey, async () => {
-    await recoverArchitectPlanReplicaMutationsUnlocked(params.deps, params.registrySnapshot, workspaceKey);
+    await params.beforeEffect?.();
+    if (params.beforeEffect) {
+      const pending = await loadArchitectPlanMutationJournal(params.deps.tauri);
+      if (pending.some(entry => entry.workspaceKey === workspaceKey)) throw new Error('content_unavailable');
+    } else await recoverArchitectPlanReplicaMutationsUnlocked(params.deps, params.registrySnapshot, workspaceKey);
     const now = new Date().toISOString();
     const entry: ArchitectPlanMutationJournalEntry<ArchitectPlanReplicaMutationPayload> = {
     id: createArchitectPlanMutationId(params),
@@ -3384,30 +3406,38 @@ const runArchitectPlanReplicaMutation = async (params: {
     planId: params.planId,
     operation: params.operation,
     phase: 'prepared',
-    payload: { targets: params.targets, commitMessage: params.commitMessage },
+    payload: { targets: params.targets, commitMessage: params.commitMessage, ...(params.beforeEffect ? { requiresPilotAuthorization: true } : {}) },
     createdAt: now,
     updatedAt: now,
   };
     let currentEntry = entry;
+    await params.beforeEffect?.();
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
     try {
     currentEntry = { ...currentEntry, phase: 'applying', updatedAt: new Date().toISOString() };
+    await params.beforeEffect?.();
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
-    await applyArchitectPlanReplicaMutation(currentEntry, params.registrySnapshot);
+    await applyArchitectPlanReplicaMutation(currentEntry, params.registrySnapshot, params.beforeEffect);
     currentEntry = { ...currentEntry, phase: 'files_applied', updatedAt: new Date().toISOString() };
+    await params.beforeEffect?.();
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
     currentEntry = { ...currentEntry, phase: 'committing', updatedAt: new Date().toISOString() };
+    await params.beforeEffect?.();
     await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
+    await params.beforeEffect?.();
     await commitMetadataScopes(
       params.targets
         .filter((target) => shouldCommitMutationTarget(target, params.registrySnapshot))
         .map((target) => target.scope),
       params.commitMessage,
       { commit: true },
-      params.deps,
+      params.beforeEffect ? { ...params.deps, tauri: { ...params.deps.tauri, macroBranchCommitIfDirty: async args => {
+        await params.beforeEffect!(); return params.deps.tauri.macroBranchCommitIfDirty(args);
+      } } } : params.deps,
     );
     await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri);
     } catch (error) {
+      await params.beforeEffect?.();
       await upsertArchitectPlanMutationJournal({
         ...currentEntry,
         updatedAt: new Date().toISOString(),
@@ -5120,6 +5150,8 @@ export const updateArchitectPlan = async (input: {
   nodes?: PlanNode[];
   predictedBranches?: PredictedBranch[];
   setActive?: boolean;
+  beforeEffect?: () => Promise<void>;
+  expectedRevision?: number;
 }, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
@@ -5133,6 +5165,7 @@ export const updateArchitectPlan = async (input: {
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const existing = replicaSet.canonical.plan;
+  if (input.expectedRevision !== undefined && existing.revision !== input.expectedRevision) throw new Error('stale_revision');
   const inputKeys = Object.keys(input).filter((key) => key !== 'branchName' && key !== 'planId');
   const isRestoringArchivedPlan =
     existing.status === 'archived' &&
@@ -5370,6 +5403,7 @@ export const updateArchitectPlan = async (input: {
     await runArchitectPlanReplicaMutation({
       branchName: normalizedBranch,
       planId: safeId,
+      beforeEffect: input.beforeEffect,
       operation: 'update',
       targets,
       registrySnapshot,
@@ -5412,6 +5446,7 @@ export const updateArchitectPlan = async (input: {
   await runArchitectPlanReplicaMutation({
     branchName: normalizedBranch,
     planId: next.id,
+    beforeEffect: input.beforeEffect,
     operation: existing.status === 'archived' && next.status !== 'archived' ? 'restore' : 'update',
     targets,
     registrySnapshot,
