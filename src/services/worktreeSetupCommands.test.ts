@@ -301,4 +301,23 @@ describe('runWorktreeSetupCommand', () => {
       tabId: 'setup-tab-1',
     });
   });
+  it('settles a pending setup wait when the Pilot lifecycle is cancelled', async () => {
+    const controller = new AbortController();
+    const started = waitForNextStart();
+    const pending = runWorktreeSetupCommand({ ...commandParams('sleep forever'), signal: controller.signal });
+    const settled = pending.catch(error => error);
+    await started; controller.abort();
+    expect((await settled).message).toContain('cancelled');
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
+  it('settles a pending setup wait when the terminal disappears', async () => {
+    const started = waitForNextStart();
+    const pending = runWorktreeSetupCommand(commandParams('sleep forever'));
+    const settled = pending.catch(error => error);
+    await started;
+    useTerminalStore.setState({ tabs: {} });
+    expect((await settled).message).toContain('removed');
+  });
+
 });

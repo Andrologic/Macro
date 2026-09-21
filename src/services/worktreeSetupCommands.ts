@@ -9,6 +9,7 @@ interface RunWorktreeSetupCommandParams {
   worktreePath: string;
   command: string;
   beforeEffect?: () => Promise<void>;
+  signal?: AbortSignal;
 }
 
 export interface WorktreeSetupCommandResult {
@@ -43,29 +44,25 @@ const isFailedTerminalTab = (tab: TerminalTab): boolean =>
   tab.status === 'error' ||
   (typeof tab.lastExitCode === 'number' && tab.lastExitCode !== 0);
 
-const waitForSetupTab = (tabId: string): Promise<TerminalTab> =>
-  new Promise((resolve) => {
-    const readCurrent = () => useTerminalStore.getState().tabs[tabId] ?? null;
-    const current = readCurrent();
-    if (current && isFinalTerminalTab(current)) {
-      resolve(current);
-      return;
-    }
-
-    const unsubscribe = useTerminalStore.subscribe((state) => {
-      const tab = state.tabs[tabId];
-      if (!tab || !isFinalTerminalTab(tab)) {
-        return;
-      }
-      unsubscribe();
-      resolve(tab);
-    });
-
-    const nextCurrent = readCurrent();
-    if (nextCurrent && isFinalTerminalTab(nextCurrent)) {
-      unsubscribe();
-      resolve(nextCurrent);
-    }
+const waitForSetupTab = (tabId: string, signal?: AbortSignal): Promise<TerminalTab> =>
+  new Promise((resolve, reject) => {
+    let unsubscribe = () => {};
+    let settled = false;
+    const finish = (tab?: TerminalTab, error?: Error) => {
+      if (settled) return;
+      settled = true; unsubscribe(); signal?.removeEventListener('abort', abort);
+      if (error) reject(error); else resolve(tab!);
+    };
+    const abort = () => finish(undefined, new Error('Setup command wait cancelled.'));
+    const inspect = () => {
+      const tab = useTerminalStore.getState().tabs[tabId];
+      if (signal?.aborted) abort();
+      else if (!tab) finish(undefined, new Error('Setup terminal was removed.'));
+      else if (isFinalTerminalTab(tab)) finish(tab);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    unsubscribe = useTerminalStore.subscribe(inspect);
+    inspect();
   });
 
 export const runWorktreeSetupCommand = async (
@@ -102,7 +99,7 @@ export const runWorktreeSetupCommand = async (
       beforeEffect: params.beforeEffect,
     });
 
-    const finalTab = await waitForSetupTab(tab.id);
+    const finalTab = await waitForSetupTab(tab.id, params.signal);
     const failed = isFailedTerminalTab(finalTab);
 
     if (failed) {

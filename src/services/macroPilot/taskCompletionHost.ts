@@ -27,7 +27,7 @@ interface Receipt { digest: string; revision: number; state: 'pending' | 'applie
 interface Journal { version: 1; records: Record<string, Revision>; receipts: Record<string, Receipt> }
 interface Capture {
   binding: string; key: string; kind: CaptureKind; ref: CaptureRef; revision: number;
-  observed: number; policy: string; cursors: Map<string, number>; bodies: Map<string, string>;
+  observed: number; policy: string; cursors: Map<string, number>; bodies: Map<string, { hash: string; bytes: number }>;
 }
 const fail = (code: string): never => { throw new Error(code); };
 const sha = async (value: unknown) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(stableJson(value)))), b => b.toString(16).padStart(2, '0')).join('');
@@ -66,7 +66,7 @@ export class TaskCompletionHost {
     for (const [id, capture] of this.captures) if (capture.observed + 300_000 <= this.now()) this.captures.delete(id);
   }
   private budget() {
-    const size = [...this.captures.values()].reduce((sum, c) => sum + utf8Bytes(stableJson({ ...c, cursors: [...c.cursors], bodies: [...c.bodies] })), 0);
+    const size = [...this.captures.values()].reduce((sum, c) => sum + [...c.bodies.values()].reduce((bytes, body) => bytes + body.bytes, 0) + utf8Bytes(stableJson({ ...c, cursors: [...c.cursors], bodies: [...c.bodies] })), 0);
     if (size > 8 * 1024 * 1024 || this.captures.size > 128) fail('resource_limit');
   }
   private async load(kind: CaptureKind, ref: CaptureRef, policy: TextPolicy) {
@@ -143,7 +143,10 @@ export class TaskCompletionHost {
         }
       });
       if (firstEffect) return fail('content_unavailable');
+      const finalSource = body.action === 'delete' ? null : await this.deps.source.load('task', body.ref, policy);
+      const finalHash = finalSource ? await sha([finalSource.fingerprint, finalSource.task, finalSource.items, policy]) : await sha(['deleted', body.ref, revision]);
       const done = structuredClone(this.journal); done.receipts[key].state = 'applied';
+      done.records[capture.key] = { hash: finalHash, revision };
       await this.emit('task', body.ref, revision);
       await this.save(done);
       for (const [id, c] of this.captures) if (stableJson(c.ref) === stableJson(body.ref)) this.captures.delete(id);
@@ -159,8 +162,9 @@ export class TaskCompletionHost {
       if (utf8Bytes(raw) > 1024 * 1024) return fail('resource_limit');
       const content = /<\/?(?:think|analysis|reasoning)(?:\s|>)/i.test(raw) ? { content_state: 'withheld' as const, reason: 'unknown_provenance' as const } : controlledText(raw, policy);
       const fullHash = await sha(raw); const previous = capture.bodies.get(item_id);
-      if (previous && previous !== fullHash) return fail('stale_revision');
-      capture.bodies.set(item_id, fullHash); this.budget();
+      if (previous && previous.hash !== fullHash) return fail('stale_revision');
+      capture.bodies.set(item_id, { hash: fullHash, bytes: utf8Bytes(raw) });
+      try { this.budget(); } catch (error) { if (previous) capture.bodies.set(item_id, previous); else capture.bodies.delete(item_id); throw error; }
       // Recheck index/visibility after loading the requested body.
       await this.current(delivery, snapshot_id, kind, ref, policy);
       if (content.content_state === 'withheld') {

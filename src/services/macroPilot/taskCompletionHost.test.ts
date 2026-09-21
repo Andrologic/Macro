@@ -6,7 +6,7 @@ const policy = { revision: 'visible-1', secrets: ['secret-demo'] };
 const text = (text: string) => ({ content_state: 'complete' as const, text });
 function setup() {
   let persisted: string | null = null; let version = 1; let calls = 0; let clock = 0;
-  let body = 'é'.repeat(10000); let effectFailure = false;
+  let changeOnEffect = true; let body = 'é'.repeat(10000); let effectFailure = false;
   const events: ContentEvent['change'][] = [];
   const task: Omit<ContentTaskDetails, 'ref' | 'snapshot_id' | 'revision' | 'expires_at'> = {
     title: text('Demo'), description: text('Synthetic description'), source: 'standalone', status: 'Pending', draft: false,
@@ -16,7 +16,7 @@ function setup() {
   const source: TaskCompletionSource = { cards: async () => [{ ...task, ref }], load: async kind => ({ fingerprint: version,
     ...(kind === 'task' ? { task } : { items: Array.from({ length: 51 }, (_, position) => ({ artifact_id: `artifact:${position}`, position,
       title: text('Artifact'), summary: text('Demo'), visibility: 'own' as const, content_type: 'text' })), read: async () => body }),
-  }), execute: async (_ref, _action, _title, beforeEffect) => { await beforeEffect(); calls++; if (effectFailure) throw new Error('unavailable'); version++; } };
+  }), execute: async (_ref, _action, _title, beforeEffect) => { await beforeEffect(); calls++; if (effectFailure) throw new Error('unavailable'); if (changeOnEffect) version++; } };
   const deps = { source, storage: { load: async () => persisted, compareAndSwap: async (old: string | null, next: string) => {
     if (old !== persisted) return false; persisted = next; return true;
   } }, now: () => clock, emit: async (change: ContentEvent['change']) => { events.push(change); } };
@@ -27,7 +27,7 @@ function setup() {
   }) as ContentDelivery;
   const read = (operation: string, body: unknown, session?: string) => host.handle(delivery(operation, body, session), policy, async () => {});
   return { host, deps, read, events, calls: () => calls, change: () => version++, setBody: (s: string) => { body = s; },
-    expire: () => { clock = 300001; }, failEffect: () => { effectFailure = true; }, persisted: () => persisted };
+    expire: () => { clock = 300001; }, unchangedEffect: () => { changeOnEffect = false; }, failEffect: () => { effectFailure = true; }, persisted: () => persisted };
 }
 test('pages and UTF-8 details are bound to scope, revision, policy and expiry', async () => {
   const s = setup(); await s.host.initialize();
@@ -89,4 +89,24 @@ test('revoked authorization at the effect boundary consumes the key without runn
   await expect(s.host.handle(delivery, policy, async () => { if (++checks > 1) throw new Error('forbidden'); })).rejects.toThrow('forbidden');
   expect(s.calls()).toBe(0);
   await expect(s.read('task.action', body)).rejects.toThrow('conflict');
+});
+
+test('unchanged successful effects advance the persisted revision of later reads', async () => {
+  const s = setup(); await s.host.initialize(); s.unchangedEffect();
+  const before = await s.read('task.get', { ref }) as ContentTaskDetails;
+  const result = await s.read('task.action', { ref, snapshot_id: before.snapshot_id, expected_revision: before.revision,
+    idempotency_key: 'action:unchanged', action: 'rename', title: 'Demo', confirmation: 'confirm_task_action' }) as { revision: number };
+  const after = await s.read('task.get', { ref }) as ContentTaskDetails;
+  expect(result.revision).toBe(before.revision + 1); expect(after.revision).toBe(result.revision);
+});
+test('enforces the shared body budget across distinct items and keeps rejected reads from poisoning captures', async () => {
+  const s = setup(); await s.host.initialize(); s.setBody('x'.repeat(1024 * 1024));
+  const page = await s.read('task.artifacts.list', { ref }) as { page: { snapshot_id: string } };
+  let accepted = 0;
+  for (let index = 0; index < 9; index++) {
+    try { await s.read('task.artifact.read', { ref, snapshot_id: page.page.snapshot_id, item_id: `artifact:${index}`, offset_bytes: 0 }); accepted++; }
+    catch (error) { expect((error as Error).message).toBe('resource_limit'); }
+  }
+  expect(accepted).toBeGreaterThan(0); expect(accepted).toBeLessThan(9);
+  await expect(s.read('task.artifact.read', { ref, snapshot_id: page.page.snapshot_id, item_id: 'artifact:0', offset_bytes: 16384 })).resolves.toBeDefined();
 });

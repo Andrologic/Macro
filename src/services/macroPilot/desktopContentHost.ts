@@ -77,7 +77,7 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
       storage: conversationCaptureStorage(configurationId, instanceId), policy: () => policy, quotaBytes: CONTENT_BUDGET.conversations });
   const taskKey = `${key}:task-completion:1`;
   return new ContentHost({ accountId, instanceId, signal, conversations,
-    taskCompletion: { source: desktopTaskCompletionSource(instanceId, workspaceId, conversations), storage: {
+    taskCompletion: { source: desktopTaskCompletionSource(instanceId, workspaceId, conversations, signal), storage: {
       load: async () => (await dbGetAppSetting(taskKey))?.value_json ?? null,
       compareAndSwap: async (previous, next) => (await dbCompareAndSwapAppSetting({ key: taskKey, expectedValueJson: previous, valueJson: next })).applied,
     } },

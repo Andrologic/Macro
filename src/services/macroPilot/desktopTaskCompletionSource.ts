@@ -17,7 +17,7 @@ import { stableJson } from './protocol';
 import { utf8Bytes } from './conversationText';
 const fail = (code: string): never => { throw new Error(code); };
 
-export function desktopTaskCompletionSource(instanceId: string, workspaceId: string, conversations: ConversationCaptures): TaskCompletionSource {
+export function desktopTaskCompletionSource(instanceId: string, workspaceId: string, conversations: ConversationCaptures, signal?: AbortSignal): TaskCompletionSource {
   const taskFor = (ref: DetailRef) => {
     if (ref.instance_id !== instanceId || !('workspace_id' in ref) || ref.workspace_id !== workspaceId || !('task_id' in ref)) return fail('not_found');
     const task = findPilotTask(desktopPilotTasks(), ref.task_id);
@@ -95,7 +95,16 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
       if (projects.length > 32) return fail('resource_limit');
       const registry = await loadTaskProjectCommandRegistry(projectIds);
       const configured = projects.map(project => project ? { project, settings: getTaskProjectCommand(registry, project.path) } : null);
-      const commands = configured.flatMap(entry => entry?.settings?.command ? [{ project_id: entry.project.id, project_name: text(entry.project.name), command: text(entry.settings.command) }] : []);
+      const commands = configured.flatMap(entry => {
+        if (!entry?.settings) return [];
+        const target = task.execution_targets?.find(target => target.projectId === entry.project.id);
+        const setup = target?.executionMode === 'direct' ? '' : entry.settings.worktreeSetupCommand?.trim();
+        return [
+          ...(setup ? [{ project_id: entry.project.id, project_name: text(`${entry.project.name} (setup)`), command: text(setup) }] : []),
+          ...(entry.settings.command ? [{ project_id: entry.project.id, project_name: text(entry.project.name), command: text(entry.settings.command) }] : []),
+        ];
+      });
+      if (commands.length > 32) return fail('resource_limit');
       const conversation = useChatStore.getState().conversations.find(c => c.task_id === task.id || c.id === task.conversation_id);
       const runtime = conversation ? useChatStore.getState().getConversationRuntime(conversation.id) : null;
       const busy = runtime && !['idle', 'error'].includes(runtime.phase);
@@ -121,7 +130,8 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
         if (action === 'delete' && task.conversation_id) useChatStore.getState().assertPilotConversationDeletionReady(task.conversation_id, reservation.token);
         const commandProjectIds = [...new Set([task.project_id, ...(task.project_ids ?? []), ...(task.execution_targets ?? []).map(target => target.projectId)])].filter(Boolean);
         const commandRegistry = action === 'run_commands' ? stableJson(await loadTaskProjectCommandRegistry(commandProjectIds)) : null;
-        const options = { pilotActionToken: reservation.token, beforeEffect: async () => {
+        const options = { signal, pilotActionToken: reservation.token, beforeEffect: async () => {
+          if (signal?.aborted) return fail('unavailable');
           assertPilotReservationCurrent(reservation);
           if (commandRegistry !== null && stableJson(await loadTaskProjectCommandRegistry(commandProjectIds)) !== commandRegistry) return fail('stale_revision');
           await beforeEffect(); assertPilotReservationCurrent(reservation);

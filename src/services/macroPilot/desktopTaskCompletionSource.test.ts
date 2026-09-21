@@ -3,6 +3,7 @@ import type { DbMessage } from '../tauriIpc';
 const task = { id: 'task:demo', project_id: 'project:demo', project_ids: ['project:demo'], task_source: 'architect', plan_id: 'plan:demo',
   plan_storage_branch: 'develop', title: 'Synthetic task', description: 'Card description', status: 'Pending', draft: true,
   plan_title: 'Demo plan', feature_slug: null, merged_at: null, archived_at: null };
+let configured: { command: string; worktreeSetupCommand: string } | undefined;
 let messages: DbMessage[] = []; let artifactCalls = 0; let configCalls = 0; let visible = true;
 const project = { id: 'project:demo', name: 'Demo', path: '/synthetic/demo' };
 mock.module('../../stores/useAppStore', () => ({ useAppStore: { getState: () => ({ getProjectById: () => project }) } }));
@@ -15,7 +16,7 @@ mock.module('../architectPlanArtifactService', () => ({
   readVisibleTaskArtifactContent: async () => { artifactCalls++; return { content: 'Actual artifact text', artifact: { contentHash: 'hash' } }; },
   taskArtifactContentHash: () => 'hash',
 }));
-mock.module('../taskProjectCommands', () => ({ loadTaskProjectCommandRegistry: async () => { configCalls++; return {}; }, getTaskProjectCommand: () => undefined }));
+mock.module('../taskProjectCommands', () => ({ loadTaskProjectCommandRegistry: async () => { configCalls++; return {}; }, getTaskProjectCommand: () => configured }));
 mock.module('../tauriIpc', () => ({ listMessages: async () => messages }));
 const { desktopTaskCompletionSource } = await import('./desktopTaskCompletionSource');
 const taskRef = { instance_id: 'instance:demo', workspace_id: 'workspace:demo', task_id: 'task:demo' };
@@ -23,7 +24,7 @@ const conversationRef = { instance_id: taskRef.instance_id, kind: 'conversation'
 const captures = { refreshCatalogMetadata: async () => ({ refs: visible ? [conversationRef] : [] }) };
 const source = desktopTaskCompletionSource(taskRef.instance_id, taskRef.workspace_id, captures as never);
 const policy = { revision: 'visible-1', secrets: ['secret-demo'] };
-beforeEach(() => { messages = []; artifactCalls = 0; configCalls = 0; visible = true; });
+beforeEach(() => { messages = []; artifactCalls = 0; configCalls = 0; visible = true; configured = undefined; });
 test('card catalog includes descriptions and badges without per-task artifact or configuration reads', async () => {
   const cards = await source.cards(policy);
   expect(cards[0]).toMatchObject({ description: { text: 'Card description' }, draft: true, plan_title: { text: 'Demo plan' }, finalization: false });
@@ -46,4 +47,18 @@ test('only visible structured trace fields are exposed; replay and hidden contex
   expect(loaded.items).toHaveLength(1);
   const item = loaded.items![0]; expect('trace_id' in item && await loaded.read!(item.trace_id)).toBe('README.md');
   visible = false; await expect(source.load('tools', conversationRef, policy)).rejects.toThrow('not_found');
+});
+
+test('confirmation lists setup before run and unsafe setup removes run availability', async () => {
+  configured = { command: 'echo run', worktreeSetupCommand: 'echo setup' };
+  const savedDraft = task.draft; task.draft = false;
+  try {
+    let loaded = await source.load('task', taskRef, policy);
+    expect(loaded.task!.commands.map(command => command.command)).toEqual([{ content_state: 'complete', text: 'echo setup' }, { content_state: 'complete', text: 'echo run' }]);
+    expect(loaded.task!.actions).toContain('run_commands');
+    configured.worktreeSetupCommand = 'echo secret-demo';
+    loaded = await source.load('task', taskRef, policy);
+    expect(loaded.task!.commands[0].command.content_state).toBe('withheld');
+    expect(loaded.task!.actions).not.toContain('run_commands');
+  } finally { task.draft = savedDraft; }
 });

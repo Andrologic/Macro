@@ -592,6 +592,7 @@ const getExecutionTargetsWithRepoPaths = (
 };
 
 export interface TaskPilotMutationOptions {
+  signal?: AbortSignal;
   pilotActionToken?: symbol;
   beforeEffect?: () => Promise<void>;
 }
@@ -1760,6 +1761,7 @@ const ensureTaskExecutionTargetsReady = async (
     onWorkspacesPrepared?: () => void;
     beforeEffect?: () => Promise<void>;
     preserveTaskScope?: boolean;
+    signal?: AbortSignal;
   },
 ): Promise<{
   createdWorktrees: Record<string, string>;
@@ -1840,6 +1842,7 @@ const ensureTaskExecutionTargetsReady = async (
           repoPath: target.repoPath,
           worktreePath: target.worktreePath,
           command: setupCommand,
+          signal: options?.signal,
           beforeEffect: options?.beforeEffect,
         });
         if (setupResult.failed) {
@@ -4504,7 +4507,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         get().branchWorktrees,
         registry,
         {
-          ...(options?.pilotActionToken ? { beforeEffect: authorizeConfiguredEffect } : {}),
+          ...(options?.pilotActionToken ? { beforeEffect: authorizeConfiguredEffect, signal: options.signal } : {}),
           preserveTaskScope: Boolean(options?.pilotActionToken),
         },
       );
@@ -4585,7 +4588,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           command: commandEntry.command,
           reveal: commandEntry.openTerminalOnRun,
           promptContext: displayMetadata.promptContext,
-          ...(options?.pilotActionToken ? { beforeEffect: authorizeConfiguredEffect } : {}),
+          ...(options?.pilotActionToken ? { beforeEffect: authorizeConfiguredEffect, signal: options.signal } : {}),
         });
 
         const runAfterTerminalCreation = get().taskCommandRuns[taskId];

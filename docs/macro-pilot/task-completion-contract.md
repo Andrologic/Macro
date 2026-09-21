@@ -129,3 +129,15 @@ is unavailable until that replay is resolved locally. The local journals retain
 that pending state; no action reports success for partial cleanup. Revision and
 receipt metadata are bounded to 2,000 records each and 1 MiB combined. At that
 limit the host rejects new records explicitly instead of forgetting idempotency.
+
+`commands` is an ordered confirmation list, including configured setup commands
+before run commands. A project can appear more than once; clients must display
+all entries rather than deduplicate by project ID. Setup entries use a readable
+`(setup)` suffix in `project_name`. If any command is withheld or truncated,
+`run_commands` is unavailable. There are at most 32 total command entries.
+
+The shared capture budget counts the cumulative full byte lengths of bodies read
+across captures even though desktop retains their hashes rather than their text.
+A successful action advances the persisted task revision even when it leaves task
+metadata unchanged. Cancelling the producer lifecycle settles setup waits and
+releases their subscriptions; an already launched native command is not replayed.
