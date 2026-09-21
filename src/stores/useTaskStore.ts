@@ -1,3 +1,4 @@
+import { configurationGetLoadedSnapshot } from '../services/configurationClient';
 import { create } from 'zustand';
 import type { CompletionMergePolicy, StandaloneTaskKind, TaskExecutionTarget, TaskStatus } from '../types';
 import i18n from '../i18n';
@@ -1794,6 +1795,7 @@ const ensureTaskExecutionTargetsReady = async (
   executionTargets.forEach(assertExecutionTargetRunnable);
   const commandRegistry = commandRegistryOverride ?? await loadTaskProjectCommandRegistry(
     executionTargets.map((target) => target.projectId),
+    options?.beforeEffect ? configurationGetLoadedSnapshot : undefined,
   );
 
   try {
@@ -1867,6 +1869,7 @@ const ensureTaskExecutionTargetsReady = async (
           );
         }
       } catch (error) {
+        if (options?.beforeEffect) throw error;
         const normalized = toServiceError(error);
         notify.warning(
           tTask('implement.worktreeSetupFailed', 'Worktree setup failed for {{project}}.', {
@@ -4510,6 +4513,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       await authorizeEffect();
       const registry = await loadTaskProjectCommandRegistry(
         getExecutionTargets(executionTask).map((target) => target.projectId),
+        options?.pilotActionToken ? configurationGetLoadedSnapshot : undefined,
       );
       const expectedCommandRegistry = JSON.stringify(registry);
       const authorizeConfiguredEffect = async (): Promise<void> => {
@@ -4517,6 +4521,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         if (!options?.pilotActionToken) return;
         const currentRegistry = await loadTaskProjectCommandRegistry(
           getExecutionTargets(executionTask).map((target) => target.projectId),
+          configurationGetLoadedSnapshot,
         );
         if (JSON.stringify(currentRegistry) !== expectedCommandRegistry) {
           throw new Error('The configured task command changed before the effect was applied.');

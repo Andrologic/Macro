@@ -1348,3 +1348,12 @@ describe('Pilot trace IPC errors', () => {
     await expect(ipc.pilotToolTracesList('conversation')).rejects.toThrow('unavailable');
   });
 });
+
+describe('Pilot loaded configuration IPC', () => {
+  it('requests observation without native document discovery', async () => {
+    const ipc = await loadTauriIpc();
+    invokeCalls.length = 0;
+    await ipc.configGetSnapshot(['project-fixture'], true);
+    expect(invokeCalls).toEqual([{ command: 'config_get_snapshot', payload: { projectIds: ['project-fixture'], observeOnly: true } }]);
+  });
+});

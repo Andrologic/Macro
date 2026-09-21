@@ -279,7 +279,7 @@ export class ContentHost {
       const guard = () => { this.check(); if (this.now() >= deadline || this.now() >= Date.parse(delivery.expires_at)) failure('unavailable'); };
       const authorizeNow = async () => { this.check(); deadline = Date.parse(await authorize(delivery)); if (!Number.isFinite(deadline) || deadline > this.now() + 10_000 || deadline > Date.parse(delivery.expires_at)) failure('unavailable'); guard(); };
       let response: unknown;
-      let completedTaskAction = false;
+      let completedTaskAction = await this.taskCompletion?.hasActionReceipt(delivery) ?? false;
       try {
         if (Date.parse(delivery.expires_at) <= this.now()) failure('unavailable');
         await this.policy();
@@ -344,7 +344,8 @@ export class ContentHost {
         if (!deadline) await authorizeNow(); else guard();
         const nativeCode = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
         const codes = new Set(['content_unavailable', 'not_found', 'validation_failed', 'snapshot_expired', 'stale_revision', 'resource_limit', 'conflict']);
-        const code = completedTaskAction ? 'conflict' : error instanceof ContentHostError || error instanceof ConversationCaptureError ? error.code : codes.has(nativeCode) ? nativeCode : 'unavailable';
+        const uncertainTaskAction = completedTaskAction || await this.taskCompletion?.hasActionReceipt(delivery);
+        const code = uncertainTaskAction ? 'conflict' : error instanceof ContentHostError || error instanceof ConversationCaptureError ? error.code : codes.has(nativeCode) ? nativeCode : 'unavailable';
         response = { contract_version: '2.0', type: 'error', request_id: request.request_id, account_id: request.account_id, operation: request.operation, code, retryable: code === 'unavailable' };
         if (!validateContentResponse(request, response)) failure('unavailable');
       }

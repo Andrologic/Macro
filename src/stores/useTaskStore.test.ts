@@ -3560,6 +3560,59 @@ describe('useTaskStore task command terminal lifecycle', () => {
     );
   });
 
+  it('propagates a Pilot setup failure and never launches run commands', async () => {
+    taskProjectCommandRegistryMock = {
+      version: 3,
+      commandsByProjectPath: {
+        '/repos/web': {
+          projectId: 'project-1',
+          projectName: 'Project One',
+          projectPath: '/repos/web',
+          command: 'npm test',
+          worktreeSetupCommand: 'bun install',
+          openTerminalOnRun: true,
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    };
+    const { useTaskStore } = await loadIsolatedTaskStore();
+
+    useTaskStore.setState({
+      tasks: [
+        buildStandaloneTask({
+          id: 'task-1',
+          title: 'Run app',
+          status: 'InProgress',
+          draft: false,
+          project_id: 'project-1',
+          project_ids: ['project-1'],
+          execution_targets: [
+            {
+              projectId: 'project-1',
+              executionMode: 'git',
+              branchName: 'feature/run-app',
+              worktreeKey: 'project-1::feature/run-app',
+              repoPath: '/repos/web',
+            },
+          ],
+        }),
+      ],
+      branchWorktrees: {
+        'project-1::feature/run-app': '/repos/web/.macro/worktrees/task-1',
+      },
+      taskCommandRuns: {},
+      lastError: null,
+    });
+
+    runWorktreeSetupCommandMock.mockRejectedValueOnce(new Error('forbidden'));
+    const reservation = reservePilotAction({ taskId: 'task-1' });
+    try {
+      expect(await useTaskStore.getState().runTaskCommands('task-1', { pilotActionToken: reservation.token, beforeEffect: async () => {} })).toBeNull();
+      expect(useTaskStore.getState().lastError).toBe('forbidden');
+      expect(startTaskCommandTabMock).not.toHaveBeenCalled();
+    } finally { reservation.release(); }
+  });
+
   it('clears the active command run when its terminal tab is closed', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
 

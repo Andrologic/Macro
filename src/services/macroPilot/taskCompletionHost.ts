@@ -117,6 +117,11 @@ export class TaskCompletionHost {
     if (loaded.revision !== capture.revision) return fail('stale_revision');
     return { capture, source: loaded.source };
   }
+  async hasActionReceipt(delivery: ContentDelivery): Promise<boolean> {
+    if (delivery.request.operation !== 'task.action') return false;
+    const key = await sha([delivery.account_id, delivery.source_session_id, delivery.request.body.idempotency_key]);
+    return Boolean(this.journal.receipts[key]);
+  }
   async handle(delivery: ContentDelivery, policy: TextPolicy, authorize: () => Promise<void>): Promise<unknown> {
     this.prune();
     const request = delivery.request;
@@ -124,7 +129,7 @@ export class TaskCompletionHost {
       const body = request.body;
       const key = await sha([delivery.account_id, delivery.source_session_id, body.idempotency_key]);
       const digest = await sha(body); const old = this.journal.receipts[key];
-      await authorize();
+      try { await authorize(); } catch (error) { if (old) return fail('conflict'); throw error; }
       if (old) {
         if (old.digest !== digest || old.state !== 'applied') return fail('conflict');
         return { outcome: 'duplicate', revision: old.revision };

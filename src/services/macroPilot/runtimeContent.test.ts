@@ -38,7 +38,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
     return { applied };
   }
   if (command === 'pilot_content_policy') { if (!supported) throw 'content_unavailable'; return secretValues; }
-  if (command === 'workspace_get_bootstrap') return { standaloneProjects: [{ id: 'project:one', name: 'Project', path: repoPath }, ...extraProjects], projectGroups: [{ id: 'closed', isOpen: false, projects: [{ id: 'project:closed', name: 'Closed', path: '/private/closed' }] }] };
+  if (command === 'workspace_get_bootstrap') throw new Error('Pilot reads must not bootstrap workspaces');
   if (command === 'workspace_list_tasks') return { tasks: taskRecords };
   if (command === 'git_branch_list') return { local: branchRecords, remote: [] };
   if (command === 'db_list_conversations') return structuredClone(conversations);
@@ -93,6 +93,7 @@ const { PilotRuntime } = await import('./runtime');
 const { MacroPilotNativeClient } = await import('./nativeClient');
 const { validateContentMessage } = await import('./contentProtocol');
 const { useChatStore } = await import('../../stores/useChatStore');
+const { useAppStore } = await import('../../stores/useAppStore');
 const { CONTENT_BUDGET } = await import('./contentHost');
 const { secretForms } = await import('./desktopContentHost');
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -105,6 +106,13 @@ function request(operation: ContentRequest['operation'], body: unknown, requestI
   return { contract_version: '2.0', type: 'request', account_id: accountId, request_id: requestId, operation, body } as ContentRequest;
 }
 function harness() {
+  const project = (value: { id: string; name: string; path: string }) => ({ ...value, mountName: value.id,
+    created_at: '2026-01-01T00:00:00Z', status: 'active' as const, gitSetupState: 'ready' as const,
+    metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } });
+  useAppStore.setState({
+    standaloneProjects: [{ id: 'project:one', name: 'Project', path: repoPath }, ...extraProjects].map(project),
+    projectGroups: [{ id: 'group:closed', name: 'Closed', isOpen: false, projects: [project({ id: 'project:closed', name: 'Closed', path: '/private/closed' })] }],
+  });
   const account = { contract_version: '1.0', type: 'account', account_id: accountId, identity: { provider: 'github', subject: '1', login: 'test' }, revision: 1 };
   const session = { contract_version: '1.0', type: 'device_session', ref: { type: 'session', account_id: accountId, session_id: 'session:desktop' }, device_id: 'device:desktop', state: 'active', issued_at: new Date().toISOString(), expires_at: new Date(Date.now() + 86400000).toISOString(), revision: 1 };
   const values: Record<string, unknown> = { macro_pilot_native_v1: { configurationId: 'config:test', relayOrigin: 'https://pilot.example.test', account, deviceSession: session,

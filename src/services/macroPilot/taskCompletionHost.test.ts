@@ -127,10 +127,10 @@ test('source loss invalidations advance revisions before a source becomes availa
   expect(restored.revision).toBeGreaterThan(invalidation.revision);
 });
 
-test('a post-action policy change is a conflict at the transport boundary', async () => {
+test.each([false, true])('retains receipt conflicts on retries with policy changes (partial: %s)', async partial => {
   const s = setup(); let changedPolicy = false; let hostJournal: string | null = null;
   const original = s.deps.source.execute;
-  s.deps.source.execute = async (...args) => { await original(...args); changedPolicy = true; };
+  s.deps.source.execute = async (...args) => { await original(...args); changedPolicy = true; if (partial) throw new Error('content_unavailable'); };
   const host = new ContentHost({ accountId: 'account:demo', instanceId: ref.instance_id, signal: new AbortController().signal,
     conversations: { clear: () => {} } as never, reviews: {} as never,
     storage: { load: async () => hostJournal, compareAndSwap: async (old, next) => { if (old !== hostJournal) return false; hostJournal = next; return true; } },
@@ -149,5 +149,12 @@ test('a post-action policy change is a conflict at the transport boundary', asyn
     idempotency_key: 'action:policy-change', action: 'rename', title: 'Renamed', confirmation: 'confirm_task_action' }), authorize);
   expect(s.calls()).toBe(1);
   expect(result.response).toMatchObject({ type: 'error', code: 'conflict', retryable: false });
-  expect(Object.values(JSON.parse(s.persisted()!).receipts)[0]).toMatchObject({ state: 'applied' });
+  expect(Object.values(JSON.parse(s.persisted()!).receipts)[0]).toMatchObject({ state: partial ? 'pending' : 'applied' });
+  changedPolicy = false;
+  const retry = await host.handle(request('task.action', { ref, snapshot_id: capture.snapshot_id, expected_revision: capture.revision,
+    idempotency_key: 'action:policy-change', action: 'rename', title: 'Renamed', confirmation: 'confirm_task_action' }), async () => {
+    changedPolicy = true; return new Date(5000).toISOString();
+  });
+  expect(retry.response).toMatchObject({ type: 'error', code: 'conflict', retryable: false });
+  expect(s.calls()).toBe(1);
 });

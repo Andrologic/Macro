@@ -87,18 +87,20 @@ const deleteMetadataRootIfPresent = async (
   target: MetadataWorkspaceTarget,
   beforeEffect?: () => Promise<void>,
 ): Promise<void> => {
-  const exists = await tauriIpc.fsExists(metadataRoot, {
-    workspaceScope: target.workspaceScope,
-    workspacePath: target.workspacePath,
-  });
-  if (!exists) return;
+  const workspaceScope = beforeEffect && target.workspaceScope === 'metadata' ? 'metadata_existing' : target.workspaceScope;
+  try {
+    if (!await tauriIpc.fsExists(metadataRoot, { workspaceScope, workspacePath: target.workspacePath })) return;
+  } catch (error) {
+    if (beforeEffect && toServiceError(error).code === 'FilesystemNotFound') return;
+    throw error;
+  }
 
   await beforeEffect?.();
   try {
     await tauriIpc.fsDelete({
       path: metadataRoot,
       recursive: true,
-      workspaceScope: target.workspaceScope,
+      workspaceScope,
       workspacePath: target.workspacePath,
     });
   } catch (error) {

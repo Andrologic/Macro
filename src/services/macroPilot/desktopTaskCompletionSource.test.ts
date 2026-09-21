@@ -17,8 +17,9 @@ mock.module('../architectPlanArtifactService', () => ({
   readVisibleTaskArtifactContent: async () => { artifactCalls++; return { content: 'Actual artifact text', artifact: { contentHash: 'hash' } }; },
   taskArtifactContentHash: () => 'hash',
 }));
-mock.module('../taskProjectCommands', () => ({ loadTaskProjectCommandRegistry: async () => { configCalls++; return {}; }, getTaskProjectCommand: () => configured }));
+mock.module('../taskProjectCommands', () => ({ loadTaskProjectCommandRegistry: async (_ids: string[], loader: unknown) => { expect(loader).toBe(configurationGetLoadedSnapshot); configCalls++; return {}; }, getTaskProjectCommand: () => configured }));
 mock.module('../tauriIpc', () => ({ pilotToolTracesList: async () => ({ revision: 1, traces }), pilotToolTraceRead: async () => { detailReads++; return { revision: 1, detail: 'README.md' }; } }));
+const { configurationGetLoadedSnapshot } = await import('../configurationClient');
 const { desktopTaskCompletionSource } = await import('./desktopTaskCompletionSource');
 const taskRef = { instance_id: 'instance:demo', workspace_id: 'workspace:demo', task_id: pilotTaskId(task.id) };
 const conversationRef = { instance_id: taskRef.instance_id, kind: 'conversation' as const, conversation_id: 'chat:demo' };

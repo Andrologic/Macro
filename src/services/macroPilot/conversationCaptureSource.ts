@@ -1,8 +1,9 @@
 import { desktopPilotTasks } from './desktopTaskCatalog';
+import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import {
   dbCompareAndSwapAppSetting, dbGetAppSetting, getConversation, listConversations,
-  listMessages, workspaceGetBootstrap,
+  listMessages,
 } from '../tauriIpc';
 import type { ConversationCaptureSource } from './conversationCaptures';
 import type { KernelStorage } from './kernel';
@@ -13,9 +14,9 @@ import { assistantProvenance } from './assistantProvenance';
 export function desktopConversationCaptureSource(): ConversationCaptureSource {
   return {
     projects: async () => {
-      const workspace = await workspaceGetBootstrap();
-      const projects = new Map(workspace.standaloneProjects.map(project => [project.id, project]));
-      for (const group of workspace.projectGroups) for (const project of group.projects) projects.set(project.id, project);
+      const { standaloneProjects, projectGroups } = useAppStore.getState();
+      const projects = new Map(standaloneProjects.map(project => [project.id, project]));
+      for (const group of projectGroups) for (const project of group.projects) projects.set(project.id, project);
       return [...projects.values()].map(project => ({ id: project.id, name: project.name }));
     },
     tasks: async () => desktopPilotTasks().map(task => ({ id: task.id, project_id: task.project_id, conversation_id: task.conversation_id })),

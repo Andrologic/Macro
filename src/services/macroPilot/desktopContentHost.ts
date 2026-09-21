@@ -1,7 +1,8 @@
+import { useAppStore } from '../../stores/useAppStore';
 import { desktopTaskCompletionSource } from './desktopTaskCompletionSource';
 import { desktopPilotTasks } from './desktopTaskCatalog';
 import { pilotTaskId, findPilotTask } from './taskIdentity';
-import { gitBranchList, pilotContentPolicy, pilotReviewCommit, dbGetAppSetting, dbCompareAndSwapAppSetting, workspaceGetBootstrap } from '../tauriIpc';
+import { gitBranchList, pilotContentPolicy, pilotReviewCommit, dbGetAppSetting, dbCompareAndSwapAppSetting } from '../tauriIpc';
 import { ContentHost, CONTENT_BUDGET, type ReviewTarget } from './contentHost';
 import { ConversationCaptures } from './conversationCaptures';
 import { conversationCaptureStorage, desktopConversationCaptureSource } from './conversationCaptureSource';
@@ -51,7 +52,7 @@ export function createDesktopContentHost(options: DesktopContentOptions): Conten
   const key = `macroPilot:content-host:v2:${JSON.stringify([configurationId, instanceId, accountId])}`;
   const resolveReview = async (ref: ContentReviewRef): Promise<ReviewTarget> => {
     if (ref.instance_id !== instanceId || ref.workspace_id !== workspaceId) throw new Error('not_found');
-    const workspace = await workspaceGetBootstrap();
+    const workspace = useAppStore.getState();
     const projects = [...workspace.standaloneProjects, ...workspace.projectGroups.flatMap(group => group.projects)];
     const project = projects.find(project => project.id === ref.project_id);
     const task = findPilotTask(desktopPilotTasks(), ref.task_id);

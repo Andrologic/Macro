@@ -2,8 +2,13 @@ import { afterAll, expect, it, mock } from 'bun:test';
 import type { DbConversation, DbMessage } from '../tauriIpc';
 
 const calls: string[] = [];
+let bootstrapCalls = 0;
 let unavailable = false;
 let stored: string | null = null;
+const projectStore = {
+  standaloneProjects: [{ id: 'standalone', name: 'Standalone' }],
+  projectGroups: [{ id: 'closed', projects: [{ id: 'archived', name: 'Archived' }] }],
+};
 const conversation: DbConversation = { id: 'global-chat', title: 'Global', description: null, scope_mode: 'Chat', task_id: null,
   project_id: null, group_id: null, provider_id: null, model_id: null, reasoning_effort: null, created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z', last_message: null, message_count: 1, is_pinned: false };
@@ -13,8 +18,7 @@ const message: DbMessage = { id: 'persisted-user', conversation_id: conversation
 const core = await import('@tauri-apps/api/core');
 mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: string, args?: Record<string, unknown>) => {
   calls.push(command);
-  if (command === 'workspace_get_bootstrap') return { standaloneProjects: [{ id: 'standalone', name: 'Standalone', path: '/private/local' }],
-    projectGroups: [{ id: 'closed', isOpen: false, projects: [{ id: 'archived', name: 'Archived', status: 'archived', path: '/private/local' }] }] };
+  if (command === 'workspace_get_bootstrap') { bootstrapCalls++; throw new Error('unexpected workspace bootstrap during capture read'); }
   if (command === 'workspace_list_tasks') return { tasks: [] };
   if (command === 'db_list_conversations') return [structuredClone(conversation)];
   if (command === 'db_get_conversation') return structuredClone(conversation);
@@ -27,6 +31,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
   }
   throw new Error(`Unexpected command: ${command}`);
 } }));
+mock.module('../../stores/useAppStore', () => ({ useAppStore: { getState: () => projectStore } }));
 afterAll(() => mock.restore());
 const { useChatStore } = await import('../../stores/useChatStore');
 const { desktopConversationCaptureSource, conversationCaptureStorage } = await import('./conversationCaptureSource');
@@ -41,6 +46,7 @@ it('uses actual IPC wrappers and chat store with an unloaded cache, preserving U
   const scope = { accountId: 'account', sessionId: 'session', instanceId: 'instance' };
   const projects = await captures.projectsList(scope);
   expect(projects.items.map(p => p.project_id)).toEqual(['archived', 'standalone']);
+  expect(bootstrapCalls).toBe(0);
   const read = await captures.conversationRead(scope, { instance_id: 'instance', kind: 'conversation', conversation_id: conversation.id });
   expect(read.items[0]).toHaveProperty('text', 'Persisted text');
   expect(JSON.stringify(read)).not.toContain('private');

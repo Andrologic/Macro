@@ -1,3 +1,4 @@
+import { configurationGetLoadedSnapshot } from '../configurationClient';
 import { useAppStore } from '../../stores/useAppStore';
 import { useChatStore } from '../../stores/useChatStore';
 import { getTaskLifecycleCapabilities, getTaskCommandTargets, useTaskStore } from '../../stores/useTaskStore';
@@ -88,7 +89,7 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
       const projectIds = commandTargets.map(target => target.projectId);
       const projects = projectIds.map(id => useAppStore.getState().getProjectById(id));
       if (projects.length > 32) return fail('resource_limit');
-      const registry = await loadTaskProjectCommandRegistry(projectIds);
+      const registry = await loadTaskProjectCommandRegistry(projectIds, configurationGetLoadedSnapshot);
       const configured = projects.map(project => project ? { project, settings: getTaskProjectCommand(registry, project.path) } : null);
       const setupCommands = configured.flatMap((entry, index) => {
         if (!entry?.settings) return [];
@@ -128,11 +129,11 @@ export function desktopTaskCompletionSource(instanceId: string, workspaceId: str
         const expectedProjectScope = projectScope();
         const assertProjectScope = () => { if (projectScope() !== expectedProjectScope) fail('stale_revision'); };
         const commandProjectIds = getTaskCommandTargets(task).map(target => target.projectId);
-        const commandRegistry = action === 'run_commands' ? stableJson(await loadTaskProjectCommandRegistry(commandProjectIds)) : null;
+        const commandRegistry = action === 'run_commands' ? stableJson(await loadTaskProjectCommandRegistry(commandProjectIds, configurationGetLoadedSnapshot)) : null;
         const options = { signal, pilotActionToken: reservation.token, beforeEffect: async () => {
           if (signal?.aborted) return fail('unavailable');
           assertPilotReservationCurrent(reservation); assertProjectScope();
-          if (commandRegistry !== null && stableJson(await loadTaskProjectCommandRegistry(commandProjectIds)) !== commandRegistry) return fail('stale_revision');
+          if (commandRegistry !== null && stableJson(await loadTaskProjectCommandRegistry(commandProjectIds, configurationGetLoadedSnapshot)) !== commandRegistry) return fail('stale_revision');
           await beforeEffect(); assertPilotReservationCurrent(reservation); assertProjectScope();
         } };
         const store = useTaskStore.getState();

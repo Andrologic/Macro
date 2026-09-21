@@ -247,6 +247,7 @@ describe('manualFeatureMetadataService', () => {
     })).rejects.toThrow(`${stage} denied`);
     expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
     if (stage !== 'delete') expect(fsDeleteMock).not.toHaveBeenCalled();
+    for (const call of fsExistsMock.mock.calls) expect(call[1]).toMatchObject({ workspaceScope: 'metadata_existing' });
   });
 
   it('accepts only a typed missing-file error when a metadata root disappears during deletion', async () => {

@@ -164,3 +164,11 @@ before JSON parsing. It returns at most 2,000 metadata entries with a 1 MiB
 aggregate field budget. Each requested detail is limited to 1 MiB. A persisted
 conversation revision changes with trace content, identity, ordering or ownership,
 so equal-length edits invalidate earlier detail requests.
+
+Project catalog and review resolution read the loaded desktop project store;
+Pilot reads never call workspace bootstrap. Command reads request an
+observation-only configuration snapshot. A newly discovered project document
+must be loaded by the ordinary desktop lifecycle before Pilot can use it;
+Pilot never creates or repairs approved configuration files during observation.
+An existing action receipt also preserves `conflict` when a subsequent
+request fails authorization or policy validation before reaching its effect.
