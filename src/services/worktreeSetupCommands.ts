@@ -115,7 +115,9 @@ export const runWorktreeSetupCommand = async (
       latestStore.activateTab(finalTab.id);
       latestStore.setPanelOpen(true);
     } else {
-      await useTerminalStore.getState().closeTab(finalTab.id).catch(() => undefined);
+      await params.beforeEffect?.();
+      const close = useTerminalStore.getState().closeTab(finalTab.id);
+      if (params.beforeEffect) await close; else await close.catch(() => undefined);
     }
 
     return {

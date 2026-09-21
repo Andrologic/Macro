@@ -50,6 +50,7 @@ import {
 import {
   commitArchitectPlanMetadata,
   getArchitectPlan,
+  readArchitectPlanSnapshot,
   getArchitectPlanCrudCapabilities,
   getArchitectPlanTargetBranchesByProjectId,
   getGitFlowBaseBranch,
@@ -1232,14 +1233,18 @@ const resolveTaskStartRef = async (
 const inspectTargetWorktreePath = async (
   task: CatalogedImplementTask,
   target: TaskExecutionTarget,
-  branchWorktrees: Record<string, string>
+  branchWorktrees: Record<string, string>,
+  beforeEffect?: () => Promise<void>,
 ): Promise<string | null> => {
   return resolvePreparedTaskWorktreePath({
     taskId: task.id,
     target,
     branchWorktrees,
     getProjectById: useAppStore.getState().getProjectById,
-    tauri: tauriIpc,
+    tauri: beforeEffect ? { ...tauriIpc,
+      directCheckpointEnsure: async args => { await beforeEffect(); return tauriIpc.directCheckpointEnsure(args); },
+      workspaceBindManualFeatureDirectCheckpoint: async args => { await beforeEffect(); return tauriIpc.workspaceBindManualFeatureDirectCheckpoint(args); },
+    } : tauriIpc,
   });
 };
 
@@ -1264,7 +1269,7 @@ const ensureTargetWorktreePath = async (
     await beforeEffect?.();
     await tauriIpc.workspaceSetActiveRoot(projectPath);
     if (!target.checkpointId) {
-      const preparedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
+      const preparedPath = await inspectTargetWorktreePath(task, target, branchWorktrees, beforeEffect);
       if (!preparedPath) {
         throw toServiceError(
           tTask(
@@ -1288,7 +1293,7 @@ const ensureTargetWorktreePath = async (
     assertExecutionTargetRunnable(target);
   }
 
-  const inspectedPath = await inspectTargetWorktreePath(task, target, branchWorktrees);
+  const inspectedPath = await inspectTargetWorktreePath(task, target, branchWorktrees, beforeEffect);
   if (inspectedPath) {
     return inspectedPath;
   }
@@ -1774,7 +1779,7 @@ const ensureTaskExecutionTargetsReady = async (
   const executionTask = options?.preserveTaskScope
     ? task
     : retargetTaskForCurrentAppScope(task);
-  const executionTargets = getExecutionTargets(executionTask);
+  const executionTargets = getExecutionTargets(executionTask).map(target => options?.preserveTaskScope ? { ...target } : target);
   if (executionTargets.length === 0) {
     throw toServiceError(
       tTask('implement.errors.cannotResolveTaskProject', 'Cannot resolve project for task {{taskId}}', {
@@ -3589,8 +3594,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
 
         await authorizeEffect();
         await tauriIpc.workspaceRenameManualFeature({ taskId, title: nextTitle });
-        await get().refreshFromPlan();
-        await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId });
+        if (options?.pilotActionToken) {
+          set(state => ({ tasks: state.tasks.map(candidate => candidate.id === taskId ? { ...candidate, title: nextTitle } : candidate) }));
+        } else {
+          await get().refreshFromPlan();
+          await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId });
+        }
         await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
           set({ lastError: message });
         }, options?.pilotActionToken ? () => authorizePilotEffect(taskId, options) : undefined);
@@ -3598,7 +3607,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       }
 
       const targetBranch = getTaskPlanStorageBranch(task);
-      const plan = await getArchitectPlan(targetBranch, task.plan_id);
+      const plan = await (options?.pilotActionToken ? readArchitectPlanSnapshot : getArchitectPlan)(targetBranch, task.plan_id);
       if (!plan || plan.status === 'deleted') {
         set({
           lastError: tTask('implement.errors.unknownTaskPlan', 'Cannot update plan metadata for task {{taskId}}.', {
@@ -3627,8 +3636,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         appState.setPlanNodes(nextPlanNodes);
       }
 
-      await get().refreshFromPlan();
-      await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId });
+      if (options?.pilotActionToken) {
+        set(state => ({ tasks: state.tasks.map(candidate => candidate.id === taskId ? { ...candidate, title: nextTitle } : candidate) }));
+      } else {
+        await get().refreshFromPlan();
+        await useTerminalStore.getState().syncTerminalDisplayMetadata({ taskId });
+      }
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
@@ -3685,7 +3698,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       );
       await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
       await authorizeEffect();
-      await tauriIpc.workspaceArchiveManualFeature({
+      const archived = await tauriIpc.workspaceArchiveManualFeature({
         taskId,
         reason: options?.reason ?? null,
         mergedAt: options?.mergedAt ?? null,
@@ -3740,7 +3753,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         useAppStore.getState().setSelectedTask(null);
       }
 
-      await get().refreshFromPlan();
+      if (options?.pilotActionToken) {
+        set(state => ({ tasks: state.tasks.map(candidate => candidate.id === taskId ? { ...candidate, archived_at: archived.archivedAt, merged_at: archived.mergedAt } : candidate) }));
+      } else await get().refreshFromPlan();
       await authorizePilotEffect(taskId, options);
       await syncManualFeatureTaskMetadata(get().getTaskById(taskId), (message) => {
         set({ lastError: message });
@@ -4058,7 +4073,9 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         set({ lastError: normalized.message });
       }
 
-      await get().refreshFromPlan();
+      if (options?.pilotActionToken) {
+        set(state => ({ tasks: state.tasks.filter(candidate => candidate.id !== taskId) }));
+      } else await get().refreshFromPlan();
       if (useAppStore.getState().selectedTaskId === task.id) {
         useAppStore.getState().setSelectedTask(null);
       }
@@ -4598,6 +4615,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         const runAfterTerminalCreation = get().taskCommandRuns[taskId];
         if (!runAfterTerminalCreation || runAfterTerminalCreation.status === 'cancelling') {
           try {
+            await authorizeConfiguredEffect();
             await terminalStore.closeTab(tab.id);
             get().handleTaskCommandTerminalClosed(tab.id);
           } catch (error) {
@@ -4642,6 +4660,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         const nextRun = get().taskCommandRuns[taskId];
         if (nextRun?.status === 'cancelling') {
           try {
+            await authorizeConfiguredEffect();
             await terminalStore.closeTab(tab.id);
             get().handleTaskCommandTerminalClosed(tab.id);
           } catch (error) {

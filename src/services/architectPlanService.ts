@@ -44,6 +44,7 @@ import { getPlanExecutionModesByProjectId } from './planExecutionModes';
 import {
   SERVICE_ERROR_CODES,
   createPlanMetadataMissingError,
+  toServiceError,
 } from './contracts/errors';
 import {
   createArchitectPlanMutationId,
@@ -2487,11 +2488,13 @@ const syncPlanTaskMetadataAtScope = async (
             path: getTaskPlannedPath(normalizedBranch, normalizedPlan.id, entry.name),
             workspaceScope: getScopeWorkspaceScope(scope),
             workspacePath: scope.workspacePath,
-          }).catch(() => undefined);
+          }).catch(error => {
+            if (beforeEffect && toServiceError(error).code !== 'FilesystemNotFound') throw error;
+          });
         })
     );
   } catch (error) {
-    if (beforeEffect) throw error;
+    if (beforeEffect && toServiceError(error).code !== 'FilesystemNotFound') throw error;
     // Ignore missing task directories and keep planned metadata writes best-effort.
   }
 
@@ -3435,6 +3438,7 @@ const runArchitectPlanReplicaMutation = async (params: {
         await params.beforeEffect!(); return params.deps.tauri.macroBranchCommitIfDirty(args);
       } } } : params.deps,
     );
+    await params.beforeEffect?.();
     await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri);
     } catch (error) {
       await params.beforeEffect?.();
@@ -3834,6 +3838,7 @@ const loadPlanReplicaSet = async (
   options?: {
     allowDivergence?: boolean;
     disableAutoHeal?: boolean;
+    metadataOnly?: boolean;
     registrySnapshot?: ValidProjectRegistrySnapshot | null;
   },
   deps?: ResolvedArchitectPlanServiceDependencies
@@ -3870,7 +3875,7 @@ const loadPlanReplicaSet = async (
         return null;
       }
 
-      const chatMessages = await readPlanChatAtScope(scope, normalizedBranch, safeId);
+      const chatMessages = options?.metadataOnly ? [] : await readPlanChatAtScope(scope, normalizedBranch, safeId);
       const manifest = await readPlanManifestAtScope({
         scope,
         branchName: normalizedBranch,
@@ -3878,7 +3883,7 @@ const loadPlanReplicaSet = async (
         chatMessages,
         registrySnapshot: resolvedRegistrySnapshot,
       });
-      const files = await readPlanFilesAtScope(scope, normalizedBranch, safeId);
+      const files = options?.metadataOnly ? {} : await readPlanFilesAtScope(scope, normalizedBranch, safeId);
 
       return {
         scope,
@@ -4945,7 +4950,7 @@ export const readArchitectPlanSnapshot = async (
   assertGitFlowTargetBranch(normalizedBranch);
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, planId, {
-    registrySnapshot, disableAutoHeal: true,
+    registrySnapshot, disableAutoHeal: true, metadataOnly: true,
   }, deps);
   return replicaSet?.canonical.plan || null;
 };
@@ -5172,9 +5177,10 @@ export const updateArchitectPlan = async (input: {
   assertGitFlowTargetBranch(normalizedBranch);
   const safeId = sanitizeId(input.planId);
   return enqueueArchitectPlanMutation(normalizedBranch, safeId, async () => {
+  await input.beforeEffect?.();
   const registrySnapshot = await loadArchitectPlanRegistrySnapshot(deps);
   const replicaSet = await loadPlanReplicaSet(normalizedBranch, safeId, {
-    registrySnapshot,
+    registrySnapshot, disableAutoHeal: Boolean(input.beforeEffect),
   }, deps);
   if (!replicaSet) {
     throwPlanMetadataMissing(normalizedBranch, safeId);
@@ -5474,7 +5480,7 @@ export const updateArchitectPlan = async (input: {
   });
 
   try {
-    return (await getArchitectPlan(normalizedBranch, next.id, deps)) || next;
+    return (await (input.beforeEffect ? readArchitectPlanSnapshot : getArchitectPlan)(normalizedBranch, next.id, deps)) || next;
   } catch (error) {
     if (isArchitectPlanReplicaDivergenceError(error)) {
       devLogger.warn(

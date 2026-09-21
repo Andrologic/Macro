@@ -86,9 +86,12 @@ const gitBranchListMock = mock(async () => ({
 }));
 const gitBranchDeleteMock = mock(async () => undefined);
 const directCheckpointResolveIdMock = mock(async () => 'task-checkpoint-0000000000000001');
+const directCheckpointEnsureMock = mock(async () => 'checkpoint-head');
+const workspaceBindManualFeatureDirectCheckpointMock = mock(async () => undefined);
 const directCheckpointRemoveMock = mock(async () => true);
 const workspaceDeleteManualFeatureDraftMock = mock(async () => undefined);
 const workspaceDeleteManualFeatureMock = mock(async () => undefined);
+const workspaceRenameManualFeatureMock = mock(async () => undefined);
 const workspaceArchiveManualFeatureMock = mock(async () => undefined);
 const dbAppSettings = new Map<string, string>();
 const dbGetAppSettingMock = mock(async (key: string) => {
@@ -271,12 +274,15 @@ mock.module('../services/tauriIpc', () => ({
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
   directCheckpointResolveId: directCheckpointResolveIdMock,
+  directCheckpointEnsure: directCheckpointEnsureMock,
+  workspaceBindManualFeatureDirectCheckpoint: workspaceBindManualFeatureDirectCheckpointMock,
   directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
+  workspaceRenameManualFeature: workspaceRenameManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
@@ -303,12 +309,15 @@ mock.module('../services/tauriIpc.ts', () => ({
   gitBranchList: gitBranchListMock,
   gitBranchDelete: gitBranchDeleteMock,
   directCheckpointResolveId: directCheckpointResolveIdMock,
+  directCheckpointEnsure: directCheckpointEnsureMock,
+  workspaceBindManualFeatureDirectCheckpoint: workspaceBindManualFeatureDirectCheckpointMock,
   directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
+  workspaceRenameManualFeature: workspaceRenameManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
 }));
 
@@ -3286,6 +3295,31 @@ describe('useTaskStore task command terminal lifecycle', () => {
     };
   });
 
+  it.each([true, false])('guards legacy direct checkpoint binding (revoked: %s)', async shouldRevoke => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const originalProject = appStoreState.getProjectById;
+    appStoreState.getProjectById = id => ({ ...originalProject(id)!, directEdit: true });
+    const task = buildStandaloneTask({ id: 'task-direct-fixture', draft: false, status: 'InProgress',
+      execution_targets: [{ projectId: 'project-1', executionMode: 'direct', branchName: '', worktreeKey: 'direct-fixture', repoPath: '/repos/web', executionKind: 'repository_root' }] });
+    useTaskStore.setState({ tasks: [task], branchWorktrees: {}, taskCommandRuns: {}, lastError: null });
+    let revoked = false;
+    directCheckpointEnsureMock.mockImplementationOnce(async () => { revoked = shouldRevoke; return 'checkpoint-head'; });
+    workspaceBindManualFeatureDirectCheckpointMock.mockClear();
+    const reservation = reservePilotAction({ taskId: task.id });
+    try {
+      const result = await useTaskStore.getState().runTaskCommands(task.id, { pilotActionToken: reservation.token,
+        beforeEffect: async () => { if (revoked) throw new Error('authorization revoked'); } });
+      if (shouldRevoke) {
+        expect(revoked).toBe(true); expect(result).toBeNull();
+        expect(workspaceBindManualFeatureDirectCheckpointMock).not.toHaveBeenCalled();
+      } else {
+        expect(result?.status).toBe('completed');
+        expect(workspaceBindManualFeatureDirectCheckpointMock).toHaveBeenCalledTimes(1);
+      }
+      expect(task.execution_targets![0].checkpointId).toBeUndefined();
+    } finally { reservation.release(); appStoreState.getProjectById = originalProject; }
+  });
+
   it('does not roll back a prepared worktree after Pilot authorization is revoked', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
     const { useGitStore } = await import('./useGitStore');
@@ -3858,6 +3892,21 @@ describe('useTaskStore task preparation safety', () => {
 });
 
 describe('Pilot task lifecycle authorization', () => {
+  it('renames only the captured task without global refresh or terminal initialization', async () => {
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    const task = buildStandaloneTask({ standalone_kind: 'manual_feature', draft: true });
+    const refresh = mock(async () => { throw new Error('Global recovery must not run'); });
+    syncTerminalDisplayMetadataMock.mockClear(); workspaceRenameManualFeatureMock.mockClear();
+    useTaskStore.setState({ tasks: [task], lastError: null, refreshFromPlan: refresh });
+    const reservation = reservePilotAction({ taskId: task.id });
+    try {
+      await useTaskStore.getState().renameTask(task.id, 'Renamed fixture', { pilotActionToken: reservation.token, beforeEffect: async () => undefined });
+      expect(workspaceRenameManualFeatureMock).toHaveBeenCalledTimes(1);
+      expect(useTaskStore.getState().getTaskById(task.id)?.title).toBe('Renamed fixture');
+      expect(refresh).not.toHaveBeenCalled(); expect(syncTerminalDisplayMetadataMock).not.toHaveBeenCalled();
+    } finally { reservation.release(); }
+  });
+
   it('refuses a revoked draft deletion before writing a saga or deleting the task', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
     const task = buildStandaloneTask({ standalone_kind: 'manual_feature', draft: true, conversation_id: null });

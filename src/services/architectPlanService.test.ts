@@ -50,6 +50,8 @@ interface LoadArchitectPlanServiceOptions {
     operation: string;
     workspaceScope?: WorkspaceScope;
   }>;
+  readPaths?: string[];
+  failDelete?: (path: string) => boolean;
   failWriteOnce?: (params: {
     path: string;
     workspacePath?: string | null;
@@ -196,6 +198,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       workspaceScope?: WorkspaceScope;
     }) => {
       options.workspaceScopeCalls?.push({ operation: 'read', workspaceScope: params.workspaceScope });
+      options.readPaths?.push(params.path);
       const workspacePath = params.workspacePath ?? '';
       const content = workspaceFilesByWorkspacePath[workspacePath]?.[normalizeMockPath(params.path)];
       if (typeof content !== 'string') {
@@ -244,6 +247,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       workspaceScope?: WorkspaceScope;
     }) => {
       options.workspaceScopeCalls?.push({ operation: 'delete', workspaceScope: params.workspaceScope });
+      if (options.failDelete?.(params.path)) throw new Error('Injected deletion denied');
       const workspacePath = params.workspacePath ?? '';
       const workspaceFiles = workspaceFilesByWorkspacePath[workspacePath] ?? {};
       const normalizedPath = normalizeMockPath(params.path);
@@ -1678,10 +1682,19 @@ describe('architectPlanService', () => {
       registrySnapshot,
       filesByWorkspacePath,
     });
+    const readPaths: string[] = [];
+    filesByWorkspacePath['/repos/docs']['branches/develop/plans/mixed-recovery-plan/artifacts/large.txt'] = 'Large artifact body';
+    service = await loadArchitectPlanService({ tauriAvailable: true, appSettings, workspaceRoot: '/repos/docs', registrySnapshot, filesByWorkspacePath, readPaths });
     const beforeReadFiles = JSON.stringify(filesByWorkspacePath);
     const beforeReadSettings = [...appSettings];
     expect(await service.readArchitectPlanSnapshot(branchName, 'unrelated-missing-plan')).toBeNull();
     await service.readArchitectPlanSnapshot(branchName, 'mixed-recovery-plan');
+    expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeReadFiles);
+    expect([...appSettings]).toEqual(beforeReadSettings);
+    expect(readPaths.some(path => path.includes('/artifacts/') || path.endsWith('/chat.jsonl'))).toBe(false);
+    await expect(service.updateArchitectPlan({ branchName, planId: 'mixed-recovery-plan', description: 'Guarded update',
+      beforeEffect: async () => { throw new Error('authorization revoked'); },
+    })).rejects.toThrow('authorization revoked');
     expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeReadFiles);
     expect([...appSettings]).toEqual(beforeReadSettings);
     await service.listArchitectPlans(branchName, true, true);
@@ -1795,6 +1808,13 @@ describe('architectPlanService', () => {
         'branches/develop/plans/plan-task-metadata/tasks/task-remove/executed.md'
       ]
     ).toBe('# Executed task');
+    filesByWorkspacePath['/repos/web']['branches/develop/plans/plan-task-metadata/tasks/orphan/planned.md'] = 'Orphan';
+    service = await loadArchitectPlanService({ tauriAvailable: true, workspaceRoot: '/repos/web', registrySnapshot, filesByWorkspacePath,
+      failDelete: path => path.endsWith('/orphan/planned.md'),
+    });
+    await expect(service.updateArchitectPlan({ branchName, planId: 'plan-task-metadata', description: 'Guarded change',
+      beforeEffect: async () => undefined,
+    })).rejects.toThrow('Injected deletion denied');
   });
 
   it('does not treat unscoped legacy plans as visible inside a selected project scope', () => {

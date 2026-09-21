@@ -91,7 +91,7 @@ interface TerminalStore extends TerminalVisibilityState {
     sessionId: string,
     executionId?: string | null
   ) => Promise<tauriIpc.TerminalSessionDto>;
-  initialize: () => Promise<void>;
+  initialize: (options?: { syncDisplayMetadata?: boolean }) => Promise<void>;
   togglePanel: () => Promise<void>;
   setPanelOpen: (open: boolean) => void;
   setPanelHeight: (height: number) => void;
@@ -1035,7 +1035,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return get().upsertSession(session);
     },
 
-    initialize: async () => {
+    initialize: async (options) => {
       if (get().initialized) {
         return;
       }
@@ -1094,7 +1094,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
             hiddenTerminalTabCount: computeCurrentHiddenCount(nextState),
           });
           await registerListeners();
-          await get().syncTerminalDisplayMetadata();
+          if (options?.syncDisplayMetadata !== false) await get().syncTerminalDisplayMetadata();
         } catch (error) {
           set({ initializing: false });
           throw error;
@@ -1350,7 +1350,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext, beforeEffect }) => {
-      await get().initialize();
+      await beforeEffect?.();
+      await get().initialize(beforeEffect ? { syncDisplayMetadata: false } : undefined);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
       await beforeEffect?.();
@@ -1369,7 +1370,8 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
     },
 
     startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext, beforeEffect }) => {
-      await get().initialize();
+      await beforeEffect?.();
+      await get().initialize(beforeEffect ? { syncDisplayMetadata: false } : undefined);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
       await beforeEffect?.();

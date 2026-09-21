@@ -334,4 +334,16 @@ describe('runWorktreeSetupCommand', () => {
     await expect(local).resolves.toMatchObject({ failed: false });
   });
 
+  it('does not close a completed setup terminal after authorization is revoked', async () => {
+    startWorktreeSetupCommandTab.mockImplementationOnce(async () => {
+      const tab = buildTab('setup-revoked', { status: 'completed', hasLiveSession: false, lastExitCode: 0 });
+      useTerminalStore.setState({ tabs: { [tab.id]: tab } });
+      return tab;
+    });
+    await expect(runWorktreeSetupCommand({ ...commandParams('echo fixture'),
+      beforeEffect: async () => { throw new Error('authorization revoked'); },
+    })).rejects.toThrow('authorization revoked');
+    expect(closeTab).not.toHaveBeenCalled();
+  });
+
 });

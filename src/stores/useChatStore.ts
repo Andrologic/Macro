@@ -15008,7 +15008,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       latestConversationSessionIdByConversationId.delete(conversationId);
       completionPersistenceOwnersByConversationId.delete(conversationId);
       try {
-        await prepareConversationReplayForDeletion(conversationId);
+        if (!options?.pilotActionToken) await prepareConversationReplayForDeletion(conversationId);
       } catch (error) {
         deletedConversationIds.delete(conversationId);
         const message = `La tâche a été supprimée, mais la restauration du code de sa conversation a échoué : ${toServiceError(error).message}`;
@@ -15026,7 +15026,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await deletePersistedConversation(chatPersistenceAdapters, conversationId);
         await authorize();
         await deleteConversationToolboxStateIfAvailable(conversationId);
-        await hydrateSelectedConversationAfterRemoval([conversationId]);
+        if (!options?.pilotActionToken) await hydrateSelectedConversationAfterRemoval([conversationId]);
         return true;
       } catch (error) {
         const message = `La tâche a été supprimée, mais le nettoyage de sa conversation reste en attente : ${toServiceError(error).message}`;
