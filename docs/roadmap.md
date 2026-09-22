@@ -38,8 +38,7 @@ la même version déclarée ; sa présence dans la branche de développement ne
 signifie pas qu'une nouvelle release a été publiée.
 
 L'état ci-dessous décrit le code intégré. Il ne vaut pas validation des paquets
-ou du canal de mises à jour, et n'inclut pas les correctifs de fiabilité encore
-en cours d'intégration.
+ou du canal de mises à jour.
 
 L'application dispose déjà d'une base solide :
 
