@@ -29,11 +29,20 @@ L'architecture repose sur quatre principes :
 - transport interchangeable entre backend desktop et backend distant
 - préservation d'un historique de travail auditable via la persistance locale et la branche metadata
 
-Macro doit pouvoir fonctionner dans trois topologies techniques :
+Le produit actuel fonctionne en desktop local avec backend Tauri embarqué.
+Les topologies client desktop ou web/mobile connecté à un kernel distant restent
+des objectifs futurs. Le prototype headless et le transport remote décrits plus
+bas ne constituent pas des capacités produit supportées.
 
-- desktop local avec backend Tauri embarqué
-- client desktop connecté à un kernel distant
-- client web/mobile connecté à un kernel distant
+Les fondations de modularité sont déjà intégrées : contrats de domaine et
+adaptateurs de composition, services de workflow, registres de contributions
+internes et contrats IPC générés. Les sections 5 à 7 décrivent leurs raccords
+et leurs limites. Les adaptateurs délèguent encore aux propriétaires existants ;
+l'extraction ne supprime pas tous les couplages historiques entre stores.
+Les registres accueillent du code interne de confiance livré avec l'application.
+Ils ne fournissent ni API publique de plugins ni runtime d'extensions
+téléchargeables. Le contrat de [contributions du shell](workspace-shell.md)
+précise cette frontière.
 
 ---
 
