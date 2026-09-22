@@ -45,8 +45,16 @@ summarization can remove whole turns from request context; source history stays
 stored. Context overflow remains explicit. Stop cancels execution and discards
 late results. Completed native call/result pairs remain cumulative across steering
 and incomplete-response continuation, including an interrupted later turn.
-Guided retries discard the rejected answer text but keep completed tool pairs in
-both the continuation request and persisted history, even at the turn limit.
+Guided retries apply only until the first accepted turn; an already satisfied
+requirement does not reject later follow-ups. Tools completed inside a native
+turn can also satisfy that requirement. While retries apply, they discard the
+rejected answer text but keep completed tool pairs in both the continuation
+request and persisted history, even at the turn limit.
+Frontend batches publish each completed result before starting the next call or
+notifying consumers. Their live and persisted projections contain only calls
+with a completed result, including a question tool's explicit interrupt result.
+An aborted call without a result is omitted; question display and permissions
+remain unchanged.
 Recovery retains executed pairs and excludes calls that have no result; older
 conversation messages are not copied into the new completion.
 

@@ -105,14 +105,19 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
       const executedToolItems = completedToolItems(turnResult.providerInputItems);
       return {
         executedToolItems,
+        executedToolNames: executedToolItems.filter(isRecord).filter(item => item.type === 'function_call' && typeof item.name === 'string').map(item => item.name as string),
         result: { ...turnResult, content, completionReason: turnResult.completionReason ?? 'completed' },
         projectAssistant: (replayContent, calls, recovering, incomplete) => {
+          const pendingIds = new Set((turnResult.toolCalls ?? []).filter(call => !calls.some(accepted => accepted.id === call.id)).map(call => call.id));
+          const withoutPendingCalls = (items: unknown[] | undefined) => items?.filter(item =>
+            !isRecord(item) || item.type !== 'function_call' || !pendingIds.has(String(item.call_id)),
+          );
           const items = recovering || incomplete
             ? [...(cloneProviderInputItems(executedToolItems) ?? []), ...buildAssistantProviderInputItemsFromTurn(replayContent, calls)]
-            : cloneProviderInputItems(turnResult.providerInputItems) ?? buildAssistantProviderInputItemsFromTurn(replayContent, calls);
+            : cloneProviderInputItems(withoutPendingCalls(turnResult.providerInputItems)) ?? buildAssistantProviderInputItemsFromTurn(replayContent, calls);
           const state = turnResult.providerTurnState ? {
             ...turnResult.providerTurnState,
-            output_items: recovering || incomplete ? cloneProviderInputItems(items) ?? [] : turnResult.providerTurnState.output_items,
+            output_items: recovering || incomplete ? cloneProviderInputItems(items) ?? [] : withoutPendingCalls(turnResult.providerTurnState.output_items) ?? [],
           } : undefined;
           return { items, state };
         },

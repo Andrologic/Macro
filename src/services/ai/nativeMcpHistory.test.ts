@@ -10,7 +10,7 @@ type Request = Parameters<typeof ipc.aiStreamChat>[0];
 type Submission = Parameters<typeof ipc.aiSubmitToolResult>[0];
 type Handler = (event: { payload: Record<string, unknown> }) => void;
 const scenarios = ['completed', 'initial-abort', 'length', 'incomplete', 'steer-abort', 'empty-steer-abort', 'steer-completed',
-  'guided-retry', 'guided-abort', 'guided-stop-before-response', 'guided-recovery', 'guided-recovery-abort', 'guided-limit', 'guided-multiple'] as const;
+  'guided-retry', 'guided-abort', 'guided-stop-before-response', 'guided-recovery', 'guided-recovery-abort', 'guided-limit', 'guided-multiple', 'guided-native-satisfied', 'native-interrupt'] as const;
 type Scenario = typeof scenarios[number];
 let handlers = new Map<string, Handler>();
 let requests: Request[] = [];
@@ -64,9 +64,9 @@ mock.module('../tauriIpc', () => ({ ...ipc,
     }
     if (scenario !== 'empty-steer-abort') emit('ai:stream', { request_id: submission.requestId, delta: `Response ${requests.length}` });
     emit('ai:done', { request_id: submission.requestId,
-      output_text: scenario === 'empty-steer-abort' ? '' : `Response ${requests.length}`,
+      output_text: scenario === 'native-interrupt' ? 'Choose' : scenario === 'empty-steer-abort' ? '' : `Response ${requests.length}`,
       completion_reason: isRecovery() ? scenario : guidedRecovery() && requests.length === 2 ? 'length' : 'completed',
-      tool_calls: isRecovery() || (isGuided() && requests.length === 1) ? [unexecutedCall] : [],
+      tool_calls: isRecovery() || (isGuided() && scenario !== 'guided-native-satisfied' && requests.length === 1) ? [unexecutedCall] : [],
     });
   },
 }));
@@ -92,13 +92,14 @@ for (const mode of scenarios) {
       providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture', signal: controller.signal,
       messages: [{ role: 'assistant', content: 'Previous message', provider_input_items: oldItems }],
       allowedToolIds: ['mcp__fixture__read', ...(isGuided() ? ['read_file'] : [])],
-      ...(isGuided() ? { guidedToolRetry: { requiredToolNames: ['read_file'], retrySystemPrompt: 'Read the attached file before answering.', maxRetries: mode === 'guided-limit' ? 3 : mode === 'guided-multiple' ? 2 : 1 } } : {}),
+      ...(isGuided() ? { guidedToolRetry: { requiredToolNames: [mode === 'guided-native-satisfied' ? 'mcp__fixture__read' : 'read_file'], retrySystemPrompt: 'Read the attached file before answering.', maxRetries: mode === 'guided-limit' ? 3 : mode === 'guided-multiple' ? 2 : 1 } } : {}),
       ...(mode === 'guided-limit' ? { maxTurns: 3 } : {}),
       mcpTools: [{ id: 'mcp__fixture__read', name: 'read', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
       onToken() {}, onComplete() {}, onError(error) { throw error; }, onLiveContextUpdate: context => live.push(context),
       onToolCall: async (_name, args) => {
         // A still-running call must never enter the persisted executed pairs.
         if (args.index === 2) await new Promise<void>(resolve => { pendingResolutions.push(resolve); });
+        if (mode === 'native-interrupt' && args.index === 1) return { kind: 'interrupt', result: 'Question queued', visibleContent: 'Choose', hiddenContext: '<questionnaire_context>fixture</questionnaire_context>' };
         return { kind: 'result', result: 'Supplied media', blocks, isError: args.index === 1 };
       },
       consumePendingSteers: () => isSteer() && !steerSent ? (steerSent = true, [{ role: 'user', content: 'Inspect another result' }]) : [],
@@ -119,8 +120,9 @@ for (const mode of scenarios) {
     expect(ids(restored, 'function_call_output')).toEqual(expectedIds);
     expect(submissions.map(item => item.toolCallId)).toEqual(expectedIds);
     const typed = restored.map(readTypedToolResult).filter(item => item !== undefined);
-    expect(typed.map(item => item.blocks)).toEqual(expectedIds.map(() => blocks));
-    expect(typed.map(item => item.isError)).toEqual(expectedIds.map(id => id.endsWith('-1')));
+    const typedIds = mode === 'native-interrupt' ? expectedIds.slice(0, 1) : expectedIds;
+    expect(typed.map(item => item.blocks)).toEqual(typedIds.map(() => blocks));
+    expect(typed.map(item => item.isError)).toEqual(typedIds.map(id => id.endsWith('-1')));
     expect(JSON.stringify(restored)).not.toContain('old-call');
     expect(JSON.stringify(restored)).not.toContain('never-executed');
     expect(ids(live.at(-1)?.providerInputItems ?? [], 'function_call_output')).toEqual(expectedIds);
@@ -137,7 +139,12 @@ for (const mode of scenarios) {
       expect(replay).not.toContain('never-executed');
       expect(requests[1].allowedToolIds).toEqual([]);
     }
-    if (isGuided()) {
+    if (mode === 'guided-native-satisfied') {
+      expect(requests).toHaveLength(1);
+      expect(result.visibleContent).toBe('Response 1');
+    }
+    if (mode === 'native-interrupt') expect(result.hiddenContext).toContain('questionnaire_context');
+    if (isGuided() && mode !== 'guided-native-satisfied') {
       expect(result.visibleContent).not.toContain('Response 1');
       expect(JSON.stringify(restored)).not.toContain('Response 1');
       const rejectedTurns = mode === 'guided-limit' ? 3 : mode === 'guided-multiple' ? 2 : 1;
