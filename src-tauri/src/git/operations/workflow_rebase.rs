@@ -104,7 +104,7 @@ pub(super) fn recover_rebase(
             ));
         }
         validate_source_ref(repo, journal)?;
-        let output = super::super::run_git_command(
+        let output = super::super::run_git_mutation_command(
             Path::new(&intent.command_path),
             &["rebase".into(), "--abort".into()],
         )?;

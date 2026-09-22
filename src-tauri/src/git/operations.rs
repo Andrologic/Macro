@@ -23,9 +23,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::core::error::{BackendError, Result};
-use crate::core::process::{
-    background_command, background_contained_tokio_command, ContainedBackgroundProcess,
-};
+use crate::core::process::{background_contained_tokio_command, ContainedBackgroundProcess};
 use crate::fs::{normalize_path, validate_path};
 use crate::git::repo::{get_branch_name, get_head_commit, get_status, get_status_options};
 use crate::project_path::{
@@ -38,6 +36,7 @@ const GENERIC_CONVENTIONAL_COMMIT_MESSAGE: &str =
     "Commit message must follow Conventional Commits: type: subject";
 pub(crate) const WSL_GIT_TIMEOUT: Duration = Duration::from_secs(8);
 pub(crate) const WSL_GIT_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
+const NATIVE_GIT_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const NATIVE_GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_GIT_COMMAND_OUTPUT_BYTES: u64 = 256 * 1024;
@@ -250,6 +249,18 @@ pub(crate) struct GitCommandOutput {
 }
 
 pub(crate) fn run_git_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
+    run_contained_git_command(
+        cwd,
+        args,
+        NATIVE_GIT_MUTATION_TIMEOUT,
+        true,
+        None,
+        None,
+        true,
+    )
+}
+
+pub(crate) fn run_git_mutation_command(cwd: &Path, args: &[String]) -> Result<GitCommandOutput> {
     run_git_command_with_reflog_action(cwd, args, None)
 }
 
@@ -258,27 +269,17 @@ fn run_git_command_with_reflog_action(
     args: &[String],
     reflog_action: Option<&str>,
 ) -> Result<GitCommandOutput> {
-    let repo = Repository::discover(cwd)?;
-    ensure_safe_config(&repo)?;
-
-    let mut command = background_command("git");
-    command
-        .env_clear()
-        .envs(std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())));
-    if let Some(action) = reflog_action {
-        command.env("GIT_REFLOG_ACTION", action);
-    }
-    command.current_dir(cwd).args(args);
-    let output = command.output().map_err(|e| BackendError::Git {
-        message: format!("Failed to run git command '{}': {}", args.join(" "), e),
-    })?;
-
-    Ok(GitCommandOutput {
-        success: output.status.success(),
-        code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    })
+    // These callers include index/branch mutations and network operations. Use
+    // the existing mutation budget, never the shorter inspection deadline.
+    run_contained_git_command(
+        cwd,
+        args,
+        NATIVE_GIT_MUTATION_TIMEOUT,
+        false,
+        None,
+        reflog_action,
+        true,
+    )
 }
 
 pub(crate) fn run_git_command_with_timeout(
@@ -332,6 +333,54 @@ pub(crate) fn run_contained_git_command_with_timeout_and_cancellation(
     fail_on_truncated_output: bool,
     cancellation: Option<Arc<AtomicBool>>,
 ) -> Result<GitCommandOutput> {
+    run_contained_git_command(
+        cwd,
+        args,
+        timeout_duration,
+        fail_on_truncated_output,
+        cancellation,
+        None,
+        false,
+    )
+}
+
+fn run_contained_git_command(
+    cwd: &Path,
+    args: &[String],
+    timeout_duration: Duration,
+    fail_on_truncated_output: bool,
+    cancellation: Option<Arc<AtomicBool>>,
+    reflog_action: Option<&str>,
+    allow_local_transport: bool,
+) -> Result<GitCommandOutput> {
+    // Synchronous workflow helpers are also called from an active runtime.
+    // Keep the private runtime off that thread to avoid nested block_on panics.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("macro-git-command".into())
+                .spawn_scoped(scope, || {
+                    run_contained_git_command(
+                        cwd,
+                        args,
+                        timeout_duration,
+                        fail_on_truncated_output,
+                        cancellation,
+                        reflog_action,
+                        allow_local_transport,
+                    )
+                })
+                .map_err(|error| BackendError::Git {
+                    message: format!("Failed to start Git command worker: {error}"),
+                })?
+                .join()
+                .map_err(|_| BackendError::Git {
+                    message:
+                        "Git command worker panicked; inspect repository state before retrying."
+                            .into(),
+                })?
+        });
+    }
     let repo = Repository::discover(cwd)?;
     ensure_safe_config(&repo)?;
     let cwd = cwd.to_path_buf();
@@ -349,6 +398,18 @@ pub(crate) fn run_contained_git_command_with_timeout_and_cancellation(
             std::env::vars_os().filter(|(key, _)| !is_git_environment_variable(key.as_os_str())),
         );
         configure_noninteractive_git_command(&mut command);
+        if allow_local_transport {
+            // Explicit Git operations historically support local bare remotes.
+            // Automatic object hydration keeps its narrower transport policy.
+            command.env("GIT_ALLOW_PROTOCOL", "file:git:http:https:ssh");
+            // Preserve repository core.sshCommand for explicit user operations.
+            if repo.config()?.get_string("core.sshCommand").is_ok() {
+                command.env_remove("GIT_SSH_COMMAND");
+            }
+        }
+        if let Some(action) = reflog_action {
+            command.env("GIT_REFLOG_ACTION", action);
+        }
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -371,15 +432,23 @@ pub(crate) fn run_contained_git_command_with_timeout_and_cancellation(
                 args.join(" ")
             ),
         })?;
+        let output_limit = Arc::new(tokio::sync::Notify::new());
+        let stdout_limit = fail_on_truncated_output.then(|| output_limit.clone());
+        let stderr_limit = fail_on_truncated_output.then(|| output_limit.clone());
         let stdout_reader =
-            tokio::spawn(async move { read_bounded_git_command_output(stdout).await });
+            tokio::spawn(
+                async move { read_bounded_git_command_output(stdout, stdout_limit).await },
+            );
         let stderr_reader =
-            tokio::spawn(async move { read_bounded_git_command_output(stderr).await });
+            tokio::spawn(
+                async move { read_bounded_git_command_output(stderr, stderr_limit).await },
+            );
 
         enum WaitOutcome {
             Completed(std::io::Result<std::process::ExitStatus>),
             Cancelled,
             TimedOut,
+            OutputLimit,
         }
         let wait_for_cancellation = async {
             if let Some(cancellation) = cancellation {
@@ -397,6 +466,7 @@ pub(crate) fn run_contained_git_command_with_timeout_and_cancellation(
             status = process.wait() => WaitOutcome::Completed(status),
             _ = wait_for_cancellation => WaitOutcome::Cancelled,
             _ = tokio::time::sleep(timeout_duration) => WaitOutcome::TimedOut,
+            _ = output_limit.notified() => WaitOutcome::OutputLimit,
         };
         let status = match outcome {
             WaitOutcome::Completed(status) => status.map_err(|error| BackendError::Git {
@@ -405,24 +475,29 @@ pub(crate) fn run_contained_git_command_with_timeout_and_cancellation(
                     args.join(" ")
                 ),
             })?,
-            WaitOutcome::Cancelled => {
-                let _ = process.terminate_bounded().await;
+            outcome => {
+                let timed_out = matches!(outcome, WaitOutcome::TimedOut);
+                let reason = match outcome {
+                    WaitOutcome::Cancelled => "Git review was cancelled.".to_string(),
+                    WaitOutcome::OutputLimit => format!("Git command '{}' produced too much output.", args.join(" ")),
+                    WaitOutcome::TimedOut => git_timeout_recovery_message(&cwd, &args),
+                    WaitOutcome::Completed(_) => unreachable!(),
+                };
+                let termination = process.terminate_bounded().await;
                 stdout_reader.abort();
                 stderr_reader.abort();
-                return Err(BackendError::Git {
-                    message: "Git review was cancelled.".to_string(),
-                });
+                // Inspect locks after stopping Git; retain the cause even when
+                // termination itself cannot prove complete containment.
+                let reason = if timed_out {
+                    git_timeout_recovery_message(&cwd, &args)
+                } else { reason };
+                return Err(git_termination_error(reason, termination.err()));
             }
-            WaitOutcome::TimedOut => {
-                let _ = process.terminate_bounded().await;
-                stdout_reader.abort();
-                stderr_reader.abort();
-                return Err(BackendError::Git {
-                    message: format!("Git command '{}' timed out.", args.join(" ")),
-                });
-            }
+
         };
-        let _ = process.terminate_with_grace(Duration::ZERO).await;
+        process.terminate_with_grace(Duration::ZERO).await.map_err(|error| BackendError::Git {
+            message: format!("Git process tree termination could not be verified: {error}. Inspect repository state and remaining processes before retrying."),
+        })?;
         let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
             tokio::time::timeout(GIT_COMMAND_OUTPUT_DRAIN_TIMEOUT, async {
                 let stdout = stdout_reader.await.map_err(|error| BackendError::Git {
@@ -480,7 +555,55 @@ pub(crate) fn configure_noninteractive_git_command(command: &mut tokio::process:
         .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
 }
 
-async fn read_bounded_git_command_output<R>(mut reader: R) -> std::io::Result<(Vec<u8>, bool)>
+fn git_termination_error(reason: String, termination: Option<std::io::Error>) -> BackendError {
+    BackendError::Git {
+        message: match termination {
+            Some(error) => format!("{reason} Process tree termination could not be verified: {error}. Inspect remaining processes before retrying."),
+            None => reason,
+        },
+    }
+}
+
+#[cfg(test)]
+mod bounded_git_error_tests {
+    #[test]
+    fn termination_failure_keeps_timeout_and_lock_recovery_details() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        std::fs::write(repo.path().join("index.lock"), b"fixture").unwrap();
+        let reason = super::git_timeout_recovery_message(temp.path(), &["add".into()]);
+        let error = super::git_termination_error(
+            reason,
+            Some(std::io::Error::other("inspection fixture failed")),
+        )
+        .to_string();
+        assert!(error.contains("timed out"));
+        assert!(error.contains("index.lock"));
+        assert!(error.contains(repo.path().to_str().unwrap()));
+        assert!(error.contains("inspection fixture failed"));
+        assert!(repo.path().join("index.lock").exists());
+    }
+}
+
+fn git_timeout_recovery_message(cwd: &Path, args: &[String]) -> String {
+    let administration = Repository::discover(cwd)
+        .map(|repo| repo.path().to_path_buf())
+        .unwrap_or_else(|_| cwd.join(".git"));
+    let locks = ["index.lock", "HEAD.lock"]
+        .into_iter()
+        .filter(|name| administration.join(name).exists())
+        .collect::<Vec<_>>();
+    format!(
+        "Git command '{}' timed out. Repository state may have changed. Inspect {} before retrying. Remaining locks: {}. Remove a stale lock only after confirming no Git process owns it; also inspect reference locks and any interrupted merge or rebase.",
+        args.join(" "), administration.display(),
+        if locks.is_empty() { "none detected".into() } else { locks.join(", ") }
+    )
+}
+
+async fn read_bounded_git_command_output<R>(
+    mut reader: R,
+    output_limit: Option<Arc<tokio::sync::Notify>>,
+) -> std::io::Result<(Vec<u8>, bool)>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -497,7 +620,12 @@ where
         let remaining = (MAX_GIT_COMMAND_OUTPUT_BYTES as usize).saturating_sub(retained.len());
         let keep = remaining.min(read);
         retained.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < read;
+        if keep < read && !truncated {
+            if let Some(output_limit) = &output_limit {
+                output_limit.notify_one();
+            }
+            truncated = true;
+        }
     }
     Ok((retained, truncated))
 }
@@ -2623,7 +2751,7 @@ pub(crate) fn mutation_paths(
 pub(crate) fn run_index_mutation(repo: &Repository, args: &[String]) -> Result<()> {
     // Git acquires index.lock before reading the index and holds it through
     // publication. Never write a cached libgit2 index over another tool's stage.
-    let output = run_git_command(&repo_root(repo)?, args)?;
+    let output = run_git_mutation_command(&repo_root(repo)?, args)?;
     if !output.success {
         return Err(BackendError::Git {
             message: command_output_text(&output),
@@ -5376,26 +5504,10 @@ pub(crate) fn build_git_merge_check(
     })
 }
 
-pub(crate) fn collect_command_conflict_files(cwd: &Path) -> Vec<String> {
-    let output = run_git_command(
-        cwd,
-        &[
-            "diff".to_string(),
-            "--name-only".to_string(),
-            "--diff-filter=U".to_string(),
-        ],
-    );
-
-    match output {
-        Ok(output) if output.success => output
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(ToString::to_string)
-            .collect(),
-        _ => Vec::new(),
-    }
+pub(crate) fn collect_command_conflict_files(cwd: &Path) -> Result<Vec<String>> {
+    let repo = Repository::open(cwd)?;
+    let index = repo.index()?;
+    collect_index_conflict_paths(&index)
 }
 
 pub(crate) fn start_merge_resolution_repo(
@@ -5411,7 +5523,7 @@ pub(crate) fn start_merge_resolution_repo(
     if is_merge_in_progress(repo) || repo.index().map(|idx| idx.has_conflicts()).unwrap_or(false) {
         return Ok(GitStartMergeResolutionDto {
             status: "conflicted".to_string(),
-            conflict_files: collect_command_conflict_files(&repo_root(repo)?),
+            conflict_files: collect_command_conflict_files(&repo_root(repo)?)?,
             output: "Merge already in progress.".to_string(),
         });
     }
@@ -5424,7 +5536,7 @@ pub(crate) fn start_merge_resolution_repo(
     }
 
     let root = repo_root(repo)?;
-    let output = run_git_command(
+    let output = run_git_mutation_command(
         &root,
         &[
             "merge".to_string(),
@@ -5453,7 +5565,7 @@ pub(crate) fn start_merge_resolution_repo(
         });
     }
 
-    let mut conflict_files = collect_command_conflict_files(&root)
+    let mut conflict_files = collect_command_conflict_files(&root)?
         .into_iter()
         .collect::<HashSet<_>>()
         .into_iter()
@@ -5547,7 +5659,7 @@ pub(crate) fn fast_forward_repo(
     }
 
     let root = repo_root(repo)?;
-    let output = run_git_command(
+    let output = run_git_mutation_command(
         &root,
         &[
             "merge".to_string(),
@@ -5634,14 +5746,45 @@ pub(crate) fn rebase_branch_repo_with_reflog_action(
     } else {
         vec!["rebase".into(), onto_branch.to_string()]
     };
-    let output = run_git_command_with_reflog_action(&command_root, &rebase_args, reflog_action)?;
+    let output = run_git_command_with_reflog_action(&command_root, &rebase_args, reflog_action)
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "{error} Rebase state was preserved in {} for branch {branch_name}; inspect it before retrying or aborting. Original branch: {}.",
+                command_root.display(), original_branch.as_deref().unwrap_or("detached HEAD")
+            ),
+        })?;
 
     if !output.success {
-        let conflict_files = collect_command_conflict_files(&command_root);
-        let _ = run_git_command(
-            &command_root,
-            &["rebase".to_string(), "--abort".to_string()],
-        );
+        let conflict_files = collect_command_conflict_files(&command_root)?;
+        let command_repo = Repository::open(&command_root)?;
+        if matches!(
+            command_repo.state(),
+            RepositoryState::Rebase
+                | RepositoryState::RebaseInteractive
+                | RepositoryState::RebaseMerge
+                | RepositoryState::ApplyMailbox
+                | RepositoryState::ApplyMailboxOrRebase
+        ) {
+            let abort = run_git_mutation_command(
+                &command_root,
+                &["rebase".to_string(), "--abort".to_string()],
+            );
+            match abort {
+                Ok(abort) if abort.success => {}
+                abort => {
+                    let details = match abort {
+                        Ok(output) => command_output_text(&output),
+                        Err(error) => error.to_string(),
+                    };
+                    return Err(BackendError::Git {
+                        message: format!(
+                            "Rebase failed and could not be aborted in {}: {details}. Rebase state was preserved; inspect it before retrying or aborting.",
+                            command_root.display()
+                        ),
+                    });
+                }
+            }
+        }
         if command_root == root {
             if let Some(original_branch) = original_branch.as_deref() {
                 if original_branch != branch_name {
@@ -5717,7 +5860,7 @@ pub(crate) fn merge_repo(
     }
 
     let root = repo_root(repo)?;
-    let output = run_git_command(
+    let output = run_git_mutation_command(
         &root,
         &[
             "merge".to_string(),
@@ -5731,7 +5874,7 @@ pub(crate) fn merge_repo(
         let merge_head_path = repo.path().join("MERGE_HEAD");
         if merge_head_path.exists() {
             let abort_output =
-                run_git_command(&root, &["merge".to_string(), "--abort".to_string()])?;
+                run_git_mutation_command(&root, &["merge".to_string(), "--abort".to_string()])?;
             if !abort_output.success {
                 let abort_details = command_output_text(&abort_output);
                 return Err(BackendError::Git {
@@ -5855,7 +5998,7 @@ pub(crate) fn abort_exact_incomplete_merge(
         return Ok(false);
     }
     let root = repo_root(repo)?;
-    let output = run_git_command(&root, &["merge".to_string(), "--abort".to_string()])?;
+    let output = run_git_mutation_command(&root, &["merge".to_string(), "--abort".to_string()])?;
     if !output.success {
         let details = command_output_text(&output);
         return Err(BackendError::Git {
@@ -6179,7 +6322,7 @@ pub(crate) fn complete_merge_repo(repo: &Repository) -> Result<String> {
     }
 
     let root = repo_root(repo)?;
-    let output = run_git_command(
+    let output = run_git_mutation_command(
         &root,
         &[
             "-c".to_string(),
