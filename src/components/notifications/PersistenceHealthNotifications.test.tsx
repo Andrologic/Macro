@@ -39,6 +39,7 @@ mock.module('../ui/toastService', () => ({
   notify: { actionRequired: notifyActionRequiredMock },
 }));
 
+const { Dialog } = await import('../ui/Dialog');
 const { PersistenceHealthNotifications } = await import('./PersistenceHealthNotifications');
 
 const conversation: Conversation = {
@@ -175,4 +176,29 @@ describe('PersistenceHealthNotifications', () => {
       process.off('unhandledRejection', onUnhandledRejection);
     }
   });
+  it('keeps recovery below modal dialogs and restores its action when the dialog closes', async () => {
+    const retryAction = mock(async () => undefined);
+    useChatStore.setState({ retryQueuedSubmissions: retryAction, queuedSubmissionRecoveryByConversationId: { [conversation.id]: { count: 1 } } });
+    const render = (open: boolean) => (
+      <>
+        <PersistenceHealthNotifications />
+        {open && <Dialog title="Synthetic settings" onClose={() => undefined}><button>Settings control</button></Dialog>}
+      </>
+    );
+    await act(async () => { root!.render(render(true)); });
+    const panel = container.querySelector('[data-persistence-recovery-panel]')!;
+    const dialog = document.querySelector('[role="dialog"]')!;
+    // These are the product's Tailwind layers, not a test-only inline style.
+    expect(panel.classList.contains('z-40')).toBe(true);
+    expect(dialog.closest('.z-50')).not.toBeNull();
+    expect(container.hasAttribute('inert')).toBe(true);
+    expect(useChatStore.getState().queuedSubmissionRecoveryByConversationId[conversation.id]?.count).toBe(1);
+    await act(async () => { root!.render(render(false)); });
+    expect(container.hasAttribute('inert')).toBe(false);
+    const retry = container.querySelector('button')!;
+    await act(async () => { retry.click(); await flush(); });
+    expect(retryAction).toHaveBeenCalledWith(conversation.id);
+    expect(container.querySelector('[data-persistence-recovery-panel]')).not.toBeNull();
+  });
+
 });

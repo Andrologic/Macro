@@ -76,7 +76,7 @@ export function PersistenceHealthNotifications() {
     <aside
       aria-label={panelTitle}
       data-persistence-recovery-panel="true"
-      className="pointer-events-auto fixed bottom-4 right-4 z-[60] w-[min(28rem,calc(100vw-2rem))] max-w-full"
+      className="pointer-events-auto fixed bottom-4 right-4 z-40 w-[min(28rem,calc(100vw-2rem))] max-w-full"
     >
       <NotificationSurface
         tone={issueEntries.length > 0 ? 'error' : 'warning'}
