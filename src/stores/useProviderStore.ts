@@ -102,11 +102,38 @@ const isProviderTransportUnavailable = (providerId: string): boolean =>
 const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
 const enqueueProviderMutation = createKeyedSerialQueue<string>();
 
+const activeProviderModelReadsById = new Map<string, Set<() => void>>();
+
+const beginProviderModelRead = (
+  providerId: string,
+  setLoading: (loading: boolean) => void,
+  onFinish?: () => void,
+): (() => void) => {
+  const reads = activeProviderModelReadsById.get(providerId) ?? new Set<() => void>();
+  const finish = () => {
+    if (!reads.delete(finish)) return;
+    if (reads.size === 0 && activeProviderModelReadsById.get(providerId) === reads) {
+      activeProviderModelReadsById.delete(providerId);
+    }
+    onFinish?.();
+    setLoading(activeProviderModelReadsById.size > 0);
+  };
+  reads.add(finish);
+  activeProviderModelReadsById.set(providerId, reads);
+  setLoading(true);
+  return finish;
+};
+
+const finishProviderModelReads = (providerId: string): void => {
+  for (const finish of [...(activeProviderModelReadsById.get(providerId) ?? [])]) finish();
+};
+
 const invalidateProviderModelScans = (providerId: string): number => {
   const nextGeneration = (providerModelScanGenerationById.get(providerId) ?? 0) + 1;
   providerModelScanGenerationById.set(providerId, nextGeneration);
   modelRefreshInFlightByProviderId.delete(providerId);
   lastModelRefreshStartedAtByProviderId.delete(providerId);
+  finishProviderModelReads(providerId);
   return nextGeneration;
 };
 
@@ -117,6 +144,7 @@ const invalidateProviderModelPreferenceReads = (providerId: string): void => {
   );
   modelRefreshInFlightByProviderId.delete(providerId);
   lastModelRefreshStartedAtByProviderId.delete(providerId);
+  finishProviderModelReads(providerId);
 };
 
 // Authentication changes invalidate reads started both before and during the transition.
@@ -1349,7 +1377,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     };
     const providerType = providerConfig?.providerType;
     if (ipcIsTauriAvailable()) {
-      set({ isLoadingModels: true });
+      const finishLoading = beginProviderModelRead(providerId, (isLoadingModels) => set({ isLoadingModels }));
       try {
         void refreshModelContextCatalog();
         const models = await ipcListProviderModels(providerId);
@@ -1382,7 +1410,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         });
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
-          isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort } : {}),
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
@@ -1412,8 +1439,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         lifecycle?.assertActive();
         if (!isCurrent()) return get().modelsByProvider[providerId] || [];
         const message = error instanceof Error ? error.message : 'Failed to load models';
-        set({ isLoadingModels: false, lastError: message });
+        set({ lastError: message });
         return modelsByProvider[providerId] || [];
+      } finally {
+        finishLoading();
       }
     }
 
@@ -1436,6 +1465,24 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return modelsByProvider[providerId] || [];
     }
 
+    const beginScan = () => {
+      const previousReachability = get().providerReachabilityById[providerId];
+      const checking = buildReachabilityRecord({
+        status: 'checking',
+        lastVerifiedBy: isLinkedProviderType(config.providerType) ? 'linked_auth' : undefined,
+      });
+      set((state) => applyReachabilityState(state, providerId, checking));
+      return beginProviderModelRead(providerId, (isLoadingModels) => set({ isLoadingModels }), () => {
+        if ((providerModelPreferenceVersionById.get(providerId) ?? 0) === preferenceVersion ||
+          (providerModelScanGenerationById.get(providerId) ?? 0) !== scanGeneration) return;
+        // Restore only this scan's checking state; a newer probe owns its own record.
+        set((state) => state.providerReachabilityById[providerId] === checking
+          ? applyReachabilityState(state, providerId,
+            previousReachability?.status === 'checking' ? undefined : previousReachability)
+          : {});
+      });
+    };
+
     if (isLinkedProviderType(config.providerType)) {
       const copilotStatus =
         config.providerType === 'copilot' ? get().copilotStatusByProvider[providerId] : undefined;
@@ -1448,13 +1495,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         return modelsByProvider[providerId] || [];
       }
 
-      set({ isLoadingModels: true });
-      set((state) => ({
-        ...withReachabilityRecord(state, providerId, {
-          status: 'checking',
-          lastVerifiedBy: 'linked_auth',
-        }),
-      }));
+      const finishLoading = beginScan();
 
       try {
         void refreshModelContextCatalog();
@@ -1531,7 +1572,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             status: 'reachable',
             lastVerifiedBy: 'linked_auth',
           }),
-          isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
@@ -1583,10 +1623,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             lastVerifiedBy: 'linked_auth',
             lastError: message,
           }),
-          isLoadingModels: false,
           lastError: message,
         }));
         return modelsByProvider[providerId] || [];
+      } finally {
+        finishLoading();
       }
     }
 
@@ -1600,10 +1641,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return modelsByProvider[providerId] || [];
     }
 
-    set({ isLoadingModels: true });
-    set((state) => ({
-      ...withReachabilityRecord(state, providerId, { status: 'checking' }),
-    }));
+    const finishLoading = beginScan();
 
     try {
       const result = await probeModelsEndpoint({
@@ -1626,7 +1664,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             lastError: result.message,
             modelIdUsed: result.modelIdUsed,
           }),
-          isLoadingModels: false,
           lastError: result.message,
         }));
 
@@ -1753,7 +1790,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             status: 'reachable',
             lastVerifiedBy: result.source,
           }),
-          isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
@@ -1844,7 +1880,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           status: 'reachable',
           lastVerifiedBy: result.source,
         }),
-        isLoadingModels: false,
       }));
       await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
       lifecycle?.assertActive();
@@ -1863,10 +1898,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           lastVerifiedBy: 'models_endpoint',
           lastError: message,
         }),
-        isLoadingModels: false,
         lastError: message,
       }));
       return modelsByProvider[providerId] || [];
+    } finally {
+      finishLoading();
     }
   },
 
@@ -1890,7 +1926,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         const selectedModelId = getFirstEnabledModelId(updatedModels);
         return {
           modelsByProvider,
-          isLoadingModels: false,
           ...(needsSelection ? {
             selectedModelId,
             selectedReasoningEffort: resolveSelectedReasoningEffort({
@@ -1921,7 +1956,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         const selectedModelId = enabled ? getFirstEnabledModelId(updatedModels) : null;
         return {
           modelsByProvider,
-          isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? {
             selectedModelId,
             selectedReasoningEffort: resolveSelectedReasoningEffort({
