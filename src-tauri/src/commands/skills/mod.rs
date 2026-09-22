@@ -3716,6 +3716,97 @@ mod tests {
         }));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn script_workspace_uses_captured_root_and_rejects_missing_directory() {
+        let project = tempdir().expect("project");
+        let worktree_parent = tempdir().expect("worktree parent");
+        let worktree = worktree_parent.path().join("task");
+        fs::create_dir(&worktree).expect("worktree");
+        let skill_dir = project.path().join(AGENTS_SKILLS_DIR).join("cwd-runner");
+        write_skill(&skill_dir, "cwd-runner");
+        fs::create_dir(skill_dir.join("scripts")).expect("scripts");
+        fs::write(skill_dir.join("scripts/cwd.sh"), "pwd -P\n").expect("script");
+        let project_root = SkillProjectRootDto {
+            project_id: "project".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        };
+        let skill_id = discover_skills(std::slice::from_ref(&project_root))
+            .into_iter()
+            .find(|skill| skill.name == "cwd-runner")
+            .expect("skill")
+            .id;
+        let roots = vec![
+            project_root,
+            SkillProjectRootDto {
+                project_id: "project".to_string(),
+                project_name: "Project".to_string(),
+                path: worktree.to_string_lossy().to_string(),
+            },
+        ];
+        let run = |allow_workspace, workspace_path| {
+            test_skills_run_script(
+                skill_id.clone(),
+                "scripts/cwd.sh".to_string(),
+                vec![],
+                Some(5_000),
+                allow_workspace,
+                workspace_path,
+                roots.clone(),
+            )
+        };
+        let path = worktree.to_string_lossy().to_string();
+        let result = run(true, Some(path.clone())).await.expect("worktree cwd");
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(
+            result.stdout.trim(),
+            fs::canonicalize(&worktree)
+                .expect("canonical worktree")
+                .to_string_lossy()
+        );
+        let result = run(true, Some(project.path().to_string_lossy().to_string()))
+            .await
+            .expect("direct project cwd");
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(
+            result.stdout.trim(),
+            fs::canonicalize(project.path())
+                .expect("canonical project")
+                .to_string_lossy()
+        );
+        fs::remove_dir(&worktree).expect("remove worktree before launch");
+        assert!(run(true, Some(path.clone())).await.is_err());
+        assert!(run(true, None).await.is_err());
+        let result = run(false, Some(path)).await.expect("temporary cwd");
+        assert_eq!(result.exit_code, Some(0));
+        let temporary_cwd = PathBuf::from(result.stdout.trim());
+        assert!(temporary_cwd
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("macro-skill-run-"));
+        assert!(
+            !temporary_cwd.exists(),
+            "temporary directory should be cleaned up"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn script_workspace_canonicalization_rejects_symlink_escape() {
+        let project = tempdir().expect("project");
+        let outside = tempdir().expect("outside");
+        let link = project.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).expect("symlink");
+        let roots = vec![SkillProjectRootDto {
+            project_id: "project".to_string(),
+            project_name: "Project".to_string(),
+            path: project.path().to_string_lossy().to_string(),
+        }];
+        assert!(resolve_workspace_cwd(Some(link.to_string_lossy().to_string()), &roots).is_err());
+    }
+
     #[tokio::test]
     async fn script_runs_are_timed_out_and_truncated() {
         let project = tempdir().expect("project");

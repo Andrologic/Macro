@@ -550,7 +550,14 @@ export interface SkillTurnFeedback {
   warnings: SkillTurnFeedbackItem[];
 }
 
+export interface SkillScriptExecutionContext {
+  projectId: string | null;
+  workspacePath: string | null;
+}
+
 export interface SkillScriptRunRequest {
+  /** Captured by the caller, never inferred from the current UI selection. */
+  executionContext?: SkillScriptExecutionContext;
   skillId: string;
   scriptPath: string;
   args?: string[];

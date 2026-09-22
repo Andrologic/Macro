@@ -424,6 +424,8 @@ export function createChatToolExecution(ports: ChatToolExecutionPorts) {
       normalizedToolName,
       args,
       conversationId,
+      undefined,
+      executionContext,
     );
     if (!isCurrentOperation()) return TOOL_EXECUTION_ABORTED_RESULT;
     if (skillToolResult !== undefined) {

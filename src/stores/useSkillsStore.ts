@@ -576,12 +576,27 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     if (skill && !skill.isValid) {
       return `Skill ${request.skillId} is invalid: ${skill.validationErrors.join(' ')}`;
     }
-    const workspacePath = useAppStore.getState().selectedProjectId
-      ? useAppStore.getState().getProjectById(useAppStore.getState().selectedProjectId!)?.path
-      : null;
+    const { executionContext, ...scriptRequest } = request;
+    const projectRoots = getProjectRootsFromAppState();
+    let workspacePath: string | null = null;
+    if (request.allowWorkspace) {
+      workspacePath = executionContext?.workspacePath ?? null;
+      if (!workspacePath?.trim() || !executionContext?.projectId) {
+        throw new Error('Workspace access was requested but the captured execution workspace is unavailable.');
+      }
+      const projectRoot = projectRoots.find((root) => root.projectId === executionContext.projectId);
+      if (!projectRoot) {
+        throw new Error('The captured execution project is no longer available.');
+      }
+      // Keep the original roots for skill identity/hash resolution. A prepared
+      // worktree may live outside its repository and is also an allowed cwd.
+      if (projectRoot.path !== workspacePath) {
+        projectRoots.push({ ...projectRoot, path: workspacePath });
+      }
+    }
     return services.runSkillScript({
-      ...request,
-      projectRoots: getProjectRootsFromAppState(),
+      ...scriptRequest,
+      projectRoots,
       workspacePath,
     });
   },
