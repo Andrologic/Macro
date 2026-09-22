@@ -1165,6 +1165,43 @@ describe('ChatZone', () => {
     mock.restore();
   });
 
+  it('bounds the zero-viewport fallback for a long history without truncating conversation data', async () => {
+    chatState = {
+      ...chatState,
+      messages: Array.from({ length: 1000 }, (_, index) => buildMessage({
+        id: `history-${index}`, role: 'user', content: `History message ${index}`,
+      })),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const rows = requireContainer().querySelectorAll('[data-index]');
+    expect(rows).toHaveLength(20);
+    expect(rows[0]?.getAttribute('data-index')).toBe('980');
+    expect(rows[19]?.getAttribute('data-index')).toBe('999');
+    expect(requireContainer().textContent).toContain('History message 999');
+    expect(chatState.messages).toHaveLength(1000);
+  });
+
+  it('preserves compaction spacing when the bootstrap window omits older rows', async () => {
+    chatState = {
+      ...chatState,
+      messages: Array.from({ length: 30 }, (_, index) => buildMessage({
+        id: `history-${index}`, role: 'assistant', content: `History message ${index}`,
+      })),
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({ id: 'early', displayAfterMessageId: 'history-0' }),
+          buildCompactionEvent({ id: 'recent', displayAfterMessageId: 'history-29' }),
+        ],
+      },
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const first = requireContainer().querySelector<HTMLElement>('[data-index="12"]');
+    const last = requireContainer().querySelector<HTMLElement>('[data-index="31"]');
+    expect(first?.style.transform).toBe('translateY(2700px)');
+    expect(last?.style.transform).toBe('translateY(7312px)');
+    expect(last?.parentElement?.style.height).toBe('7352px');
+  });
+
   it('renders the first user message when the selected conversation has messages', async () => {
     chatState = {
       ...chatState,

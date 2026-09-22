@@ -3,6 +3,9 @@ import { describe, expect, it } from 'bun:test';
 import type { ChatMessage } from '../../types';
 import {
   buildChatTranscriptItems,
+  buildTranscriptMessageIndex,
+  buildTranscriptBootstrapWindow,
+  CHAT_TRANSCRIPT_BOOTSTRAP_LIMIT,
   getTranscriptMessageIndexById,
   type ChatTranscriptCompactionEventInput,
 } from './transcriptItems';
@@ -245,5 +248,37 @@ describe('buildChatTranscriptItems', () => {
       kind: 'compaction_progress',
       eventId: 'current-compaction',
     });
+  });
+});
+
+describe('transcript navigation and bootstrap', () => {
+  it('indexes messages in one traversal, retaining first matches around compaction rows', () => {
+    const items = buildChatTranscriptItems(
+      [makeMessage('u1'), makeMessage('a1'), makeMessage('u2'), makeMessage('u1')],
+      { compactionEvents: [makeCompactionEvent()] },
+    );
+    const index = buildTranscriptMessageIndex(items);
+    expect([...index]).toEqual([['u1', 0], ['a1', 1], ['u2', 3]]);
+    expect(index.has('compaction-1')).toBe(false);
+    expect(index.get('missing')).toBeUndefined();
+    expect(buildTranscriptMessageIndex([]).size).toBe(0);
+  });
+
+  it('bounds bootstrap rows while preserving full offsets, compaction and source messages', () => {
+    const messages = Array.from({ length: 10_000 }, (_, i) => makeMessage(`a${i}`));
+    const items = buildChatTranscriptItems(messages, { compactionEvents: [
+      makeCompactionEvent({ displayAfterMessageId: 'a9998' }),
+    ] });
+    const window = buildTranscriptBootstrapWindow(items, (item) => item.kind === 'message' ? 220 : 48, 16);
+    expect(window.rows).toHaveLength(CHAT_TRANSCRIPT_BOOTSTRAP_LIMIT);
+    expect(window.rows[0].index).toBe(items.length - CHAT_TRANSCRIPT_BOOTSTRAP_LIMIT);
+    expect(window.rows[0].start).toBe(window.rows[0].index * 236);
+    expect(window.rows.at(-2)?.item.kind).toBe('compaction_boundary');
+    expect(window.rows.at(-1)?.key).toBe('message:a9999');
+    expect(window.totalSize).toBe(10_000 * 220 + 48 + 10_000 * 16);
+    expect(window.rows.at(-1)!.start + window.rows.at(-1)!.size).toBe(window.totalSize);
+    expect(messages).toHaveLength(10_000);
+    expect(items.filter((item) => item.kind === 'message')).toHaveLength(10_000);
+    expect(buildTranscriptBootstrapWindow([], () => 220, 16)).toEqual({ rows: [], totalSize: 0 });
   });
 });

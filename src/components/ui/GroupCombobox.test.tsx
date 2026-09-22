@@ -111,9 +111,7 @@ describe('GroupCombobox', () => {
       await Promise.resolve();
     });
 
-    const dropdown = Array.from(document.body.querySelectorAll('div')).find((element) =>
-      element.className.includes('z-[80]')
-    ) as HTMLDivElement | undefined;
+    const dropdown = document.body.querySelector<HTMLDivElement>('[data-macro-dialog-portal]');
     expect(dropdown).toBeDefined();
     expect(dropdown?.parentElement).toBe(document.body);
     expect(dropdown?.className).toContain('fixed');

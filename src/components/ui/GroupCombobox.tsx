@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useLayoutEffect } from
 import { createPortal } from 'react-dom';
 import i18n from '../../i18n';
 import { cn } from '../../utils/cn';
+import { DialogContext } from './Dialog';
 import { Icon } from './Icon';
 
 interface GroupComboboxProps {
@@ -34,9 +35,11 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
   const [query, setQuery] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState<DropdownPosition | null>(null);
+  const dialogContext = React.useContext(DialogContext);
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const suppressFocusOpenRef = useRef(false);
 
   const selectedGroup = projectGroups.find((g) => g.id === selectedGroupId);
   const displayValue = isCreating ? query : (selectedGroup?.name || '');
@@ -106,6 +109,21 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
     setQuery('');
   }, []);
 
+  const closeAndRestoreFocus = useCallback(() => {
+    suppressFocusOpenRef.current = true;
+    resetSearch();
+    inputRef.current?.focus();
+    suppressFocusOpenRef.current = false;
+  }, [resetSearch]);
+
+  useEffect(() => {
+    if (!isOpen || !dialogContext) return;
+
+    return dialogContext.registerEscapeHandler(() => {
+      closeAndRestoreFocus();
+    });
+  }, [closeAndRestoreFocus, dialogContext, isOpen]);
+
   const handleCreateNew = () => {
     if (onCreateGroup && query.trim()) {
       onCreateGroup(query.trim());
@@ -126,7 +144,9 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') {
-      resetSearch();
+      if (dialogContext) return;
+      e.preventDefault();
+      closeAndRestoreFocus();
     } else if (e.key === 'Enter' && showCreateOption) {
       e.preventDefault();
       handleCreateNew();
@@ -204,7 +224,9 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
             left: dropdownPosition.left,
             width: dropdownPosition.width,
             maxHeight: dropdownPosition.maxHeight,
+            zIndex: (dialogContext?.zIndex ?? 79) + 1,
           }}
+          data-macro-dialog-portal
           className={cn(
             'fixed z-[80] bg-card border border-border',
             'rounded-lg shadow-2xl overflow-y-auto',
@@ -272,6 +294,11 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
       )
     : null;
 
+  useEffect(() => {
+    if (!dropdownRef.current || !dialogContext) return;
+    return dialogContext.registerPortal(dropdownRef.current);
+  }, [dialogContext, dropdownPosition]);
+
   return (
     <div ref={containerRef} className={cn('relative', className)}>
       {/* Trigger/Input */}
@@ -281,7 +308,9 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
           type="text"
           value={displayValue}
           onChange={handleInputChange}
-          onFocus={() => setIsOpen(true)}
+          onFocus={() => {
+            if (!suppressFocusOpenRef.current) setIsOpen(true);
+          }}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           className={cn(
