@@ -191,10 +191,12 @@ describe('architectPlanArtifactService reviews and versions', () => {
     dependencies: ['audit'],
   } as CatalogedImplementTask;
   const files = new Map<string, string>();
+  const settings = new Map<string, string>();
   const fsCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
 
   beforeEach(() => {
     files.clear();
+    settings.clear();
     fsCalls.length = 0;
     useAppStore.setState({
       standaloneProjects: [{
@@ -213,6 +215,16 @@ describe('architectPlanArtifactService reviews and versions', () => {
       selectedGroupId: null,
     });
     installTauriRuntimeMock(mock(async (command, payload) => {
+      if (command === 'db_get_app_setting') {
+        const value = settings.get(String(payload?.key));
+        return value === undefined ? null : { value_json: value };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        const key = String(payload?.key);
+        if ((settings.get(key) ?? null) !== payload?.expectedValueJson) return { applied: false };
+        settings.set(key, String(payload?.valueJson));
+        return { applied: true };
+      }
       if (command.startsWith('fs_')) {
         fsCalls.push({ command, payload: (payload || {}) as Record<string, unknown> });
       }
@@ -229,12 +241,12 @@ describe('architectPlanArtifactService reviews and versions', () => {
         const workspacePath = String(payload?.workspacePath || '');
         const scopedPath = `${workspacePath}::${path}`;
         if (files.has(scopedPath)) {
-          return { content: files.get(scopedPath) };
+          return { content: files.get(scopedPath), revision: files.get(scopedPath) };
         }
         if (!files.has(path)) {
           throw new Error(`missing ${path}`);
         }
-        return { content: files.get(path) };
+        return { content: files.get(path), revision: files.get(path) };
       }
       if (command === 'fs_write_file') {
         files.set(String(payload?.path || ''), String(payload?.content || ''));
@@ -278,7 +290,7 @@ describe('architectPlanArtifactService reviews and versions', () => {
           summary: 'Parent summary',
           contentType: 'markdown',
           path: contentPath,
-          contentHash: 'parent',
+          contentHash: 'ca280374',
           createdAt: '2026-05-26T00:00:00.000Z',
           updatedAt: '2026-05-26T00:00:00.000Z',
           createdBy: 'agent',
@@ -473,7 +485,7 @@ describe('architectPlanArtifactService reviews and versions', () => {
           summary: 'Produced contract',
           contentType: 'markdown',
           path: contentPath,
-          contentHash: 'api',
+          contentHash: 'bde49478',
           createdAt: '2026-05-26T00:00:00.000Z',
           updatedAt: '2026-05-26T00:00:00.000Z',
           createdBy: 'agent',
@@ -565,7 +577,7 @@ describe('architectPlanArtifactService reviews and versions', () => {
             'migration-map',
             'markdown',
           ),
-          contentHash: 'map',
+          contentHash: '6f5f5f41',
           createdAt: '2026-06-05T00:00:00.000Z',
           updatedAt: '2026-06-05T00:00:00.000Z',
           createdBy: 'agent',
@@ -574,6 +586,7 @@ describe('architectPlanArtifactService reviews and versions', () => {
       reviews: [],
     }, null, 2)}\n`);
 
+    files.set(`/repos/octan_sales::${getPlanArtifactContentPath(branchName, plan.id, 'api', 'migration-map', 'markdown')}`, 'Map\n');
     const overview = await listPlanArtifactOverview({
       branchName,
       plan: {
