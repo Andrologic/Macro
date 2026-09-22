@@ -20,6 +20,7 @@ import { createDeferred } from '../test-utils/deferred';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
+import { registerQueuedSubmissionRecoveryScenarios } from './__tests__/queuedSubmissionRecovery.scenarios';
 import { registerArchitectLifecycleScenarios } from './__tests__/architectLifecycle.scenarios';
 import { registerArchitectStrategyScenarios } from './__tests__/architectStrategy.scenarios';
 import { registerChatToolsAndSourcesScenarios } from './__tests__/chatToolsAndSources.scenarios';
@@ -3594,6 +3595,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   registerReplayAndEditingScenarios(useChatStoreScenarioContext);
   registerImplementPolicyScenarios(useChatStoreScenarioContext);
   registerToolApprovalRecoveryScenarios(useChatStoreScenarioContext);
+  registerQueuedSubmissionRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);
 });
 

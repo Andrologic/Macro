@@ -357,6 +357,7 @@ import {
   type MessageImageAttachment,
   type PersistedComposerDraft,
 } from "./chat/chatLocalSessionState";
+import { captureQueuedSubmission, loadQueuedSubmissions, saveQueuedSubmissions, type QueuedSubmission } from "./chat/chatQueuedSubmissions";
 import {
   buildConversationRuntimePatch,
   buildLegacyStreamingFlags,
@@ -1009,12 +1010,13 @@ interface ChatStore {
     hiddenContext?: string;
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
-  }) => Promise<ChatSendResult | ChatSendCancelledResult>;
+  }, queuedSubmission?: QueuedSubmission) => Promise<ChatSendResult | ChatSendCancelledResult>;
   submitDuringActiveTurn: (
     payload: ComposerSubmissionPayload,
     behavior: ActiveTurnSubmissionBehavior,
   ) => Promise<"steered" | "queued">;
   stopConversationStream: (conversationId: string) => void;
+  retryQueuedSubmissions: (conversationId: string) => Promise<void>;
   clearConversationRuntimeError: (conversationId: string) => void;
   retryAssistantPersistence: (messageId: string) => Promise<void>;
   deleteUnsavedAssistantResponse: (messageId: string) => Promise<void>;
@@ -1348,7 +1350,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     cancelTransport: cancelStream,
     settled: (id) => { void drainQueuedSubmissions(id); },
   });
-  const queuedSubmissionsByConversationId = new Map<string, ComposerSubmissionPayload[]>();
+  let queuedSubmissions = loadQueuedSubmissions();
+  const pausedQueuedConversationIds = new Set(queuedSubmissions.map(entry => entry.input.conversationId));
   const drainingQueuedConversationIds = new Set<string>();
   const toolboxPersistenceTailsByConversationId = new Map<string, Promise<void>>();
   const contextDiagnosticsRequestIds = new Map<string, number>();
@@ -3304,7 +3307,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
       archiveUnsubscribe = useConversationArchiveStore.subscribe((next, previous) => {
         if (!scope.isActive()) return;
         for (const conversationId of next.archivedConversationIds) {
-          if (!previous.archivedConversationIds.has(conversationId)) get().stopConversationStream(conversationId);
+          if (!previous.archivedConversationIds.has(conversationId)) {
+            get().stopConversationStream(conversationId);
+            if (queuedSubmissions.some(entry => entry.input.conversationId === conversationId)) {
+              pausedQueuedConversationIds.add(conversationId);
+              showQueuedSubmissionRecovery(conversationId);
+            }
+          }
         }
       });
       scope.own(archiveUnsubscribe);
@@ -5752,6 +5761,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const restorePersistedComposerDrafts = (
     visibleConversations: Conversation[],
     archivedConversationIds: ReadonlySet<string>,
+    pruneMissingConversations = true,
   ): Record<string, ComposerDraft> => {
     const visibleConversationIds = new Set(
       visibleConversations.map((conversation) => conversation.id),
@@ -5762,7 +5772,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           if (contextKey.startsWith("conversation:")) {
             const conversationId = contextKey.slice("conversation:".length);
             if (
-              !visibleConversationIds.has(conversationId) ||
+              (pruneMissingConversations && !visibleConversationIds.has(conversationId)) ||
               archivedConversationIds.has(conversationId)
             ) {
               return [];
@@ -7312,6 +7322,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (conversationIds.length === 0) {
       return;
     }
+    const remainingQueue = queuedSubmissions.filter(entry => !conversationIds.includes(entry.input.conversationId));
+    if (remainingQueue.length !== queuedSubmissions.length) {
+      // A failed cleanup remains visible; deleted conversations are never executed.
+      saveQueuedSubmissions(remainingQueue);
+      queuedSubmissions = remainingQueue;
+    }
+    conversationIds.forEach(id => pausedQueuedConversationIds.delete(id));
     discardComposerDraftsForConversationIds(conversationIds);
     clearUnsavedAssistantResponsesForConversations(conversationIds);
     clearPendingArchitectConversationsForConversationIds(conversationIds);
@@ -8348,32 +8365,140 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
-    if (drainingQueuedConversationIds.has(conversationId)) return;
-    if (hasUnsavedAssistantResponse(conversationId)) return;
-    const runtime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
-    if (isConversationRuntimeActive(runtime)) return;
-    const queue = queuedSubmissionsByConversationId.get(conversationId);
-    const next = queue?.shift();
-    if (!next) {
-      queuedSubmissionsByConversationId.delete(conversationId);
-      return;
+  const captureSendSnapshot = (conversationId: string): ChatSendSnapshot => {
+    // Capture UI selections synchronously before the use case can suspend.
+    const app = useAppStore.getState();
+    const provider = useProviderStore.getState();
+    const chat = get();
+    const mode = app.mode;
+    return {
+      mode,
+      agentType: mode === "Implement" ? app.agentType : null,
+      architectPlan: mode === "Architect" && app.activeArchitectPlanId
+        ? { planId: app.activeArchitectPlanId, targetBranch: resolveTargetBranch(app.activePlanContext?.targetBranch) }
+        : undefined,
+      conversationTaskId: chat.conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null,
+      selectedTaskId: mode === "Implement" ? (app.selectedTaskId ?? "") : "",
+      executionContext: resolveConversationExecutionContext(conversationId),
+      composerContextRefs: persistableContextRefs(chat.composerContextRefs),
+      composerRevision: composerContextRefsRevision,
+      provider: {
+        selectedProviderId: provider.selectedProviderId,
+        selectedModelId: provider.selectedModelId,
+        selectedReasoningEffort: provider.selectedReasoningEffort,
+        isLoading: provider.isLoading,
+        providerConfigs: provider.providerConfigs.map((config) => ({ ...config })),
+      },
+    };
+  };
+
+  const persistQueue = (next: QueuedSubmission[]) => {
+    if (!saveQueuedSubmissions(next)) throw buildSendError(i18n.t(
+      'chat.queueSaveFailed', 'Queued messages could not be saved. Keep this session open and try again.',
+    ));
+    queuedSubmissions = next;
+  };
+
+  const revalidateQueuedExecutionContext = async (entry: QueuedSubmission): Promise<ProjectExecutionContext> => {
+    const captured = entry.intent.executionContext;
+    const plan = entry.intent.architectPlan
+      ? await getArchitectPlan(entry.intent.architectPlan.targetBranch, entry.intent.architectPlan.planId)
+      : null;
+    if (entry.intent.architectPlan && (!plan || plan.status === 'deleted' || plan.deletedAt || plan.archivedAt ||
+      (plan.conversationId && plan.conversationId !== entry.input.conversationId))) {
+      throw buildSendError(i18n.t('chat.queuePlanUnavailable', 'The original plan is unavailable for this queued message.'));
     }
-    if (queue?.length === 0) queuedSubmissionsByConversationId.delete(conversationId);
+    if (plan && captured.projectIds.some(id => !getArchitectPlanVisibleProjectIds(plan).includes(id))) {
+      throw buildSendError(i18n.t('chat.queueContextChanged', 'The queued message target has changed. Restore its original context before retrying.'));
+    }
+    const app = useAppStore.getState();
+    const tasks = useTaskStore.getState();
+    const current = resolveProjectExecutionContext({
+      mode: entry.intent.mode,
+      projects: [...(app.standaloneProjects ?? []), ...app.projectGroups.flatMap(group => group.projects)],
+      projectGroups: app.projectGroups,
+      tasks: tasks.tasks,
+      conversations: get().conversations,
+      conversationId: entry.input.conversationId,
+      selectedGroupId: captured.groupId,
+      selectedProjectId: captured.focusedProjectId,
+      selectedTaskId: entry.input.taskId ?? entry.intent.conversationTaskId ?? entry.intent.selectedTaskId,
+      branchWorktrees: tasks.branchWorktrees,
+      architectExecutionModesByProjectId: plan?.executionModesByProjectId,
+    });
+    // A changed target requires the user to resolve the queued intent, never a
+    // silent switch to a different repository. Access modes come from live state.
+    if (current.taskId !== captured.taskId ||
+      JSON.stringify([...current.projectIds].sort()) !== JSON.stringify([...captured.projectIds].sort()) ||
+      captured.projectIds.some(id => current.workspacePathsByProjectId[id] !== captured.workspacePathsByProjectId[id])) {
+      throw buildSendError(i18n.t('chat.queueContextChanged', 'The queued message target has changed. Restore its original context before retrying.'));
+    }
+    return { ...current, branchName: captured.branchName };
+  };
+
+  const acknowledgeQueuedSubmission = (entry: QueuedSubmission, message: ChatMessage) => {
+    if (deletedConversationIds.has(entry.input.conversationId) ||
+      !queuedSubmissions.some(candidate => candidate.id === entry.id)) return;
+    if (entry.input.images?.length) {
+      const images = { ...get().messageImagesByMessageId, [message.id]: entry.input.images };
+      if (!saveMessageImagesToStorage(images)) throw buildSendError(i18n.t(
+        'chat.queueImagesSaveFailed', 'The message is saved, but its images still need saving. Retry the queued submission.',
+      ));
+      set({ messageImagesByMessageId: images });
+    }
+    persistQueue(queuedSubmissions.filter(candidate => candidate.id !== entry.id));
+  };
+
+  const showQueuedSubmissionRecovery = (conversationId: string) => {
+    const pending = queuedSubmissions.filter(entry => entry.input.conversationId === conversationId);
+    if (!pending.length) return;
+    notify.actionRequired(i18n.t('chat.queueRecoveryTitle', 'Queued messages need attention'), {
+      notificationKey: `chat-queue:${conversationId}`,
+      description: i18n.t('chat.queueRecoveryDescription', '{{count}} queued message(s) are retained. Retry resumes them in their original context.', { count: pending.length }),
+      actions: [{
+        label: i18n.t('common.retry', 'Retry'),
+        dismissOnSuccess: false,
+        onClick: () => get().retryQueuedSubmissions(conversationId),
+      }],
+    });
+  };
+
+  const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
+    if (drainingQueuedConversationIds.has(conversationId) ||
+      pausedQueuedConversationIds.has(conversationId) || isAppShutdownGateActive()) return;
+    if (hasUnsavedAssistantResponse(conversationId)) return;
+    if (useConversationArchiveStore.getState().archivedConversationIds.has(conversationId)) return;
+    const runtime = getConversationRuntimeSnapshot(get().conversationRuntimeById, conversationId);
+    if (isConversationRuntimeActive(runtime)) return;
+    const next = queuedSubmissions.find(entry => entry.input.conversationId === conversationId);
+    if (!next || deletedConversationIds.has(conversationId)) return;
     drainingQueuedConversationIds.add(conversationId);
-    let shouldContinue = true;
+    let shouldContinue = false;
     try {
-      await get().sendMessage(next);
+      // Reconcile against durable messages even when the in-memory transcript was
+      // already loaded before an interrupted save. Never execute a saved turn twice.
+      const persisted = await loadConversationMessages(chatPersistenceAdapters, {
+        conversationId, conversations: get().conversations,
+      });
+      if (deletedConversationIds.has(conversationId) || isAppShutdownGateActive() ||
+        !queuedSubmissions.some(entry => entry.id === next.id)) return;
+      const saved = persisted.find(message => message.role === 'user' && message.turn_id === next.id);
+      if (saved) {
+        get().addMessage(saved);
+        acknowledgeQueuedSubmission(next, saved);
+      } else {
+        const result = await get().sendMessage(next.input, next);
+        if (result.status === 'cancelled') throw new Error(i18n.t('chat.queueInterrupted', 'The queued send was interrupted. Its content is retained.'));
+      }
+      shouldContinue = true;
     } catch {
-      shouldContinue = false;
+      if (queuedSubmissions.some(entry => entry.input.conversationId === conversationId)) {
+        pausedQueuedConversationIds.add(conversationId);
+        showQueuedSubmissionRecovery(conversationId);
+      }
     } finally {
       drainingQueuedConversationIds.delete(conversationId);
-      if (shouldContinue) {
-        queueMicrotask(() => void drainQueuedSubmissions(conversationId));
-      }
+      if (shouldContinue) queueMicrotask(() => void drainQueuedSubmissions(conversationId));
     }
   };
 
@@ -11091,6 +11216,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       lastError: replayRecoveryError ?? null,
       abortController: null,
     });
+    const missingQueuedConversationIds = new Set(queuedSubmissions
+      .filter(entry => !conversations.some(conversation => conversation.id === entry.input.conversationId))
+      .map(entry => entry.input.conversationId));
+    if (missingQueuedConversationIds.size) {
+      const retained = queuedSubmissions.filter(entry => !missingQueuedConversationIds.has(entry.input.conversationId));
+      if (saveQueuedSubmissions(retained)) queuedSubmissions = retained;
+    }
+    for (const id of pausedQueuedConversationIds) showQueuedSubmissionRecovery(id);
     scheduleImplementAwaitingResponseReconciliation();
   };
 
@@ -13381,13 +13514,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
         throw buildSendError("The conversation is no longer running.");
       }
       if (behavior === "queue") {
-        const queue = queuedSubmissionsByConversationId.get(payload.conversationId) ?? [];
-        queue.push({
-          ...payload,
-          images: payload.images ? [...payload.images] : undefined,
-          contextRefs: persistableContextRefs(get().composerContextRefs),
+        if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
+        const entry = captureQueuedSubmission(createConversationTurnId(), payload, captureSendSnapshot(payload.conversationId));
+        if (entry.intent.mode === 'Architect' && !entry.intent.architectPlan) {
+          throw buildSendError('Select a plan before sending an Architect message.');
+        }
+        const config = await loadScopedTurnConfiguration({
+          projectIds: entry.intent.executionContext.projectIds,
+          focusProjectId: entry.intent.executionContext.focusedProjectId,
+          mode: entry.intent.mode,
         });
-        queuedSubmissionsByConversationId.set(payload.conversationId, queue);
+        const scoped = resolveScopedModelSelection(config,
+          scopedModelPreferenceKeys(entry.intent.mode, entry.intent.agentType, entry.input.internalAgentProfile));
+        if (scoped) entry.intent.provider = {
+          selectedProviderId: scoped.providerId, selectedModelId: scoped.modelId,
+          selectedReasoningEffort: scoped.reasoningEffort ?? null,
+        };
+        if (isAppShutdownGateActive() || deletedConversationIds.has(payload.conversationId) ||
+          useConversationArchiveStore.getState().archivedConversationIds.has(payload.conversationId)) {
+          throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
+        }
+        persistQueue([...queuedSubmissions, entry]);
+        // Completion may have happened while resolving the captured model preference.
+        queueMicrotask(() => void drainQueuedSubmissions(payload.conversationId));
         return "queued";
       }
 
@@ -13433,46 +13582,41 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return "steered";
     },
 
-    sendMessage: async (payload) => {
+    sendMessage: async (payload, queuedSubmission) => {
       if (isAppShutdownGateActive()) {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
-      // Capture UI selections synchronously before the use case can suspend.
-      const app = useAppStore.getState();
+      const queuedExecutionContext = queuedSubmission
+        ? await revalidateQueuedExecutionContext(queuedSubmission) : undefined;
       const provider = useProviderStore.getState();
-      const chat = get();
-      const mode = app.mode;
-      const snapshot: ChatSendSnapshot = {
-        mode,
-        agentType: mode === "Implement" ? app.agentType : null,
-        architectPlan: mode === "Architect" && app.activeArchitectPlanId
-          ? { planId: app.activeArchitectPlanId, targetBranch: resolveTargetBranch(app.activePlanContext?.targetBranch) }
-          : undefined,
-        conversationTaskId: chat.conversations.find((conversation) => conversation.id === payload.conversationId)?.task_id ?? null,
-        selectedTaskId: mode === "Implement" ? (app.selectedTaskId ?? "") : "",
-        executionContext: resolveConversationExecutionContext(payload.conversationId),
-        composerContextRefs: persistableContextRefs(chat.composerContextRefs),
-        composerRevision: composerContextRefsRevision,
-        provider: {
-          selectedProviderId: provider.selectedProviderId,
-          selectedModelId: provider.selectedModelId,
-          selectedReasoningEffort: provider.selectedReasoningEffort,
-          isLoading: provider.isLoading,
-          providerConfigs: provider.providerConfigs.map((config) => ({ ...config })),
-        },
-      };
-      return sendChatMessage(payload, snapshot, {
+      const snapshot: ChatSendSnapshot = queuedSubmission
+        ? { ...queuedSubmission.intent, composerRevision: -1,
+            executionContext: queuedExecutionContext!,
+            modelSelectionCaptured: true,
+            provider: { ...queuedSubmission.intent.provider,
+              isLoading: provider.isLoading,
+              providerConfigs: provider.providerConfigs.map(config => ({ ...config })) } }
+        : captureSendSnapshot(payload.conversationId);
+      if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
+      return sendChatMessage({ ...payload, submissionTurnId: queuedSubmission?.id }, snapshot, {
         owner: turnRuntime,
         messages: {
           persistence: chatPersistenceAdapters,
+          onUserPersisted: queuedSubmission ? message => acknowledgeQueuedSubmission(queuedSubmission, message) : undefined,
           ensureLoaded: ensureMessagesLoadedForConversation,
           list: getOrderedConversationMessages,
           hasInterruptedApproval: (id) => get().pendingToolApprovalByConversationId[id]?.recoveryState === "interrupted",
           clearApprovalRecovery: (id) => persistToolApprovalRecovery(id, null),
         },
         preparation: {
-          assertCanSend: assertConversationRuntimeAvailableForSend,
-          isDeleted: (id) => deletedConversationIds.has(id),
+          assertCanSend: (id) => {
+            if (queuedSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
+              throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
+            }
+            assertConversationRuntimeAvailableForSend(id);
+          },
+          isDeleted: (id) => deletedConversationIds.has(id) || Boolean(queuedSubmission &&
+            useConversationArchiveStore.getState().archivedConversationIds.has(id)),
           createSessionId: createConversationSessionId,
           createTurnId: createConversationTurnId,
           hasPendingArchitectConversation: (id) => pendingArchitectConversationDetailsById.has(id),
@@ -13506,7 +13650,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           failLaunch: failStandaloneTaskLaunch,
         },
         projection: {
-          persistSelection: persistSelectionForContext,
+          persistSelection: (mode, id) => {
+            if (!queuedSubmission) persistSelectionForContext(mode, id);
+          },
           publishUser: (message, context) => {
             get().addMessage(message);
             if (context.images?.length) get().setMessageImages(message.id, context.images);
@@ -13546,6 +13692,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }),
         },
       });
+    },
+
+    retryQueuedSubmissions: async (conversationId) => {
+      pausedQueuedConversationIds.delete(conversationId);
+      await drainQueuedSubmissions(conversationId);
     },
 
     stopConversationStream: (conversationId) => {
@@ -14336,6 +14487,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const composerDraftsByContextKey = restorePersistedComposerDrafts(
           [],
           EMPTY_STRING_SET,
+          false,
         );
         set({
           conversations: [],

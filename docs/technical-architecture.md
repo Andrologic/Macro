@@ -466,6 +466,15 @@ ni mock de store. L'adaptateur capture les sélections UI avant la première
 attente ; le runtime reçoit ensuite ce snapshot, ses dépendances et les
 opérations de projection séparément.
 
+Les soumissions différées utilisent le stockage local de récupération du chat.
+`chatQueuedSubmissions` conserve uniquement l'intention et le contenu acceptés,
+avec un identifiant repris comme `turn_id`. Le store garde l'entrée tant que le
+message utilisateur et ses images ne sont pas durables. Une reprise relit le
+transcript pour reconnaître ce tour avant tout nouvel envoi. Elle recharge les
+configurations et les droits sur la cible capturée ; un changement de cible
+bloque la reprise. La notification commune porte l'action de réessai, sans état
+de récupération parallèle dans `ChatZone`.
+
 `chatTurnRuntime` possède les identités de session, les promesses de stream,
 les instructions en attente et les propriétaires de persistance. Le record des
 phases reste unique, derrière un port de projection adossé au store. Le runtime

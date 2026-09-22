@@ -14,6 +14,28 @@ function deferred<T = void>() {
 
 
 describe('sendMessage use case without UI stores', () => {
+  it('pins a deferred model while loading current policies and credentials', async () => {
+    const f = fixture();
+    f.snapshot.modelSelectionCaptured = true;
+    f.snapshot.provider.providerConfigs[0].isLocal = false;
+    f.ports.configuration.selectScoped = () => ({ providerId: 'changed', modelId: 'changed', reasoningEffort: null });
+    await sendMessage({ ...f.input, submissionTurnId: 'accepted-turn' }, f.snapshot, f.ports);
+    expect(f.createMessage.mock.calls[0]?.[3]?.turnId).toBe('accepted-turn');
+    expect(f.ports.configuration.load).toHaveBeenCalled();
+    expect(f.ports.configuration.resolveApiKey).toHaveBeenCalledWith('provider-1');
+    expect(f.ports.stream.prepare).toHaveBeenCalledWith(expect.objectContaining({ providerId: 'provider-1', modelId: 'model-1' }));
+  });
+
+  it('acknowledges durable user persistence even if assistant preparation fails', async () => {
+    const f = fixture();
+    let accepted = '';
+    f.ports.messages.onUserPersisted = message => { accepted = message.turn_id!; };
+    f.ports.stream.prepare = async () => { throw new Error('preparation failure'); };
+    await expect(sendMessage({ ...f.input, submissionTurnId: 'accepted-turn' }, f.snapshot, f.ports)).rejects.toMatchObject({ message: 'preparation failure' });
+    expect(accepted).toBe('accepted-turn');
+    expect(f.createMessage.mock.calls.filter(call => call[1] === 'user')).toHaveLength(1);
+  });
+
   it('persists the captured turn and starts with its scoped configuration and context', async () => {
     const f = fixture();
     const scoped = { providerId: 'scoped', modelId: 'scoped-model', reasoningEffort: null } as const;
