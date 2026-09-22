@@ -43,7 +43,10 @@ for retry; they are not durable saves.
 Deterministic compaction keeps typed results and paired calls intact. Existing
 summarization can remove whole turns from request context; source history stays
 stored. Context overflow remains explicit. Stop cancels execution and discards
-late results.
+late results. Completed native call/result pairs remain cumulative across steering
+and incomplete-response continuation, including an interrupted later turn.
+Recovery retains executed pairs and excludes calls that have no result; older
+conversation messages are not copied into the new completion.
 
 Before downgrading, back up the local conversation database if media history must
 survive. Older versions read fallback text but may discard the extension when

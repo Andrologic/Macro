@@ -68,9 +68,11 @@ export async function runToolCallingLoop(
   let enforceGuidedRetry = Boolean(options.guidedToolRetry);
   let recoveryCause: 'length' | 'incomplete' | null = null;
   const usedToolNames = new Set<string>();
+  // Native live context also contains completed results from a turn interrupted
+  // before projectAssistant could add it to the settled transcript.
   const complete = (completionReason?: StreamCompletionReason) => ({
     ...accumulator.buildResult(),
-    providerInputItems: cloneProviderInputItems(transcript.length ? transcript : accumulator.snapshotLiveContext().providerInputItems),
+    providerInputItems: cloneProviderInputItems(accumulator.snapshotLiveContext().providerInputItems ?? transcript),
     ...(providerTurnState ? { providerTurnState } : {}),
     ...(completionReason ? { completionReason } : {}),
   });
@@ -127,7 +129,7 @@ export async function runToolCallingLoop(
       accumulator.flushProviderDelta();
       const projected = turn.projectAssistant(replayContent, calls, recovering, incomplete);
       providerTurnState = projected.state ?? providerTurnState;
-      if (replayContent.trim() || calls.length) {
+      if (replayContent.trim() || calls.length || projected.items.length) {
         if (projected.items.length) {
           transcript.push(...projected.items);
           accumulator.setProviderContext({ providerInputItems: transcript, providerTurnState });
