@@ -93,6 +93,8 @@ let providerConfigLoadVersion = 0;
 const providerConnectionRequestVersionById = new Map<string, number>();
 const providerSettingsRequestVersionById = new Map<string, number>();
 const providerModelScanGenerationById = new Map<string, number>();
+// Preferences invalidate model snapshots without cancelling auth or connection work.
+const providerModelPreferenceVersionById = new Map<string, number>();
 const providerTransportMutations = new Set<string>();
 const providerConfigsNeedingReload = new Set<string>();
 const isProviderTransportUnavailable = (providerId: string): boolean =>
@@ -106,6 +108,15 @@ const invalidateProviderModelScans = (providerId: string): number => {
   modelRefreshInFlightByProviderId.delete(providerId);
   lastModelRefreshStartedAtByProviderId.delete(providerId);
   return nextGeneration;
+};
+
+const invalidateProviderModelPreferenceReads = (providerId: string): void => {
+  providerModelPreferenceVersionById.set(
+    providerId,
+    (providerModelPreferenceVersionById.get(providerId) ?? 0) + 1,
+  );
+  modelRefreshInFlightByProviderId.delete(providerId);
+  lastModelRefreshStartedAtByProviderId.delete(providerId);
 };
 
 // Authentication changes invalidate reads started both before and during the transition.
@@ -1324,12 +1335,14 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     lifecycle?.assertActive();
     if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
     const generation = providerModelScanGenerationById.get(providerId) ?? 0;
+    const preferenceVersion = providerModelPreferenceVersionById.get(providerId) ?? 0;
     const { modelsByProvider, providerConfigs } = get();
     const providerConfig = providerConfigs.find((provider) => provider.id === providerId);
     const isCurrent = () => {
       const current = get().providerConfigs.find((provider) => provider.id === providerId);
       return !isProviderTransportUnavailable(providerId) &&
         (providerModelScanGenerationById.get(providerId) ?? 0) === generation &&
+        (providerModelPreferenceVersionById.get(providerId) ?? 0) === preferenceVersion &&
         current?.providerType === providerConfig?.providerType &&
         current?.baseUrl === providerConfig?.baseUrl &&
         current?.isLocal === providerConfig?.isLocal;
@@ -1411,9 +1424,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     lifecycle?.assertActive();
     if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
     const scanGeneration = providerModelScanGenerationById.get(providerId) ?? 0;
+    const preferenceVersion = providerModelPreferenceVersionById.get(providerId) ?? 0;
     const isCurrentScan = () =>
       (lifecycle?.isActive() ?? true) &&
-      (providerModelScanGenerationById.get(providerId) ?? 0) === scanGeneration;
+      (providerModelScanGenerationById.get(providerId) ?? 0) === scanGeneration &&
+      (providerModelPreferenceVersionById.get(providerId) ?? 0) === preferenceVersion;
     const { providerConfigs, modelsByProvider, resolveProviderApiKey } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
 
@@ -1855,71 +1870,71 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     }
   },
 
-  setProviderModelEnabled: async (providerId: string, modelId: string, enabled: boolean) => {
-    if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.setProviderModelEnabled({ providerId, modelId, enabled });
-    }
-
-    set((state) => ({
-      modelsByProvider: {
-        ...state.modelsByProvider,
-        [providerId]: (state.modelsByProvider[providerId] || []).map((model) =>
-          model.id === modelId ? { ...model, isEnabled: enabled } : model
-        ),
-      },
-    }));
-
-    const { selectedProviderId, selectedModelId, modelsByProvider } = get();
-    if (selectedProviderId === providerId) {
-      const updatedModels = modelsByProvider[providerId] || [];
-      const selected = updatedModels.find((m) => m.id === selectedModelId);
-      if (!selected || selected.isEnabled === false) {
-        const nextSelectedModelId = getFirstEnabledModelId(updatedModels);
-        set({
-          selectedModelId: nextSelectedModelId,
-          selectedReasoningEffort: resolveSelectedReasoningEffort({
-            providerId,
-            modelId: nextSelectedModelId,
-            modelsByProvider,
-            unsupported: get().reasoningUnsupportedModelKeys,
-            requested: get().selectedReasoningEffort,
-          }),
-        });
+  setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) =>
+    enqueueProviderModelPersistence(providerId, async () => {
+      if (tauriIpc.isTauriAvailable()) {
+        await tauriIpc.setProviderModelEnabled({ providerId, modelId, enabled });
       }
-    }
-  },
 
-  setAllProviderModelsEnabled: async (providerId: string, enabled: boolean) => {
-    if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.setAllProviderModelsEnabled({ providerId, enabled });
-    }
+      // Invalidate snapshots captured before or during the successful write.
+      // Keep failed writes observable without publishing an unpersisted preference.
+      invalidateProviderModelPreferenceReads(providerId);
+      set((state) => {
+        const updatedModels = (state.modelsByProvider[providerId] || []).map((model) =>
+          model.id === modelId ? { ...model, isEnabled: enabled } : model
+        );
+        const modelsByProvider = { ...state.modelsByProvider, [providerId]: updatedModels };
+        const selected = updatedModels.find((model) => model.id === state.selectedModelId);
+        const needsSelection = state.selectedProviderId === providerId &&
+          (!selected || selected.isEnabled === false);
+        const selectedModelId = getFirstEnabledModelId(updatedModels);
+        return {
+          modelsByProvider,
+          isLoadingModels: false,
+          ...(needsSelection ? {
+            selectedModelId,
+            selectedReasoningEffort: resolveSelectedReasoningEffort({
+              providerId,
+              modelId: selectedModelId,
+              modelsByProvider,
+              unsupported: state.reasoningUnsupportedModelKeys,
+              requested: state.selectedReasoningEffort,
+            }),
+          } : {}),
+        };
+      });
+    }),
 
-    set((state) => ({
-      modelsByProvider: {
-        ...state.modelsByProvider,
-        [providerId]: (state.modelsByProvider[providerId] || []).map((model) => ({
+  setAllProviderModelsEnabled: (providerId: string, enabled: boolean) =>
+    enqueueProviderModelPersistence(providerId, async () => {
+      if (tauriIpc.isTauriAvailable()) {
+        await tauriIpc.setAllProviderModelsEnabled({ providerId, enabled });
+      }
+
+      invalidateProviderModelPreferenceReads(providerId);
+      set((state) => {
+        const updatedModels = (state.modelsByProvider[providerId] || []).map((model) => ({
           ...model,
           isEnabled: enabled,
-        })),
-      },
-    }));
-
-    const { selectedProviderId, modelsByProvider } = get();
-    if (selectedProviderId === providerId) {
-      const updatedModels = modelsByProvider[providerId] || [];
-      const nextSelectedModelId = enabled ? getFirstEnabledModelId(updatedModels) : null;
-      set({
-        selectedModelId: nextSelectedModelId,
-        selectedReasoningEffort: resolveSelectedReasoningEffort({
-          providerId,
-          modelId: nextSelectedModelId,
+        }));
+        const modelsByProvider = { ...state.modelsByProvider, [providerId]: updatedModels };
+        const selectedModelId = enabled ? getFirstEnabledModelId(updatedModels) : null;
+        return {
           modelsByProvider,
-          unsupported: get().reasoningUnsupportedModelKeys,
-          requested: get().selectedReasoningEffort,
-        }),
+          isLoadingModels: false,
+          ...(state.selectedProviderId === providerId ? {
+            selectedModelId,
+            selectedReasoningEffort: resolveSelectedReasoningEffort({
+              providerId,
+              modelId: selectedModelId,
+              modelsByProvider,
+              unsupported: state.reasoningUnsupportedModelKeys,
+              requested: state.selectedReasoningEffort,
+            }),
+          } : {}),
+        };
       });
-    }
-  },
+    }),
 
   addManualModel: async (providerId, modelId, name, reasoning = null) => {
     if (tauriIpc.isTauriAvailable()) {
