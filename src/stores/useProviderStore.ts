@@ -11,10 +11,6 @@ import {
 } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import {
-  probeModelsEndpoint,
-  probeProviderReachability,
-} from '../services/providerApi';
-import {
   buildCatalogModelContextLimitOverlay,
   buildProviderModelContextLimitOverlay,
   enrichModelWithCatalogContextLimits,
@@ -93,6 +89,8 @@ let providerConfigLoadVersion = 0;
 const providerConnectionRequestVersionById = new Map<string, number>();
 const providerSettingsRequestVersionById = new Map<string, number>();
 const providerModelScanGenerationById = new Map<string, number>();
+// Preferences invalidate model snapshots without cancelling auth or connection work.
+const providerModelPreferenceVersionById = new Map<string, number>();
 const providerTransportMutations = new Set<string>();
 const providerConfigsNeedingReload = new Set<string>();
 const isProviderTransportUnavailable = (providerId: string): boolean =>
@@ -100,12 +98,49 @@ const isProviderTransportUnavailable = (providerId: string): boolean =>
 const providerModelPersistenceQueueById = new Map<string, Promise<void>>();
 const enqueueProviderMutation = createKeyedSerialQueue<string>();
 
+const activeProviderModelReadsById = new Map<string, Set<() => void>>();
+
+const beginProviderModelRead = (
+  providerId: string,
+  setLoading: (loading: boolean) => void,
+  onFinish?: () => void,
+): (() => void) => {
+  const reads = activeProviderModelReadsById.get(providerId) ?? new Set<() => void>();
+  const finish = () => {
+    if (!reads.delete(finish)) return;
+    if (reads.size === 0 && activeProviderModelReadsById.get(providerId) === reads) {
+      activeProviderModelReadsById.delete(providerId);
+    }
+    onFinish?.();
+    setLoading(activeProviderModelReadsById.size > 0);
+  };
+  reads.add(finish);
+  activeProviderModelReadsById.set(providerId, reads);
+  setLoading(true);
+  return finish;
+};
+
+const finishProviderModelReads = (providerId: string): void => {
+  for (const finish of [...(activeProviderModelReadsById.get(providerId) ?? [])]) finish();
+};
+
 const invalidateProviderModelScans = (providerId: string): number => {
   const nextGeneration = (providerModelScanGenerationById.get(providerId) ?? 0) + 1;
   providerModelScanGenerationById.set(providerId, nextGeneration);
   modelRefreshInFlightByProviderId.delete(providerId);
   lastModelRefreshStartedAtByProviderId.delete(providerId);
+  finishProviderModelReads(providerId);
   return nextGeneration;
+};
+
+const invalidateProviderModelPreferenceReads = (providerId: string): void => {
+  providerModelPreferenceVersionById.set(
+    providerId,
+    (providerModelPreferenceVersionById.get(providerId) ?? 0) + 1,
+  );
+  modelRefreshInFlightByProviderId.delete(providerId);
+  lastModelRefreshStartedAtByProviderId.delete(providerId);
+  finishProviderModelReads(providerId);
 };
 
 // Authentication changes invalidate reads started both before and during the transition.
@@ -1324,19 +1359,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     lifecycle?.assertActive();
     if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
     const generation = providerModelScanGenerationById.get(providerId) ?? 0;
+    const preferenceVersion = providerModelPreferenceVersionById.get(providerId) ?? 0;
     const { modelsByProvider, providerConfigs } = get();
     const providerConfig = providerConfigs.find((provider) => provider.id === providerId);
     const isCurrent = () => {
       const current = get().providerConfigs.find((provider) => provider.id === providerId);
       return !isProviderTransportUnavailable(providerId) &&
         (providerModelScanGenerationById.get(providerId) ?? 0) === generation &&
+        (providerModelPreferenceVersionById.get(providerId) ?? 0) === preferenceVersion &&
         current?.providerType === providerConfig?.providerType &&
         current?.baseUrl === providerConfig?.baseUrl &&
         current?.isLocal === providerConfig?.isLocal;
     };
     const providerType = providerConfig?.providerType;
     if (ipcIsTauriAvailable()) {
-      set({ isLoadingModels: true });
+      const finishLoading = beginProviderModelRead(providerId, (isLoadingModels) => set({ isLoadingModels }));
       try {
         void refreshModelContextCatalog();
         const models = await ipcListProviderModels(providerId);
@@ -1369,7 +1406,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         });
         set((state) => ({
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
-          isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort } : {}),
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
@@ -1399,8 +1435,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         lifecycle?.assertActive();
         if (!isCurrent()) return get().modelsByProvider[providerId] || [];
         const message = error instanceof Error ? error.message : 'Failed to load models';
-        set({ isLoadingModels: false, lastError: message });
+        set({ lastError: message });
         return modelsByProvider[providerId] || [];
+      } finally {
+        finishLoading();
       }
     }
 
@@ -1411,15 +1449,35 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     lifecycle?.assertActive();
     if (isProviderTransportUnavailable(providerId)) return get().modelsByProvider[providerId] || [];
     const scanGeneration = providerModelScanGenerationById.get(providerId) ?? 0;
+    const preferenceVersion = providerModelPreferenceVersionById.get(providerId) ?? 0;
     const isCurrentScan = () =>
       (lifecycle?.isActive() ?? true) &&
-      (providerModelScanGenerationById.get(providerId) ?? 0) === scanGeneration;
+      (providerModelScanGenerationById.get(providerId) ?? 0) === scanGeneration &&
+      (providerModelPreferenceVersionById.get(providerId) ?? 0) === preferenceVersion;
     const { providerConfigs, modelsByProvider, resolveProviderApiKey } = get();
     const config = providerConfigs.find((c) => c.id === providerId);
 
     if (!config) {
       return modelsByProvider[providerId] || [];
     }
+
+    const beginScan = () => {
+      const previousReachability = get().providerReachabilityById[providerId];
+      const checking = buildReachabilityRecord({
+        status: 'checking',
+        lastVerifiedBy: isLinkedProviderType(config.providerType) ? 'linked_auth' : undefined,
+      });
+      set((state) => applyReachabilityState(state, providerId, checking));
+      return beginProviderModelRead(providerId, (isLoadingModels) => set({ isLoadingModels }), () => {
+        if ((providerModelPreferenceVersionById.get(providerId) ?? 0) === preferenceVersion ||
+          (providerModelScanGenerationById.get(providerId) ?? 0) !== scanGeneration) return;
+        // Restore only this scan's checking state; a newer probe owns its own record.
+        set((state) => state.providerReachabilityById[providerId] === checking
+          ? applyReachabilityState(state, providerId,
+            previousReachability?.status === 'checking' ? undefined : previousReachability)
+          : {});
+      });
+    };
 
     if (isLinkedProviderType(config.providerType)) {
       const copilotStatus =
@@ -1433,13 +1491,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         return modelsByProvider[providerId] || [];
       }
 
-      set({ isLoadingModels: true });
-      set((state) => ({
-        ...withReachabilityRecord(state, providerId, {
-          status: 'checking',
-          lastVerifiedBy: 'linked_auth',
-        }),
-      }));
+      const finishLoading = beginScan();
 
       try {
         void refreshModelContextCatalog();
@@ -1516,7 +1568,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             status: 'reachable',
             lastVerifiedBy: 'linked_auth',
           }),
-          isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
@@ -1568,10 +1619,11 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             lastVerifiedBy: 'linked_auth',
             lastError: message,
           }),
-          isLoadingModels: false,
           lastError: message,
         }));
         return modelsByProvider[providerId] || [];
+      } finally {
+        finishLoading();
       }
     }
 
@@ -1585,12 +1637,12 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       return modelsByProvider[providerId] || [];
     }
 
-    set({ isLoadingModels: true });
-    set((state) => ({
-      ...withReachabilityRecord(state, providerId, { status: 'checking' }),
-    }));
+    const finishLoading = beginScan();
 
     try {
+      const { probeModelsEndpoint } = await import('../services/providerApi');
+      lifecycle?.assertActive();
+      if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
       const result = await probeModelsEndpoint({
         baseUrl: config.baseUrl,
         apiKey,
@@ -1611,7 +1663,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             lastError: result.message,
             modelIdUsed: result.modelIdUsed,
           }),
-          isLoadingModels: false,
           lastError: result.message,
         }));
 
@@ -1738,7 +1789,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
             status: 'reachable',
             lastVerifiedBy: result.source,
           }),
-          isLoadingModels: false,
           ...(state.selectedProviderId === providerId ? { selectedReasoningEffort: nextSelectedReasoningEffort } : {}),
         }));
         await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
@@ -1829,7 +1879,6 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           status: 'reachable',
           lastVerifiedBy: result.source,
         }),
-        isLoadingModels: false,
       }));
       await get().refreshLoadedModelContextCatalog(providerId, lifecycle);
       lifecycle?.assertActive();
@@ -1848,78 +1897,77 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           lastVerifiedBy: 'models_endpoint',
           lastError: message,
         }),
-        isLoadingModels: false,
         lastError: message,
       }));
       return modelsByProvider[providerId] || [];
+    } finally {
+      finishLoading();
     }
   },
 
-  setProviderModelEnabled: async (providerId: string, modelId: string, enabled: boolean) => {
-    if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.setProviderModelEnabled({ providerId, modelId, enabled });
-    }
-
-    set((state) => ({
-      modelsByProvider: {
-        ...state.modelsByProvider,
-        [providerId]: (state.modelsByProvider[providerId] || []).map((model) =>
-          model.id === modelId ? { ...model, isEnabled: enabled } : model
-        ),
-      },
-    }));
-
-    const { selectedProviderId, selectedModelId, modelsByProvider } = get();
-    if (selectedProviderId === providerId) {
-      const updatedModels = modelsByProvider[providerId] || [];
-      const selected = updatedModels.find((m) => m.id === selectedModelId);
-      if (!selected || selected.isEnabled === false) {
-        const nextSelectedModelId = getFirstEnabledModelId(updatedModels);
-        set({
-          selectedModelId: nextSelectedModelId,
-          selectedReasoningEffort: resolveSelectedReasoningEffort({
-            providerId,
-            modelId: nextSelectedModelId,
-            modelsByProvider,
-            unsupported: get().reasoningUnsupportedModelKeys,
-            requested: get().selectedReasoningEffort,
-          }),
-        });
+  setProviderModelEnabled: (providerId: string, modelId: string, enabled: boolean) =>
+    enqueueProviderModelPersistence(providerId, async () => {
+      if (tauriIpc.isTauriAvailable()) {
+        await tauriIpc.setProviderModelEnabled({ providerId, modelId, enabled });
       }
-    }
-  },
 
-  setAllProviderModelsEnabled: async (providerId: string, enabled: boolean) => {
-    if (tauriIpc.isTauriAvailable()) {
-      await tauriIpc.setAllProviderModelsEnabled({ providerId, enabled });
-    }
+      // Invalidate snapshots captured before or during the successful write.
+      // Keep failed writes observable without publishing an unpersisted preference.
+      invalidateProviderModelPreferenceReads(providerId);
+      set((state) => {
+        const updatedModels = (state.modelsByProvider[providerId] || []).map((model) =>
+          model.id === modelId ? { ...model, isEnabled: enabled } : model
+        );
+        const modelsByProvider = { ...state.modelsByProvider, [providerId]: updatedModels };
+        const selected = updatedModels.find((model) => model.id === state.selectedModelId);
+        const needsSelection = state.selectedProviderId === providerId &&
+          (!selected || selected.isEnabled === false);
+        const selectedModelId = getFirstEnabledModelId(updatedModels);
+        return {
+          modelsByProvider,
+          ...(needsSelection ? {
+            selectedModelId,
+            selectedReasoningEffort: resolveSelectedReasoningEffort({
+              providerId,
+              modelId: selectedModelId,
+              modelsByProvider,
+              unsupported: state.reasoningUnsupportedModelKeys,
+              requested: state.selectedReasoningEffort,
+            }),
+          } : {}),
+        };
+      });
+    }),
 
-    set((state) => ({
-      modelsByProvider: {
-        ...state.modelsByProvider,
-        [providerId]: (state.modelsByProvider[providerId] || []).map((model) => ({
+  setAllProviderModelsEnabled: (providerId: string, enabled: boolean) =>
+    enqueueProviderModelPersistence(providerId, async () => {
+      if (tauriIpc.isTauriAvailable()) {
+        await tauriIpc.setAllProviderModelsEnabled({ providerId, enabled });
+      }
+
+      invalidateProviderModelPreferenceReads(providerId);
+      set((state) => {
+        const updatedModels = (state.modelsByProvider[providerId] || []).map((model) => ({
           ...model,
           isEnabled: enabled,
-        })),
-      },
-    }));
-
-    const { selectedProviderId, modelsByProvider } = get();
-    if (selectedProviderId === providerId) {
-      const updatedModels = modelsByProvider[providerId] || [];
-      const nextSelectedModelId = enabled ? getFirstEnabledModelId(updatedModels) : null;
-      set({
-        selectedModelId: nextSelectedModelId,
-        selectedReasoningEffort: resolveSelectedReasoningEffort({
-          providerId,
-          modelId: nextSelectedModelId,
+        }));
+        const modelsByProvider = { ...state.modelsByProvider, [providerId]: updatedModels };
+        const selectedModelId = enabled ? getFirstEnabledModelId(updatedModels) : null;
+        return {
           modelsByProvider,
-          unsupported: get().reasoningUnsupportedModelKeys,
-          requested: get().selectedReasoningEffort,
-        }),
+          ...(state.selectedProviderId === providerId ? {
+            selectedModelId,
+            selectedReasoningEffort: resolveSelectedReasoningEffort({
+              providerId,
+              modelId: selectedModelId,
+              modelsByProvider,
+              unsupported: state.reasoningUnsupportedModelKeys,
+              requested: state.selectedReasoningEffort,
+            }),
+          } : {}),
+        };
       });
-    }
-  },
+    }),
 
   addManualModel: async (providerId, modelId, name, reasoning = null) => {
     if (tauriIpc.isTauriAvailable()) {
@@ -3788,6 +3836,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       };
     }
 
+    let providerApi: typeof import('../services/providerApi');
+    try {
+      providerApi = await import('../services/providerApi');
+    } catch (error) {
+      lifecycle?.assertActive();
+      if (!isCurrent()) return obsoleteResult;
+      const message = getErrorMessage(error, 'Failed to load provider connection probe.');
+      set((state) => withReachabilityRecord(state, providerId, {
+        status: 'unreachable',
+        lastError: message,
+      }));
+      return { success: false, message, status: 'unreachable' };
+    }
+    lifecycle?.assertActive();
+    if (!isCurrent()) return obsoleteResult;
     const apiKey = config.isLocal ? undefined : await resolveProviderApiKey(providerId);
     lifecycle?.assertActive();
     if (!isCurrent()) return obsoleteResult;
@@ -3798,7 +3861,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       selectedModelId,
       modelsByProvider,
     });
-    const result = await probeProviderReachability({
+    const result = await providerApi.probeProviderReachability({
       baseUrl: config.baseUrl,
       apiKey,
       providerId: config.providerType,

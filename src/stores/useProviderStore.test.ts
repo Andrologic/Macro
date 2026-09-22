@@ -89,6 +89,14 @@ const updateProviderSettingsMock = mock(async (_params: {
 }): Promise<void> => undefined);
 const listProviderModelsMock = mock(async (): Promise<ReturnType<typeof dbModel>[]> => []);
 const upsertProviderModelsMock = mock(async () => []);
+const setProviderModelEnabledMock = mock(async (_params: { providerId: string; modelId: string; enabled: boolean }): Promise<void> => undefined);
+const setAllProviderModelsEnabledMock = mock(async (_params: { providerId: string; enabled: boolean }): Promise<void> => undefined);
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
 const aiDownloadCopilotRuntimeMock = mock(
   async (_params: { requestId: string; providerId?: string }) => undefined
 );
@@ -263,6 +271,8 @@ const loadProviderStore = async () => {
     updateProviderSettings: updateProviderSettingsMock,
     listProviderModels: listProviderModelsMock,
     upsertProviderModels: upsertProviderModelsMock,
+    setProviderModelEnabled: setProviderModelEnabledMock,
+    setAllProviderModelsEnabled: setAllProviderModelsEnabledMock,
     aiDownloadCopilotRuntime: aiDownloadCopilotRuntimeMock,
     aiCancelCopilotRuntimeDownload: aiCancelCopilotRuntimeDownloadMock,
     aiGetCopilotStatus: aiGetCopilotStatusMock,
@@ -410,6 +420,10 @@ describe('useProviderStore secret resolution', () => {
     updateProviderSettingsMock.mockClear();
     listProviderModelsMock.mockClear();
     upsertProviderModelsMock.mockClear();
+    setProviderModelEnabledMock.mockReset();
+    setAllProviderModelsEnabledMock.mockReset();
+    setProviderModelEnabledMock.mockImplementation(async () => undefined);
+    setAllProviderModelsEnabledMock.mockImplementation(async () => undefined);
     listenMock.mockClear();
     aiDownloadCopilotRuntimeMock.mockClear();
     aiCancelCopilotRuntimeDownloadMock.mockClear();
@@ -435,6 +449,319 @@ describe('useProviderStore secret resolution', () => {
   afterEach(() => {
     useAppStoreMock.setState({ mode: 'Chat' });
     mock.restore();
+  });
+
+  const setupModelPreferences = async () => {
+    const { useProviderStore: store } = await loadProviderStore();
+    await store.getState().loadProviderConfigs();
+    store.setState({
+      modelsByProvider: {
+        'provider-openai': [
+          { id: 'model-a', name: 'A', provider_id: 'provider-openai', isEnabled: true,
+            reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' },
+          { id: 'model-b', name: 'B', provider_id: 'provider-openai', isEnabled: true,
+            reasoningEfforts: ['low'], defaultReasoningEffort: 'low' },
+        ],
+      },
+      selectedProviderId: 'provider-openai', selectedModelId: 'model-a',
+      selectedReasoningEffort: 'high',
+      refreshLoadedModelContextCatalog: async () => undefined,
+    });
+    return store;
+  };
+
+  for (const all of [false, true]) {
+    for (const during of [false, true]) {
+      it(`keeps ${all ? 'bulk' : 'single'} preferences after a read started ${during ? 'during' : 'before'} persistence`, async () => {
+        const store = await setupModelPreferences();
+        const read = deferred<ReturnType<typeof dbModel>[]>();
+        const write = deferred<void>();
+        listProviderModelsMock.mockImplementationOnce(() => read.promise);
+        (all ? setAllProviderModelsEnabledMock : setProviderModelEnabledMock)
+          .mockImplementationOnce(() => write.promise);
+        const mutate = () => all
+          ? store.getState().setAllProviderModelsEnabled('provider-openai', false)
+          : store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+        const mutation = during ? mutate() : null;
+        await flushAsyncWork();
+        const loading = store.getState().loadProviderModels('provider-openai');
+        const pending = mutation ?? mutate();
+        await flushAsyncWork();
+        expect(store.getState().modelsByProvider['provider-openai'][0].isEnabled).toBe(true);
+        write.resolve();
+        await pending;
+        read.resolve([dbModel('provider-openai', 'model-a'), dbModel('provider-openai', 'model-b')]);
+        await loading;
+        expect(store.getState().modelsByProvider['provider-openai'].map((m: { isEnabled: boolean }) => m.isEnabled))
+          .toEqual(all ? [false, false] : [false, true]);
+        expect(store.getState().selectedModelId).toBe(all ? null : 'model-b');
+        expect(store.getState().selectedReasoningEffort).toBe(all ? null : 'low');
+        expect(store.getState().isLoadingModels).toBe(false);
+      });
+    }
+
+    it(`publishes ${all ? 'bulk' : 'single'} preferences and selection atomically`, async () => {
+      const store = await setupModelPreferences();
+      const invalid: string[] = [];
+      const unsubscribe = store.subscribe((state: ReturnType<typeof store.getState>) => {
+        if (state.selectedModelId && !state.modelsByProvider['provider-openai']
+          .some((m: { id: string; isEnabled: boolean }) => m.id === state.selectedModelId && m.isEnabled)) {
+          invalid.push(state.selectedModelId);
+        }
+      });
+      if (all) await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+      else await store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+      unsubscribe();
+      expect(invalid).toEqual([]);
+    });
+  }
+
+  it('discards a scan response started before a preference commit', async () => {
+    const store = await setupModelPreferences();
+    const probe = deferred<Awaited<ReturnType<typeof probeModelsEndpointMock>>>();
+    probeModelsEndpointMock.mockImplementationOnce(() => probe.promise);
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    await store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+    probe.resolve({ success: true, status: 'reachable', source: 'models_endpoint', message: '', models: [] });
+    await scan;
+    expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    expect(store.getState().providerReachabilityById['provider-openai']?.status).not.toBe('checking');
+    expect(store.getState().connectionStatus['provider-openai']).not.toBe('checking');
+    expect(store.getState().modelsByProvider['provider-openai'][0].isEnabled).toBe(false);
+    expect(store.getState().selectedModelId).toBe('model-b');
+    expect(store.getState().selectedReasoningEffort).toBe('low');
+  });
+
+  for (const failure of [false, true]) {
+    for (const newerCheck of [false, true]) {
+      it(`finishes only an invalidated scan's checking state, failure=${failure}, newerCheck=${newerCheck}`, async () => {
+        const store = await setupModelPreferences();
+        store.getState().markProviderReachable('provider-openai');
+        const previous = store.getState().providerReachabilityById['provider-openai'];
+        const probe = deferred<Awaited<ReturnType<typeof probeModelsEndpointMock>>>();
+        probeModelsEndpointMock.mockImplementationOnce(() => probe.promise);
+        const scan = store.getState().scanModelsForProvider('provider-openai');
+        await flushAsyncWork();
+        const connectionProbe = deferred<Awaited<ReturnType<typeof probeProviderReachabilityMock>>>();
+        if (newerCheck) probeProviderReachabilityMock.mockImplementationOnce(() => connectionProbe.promise);
+        const connection = newerCheck ? store.getState().testConnection('provider-openai') : null;
+        await flushAsyncWork();
+        await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+        if (failure) probe.reject(new Error('Obsolete scan failure'));
+        else probe.resolve({ success: true, status: 'reachable', source: 'models_endpoint', message: '', models: [] });
+        await scan;
+        if (newerCheck) {
+          expect(store.getState().connectionStatus['provider-openai']).toBe('checking');
+          connectionProbe.resolve({ success: true, message: 'Connected', status: 'reachable', source: 'models_endpoint', models: [] });
+          await connection;
+        } else {
+          expect(store.getState().providerReachabilityById['provider-openai']).toEqual(previous);
+        }
+        expect(store.getState().connectionStatus['provider-openai']).toBe('online');
+        expect(store.getState().providers.find((p: { id: string }) => p.id === 'provider-openai').status).toBe('online');
+        expect(store.getState().lastError).not.toBe('Obsolete scan failure');
+      });
+    }
+  }
+
+  it('keeps the loading ownership of a fresh read when an invalidated read finishes', async () => {
+    const store = await setupModelPreferences();
+    const oldRead = deferred<ReturnType<typeof dbModel>[]>();
+    const freshRead = deferred<ReturnType<typeof dbModel>[]>();
+    listProviderModelsMock.mockImplementationOnce(() => oldRead.promise);
+    const oldLoad = store.getState().loadProviderModels('provider-openai');
+    await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    expect(store.getState().isLoadingModels).toBe(false);
+    listProviderModelsMock.mockImplementationOnce(() => freshRead.promise);
+    const freshLoad = store.getState().loadProviderModels('provider-openai');
+    oldRead.resolve([dbModel('provider-openai', 'model-a')]);
+    await oldLoad;
+    expect(store.getState().isLoadingModels).toBe(true);
+    freshRead.resolve([dbModel('provider-openai', 'model-a', { is_enabled: false })]);
+    await freshLoad;
+    expect(store.getState().isLoadingModels).toBe(false);
+    expect(store.getState().modelsByProvider['provider-openai'][0].isEnabled).toBe(false);
+  });
+
+  it('finishes a linked scan invalidated while queued behind a preference write', async () => {
+    const store = await setupModelPreferences();
+    store.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'provider-openai',
+      providerType: 'chatgpt', authStatus: 'authenticated' }] });
+    const write = deferred<void>();
+    setAllProviderModelsEnabledMock.mockImplementationOnce(() => write.promise);
+    const mutation = store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    await flushAsyncWork();
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    expect(aiSyncProviderModelsMock).not.toHaveBeenCalled();
+    write.resolve();
+    await Promise.all([mutation, scan]);
+    expect(aiSyncProviderModelsMock).not.toHaveBeenCalled();
+    expect(store.getState().connectionStatus['provider-openai']).not.toBe('checking');
+    expect(store.getState().isLoadingModels).toBe(false);
+    expect(store.getState().modelsByProvider['provider-openai'].every((m: { isEnabled: boolean }) => !m.isEnabled)).toBe(true);
+  });
+
+  it('keeps a preference selection when an older load resumes after catalog enrichment', async () => {
+    const store = await setupModelPreferences();
+    const catalog = deferred<void>();
+    store.setState({ refreshLoadedModelContextCatalog: () => catalog.promise });
+    listProviderModelsMock.mockImplementationOnce(async () => [dbModel('provider-openai', 'model-a')]);
+    const load = store.getState().loadProviderModels('provider-openai');
+    await flushAsyncWork();
+    await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    catalog.resolve();
+    await load;
+    expect(store.getState().selectedModelId).toBeNull();
+    expect(store.getState().selectedReasoningEffort).toBeNull();
+  });
+
+  it('serializes preferences behind scan persistence and preserves the last accepted mutation', async () => {
+    const store = await setupModelPreferences();
+    const persisted = deferred<never[]>();
+    upsertProviderModelsMock.mockImplementationOnce(() => persisted.promise);
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+    const first = store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    const second = store.getState().setProviderModelEnabled('provider-openai', 'model-a', true);
+    await flushAsyncWork();
+    expect(setAllProviderModelsEnabledMock).not.toHaveBeenCalled();
+    expect(setProviderModelEnabledMock).not.toHaveBeenCalled();
+    // The scan returns the existing catalog after its durable write.
+    persisted.resolve([dbModel('provider-openai', 'model-a'), dbModel('provider-openai', 'model-b')] as never[]);
+    await Promise.all([scan, first, second]);
+    expect(store.getState().modelsByProvider['provider-openai'].map((m: { isEnabled: boolean }) => m.isEnabled))
+      .toEqual([true, false]);
+    expect(store.getState().selectedModelId).toBe('model-a');
+  });
+
+  it('propagates a failed preference write and lets a later mutation proceed', async () => {
+    const store = await setupModelPreferences();
+    const firstWrite = deferred<void>();
+    setAllProviderModelsEnabledMock.mockImplementationOnce(() => firstWrite.promise);
+    const failure = store.getState().setAllProviderModelsEnabled('provider-openai', false)
+      .then(() => null, (error: unknown) => error);
+    const next = store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+    await flushAsyncWork();
+    expect(setProviderModelEnabledMock).not.toHaveBeenCalled();
+    expect(store.getState().selectedModelId).toBe('model-a');
+    const error = new Error('Preference persistence failed');
+    firstWrite.reject(error);
+    expect(await failure).toBe(error);
+    await next;
+    expect(store.getState().modelsByProvider['provider-openai'].map((m: { isEnabled: boolean }) => m.isEnabled))
+      .toEqual([false, true]);
+    expect(store.getState().selectedModelId).toBe('model-b');
+    expect(store.getState().selectedReasoningEffort).toBe('low');
+  });
+
+  for (const action of ['scanModelsForProvider', 'testConnection'] as const) {
+    it(`stops ${action} before probing when lifecycle ends during lazy loading`, async () => {
+      const store = await setupModelPreferences();
+      store.setState({ providerConfigs: [{ ...store.getState().providerConfigs[0], isLocal: true }] });
+      const scope = createLifecycleScope();
+      const pending = store.getState()[action]('provider-openai', scope);
+      const failure = pending.then(() => null, (error: unknown) => error);
+      scope.stop();
+      expect(await failure).toBeInstanceOf(Error);
+      expect(probeModelsEndpointMock).not.toHaveBeenCalled();
+      expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+      expect(store.getState().isLoadingModels).toBe(false);
+    });
+  }
+
+  it('keeps an in-flight connection check valid after a model preference changes', async () => {
+    const store = await setupModelPreferences();
+    const probe = deferred<Awaited<ReturnType<typeof probeProviderReachabilityMock>>>();
+    probeProviderReachabilityMock.mockImplementationOnce(() => probe.promise);
+    const connection = store.getState().testConnection('provider-openai');
+    await flushAsyncWork();
+    expect(probeProviderReachabilityMock).toHaveBeenCalledTimes(1);
+    await store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+    probe.resolve({ success: true, message: 'Connected', status: 'reachable', source: 'models_endpoint', models: [] });
+    expect((await connection).success).toBe(true);
+    expect(store.getState().providerReachabilityById['provider-openai'].status).toBe('reachable');
+  });
+
+  it('preserves an accepted bulk preference when a later single write fails', async () => {
+    const store = await setupModelPreferences();
+    await store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    setProviderModelEnabledMock.mockImplementationOnce(async () => {
+      throw new Error('Single preference rejected');
+    });
+    await expect(store.getState().setProviderModelEnabled('provider-openai', 'model-a', true))
+      .rejects.toThrow('Single preference rejected');
+    expect(store.getState().modelsByProvider['provider-openai'].every((m: { isEnabled: boolean }) => !m.isEnabled)).toBe(true);
+    expect(store.getState().selectedModelId).toBeNull();
+    expect(store.getState().selectedReasoningEffort).toBeNull();
+  });
+
+  it('discards a scan queued during a preference write', async () => {
+    const store = await setupModelPreferences();
+    const write = deferred<void>();
+    setAllProviderModelsEnabledMock.mockImplementationOnce(() => write.promise);
+    const mutation = store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    await flushAsyncWork();
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    expect(probeModelsEndpointMock).toHaveBeenCalledTimes(1);
+    expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    write.resolve();
+    await Promise.all([mutation, scan]);
+    expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    expect(store.getState().modelsByProvider['provider-openai'].every((m: { isEnabled: boolean }) => !m.isEnabled)).toBe(true);
+    expect(store.getState().isLoadingModels).toBe(false);
+  });
+
+  it('orders a preference after linked model sync and protects selection from its delayed enrichment', async () => {
+    const store = await setupModelPreferences();
+    store.setState({ providerConfigs: [{ ...copilotProviderConfig, id: 'provider-openai',
+      providerType: 'chatgpt', authStatus: 'authenticated' }] });
+    const sync = deferred<never[]>();
+    const catalog = deferred<void>();
+    store.setState({ refreshLoadedModelContextCatalog: () => catalog.promise });
+    aiSyncProviderModelsMock.mockImplementationOnce(() => sync.promise);
+    const scan = store.getState().scanModelsForProvider('provider-openai');
+    await flushAsyncWork();
+    const mutation = store.getState().setAllProviderModelsEnabled('provider-openai', false);
+    await flushAsyncWork();
+    expect(setAllProviderModelsEnabledMock).not.toHaveBeenCalled();
+    sync.resolve([dbModel('provider-openai', 'model-a')] as never[]);
+    await mutation;
+    catalog.resolve();
+    await scan;
+    expect(store.getState().modelsByProvider['provider-openai'][0].isEnabled).toBe(false);
+    expect(store.getState().selectedModelId).toBeNull();
+    expect(store.getState().selectedReasoningEffort).toBeNull();
+  });
+
+  it('does not block a second provider behind a pending preference write', async () => {
+    const store = await setupModelPreferences();
+    const write = deferred<void>();
+    setProviderModelEnabledMock.mockImplementationOnce(() => write.promise);
+    store.setState({
+      providerConfigs: [...store.getState().providerConfigs,
+        { ...store.getState().providerConfigs[0], id: 'provider-other' }],
+      modelsByProvider: { ...store.getState().modelsByProvider,
+        'provider-other': [{ id: 'other-model', name: 'Other', provider_id: 'provider-other', isEnabled: true }] },
+    });
+    const first = store.getState().setProviderModelEnabled('provider-openai', 'model-a', false);
+    await flushAsyncWork();
+    await store.getState().setAllProviderModelsEnabled('provider-other', false);
+    expect(setAllProviderModelsEnabledMock).toHaveBeenCalledWith({ providerId: 'provider-other', enabled: false });
+    expect(store.getState().selectedModelId).toBe('model-a');
+    expect(store.getState().selectedReasoningEffort).toBe('high');
+    const read = deferred<ReturnType<typeof dbModel>[]>();
+    listProviderModelsMock.mockImplementationOnce(() => read.promise);
+    const loading = store.getState().loadProviderModels('provider-other');
+    write.resolve();
+    await first;
+    expect(store.getState().isLoadingModels).toBe(true);
+    read.resolve([dbModel('provider-other', 'other-model', { name: 'Fresh metadata', is_enabled: false })]);
+    await loading;
+    expect(store.getState().modelsByProvider['provider-other'][0]).toMatchObject({ name: 'Fresh metadata', isEnabled: false });
   });
 
   it('loads provider configs without revealing stored secrets', async () => {
