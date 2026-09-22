@@ -7,6 +7,15 @@ base64 bytes. Excess, malformed base64, unknown types and invalid MIME types
 produce explicit unavailable blocks and mark the result as an error. No URI is
 fetched and no file is opened. Validation covers the envelope, not media decoding.
 
+Embedded `resource` text and `resource_link` metadata, including the URI, remain
+bounded JSON text blocks. Their URI is data only: links are not downloaded or
+opened, and a valid link alone does not make the tool result an error. Embedded
+resource blobs remain unsupported and produce an explicit unavailable block.
+When content is empty or contains only blank text, the original result is kept
+as bounded JSON text, preserving `structuredContent`. These projections share
+the same cumulative byte limit as other blocks; exceeding it is explicit.
+A server-reported `isError: true` remains an error after text projection.
+
 Images accept PNG, JPEG, WebP and GIF. Audio accepts WAV, x-WAV, MPEG, MP3, OGG,
 FLAC, MP4 and WebM. IPC exposes typed blocks and a readable text fallback;
 `rawResult` preserves bounded text responses or error metadata without duplicating media.

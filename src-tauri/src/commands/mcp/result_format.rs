@@ -11,6 +11,16 @@ fn unavailable(reason: &str) -> McpResultBlock {
     }
 }
 
+fn bounded_text(text: &str, remaining: &mut usize) -> McpResultBlock {
+    if text.len() > *remaining {
+        return unavailable("MCP result exceeds the 8 MiB content limit; text omitted.");
+    }
+    *remaining -= text.len();
+    McpResultBlock::Text {
+        text: text.to_string(),
+    }
+}
+
 /// Remote content is data. Never dereference resources or interpret instructions here.
 pub(crate) fn normalize_tool_call_result(result: Value) -> McpCallToolResponse {
     let mut is_error = result
@@ -24,17 +34,30 @@ pub(crate) fn normalize_tool_call_result(result: Value) -> McpCallToolResponse {
             let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
             let block = match kind {
                 "text" => match item.get("text").and_then(Value::as_str) {
-                    Some(text) if text.len() <= remaining => {
-                        remaining -= text.len();
-                        McpResultBlock::Text {
-                            text: text.to_string(),
-                        }
-                    }
-                    Some(_) => {
-                        unavailable("MCP result exceeds the 8 MiB content limit; block omitted.")
-                    }
+                    Some(text) => bounded_text(text, &mut remaining),
                     None => unavailable("Invalid MCP text block."),
                 },
+                "resource" => {
+                    let resource = &item["resource"];
+                    if resource.get("blob").is_some() {
+                        unavailable("Unsupported MCP resource blob; no URI was fetched.")
+                    } else if resource.get("uri").and_then(Value::as_str).is_some()
+                        && resource.get("text").and_then(Value::as_str).is_some()
+                    {
+                        bounded_text(&item.to_string(), &mut remaining)
+                    } else {
+                        unavailable("Invalid MCP embedded resource text or URI.")
+                    }
+                }
+                "resource_link" => {
+                    if item.get("uri").and_then(Value::as_str).is_some()
+                        && item.get("name").and_then(Value::as_str).is_some()
+                    {
+                        bounded_text(&item.to_string(), &mut remaining)
+                    } else {
+                        unavailable("Invalid MCP resource link metadata.")
+                    }
+                }
                 "unavailable" => unavailable(
                     &item
                         .get("reason")
@@ -100,14 +123,17 @@ pub(crate) fn normalize_tool_call_result(result: Value) -> McpCallToolResponse {
             ));
             is_error = true;
         }
-    } else {
-        let text = result.to_string();
-        if text.len() <= remaining {
-            blocks.push(McpResultBlock::Text { text });
-        } else {
-            blocks.push(unavailable("MCP result exceeds the 8 MiB content limit."));
-            is_error = true;
-        }
+    }
+    // Legacy results can carry only structuredContent, including when all text
+    // parts are blank. Replace those empty parts with the bounded original JSON.
+    if blocks
+        .iter()
+        .all(|block| matches!(block, McpResultBlock::Text { text } if text.trim().is_empty()))
+    {
+        remaining = MAX_RESULT_BYTES;
+        let block = bounded_text(&result.to_string(), &mut remaining);
+        is_error |= matches!(block, McpResultBlock::Unavailable { .. });
+        blocks = vec![block];
     }
     let content = blocks
         .iter()
@@ -185,5 +211,75 @@ mod tests {
             ));
             assert!(result.content.len() < 200);
         }
+    }
+
+    #[test]
+    fn mcp_resource_text_and_link_metadata_stay_successful_without_fetching() {
+        let input = json!({"content":[
+            {"type":"resource","resource":{"uri":"memo://example","mimeType":"text/plain","text":"already supplied content"}},
+            {"type":"resource_link","uri":"memo://next","name":"next","description":"linked memo"}
+        ]});
+        let result = normalize_tool_call_result(input.clone());
+        assert!(!result.is_error);
+        assert_eq!(result.blocks.len(), 2);
+        for (block, original) in result
+            .blocks
+            .iter()
+            .zip(input["content"].as_array().unwrap())
+        {
+            let McpResultBlock::Text { text } = block else {
+                panic!("Expected supplied resource data as text")
+            };
+            assert_eq!(serde_json::from_str::<Value>(text).unwrap(), *original);
+        }
+        let failed = normalize_tool_call_result(json!({"isError":true,"content":input["content"]}));
+        assert!(failed.is_error);
+        assert_eq!(failed.content, result.content);
+        let blob = normalize_tool_call_result(
+            json!({"content":[{"type":"resource","resource":{"uri":"file:///never-opened","blob":"c2VjcmV0"}}]}),
+        );
+        assert!(blob.is_error);
+        assert!(blob.content.contains("blob"));
+        assert!(!blob.content.contains("c2VjcmV0"));
+        assert!(blob.raw_result.get("content").is_none());
+    }
+
+    #[test]
+    fn mcp_structured_only_content_survives_empty_or_blank_text() {
+        for content in [json!([]), json!([{"type":"text","text":" \n"}])] {
+            let input = json!({"content":content,"structuredContent":{"answer":42,"memo":"only structured data"}});
+            let result = normalize_tool_call_result(input.clone());
+            assert!(!result.is_error);
+            assert_eq!(result.blocks.len(), 1);
+            assert_eq!(
+                serde_json::from_str::<Value>(&result.content).unwrap(),
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_resource_and_structured_text_share_the_byte_budget() {
+        let resource = json!({"type":"resource","resource":{"uri":"memo://example","text":"é"}});
+        let link = json!({"type":"resource_link","uri":"memo://next","name":"next"});
+        for item in [resource, link] {
+            let bytes = item.to_string().len();
+            for excess in [0, 1] {
+                let result = normalize_tool_call_result(json!({"content":[
+                    {"type":"text","text":"a".repeat(MAX_RESULT_BYTES-bytes+excess)}, item
+                ]}));
+                assert_eq!(result.is_error, excess == 1);
+                assert_eq!(
+                    matches!(result.blocks[1], McpResultBlock::Unavailable { .. }),
+                    excess == 1
+                );
+            }
+        }
+        let oversized = normalize_tool_call_result(
+            json!({"content":[],"structuredContent":{"text":"é".repeat(MAX_RESULT_BYTES/2)}}),
+        );
+        assert!(oversized.is_error);
+        assert!(oversized.content.contains("8 MiB"));
+        assert!(oversized.content.len() < 200);
     }
 }
