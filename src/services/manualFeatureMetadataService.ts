@@ -231,6 +231,7 @@ const commitMetadataTargets = async (
   workspacePaths: string[],
   message: string,
   beforeEffect?: () => Promise<void>,
+  metadataPaths?: string[],
 ): Promise<void> => {
   if (!tauriIpc.isTauriAvailable() || workspacePaths.length === 0) {
     return;
@@ -242,7 +243,7 @@ const commitMetadataTargets = async (
     workspacePaths,
     message,
   }, beforeEffect ? { tauri: { ...tauriIpc, macroBranchCommitIfDirty: async args => {
-    await beforeEffect(); return tauriIpc.macroBranchCommitIfDirty(args);
+    await beforeEffect(); return tauriIpc.macroBranchCommitIfDirty({ ...args, pilotOnly: true, metadataPaths });
   } } } : undefined);
 };
 
@@ -269,6 +270,7 @@ export const commitManualFeatureMetadata = async (
       .map((target) => target.workspacePath),
     message?.trim().length ? message.trim() : 'chore(@macro): update task metadata',
     beforeEffect,
+    [toCanonicalMetadataRoot(task), toLegacyMetadataRoot(task)],
   );
 };
 
@@ -315,7 +317,7 @@ export const syncManualFeatureMetadataFromTask = async (
         content: metadataJson,
         createDirs: true,
         allowOutsideWorkspace: false,
-        workspaceScope: target.workspaceScope,
+        workspaceScope: beforeEffect && target.workspaceScope === 'metadata' ? 'metadata_existing' : target.workspaceScope,
         workspacePath: target.workspacePath,
       });
       await beforeEffect?.();
@@ -324,7 +326,7 @@ export const syncManualFeatureMetadataFromTask = async (
         content: metadataMarkdown,
         createDirs: true,
         allowOutsideWorkspace: false,
-        workspaceScope: target.workspaceScope,
+        workspaceScope: beforeEffect && target.workspaceScope === 'metadata' ? 'metadata_existing' : target.workspaceScope,
         workspacePath: target.workspacePath,
       });
       await beforeEffect?.();
@@ -333,7 +335,7 @@ export const syncManualFeatureMetadataFromTask = async (
         content: transcriptJsonl,
         createDirs: true,
         allowOutsideWorkspace: false,
-        workspaceScope: target.workspaceScope,
+        workspaceScope: beforeEffect && target.workspaceScope === 'metadata' ? 'metadata_existing' : target.workspaceScope,
         workspacePath: target.workspacePath,
       });
 
@@ -356,6 +358,7 @@ export const syncManualFeatureMetadataFromTask = async (
       .map((target) => target.workspacePath),
     `chore(@macro): update manual feature ${task.id}`,
     beforeEffect,
+    [`${metadataRoot}/feature.json`, `${metadataRoot}/feature.md`, `${metadataRoot}/chat.jsonl`, legacyMetadataRoot],
   );
 };
 
@@ -400,5 +403,6 @@ export const removeManualFeatureMetadata = async (
       .map((target) => target.workspacePath),
     `chore(@macro): delete manual feature ${task.id}`,
     beforeEffect,
+    [toCanonicalMetadataRoot(task), toLegacyMetadataRoot(task)],
   );
 };

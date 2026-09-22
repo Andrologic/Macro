@@ -736,6 +736,131 @@ fn release_branch_from_primary_workdir(
     checkout_first_stable_fallback(repo, branch_name, fallback_branches)
 }
 
+fn validate_pilot_branch_name(branch_name: &str) -> Result<()> {
+    let ref_name = format!("refs/heads/{}", branch_name);
+    if branch_name.is_empty()
+        || branch_name.trim() != branch_name
+        || !git2::Reference::is_valid_name(&ref_name)
+    {
+        return Err(BackendError::Git {
+            message: format!("Invalid pilot task branch name: {}", branch_name),
+        });
+    }
+    Ok(())
+}
+
+fn validate_pilot_worktree_path(repo: &Repository, worktree_path: &Path) -> Result<PathBuf> {
+    let root = task_worktree_root(repo)?;
+    for path in [root.parent().unwrap_or(&root), root.as_path()] {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Pilot worktree path '{}' is a symbolic link; creation refused.",
+                        path.display()
+                    ),
+                });
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Pilot worktree path '{}' is not a directory; creation refused.",
+                        path.display()
+                    ),
+                });
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    if fs::symlink_metadata(worktree_path).is_ok() {
+        return Err(BackendError::Git {
+            message: format!(
+                "Pilot worktree path '{}' is already present; creation refused.",
+                worktree_path.display()
+            ),
+        });
+    }
+
+    Ok(root)
+}
+
+fn resolve_pilot_branch_source<'repo>(
+    repo: &'repo Repository,
+    branch_name: &str,
+    from_ref: Option<&str>,
+) -> Result<git2::Commit<'repo>> {
+    let source = from_ref.map(str::trim).filter(|value| !value.is_empty());
+    let Some(source) = source else {
+        return Err(BackendError::Git {
+            message: format!(
+                "Cannot create pilot task branch '{}' without a branch source reference",
+                branch_name
+            ),
+        });
+    };
+
+    repo.revparse_single(source)
+        .and_then(|object| object.peel_to_commit())
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Cannot create pilot task branch '{}' from reference '{}': {}",
+                branch_name, source, error
+            ),
+        })
+}
+
+fn pilot_branch_checked_out_elsewhere(
+    repo: &Repository,
+    branch_name: &str,
+    expected_worktree_name: &str,
+    expected_worktree_path: &Path,
+) -> Result<Option<String>> {
+    if current_branch_name(repo).as_deref() == Some(branch_name) {
+        return Ok(Some("the repository root".to_string()));
+    }
+
+    let worktree_names = repo.worktrees().map_err(|error| BackendError::Git {
+        message: format!("Failed to list registered worktrees: {}", error),
+    })?;
+
+    for candidate_name in worktree_names.iter().flatten().flatten() {
+        let worktree = match repo.find_worktree(candidate_name) {
+            Ok(worktree) => worktree,
+            Err(error) if error.code() == ErrorCode::NotFound => continue,
+            Err(error) => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Failed to inspect candidate worktree '{}': {}",
+                        candidate_name, error
+                    ),
+                });
+            }
+        };
+        let candidate_path = worktree.path().to_path_buf();
+        if candidate_name == expected_worktree_name && candidate_path == expected_worktree_path {
+            continue;
+        }
+
+        let inspection = inspect_registered_worktree(
+            repo,
+            branch_name,
+            candidate_name.to_string(),
+            candidate_path,
+            false,
+        )?;
+        if inspection.status == TaskWorktreeStatus::Ready
+            && inspection.branch_name.as_deref() == Some(branch_name)
+        {
+            return Ok(Some(candidate_name.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
 impl GitState {
     fn clear_worktree_cache(&self, task_id: &str) {
         if let Ok(mut map) = self.inner.worktrees.lock() {
@@ -1070,6 +1195,136 @@ impl GitState {
             } else {
                 TaskWorktreeEnsureStatus::Created
             },
+        })
+    }
+
+    /// Ensure the worktree needed to prepare one Pilot task without changing shared Git state.
+    pub fn ensure_pilot_task_worktree(
+        &self,
+        repo: &Repository,
+        task_id: &str,
+        branch_name: &str,
+        from_ref: Option<&str>,
+    ) -> Result<TaskWorktreeEnsureResult> {
+        repo.workdir().ok_or_else(|| BackendError::Git {
+            message: "Bare repositories are not supported for worktrees".to_string(),
+        })?;
+        validate_pilot_branch_name(branch_name)?;
+
+        let expected_worktree_name = task_worktree_name(task_id);
+        let expected_worktree_path = task_worktree_path(repo, task_id)?;
+        let inspection =
+            self.inspect_task_worktree_internal(repo, task_id, Some(branch_name), false)?;
+
+        match inspection.status {
+            TaskWorktreeStatus::Ready => {
+                require_expected_branch(
+                    inspection.branch_name.as_deref(),
+                    branch_name,
+                    &inspection.worktree_path,
+                )?;
+                if inspection.worktree_name != expected_worktree_name
+                    || inspection.worktree_path != expected_worktree_path
+                {
+                    return Err(BackendError::Git {
+                        message: format!(
+                            "Pilot task branch '{}' is already checked out in another worktree '{}'; creation refused.",
+                            branch_name, inspection.worktree_path.display()
+                        ),
+                    });
+                }
+            }
+            TaskWorktreeStatus::Absent => {}
+            TaskWorktreeStatus::StaleRegistration
+            | TaskWorktreeStatus::OrphanPath
+            | TaskWorktreeStatus::InvalidRepo => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Pilot task worktree inspection for '{}' returned '{}'; repair is required before creation.",
+                        task_id,
+                        inspection.status.as_str()
+                    ),
+                });
+            }
+        }
+
+        if let Some(worktree_name) = pilot_branch_checked_out_elsewhere(
+            repo,
+            branch_name,
+            &expected_worktree_name,
+            &expected_worktree_path,
+        )? {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Pilot task branch '{}' is already checked out in {}; creation refused.",
+                    branch_name, worktree_name
+                ),
+            });
+        }
+
+        if inspection.status == TaskWorktreeStatus::Ready {
+            self.register_worktree(task_id, inspection.worktree_path.clone());
+            return Ok(TaskWorktreeEnsureResult {
+                task_id: task_id.to_string(),
+                worktree_path: inspection.worktree_path,
+                branch_name: branch_name.to_string(),
+                status: TaskWorktreeEnsureStatus::Reused,
+            });
+        }
+
+        let branch_exists = repo.find_branch(branch_name, BranchType::Local).is_ok();
+        let branch_source = if branch_exists {
+            None
+        } else {
+            Some(resolve_pilot_branch_source(repo, branch_name, from_ref)?)
+        };
+        let worktree_root = validate_pilot_worktree_path(repo, &expected_worktree_path)?;
+
+        fs::create_dir_all(&worktree_root).map_err(|error| BackendError::Io {
+            message: error.to_string(),
+            source: error,
+        })?;
+
+        if let Some(branch_commit) = branch_source {
+            repo.branch(branch_name, &branch_commit, false)?;
+        }
+
+        let reference = repo
+            .find_reference(&format!("refs/heads/{}", branch_name))
+            .map_err(|error| BackendError::Git {
+                message: format!("Failed to find branch '{}': {}", branch_name, error),
+            })?;
+        let mut options = WorktreeAddOptions::new();
+        options.reference(Some(&reference));
+        repo.worktree(
+            &expected_worktree_name,
+            &expected_worktree_path,
+            Some(&options),
+        )
+        .map_err(|error| BackendError::Git {
+            message: format!(
+                "Failed to create pilot task worktree '{}': {}",
+                expected_worktree_name, error
+            ),
+        })?;
+
+        let created_repo =
+            Repository::open(&expected_worktree_path).map_err(|error| BackendError::Git {
+                message: format!(
+                    "Failed to verify created pilot task worktree {}: {}",
+                    expected_worktree_path.display(),
+                    error
+                ),
+            })?;
+        let created_branch_name =
+            current_branch_name(&created_repo).unwrap_or_else(|| branch_name.to_string());
+        self.register_worktree(task_id, expected_worktree_path.clone());
+
+        Ok(TaskWorktreeEnsureResult {
+            task_id: task_id.to_string(),
+            worktree_path: expected_worktree_path,
+            branch_name: created_branch_name,
+            status: TaskWorktreeEnsureStatus::Created,
         })
     }
 
@@ -1423,6 +1678,91 @@ impl GitState {
         Ok(TaskWorktreeRemoveResult {
             task_id: task_id.to_string(),
             worktree_path: inspection.worktree_path,
+            removed_path,
+            pruned_registration,
+            already_absent: !removed_path && !pruned_registration,
+        })
+    }
+
+    /// Remove only the exact clean worktree owned by one Pilot task.
+    pub fn remove_pilot_task_worktree(
+        &self,
+        repo: &Repository,
+        task_id: &str,
+        expected_branch: &str,
+    ) -> Result<TaskWorktreeRemoveResult> {
+        validate_pilot_branch_name(expected_branch)?;
+        let expected_worktree_name = task_worktree_name(task_id);
+        let expected_worktree_path = task_worktree_path(repo, task_id)?;
+        let inspection =
+            self.inspect_task_worktree_internal(repo, task_id, Some(expected_branch), false)?;
+
+        if inspection.status == TaskWorktreeStatus::Absent {
+            self.clear_worktree_cache(task_id);
+            return Ok(TaskWorktreeRemoveResult {
+                task_id: task_id.to_string(),
+                worktree_path: expected_worktree_path,
+                removed_path: false,
+                pruned_registration: false,
+                already_absent: true,
+            });
+        }
+
+        if inspection.status != TaskWorktreeStatus::Ready {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Pilot task worktree inspection for '{}' returned '{}'; removal refused.",
+                    task_id,
+                    inspection.status.as_str()
+                ),
+            });
+        }
+
+        if inspection.worktree_name != expected_worktree_name
+            || inspection.worktree_path != expected_worktree_path
+            || inspection.registered_path.as_deref() != Some(expected_worktree_path.as_path())
+        {
+            return Err(BackendError::Git {
+                message: format!(
+                    "Pilot task worktree provenance for '{}' is uncertain; removal refused.",
+                    task_id
+                ),
+            });
+        }
+
+        require_expected_branch(
+            inspection.branch_name.as_deref(),
+            expected_branch,
+            &expected_worktree_path,
+        )?;
+
+        match inspection.is_dirty {
+            Some(false) => {}
+            Some(true) => {
+                return Err(BackendError::GitRepositoryNotClean {
+                    message: format!(
+                        "Pilot task worktree {} has uncommitted changes",
+                        expected_worktree_path.display()
+                    ),
+                });
+            }
+            None => {
+                return Err(BackendError::Git {
+                    message: format!(
+                        "Pilot task worktree {} has an unknown dirty state; removal refused.",
+                        expected_worktree_path.display()
+                    ),
+                });
+            }
+        }
+
+        let removed_path = remove_path_if_present(&expected_worktree_path)?;
+        let pruned_registration = prune_worktree(repo, &expected_worktree_name)?;
+        self.clear_worktree_cache(task_id);
+
+        Ok(TaskWorktreeRemoveResult {
+            task_id: task_id.to_string(),
+            worktree_path: expected_worktree_path,
             removed_path,
             pruned_registration,
             already_absent: !removed_path && !pruned_registration,

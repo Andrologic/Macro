@@ -2323,11 +2323,13 @@ export async function gitBranchCreate(params: {
 
 export async function gitBranchDelete(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   branchName: string;
   force?: boolean;
 }): Promise<void> {
   return invoke("git_branch_delete", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     branchName: params.branchName,
     force: params.force ?? null,
   });
@@ -2712,6 +2714,7 @@ export async function gitTaskStartPoints(params: {
 
 export async function gitWorktreeCreate(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   taskId: string;
   branchName: string;
   fromRef?: string | null;
@@ -2720,6 +2723,7 @@ export async function gitWorktreeCreate(params: {
 }): Promise<GitWorktreeEnsureDto> {
   return invoke<GitWorktreeEnsureDto>("git_worktree_create", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     taskId: params.taskId,
     branchName: params.branchName,
     fromRef: params.fromRef ?? null,
@@ -2730,12 +2734,14 @@ export async function gitWorktreeCreate(params: {
 
 export async function gitWorktreeRemove(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   taskId: string;
   force?: boolean;
   branchName?: string | null;
 }): Promise<GitWorktreeRemoveDto> {
   return invoke<GitWorktreeRemoveDto>("git_worktree_remove", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     taskId: params.taskId,
     force: params.force ?? null,
     branchName: params.branchName ?? null,
@@ -2847,11 +2853,14 @@ export async function macroBranchStatus(params?: {
 }
 
 export async function macroBranchCommitIfDirty(params?: {
+  pilotOnly?: boolean;
+  metadataPaths?: string[];
   message?: string;
   workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
   return invoke<MacroBranchSyncDto>("macro_branch_commit_if_dirty", {
     message: params?.message ?? null,
+    ...(params?.pilotOnly ? { pilotOnly: true, metadataPaths: params.metadataPaths ?? [] } : {}),
     workspacePath: params?.workspacePath ?? null,
   });
 }
@@ -4063,6 +4072,8 @@ export async function terminalStartCommandTab(params: {
   taskId?: string | null;
   promptContext?: TerminalPromptContextInput | null;
   command: string;
+  pilotOnly?: boolean;
+  expectedBranch?: string | null;
 }): Promise<TerminalTabDto> {
   return invoke<TerminalTabDto>("terminal_start_command_tab", {
     kind: params.kind,
@@ -4072,6 +4083,7 @@ export async function terminalStartCommandTab(params: {
     taskId: params.taskId ?? null,
     promptContext: params.promptContext ?? null,
     command: params.command,
+    ...(params.pilotOnly ? { pilotOnly: true, expectedBranch: params.expectedBranch ?? null } : {}),
   });
 }
 

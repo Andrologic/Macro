@@ -143,6 +143,17 @@ describe('manualFeatureMetadataService', () => {
     });
   });
 
+  it('uses existing metadata roots for every guarded write', async () => {
+    const { syncManualFeatureMetadataFromTask } = await loadService();
+    await syncManualFeatureMetadataFromTask({
+      id: 'task-1', title: 'Renamed', description: '', status: 'Pending', draft: false,
+      base_branch: 'develop', project_id: 'project-1', project_ids: ['project-1'],
+      standalone_kind: 'manual_feature', execution_targets: [],
+    }, async () => undefined);
+    expect(fsWriteFileMock).toHaveBeenCalledTimes(3);
+    for (const [params] of fsWriteFileMock.mock.calls) expect(params.workspaceScope).toBe('metadata_existing');
+  });
+
   it('removes both canonical and legacy metadata roots when deleting a manual feature snapshot', async () => {
     fsExistsMock.mockImplementation(
       async (path: string) =>
@@ -232,6 +243,7 @@ describe('manualFeatureMetadataService', () => {
         if (revoked) throw new Error('authorization revoked');
       })).rejects.toThrow('authorization revoked');
       expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+      expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toMatchObject({ pilotOnly: true });
     } finally { appState.getProjectById = saved; }
   });
 

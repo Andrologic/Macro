@@ -9,6 +9,7 @@ interface RunWorktreeSetupCommandParams {
   worktreePath: string;
   command: string;
   beforeEffect?: () => Promise<void>;
+  expectedBranch?: string | null;
   signal?: AbortSignal;
 }
 
@@ -105,6 +106,7 @@ export const runWorktreeSetupCommand = async (
         branchLabel: null,
       },
       beforeEffect: params.beforeEffect,
+      ...(params.beforeEffect ? { expectedBranch: params.expectedBranch } : {}),
     });
 
     const finalTab = await waitForSetupTab(tab.id, params.signal);

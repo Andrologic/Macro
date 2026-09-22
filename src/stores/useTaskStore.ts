@@ -605,9 +605,17 @@ export interface TaskPilotMutationOptions {
 const assertLifecycleGitTargetsSafe = async (
   targets: Array<TaskExecutionTarget & { repoPath: string }>,
   worktreePaths: Record<string, string>,
+  pilotOnly = false,
 ): Promise<void> => {
   for (const target of targets) {
-    const worktreePath = worktreePaths[target.worktreeKey];
+    const inspection = pilotOnly ? await tauriIpc.gitWorktreeInspect({
+      repoPath: target.repoPath, taskId: target.worktreeKey, branchName: target.branchName, readOnly: true,
+    }) : null;
+    if (inspection && inspection.status !== 'absent' &&
+        (inspection.status !== 'ready' || inspection.branchName !== target.branchName || inspection.isDirty !== false)) {
+      throw new Error('Task worktree requires desktop inspection before cleanup.');
+    }
+    const worktreePath = inspection ? (inspection.status === 'ready' ? inspection.worktreePath : null) : worktreePaths[target.worktreeKey];
     if (!worktreePath) continue;
     const status = await tauriIpc.gitStatus(worktreePath);
     if (!status.is_clean) {
@@ -666,6 +674,7 @@ const resumeLinkedTaskGitCleanup = async (
     if (!target.worktreeRemoved) {
       const inspectWorktree = () =>
         tauriIpc.gitWorktreeInspect({
+          ...(beforeEffect ? { readOnly: true } : {}),
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
           branchName: target.branchName,
@@ -675,6 +684,7 @@ const resumeLinkedTaskGitCleanup = async (
         try {
           await beforeEffect?.();
           await tauriIpc.gitWorktreeRemove({
+            ...(beforeEffect ? { pilotOnly: true } : {}),
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
             force: false,
@@ -711,6 +721,7 @@ const resumeLinkedTaskGitCleanup = async (
         try {
           await beforeEffect?.();
           await tauriIpc.gitBranchDelete({
+            ...(beforeEffect ? { pilotOnly: true } : {}),
             repoPath: updatedTarget.repoPath,
             branchName: updatedTarget.branchName,
             force: false,
@@ -1164,7 +1175,7 @@ const buildPersistedMergeWorkflowSessionForRuntime = (
     previous,
   });
 
-const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promise<boolean> => {
+const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask, strict = false): Promise<boolean> => {
   if (!tauriIpc.isTauriAvailable() || !isManualStandaloneTask(task) || task.draft || !task.branch_name) {
     return false;
   }
@@ -1181,7 +1192,8 @@ const hasPublishedStandaloneBranch = async (task: CatalogedImplementTask): Promi
       if ((branches.remote || []).some((branch) => branch.name === `origin/${branchName}`)) {
         return true;
       }
-    } catch {
+    } catch (error) {
+      if (strict) throw error;
       // Ignore publication checks for missing or unavailable repositories.
     }
   }
@@ -1240,9 +1252,10 @@ const inspectTargetWorktreePath = async (
   return resolvePreparedTaskWorktreePath({
     taskId: task.id,
     target,
-    branchWorktrees,
+    branchWorktrees: beforeEffect ? {} : branchWorktrees,
     getProjectById: useAppStore.getState().getProjectById,
     tauri: beforeEffect ? { ...tauriIpc,
+      gitWorktreeInspect: args => tauriIpc.gitWorktreeInspect({ ...args, readOnly: true }),
       directCheckpointEnsure: async args => { await beforeEffect(); return tauriIpc.directCheckpointEnsure(args); },
       workspaceBindManualFeatureDirectCheckpoint: async args => { await beforeEffect(); return tauriIpc.workspaceBindManualFeatureDirectCheckpoint({ ...args, pilotOnly: true }); },
     } : tauriIpc,
@@ -1321,7 +1334,14 @@ const ensureTargetWorktreePath = async (
     ],
   });
   await beforeEffect?.();
-  const ensured = await useGitStore
+  const pilotResult = beforeEffect && repoPath ? await tauriIpc.gitWorktreeCreate({
+    repoPath, taskId: target.worktreeKey, branchName: target.branchName, fromRef, pilotOnly: true,
+  }) : null;
+  if (beforeEffect && !pilotResult) throw new Error('content_unavailable');
+  const ensured = pilotResult ? {
+    worktreePath: pilotResult.worktreePath,
+    status: pilotResult.status,
+  } : await useGitStore
     .getState()
     .createWorktree(
       target.projectId,
@@ -1854,6 +1874,7 @@ const ensureTaskExecutionTargetsReady = async (
           command: setupCommand,
           signal: options?.signal,
           beforeEffect: options?.beforeEffect,
+          expectedBranch: target.branchName,
         });
         if (setupResult.failed) {
           notify.warning(
@@ -1884,6 +1905,7 @@ const ensureTaskExecutionTargetsReady = async (
       try {
         await options?.beforeEffect?.();
         await tauriIpc.gitWorktreeRemove({
+          ...(options?.beforeEffect ? { pilotOnly: true } : {}),
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
           force: false,
@@ -3632,6 +3654,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         setActive: false,
         beforeEffect: options?.pilotActionToken ? authorizeEffect : undefined,
         expectedRevision: options?.pilotActionToken ? plan.revision : undefined,
+        pilotTaskId: options?.pilotActionToken ? businessTaskId : undefined,
       });
 
       const appState = useAppStore.getState();
@@ -3699,7 +3722,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           isGitExecutionTarget(target) &&
           !isRepositoryRootTarget(target),
       );
-      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
+      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees, Boolean(options?.pilotActionToken));
       await authorizeEffect();
       const archived = await tauriIpc.workspaceArchiveManualFeature({
         taskId,
@@ -3710,6 +3733,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       for (const target of gitTargets) {
         await authorizeEffect();
         await tauriIpc.gitWorktreeRemove({
+          ...(options?.pilotActionToken ? { pilotOnly: true } : {}),
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
           force: false,
@@ -3720,6 +3744,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
           await authorizeEffect();
           await tauriIpc.gitBranchDelete({
+              ...(options?.pilotActionToken ? { pilotOnly: true } : {}),
             repoPath: target.repoPath,
             branchName: target.branchName,
             force: false,
@@ -3856,7 +3881,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     let linkedConversationSaga: LinkedTaskDeletionSaga | null = null;
     try {
       if (!task.draft) {
-        const published = await hasPublishedStandaloneBranch(task);
+        const published = await hasPublishedStandaloneBranch(task, Boolean(options?.pilotActionToken));
         set((state) => ({
           publishedStandaloneTasks: {
             ...state.publishedStandaloneTasks,
@@ -3896,7 +3921,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           ] as const),
         ),
       );
-      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees);
+      await assertLifecycleGitTargetsSafe(gitTargets, get().branchWorktrees, Boolean(options?.pilotActionToken));
       const branchSnapshots = new Map(
         await Promise.all(
           gitTargets.map(async (target) => [
@@ -3983,6 +4008,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         for (const target of gitTargets) {
           await authorizeEffect();
           await tauriIpc.gitWorktreeRemove({
+          ...(options?.pilotActionToken ? { pilotOnly: true } : {}),
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
             force: false,
@@ -3992,6 +4018,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           if ((branches.local || []).some((branch) => branch.name === target.branchName)) {
             await authorizeEffect();
             await tauriIpc.gitBranchDelete({
+              ...(options?.pilotActionToken ? { pilotOnly: true } : {}),
               repoPath: target.repoPath,
               branchName: target.branchName,
               force: false,
@@ -4052,7 +4079,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           : true;
         if (linkedConversationCleanupCompleted && !sagaPersistenceError) {
           await authorizePilotEffect(taskId, options);
-          await removeLinkedTaskDeletionSaga(task.id, taskDeletedSaga.targetBranch);
+          await removeLinkedTaskDeletionSaga(task.id, taskDeletedSaga.targetBranch, Boolean(options?.pilotActionToken));
         } else if (!linkedConversationCleanupCompleted) {
           await authorizePilotEffect(taskId, options);
           await upsertLinkedTaskDeletionSaga({
@@ -4615,7 +4642,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           command: commandEntry.command,
           reveal: commandEntry.openTerminalOnRun,
           promptContext: displayMetadata.promptContext,
-          ...(options?.pilotActionToken ? { beforeEffect: authorizeConfiguredEffect, signal: options.signal } : {}),
+          ...(options?.pilotActionToken ? { beforeEffect: authorizeConfiguredEffect, signal: options.signal, expectedBranch: isDirectEditTarget(target) ? null : target.branchName } : {}),
         });
 
         const runAfterTerminalCreation = get().taskCommandRuns[taskId];

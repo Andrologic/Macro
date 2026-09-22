@@ -60,6 +60,19 @@ describe('architectPlanMutationJournal', () => {
     expect(JSON.parse(settings.get(QUARANTINE_KEY) || '[]')).toHaveLength(1);
   });
 
+  it('refuses malformed entries in Pilot without changing the journal or quarantine', async () => {
+    const invalidForeignEntry = { workspaceKey: '/other/workspace', malformed: true };
+    const rawJournal = JSON.stringify([invalidForeignEntry, validEntry()]);
+    const settings = new Map<string, string>([[JOURNAL_KEY, rawJournal]]);
+    const transport = createTransport(settings);
+
+    await expect(
+      loadArchitectPlanMutationJournal(transport, { pilotOnly: true }),
+    ).rejects.toThrow('entrée invalide');
+    expect(settings.get(JOURNAL_KEY)).toBe(rawJournal);
+    expect(settings.has(QUARANTINE_KEY)).toBe(false);
+  });
+
   it('retries an upsert after an interleaved write and preserves both entries', async () => {
     const concurrent = validEntry({ id: 'tx-concurrent', planId: 'plan-2' });
     const settings = new Map<string, string>([[JOURNAL_KEY, '[]']]);

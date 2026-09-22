@@ -1,5 +1,6 @@
 use super::metadata::{
-    direct_checkpoint_id, direct_checkpoint_task_segment, ManualFeatureDto, WorkspaceState,
+    direct_checkpoint_id, direct_checkpoint_task_segment, ManualFeatureDto, ProjectDto,
+    WorkspaceState,
 };
 use crate::core::error::{BackendError, Result};
 use chrono::Utc;
@@ -269,7 +270,23 @@ pub(super) fn mutate_manual_task_sync(
     Ok(returned_feature)
 }
 
-fn parse_primary_state(path: &Path, bytes: &[u8]) -> Result<(Value, WorkspaceState)> {
+pub(crate) fn get_project_by_id_from_primary(
+    metadata_root: &Path,
+    project_id: &str,
+) -> Result<Option<ProjectDto>> {
+    let primary_path = super::workspace_state_path(metadata_root);
+    let bytes = std::fs::read(&primary_path).map_err(|error| BackendError::Filesystem {
+        message: format!(
+            "Failed to read the existing workspace state {}: {}",
+            primary_path.display(),
+            error
+        ),
+    })?;
+    let (_, state) = parse_primary_state(&primary_path, &bytes)?;
+    Ok(super::find_project_by_id_in_state(&state, project_id).cloned())
+}
+
+pub(crate) fn parse_primary_state(path: &Path, bytes: &[u8]) -> Result<(Value, WorkspaceState)> {
     let raw_state: Value = serde_json::from_slice(bytes).map_err(|error| {
         BackendError::Validation(format!(
             "Invalid primary workspace state format in {}: {}",
@@ -444,6 +461,103 @@ mod tests {
         )
         .expect("write state");
         value
+    }
+
+    #[test]
+    fn primary_project_lookup_refuses_backup_recovery() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        fs::create_dir_all(&metadata_root).expect("metadata root");
+        let state = WorkspaceState {
+            standalone_projects: vec![super::super::build_project(
+                "Project A",
+                "",
+                Some("project-a"),
+                temp.path(),
+                None,
+            )],
+            ..WorkspaceState::default()
+        };
+        let raw = write_state(&metadata_root, &state);
+        fs::write(
+            super::super::workspace_state_backup_path(&metadata_root),
+            serde_json::to_vec_pretty(&raw).expect("serialize backup"),
+        )
+        .expect("write backup");
+        let backup =
+            fs::read(super::super::workspace_state_backup_path(&metadata_root)).expect("backup");
+
+        fs::remove_file(super::super::workspace_state_path(&metadata_root))
+            .expect("remove primary");
+        let error = get_project_by_id_from_primary(&metadata_root, "project-a")
+            .expect_err("missing primary must fail");
+        assert!(error.to_string().contains("existing workspace state"));
+        assert!(!super::super::workspace_state_path(&metadata_root).exists());
+        assert_eq!(
+            fs::read(super::super::workspace_state_backup_path(&metadata_root)).unwrap(),
+            backup
+        );
+
+        fs::write(
+            super::super::workspace_state_path(&metadata_root),
+            b"{corrupt",
+        )
+        .expect("corrupt primary");
+        let error = get_project_by_id_from_primary(&metadata_root, "project-a")
+            .expect_err("corrupt primary must fail");
+        assert!(error.to_string().contains("Invalid primary"));
+        assert_eq!(
+            fs::read(super::super::workspace_state_path(&metadata_root)).unwrap(),
+            b"{corrupt"
+        );
+        assert_eq!(
+            fs::read(super::super::workspace_state_backup_path(&metadata_root)).unwrap(),
+            backup
+        );
+    }
+
+    #[test]
+    fn primary_project_lookup_returns_the_requested_project_without_rewriting_json() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        fs::create_dir_all(&metadata_root).expect("metadata root");
+        let mut project_a = super::super::build_project(
+            "Project A",
+            "projects/a",
+            Some("project-a"),
+            temp.path(),
+            None,
+        );
+        project_a.id = "project-a".to_string();
+        let mut project_b = super::super::build_project(
+            "Project B",
+            "projects/b",
+            Some("project-b"),
+            temp.path(),
+            None,
+        );
+        project_b.id = "project-b".to_string();
+        let state = WorkspaceState {
+            standalone_projects: vec![project_a, project_b],
+            ..WorkspaceState::default()
+        };
+        let before = write_state(&metadata_root, &state);
+        let before_bytes = fs::read(super::super::workspace_state_path(&metadata_root)).unwrap();
+
+        let project = get_project_by_id_from_primary(&metadata_root, "project-b")
+            .expect("primary project lookup")
+            .expect("project b");
+
+        assert_eq!(project.id, "project-b");
+        assert_eq!(project.name, "Project B");
+        assert_eq!(
+            fs::read(super::super::workspace_state_path(&metadata_root)).unwrap(),
+            before_bytes
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&before_bytes).unwrap(),
+            before
+        );
     }
 
     #[tokio::test]

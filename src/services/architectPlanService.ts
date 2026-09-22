@@ -2462,14 +2462,33 @@ const syncPlanTaskMetadataAtScope = async (
   branchName: string,
   plan: ArchitectPlanRecord,
   beforeEffect?: () => Promise<void>,
+  targetedTaskId?: string,
+  onWrite?: (path: string) => void,
 ): Promise<void> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return;
+  if (beforeEffect && !targetedTaskId) {
+    throw new Error('content_unavailable');
+  }
   const normalizedBranch = normalizeBranchName(branchName);
   const normalizedPlan = {
     ...plan,
     nodes: normalizePlanNodes(plan.nodes),
     predictedBranches: normalizePlanPredictedBranches(plan.predictedBranches),
   };
+  const targetedNode = targetedTaskId
+    ? normalizedPlan.nodes.find((node) => node.id === targetedTaskId)
+    : undefined;
+  if (beforeEffect && targetedTaskId) {
+    if (!targetedNode) return;
+    await writeTextFileAtScope(
+      scope,
+      getTaskPlannedPath(normalizedBranch, normalizedPlan.id, targetedNode.id),
+      buildTaskPlannedMarkdown(normalizedPlan, targetedNode),
+      beforeEffect,
+      onWrite,
+    );
+    return;
+  }
   const activeTaskIds = new Set(normalizedPlan.nodes.map((node) => node.id));
 
   try {
@@ -2487,13 +2506,14 @@ const syncPlanTaskMetadataAtScope = async (
         .filter((entry) => entry.kind === 'dir' || entry.kind === 'directory')
         .filter((entry) => !activeTaskIds.has(entry.name))
         .map(async (entry) => {
-          await beforeEffect?.();
+          const authorizeBeforeEffect = beforeEffect;
+          if (authorizeBeforeEffect) await authorizeBeforeEffect();
           return tauriIpc.fsDelete({
             path: getTaskPlannedPath(normalizedBranch, normalizedPlan.id, entry.name),
             workspaceScope: getScopeWorkspaceScope(scope),
             workspacePath: scope.workspacePath,
           }).catch(error => {
-            if (beforeEffect && toServiceError(error).code !== 'FilesystemNotFound') throw error;
+    if (beforeEffect && toServiceError(error).code !== 'FilesystemNotFound') throw error;
           });
         })
     );
@@ -2509,6 +2529,7 @@ const syncPlanTaskMetadataAtScope = async (
         getTaskPlannedPath(normalizedBranch, normalizedPlan.id, node.id),
         buildTaskPlannedMarkdown(normalizedPlan, node),
         beforeEffect,
+        onWrite,
       )
     )
   );
@@ -2537,6 +2558,7 @@ const writeJsonFileAtScope = async (
   path: string,
   value: unknown,
   beforeEffect?: () => Promise<void>,
+  onWrite?: (path: string) => void,
 ): Promise<boolean> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return false;
   const content = JSON.stringify(value, null, 2);
@@ -2553,6 +2575,7 @@ const writeJsonFileAtScope = async (
     workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
+  onWrite?.(path);
   return true;
 };
 
@@ -2579,6 +2602,7 @@ const writeTextFileAtScope = async (
   path: string,
   content: string,
   beforeEffect?: () => Promise<void>,
+  onWrite?: (path: string) => void,
 ): Promise<boolean> => {
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') return false;
   const existing = await readTextFileAtScope(scope, path);
@@ -2594,6 +2618,7 @@ const writeTextFileAtScope = async (
     workspaceScope: getScopeWorkspaceScope(scope),
     workspacePath: scope.workspacePath,
   });
+  onWrite?.(path);
   return true;
 };
 
@@ -2740,13 +2765,54 @@ const writeIndexAtScope = async (
   branchName: string,
   index: ArchitectPlanIndex,
   beforeEffect?: () => Promise<void>,
+  onWrite?: (path: string) => void,
+  options?: { pilotOnly?: boolean; targetedPlanId?: string },
 ): Promise<boolean> => {
   const normalized = normalizeBranchName(branchName);
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     return writeLocalIndex(normalized, index);
   }
 
-  return writeJsonFileAtScope(scope, getIndexPath(normalized), index, beforeEffect);
+  if (options?.pilotOnly) {
+    const rawIndex = await readJsonFileAtScope<Partial<ArchitectPlanIndex>>(scope, getIndexPath(normalized));
+    if (!rawIndex || !Array.isArray(rawIndex.plans)) {
+      throw new Error('content_unavailable');
+    }
+    const rawPlans = rawIndex.plans as ArchitectPlanSummary[];
+    const computedPlansById = new Map(index.plans.map((summary) => [summary.id, summary]));
+    const rawPlanIds = new Set(rawPlans.map((summary) => summary.id));
+    const mergedPlans = rawPlans
+      .filter((summary) => summary.id !== options.targetedPlanId || computedPlansById.has(summary.id))
+      .map((summary) => {
+        if (summary.id !== options.targetedPlanId) return summary;
+        return {
+          ...summary,
+          ...computedPlansById.get(summary.id),
+        };
+      });
+    index.plans.forEach((summary) => {
+      if (!rawPlanIds.has(summary.id)) mergedPlans.push(summary);
+    });
+    const rawReservedPlanSlugs = Array.isArray(rawIndex.reservedPlanSlugs)
+      ? rawIndex.reservedPlanSlugs
+      : [];
+    return writeJsonFileAtScope(
+      scope,
+      getIndexPath(normalized),
+      {
+        ...rawIndex,
+        ...index,
+        plans: mergedPlans,
+        reservedPlanSlugs: Array.from(new Set([
+          ...rawReservedPlanSlugs,
+          ...index.reservedPlanSlugs,
+        ])),
+      },
+      beforeEffect,
+      onWrite,
+    );
+  }
+  return writeJsonFileAtScope(scope, getIndexPath(normalized), index, beforeEffect, onWrite);
 };
 
 const normalizePlanRecordForBranch = (
@@ -2866,7 +2932,12 @@ const preservePlanArtifactManifestAtScope = async (
   }
   const existing = await readStoredPlanManifestAtScope(scope, branchName, planId);
   const artifacts = normalizeArtifactManifestSummary(existing?.artifacts);
-  return artifacts ? { ...manifest, artifacts } : manifest;
+  if (!existing) return manifest;
+  return {
+    ...existing,
+    ...manifest,
+    ...(artifacts ? { artifacts } : {}),
+  } as ArchitectPlanManifest;
 };
 
 const readPlanManifestAtScope = async (params: {
@@ -2966,8 +3037,13 @@ const writePlanAtScope = async (
   options?: {
     chatMessages?: ArchitectPlanChatMessage[];
     beforeEffect?: () => Promise<void>;
+    targetedTaskId?: string;
+    onWrite?: (path: string) => void;
   }
 ): Promise<void> => {
+  if (options?.beforeEffect && !options.targetedTaskId) {
+    throw new Error('content_unavailable');
+  }
   const normalized = normalizeBranchName(branchName);
   const sanitizedPlanResult = sanitizeArchitectPlanRecord(
     normalized,
@@ -2989,6 +3065,26 @@ const writePlanAtScope = async (
     ...sanitizedPlanResult.plan,
     label: normalizePlanLabel(sanitizedPlanResult.plan.label),
   };
+  let planToWrite = normalizedPlan;
+  if (options?.beforeEffect && options.targetedTaskId) {
+    const rawPlan = await readJsonFileAtScope<ArchitectPlanRecord>(
+      scope,
+      getPlanJsonPath(normalized, sanitizeId(normalizedPlan.id)),
+    );
+    const rawNodes = rawPlan && Array.isArray(rawPlan.nodes) ? rawPlan.nodes : null;
+    const targetedNode = normalizedPlan.nodes.find((node) => node.id === options.targetedTaskId);
+    if (!rawPlan || !rawNodes || !targetedNode || !rawNodes.some((node) => node.id === options.targetedTaskId)) {
+      throw new Error('content_unavailable');
+    }
+    planToWrite = {
+      ...rawPlan,
+      updatedAt: normalizedPlan.updatedAt,
+      revision: normalizedPlan.revision,
+      nodes: rawNodes.map((node) => node.id === options.targetedTaskId
+        ? { ...node, title: targetedNode.title }
+        : node),
+    };
+  }
 
   if (!tauriIpc.isTauriAvailable() || scope.source === 'local') {
     await options?.beforeEffect?.();
@@ -2997,16 +3093,23 @@ const writePlanAtScope = async (
   }
 
   const safeId = sanitizeId(normalizedPlan.id);
-  await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), normalizedPlan, options?.beforeEffect);
-  await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(normalizedPlan, registrySnapshot), options?.beforeEffect);
-  await syncPlanTaskMetadataAtScope(scope, normalized, normalizedPlan, options?.beforeEffect);
+  await writeJsonFileAtScope(scope, getPlanJsonPath(normalized, safeId), planToWrite, options?.beforeEffect, options?.onWrite);
+  await writeTextFileAtScope(scope, getPlanMarkdownPath(normalized, safeId), buildPlanMarkdown(planToWrite, registrySnapshot), options?.beforeEffect, options?.onWrite);
+  await syncPlanTaskMetadataAtScope(
+    scope,
+    normalized,
+    planToWrite,
+    options?.beforeEffect,
+    options?.targetedTaskId,
+    options?.onWrite,
+  );
   const chatMessages = options?.chatMessages ?? await readPlanChatAtScope(scope, normalized, safeId);
   const manifest = await preservePlanArtifactManifestAtScope(scope, normalized, safeId, await buildPlanManifest({
-    plan: normalizedPlan,
+    plan: planToWrite,
     chatMessages,
     registrySnapshot,
   }));
-  await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest, options?.beforeEffect);
+  await writeJsonFileAtScope(scope, getPlanManifestPath(normalized, safeId), manifest, options?.beforeEffect, options?.onWrite);
 };
 
 const writePlanChatAtScope = async (
@@ -3072,6 +3175,7 @@ interface ArchitectPlanReplicaMutationTarget {
   chatMessages?: ArchitectPlanChatMessage[];
   replacePlanDirectory?: boolean;
   extraFiles?: Record<string, string>;
+  targetedTaskId?: string;
 }
 
 interface ArchitectPlanReplicaMutationPayload {
@@ -3118,6 +3222,7 @@ const isReplicaMutationPayload = (
       !!message && typeof message.id === 'string' && (message.role === 'user' || message.role === 'assistant') &&
       typeof message.content === 'string' && typeof message.createdAt === 'string'
     ))) && (target.replacePlanDirectory === undefined || typeof target.replacePlanDirectory === 'boolean') &&
+    (target.targetedTaskId === undefined || (typeof target.targetedTaskId === 'string' && target.targetedTaskId.length > 0)) &&
     (target.extraFiles === undefined || (target.extraFiles !== null && typeof target.extraFiles === 'object' &&
       Object.entries(target.extraFiles).every(([path, content]) =>
         path.startsWith('artifacts/') && !path.includes('..') && !path.includes('\\') &&
@@ -3253,8 +3358,12 @@ const applyArchitectPlanReplicaMutation = async (
   entry: ArchitectPlanMutationJournalEntry<ArchitectPlanReplicaMutationPayload>,
   registrySnapshot: ValidProjectRegistrySnapshot | null | undefined,
   beforeEffect?: () => Promise<void>,
+  onWrite?: (workspacePath: string | null | undefined, path: string) => void,
 ): Promise<void> => {
   for (const target of entry.payload.targets) {
+    const targetOnWrite = onWrite
+      ? (path: string) => onWrite(target.scope.workspacePath, path)
+      : undefined;
     await beforeEffect?.();
     if (target.action === 'upsert' && target.plan) {
       if (target.replacePlanDirectory) {
@@ -3263,6 +3372,8 @@ const applyArchitectPlanReplicaMutation = async (
       await writePlanAtScope(target.scope, entry.branchName, target.plan, registrySnapshot, {
         chatMessages: target.chatMessages,
         beforeEffect,
+        targetedTaskId: target.targetedTaskId,
+        onWrite: targetOnWrite,
       });
       if (target.chatMessages) {
         await writePlanChatAtScope(
@@ -3284,13 +3395,21 @@ const applyArchitectPlanReplicaMutation = async (
             workspaceScope: getScopeWorkspaceScope(target.scope),
             workspacePath: target.scope.workspacePath,
           });
+          targetOnWrite?.(`${getPlanDir(entry.branchName, entry.planId)}/${relativePath}`);
         }
       }
     } else if (target.action === 'remove') {
       await removePlanAtScope(target.scope, entry.branchName, entry.planId);
     }
     await beforeEffect?.();
-    await writeIndexAtScope(target.scope, entry.branchName, target.index, beforeEffect);
+    await writeIndexAtScope(
+      target.scope,
+      entry.branchName,
+      target.index,
+      beforeEffect,
+      targetOnWrite,
+      beforeEffect ? { pilotOnly: true, targetedPlanId: entry.planId } : undefined,
+    );
   }
 };
 
@@ -3402,7 +3521,7 @@ const runArchitectPlanReplicaMutation = async (params: {
   await withReplicaTransactionLock(workspaceKey, async () => {
     await params.beforeEffect?.();
     if (params.beforeEffect) {
-      const pending = await loadArchitectPlanMutationJournal(params.deps.tauri);
+      const pending = await loadArchitectPlanMutationJournal(params.deps.tauri, { pilotOnly: true });
       if (pending.some(entry => entry.workspaceKey === workspaceKey)) throw new Error('content_unavailable');
     } else await recoverArchitectPlanReplicaMutationsUnlocked(params.deps, params.registrySnapshot, workspaceKey);
     const now = new Date().toISOString();
@@ -3418,39 +3537,58 @@ const runArchitectPlanReplicaMutation = async (params: {
     updatedAt: now,
   };
     let currentEntry = entry;
+    const writtenMetadataPathsByWorkspace = new Map<string, Set<string>>();
+    const noteWrite = params.beforeEffect
+      ? (workspacePath: string | null | undefined, path: string) => {
+          const normalizedWorkspacePath = workspacePath?.trim();
+          if (!normalizedWorkspacePath) return;
+          const paths = writtenMetadataPathsByWorkspace.get(normalizedWorkspacePath) ?? new Set<string>();
+          paths.add(path);
+          writtenMetadataPathsByWorkspace.set(normalizedWorkspacePath, paths);
+        }
+      : undefined;
     await params.beforeEffect?.();
-    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri, params.beforeEffect ? { pilotOnly: true } : undefined);
     try {
     currentEntry = { ...currentEntry, phase: 'applying', updatedAt: new Date().toISOString() };
     await params.beforeEffect?.();
-    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
-    await applyArchitectPlanReplicaMutation(currentEntry, params.registrySnapshot, params.beforeEffect);
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri, params.beforeEffect ? { pilotOnly: true } : undefined);
+    await applyArchitectPlanReplicaMutation(currentEntry, params.registrySnapshot, params.beforeEffect, noteWrite);
     currentEntry = { ...currentEntry, phase: 'files_applied', updatedAt: new Date().toISOString() };
     await params.beforeEffect?.();
-    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri, params.beforeEffect ? { pilotOnly: true } : undefined);
     currentEntry = { ...currentEntry, phase: 'committing', updatedAt: new Date().toISOString() };
     await params.beforeEffect?.();
-    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri);
+    await upsertArchitectPlanMutationJournal(currentEntry, params.deps.tauri, params.beforeEffect ? { pilotOnly: true } : undefined);
     await params.beforeEffect?.();
     await commitMetadataScopes(
       params.targets
         .filter((target) => shouldCommitMutationTarget(target, params.registrySnapshot))
         .map((target) => target.scope),
       params.commitMessage,
-      { commit: true },
+      { commit: true, ...(params.beforeEffect ? { metadataPathsByWorkspace: writtenMetadataPathsByWorkspace } : {}) },
       params.beforeEffect ? { ...params.deps, tauri: { ...params.deps.tauri, macroBranchCommitIfDirty: async args => {
-        await params.beforeEffect!(); return params.deps.tauri.macroBranchCommitIfDirty(args);
+        await params.beforeEffect!();
+        const workspacePath = args?.workspacePath?.trim();
+        const metadataPaths = workspacePath
+          ? Array.from(writtenMetadataPathsByWorkspace.get(workspacePath) ?? [])
+          : [];
+        return params.deps.tauri.macroBranchCommitIfDirty({
+          ...args,
+          pilotOnly: true,
+          metadataPaths,
+        });
       } } } : params.deps,
     );
     await params.beforeEffect?.();
-    await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri);
+    await removeArchitectPlanMutationJournal(currentEntry.id, params.deps.tauri, params.beforeEffect ? { pilotOnly: true } : undefined);
     } catch (error) {
       await params.beforeEffect?.();
       await upsertArchitectPlanMutationJournal({
         ...currentEntry,
         updatedAt: new Date().toISOString(),
         lastError: toErrorMessage(error),
-      }, params.deps.tauri);
+      }, params.deps.tauri, params.beforeEffect ? { pilotOnly: true } : undefined);
       throw error;
     }
   });
@@ -3466,6 +3604,7 @@ const buildUpsertReplicaMutationTarget = async (params: {
   chatMessages?: ArchitectPlanChatMessage[];
   replacePlanDirectory?: boolean;
   extraFiles?: Record<string, string>;
+  targetedTaskId?: string;
 }): Promise<ArchitectPlanReplicaMutationTarget> => {
   const index = await readIndexAtScope(params.scope, params.branchName, params.registrySnapshot);
   const previousSummary = index.plans.find((candidate) => candidate.id === params.plan.id);
@@ -3484,6 +3623,7 @@ const buildUpsertReplicaMutationTarget = async (params: {
     chatMessages: params.chatMessages,
     replacePlanDirectory: params.replacePlanDirectory,
     extraFiles: params.extraFiles,
+    targetedTaskId: params.targetedTaskId,
     index: {
       ...index,
       version: 3,
@@ -4686,6 +4826,7 @@ const commitMetadataScopes = async (
     mutationKind?: MacroMetadataMutationKind;
     mutationLabel?: string | null;
     structural?: boolean;
+    metadataPathsByWorkspace?: ReadonlyMap<string, ReadonlySet<string>>;
   },
   deps?: ResolvedArchitectPlanServiceDependencies
 ): Promise<void> => {
@@ -4710,9 +4851,17 @@ const commitMetadataScopes = async (
   }
 
   if (options?.commit) {
+    const scopesWithWrittenMetadata = options.metadataPathsByWorkspace
+      ? repoScopes.filter((scope) =>
+          options.metadataPathsByWorkspace?.get(scope.workspacePath as string)?.size
+        )
+      : repoScopes;
+    if (scopesWithWrittenMetadata.length === 0) {
+      return;
+    }
     await flushMacroMetadata({
       trigger: 'explicit_checkpoint',
-      workspacePaths: repoScopes.map((scope) => scope.workspacePath as string),
+      workspacePaths: scopesWithWrittenMetadata.map((scope) => scope.workspacePath as string),
       message: commitMessage,
     }, {
       tauri: resolvedDeps.tauri,
@@ -5180,6 +5329,7 @@ export const updateArchitectPlan = async (input: {
   setActive?: boolean;
   beforeEffect?: () => Promise<void>;
   expectedRevision?: number;
+  pilotTaskId?: string;
 }, deps: ResolvedArchitectPlanServiceDependencies = resolveArchitectPlanServiceDependencies()): Promise<ArchitectPlanRecord> => {
   const normalizedBranch = normalizeBranchName(input.branchName);
   assertGitFlowTargetBranch(normalizedBranch);
@@ -5195,7 +5345,16 @@ export const updateArchitectPlan = async (input: {
   }
   const existing = replicaSet.canonical.plan;
   if (input.expectedRevision !== undefined && existing.revision !== input.expectedRevision) throw new Error('stale_revision');
-  const inputKeys = Object.keys(input).filter((key) => key !== 'branchName' && key !== 'planId');
+  if (input.beforeEffect) {
+    const allowedKeys = new Set(['branchName', 'planId', 'nodes', 'setActive', 'beforeEffect', 'expectedRevision', 'pilotTaskId']);
+    if (Object.keys(input).some(key => !allowedKeys.has(key)) || input.setActive === true ||
+      !input.pilotTaskId || !input.nodes?.some(node => node.id === input.pilotTaskId)) {
+      throw new Error('content_unavailable');
+    }
+  }
+  const inputKeys = Object.keys(input).filter(
+    (key) => key !== 'branchName' && key !== 'planId' && key !== 'pilotTaskId'
+  );
   const isRestoringArchivedPlan =
     existing.status === 'archived' &&
     isArchitectPlanRestorableStatus(input.status) &&
@@ -5381,6 +5540,10 @@ export const updateArchitectPlan = async (input: {
     throwPlanMetadataMissing(normalizedBranch, safeId);
   }
   const candidate = candidateResult.plan;
+  const targetedTaskId = input.beforeEffect ? input.pilotTaskId?.trim() || undefined : undefined;
+  if (input.beforeEffect && !targetedTaskId) {
+    throw new Error('content_unavailable');
+  }
 
   const targetScopes = (await ensurePlanScopes(
     candidate.expectedProjectIds || candidate.projectIds || [],
@@ -5402,6 +5565,7 @@ export const updateArchitectPlan = async (input: {
   const hasScopeChanges =
     targetScopes.length !== existingScopes.length ||
     targetScopes.some((scope) => !existingScopeKeys.has(scope.scopeKey));
+  if (input.beforeEffect && hasScopeChanges) throw new Error('content_unavailable');
   const hasSemanticChange = !areArchitectPlansSemanticallyEqual(existing, candidate);
   let shouldActivate = input.setActive === true;
   if (shouldActivate) {
@@ -5463,6 +5627,7 @@ export const updateArchitectPlan = async (input: {
       registrySnapshot,
       setActive: shouldActivate,
       chatMessageCount: replicaSet.canonical.manifest.conversation.messageCount,
+      targetedTaskId,
     }))),
     ...await Promise.all(removedScopes.map((scope) => buildRemoveReplicaMutationTarget({
       scope,

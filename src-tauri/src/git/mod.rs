@@ -1679,6 +1679,144 @@ mod tests {
     }
 
     #[test]
+    fn test_ensure_pilot_task_worktree_preserves_other_branches_gitignore_and_index() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let initial_commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("initial commit");
+        repo.branch("develop", &initial_commit, false)
+            .expect("create develop branch");
+        checkout_branch(&repo, "feature/active");
+
+        let develop_before = repo
+            .find_branch("develop", BranchType::Local)
+            .expect("develop branch")
+            .get()
+            .target();
+        let main_before = repo
+            .find_branch("main", BranchType::Local)
+            .expect("main branch")
+            .get()
+            .target();
+        let index_before = fs::read(repo.path().join("index")).expect("read index");
+        let gitignore_path = temp.path().join(".gitignore");
+
+        let ensured = GitState::new()
+            .ensure_pilot_task_worktree(
+                &repo,
+                "pilot-preserve",
+                "task/pilot-preserve",
+                Some("develop"),
+            )
+            .expect("pilot worktree");
+
+        assert_eq!(ensured.status, TaskWorktreeEnsureStatus::Created);
+        assert_eq!(
+            repo.find_branch("develop", BranchType::Local)
+                .expect("develop branch")
+                .get()
+                .target(),
+            develop_before
+        );
+        assert_eq!(
+            repo.find_branch("main", BranchType::Local)
+                .expect("main branch")
+                .get()
+                .target(),
+            main_before
+        );
+        assert!(!gitignore_path.exists());
+        assert_eq!(
+            fs::read(repo.path().join("index")).expect("read index"),
+            index_before
+        );
+        assert_eq!(
+            current_branch_name_for_test(&repo).as_deref(),
+            Some("feature/active")
+        );
+        assert_eq!(
+            current_branch_name_for_test(
+                &Repository::open(&ensured.worktree_path).expect("open pilot worktree")
+            )
+            .as_deref(),
+            Some("task/pilot-preserve")
+        );
+    }
+
+    #[test]
+    fn test_ensure_pilot_task_worktree_reuses_ready_worktree_without_shared_changes() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let first = state
+            .ensure_pilot_task_worktree(&repo, "pilot-reuse", "task/pilot-reuse", Some("main"))
+            .expect("first pilot worktree");
+        let index_before = fs::read(repo.path().join("index")).ok();
+        let main_before = repo
+            .find_branch("main", BranchType::Local)
+            .expect("main branch")
+            .get()
+            .target();
+
+        let second = state
+            .ensure_pilot_task_worktree(&repo, "pilot-reuse", "task/pilot-reuse", Some("main"))
+            .expect("reused pilot worktree");
+
+        assert_eq!(second.status, TaskWorktreeEnsureStatus::Reused);
+        assert_eq!(second.worktree_path, first.worktree_path);
+        assert_eq!(second.branch_name, "task/pilot-reuse");
+        assert_eq!(
+            repo.find_branch("main", BranchType::Local)
+                .expect("main branch")
+                .get()
+                .target(),
+            main_before
+        );
+        assert_eq!(fs::read(repo.path().join("index")).ok(), index_before);
+        assert!(!temp.path().join(".gitignore").exists());
+    }
+
+    #[test]
+    fn test_ensure_pilot_task_worktree_refuses_stale_registration_without_repair() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let ensured = state
+            .ensure_pilot_task_worktree(&repo, "pilot-stale", "task/pilot-stale", Some("main"))
+            .expect("pilot worktree");
+        let admin_dir = repo.path().join("worktrees").join("taskpilot-stale");
+        let admin_head_before = fs::read(admin_dir.join("HEAD")).expect("read admin HEAD");
+        let index_before = fs::read(repo.path().join("index")).ok();
+        let branch_before = repo
+            .find_branch("task/pilot-stale", BranchType::Local)
+            .expect("pilot branch")
+            .get()
+            .target();
+        fs::remove_dir_all(&ensured.worktree_path).expect("remove stale worktree path");
+
+        let error = state
+            .ensure_pilot_task_worktree(&repo, "pilot-stale", "task/pilot-stale", Some("main"))
+            .expect_err("stale registration should be refused");
+        assert!(matches!(error, BackendError::Git { .. }));
+        assert_eq!(
+            repo.find_branch("task/pilot-stale", BranchType::Local)
+                .expect("pilot branch")
+                .get()
+                .target(),
+            branch_before
+        );
+        assert_eq!(fs::read(repo.path().join("index")).ok(), index_before);
+        assert_eq!(
+            fs::read(admin_dir.join("HEAD")).expect("read admin HEAD"),
+            admin_head_before
+        );
+        assert!(repo.find_worktree("taskpilot-stale").is_ok());
+        assert!(!temp.path().join(".gitignore").exists());
+    }
+
+    #[test]
     fn test_ensure_task_worktree_skips_gitignore_commit_for_rare_conventions_without_confirmation()
     {
         let temp = TempDir::new().expect("temp dir");
@@ -1912,6 +2050,153 @@ mod tests {
 
         assert!(!worktree_path.exists());
         assert!(repo.find_worktree("task790").is_err());
+    }
+
+    #[test]
+    fn test_remove_pilot_task_worktree_leaves_third_party_worktree_unchanged() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let pilot = state
+            .ensure_pilot_task_worktree(&repo, "pilot-remove", "task/pilot-remove", Some("main"))
+            .expect("pilot worktree");
+
+        let third_branch = "feature/third-party";
+        let head = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .expect("head commit");
+        repo.branch(third_branch, &head, false)
+            .expect("third-party branch");
+        let third_path = temp
+            .path()
+            .join(".macro")
+            .join("worktrees")
+            .join("third-party");
+        let reference = repo
+            .find_reference("refs/heads/feature/third-party")
+            .expect("third-party reference");
+        let mut options = WorktreeAddOptions::new();
+        options.reference(Some(&reference));
+        repo.worktree("third-party", &third_path, Some(&options))
+            .expect("third-party worktree");
+        let third_head_before = fs::read(
+            repo.path()
+                .join("worktrees")
+                .join("third-party")
+                .join("HEAD"),
+        )
+        .expect("read third-party HEAD");
+
+        let removed = state
+            .remove_pilot_task_worktree(&repo, "pilot-remove", "task/pilot-remove")
+            .expect("remove pilot worktree");
+
+        assert!(removed.removed_path);
+        assert!(removed.pruned_registration);
+        assert!(!pilot.worktree_path.exists());
+        assert!(third_path.exists());
+        assert!(repo.find_worktree("third-party").is_ok());
+        assert_eq!(
+            fs::read(
+                repo.path()
+                    .join("worktrees")
+                    .join("third-party")
+                    .join("HEAD")
+            )
+            .expect("read third-party HEAD"),
+            third_head_before
+        );
+    }
+
+    #[test]
+    fn test_remove_pilot_task_worktree_is_idempotent_when_absent() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+
+        let removed = state
+            .remove_pilot_task_worktree(&repo, "pilot-absent", "task/pilot-absent")
+            .expect("absent pilot worktree");
+
+        assert!(removed.already_absent);
+        assert!(!removed.removed_path);
+        assert!(!removed.pruned_registration);
+        assert!(!temp.path().join(".macro").exists());
+        assert!(repo.find_worktree("taskpilot-absent").is_err());
+    }
+
+    #[test]
+    fn test_remove_pilot_task_worktree_refuses_unknown_dirty_state_without_repair() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let pilot = state
+            .ensure_pilot_task_worktree(
+                &repo,
+                "pilot-unknown-dirty",
+                "task/pilot-unknown-dirty",
+                Some("main"),
+            )
+            .expect("pilot worktree");
+        let admin_dir = repo
+            .path()
+            .join("worktrees")
+            .join("taskpilot-unknown-dirty");
+        let admin_head_before = fs::read(admin_dir.join("HEAD")).expect("read admin HEAD");
+        let branch_before = repo
+            .find_branch("task/pilot-unknown-dirty", BranchType::Local)
+            .expect("pilot branch")
+            .get()
+            .target();
+        fs::remove_dir_all(&pilot.worktree_path).expect("remove worktree path");
+
+        let error = state
+            .remove_pilot_task_worktree(&repo, "pilot-unknown-dirty", "task/pilot-unknown-dirty")
+            .expect_err("unknown dirty state should be refused");
+
+        assert!(matches!(error, BackendError::Git { .. }));
+        assert_eq!(
+            repo.find_branch("task/pilot-unknown-dirty", BranchType::Local)
+                .expect("pilot branch")
+                .get()
+                .target(),
+            branch_before
+        );
+        assert_eq!(
+            fs::read(admin_dir.join("HEAD")).expect("read admin HEAD"),
+            admin_head_before
+        );
+        assert!(repo.find_worktree("taskpilot-unknown-dirty").is_ok());
+    }
+
+    #[test]
+    fn test_remove_pilot_task_worktree_refuses_wrong_branch_without_removing() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let pilot = state
+            .ensure_pilot_task_worktree(
+                &repo,
+                "pilot-wrong-branch",
+                "task/pilot-right",
+                Some("main"),
+            )
+            .expect("pilot worktree");
+        let admin_dir = repo.path().join("worktrees").join("taskpilot-wrong-branch");
+        let admin_head_before = fs::read(admin_dir.join("HEAD")).expect("read admin HEAD");
+
+        let error = state
+            .remove_pilot_task_worktree(&repo, "pilot-wrong-branch", "task/pilot-wrong")
+            .expect_err("wrong branch should be refused");
+
+        assert!(matches!(error, BackendError::Git { .. }));
+        assert!(pilot.worktree_path.exists());
+        assert!(repo.find_worktree("taskpilot-wrong-branch").is_ok());
+        assert_eq!(
+            fs::read(admin_dir.join("HEAD")).expect("read admin HEAD"),
+            admin_head_before
+        );
     }
 
     #[test]

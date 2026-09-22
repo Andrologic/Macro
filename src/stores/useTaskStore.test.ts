@@ -3322,8 +3322,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
 
   it('does not roll back a prepared worktree after Pilot authorization is revoked', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
-    const { useGitStore } = await import('./useGitStore');
-    const originalCreate = useGitStore.getState().createWorktree;
+    const originalCreate = gitWorktreeCreateMock.getMockImplementation()!;
     const originalProject = appStoreState.getProjectById;
     appStoreState.getProjectById = projectId => ({ ...originalProject(projectId)!, id: projectId });
     const originalInspect = gitWorktreeInspectMock.getMockImplementation()!;
@@ -3335,10 +3334,11 @@ describe('useTaskStore task command terminal lifecycle', () => {
       })) });
     useTaskStore.setState({ tasks: [task], branchWorktrees: {}, taskCommandRuns: {}, lastError: null });
     gitWorktreeInspectMock.mockImplementation(async params => ({ taskId: params.taskId, worktreePath: '', branchName: params.branchName ?? null, status: 'absent', isDirty: false }));
-    useGitStore.setState({ createWorktree: async (projectId, worktreeKey, branchName) => {
-      created.push(projectId); revoked = true;
-      return { taskId: worktreeKey, worktreePath: '/synthetic/created', branchName, status: 'created' };
-    } });
+    gitWorktreeCreateMock.mockImplementation(async params => {
+      expect(params).toMatchObject({ pilotOnly: true });
+      created.push(params.taskId); revoked = true;
+      return { taskId: params.taskId, worktreePath: '/synthetic/created', branchName: params.branchName, status: 'created' as 'reused' };
+    });
     gitWorktreeRemoveMock.mockClear();
     const reservation = reservePilotAction({ taskId: task.id });
     try {
@@ -3348,7 +3348,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
       expect(created).toEqual(['project-1']);
       expect(gitWorktreeRemoveMock).not.toHaveBeenCalled();
     } finally {
-      reservation.release(); useGitStore.setState({ createWorktree: originalCreate });
+      reservation.release(); gitWorktreeCreateMock.mockImplementation(originalCreate);
       appStoreState.getProjectById = originalProject;
       gitWorktreeInspectMock.mockImplementation(originalInspect);
     }

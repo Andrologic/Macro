@@ -1376,3 +1376,15 @@ describe('Pilot task mutation IPC', () => {
     ]);
   });
 });
+
+
+describe('Pilot native effect routing', () => {
+  it('requests non-repairing metadata commits and terminal preparation', async () => {
+    const ipc = await loadTauriIpc();
+    invokeCalls.length = 0;
+    await ipc.macroBranchCommitIfDirty({ workspacePath: '/synthetic/project', pilotOnly: true });
+    await ipc.terminalStartCommandTab({ kind: 'task', projectId: 'project-fixture', title: 'Run', command: 'echo fixture', pilotOnly: true });
+    expect(invokeCalls[0]).toEqual({ command: 'macro_branch_commit_if_dirty', payload: { workspacePath: '/synthetic/project', message: null, pilotOnly: true, metadataPaths: [] } });
+    expect(invokeCalls[1]).toMatchObject({ command: 'terminal_start_command_tab', payload: { pilotOnly: true } });
+  });
+});

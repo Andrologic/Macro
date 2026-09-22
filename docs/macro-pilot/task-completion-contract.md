@@ -179,3 +179,16 @@ preserves unrelated tasks and unknown JSON fields. Rename, archive, delete and
 legacy direct-checkpoint binding never invoke global sanitization or recovery.
 The command uses the shared workspace locks and checks the primary bytes again
 before writing the selected task change and advancing the workspace revision.
+
+Pilot preparation may create the exact task branch and its worktree; task cleanup
+may remove those same resources under the desktop eligibility rules. It must not
+move an existing code-branch tip, switch the primary checkout, create incidental
+code commits, or repair another worktree. Broken registration or uncertain
+ownership requires desktop inspection. Read-only inspection precedes preparation,
+and command startup checks the selected repository and expected branch again.
+Internal checkpoint baselines and metadata commits remain task-support effects;
+they are distinct from commits in the project code repository.
+
+Guarded metadata writes resolve existing locations only. Their native commit
+selects the requested metadata paths and writes Git objects without executing
+hooks, filters or signing commands. It leaves other staged paths intact.

@@ -1178,6 +1178,7 @@ describe('useTerminalStore', () => {
       beforeEffect: async () => { authorizationCount++; },
     });
     expect(authorizationCount).toBe(2);
+    expect(terminalStartCommandTabMock.mock.calls[0]?.[0]).toMatchObject({ pilotOnly: true });
     expect(terminalUpdateTabMetadataMock).not.toHaveBeenCalled();
     expect(terminalStartCommandTabMock).toHaveBeenCalledTimes(1);
   });
