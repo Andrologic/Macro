@@ -20,6 +20,7 @@ import { createDeferred } from '../test-utils/deferred';
 import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
+import { registerQueuedSubmissionRecoveryScenarios } from './__tests__/queuedSubmissionRecovery.scenarios';
 import { registerArchitectLifecycleScenarios } from './__tests__/architectLifecycle.scenarios';
 import { registerArchitectStrategyScenarios } from './__tests__/architectStrategy.scenarios';
 import { registerChatToolsAndSourcesScenarios } from './__tests__/chatToolsAndSources.scenarios';
@@ -33,6 +34,8 @@ import { registerConversationSelectionScenarios } from './__tests__/conversation
 import { registerQuestionnaireNavigationScenarios } from './__tests__/questionnaireNavigation.scenarios';
 const actualTauriIpc = await import('../services/tauriIpc');
 const actualConfigurationClient = await import('../services/configurationClient');
+let actualResolveProjectExecutionContext: typeof import('../services/projectExecutionContext').resolveProjectExecutionContext;
+let useRealProjectExecutionContextForTest = false;
 
 interface LocalStorageMock {
   clear: () => void;
@@ -1997,7 +2000,7 @@ const registerUseChatStoreMocks = async () => {
   }));
 
   mock.module('../services/projectExecutionContext', () => ({
-    resolveProjectExecutionContext: mock(() => ({
+    resolveProjectExecutionContext: mock((input: Parameters<typeof actualResolveProjectExecutionContext>[0]) => useRealProjectExecutionContextForTest ? actualResolveProjectExecutionContext(input) : ({
       groupName: 'Macro',
       groupId: 'group-1',
       projectName: 'Web',
@@ -2654,6 +2657,13 @@ const useChatStoreScenarioContext = {
   waitForConversationDiagnostics,
   waitForStreamCallCount,
   webSearchMock,
+  async enableRealProjectExecutionContext() {
+    const realModulePath = "../services/projectExecutionContext.ts?queue-tests";
+    actualResolveProjectExecutionContext = (await import(realModulePath)).resolveProjectExecutionContext;
+    useRealProjectExecutionContextForTest = true;
+  },
+  get useRealProjectExecutionContext() { return useRealProjectExecutionContextForTest; },
+  set useRealProjectExecutionContext(value: boolean) { useRealProjectExecutionContextForTest = value; },
   get tauriAvailable() {
     return tauriAvailable;
   },
@@ -3179,8 +3189,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       timed_out: boolean;
       updated_at: string;
     }>();
+    const commandStarted = createDeferred<void>();
     terminalRunCommandFromChatMock.mockImplementationOnce(
-      async () => commandFinished.promise,
+      async () => {
+        commandStarted.resolve();
+        return commandFinished.promise;
+      },
     );
     terminalKillSessionFromChatMock.mockImplementationOnce(async () => {
       const commandResult = {
@@ -3200,16 +3214,24 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       };
     });
 
+    const approvalReady = new Promise<void>(resolve => {
+      const unsubscribe = useChatStore.subscribe((state: ReturnType<typeof import('./useChatStore').useChatStore.getState>) => {
+        if (state.pendingToolApprovalByConversationId['implement-conv']?.toolCallId === 'terminal-run-cancelled') {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
     const toolCall = onToolCall(
       'terminal_run',
       { session_id: 'session-1', command: 'bun test' },
       'terminal-run-cancelled',
     );
-    await flushAsyncWork();
+    await approvalReady;
     useChatStore
       .getState()
       .approvePendingToolApprovalForConversation('implement-conv');
-    await flushAsyncWork();
+    await commandStarted.promise;
 
     useChatStore.getState().stopConversationStream('implement-conv');
     await toolCall;
@@ -3594,6 +3616,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   registerReplayAndEditingScenarios(useChatStoreScenarioContext);
   registerImplementPolicyScenarios(useChatStoreScenarioContext);
   registerToolApprovalRecoveryScenarios(useChatStoreScenarioContext);
+  registerQueuedSubmissionRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);
 });
 

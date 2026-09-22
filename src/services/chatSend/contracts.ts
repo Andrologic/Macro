@@ -29,12 +29,15 @@ export interface ChatSendInput {
   hiddenContext?: string;
   providerInputItems?: unknown[];
   contextRefs?: ChatMessage['context_refs'];
+  /** Stable identity used to reconcile a deferred send after a restart. */
+  submissionTurnId?: string;
 }
 
 export interface ArchitectPlanAtSend { planId: string; targetBranch: string }
 
 /** Captured synchronously by the UI adapter, before invoking sendMessage. */
 export interface ChatSendSnapshot {
+  modelSelectionCaptured?: boolean;
   mode: AppMode;
   agentType: AgentType | null;
   architectPlan?: ArchitectPlanAtSend;
@@ -92,6 +95,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
   owner: ChatSendOwner;
   messages: {
     persistence: ChatPersistenceAdapters;
+    onUserPersisted?(message: ChatMessage): void;
     ensureLoaded(conversationId: string): Promise<void>;
     list(conversationId: string): readonly ChatMessage[];
     hasInterruptedApproval(conversationId: string): boolean;

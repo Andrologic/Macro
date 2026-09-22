@@ -1350,6 +1350,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
   const composerFileInputRef = useRef<HTMLInputElement>(null);
   const pendingSpeechInsertionRef = useRef<SpeechComposerInsertion | null>(null);
+  const activeTurnSubmissionInFlightRef = useRef(false);
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
@@ -2984,16 +2985,33 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activeBehaviorOverride?: 'steer' | 'queue',
   ) => {
     if (isComposerDisabled || activeQuestionnaire || attachmentImportInFlightRef.current) return;
+    if (activeTurnSubmissionInFlightRef.current) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
     if (isBusySending) {
       if (!selectedConversationId || !text) return;
+      activeTurnSubmissionInFlightRef.current = true;
+      const submittedConversationId = selectedConversationId;
+      const submittedContextKey = composerDraftContextKey;
+      const submittedDraft: SavedComposerDraft = {
+        savedDraftText: textOverride ?? composerEditorRef.current?.getTextContent() ?? inputValue,
+        savedDraftImages: [...composerImages],
+        savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+      };
+      const submittedDraftContextKeys = [
+        ...new Set([
+          submittedContextKey,
+          `conversation:${submittedConversationId}`,
+        ]),
+      ];
       try {
-        const internalAgentProfile = getConflictAssistantInternalAgentProfile(selectedConversationId);
+        const internalAgentProfile = getConflictAssistantInternalAgentProfile(
+          submittedConversationId,
+        );
         await submitDuringActiveTurn(
           {
-            conversationId: selectedConversationId,
+            conversationId: submittedConversationId,
             content: text,
             taskId: implementTaskIdForSend,
             images: [...composerImages],
@@ -3002,19 +3020,38 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
         if (internalAgentProfile) {
-          clearConflictAssistantInternalAgentProfile(selectedConversationId);
+          clearConflictAssistantInternalAgentProfile(submittedConversationId);
         }
-        clearComposerDraftForContext(composerDraftContextKey);
-        clearComposerDraftForContext(`conversation:${selectedConversationId}`);
-        composerEditorRef.current?.clear();
-        clearComposerContextRefs();
-        setComposerImages([]);
-        setInputValue('');
-        resetPromptHistoryNavigation();
+        submittedDraftContextKeys.forEach((contextKey) => {
+          const storedDraft = getComposerDraftForContext(contextKey);
+          if (storedDraft && composerDraftMatchesSavedDraft(storedDraft, submittedDraft)) {
+            clearComposerDraftForContext(contextKey);
+          }
+        });
+        const composerStillContainsSubmittedDraft =
+          activeComposerDraftContextKeyRef.current === submittedContextKey &&
+          composerDraftMatchesSavedDraft(latestComposerDraftRef.current, submittedDraft);
+        if (composerStillContainsSubmittedDraft) {
+          // The saved draft may lag behind the editor's 250 ms persistence timer.
+          // Acceptance consumes this context even when storage still holds an older edit.
+          clearComposerDraftForContext(submittedContextKey);
+          composerEditorRef.current?.clear();
+          clearComposerContextRefs();
+          setComposerImages([]);
+          setInputValue('');
+          latestComposerDraftRef.current = {
+            text: '',
+            images: [],
+            contextRefs: [],
+          };
+          resetPromptHistoryNavigation();
+        }
       } catch (error) {
         notify.error(t('chat.activeTurnSendFailed', 'Message not sent'), {
           description: toServiceError(error).message,
         });
+      } finally {
+        activeTurnSubmissionInFlightRef.current = false;
       }
       return;
     }

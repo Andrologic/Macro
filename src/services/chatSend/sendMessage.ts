@@ -52,19 +52,22 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
     images, contextRefs, clearComposerRevision,
   });
   const saveUser = async (current: SendLease) => {
+    let message: ChatMessage;
     try {
-      return await createUserMessage(messages.persistence, {
+      message = await createUserMessage(messages.persistence, {
         conversationId, turnId: current.turnId, taskId: resolvedTaskId,
         content, hiddenContext, providerInputItems, contextRefs,
       });
     } catch (error) {
       throw new Error(`Failed to save the message before sending: ${toServiceError(error).message}`);
     }
+    messages.onUserPersisted?.(message);
+    return message;
   };
 
   try {
     preparation.assertCanSend(conversationId);
-    lease = { sessionId: preparation.createSessionId(), turnId: preparation.createTurnId(), abortController };
+    lease = { sessionId: preparation.createSessionId(), turnId: input.submissionTurnId ?? preparation.createTurnId(), abortController };
     const current = lease;
     owner.rememberSession(conversationId, current.sessionId);
     timeline('send_requested', { conversationId });
@@ -100,7 +103,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       projectIds: executionContext.projectIds, focusProjectId: executionContext.focusedProjectId, mode,
     });
     if (!isCurrent()) return cancelled();
-    const scopedModel = configuration.selectScoped(scopedConfiguration, snapshot, internalAgentProfile);
+    const scopedModel = snapshot.modelSelectionCaptured
+      ? null : configuration.selectScoped(scopedConfiguration, snapshot, internalAgentProfile);
     const providerId = scopedModel?.providerId ?? provider.selectedProviderId;
     const modelId = scopedModel?.modelId ?? provider.selectedModelId;
     const reasoningEffort = scopedModel ? scopedModel.reasoningEffort : provider.selectedReasoningEffort;
@@ -187,6 +191,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       const request: PrepareAssistantStreamParams = {
         conversationId, replyToMessageId: persistedUserMessage.id, userContent: content, resolvedTaskId,
         modeAtSend: mode, agentTypeAtSend: agentType, providerId, modelId, reasoningEffort,
+        architectPlanAtSend: snapshot.modelSelectionCaptured ? architectPlan : undefined,
         providerConfig: providerForUse, internalAgentProfile, executionContext,
         scopedTurnConfigurationOverride: scopedConfiguration,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),

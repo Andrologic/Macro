@@ -63,6 +63,7 @@ export function createAssistantStreamRuntime(ports: ChatAssistantStreamPorts) {
       ...input,
       providerConfig: { ...input.providerConfig },
       architectPlanAtSend: input.architectPlanAtSend ? { ...input.architectPlanAtSend } : undefined,
+      architectPlanContext: structuredClone(input.architectPlanContext),
       executionContext: structuredClone(input.executionContext),
       scopedTurnConfiguration: structuredClone(input.scopedTurnConfiguration),
       allowedToolIds: [...input.allowedToolIds],

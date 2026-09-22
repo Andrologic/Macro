@@ -127,7 +127,6 @@ import {
   getArchitectPlan,
   getArchitectPlanActivationPayload,
   getArchitectPlanChatTranscript,
-  getArchitectPlanTargetDisplay,
   getGitFlowBaseBranch,
   getArchitectPlanVisibleProjectIds,
   hasPersistedArchitectStrategy,
@@ -147,7 +146,6 @@ import {
   isDefaultNewPlanFamilyLabel,
   isCanonicalArchitectPlan,
 } from "../services/architectPlanPresentation";
-import { buildArchitectPlanToolFollowUpInstruction } from "../services/architectChat";
 
 import { selectInjectableMCPToolIds } from "../services/mcp";
 import { isMCPToolId } from "../services/mcpToolNames";
@@ -357,6 +355,8 @@ import {
   type MessageImageAttachment,
   type PersistedComposerDraft,
 } from "./chat/chatLocalSessionState";
+import type { QueuedSubmission } from "./chat/chatQueuedSubmissions";
+import type { QueuedSubmissionRuntime } from "./chat/chatQueuedSubmissionRuntime";
 import {
   buildConversationRuntimePatch,
   buildLegacyStreamingFlags,
@@ -1009,12 +1009,14 @@ interface ChatStore {
     hiddenContext?: string;
     providerInputItems?: unknown[];
     contextRefs?: ChatMessage["context_refs"];
-  }) => Promise<ChatSendResult | ChatSendCancelledResult>;
+  }, queuedSubmission?: QueuedSubmission) => Promise<ChatSendResult | ChatSendCancelledResult>;
   submitDuringActiveTurn: (
     payload: ComposerSubmissionPayload,
     behavior: ActiveTurnSubmissionBehavior,
   ) => Promise<"steered" | "queued">;
   stopConversationStream: (conversationId: string) => void;
+  retryQueuedSubmissions: (conversationId: string) => Promise<void>;
+  queuedSubmissionRecoveryByConversationId: Record<string, { count: number; error?: string }>;
   clearConversationRuntimeError: (conversationId: string) => void;
   retryAssistantPersistence: (messageId: string) => Promise<void>;
   deleteUnsavedAssistantResponse: (messageId: string) => Promise<void>;
@@ -1348,8 +1350,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
     cancelTransport: cancelStream,
     settled: (id) => { void drainQueuedSubmissions(id); },
   });
-  const queuedSubmissionsByConversationId = new Map<string, ComposerSubmissionPayload[]>();
-  const drainingQueuedConversationIds = new Set<string>();
+  let queueRuntime: QueuedSubmissionRuntime | undefined;
+  let queueRuntimeLoading: Promise<QueuedSubmissionRuntime> | undefined;
+  const getQueueRuntime = (): Promise<QueuedSubmissionRuntime> => queueRuntimeLoading ??= import("./chat/chatQueuedSubmissionRuntime").then(({ createQueuedSubmissionRuntime }) => {
+    queueRuntime = createQueuedSubmissionRuntime({
+      blocked: id => isAppShutdownGateActive() || hasUnsavedAssistantResponse(id) ||
+        useConversationArchiveStore.getState().archivedConversationIds.has(id) ||
+        isConversationRuntimeActive(getConversationRuntimeSnapshot(get().conversationRuntimeById, id)),
+      cancelled: id => deletedConversationIds.has(id) || isAppShutdownGateActive(),
+      read: id => loadConversationMessages(chatPersistenceAdapters, { conversationId: id, conversations: get().conversations }),
+      send: entry => get().sendMessage(entry.input, entry),
+      publish: message => get().addMessage(message),
+      saveImages: (id, images) => {
+        const next = { ...get().messageImagesByMessageId, [id]: images };
+        if (!saveMessageImagesToStorage(next)) return false;
+        set({ messageImagesByMessageId: next });
+        return true;
+      },
+      recovery: value => set({ queuedSubmissionRecoveryByConversationId: value }),
+    });
+    return queueRuntime;
+  });
   const toolboxPersistenceTailsByConversationId = new Map<string, Promise<void>>();
   const contextDiagnosticsRequestIds = new Map<string, number>();
   const liveContextDiagnosticsRefreshByConversationId = new Map<
@@ -1681,10 +1702,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const filterToolIdsForArchitectPlan = (
     toolIds: string[],
     executionContext: ProjectExecutionContext,
+    capturedPlan?: ArchitectPlanRecord | null,
   ): string[] => {
     const appState = useAppStore.getState();
+    const nodes = capturedPlan === undefined ? appState.planNodes : capturedPlan?.nodes ?? [];
+    const executionModes = capturedPlan === undefined
+      ? appState.activePlanContext?.executionModesByProjectId : capturedPlan?.executionModesByProjectId;
     const planProjectIds = new Set<string>();
-    for (const node of appState.planNodes ?? []) {
+    for (const node of nodes ?? []) {
       for (const projectId of node.projectIds ?? []) {
         if (projectId) planProjectIds.add(projectId);
       }
@@ -1694,7 +1719,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       }
     }
     for (const projectId of Object.keys(
-      appState.activePlanContext?.executionModesByProjectId ?? {},
+      executionModes ?? {},
     )) {
       planProjectIds.add(projectId);
     }
@@ -1705,8 +1730,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     const gitToolsUnavailable = projectIds.length > 0 && projectIds.every((projectId) =>
       resolvePlanProjectExecutionMode({
         projectId,
-        nodes: appState.planNodes,
-        executionModesByProjectId: appState.activePlanContext?.executionModesByProjectId,
+        nodes,
+        executionModesByProjectId: executionModes,
         project: appState.getProjectById(projectId),
       }) !== 'git'
     );
@@ -3304,7 +3329,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       archiveUnsubscribe = useConversationArchiveStore.subscribe((next, previous) => {
         if (!scope.isActive()) return;
         for (const conversationId of next.archivedConversationIds) {
-          if (!previous.archivedConversationIds.has(conversationId)) get().stopConversationStream(conversationId);
+          if (!previous.archivedConversationIds.has(conversationId)) {
+            get().stopConversationStream(conversationId);
+            queueRuntime?.pause(conversationId);
+          }
         }
       });
       scope.own(archiveUnsubscribe);
@@ -5752,6 +5780,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   const restorePersistedComposerDrafts = (
     visibleConversations: Conversation[],
     archivedConversationIds: ReadonlySet<string>,
+    pruneMissingConversations = true,
   ): Record<string, ComposerDraft> => {
     const visibleConversationIds = new Set(
       visibleConversations.map((conversation) => conversation.id),
@@ -5762,7 +5791,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           if (contextKey.startsWith("conversation:")) {
             const conversationId = contextKey.slice("conversation:".length);
             if (
-              !visibleConversationIds.has(conversationId) ||
+              (pruneMissingConversations && !visibleConversationIds.has(conversationId)) ||
               archivedConversationIds.has(conversationId)
             ) {
               return [];
@@ -6103,6 +6132,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     skillPermissionSnapshot?: SkillPermissionSnapshot | null,
     executionContextOverride?: ProjectExecutionContext,
     riskLevelOverride?: ToolRiskLevel,
+    architectPlanOverride?: ArchitectPlanRecord | null,
   ) => {
     const appState = useAppStore.getState();
     const executionContext =
@@ -6131,8 +6161,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .map((m) => m.role)
       .lastIndexOf("user");
     const lastUserMessage = lastUserIndex >= 0 ? orderedMessages[lastUserIndex] : null;
-    const fileRefsForTurn = (lastUserMessage?.context_refs ?? get().composerContextRefs)
-      .filter(isFileContextRef);
+    // A persisted message owns its references, including an empty list. The
+    // current composer may belong to a different conversation by this point.
+    const turnContextRefs = lastUserMessage
+      ? lastUserMessage.context_refs ?? []
+      : get().composerContextRefs;
+    const fileRefsForTurn = turnContextRefs.filter(isFileContextRef);
     const availableFiles = [
       ...fileCitations
         .map((c) => c.path || c.title || c.source)
@@ -6144,7 +6178,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? await useSkillsStore.getState().prepareSkillsForTurn({
             conversationId,
             content: lastUserMessage.content,
-            contextRefs: lastUserMessage.context_refs ?? get().composerContextRefs,
+            contextRefs: turnContextRefs,
             toolsAvailable: allowedToolIds.includes("skill_activate"),
             permissionSnapshot: skillPermissionSnapshot ?? null,
           })
@@ -6209,7 +6243,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         const skillActivationAvailable = allowedToolIds.includes("skill_activate");
-        const contextRefs = (message.context_refs ?? get().composerContextRefs).filter(
+        const contextRefs: (ContextReference | PersistedContextReference)[] = (message.context_refs ?? []).filter(
           (ref) => ref.kind !== "skill" || explicitSkillIdSet.has(ref.id) || skillActivationAvailable,
         );
         if (contextRefs.length > 0) {
@@ -6621,75 +6655,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
 
     if (appMode === "Architect") {
-      systemInstructions.push(buildArchitectPlanToolFollowUpInstruction());
-      systemInstructions.push(
-        "In Architect mode, discuss the plan directly with the user. Inspect the selected project code when it provides useful context, and use the `question` tool for focused clarifications when important information is missing. Generate or regenerate strategy only after an explicit user request, using the plan conversation, expressed intent, plan scope, selected projects, inspected code context, and clarification answers.",
-      );
-      systemInstructions.push(
-        "In Architect mode, do not call `strategy_generate` automatically. Only call it after an explicit user request to generate/regenerate strategy (for example via the Generate Strategy button or a direct instruction in chat).",
-      );
-      systemInstructions.push(
-        "In Architect mode, the plan lifecycle remains UI-only for this iteration. Never call `plan_create`, `plan_delete`, `plan_restore`, or `plan_set_active`; ask the user to use the plan selector instead.",
-      );
-      systemInstructions.push(
-        "In Architect mode, `plan_update` may change the optional label/title alias, description, mutable draft slug, and draft-only scope metadata. Never use it to change plan status or activate a plan.",
-      );
-      systemInstructions.push(
-        "In Architect mode, if a strategy tool reports frozen-node conflicts and explicitly requests a repair retry, immediately call the same strategy tool one more time with a corrected full strategy that preserves all frozen nodes verbatim. If the tool stages a preview or blocks the mutation, stop retrying and explain that the user must review the preview.",
-      );
-      const persistedArchitectExecutionModes = Object.values(
-        getPlanExecutionModesByProjectId(
-          useAppStore.getState().planNodes,
-          useAppStore.getState().activePlanContext?.executionModesByProjectId,
-        ),
-      );
-      const architectExecutionModes = persistedArchitectExecutionModes.length > 0
-        ? persistedArchitectExecutionModes
-        : executionContext.projectMounts
-          .filter((mount) => executionContext.projectIds.includes(mount.projectId))
-          .flatMap((mount) =>
-            mount.executionMode === 'git' || mount.executionMode === 'direct'
-              ? [mount.executionMode]
-              : []
-          );
-      const hasDirectArchitectTarget = architectExecutionModes.includes('direct');
-      const hasGitArchitectTarget = architectExecutionModes.includes('git');
-      if (hasDirectArchitectTarget && hasGitArchitectTarget) {
-        systemInstructions.push(
-          "This plan mixes Git and direct targets. Propose branch slugs only for Git targets. Direct targets run in their project directory without branches, worktrees, commits, or merges. Preserve each project's execution mode when defining nodes and dependencies.",
-        );
-      } else if (hasDirectArchitectTarget) {
-        systemInstructions.push(
-          "This is a direct-only plan. Do not propose branches, worktrees, commits, merges, or other Git operations. Each node runs in its project directory and Macro finalizes the work by accepting its direct checkpoint.",
-        );
-      } else {
-        systemInstructions.push(
-          "Git workflow for plans is strict: each plan has an immutable technical id plus a logical `slug` once it is locked. In mainline mode, where the development target and main branch are the same, create feature work only and do not propose release, hotfix, or bugfix branches. Feature plans integrate on rendered `plan/*` branches. The Architect AI should propose `plan_slug` and unique per-node `featureSlug` values, not raw git branch names. Task work branches are rendered later from each project's Git workflow profile and merge into the plan integration branch.",
-        );
-      }
-      systemInstructions.push(
-        "Express sequential work with `dependencies`. Include concrete per-node `todos` for the Implement checklist; each todo should be task-local and use `pending`, `in-progress`, or `done`. Do not create a `Finalize plan` node yourself. Macro adds a synthetic finalization task after the terminal strategy nodes and finalizes each target according to its persisted execution mode.",
-      );
-      const activePlanContext = useAppStore.getState().activePlanContext;
-      if (activePlanContext) {
-        const appState = useAppStore.getState();
-        const planKind = activePlanContext.planKind || "feature";
-        const targetDisplay = getArchitectPlanTargetDisplay(activePlanContext, null, {
-          getProjectGitFlowSettings: (projectId) =>
-            appState.getProjectById(projectId)?.gitFlowSettings ?? null,
-        });
-        const typedPlanInstruction =
-          planKind === "release"
-            ? "This is a Release plan. First inspect likely version files and relevant repositories. If important version or repository scope information remains missing, use the question tool for focused clarification; do not force confirmation when the conversation and inspected code already establish it. Do not create tags or GitHub releases."
-            : planKind === "hotfix"
-              ? "This is a Hotfix plan. Ask the user to describe the production bug if they have not already done so. Then inspect from the main-branch mindset, infer affected repositories, and propose a concise hotfix slug and patch versions per repository. Use the question tool only when important scope, version, or slug information remains missing; do not impose a confirmation step before strategy generation."
-              : planKind === "bugfix"
-                ? "This is a Bugfix plan. Ask the user to describe the bug if they have not already done so. Then inspect from the development-branch mindset, infer affected repositories, and propose a concise bugfix slug. Use the question tool only when important scope or slug information remains missing; do not impose a confirmation step before strategy generation."
-                : "This is a Feature plan. Keep the existing lightweight planning flow; do not force an initial questionnaire unless a clarification is blocking.";
-        systemInstructions.push(
-          `[Active Plan] id="${activePlanContext.id}", kind="${planKind}", slug="${activePlanContext.slug || activePlanContext.id}", title="${activePlanContext.title}", label="${activePlanContext.label || "none"}", description="${activePlanContext.description || "none"}", status="${activePlanContext.status}", storageTargetBranch="${activePlanContext.targetBranch}", effectiveTargetBranch="${targetDisplay.effectiveTargetBranch || targetDisplay.targetBranch}", targetBranchesByProjectId=${JSON.stringify(targetDisplay.targetBranchesByProjectId)}. ${typedPlanInstruction} Use plan_update.label (or title as legacy alias) for the optional display label. For Release/Hotfix/Bugfix, plan_update may also update project_ids, context_project_ids, and git_flow metadata while the plan is still a draft. Only update plan slug through \`plan_update.slug\` or \`strategy_generate.plan_slug\` while the plan is still a mutable draft.`,
-        );
-      }
+      const activePlanContext = architectPlanOverride === undefined ? appState.activePlanContext : architectPlanOverride;
+      const nodes = architectPlanOverride === undefined ? appState.planNodes : architectPlanOverride?.nodes ?? [];
+      const { buildArchitectPlanInstructions } = await import("./chat/chatArchitectPlanPrompt");
+      systemInstructions.push(...buildArchitectPlanInstructions(activePlanContext, nodes, executionContext, {
+        getProjectGitFlowSettings: projectId => appState.getProjectById(projectId)?.gitFlowSettings ?? null,
+      }));
     }
 
     const systemMessage =
@@ -7312,6 +7283,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     if (conversationIds.length === 0) {
       return;
     }
+    queueRuntime?.remove(conversationIds);
     discardComposerDraftsForConversationIds(conversationIds);
     clearUnsavedAssistantResponsesForConversations(conversationIds);
     clearPendingArchitectConversationsForConversationIds(conversationIds);
@@ -8348,34 +8320,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const drainQueuedSubmissions = async (conversationId: string): Promise<void> => {
-    if (drainingQueuedConversationIds.has(conversationId)) return;
-    if (hasUnsavedAssistantResponse(conversationId)) return;
-    const runtime = getConversationRuntimeSnapshot(
-      get().conversationRuntimeById,
-      conversationId,
-    );
-    if (isConversationRuntimeActive(runtime)) return;
-    const queue = queuedSubmissionsByConversationId.get(conversationId);
-    const next = queue?.shift();
-    if (!next) {
-      queuedSubmissionsByConversationId.delete(conversationId);
-      return;
-    }
-    if (queue?.length === 0) queuedSubmissionsByConversationId.delete(conversationId);
-    drainingQueuedConversationIds.add(conversationId);
-    let shouldContinue = true;
-    try {
-      await get().sendMessage(next);
-    } catch {
-      shouldContinue = false;
-    } finally {
-      drainingQueuedConversationIds.delete(conversationId);
-      if (shouldContinue) {
-        queueMicrotask(() => void drainQueuedSubmissions(conversationId));
-      }
-    }
+  const captureSendSnapshot = (conversationId: string): ChatSendSnapshot => {
+    // Capture UI selections synchronously before the use case can suspend.
+    const app = useAppStore.getState();
+    const provider = useProviderStore.getState();
+    const chat = get();
+    const mode = app.mode;
+    return {
+      mode,
+      agentType: mode === "Implement" ? app.agentType : null,
+      architectPlan: mode === "Architect" && app.activeArchitectPlanId
+        ? { planId: app.activeArchitectPlanId, targetBranch: resolveTargetBranch(app.activePlanContext?.targetBranch) }
+        : undefined,
+      conversationTaskId: chat.conversations.find((conversation) => conversation.id === conversationId)?.task_id ?? null,
+      selectedTaskId: mode === "Implement" ? (app.selectedTaskId ?? "") : "",
+      executionContext: resolveConversationExecutionContext(conversationId),
+      composerContextRefs: persistableContextRefs(chat.composerContextRefs),
+      composerRevision: composerContextRefsRevision,
+      provider: {
+        selectedProviderId: provider.selectedProviderId,
+        selectedModelId: provider.selectedModelId,
+        selectedReasoningEffort: provider.selectedReasoningEffort,
+        isLoading: provider.isLoading,
+        providerConfigs: provider.providerConfigs.map((config) => ({ ...config })),
+      },
+    };
   };
+
+  const revalidateQueuedExecutionContext = async (entry: QueuedSubmission) => {
+    const { revalidateQueuedExecutionContext: revalidate } = await import("./chat/chatQueuedSubmissionContext");
+    return revalidate(entry, {
+      app: () => useAppStore.getState(), tasks: () => useTaskStore.getState(),
+      conversations: () => get().conversations, getPlan: getArchitectPlan,
+    });
+  };
+
+  const drainQueuedSubmissions = (conversationId: string): Promise<void> => queueRuntime
+    ? queueRuntime.drain(conversationId)
+    : getQueueRuntime().then(queue => queue.drain(conversationId));
 
   const buildUserMessageForSend = async (params: {
     conversationId: string;
@@ -8414,12 +8396,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
     }
   };
 
-  const prepareAssistantStreamLaunch = (params: PrepareAssistantStreamParams) => {
+  const prepareAssistantStreamLaunch = async (params: PrepareAssistantStreamParams) => {
     const capturedRuntime = turnRuntime.read(params.conversationId);
     const isCurrent = () => (capturedRuntime.phase === "preparing" || capturedRuntime.phase === "overflow_recovery") &&
       turnRuntime.read(params.conversationId) === capturedRuntime &&
       !capturedRuntime.abortController?.signal.aborted && !deletedConversationIds.has(params.conversationId);
-    return prepareChatRequest(params, {
+    const capturedPlan = params.turnCapabilities?.architectPlanContext ?? (params.architectPlanAtSend
+      ? await getArchitectPlan(params.architectPlanAtSend.targetBranch, params.architectPlanAtSend.planId)
+      : undefined);
+    if (params.architectPlanAtSend && !capturedPlan) throw buildSendError(i18n.t(
+      'chat.queuePlanUnavailable', 'The original plan is unavailable for this queued message.',
+    ));
+    const launch = await prepareChatRequest(params, {
       isCurrent,
       tasks: { find: (id) => useTaskStore.getState().getTaskById(id) },
       policy: {
@@ -8441,7 +8429,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
         allowedForMode: getAllowedToolIdsForCurrentMode,
         filterForImplementTask: filterToolIdsForImplementTask,
-        filterForArchitectPlan: filterToolIdsForArchitectPlan,
+        filterForArchitectPlan: (ids, context) => filterToolIdsForArchitectPlan(ids, context, capturedPlan),
         resolveScopedMcp: resolveScopedMcpRuntime,
         reportUnavailableMcpServers: (failures, description) => {
           devLogger.warn("Scoped MCP servers are unavailable", { failures });
@@ -8476,7 +8464,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
       context: {
         executionContext: resolveConversationExecutionContext,
-        prepareMessages: prepareMessagesForRequest,
+        prepareMessages: (...args) => prepareMessagesForRequest(...args, capturedPlan),
         citations: (id) => useCitationsStore.getState().getConversationContextCitations(id),
         fileRefPath: getFileRefPath,
       },
@@ -8496,7 +8484,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       },
       persistence: { providerInputItems: persistProviderInputItemsForMessage },
     });
-
+    return { ...launch, architectPlanContext: capturedPlan };
   };
 
   const removeEmptyAssistantPlaceholderFromState = (
@@ -9558,7 +9546,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       status: id => get().conversationCompactionStatusById[id] ?? null,
       request: turn => prepareMessagesForRequest(turn.conversationId, turn.allowedToolIds,
         turn.internalAgentProfile, turn.modeAtSend, turn.agentTypeAtSend, undefined, undefined,
-        turn.executionContext, turn.riskLevel),
+        turn.executionContext, turn.riskLevel, turn.architectPlanContext),
     },
     projection: {
       markConversationCompactionStarted, clearLatestRunningSessionCompactionEvent,
@@ -11091,6 +11079,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
       lastError: replayRecoveryError ?? null,
       abortController: null,
     });
+    const restoredQueue = await getQueueRuntime();
+    lifecycle?.assertActive();
+    restoredQueue.restore(conversations.map(conversation => conversation.id));
     scheduleImplementAwaitingResponseReconciliation();
   };
 
@@ -13381,13 +13372,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
         throw buildSendError("The conversation is no longer running.");
       }
       if (behavior === "queue") {
-        const queue = queuedSubmissionsByConversationId.get(payload.conversationId) ?? [];
-        queue.push({
-          ...payload,
-          images: payload.images ? [...payload.images] : undefined,
-          contextRefs: persistableContextRefs(get().composerContextRefs),
+        if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
+        const capturedInput = structuredClone(payload);
+        const capturedSnapshot = structuredClone(captureSendSnapshot(payload.conversationId));
+        const queue = await getQueueRuntime();
+        const entry = queue.capture(createConversationTurnId(), capturedInput, capturedSnapshot);
+        if (entry.intent.mode === 'Architect' && !entry.intent.architectPlan) {
+          throw buildSendError('Select a plan before sending an Architect message.');
+        }
+        const config = await loadScopedTurnConfiguration({
+          projectIds: entry.intent.executionContext.projectIds,
+          focusProjectId: entry.intent.executionContext.focusedProjectId,
+          mode: entry.intent.mode,
         });
-        queuedSubmissionsByConversationId.set(payload.conversationId, queue);
+        const scoped = resolveScopedModelSelection(config,
+          scopedModelPreferenceKeys(entry.intent.mode, entry.intent.agentType, entry.input.internalAgentProfile));
+        if (scoped) entry.intent.provider = {
+          selectedProviderId: scoped.providerId, selectedModelId: scoped.modelId,
+          selectedReasoningEffort: scoped.reasoningEffort ?? null,
+        };
+        if (isAppShutdownGateActive() || deletedConversationIds.has(payload.conversationId) ||
+          useConversationArchiveStore.getState().archivedConversationIds.has(payload.conversationId)) {
+          throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
+        }
+        queue.accept(entry);
         return "queued";
       }
 
@@ -13433,46 +13441,41 @@ export const useChatStore = create<ChatStore>((set, get) => {
       return "steered";
     },
 
-    sendMessage: async (payload) => {
+    sendMessage: async (payload, queuedSubmission) => {
       if (isAppShutdownGateActive()) {
         throw new Error(i18n.t('shutdown.closing', 'Macro is closing.'));
       }
-      // Capture UI selections synchronously before the use case can suspend.
-      const app = useAppStore.getState();
+      const queuedExecutionContext = queuedSubmission
+        ? await revalidateQueuedExecutionContext(queuedSubmission) : undefined;
       const provider = useProviderStore.getState();
-      const chat = get();
-      const mode = app.mode;
-      const snapshot: ChatSendSnapshot = {
-        mode,
-        agentType: mode === "Implement" ? app.agentType : null,
-        architectPlan: mode === "Architect" && app.activeArchitectPlanId
-          ? { planId: app.activeArchitectPlanId, targetBranch: resolveTargetBranch(app.activePlanContext?.targetBranch) }
-          : undefined,
-        conversationTaskId: chat.conversations.find((conversation) => conversation.id === payload.conversationId)?.task_id ?? null,
-        selectedTaskId: mode === "Implement" ? (app.selectedTaskId ?? "") : "",
-        executionContext: resolveConversationExecutionContext(payload.conversationId),
-        composerContextRefs: persistableContextRefs(chat.composerContextRefs),
-        composerRevision: composerContextRefsRevision,
-        provider: {
-          selectedProviderId: provider.selectedProviderId,
-          selectedModelId: provider.selectedModelId,
-          selectedReasoningEffort: provider.selectedReasoningEffort,
-          isLoading: provider.isLoading,
-          providerConfigs: provider.providerConfigs.map((config) => ({ ...config })),
-        },
-      };
-      return sendChatMessage(payload, snapshot, {
+      const snapshot: ChatSendSnapshot = queuedSubmission
+        ? { ...queuedSubmission.intent, composerRevision: -1,
+            executionContext: queuedExecutionContext!,
+            modelSelectionCaptured: true,
+            provider: { ...queuedSubmission.intent.provider,
+              isLoading: provider.isLoading,
+              providerConfigs: provider.providerConfigs.map(config => ({ ...config })) } }
+        : captureSendSnapshot(payload.conversationId);
+      if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
+      return sendChatMessage({ ...payload, submissionTurnId: queuedSubmission?.id }, snapshot, {
         owner: turnRuntime,
         messages: {
           persistence: chatPersistenceAdapters,
+          onUserPersisted: queuedSubmission ? message => queueRuntime!.acknowledge(queuedSubmission, message) : undefined,
           ensureLoaded: ensureMessagesLoadedForConversation,
           list: getOrderedConversationMessages,
           hasInterruptedApproval: (id) => get().pendingToolApprovalByConversationId[id]?.recoveryState === "interrupted",
           clearApprovalRecovery: (id) => persistToolApprovalRecovery(id, null),
         },
         preparation: {
-          assertCanSend: assertConversationRuntimeAvailableForSend,
-          isDeleted: (id) => deletedConversationIds.has(id),
+          assertCanSend: (id) => {
+            if (queuedSubmission && useConversationArchiveStore.getState().archivedConversationIds.has(id)) {
+              throw buildSendError(i18n.t('chat.queueUnavailable', 'This conversation can no longer accept queued messages.'));
+            }
+            assertConversationRuntimeAvailableForSend(id);
+          },
+          isDeleted: (id) => deletedConversationIds.has(id) || Boolean(queuedSubmission &&
+            useConversationArchiveStore.getState().archivedConversationIds.has(id)),
           createSessionId: createConversationSessionId,
           createTurnId: createConversationTurnId,
           hasPendingArchitectConversation: (id) => pendingArchitectConversationDetailsById.has(id),
@@ -13506,7 +13509,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           failLaunch: failStandaloneTaskLaunch,
         },
         projection: {
-          persistSelection: persistSelectionForContext,
+          persistSelection: (mode, id) => {
+            if (!queuedSubmission) persistSelectionForContext(mode, id);
+          },
           publishUser: (message, context) => {
             get().addMessage(message);
             if (context.images?.length) get().setMessageImages(message.id, context.images);
@@ -13546,6 +13551,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
           }),
         },
       });
+    },
+
+    queuedSubmissionRecoveryByConversationId: {},
+
+    retryQueuedSubmissions: async (conversationId) => {
+      const queue = await getQueueRuntime();
+      await queue.retry(conversationId);
     },
 
     stopConversationStream: (conversationId) => {
@@ -14336,6 +14348,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const composerDraftsByContextKey = restorePersistedComposerDrafts(
           [],
           EMPTY_STRING_SET,
+          false,
         );
         set({
           conversations: [],
