@@ -3115,6 +3115,9 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           activeComposerDraftContextKeyRef.current === submittedContextKey &&
           composerDraftMatchesSavedDraft(latestComposerDraftRef.current, submittedDraft);
         if (composerStillContainsSubmittedDraft) {
+          // The saved draft may lag behind the editor's 250 ms persistence timer.
+          // Acceptance consumes this context even when storage still holds an older edit.
+          clearComposerDraftForContext(submittedContextKey);
           composerEditorRef.current?.clear();
           clearComposerContextRefs();
           setComposerImages([]);

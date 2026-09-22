@@ -18,6 +18,11 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import {
+  COMPOSER_DRAFTS_STORAGE_KEY,
+  loadComposerDraftsFromStorage,
+  saveComposerDraftsToStorage,
+} from '../../stores/chat/chatLocalSessionState';
 import { registerArchitectScenarios } from './__tests__/architect.scenarios';
 import { registerCompactionScenarios } from './__tests__/compaction.scenarios';
 import { registerImplementScenarios } from './__tests__/implement.scenarios';
@@ -1381,6 +1386,68 @@ describe('ChatZone', () => {
 
     expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
   });
+
+  it.each([false, true])(
+    'restores only unsent edits after active-turn acceptance and immediate reload (edited: %s)',
+    async (edited) => {
+      const acceptanceDeferred = createDeferred<'queued'>();
+      const originalSave = chatState.saveComposerDraftForContext;
+      const originalClear = chatState.clearComposerDraftForContext;
+      const persistTextDrafts = () => {
+        expect(saveComposerDraftsToStorage(Object.fromEntries(
+          Object.entries(composerDraftsByContextKey).map(([key, draft]) => [key, {
+            text: draft.text, images: [], contextRefs: [],
+          }]),
+        ))).toBe(true);
+      };
+      window.localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
+      chatState = {
+        ...chatState,
+        isStreaming: true,
+        submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+        saveComposerDraftForContext: mock((key: string, draft: ComposerDraft) => {
+          originalSave(key, draft);
+          persistTextDrafts();
+        }),
+        clearComposerDraftForContext: mock((key: string) => {
+          originalClear(key);
+          persistTextDrafts();
+        }),
+      };
+      chatState.saveComposerDraftForContext('conversation:conv-1', {
+        text: 'Version antérieure enregistrée.', images: [], contextRefs: [],
+      });
+      chatState.saveComposerDraftForContext('conversation:conv-2', {
+        text: 'Autre conversation intacte.', images: [], contextRefs: [],
+      });
+      await act(async () => { requireRoot().render(<ChatZone />); });
+      await setComposerText('Message accepté dans la file.');
+      await clickSendButton();
+      if (edited) await setComposerText('Nouvelle édition non envoyée.');
+      await act(async () => {
+        acceptanceDeferred.resolve('queued');
+        await acceptanceDeferred.promise;
+      });
+      expect(getComposerEditor().value).toBe(edited ? 'Nouvelle édition non envoyée.' : '');
+      // Observe durable state before pagehide or the 250 ms draft timer can repair it.
+      if (!edited) {
+        expect(loadComposerDraftsFromStorage()['conversation:conv-1']).toBeUndefined();
+      }
+      await act(async () => {
+        window.dispatchEvent(new window.Event('pagehide'));
+        requireRoot().unmount();
+      });
+      const restored = loadComposerDraftsFromStorage();
+      composerDraftsByContextKey = Object.fromEntries(Object.entries(restored).map(
+        ([key, draft]) => [key, { text: draft.text, images: [], contextRefs: [] }],
+      ));
+      root = createRoot(requireContainer());
+      await act(async () => { requireRoot().render(<ChatZone />); });
+      expect(getComposerEditor().value).toBe(edited ? 'Nouvelle édition non envoyée.' : '');
+      expect(restored['conversation:conv-2']?.text).toBe('Autre conversation intacte.');
+      window.localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    },
+  );
 
   it('keeps a newer saved draft after deferred active-turn acceptance', async () => {
     const acceptanceDeferred = createDeferred<'queued'>();
