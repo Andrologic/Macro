@@ -41,6 +41,7 @@ export interface BridgeSendRequest {
   reasoning_effort?: string | null;
   messages: BridgeChatMessage[];
   allowed_tool_ids?: string[];
+  tools?: unknown[];
   workspace_path?: string | null;
   default_workspace_path?: string | null;
   project_mounts?: BridgeProjectMount[];

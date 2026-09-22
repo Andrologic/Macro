@@ -7,6 +7,9 @@ import type { ToolInvocation, ToolResultObject } from '@github/copilot-sdk';
 import nativeToolResults from '../../src-tauri/src/ai/copilot/fixtures/tool-results.json';
 import { BridgeControlChannel } from './controlChannel';
 import type { RelayToolResult } from './protocol';
+import { requireMacroToolRegistryEntry, toFunctionToolShape } from '../../src/shared/macroToolRegistry';
+
+const suppliedTools = (ids: string[]) => ids.map(id => toFunctionToolShape(requireMacroToolRegistryEntry(id)));
 
 process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT = '1';
 
@@ -42,6 +45,7 @@ describe('copilot bridge tool registration', () => {
     input.write('{}\n');
     const tools = __testables.buildMacroTools({
       request_id: ' request:opaque ', model_id: 'synthetic', messages: [],
+      tools: suppliedTools(['read_file']),
       allowed_tool_ids: ['read_file'],
     }, { controlChannel: channel, recordRelayResult: recorded }) as Array<{
       name: string;
@@ -152,6 +156,7 @@ describe('copilot bridge tool registration', () => {
       request_id: 'req-1',
       model_id: 'gpt-5',
       messages: [],
+      tools: suppliedTools(['web_fetch', 'git_status']),
       allowed_tool_ids: ['web_fetch', 'git_status'],
     }) as Array<{ name: string; options: { overridesBuiltInTool?: true } }>;
 
@@ -174,6 +179,7 @@ describe('copilot bridge tool registration', () => {
         request_id: 'req-web-fetch',
         model_id: 'gpt-5',
         messages: [],
+        tools: suppliedTools(['web_fetch']),
         allowed_tool_ids: ['web_fetch'],
       }) as Array<{
         name: string;
@@ -228,6 +234,7 @@ describe('copilot bridge tool registration', () => {
           request_id: 'req-terminal',
           model_id: 'gpt-5',
           messages: [],
+          tools: suppliedTools([toolId]),
           allowed_tool_ids: [toolId],
         },
         { controlChannel: { requestTool } } as never,
@@ -270,6 +277,7 @@ describe('copilot bridge tool registration', () => {
         request_id: 'req-read-file',
         model_id: 'gpt-5',
         messages: [],
+        tools: suppliedTools(['read_file']),
         allowed_tool_ids: ['read_file'],
       },
       { controlChannel: { requestTool } } as never,
@@ -343,6 +351,7 @@ describe('copilot bridge tool registration', () => {
             is_read_only: false,
           },
         ],
+        tools: suppliedTools(relayedToolIds),
         allowed_tool_ids: relayedToolIds,
       },
       { controlChannel: { requestTool } } as never,
@@ -399,6 +408,7 @@ describe('copilot bridge tool registration', () => {
         model_id: 'gpt-5',
         messages: [],
         default_workspace_path: '/tmp/macro-source',
+        tools: suppliedTools(['git_status']),
         allowed_tool_ids: ['git_status'],
       }) as Array<{
         name: string;

@@ -1478,13 +1478,31 @@ const buildMacroTools = (
   const context = buildWorkspaceContext(request);
   const allowedToolIds = filterCopilotSupportedToolIds(request.allowed_tool_ids || []);
 
-  return allowedToolIds
+  // The frontend catalogue already applies availability and schema restrictions.
+  // An allowlist entry alone must never recreate a tool removed from that catalogue.
+  const suppliedTools = new Map<string, JsonRecord>();
+  for (const tool of request.tools ?? []) {
+    if (!isToolArgumentObject(tool) || tool.type !== 'function' || !isToolArgumentObject(tool.function)) continue;
+    const definition = tool.function;
+    if (typeof definition.name !== 'string' || !allowedToolIds.includes(definition.name)) continue;
+    if (suppliedTools.has(definition.name)) {
+      throw new BridgeError('duplicate_macro_tool', `Duplicate Macro tool ${definition.name}.`);
+    }
+    if (!isToolArgumentObject(definition.parameters)) {
+      throw new BridgeError('invalid_macro_schema', `Invalid Macro schema for ${definition.name}.`);
+    }
+    suppliedTools.set(definition.name, definition);
+  }
+
+  return Array.from(new Set(allowedToolIds))
+    .filter((toolId) => suppliedTools.has(toolId))
     .map((toolId) => getMacroToolRegistryEntry(toolId))
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
     .map((entry) =>
       defineTool(entry.id, {
-        description: entry.description,
-        parameters: entry.parameters,
+        description: typeof suppliedTools.get(entry.id)!.description === 'string'
+          ? suppliedTools.get(entry.id)!.description as string : entry.description,
+        parameters: suppliedTools.get(entry.id)!.parameters as JsonRecord,
         ...(entry.copilot?.overridesBuiltInTool === true
           ? { overridesBuiltInTool: true }
           : {}),
@@ -1511,6 +1529,28 @@ const buildMacroTools = (
         },
       })
     );
+};
+
+const buildSessionToolConfig = (
+  request: BridgeSendRequest,
+  options?: Parameters<typeof buildMacroTools>[1],
+): Pick<SessionConfig, 'tools' | 'availableTools' | 'onPermissionRequest'> => {
+  const tools = buildMacroTools(request, options);
+  const allowedToolNames = new Set(tools.map((tool) => tool.name));
+  return {
+    tools,
+    availableTools: Array.from(allowedToolNames),
+    onPermissionRequest: (permissionRequest: PermissionRequest): PermissionRequestResult => {
+      if (
+        permissionRequest.kind === 'custom-tool' &&
+        typeof permissionRequest.toolName === 'string' &&
+        allowedToolNames.has(permissionRequest.toolName)
+      ) {
+        return { kind: 'approved' };
+      }
+      return { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
+    },
+  };
 };
 
 const handleHealth = async (): Promise<void> => {
@@ -1617,11 +1657,10 @@ const handleSend = async (): Promise<void> => {
         relayState.interruptResult = result;
       }
     };
-    const tools = buildMacroTools(request, {
+    const toolConfig = buildSessionToolConfig(request, {
       controlChannel,
       recordRelayResult,
     });
-    const allowedToolNames = new Set(tools.map((tool) => tool.name));
 
     await withClient(async (client) => {
       const auth = await client.getAuthStatus();
@@ -1638,19 +1677,7 @@ const handleSend = async (): Promise<void> => {
           undefined,
         streaming: true,
         systemMessage: system ? { mode: 'append', content: system } : undefined,
-        tools,
-        availableTools: Array.from(allowedToolNames),
-        onPermissionRequest: (permissionRequest: PermissionRequest): PermissionRequestResult => {
-          if (
-            permissionRequest.kind === 'custom-tool' &&
-            typeof permissionRequest.toolName === 'string' &&
-            allowedToolNames.has(permissionRequest.toolName)
-          ) {
-            return { kind: 'approved' };
-          }
-
-          return { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
-        },
+        ...toolConfig,
       });
 
       try {
@@ -1720,6 +1747,7 @@ const main = async (): Promise<void> => {
 export const __testables = {
   parseSdkReasoningEffort,
   buildMacroTools,
+  buildSessionToolConfig,
   closeCopilotThinkingBlock,
   classifyCopilotWarningCompletionReason,
   createCopilotSessionEventState,
