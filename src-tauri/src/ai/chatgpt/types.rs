@@ -36,7 +36,17 @@ pub use crate::ai::types::*;
 #[derive(Debug, Deserialize)]
 pub(super) struct ModelsCacheFile {
     pub(super) client_version: Option<String>,
-    pub(super) models: Vec<ModelsCacheEntry>,
+}
+
+// Macro owns this provenance record. Codex cache timestamps or private account hashes
+// cannot establish which authenticated session collected our persisted catalog.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct VerifiedModelsCatalog {
+    pub(super) account_id: String,
+    pub(super) base_url: String,
+    pub(super) plan_type: Option<String>,
+    pub(super) collected_at: DateTime<Utc>,
+    pub(super) model_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
