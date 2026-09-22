@@ -1036,6 +1036,28 @@ Les artefacts de relais de tâches sont séparés du dossier `tasks/<task-id>/`,
 
 `artifacts/index.json` contient l'index durable des artefacts et les validations metadata par couple `(artifactId, taskId)`. Une validation d'artefact ne stage aucun fichier applicatif ; elle sert uniquement à marquer la revue de l'artefact pour la tâche consommatrice courante.
 
+Les écritures et validations d'artefacts utilisent le journal SQLite des mutations
+Plans, la même file de mutations par branche et le même verrou de workspace que
+la reprise Plans. L'intention `artifacts` conserve les contenus avant et après
+pour chaque réplique, y compris l'index, le manifeste existant et les contenus
+inchangés nécessaires à une validation. Elle précède toute écriture de fichier.
+Avant le marqueur durable `files_applied`, une erreur ou une réouverture restaure
+l'état antérieur. Après ce marqueur, la reprise vérifie l'état final et termine
+le signalement au coordinateur metadata, sans annuler l'opération. Le journal
+reste présent jusqu'au succès de cette reprise.
+
+Chaque écriture ou suppression réutilise la révision native observée. La reprise
+refuse un fichier dont le contenu diffère à la fois de l'état initial et de
+l'état attendu ; elle conserve l'intention pour ne pas écraser une modification
+externe. Une intention d'artefacts invalide bloque aussi la reprise. Les lectures
+d'artefacts vérifient les chemins, les empreintes de contenu, le résumé du
+manifeste lorsqu'il existe et l'accord des répliques avant d'exposer une
+validation ou d'autoriser la fin d'une tâche. Un ancien état partiel sans journal
+est donc signalé, sans inventer le contenu antérieur manquant. Ces garanties
+reposent sur les écritures atomiques natives et le journal SQLite existants ;
+elles n'ajoutent pas de verrou distribué entre processus.
+
+
 ### 11.2 Raison de cette structure
 
 Cette structure sert à :

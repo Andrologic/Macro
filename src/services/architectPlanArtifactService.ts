@@ -18,7 +18,15 @@ import {
 import type { CatalogedImplementTask } from './implementTaskCatalog';
 import { getTaskBusinessId, resolveTaskReference } from './durableIdentity';
 import { isPlanFinalizationTask } from './implementTaskCatalog';
-import { recordMacroMetadataMutation } from './macroMetadataCoordinator';
+import {
+  enqueueArchitectPlanMutation,
+  recoverArchitectPlanReplicaMutationsUnlocked,
+  resolveReplicaWorkspaceKey,
+  withReplicaTransactionLock,
+} from './architectPlanMutationPersistence';
+import { resolveArchitectPlanServiceDependencies } from './architectPlanReadContext';
+import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
+import { persistArtifactMutation, readArtifactFileSnapshot, type ArtifactFileMutation } from './architectPlanArtifactPersistence';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
@@ -34,7 +42,7 @@ const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
 type ArtifactWorkspaceTarget = {
   workspacePath: string;
-  workspaceScope: tauriIpc.WorkspaceScope;
+  workspaceScope: 'metadata' | 'direct';
 };
 
 export class PlanTaskArtifactIndexReadError extends Error {
@@ -44,29 +52,17 @@ export class PlanTaskArtifactIndexReadError extends Error {
   }
 }
 
-const artifactMutationTails = new Map<string, Promise<void>>();
+const serializeArtifactMutation = enqueueArchitectPlanMutation;
 
-const serializeArtifactMutation = async <T>(
-  branchName: string,
-  planId: string,
-  operation: () => Promise<T>,
-): Promise<T> => {
-  const key = `${branchName}\u0000${planId}`;
-  const previous = artifactMutationTails.get(key) || Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
+const withArtifactRecovery = async <T>(operation: (workspaceKey: string) => Promise<T>): Promise<T> => {
+  if (!tauriIpc.isTauriAvailable()) return operation('');
+  const deps = resolveArchitectPlanServiceDependencies({ getAppState: () => useAppStore.getState() });
+  const registry = buildValidProjectRegistrySnapshot(useAppStore.getState());
+  const workspaceKey = await resolveReplicaWorkspaceKey(deps, registry);
+  return withReplicaTransactionLock(workspaceKey, async () => {
+    await recoverArchitectPlanReplicaMutationsUnlocked(deps, registry, workspaceKey);
+    return operation(workspaceKey);
   });
-  artifactMutationTails.set(key, current);
-  await previous.catch(() => undefined);
-  try {
-    return await operation();
-  } finally {
-    release();
-    if (artifactMutationTails.get(key) === current) {
-      artifactMutationTails.delete(key);
-    }
-  }
 };
 
 export interface PlanTaskArtifactIndex {
@@ -401,21 +397,6 @@ const readTextAtWorkspace = async (
   }
 };
 
-const writeTextAtWorkspace = async (
-  target: ArtifactWorkspaceTarget,
-  path: string,
-  content: string,
-): Promise<void> => {
-  await tauriIpc.fsWriteFile({
-    path,
-    content,
-    createDirs: true,
-    allowOutsideWorkspace: false,
-    workspaceScope: target.workspaceScope,
-    workspacePath: target.workspacePath,
-  });
-};
-
 const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
   count: index.artifacts.length,
   indexHash: hashString(stableSerialize(index.artifacts.map((artifact) => ({
@@ -441,50 +422,6 @@ const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
   updatedAt: index.updatedAt,
 });
 
-const updateArtifactManifestAtWorkspace = async (params: {
-  target: ArtifactWorkspaceTarget;
-  branchName: string;
-  planId: string;
-  index: PlanTaskArtifactIndex;
-}): Promise<void> => {
-  const manifestPath = getPlanManifestPath(params.branchName, params.planId);
-  const exists = await tauriIpc.fsExists(manifestPath, {
-    workspaceScope: params.target.workspaceScope,
-    workspacePath: params.target.workspacePath,
-  });
-  if (!exists) {
-    return;
-  }
-  let existing: Record<string, unknown>;
-  try {
-    const file = await tauriIpc.fsReadFileWithOptions({
-      path: manifestPath,
-      allowOutsideWorkspace: false,
-      workspaceScope: params.target.workspaceScope,
-      workspacePath: params.target.workspacePath,
-    });
-    const parsed: unknown = JSON.parse(file.content);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Manifest has an invalid schema.');
-    }
-    existing = parsed as Record<string, unknown>;
-  } catch (error) {
-    throw new PlanTaskArtifactIndexReadError(params.planId, manifestPath, error);
-  }
-  await writeTextAtWorkspace(
-    params.target,
-    manifestPath,
-    `${JSON.stringify(
-      {
-        ...existing,
-        artifacts: buildArtifactManifestSummary(params.index),
-      },
-      null,
-      2,
-    )}\n`,
-  );
-};
-
 export const readPlanTaskArtifactIndex = async (params: {
   branchName: string;
   planId: string;
@@ -494,7 +431,7 @@ export const readPlanTaskArtifactIndex = async (params: {
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
-}): Promise<PlanTaskArtifactIndex> => {
+}): Promise<PlanTaskArtifactIndex> => withArtifactRecovery(async () => {
   if (!tauriIpc.isTauriAvailable()) {
     return emptyArtifactIndex(params.planId);
   }
@@ -511,7 +448,13 @@ export const readPlanTaskArtifactIndex = async (params: {
     } catch (error) {
       throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, error);
     }
-    if (!indexExists) continue;
+    if (!indexExists) {
+      const manifest = await readArtifactFileSnapshot({ ...target, path: getPlanManifestPath(params.branchName, params.planId) });
+      if (manifest.content !== null && JSON.parse(manifest.content)?.artifacts) {
+        throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, new Error('Artifact index is missing from a manifested replica.'));
+      }
+      continue;
+    }
     try {
       const file = await tauriIpc.fsReadFileWithOptions({
         path: indexPath,
@@ -530,15 +473,41 @@ export const readPlanTaskArtifactIndex = async (params: {
       ) {
         throw new Error('Artifact index has an invalid schema.');
       }
-      validIndexes.push(normalizeArtifactIndex(
-        params.planId,
-        parsed as Partial<PlanTaskArtifactIndex>,
-      ));
+      const raw = parsed as PlanTaskArtifactIndex;
+      const index = normalizeArtifactIndex(params.planId, raw);
+      if (raw.schemaVersion !== 1 || raw.planId !== params.planId || index.artifacts.length !== raw.artifacts.length ||
+        raw.artifacts.some((artifact) => artifact.planId !== params.planId ||
+          artifact.id !== sanitizeId(artifact.id) || artifact.taskId !== sanitizeId(artifact.taskId) ||
+          !['markdown', 'json', 'text'].includes(artifact.contentType)) ||
+        new Set(index.artifacts.map((artifact) => artifact.id)).size !== index.artifacts.length) {
+        throw new Error('Invalid artifact entry or schema.');
+      }
+      for (const artifact of index.artifacts) {
+        if (artifact.path.split('/').some((part) => part === '.' || part === '..') ||
+          artifact.path !== getPlanArtifactContentPath(params.branchName, params.planId, artifact.taskId, artifact.id, artifact.contentType)) {
+          throw new Error(`Invalid artifact content path: ${artifact.id}`);
+        }
+        const content = await readArtifactFileSnapshot({ ...target, path: artifact.path });
+        if (content.content === null || hashString(content.content) !== artifact.contentHash) {
+          throw new Error(`Artifact content does not match its index: ${artifact.id}`);
+        }
+      }
+      const manifest = await readArtifactFileSnapshot({ ...target, path: getPlanManifestPath(params.branchName, params.planId) });
+      if (manifest.content !== null) {
+        const summary = JSON.parse(manifest.content)?.artifacts;
+        if (stableSerialize(summary) !== stableSerialize(buildArtifactManifestSummary(index))) {
+          throw new Error('Artifact manifest does not match its index.');
+        }
+      }
+      validIndexes.push(index);
     } catch (error) {
       throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, error);
     }
   }
   if (validIndexes.length === 0) return emptyArtifactIndex(params.planId);
+  if (validIndexes.length !== workspaceTargets.length) {
+    throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, new Error('Artifact index replica is missing.'));
+  }
   const canonical = validIndexes[0]!;
   const canonicalSerialized = stableSerialize(canonical);
   if (validIndexes.some((index) => stableSerialize(index) !== canonicalSerialized)) {
@@ -549,7 +518,7 @@ export const readPlanTaskArtifactIndex = async (params: {
     );
   }
   return canonical;
-};
+});
 
 const writePlanTaskArtifactIndex = async (params: {
   branchName: string;
@@ -561,82 +530,56 @@ const writePlanTaskArtifactIndex = async (params: {
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   index: PlanTaskArtifactIndex;
+  previousIndex: PlanTaskArtifactIndex;
   contentWrites?: Array<{ path: string; content: string }>;
-}): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable()) {
-    return;
-  }
-  const workspaceTargets = await resolveWorkspacePaths({ ...params, allowFallbackPaths: false });
-  if (workspaceTargets.length === 0) {
-    return;
-  }
-  const indexPath = getPlanArtifactIndexPath(params.branchName, params.planId);
-  const indexContent = `${JSON.stringify(params.index, null, 2)}\n`;
-  const paths = [
-    ...(params.contentWrites || []).map((write) => write.path),
-    indexPath,
-    getPlanManifestPath(params.branchName, params.planId),
-  ];
-  const snapshots = await Promise.all(workspaceTargets.map(async (target) => ({
-    target,
-    files: await Promise.all(paths.map(async (path) => ({
-      path,
-      exists: await tauriIpc.fsExists(path, {
-        workspaceScope: target.workspaceScope,
-        workspacePath: target.workspacePath,
-      }),
-      content: await readTextAtWorkspace(target, path),
-    }))),
-  })));
-  try {
-    for (const target of workspaceTargets) {
-      for (const write of params.contentWrites || []) {
-        await writeTextAtWorkspace(target, write.path, write.content);
+}): Promise<void> => withArtifactRecovery(async (workspaceKey) => {
+  if (!tauriIpc.isTauriAvailable()) return;
+  const targets = await resolveWorkspacePaths({ ...params, allowFallbackPaths: false });
+  if (targets.length === 0) throw new Error('No registered artifact workspace is available.');
+  const files: ArtifactFileMutation[] = [];
+  for (const target of targets) {
+    const manifestPath = getPlanManifestPath(params.branchName, params.planId);
+    const manifest = await readArtifactFileSnapshot({ ...target, path: manifestPath });
+    const unchangedContents = [];
+    for (const artifact of params.previousIndex.artifacts) {
+      if (params.contentWrites?.some((write) => write.path === artifact.path)) continue;
+      const snapshot = await readArtifactFileSnapshot({ ...target, path: artifact.path });
+      if (snapshot.content === null || hashString(snapshot.content) !== artifact.contentHash) {
+        throw new Error(`Artifact content changed during mutation: ${artifact.id}`);
       }
-      await writeTextAtWorkspace(target, indexPath, indexContent);
-      await updateArtifactManifestAtWorkspace({
-        target,
-        branchName: params.branchName,
-        planId: params.planId,
-        index: params.index,
-      });
-      recordMacroMetadataMutation({
-        workspacePath: target.workspacePath,
-        kind: 'task_metadata',
-        entityId: params.planId,
-        label: 'task artifacts',
-        importance: 'light',
-      });
+      unchangedContents.push({ path: artifact.path, content: snapshot.content });
     }
-  } catch (error) {
-    const rollbackFailures: string[] = [];
-    for (const snapshot of [...snapshots].reverse()) {
-      for (const file of [...snapshot.files].reverse()) {
-        try {
-          if (!file.exists) {
-            await tauriIpc.fsDelete({
-              path: file.path,
-              workspaceScope: snapshot.target.workspaceScope,
-              workspacePath: snapshot.target.workspacePath,
-            });
-          } else if (file.content !== null) {
-            await writeTextAtWorkspace(snapshot.target, file.path, file.content);
-          } else {
-            throw new Error(`Cannot restore ${file.path}: its prior content is unreadable.`);
-          }
-        } catch (rollbackError) {
-          rollbackFailures.push(`${snapshot.target.workspacePath}:${file.path}: ${toServiceError(rollbackError).message}`);
+    const writes = [
+      ...unchangedContents,
+      ...(params.contentWrites || []),
+      { path: getPlanArtifactIndexPath(params.branchName, params.planId), content: `${JSON.stringify(params.index, null, 2)}\n` },
+    ];
+    if (manifest.content !== null) {
+      const parsed: unknown = JSON.parse(manifest.content);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid artifact manifest.');
+      writes.push({ path: manifestPath, content: `${JSON.stringify({
+        ...parsed, artifacts: buildArtifactManifestSummary(params.index),
+      }, null, 2)}\n` });
+    }
+    for (const write of writes) {
+      const before = write.path === manifestPath ? manifest : await readArtifactFileSnapshot({ ...target, path: write.path });
+      if (write.path === getPlanArtifactIndexPath(params.branchName, params.planId)) {
+        if (before.content === null
+          ? params.previousIndex.artifacts.length > 0 || (params.previousIndex.reviews || []).length > 0
+          : stableSerialize(normalizeArtifactIndex(params.planId, JSON.parse(before.content))) !== stableSerialize(params.previousIndex)) {
+          throw new Error('Artifact index changed during mutation.');
         }
       }
+      const priorArtifact = params.previousIndex.artifacts.find((artifact) => artifact.path === write.path);
+      if (priorArtifact && (before.content === null || hashString(before.content) !== priorArtifact.contentHash)) {
+        throw new Error(`Artifact content changed during mutation: ${priorArtifact.id}`);
+      }
+      if (before.content !== null && !before.revision) throw new Error(`Artifact revision unavailable: ${write.path}`);
+      files.push({ ...target, path: write.path, before: before.content, after: write.content });
     }
-    if (rollbackFailures.length > 0) {
-      throw new Error(
-        `Artifact write failed and rollback is incomplete: ${toServiceError(error).message}; ${rollbackFailures.join('; ')}`
-      );
-    }
-    throw error;
   }
-};
+  await persistArtifactMutation({ branchName: normalizeBranchName(params.branchName), planId: sanitizeId(params.planId), workspaceKey, files });
+});
 
 const getRequestedTaskId = (
   args: Record<string, unknown>,
@@ -1103,6 +1046,7 @@ const validateVisibleTaskArtifactInternal = async (params: {
       (params.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
     ),
     index: nextIndex,
+    previousIndex: index,
   });
   return review;
 };
@@ -1147,6 +1091,7 @@ const unvalidateVisibleTaskArtifactInternal = async (params: {
       (params.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
     ),
     index: nextIndex,
+    previousIndex: index,
   });
 };
 
@@ -1293,6 +1238,7 @@ const putTaskArtifactInternal = async ({
       (target.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
     ),
     index: nextIndex,
+    previousIndex: index,
     contentWrites: [{ path, content: normalizedContent }],
   });
 

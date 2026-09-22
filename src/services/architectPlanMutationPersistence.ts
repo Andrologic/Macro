@@ -1,3 +1,4 @@
+import { isArtifactMutation, recoverArtifactMutation } from './architectPlanArtifactPersistence';
 import { getArchitectPlanMetadataCoordinatorDeps } from './architectPlanReadContext';
 import * as tauriIpc from './tauriIpc';
 import { normalizeProjectRegistryPath, type ValidProjectRegistrySnapshot } from './validProjectRegistry';
@@ -290,6 +291,15 @@ export const recoverArchitectPlanReplicaMutationsUnlocked = async (
   if (entries.length === 0) return;
   const allowedWorkspaceRoots = new Set(currentWorkspaceKey.split('|').filter(Boolean));
   for (const entry of entries.filter((candidate) => candidate.workspaceKey === currentWorkspaceKey)) {
+      if (entry.operation === 'artifacts') {
+        if (!isArtifactMutation(entry)) {
+          // Keep the intent blocking: quarantine alone must not turn incomplete
+          // artifacts into an apparently healthy plan on the next read.
+          throw new Error(`Invalid artifact recovery intent: ${entry.id}`);
+        }
+        await recoverArtifactMutation(entry, deps.tauri);
+        continue;
+      }
       if (!isReplicaMutationPayload(entry)) {
         await quarantineArchitectPlanMutationJournal(
           entry,
