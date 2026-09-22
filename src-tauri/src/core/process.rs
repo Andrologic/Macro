@@ -967,6 +967,11 @@ impl TerminalProcessTree {
         command.get_argv_mut().splice(0..0, prefix);
     }
 
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn marker_path_for_test(&self) -> &Path {
+        &self.marker.path
+    }
+
     pub(crate) fn terminate(&mut self) {
         if let Err(error) = self.try_terminate() {
             tracing::warn!(action = "terminal_process_tree_termination_incomplete", error = %error,

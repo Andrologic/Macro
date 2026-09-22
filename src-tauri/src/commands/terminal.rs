@@ -1947,8 +1947,45 @@ fn handle_live_disconnect(
     // EOF ends ownership of this PTY, including jobs left behind by its shell.
     let exit_code = wait_for_child_exit_code(&session.child);
     #[cfg(unix)]
-    if let Ok(mut tree) = session.process_tree.lock() {
-        tree.terminate();
+    {
+        let termination = session
+            .process_tree
+            .lock()
+            .map_err(|_| command_error("Failed to lock terminal process tree after disconnect"))
+            .and_then(|mut tree| {
+                tree.try_terminate()
+                    .map_err(|error| command_error(error.to_string()))
+            });
+        if let Err(error) = termination {
+            // EOF must not discard the only owner of a descendant whose
+            // inspection failed. Fence reconnects and retain it for close retry.
+            lifecycle.closed.store(true, Ordering::Release);
+            lifecycle.close_pending.store(true, Ordering::Release);
+            let record = {
+                let mut runtime = runtime.blocking_lock();
+                runtime.persistence_active = false;
+                runtime.record.status = "closed".into();
+                if let Some(pending) = runtime.pending_command.as_mut() {
+                    if let Some(completion) = pending.completion_tx.take() {
+                        let _ = completion.send(130);
+                    }
+                }
+                runtime.pending_command = None;
+                touch_terminal_tab_record(&mut runtime.record);
+                runtime.record.clone()
+            };
+            terminal_store
+                .live_tabs
+                .blocking_lock()
+                .insert(tab_id.clone(), live_session.unwrap());
+            let persistence = tauri::async_runtime::block_on(persist_terminal_tab_record(
+                db_pool,
+                record.clone(),
+            ));
+            emit_tab_update(&app_handle, &record, false);
+            tracing::error!(action = "terminal_disconnect_termination_incomplete", tab_id = %tab_id, error = ?error, persistence = ?persistence);
+            return;
+        }
     }
     let command_exit_code = is_command_process.then_some(exit_code);
 
@@ -2986,9 +3023,17 @@ async fn terminate_live_terminal_process(
     }
 
     #[cfg(unix)]
-    if let Ok(mut tree) = session.process_tree.lock() {
-        tree.terminate();
-    }
+    let tree_result = session
+        .process_tree
+        .lock()
+        .map_err(|_| command_error("Failed to lock terminal process tree during close"))
+        .and_then(|mut tree| {
+            tree.try_terminate().map_err(|error| {
+                command_error(format!(
+                    "Terminal process tree termination is incomplete: {error}"
+                ))
+            })
+        });
 
     let child = session.child.clone();
     let child_result = tokio::time::timeout(
@@ -3024,7 +3069,14 @@ async fn terminate_live_terminal_process(
         return Ok(());
     }
 
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        // Always reap the direct child, but keep the native session available
+        // for retry when discovery of detached descendants was incomplete.
+        tree_result.and(child_result)
+    }
+
+    #[cfg(not(any(unix, windows)))]
     child_result
 }
 
@@ -4260,6 +4312,68 @@ mod tests {
             .unwrap();
         close_terminal_tab(&pool, &store, &record.id).await.unwrap();
         assert!(store.live_tabs.lock().await.is_empty());
+        assert!(repository::get_terminal_tab(&sql, &record.id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn lifecycle_inspection_failure_preserves_native_owner_for_retry() {
+        let (temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let session = synthetic_live_session("trap '' INT HUP; sleep 30", temp.path());
+        {
+            let mut runtime = session.runtime.lock().await;
+            runtime.record = record.clone();
+            runtime.lifecycle = store.tab_lifecycle(&record.id);
+        }
+        let marker = session
+            .process_tree
+            .lock()
+            .unwrap()
+            .marker_path_for_test()
+            .to_path_buf();
+        let saved_marker = temp.path().join("saved-marker");
+        fs::rename(&marker, &saved_marker).unwrap();
+        store
+            .live_tabs
+            .lock()
+            .await
+            .insert(record.id.clone(), session);
+        let error = close_terminal_tab(&pool, &store, &record.id)
+            .await
+            .unwrap_err();
+        assert!(
+            error.message.contains("termination is incomplete"),
+            "{error:?}"
+        );
+        {
+            let tabs = store.live_tabs.lock().await;
+            let retained = tabs
+                .get(&record.id)
+                .expect("retain native owner after inspection failure");
+            assert!(retained.child.lock().unwrap().try_wait().unwrap().is_some());
+            assert!(retained
+                .process_tree
+                .lock()
+                .unwrap()
+                .process_group_id
+                .is_some());
+        }
+        let sql = pool.ready_pool().unwrap();
+        assert!(repository::get_terminal_tab(&sql, &record.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .tab_lifecycle(&record.id)
+            .close_pending
+            .load(Ordering::Acquire));
+        fs::rename(&saved_marker, &marker).unwrap();
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
+        assert!(!store.live_tabs.lock().await.contains_key(&record.id));
         assert!(repository::get_terminal_tab(&sql, &record.id)
             .await
             .unwrap()

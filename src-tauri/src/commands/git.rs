@@ -2246,7 +2246,7 @@ fn cleanup_temp_worktree(
     // A recursive filesystem fallback could itself block without a deadline.
     Err(BackendError::Git {
         message: format!(
-            "Temporary rebase worktree cleanup failed at {}: {details}. Inspect this path and its Git worktree registration before removing it with git worktree remove --force.",
+            "Temporary rebase worktree cleanup failed at {}: {details}. Inspect this path and its Git worktree registration before retrying removal. An interrupted creation may leave a locked registration; verify that no Git process owns it before unlocking it.",
             worktree_path.display()
         ),
     })
