@@ -517,3 +517,30 @@ describe('copilot bridge reasoning events', () => {
     );
   });
 });
+
+it('registers only allowed MCP schemas and relays mixed media through the channel to the SDK', async () => {
+  const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+  const { __testables } = await loadBridge();
+  const input = new PassThrough();
+  let dispatched: unknown;
+  const channel = new BridgeControlChannel(input, payload => {
+    dispatched = payload;
+    input.write(`${JSON.stringify({ type: 'tool_result', request_id: payload.request_id, tool_call_id: payload.tool_call_id, result: 'partial result', is_error: true, blocks: fixture.content })}\n`);
+  });
+  input.write('{}\n');
+  const schema = { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] };
+  const tools = __testables.buildMacroTools({ request_id: 'mcp-native', model_id: 'fixture', messages: [],
+    allowed_tool_ids: ['mcp__fixture__read', 'mcp__fixture__missing'], tools: [
+      { type: 'function', function: { name: 'mcp__fixture__read', description: 'Fixture', parameters: schema } },
+      { type: 'function', function: { name: 'mcp__fixture__denied', parameters: schema } },
+    ],
+  }, { controlChannel: channel }) as Array<{ name: string; options: { parameters: unknown; handler: (args: unknown, invocation: ToolInvocation) => Promise<ToolResultObject> } }>;
+  try {
+    expect(tools.map(tool => tool.name)).toEqual(['mcp__fixture__read']);
+    expect(tools[0].options.parameters).toEqual(schema);
+    const result = await tools[0].options.handler({ query: 'synthetic' }, { sessionId: 'session', toolCallId: 'call', toolName: tools[0].name, arguments: {} });
+    expect(dispatched).toMatchObject({ request_id: 'mcp-native', tool_call_id: 'call', tool_name: 'mcp__fixture__read', args: { query: 'synthetic' } });
+    expect(JSON.stringify(result.binaryResultsForLlm)).toBe(JSON.stringify(fixture.content.slice(1)));
+    expect(result.resultType).toBe('failure');
+  } finally { channel.close(); }
+});

@@ -1,3 +1,4 @@
+import { isMCPToolId } from '../../src/services/mcp/identifiers';
 import {
   CopilotClient,
   defineTool,
@@ -1327,6 +1328,7 @@ const TOOL_HOST_GIT_READ_IDS = new Set([
 ]);
 
 const isFrontendRelayToolId = (toolId: string): boolean =>
+  isMCPToolId(toolId) ||
   toolId === 'question' ||
   toolId === 'read_file' ||
   toolId === 'web_fetch' ||
@@ -1478,7 +1480,27 @@ const buildMacroTools = (
   const context = buildWorkspaceContext(request);
   const allowedToolIds = filterCopilotSupportedToolIds(request.allowed_tool_ids || []);
 
-  return allowedToolIds
+  const mcpTools: Tool[] = [];
+  const allowedMcpIds = new Set((request.allowed_tool_ids ?? []).filter(isMCPToolId));
+  const seen = new Set<string>();
+  for (const tool of request.tools ?? []) {
+    if (!isToolArgumentObject(tool) || tool.type !== 'function' || !isToolArgumentObject(tool.function)) continue;
+    const fn = tool.function;
+    if (typeof fn.name !== 'string' || !allowedMcpIds.has(fn.name)) continue;
+    if (seen.has(fn.name)) throw new BridgeError('duplicate_mcp_tool', `Duplicate MCP tool ${fn.name}.`);
+    if (!isToolArgumentObject(fn.parameters)) throw new BridgeError('invalid_mcp_schema', `Invalid MCP schema for ${fn.name}.`);
+    seen.add(fn.name);
+    const name = fn.name;
+    mcpTools.push(defineTool(name, {
+      description: typeof fn.description === 'string' ? fn.description : '',
+      parameters: fn.parameters,
+      handler: async (args: unknown, invocation: ToolInvocation) => {
+        if (!isToolArgumentObject(args)) throw new BridgeError('invalid_tool_arguments', 'Tool arguments must be an object.');
+        return executeCopilotMacroTool(request, context, name, args, invocation, options?.controlChannel, options?.recordRelayResult);
+      },
+    }));
+  }
+  return [...mcpTools, ...allowedToolIds
     .map((toolId) => getMacroToolRegistryEntry(toolId))
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
     .map((entry) =>
@@ -1510,7 +1532,7 @@ const buildMacroTools = (
           }
         },
       })
-    );
+    )];
 };
 
 const handleHealth = async (): Promise<void> => {

@@ -32,6 +32,7 @@ export interface ToolCall {
 }
 
 export interface ToolResult {
+  blocks?: import('../../shared/toolResultContent').ToolResultBlock[];
   tool_call_id: string;
   content: string;
   tool_name?: string;
@@ -83,6 +84,7 @@ export interface StreamTimelineEvent {
 }
 
 export interface ToolResultResolution {
+  blocks?: import('../../shared/toolResultContent').ToolResultBlock[];
   kind: 'result';
   result: string;
   isError?: boolean;

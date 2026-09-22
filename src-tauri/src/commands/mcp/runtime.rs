@@ -1390,6 +1390,7 @@ mod tests {
                 }
                 Ok(McpCallToolResponse {
                     content: format!("{tool_name}:{arguments}"),
+                    blocks: vec![],
                     is_error: false,
                     raw_result: serde_json::json!({"ok": true}),
                 })

@@ -182,6 +182,7 @@ const loadStreamingChat = async (
       requestId: string;
       toolCallId: string;
       result: string;
+      blocks?: import('../shared/toolResultContent').ToolResultBlock[];
       hiddenContext?: string | null;
       visibleContent?: string | null;
       interrupt?: boolean;
@@ -193,6 +194,7 @@ const loadStreamingChat = async (
           request_id: params.requestId,
           tool_call_id: params.toolCallId,
           result: params.result,
+          ...(params.blocks ? { blocks: params.blocks } : {}),
           hidden_context: params.hiddenContext ?? null,
           visible_content: params.visibleContent ?? null,
           interrupt: params.interrupt ?? false,
@@ -4385,4 +4387,68 @@ describe('streamingChat partial native listener setup', () => {
     expect(completed).toHaveBeenCalledTimes(1);
     for (const index of [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11]) expect(disposers[index]).toHaveBeenCalledTimes(1);
   });
+});
+
+
+for (const ending of ['done', 'abort'] as const) {
+  it(`retains native MCP media when ${ending} races tool submission`, async () => {
+    const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+    const { normalizeToolResultBlocks, readTypedToolResult } = await import('../shared/toolResultContent');
+    const blocks = normalizeToolResultBlocks(fixture.content);
+    const callbacks = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+    const controller = new AbortController();
+    let submitted: Record<string, unknown> | undefined;
+    let completed: StreamCompletionResult | undefined;
+    const { streamChat } = await loadStreamingChat(undefined, {
+      forceTauriAvailable: true,
+      listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => {
+        callbacks.set(name, callback);
+        return () => callbacks.delete(name);
+      }),
+      invokeImpl: mock(async (command: string, args: { request?: Record<string, unknown> }) => {
+        if (command === 'ai_stream_chat') queueMicrotask(() => callbacks.get('ai:tool-request')!({ payload: {
+          request_id: args.request!.request_id, tool_call_id: 'media-call', tool_name: 'mcp__fixture__read', args: {},
+        } }));
+        if (command === 'ai_submit_tool_result') {
+          submitted = args.request;
+          if (ending === 'abort') controller.abort();
+          else callbacks.get('ai:done')!({ payload: { request_id: submitted!.request_id, output_text: 'done', tool_calls: [] } });
+        }
+      }),
+    });
+    await streamChat({
+      providerId: 'copilot', providerType: 'copilot', modelId: 'fixture', messages: [],
+      allowedToolIds: ['mcp__fixture__read'], signal: controller.signal,
+      mcpTools: [{ id: 'mcp__fixture__read', name: 'read', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
+      onToolCall: () => ({ kind: 'result', result: 'Partial remote result.', blocks, isError: true }),
+      onToken() {}, onComplete(result: StreamCompletionResult) { completed = result; }, onError(error: Error) { throw error; },
+    });
+    expect(submitted!.blocks).toEqual(blocks);
+    expect(submitted!.is_error).toBe(true);
+    const storedResult = completed!.providerInputItems!.find(item => readTypedToolResult(item));
+    expect(readTypedToolResult(storedResult)).toEqual({ version: 1, blocks, isError: true });
+  });
+}
+
+it('native Copilot replay names unavailable media without putting base64 in its prompt', async () => {
+  const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+  const callbacks = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
+  let request: Record<string, unknown> = {};
+  const { streamChat } = await loadStreamingChat(undefined, {
+    forceTauriAvailable: true,
+    listenImpl: mock(async (name: string, callback: (event: { payload: Record<string, unknown> }) => void) => { callbacks.set(name, callback); return () => callbacks.delete(name); }),
+    invokeImpl: mock(async (command: string, args: { request?: Record<string, unknown> }) => {
+      if (command === 'ai_stream_chat') {
+        request = args.request!;
+        callbacks.get('ai:done')!({ payload: { request_id: request.request_id, output_text: 'done', tool_calls: [] } });
+      }
+    }),
+  });
+  await streamChat({ providerId: 'copilot', providerType: 'copilot', modelId: 'fixture',
+    messages: [{ role: 'assistant', content: 'Earlier response', provider_input_items: [{ type: 'function_call_output', call_id: 'c', output: 'text fallback', macro_tool_result: { version: 1, blocks: fixture.content, isError: true } }] }],
+    onToken() {}, onComplete() {}, onError(error: Error) { throw error; },
+  });
+  const message = (request.messages as Array<{ content: string }>)[0];
+  expect(message.content).toContain('not sent as media by Copilot historical prompt replay');
+  expect(message.content).not.toContain(fixture.content[1].data!);
 });

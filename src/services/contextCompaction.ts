@@ -1,3 +1,4 @@
+import { readTypedToolResult, projectToolResultText } from '../shared/toolResultContent';
 import type {
   ChatMessage,
   CompactionPass,
@@ -328,7 +329,16 @@ const estimateProviderInputContext = (
     return emptyStructuredEstimate();
   }
 
-  return estimateStructuredContext(providerInputItems, { imageMetadata, context });
+  const projectedItems = providerInputItems.map(item => {
+    const result = readTypedToolResult(item);
+    if (!result) return item;
+    return { type: 'function_call_output', output: result.blocks.map(block =>
+      block.type === 'image' && (!context.providerType || context.providerType === 'chatgpt')
+        ? { type: 'input_image', image_url: `data:${block.mimeType};base64,${block.data}` }
+        : { type: 'input_text', text: projectToolResultText([block], context.providerType ?? 'this transport') },
+    ) };
+  });
+  return estimateStructuredContext(projectedItems, { imageMetadata, context });
 };
 
 const estimateStreamMessageContext = (
@@ -696,6 +706,8 @@ const compactProviderInputItem = (
 ): unknown | null => {
   if (!isRecord(item)) return item;
 
+  // Bounded typed media stays intact; slicing base64 would corrupt replay.
+  if ('macro_tool_result' in item) return deepCloneJsonValue(item);
   const targetChars = getProviderCompactionTargetChars(pass);
   if (item.type === 'chat_completion_message') {
     const role = item.role === 'tool' ? 'tool' : 'assistant';
@@ -1107,6 +1119,7 @@ const inspectProviderToolResults = (
   let hasProtectedResult = false;
   for (const item of items) {
     if (!isRecord(item)) continue;
+    hasProtectedResult ||= 'macro_tool_result' in item;
     if (item.type === 'function_call_output') {
       hasResult = true;
       if (typeof item.call_id === 'string' && item.call_id.trim()) {

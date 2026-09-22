@@ -3,7 +3,7 @@ mod ids;
 mod modern_adapter;
 mod oauth;
 mod protocol;
-mod result_format;
+pub(crate) mod result_format;
 mod rmcp_adapter;
 mod runtime;
 mod runtime_connector;
@@ -18,8 +18,8 @@ use self::ids::{
 use self::stdio::{call_stdio_tool, discover_stdio_tools};
 pub use self::types::{
     McpCallToolResponse, McpCatalogDto, McpDiscoverToolsResponse, McpProtocolEra, McpProtocolMode,
-    McpRuntimeKey, McpRuntimeSelector, McpRuntimeServerSnapshot, McpRuntimeSnapshotDto,
-    McpRuntimeStatus, McpServerDto, McpToolDto, McpTransportDto,
+    McpResultBlock, McpRuntimeKey, McpRuntimeSelector, McpRuntimeServerSnapshot,
+    McpRuntimeSnapshotDto, McpRuntimeStatus, McpServerDto, McpToolDto, McpTransportDto,
 };
 use crate::commands::{command_error, CommandResult};
 use crate::config::ConfigManager;

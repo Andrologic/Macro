@@ -133,7 +133,7 @@ describe('MCP domain helpers', () => {
         providerType: 'copilot',
         mode: 'Chat',
       })
-    ).toEqual([]);
+    ).toEqual(enabledToolIds);
     expect(
       selectInjectableMCPToolIds({
         enabledToolIds,

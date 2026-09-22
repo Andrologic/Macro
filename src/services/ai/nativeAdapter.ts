@@ -50,10 +50,11 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             },
             onToolCall: options.onToolCall,
             onToolResult: options.onToolResult,
-            onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext }) => {
+            onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext, providerInputItems }) => {
               const detail = formatToolTraceDetail(toolName, args);
               accumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
               accumulator.addHiddenContextBlock(hiddenContext);
+              if (providerInputItems) accumulator.setProviderContext({ providerInputItems });
             },
           }, resources);
           break;
@@ -97,7 +98,7 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
         },
       };
     },
-    projectTool: (result) => buildFunctionCallOutputProviderInputItem(result.tool_call_id, result.content),
+    projectTool: (result) => buildFunctionCallOutputProviderInputItem(result.tool_call_id, result.content, result.blocks, result.is_error),
     afterToolResults: (_messages, results) => {
       const hasToolErrors = results.some((result) => result.is_error);
       const hasFileReadResults = results.some((result) => /^FILE:\s+/m.test(result.content));

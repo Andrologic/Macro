@@ -15,3 +15,4 @@ export type { CopilotStatus } from '../CopilotStatus';
 export type { CopilotToolRequestEvent } from '../CopilotToolRequestEvent';
 export type { CopilotToolResultRequest } from '../CopilotToolResultRequest';
 export type { JsonValue } from '../serde_json/JsonValue';
+export type { McpResultBlock } from '../McpResultBlock';

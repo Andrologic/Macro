@@ -125,7 +125,7 @@ export async function runToolBatch(params: {
     accumulator.addHiddenToolContext(call.id, name, detail, resolution.result);
     accumulator.completeToolTrace(call.id);
     const errorKind = resolution.kind === 'result' && resolution.isError ? resolution.errorKind ?? 'execution' : undefined;
-    toolResults.push({ tool_call_id: call.id, tool_name: name, content: resolution.result, is_error: Boolean(errorKind), ...(errorKind ? { error_kind: errorKind } : {}) });
+    toolResults.push({ tool_call_id: call.id, tool_name: name, content: resolution.result, ...(resolution.kind === 'result' && resolution.blocks ? { blocks: resolution.blocks } : {}), is_error: Boolean(errorKind), ...(errorKind ? { error_kind: errorKind } : {}) });
     if (interruptResolution) break;
   }
   return { toolResults, interruptResolution };

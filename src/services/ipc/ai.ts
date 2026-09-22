@@ -180,6 +180,7 @@ export async function aiSubmitToolResult(params: {
   requestId: string;
   toolCallId: string;
   result: string;
+  blocks?: import('../../shared/toolResultContent').ToolResultBlock[];
   hiddenContext?: string | null;
   visibleContent?: string | null;
   interrupt?: boolean;
@@ -191,6 +192,7 @@ export async function aiSubmitToolResult(params: {
       request_id: params.requestId,
       tool_call_id: params.toolCallId,
       result: params.result,
+      ...(params.blocks ? { blocks: params.blocks } : {}),
       hidden_context: params.hiddenContext ?? null,
       visible_content: params.visibleContent ?? null,
       interrupt: params.interrupt ?? false,

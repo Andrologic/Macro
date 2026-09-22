@@ -70,7 +70,7 @@ export async function runToolCallingLoop(
   const usedToolNames = new Set<string>();
   const complete = (completionReason?: StreamCompletionReason) => ({
     ...accumulator.buildResult(),
-    providerInputItems: cloneProviderInputItems(transcript),
+    providerInputItems: cloneProviderInputItems(transcript.length ? transcript : accumulator.snapshotLiveContext().providerInputItems),
     ...(providerTurnState ? { providerTurnState } : {}),
     ...(completionReason ? { completionReason } : {}),
   });

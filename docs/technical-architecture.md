@@ -701,6 +701,10 @@ pas être déduit d'une recherche d'imports nommés uniquement.
 
 ### 7.4 Boucle d'outils et compatibilité des providers
 
+Les résultats MCP conservent des blocs typés dans l’historique. Le
+[contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
+modèle, les replis explicites et le retour à une ancienne version.
+
 `streamingChat` valide les arguments d'un outil avec le schéma publié dans le
 registre avant d'appeler son exécuteur. Un échec de validation ou d'exécution
 reste un résultat d'outil associé au `tool_call_id`. Il ne devient jamais un

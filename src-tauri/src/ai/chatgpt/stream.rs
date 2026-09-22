@@ -850,6 +850,38 @@ pub(super) fn normalize_provider_input_items_for_replay(
     let mut normalized = Vec::new();
 
     for item in output_items {
+        if item.get("type").and_then(Value::as_str) == Some("chat_completion_message") {
+            if item.get("role").and_then(Value::as_str) == Some("tool") {
+                let converted = json!({"type":"function_call_output", "call_id":item.get("tool_call_id"),
+                    "output":item.get("content"), "macro_tool_result":item.get("macro_tool_result")});
+                if let Some(replay) = normalize_provider_input_item_for_replay(&converted)? {
+                    normalized.push(replay);
+                }
+            } else {
+                let content = item.get("content").cloned().unwrap_or(Value::Null);
+                let content = if let Some(text) = content.as_str() {
+                    json!([{"type":"output_text", "text":text}])
+                } else {
+                    content
+                };
+                let converted = json!({"type":"message", "role":"assistant", "content":content});
+                if let Some(replay) = normalize_message_item_for_replay(&converted)? {
+                    normalized.push(replay);
+                }
+                if let Some(calls) = item.get("tool_calls").and_then(Value::as_array) {
+                    for call in calls {
+                        let converted = json!({"type":"function_call", "call_id":call.get("id"),
+                            "name":call.get("function").and_then(|v| v.get("name")),
+                            "arguments":call.get("function").and_then(|v| v.get("arguments"))});
+                        if let Some(replay) = normalize_provider_input_item_for_replay(&converted)?
+                        {
+                            normalized.push(replay);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         if let Some(replay_item) = normalize_provider_input_item_for_replay(item)? {
             normalized.push(replay_item);
         }
@@ -904,11 +936,36 @@ fn normalize_provider_input_item_for_replay(item: &Value) -> Result<Option<Value
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| "Function call output item is missing call_id.".to_string())?;
-            let output = item
-                .get("output")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+            let output = if let Some(typed) = item
+                .get("macro_tool_result")
+                .filter(|v| v.get("version").and_then(Value::as_u64) == Some(1))
+            {
+                let normalized =
+                    crate::commands::mcp::result_format::normalize_tool_call_result(json!({
+                        "content": typed.get("blocks"), "isError": typed.get("isError")
+                    }));
+                use crate::commands::mcp::McpResultBlock;
+                let mut parts: Vec<Value> = normalized.blocks.iter().map(|block| match block {
+                    McpResultBlock::Text { text } => json!({"type":"input_text", "text":text}),
+                    McpResultBlock::Image { data, mime_type } => json!({"type":"input_image", "image_url":format!("data:{mime_type};base64,{data}"), "detail":"auto"}),
+                    McpResultBlock::Audio { mime_type, .. } => json!({"type":"input_text", "text":format!("[MCP audio {mime_type} retained in history; ChatGPT Responses tool outputs do not support audio. The model cannot hear this block.]")}),
+                    McpResultBlock::Unavailable { reason } => json!({"type":"input_text", "text":format!("[MCP content unavailable: {reason}]")}),
+                }).collect();
+                if normalized.is_error {
+                    parts.insert(
+                        0,
+                        json!({"type":"input_text", "text":"[MCP tool reported an error]"}),
+                    );
+                }
+                Value::Array(parts)
+            } else {
+                Value::String(
+                    item.get("output")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            };
 
             Ok(Some(json!({
                 "type": "function_call_output",
