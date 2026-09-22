@@ -45,6 +45,8 @@ summarization can remove whole turns from request context; source history stays
 stored. Context overflow remains explicit. Stop cancels execution and discards
 late results. Completed native call/result pairs remain cumulative across steering
 and incomplete-response continuation, including an interrupted later turn.
+Guided retries discard the rejected answer text but keep completed tool pairs in
+both the continuation request and persisted history, even at the turn limit.
 Recovery retains executed pairs and excludes calls that have no result; older
 conversation messages are not copied into the new completion.
 

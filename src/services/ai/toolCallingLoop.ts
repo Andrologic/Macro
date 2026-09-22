@@ -16,6 +16,8 @@ export type StreamAccumulator = ReturnType<typeof createStreamAccumulator>;
 
 export interface LoopTurn {
   result: StreamingTurnResult;
+  // Native tools can finish inside streamTurn, before the loop accepts its text.
+  executedToolItems?: unknown[];
   projectAssistant: (content: string, calls: ToolCall[], recovering: boolean, incomplete: boolean) => {
     items: unknown[];
     state?: ProviderTurnState;
@@ -114,6 +116,13 @@ export async function runToolCallingLoop(
       const calls = incomplete || recoveryAttemptedTool ? [] : rawCalls;
 
       if (!incomplete && !recovering && shouldRetryMissingRequiredTool(options.guidedToolRetry, calls, guidedRetryCount)) {
+        // Reject the answer, not effects that already completed in the native turn.
+        const executedItems = cloneProviderInputItems(turn.executedToolItems);
+        if (executedItems?.length) {
+          transcript.push(...executedItems);
+          accumulator.setProviderContext({ providerInputItems: transcript, providerTurnState });
+          messages.push({ role: 'assistant', content: '', provider_input_items: executedItems });
+        }
         guidedRetryCount += 1;
         messages.push({ role: 'system', content: options.guidedToolRetry?.retrySystemPrompt || '' });
         turnCount += 1;

@@ -9,7 +9,9 @@ const bridge = await import('../tauriRuntimeBridge');
 type Request = Parameters<typeof ipc.aiStreamChat>[0];
 type Submission = Parameters<typeof ipc.aiSubmitToolResult>[0];
 type Handler = (event: { payload: Record<string, unknown> }) => void;
-type Scenario = 'completed' | 'initial-abort' | 'length' | 'incomplete' | 'steer-abort' | 'empty-steer-abort' | 'steer-completed';
+const scenarios = ['completed', 'initial-abort', 'length', 'incomplete', 'steer-abort', 'empty-steer-abort', 'steer-completed',
+  'guided-retry', 'guided-abort', 'guided-stop-before-response', 'guided-recovery', 'guided-recovery-abort', 'guided-limit', 'guided-multiple'] as const;
+type Scenario = typeof scenarios[number];
 let handlers = new Map<string, Handler>();
 let requests: Request[] = [];
 let submissions: Submission[] = [];
@@ -20,6 +22,8 @@ const emit = (type: string, payload: Record<string, unknown>) => handlers.get(ty
 const unexecutedCall: ToolCall = { id: 'never-executed', type: 'function', function: { name: 'mcp__fixture__read', arguments: '{}' } };
 const isSteer = () => scenario.includes('steer');
 const isRecovery = () => scenario === 'length' || scenario === 'incomplete';
+const isGuided = () => scenario.startsWith('guided-');
+const guidedRecovery = () => scenario === 'guided-recovery' || scenario === 'guided-recovery-abort';
 
 mock.module('../tauriRuntimeBridge', () => ({ ...bridge, listen: async (type: string, fn: Handler) => {
   handlers.set(type, fn);
@@ -30,6 +34,15 @@ mock.module('../tauriIpc', () => ({ ...ipc,
   aiStreamChat: async (request: Request) => {
     requests.push(request);
     queueMicrotask(() => {
+      if ((scenario === 'guided-stop-before-response' && requests.length === 2)
+        || (scenario === 'guided-recovery-abort' && requests.length === 3)) {
+        controller.abort();
+        return;
+      }
+      if ((scenario === 'guided-retry' && requests.length === 2) || (scenario === 'guided-recovery' && requests.length === 3)) {
+        emit('ai:done', { request_id: request.requestId, output_text: 'Final response', completion_reason: 'completed', tool_calls: [] });
+        return;
+      }
       if (isRecovery() && requests.length === 2) {
         // Recovery must also discard an unexecuted call included in provider items.
         emit('ai:done', { request_id: request.requestId, output_text: 'Final response', completion_reason: 'completed',
@@ -49,10 +62,11 @@ mock.module('../tauriIpc', () => ({ ...ipc,
       controller.abort();
       return;
     }
+    if (scenario !== 'empty-steer-abort') emit('ai:stream', { request_id: submission.requestId, delta: `Response ${requests.length}` });
     emit('ai:done', { request_id: submission.requestId,
       output_text: scenario === 'empty-steer-abort' ? '' : `Response ${requests.length}`,
-      completion_reason: isRecovery() ? scenario : 'completed',
-      tool_calls: isRecovery() ? [unexecutedCall] : [],
+      completion_reason: isRecovery() ? scenario : guidedRecovery() && requests.length === 2 ? 'length' : 'completed',
+      tool_calls: isRecovery() || (isGuided() && requests.length === 1) ? [unexecutedCall] : [],
     });
   },
 }));
@@ -65,7 +79,7 @@ const { buildFunctionCallOutputProviderInputItem } = await import('./responsesCo
 const blocks = normalizeToolResultBlocks(fixture.content);
 const ids = (items: unknown[], type: string) => items.filter(isRecord).filter(item => item.type === type).map(item => item.call_id);
 
-for (const mode of ['completed', 'initial-abort', 'length', 'incomplete', 'steer-abort', 'empty-steer-abort', 'steer-completed'] as const) {
+for (const mode of scenarios) {
   test(`${mode}: native executed pairs survive the loop, persistence and reload exactly once`, async () => {
     scenario = mode; requests = []; submissions = []; handlers = new Map(); controller = new AbortController(); pendingResolutions = [];
     let steerSent = false;
@@ -77,7 +91,9 @@ for (const mode of ['completed', 'initial-abort', 'length', 'incomplete', 'steer
     const options: StreamingChatOptions = {
       providerId: 'copilot', providerType: 'copilot', baseUrl: 'copilot://cli', modelId: 'fixture', signal: controller.signal,
       messages: [{ role: 'assistant', content: 'Previous message', provider_input_items: oldItems }],
-      allowedToolIds: ['mcp__fixture__read'],
+      allowedToolIds: ['mcp__fixture__read', ...(isGuided() ? ['read_file'] : [])],
+      ...(isGuided() ? { guidedToolRetry: { requiredToolNames: ['read_file'], retrySystemPrompt: 'Read the attached file before answering.', maxRetries: mode === 'guided-limit' ? 3 : mode === 'guided-multiple' ? 2 : 1 } } : {}),
+      ...(mode === 'guided-limit' ? { maxTurns: 3 } : {}),
       mcpTools: [{ id: 'mcp__fixture__read', name: 'read', serverId: 'fixture', inputSchema: { type: 'object', properties: {} } }],
       onToken() {}, onComplete() {}, onError(error) { throw error; }, onLiveContextUpdate: context => live.push(context),
       onToolCall: async (_name, args) => {
@@ -97,7 +113,7 @@ for (const mode of ['completed', 'initial-abort', 'length', 'incomplete', 'steer
       updateMessage: async (_id, _text, persistenceOptions) => { stored = JSON.stringify(persistenceOptions?.providerInputItems); },
     } }, { assistantMessageId: 'fixture-message', result });
     const restored = parseDbProviderInputItems(stored)!;
-    const turns = isSteer() ? 2 : 1;
+    const turns = mode === 'guided-multiple' || mode === 'guided-limit' ? 3 : isSteer() || mode === 'guided-abort' || guidedRecovery() ? 2 : 1;
     const expectedIds = Array.from({ length: turns }, (_, turn) => [0, 1].map(index => `turn-${turn + 1}-call-${index}`)).flat();
     expect(ids(restored, 'function_call')).toEqual(expectedIds);
     expect(ids(restored, 'function_call_output')).toEqual(expectedIds);
@@ -120,6 +136,32 @@ for (const mode of ['completed', 'initial-abort', 'length', 'incomplete', 'steer
       expect(replay).toContain('tool reported an error');
       expect(replay).not.toContain('never-executed');
       expect(requests[1].allowedToolIds).toEqual([]);
+    }
+    if (isGuided()) {
+      expect(result.visibleContent).not.toContain('Response 1');
+      expect(JSON.stringify(restored)).not.toContain('Response 1');
+      const rejectedTurns = mode === 'guided-limit' ? 3 : mode === 'guided-multiple' ? 2 : 1;
+      for (const request of requests.slice(1)) {
+        const replay = JSON.stringify(request.messages);
+        expect(replay).toContain('turn-1-call-0');
+        expect(replay).toContain('macro_tool_result');
+        expect(replay).toContain('not sent as media by Copilot historical prompt replay');
+        expect(replay).toContain('tool reported an error');
+        expect(replay).not.toContain('never-executed');
+        for (let rejected = 1; rejected <= Math.min(rejectedTurns, requests.indexOf(request)); rejected += 1) {
+          expect(replay).not.toContain(`Response ${rejected}`);
+        }
+      }
+      if (mode === 'guided-multiple') {
+        expect(result.visibleContent).toBe('Response 3');
+        expect(JSON.stringify(restored)).not.toContain('Response 2');
+      }
+      if (mode === 'guided-recovery') expect(result.completionReason).toBe('length_recovered');
+      if (mode === 'guided-limit') {
+        expect(requests).toHaveLength(3);
+        expect(result.visibleContent).toBe('');
+        expect(restored.filter(isRecord).some(item => item.type === 'message')).toBe(false);
+      }
     }
     if (isSteer() && mode !== 'empty-steer-abort') {
       const firstMessages = restored.filter(isRecord).filter(item => item.type === 'message' && JSON.stringify(item).includes('Response 1'));

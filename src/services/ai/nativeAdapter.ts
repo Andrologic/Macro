@@ -102,11 +102,13 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
       const content = providerType === 'chatgpt' || providerType === 'copilot'
         ? buildNativeReasoningVisibleTurnContent(turnResult.content || streamedTurnContent, turnResult.reasoningSummary)
         : turnResult.content || streamedTurnContent;
+      const executedToolItems = completedToolItems(turnResult.providerInputItems);
       return {
+        executedToolItems,
         result: { ...turnResult, content, completionReason: turnResult.completionReason ?? 'completed' },
         projectAssistant: (replayContent, calls, recovering, incomplete) => {
           const items = recovering || incomplete
-            ? [...completedToolItems(turnResult.providerInputItems), ...buildAssistantProviderInputItemsFromTurn(replayContent, calls)]
+            ? [...(cloneProviderInputItems(executedToolItems) ?? []), ...buildAssistantProviderInputItemsFromTurn(replayContent, calls)]
             : cloneProviderInputItems(turnResult.providerInputItems) ?? buildAssistantProviderInputItemsFromTurn(replayContent, calls);
           const state = turnResult.providerTurnState ? {
             ...turnResult.providerTurnState,
