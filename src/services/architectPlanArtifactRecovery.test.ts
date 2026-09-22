@@ -266,6 +266,18 @@ describe('artifact durable recovery', () => {
     expect((await reader).artifacts).toHaveLength(1);
   });
 
+  it('keeps artifacts readable and reviewable for catalog runtime task identities', async () => {
+    const catalogTask = { ...task, id: 'task:v1:develop:plan-1:task', node_id: 'task' };
+    const artifact = await service.putTaskArtifact({
+      target: { branchName, plan, task: catalogTask, currentTask: catalogTask },
+      args: { title: 'Catalog notes', content: 'Catalog content' },
+    });
+    expect((await read()).artifacts).toHaveLength(1);
+    expect(await service.listVisibleTaskArtifacts({ branchName, plan, task: catalogTask })).toHaveLength(1);
+    await service.validateVisibleTaskArtifact({ branchName, plan, task: catalogTask, artifactId: artifact.id });
+    expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toEqual([]);
+  });
+
   it('blocks an invalid artifact journal scope without writing or discarding the intent', async () => {
     settings.set(journalKey, JSON.stringify([{
       id: 'bad-scope', branchName, planId: plan.id, workspaceKey: roots.join('|'),

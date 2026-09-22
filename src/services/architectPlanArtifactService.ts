@@ -259,7 +259,7 @@ const normalizeArtifactIndex = (
           ...artifact,
           id: sanitizeId(artifact.id),
           planId,
-          taskId: sanitizeId(artifact.taskId),
+          taskId: artifact.taskId,
           kind: typeof artifact.kind === 'string' && artifact.kind.trim() ? artifact.kind.trim() : 'note',
           title: typeof artifact.title === 'string' && artifact.title.trim() ? artifact.title.trim() : artifact.id,
           summary: typeof artifact.summary === 'string' ? artifact.summary.trim() : '',
@@ -477,7 +477,7 @@ export const readPlanTaskArtifactIndex = async (params: {
       const index = normalizeArtifactIndex(params.planId, raw);
       if (raw.schemaVersion !== 1 || raw.planId !== params.planId || index.artifacts.length !== raw.artifacts.length ||
         raw.artifacts.some((artifact) => artifact.planId !== params.planId ||
-          artifact.id !== sanitizeId(artifact.id) || artifact.taskId !== sanitizeId(artifact.taskId) ||
+          artifact.id !== sanitizeId(artifact.id) || !artifact.taskId.trim() ||
           !['markdown', 'json', 'text'].includes(artifact.contentType)) ||
         new Set(index.artifacts.map((artifact) => artifact.id)).size !== index.artifacts.length) {
         throw new Error('Invalid artifact entry or schema.');
@@ -687,7 +687,7 @@ export const resolveTaskArtifactTarget = async (
 
 export const resolveVisiblePlanTaskIds = (params: {
   plan: Pick<ArchitectPlanRecord, 'nodes'>;
-  task: Pick<CatalogedImplementTask, 'id' | 'dependencies' | 'task_source'>;
+  task: Pick<CatalogedImplementTask, 'id' | 'node_id' | 'dependencies' | 'task_source'>;
   includeInherited?: boolean;
   includeOwn?: boolean;
 }): Set<string> => {
@@ -721,9 +721,9 @@ export const resolveVisiblePlanTaskIds = (params: {
     return visible;
   }
 
-  const currentNode = nodeById.get(params.task.id);
+  const currentNode = nodeById.get(getTaskBusinessId(params.task));
   if (includeOwn && currentNode) {
-    visible.add(params.task.id);
+    visible.add(getTaskBusinessId(params.task));
   }
   if (includeInherited && currentNode) {
     currentNode.dependencies.forEach(addAncestors);
@@ -753,7 +753,7 @@ export const listVisibleTaskArtifacts = async (params: {
     .filter((artifact) => visibleTaskIds.has(artifact.taskId))
     .map((artifact) => ({
       ...artifact,
-      visibility: (artifact.taskId === params.task.id ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
+      visibility: (artifact.taskId === getTaskBusinessId(params.task) ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
     }))
     .sort((left, right) => {
       if (left.visibility !== right.visibility) {
@@ -782,7 +782,7 @@ export const listVisibleTaskArtifactReviewEntries = async (params: {
       reviews.find(
         (candidate) =>
           candidate.artifactId === artifact.id &&
-          candidate.taskId === sanitizeId(params.task.id),
+          candidate.taskId === sanitizeId(getTaskBusinessId(params.task)),
       ) || null;
     return {
       artifact,
@@ -918,7 +918,7 @@ export const readVisibleTaskArtifactDiff = async (params: {
     .filter((artifact) => visibleTaskIds.has(artifact.taskId))
     .map((artifact) => ({
       ...artifact,
-      visibility: (artifact.taskId === params.task.id ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
+      visibility: (artifact.taskId === getTaskBusinessId(params.task) ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
     }));
   const artifact = visibleArtifacts.find((candidate) => candidate.id === artifactId);
   if (!artifact) {
@@ -1019,7 +1019,7 @@ const validateVisibleTaskArtifactInternal = async (params: {
   const now = new Date().toISOString();
   const review: PlanTaskArtifactReview = {
     artifactId,
-    taskId: sanitizeId(params.task.id),
+    taskId: sanitizeId(getTaskBusinessId(params.task)),
     validatedAt: now,
     validatedBy:
       typeof params.validatedBy === 'string' && params.validatedBy.trim()
@@ -1080,7 +1080,7 @@ const unvalidateVisibleTaskArtifactInternal = async (params: {
     reviews: (index.reviews || []).filter(
       (review) =>
         review.artifactId !== artifactId ||
-        review.taskId !== sanitizeId(params.task.id),
+        review.taskId !== sanitizeId(getTaskBusinessId(params.task)),
     ),
   };
   await writePlanTaskArtifactIndex({
@@ -1159,7 +1159,7 @@ const putTaskArtifactInternal = async ({
   const existingByContract =
     contractId
       ? index.artifacts.find(
-          (artifact) => artifact.taskId === target.task.id && artifact.contractId === contractId,
+          (artifact) => artifact.taskId === getTaskBusinessId(target.task) && artifact.contractId === contractId,
         )
       : undefined;
   const visibleTaskIds = resolveVisiblePlanTaskIds({
@@ -1182,29 +1182,29 @@ const putTaskArtifactInternal = async ({
     explicitArtifactId ||
     existingByContract?.id ||
     (supersededArtifact
-      ? slugify(`${supersededArtifact.id}-${target.task.id}`)
-      : slugify(`${target.task.id}-${contractId || title}`));
+      ? slugify(`${supersededArtifact.id}-${getTaskBusinessId(target.task)}`)
+      : slugify(`${getTaskBusinessId(target.task)}-${contractId || title}`));
   const previous = index.artifacts.find((artifact) => artifact.id === artifactId);
   const supersededArtifactId =
     requestedSupersedesArtifactId ||
     (existingByContract && existingByContract.id !== artifactId
       ? existingByContract.id
       : undefined);
-  if (previous && previous.taskId !== target.task.id) {
+  if (previous && previous.taskId !== getTaskBusinessId(target.task)) {
     throw toServiceError(`Artifact id ${artifactId} already belongs to another task.`);
   }
   const now = new Date().toISOString();
   const path = getPlanArtifactContentPath(
     target.branchName,
     target.plan.id,
-    target.task.id,
+    getTaskBusinessId(target.task),
     artifactId,
     contentType,
   );
   const artifact: PlanTaskArtifact = {
     id: artifactId,
     planId: target.plan.id,
-    taskId: target.task.id,
+    taskId: getTaskBusinessId(target.task),
     kind,
     title,
     summary,
@@ -1313,7 +1313,7 @@ export const formatTaskArtifactListResult = async (
           required: contract.required,
           satisfied: artifacts.some(
             (artifact) =>
-              artifact.taskId === target.task.id &&
+              artifact.taskId === getTaskBusinessId(target.task) &&
               (artifact.contractId === contract.id || artifact.id === contract.id),
           ),
         })),
