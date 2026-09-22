@@ -1957,33 +1957,17 @@ fn handle_live_disconnect(
                     .map_err(|error| command_error(error.to_string()))
             });
         if let Err(error) = termination {
-            // EOF must not discard the only owner of a descendant whose
-            // inspection failed. Fence reconnects and retain it for close retry.
-            lifecycle.closed.store(true, Ordering::Release);
-            lifecycle.close_pending.store(true, Ordering::Release);
-            let record = {
-                let mut runtime = runtime.blocking_lock();
-                runtime.persistence_active = false;
-                runtime.record.status = "closed".into();
-                if let Some(pending) = runtime.pending_command.as_mut() {
-                    if let Some(completion) = pending.completion_tx.take() {
-                        let _ = completion.send(130);
-                    }
-                }
-                runtime.pending_command = None;
-                touch_terminal_tab_record(&mut runtime.record);
-                runtime.record.clone()
-            };
-            terminal_store
-                .live_tabs
-                .blocking_lock()
-                .insert(tab_id.clone(), live_session.unwrap());
-            let persistence = tauri::async_runtime::block_on(persist_terminal_tab_record(
+            let result = tauri::async_runtime::block_on(retain_failed_disconnect(
                 db_pool,
-                record.clone(),
+                &terminal_store,
+                &tab_id,
+                live_session.unwrap(),
+                is_command_process.then_some(exit_code),
+                |snapshot| {
+                    let _ = app_handle.emit("terminal:tab", snapshot);
+                },
             ));
-            emit_tab_update(&app_handle, &record, false);
-            tracing::error!(action = "terminal_disconnect_termination_incomplete", tab_id = %tab_id, error = ?error, persistence = ?persistence);
+            tracing::error!(action = "terminal_disconnect_termination_incomplete", tab_id = %tab_id, error = ?error, persistence = ?result);
             return;
         }
     }
@@ -2005,6 +1989,53 @@ fn handle_live_disconnect(
     if let Err(error) = result {
         tracing::error!(action = "terminal_tab_persistence_failed", error = ?error);
     }
+}
+
+// Preserve the native owner even if persisting the cleanup intent fails.
+#[cfg(unix)]
+async fn retain_failed_disconnect(
+    db_pool: DbPool,
+    terminal_store: &TerminalSessionStore,
+    tab_id: &str,
+    session: LiveTerminalSession,
+    command_exit_code: Option<i32>,
+    emit: impl FnOnce(TerminalTabDto),
+) -> CommandResult<()> {
+    let (lifecycle, record, snapshot) = {
+        let mut runtime = session.runtime.lock().await;
+        runtime.lifecycle.closed.store(true, Ordering::Release);
+        runtime
+            .lifecycle
+            .close_pending
+            .store(true, Ordering::Release);
+        runtime.persistence_active = false;
+        runtime.record.status = "closed".into();
+        if let Some(exit_code) = command_exit_code {
+            runtime.record.last_exit_code = Some(exit_code);
+        }
+        if let Some(pending) = runtime.pending_command.as_mut() {
+            if let Some(completion) = pending.completion_tx.take() {
+                let _ = completion.send(130);
+            }
+        }
+        runtime.pending_command = None;
+        touch_terminal_tab_record(&mut runtime.record);
+        (
+            runtime.lifecycle.clone(),
+            runtime.record.clone(),
+            runtime_tab_snapshot(&runtime)?,
+        )
+    };
+    terminal_store
+        .live_tabs
+        .lock()
+        .await
+        .insert(tab_id.to_owned(), session);
+    emit(snapshot);
+    // Drain writes admitted before the fence, as explicit close does. A late
+    // writer cannot complete after the final cleanup intent is persisted.
+    let _persistence = lifecycle.persistence.lock().await;
+    persist_terminal_tab_record(db_pool, record).await
 }
 
 async fn complete_live_disconnect(
@@ -4316,6 +4347,85 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lifecycle_failed_inspection_eof_drains_admitted_persistence() {
+        let (temp, pool, record) = terminal_lifecycle_fixture().await;
+        let store = TerminalSessionStore::default();
+        let lifecycle = store.tab_lifecycle(&record.id);
+        let session = synthetic_live_session("sleep 30", temp.path());
+        let runtime = session.runtime.clone();
+        {
+            let mut state = runtime.lock().await;
+            state.record = record.clone();
+            state.lifecycle = lifecycle.clone();
+        }
+        // A writer has already passed admission and captured the active record.
+        let persistence = lifecycle.persistence.lock().await;
+        let mut admitted = record.clone();
+        admitted.status = "running".into();
+        let mut eof = tokio::spawn({
+            let pool = pool.clone();
+            let store = store.clone();
+            let id = record.id.clone();
+            async move {
+                retain_failed_disconnect(pool, &store, &id, session, Some(17), |snapshot| {
+                    assert_eq!(snapshot.status, "closed");
+                    assert!(!snapshot.is_restored);
+                    assert!(!snapshot.has_live_session);
+                    assert_eq!(snapshot.last_exit_code, Some(17));
+                })
+                .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !lifecycle.closed.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let premature = tokio::time::timeout(Duration::from_millis(150), &mut eof).await;
+        assert!(
+            premature.is_err(),
+            "cleanup must drain an already admitted writer"
+        );
+        persist_terminal_tab_record(pool.clone(), admitted)
+            .await
+            .unwrap();
+        drop(persistence);
+        match premature {
+            Ok(result) => {
+                result.unwrap().unwrap();
+            }
+            Err(_) => {
+                eof.await.unwrap().unwrap();
+            }
+        }
+        let persisted = repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            persisted.status, "closed",
+            "admitted write must precede the final cleanup intent"
+        );
+        assert_eq!(persisted.last_exit_code, Some(17));
+        assert!(store.live_tabs.lock().await.contains_key(&record.id));
+        persist_live_tab_record(pool.clone(), runtime)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository::get_terminal_tab(&pool.ready_pool().unwrap(), &record.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "closed"
+        );
+        close_terminal_tab(&pool, &store, &record.id).await.unwrap();
     }
 
     #[cfg(target_os = "macos")]
