@@ -579,6 +579,7 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
     const { executionContext, ...scriptRequest } = request;
     const projectRoots = getProjectRootsFromAppState();
     let workspacePath: string | null = null;
+    let workspaceRoot: { projectId: string; path: string } | null = null;
     if (request.allowWorkspace) {
       workspacePath = executionContext?.workspacePath ?? null;
       if (!workspacePath?.trim() || !executionContext?.projectId) {
@@ -588,16 +589,13 @@ export const useSkillsStore = create<SkillsStore>((set, get) => ({
       if (!projectRoot) {
         throw new Error('The captured execution project is no longer available.');
       }
-      // Keep the original roots for skill identity/hash resolution. A prepared
-      // worktree may live outside its repository and is also an allowed cwd.
-      if (projectRoot.path !== workspacePath) {
-        projectRoots.push({ ...projectRoot, path: workspacePath });
-      }
+      workspaceRoot = { projectId: executionContext.projectId, path: workspacePath };
     }
     return services.runSkillScript({
       ...scriptRequest,
       projectRoots,
       workspacePath,
+      workspaceRoot,
     });
   },
 

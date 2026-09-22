@@ -10,6 +10,15 @@ pub struct SkillProjectRootDto {
     pub path: String,
 }
 
+/// Captured execution root. Never used for skill discovery.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
+pub struct SkillScriptWorkspaceDto {
+    pub project_id: String,
+    pub path: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(ts_rs::TS)]

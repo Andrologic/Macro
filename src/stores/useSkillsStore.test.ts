@@ -349,6 +349,7 @@ describe('useSkillsStore', () => {
       allowWorkspace: true,
       projectRoots: [PROJECT_ROOT],
       workspacePath: PROJECT_ROOT.path,
+      workspaceRoot: { projectId: PROJECT_ROOT.projectId, path: PROJECT_ROOT.path },
     });
   });
 
@@ -382,7 +383,8 @@ describe('useSkillsStore', () => {
     expect(services.runSkillScript).toHaveBeenCalledWith({
       skillId: skill.id, scriptPath: 'scripts/check.sh', allowWorkspace: true,
       workspacePath: '/worktrees/task-1',
-      projectRoots: [PROJECT_ROOT, { ...PROJECT_ROOT, path: '/worktrees/task-1' }],
+      projectRoots: [PROJECT_ROOT],
+      workspaceRoot: { projectId: PROJECT_ROOT.projectId, path: '/worktrees/task-1' },
     });
   });
 
@@ -432,7 +434,7 @@ describe('useSkillsStore', () => {
     });
     expect(services.runSkillScript).toHaveBeenCalledWith({
       skillId: skill.id, scriptPath: 'scripts/check.sh', allowWorkspace: false,
-      workspacePath: null, projectRoots: [PROJECT_ROOT],
+      workspacePath: null, workspaceRoot: null, projectRoots: [PROJECT_ROOT],
     });
   });
 

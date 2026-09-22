@@ -23,6 +23,9 @@ use uuid::Uuid;
 
 mod types;
 
+#[cfg(all(test, unix))]
+mod configured_execution_tests;
+
 pub use types::*;
 
 const SKILL_FILE: &str = "SKILL.md";
@@ -2046,7 +2049,7 @@ fn install_skill_from_local_source(
 
 fn resolve_workspace_cwd(
     workspace_path: Option<String>,
-    project_roots: &[SkillProjectRootDto],
+    workspace_roots: &[SkillProjectRootDto],
 ) -> CommandResult<PathBuf> {
     let raw_path = workspace_path
         .filter(|path| !path.trim().is_empty())
@@ -2059,14 +2062,14 @@ fn resolve_workspace_cwd(
         return Err(command_error("Workspace path is not a directory."));
     }
 
-    let allowed = project_roots.iter().any(|project| {
+    let allowed = workspace_roots.iter().any(|project| {
         fs::canonicalize(&project.path)
             .map(|project_root| path_is_inside(&project_root, &cwd))
             .unwrap_or(false)
     });
     if !allowed {
         return Err(command_error(
-            "Workspace path is not one of the active Macro project roots.",
+            "Workspace path is outside the authorized execution roots.",
         ));
     }
 
@@ -2424,9 +2427,36 @@ pub async fn skills_run_script(
     allow_workspace: bool,
     workspace_path: Option<String>,
     project_roots: Vec<SkillProjectRootDto>,
+    workspace_root: Option<SkillScriptWorkspaceDto>,
 ) -> CommandResult<SkillScriptRunResponse> {
-    let skill = resolve_configured_skill(manager.inner(), &skill_id, &project_roots).await?;
-    let permission = configured_skill_permission(manager.inner(), &skill_id)
+    run_configured_skill_script(
+        manager.inner(),
+        skill_id,
+        script_path,
+        args,
+        timeout_ms,
+        allow_workspace,
+        workspace_path,
+        project_roots,
+        workspace_root,
+    )
+    .await
+}
+
+async fn run_configured_skill_script(
+    manager: &ConfigManager,
+    skill_id: String,
+    script_path: String,
+    args: Vec<String>,
+    timeout_ms: Option<u64>,
+    allow_workspace: bool,
+    workspace_path: Option<String>,
+    project_roots: Vec<SkillProjectRootDto>,
+    workspace_root: Option<SkillScriptWorkspaceDto>,
+) -> CommandResult<SkillScriptRunResponse> {
+    // Source resolution and its permission record use discovery roots only.
+    let skill = resolve_configured_skill(manager, &skill_id, &project_roots).await?;
+    let permission = configured_skill_permission(manager, &skill_id)
         .await?
         .ok_or_else(|| command_error("This skill has no local permission record."))?;
     if permission.enabled != Some(true) || permission.scripts_enabled != Some(true) {
@@ -2445,6 +2475,24 @@ pub async fn skills_run_script(
         ));
     }
 
+    let workspace_roots = if allow_workspace {
+        if let Some(root) = workspace_root {
+            let project = project_roots
+                .iter()
+                .find(|project| project.project_id == root.project_id)
+                .ok_or_else(|| command_error("The captured workspace project is not available."))?;
+            vec![SkillProjectRootDto {
+                project_id: root.project_id,
+                project_name: project.project_name.clone(),
+                path: root.path,
+            }]
+        } else {
+            // Compatibility for callers confined to an original project root.
+            project_roots
+        }
+    } else {
+        Vec::new()
+    };
     run_skill_script_with_manifest(
         skill,
         skill_id,
@@ -2453,7 +2501,7 @@ pub async fn skills_run_script(
         timeout_ms,
         allow_workspace,
         workspace_path,
-        project_roots,
+        workspace_roots,
     )
     .await
 }
@@ -2466,7 +2514,7 @@ async fn run_skill_script_with_manifest(
     timeout_ms: Option<u64>,
     allow_workspace: bool,
     workspace_path: Option<String>,
-    project_roots: Vec<SkillProjectRootDto>,
+    workspace_roots: Vec<SkillProjectRootDto>,
 ) -> CommandResult<SkillScriptRunResponse> {
     let script = resolve_resource_path(&skill, &script_path, &["scripts"])?;
     let timeout_ms = timeout_ms
@@ -2502,7 +2550,7 @@ async fn run_skill_script_with_manifest(
 
     let mut temp_run_dir = SkillRunTempDir(None);
     let run_cwd = if allow_workspace {
-        resolve_workspace_cwd(workspace_path, &project_roots)?
+        resolve_workspace_cwd(workspace_path, &workspace_roots)?
     } else {
         let path = std::env::temp_dir().join(format!("macro-skill-run-{}", Uuid::new_v4()));
         fs::create_dir_all(&path).map_err(|error| {
