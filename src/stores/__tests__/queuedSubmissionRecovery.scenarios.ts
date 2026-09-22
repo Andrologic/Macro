@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { loadQueuedSubmissions, QUEUED_SUBMISSIONS_STORAGE_KEY } from '../chat/chatQueuedSubmissions';
 import { useConversationArchiveStore } from '../useConversationArchiveStore';
 import { beginAppShutdownGate } from '../../services/appShutdownGate';
+import type { MergeWorkflowRuntimeState } from '../../services/mergeWorkflow';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
 export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenarioContext) {
@@ -62,18 +63,94 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       c.appState.mode = 'Architect';
       c.appState.activeArchitectPlanId = 'original-plan';
       c.appState.activePlanContext = { id: 'original-plan', targetBranch: 'develop' };
-      const plan = c.createPlan({ id: 'original-plan', conversationId: 'queued-conv' });
+      const plan = c.createPlan({ id: 'original-plan', conversationId: 'queued-conv',
+        planKind: 'bugfix', executionModesByProjectId: { 'project-1': 'direct' },
+      });
       c.architectPlans.set(plan.id, plan);
       store.setState({ conversations: [{ ...c.createConversation('queued-conv'), scope_mode: 'Architect', task_id: null }] });
       await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Original plan discussion' }, 'queue');
-      c.appState.mode = 'Chat';
+      c.appState.mode = 'Architect';
       c.appState.activeArchitectPlanId = 'different-plan';
+      c.appState.activePlanContext = { id: 'different-plan', targetBranch: 'main', executionModesByProjectId: { 'project-1': 'git' } };
+      c.appState.planNodes = [];
       release(store);
       await store.getState().retryQueuedSubmissions('queued-conv');
       expect(loadQueuedSubmissions()).toEqual([]);
       expect(c.streamChatMock).toHaveBeenCalledTimes(1);
       expect(c.getArchitectPlanMock).toHaveBeenCalledWith('develop', 'original-plan');
       expect(c.getArchitectPlanMock).not.toHaveBeenCalledWith(expect.anything(), 'different-plan');
+      const options = c.getLatestStreamOptions<{ messages: unknown[]; allowedToolIds: string[] }>();
+      const sent = JSON.stringify(options.messages);
+      expect(sent).toContain('[Active Plan] id=\\"original-plan\\"');
+      expect(sent).not.toContain('different-plan');
+      expect(sent).toContain('This is a Bugfix plan.');
+      expect(sent).toContain('direct-only plan');
+      expect(options.allowedToolIds).not.toContain('git_status');
+    });
+
+    it('publishes recovery during full hydration without depending on notifications', async () => {
+      const store = await prepare();
+      await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'Recover after restart' }, 'queue');
+      c.chatSnapshotConversations = [c.createChatSnapshotConversation('queued-conv', { scope_mode: 'Chat' })];
+      const { useChatStore: restarted } = await c.loadChatStore();
+      await restarted.getState().initializeCritical();
+      expect(restarted.getState().queuedSubmissionRecoveryByConversationId['queued-conv']).toEqual({ count: 1, error: undefined });
+      await restarted.getState().retryQueuedSubmissions('queued-conv');
+      expect(restarted.getState().queuedSubmissionRecoveryByConversationId).toEqual({});
+      expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+    });
+
+    for (const restart of [false, true]) it(`resolves the original task merge workspace after navigation, restart=${restart}`, async () => {
+      let store = await prepare();
+      await c.enableRealProjectExecutionContext();
+      c.appState.mode = 'Implement';
+      c.appState.selectedTaskId = 'merge-task';
+      c.taskStoreState.tasks = [c.createImplementTask({ id: 'merge-task', status: 'InProgress' })];
+      const taskState = c.taskStoreState as typeof c.taskStoreState & {
+        activeWorkspacePathOverridesByProjectId?: Record<string, string>;
+        activeRepositoryPath?: string;
+        getMergeWorkflowRuntime?: (id: string) => MergeWorkflowRuntimeState | null;
+      };
+      taskState.activeWorkspacePathOverridesByProjectId = { 'project-1': '/synthetic/merge-repo' };
+      taskState.activeRepositoryPath = '/synthetic/merge-repo';
+      taskState.getMergeWorkflowRuntime = id => id === 'merge-task' ? {
+        taskId: id, kind: 'task_completion', phase: 'blocked', taskStatus: 'InProgress', review: null,
+        repositories: [{
+          id: 'repo-1', projectId: 'project-1', repoPath: '/synthetic/merge-repo',
+          repositoryRootPath: '/repos/web', integrationWorktreePath: '/synthetic/merge-repo',
+          sourceBranchName: 'feature/merge-task', targetBranchName: 'develop',
+          progressState: 'blocked', hadChangesAtStart: true, mergeAppliedAt: null,
+          isClean: false, hasChanges: true, ahead: 1, behind: 1, mergeable: false,
+          conflictFiles: ['file.ts'], dirtyFiles: [], mergeInProgress: true, diff: '',
+          checkStatus: 'not_run', blockingKind: 'merge_conflict', nextAction: 'resolve_conflicts',
+          blockingReason: 'Resolve conflict', isSourcePublished: false, mergeStrategy: 'file_conflict',
+          recommendedAction: 'assistant', availableActions: ['assistant'],
+        }],
+        blockedRepositories: [], message: null, lastLoadedAt: null,
+      } : null;
+      try {
+        store.setState({ conversations: [{ ...c.createConversation('queued-conv'), scope_mode: 'Implement', task_id: 'merge-task' }] });
+        await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', taskId: 'merge-task', content: 'Inspect merge' }, 'queue');
+        c.appState.selectedTaskId = 'different-task';
+        taskState.activeWorkspacePathOverridesByProjectId = { 'project-1': '/synthetic/different-task' };
+        taskState.activeRepositoryPath = '/synthetic/different-task';
+        if (restart) {
+          const conversations = store.getState().conversations;
+          ({ useChatStore: store } = await c.loadChatStore());
+          store.setState(c.createIdleChatStoreState({ conversations }));
+        }
+        release(store);
+        await store.getState().retryQueuedSubmissions('queued-conv');
+        expect(loadQueuedSubmissions()).toEqual([]);
+        expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+        expect(c.repositoryInstructionsLoadMock).toHaveBeenCalledWith(expect.objectContaining({ projects: expect.arrayContaining([expect.objectContaining({ rootPath: '/synthetic/merge-repo' })]) }));
+        expect(JSON.stringify(c.getLatestStreamOptions().messages)).not.toContain('/synthetic/different-task');
+      } finally {
+        delete taskState.activeWorkspacePathOverridesByProjectId;
+        delete taskState.activeRepositoryPath;
+        delete taskState.getMergeWorkflowRuntime;
+        c.useRealProjectExecutionContext = false;
+      }
     });
 
     it('reconciles an already saved turn without another user message or stream', async () => {

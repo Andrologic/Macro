@@ -191,6 +191,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       const request: PrepareAssistantStreamParams = {
         conversationId, replyToMessageId: persistedUserMessage.id, userContent: content, resolvedTaskId,
         modeAtSend: mode, agentTypeAtSend: agentType, providerId, modelId, reasoningEffort,
+        architectPlanAtSend: snapshot.modelSelectionCaptured ? architectPlan : undefined,
         providerConfig: providerForUse, internalAgentProfile, executionContext,
         scopedTurnConfigurationOverride: scopedConfiguration,
         providerSupportsNativeToolCalling: configuration.supportsNativeToolCalling(providerId, modelId),

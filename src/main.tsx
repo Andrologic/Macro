@@ -7,7 +7,6 @@ import { startNotificationComposition } from './composition/notificationComposit
 import { startPlansComposition } from './composition/plansComposition';
 import { providers, tools } from './composition/domainAdapters';
 import { BackupStartupRecovery } from './components/settings/views/BackupRecoveryStatus';
-import { PersistenceHealthNotifications } from "./components/notifications/PersistenceHealthNotifications";
 import { restoreBackupBrowserState } from "./services/localBackup";
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -26,6 +25,8 @@ import { isDevelopmentBuild } from "./utils/devLogger";
 import "xterm/css/xterm.css";
 import "./index.css";
 import "./styles/highlight.css";
+
+const PersistenceHealthNotifications = React.lazy(() => import("./components/notifications/PersistenceHealthNotifications").then(module => ({ default: module.PersistenceHealthNotifications })));
 
 const installBenignTauriReloadWarningFilter = (): void => {
   if (!import.meta.env.DEV || typeof window === "undefined") {
@@ -97,7 +98,7 @@ const renderApp = (application: LifecycleScope): void => {
   root.render(
     <React.StrictMode key={generation}>
       <ThemeProvider>
-        <PersistenceHealthNotifications />
+        <React.Suspense fallback={null}><PersistenceHealthNotifications /></React.Suspense>
         {appTree}
       </ThemeProvider>
     </React.StrictMode>,

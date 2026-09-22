@@ -9,6 +9,7 @@ import type { ProjectExecutionContext } from "./projectExecutionContext";
 import type { ScopedTurnConfiguration } from "./configurationClient";
 import type { ChatMaxTurnsPreference } from "./chatTurnLimits";
 import type { getStreamingWebSearchConfig } from "./webSearchSettings";
+import type { ArchitectPlanRecord } from './architectPlanService';
 export interface RepositoryInstructionDiagnosticSource {
  projectId: string; projectName: string; sourcePath: string; relativePath: string; depth: number; sizeBytes: number;
 }
@@ -66,6 +67,7 @@ export interface FrozenToolCallContext {
 }
 
 export interface AssistantStreamLaunch {
+    architectPlanContext?: ArchitectPlanRecord | null;
     architectPlanAtSend?: { planId: string; targetBranch: string };
     sessionId: string;
     assistantMessage: ChatMessage;
@@ -124,10 +126,11 @@ export interface AssistantStreamLaunch {
 export type ChatTurnCapabilities = Pick<AssistantStreamLaunch,
   "allowedToolIds" | "riskLevel" | "scopedTurnConfiguration" | "mcpServers" | "mcpTools" |
   "internalAgentProfile" | "skillToolIds" | "runnableSkillToolIds" | "guidedToolRetry" |
-  "showToolTraces" | "enableWebSearch" | "enableWebFetch" | "webSearchOptions" | "maxTurns"
+  "showToolTraces" | "enableWebSearch" | "enableWebFetch" | "webSearchOptions" | "maxTurns" | "architectPlanContext"
 >;
 
 export interface PrepareAssistantStreamParams {
+  architectPlanAtSend?: { planId: string; targetBranch: string };
     turnCapabilities?: ChatTurnCapabilities;
     conversationId: string;
     replyToMessageId: string;
