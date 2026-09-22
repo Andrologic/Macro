@@ -84,7 +84,7 @@ const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanM
       if (value === null || typeof value !== 'object') return false;
       const entry = value as { operation?: unknown; id?: unknown; payload?: unknown };
       const artifactIntent = entry.operation === 'artifacts' ||
-        (typeof entry.id === 'string' && entry.id.includes(':artifacts:')) ||
+        (typeof entry.id === 'string' && /^plan:v1:[^:]+:[^:]+:artifacts:/.test(entry.id)) ||
         (entry.payload !== null && typeof entry.payload === 'object' &&
           Object.prototype.hasOwnProperty.call(entry.payload, 'files'));
       return artifactIntent && (!isEntry(value) || value.operation !== 'artifacts');
