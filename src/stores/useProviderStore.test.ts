@@ -316,6 +316,55 @@ mock.module('../services/aiConfig', () => ({
 };
 
 describe('useProviderStore secret resolution', () => {
+  for (const failure of ['expired', 'missing', 'other-account', 'read-failure']) {
+    it(`removes unavailable ChatGPT discovery after ${failure} rejection and preserves manual selection`, async () => {
+      const { useProviderStore } = await loadProviderStore();
+      const manual = dbModel('chatgpt', 'manual-model', { is_manual: true });
+      const message = `No verified ChatGPT model catalog: ${failure}. Retry model sync.`;
+      useProviderStore.setState({
+        providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+        modelsByProvider: { chatgpt: [
+          { id: 'old-model', name: 'Old', provider_id: 'chatgpt', isEnabled: true },
+          { id: 'manual-model', name: 'Manual', provider_id: 'chatgpt', isEnabled: true, isManual: true },
+        ] },
+        selectedProviderId: 'chatgpt', selectedModelId: 'old-model',
+        loadProviderConfigs: async () => undefined,
+        refreshLoadedModelContextCatalog: async () => undefined,
+      });
+      if (failure === 'read-failure') {
+        listProviderModelsMock.mockImplementationOnce(async () => { throw { message: 'Read unavailable' }; });
+      } else {
+        listProviderModelsMock.mockImplementationOnce(async () => [manual]);
+      }
+      aiSyncProviderModelsMock.mockImplementationOnce(async () => { throw { message }; });
+      await expect(useProviderStore.getState().scanModelsForProvider('chatgpt')).rejects.toThrow(message);
+      expect(useProviderStore.getState().modelsByProvider.chatgpt.map((model: { id: string }) => model.id)).toEqual(['manual-model']);
+      expect(useProviderStore.getState().selectedModelId).toBe('manual-model');
+      expect(useProviderStore.getState().lastError).toBe(message);
+      expect(useProviderStore.getState().providerReachabilityById.chatgpt?.status).toBe('unreachable');
+      expect(upsertProviderModelsMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it('loads the available ChatGPT projection and preserves a manual choice through a valid fallback', async () => {
+    const { useProviderStore } = await loadProviderStore();
+    useProviderStore.setState({
+      providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+      selectedProviderId: 'chatgpt', selectedModelId: 'unverified-model',
+      refreshLoadedModelContextCatalog: async () => undefined,
+    });
+    const manual = dbModel('chatgpt', 'manual-model', { is_manual: true });
+    listProviderModelsMock.mockImplementationOnce(async () => [manual]);
+    await useProviderStore.getState().loadProviderModels('chatgpt');
+    expect(useProviderStore.getState().selectedModelId).toBe('manual-model');
+    expect(useProviderStore.getState().modelsByProvider.chatgpt.map((model: { id: string }) => model.id)).toEqual(['manual-model']);
+    aiSyncProviderModelsMock.mockImplementationOnce(async () => [dbModel('chatgpt', 'verified-model')] as never[]);
+    listProviderModelsMock.mockImplementationOnce(async () => [manual, dbModel('chatgpt', 'verified-model')]);
+    const result = await useProviderStore.getState().scanModelsForProvider('chatgpt');
+    expect(result.map((model: { id: string }) => model.id)).toContain('verified-model');
+    expect(useProviderStore.getState().selectedModelId).toBe('manual-model');
+  });
+
   it('preserves new transport model selection after an old catalog wait', async () => {
     const { useProviderStore } = await loadProviderStore();
     await useProviderStore.getState().loadProviderConfigs();
@@ -723,6 +772,7 @@ describe('useProviderStore secret resolution', () => {
     const catalog = deferred<void>();
     store.setState({ refreshLoadedModelContextCatalog: () => catalog.promise });
     aiSyncProviderModelsMock.mockImplementationOnce(() => sync.promise);
+    listProviderModelsMock.mockImplementationOnce(async () => [dbModel('provider-openai', 'model-a')]);
     const scan = store.getState().scanModelsForProvider('provider-openai');
     await flushAsyncWork();
     const mutation = store.getState().setAllProviderModelsEnabled('provider-openai', false);

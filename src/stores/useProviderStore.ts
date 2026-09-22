@@ -1434,7 +1434,30 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       } catch (error) {
         lifecycle?.assertActive();
         if (!isCurrent()) return get().modelsByProvider[providerId] || [];
-        const message = error instanceof Error ? error.message : 'Failed to load models';
+        const message = getErrorMessage(error, 'Failed to load models');
+        if (providerType === 'chatgpt') {
+          // A failed read cannot establish discovery provenance. Preserve only
+          // explicit manual choices until the native projection can be reloaded.
+          const manualModels = (get().modelsByProvider[providerId] || []).filter((model) => model.isManual);
+          set((state) => {
+            const selectedModelId = manualModels.some((model) => model.id === state.selectedModelId && model.isEnabled !== false)
+              ? state.selectedModelId : getFirstEnabledModelId(manualModels);
+            return {
+              lastError: message,
+              modelsByProvider: { ...state.modelsByProvider, [providerId]: manualModels },
+              ...(state.selectedProviderId === providerId ? {
+                selectedModelId,
+                selectedReasoningEffort: resolveSelectedReasoningEffort({
+                  providerId, modelId: selectedModelId,
+                  modelsByProvider: { ...state.modelsByProvider, [providerId]: manualModels },
+                  unsupported: state.reasoningUnsupportedModelKeys,
+                  requested: state.selectedReasoningEffort,
+                }),
+              } : {}),
+            };
+          });
+          return manualModels;
+        }
         set({ lastError: message });
         return modelsByProvider[providerId] || [];
       } finally {
@@ -1495,7 +1518,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
       try {
         void refreshModelContextCatalog();
-        const updated = tauriIpc.isTauriAvailable()
+        let updated = tauriIpc.isTauriAvailable()
           ? await enqueueProviderModelPersistence(providerId, async () => {
             lifecycle?.assertActive();
               if (!isCurrentScan()) {
@@ -1507,6 +1530,13 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         lifecycle?.assertActive();
         if (!updated || !isCurrentScan()) {
           return get().modelsByProvider[providerId] || [];
+        }
+        if (config.providerType === 'chatgpt' && tauriIpc.isTauriAvailable()) {
+          // Include configured manual models and preference overlays in both a
+          // fresh discovery and a verified fallback, using the same read contract.
+          updated = await ipcListProviderModels(providerId);
+          lifecycle?.assertActive();
+          if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
         }
         let normalized = enrichModelsWithCatalogContextLimits(
           updated.map((model) => normalizeDbModel(model, config.providerType)),
@@ -1563,6 +1593,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           requested: get().selectedReasoningEffort,
         });
         set((state) => ({
+          lastError: null,
           modelsByProvider: { ...state.modelsByProvider, [providerId]: normalized },
           ...withReachabilityRecord(state, providerId, {
             status: 'reachable',
@@ -1610,9 +1641,15 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
 
         if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
 
+        if (config.providerType === 'chatgpt') {
+          // Reconcile the selectable catalog with the native provenance check.
+          // Stored rows and preferences remain intact for a later successful retry.
+          await get().loadProviderModels(providerId, lifecycle);
+          lifecycle?.assertActive();
+          if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
+        }
         const providerLabel = config.providerType === 'copilot' ? 'GitHub Copilot' : 'ChatGPT';
-        const message =
-          error instanceof Error ? error.message : `Failed to sync ${providerLabel} models`;
+        const message = getErrorMessage(error, `Failed to sync ${providerLabel} models`);
         set((state) => ({
           ...withReachabilityRecord(state, providerId, {
             status: 'unreachable',
@@ -1621,7 +1658,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           }),
           lastError: message,
         }));
-        return modelsByProvider[providerId] || [];
+        throw new Error(message);
       } finally {
         finishLoading();
       }
@@ -3259,7 +3296,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       if (!isCurrent()) return;
       await get().loadProviderModels(providerId);
       if (!isCurrent()) return;
-      await get().scanModelsForProvider(providerId);
+      await get().refreshModelsForProviderIfNeeded(providerId, 'manual');
     } catch (error) {
       if (!isCurrent()) return;
       authGeneration = beginProviderAuthTransition(providerId);

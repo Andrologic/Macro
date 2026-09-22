@@ -461,17 +461,72 @@ async fn retain_verified_models(
         "{remote_error} No verified ChatGPT model catalog for the current account and plan collected within the last 24 hours is available. Retry model sync."
     )
     };
+    let models = repository::list_models_by_provider(pool, provider_id)
+        .await
+        .map_err(db_error_to_string)?;
+    let catalog = verified_catalog_for_models(pool, provider_id, provider, secret, &models, now)
+        .await?
+        .ok_or_else(unavailable)?;
+    warn!(provider_id = %provider_id, collected_at = %catalog.collected_at,
+        "ChatGPT model refresh unavailable; retaining the verified catalog for up to 24 hours");
+    Ok(models)
+}
+
+// Read-time projection only: stored preferences and manual model definitions survive
+// missing, expired or foreign provenance. No token refresh or provider request here.
+pub(crate) async fn available_models(
+    pool: &SqlitePool,
+    provider_id: &str,
+) -> Result<Vec<AiModel>, String> {
+    let _auth_guard = lock_auth_mutation(provider_id).await?;
+    recover_pending_disconnect_locked(pool, provider_id).await?;
+    let provider = repository::get_provider_config(pool, provider_id)
+        .await
+        .map_err(db_error_to_string)?
+        .ok_or_else(|| format!("Provider {provider_id} not found."))?;
+    let secret = secrets::reload_chatgpt_secret(provider_id)
+        .map_err(|error| format!("Failed to reload the current ChatGPT session: {error}"))?;
+    let mut models = repository::list_models_by_provider(pool, provider_id)
+        .await
+        .map_err(db_error_to_string)?;
+    let verified = if let Some(secret) =
+        secret.filter(|_| provider.auth_status.as_deref() == Some("authenticated"))
+    {
+        verified_catalog_for_models(
+            pool,
+            provider_id,
+            &provider,
+            &secret,
+            &models,
+            chrono::Utc::now(),
+        )
+        .await?
+        .is_some()
+    } else {
+        false
+    };
+    if !verified {
+        models.retain(|model| model.is_manual);
+    }
+    Ok(models)
+}
+
+async fn verified_catalog_for_models(
+    pool: &SqlitePool,
+    provider_id: &str,
+    provider: &ProviderConfig,
+    secret: &ChatGptSecret,
+    models: &[AiModel],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<VerifiedModelsCatalog>, String> {
     let catalog = repository::get_app_setting(pool, &verified_models_key(provider_id))
         .await
         .map_err(db_error_to_string)?
         .and_then(|record| serde_json::from_str::<VerifiedModelsCatalog>(&record.value_json).ok())
-        .filter(|catalog| catalog_matches_session(catalog, provider, secret, now))
-        .ok_or_else(unavailable)?;
-    let models = repository::list_models_by_provider(pool, provider_id)
-        .await
-        .map_err(db_error_to_string)?;
-    // User-added models stay user-owned, but changed discovery rows cannot inherit
-    // the provenance of a different catalog. Never rewrite preferences on fallback.
+        .filter(|catalog| catalog_matches_session(catalog, provider, secret, now));
+    let Some(catalog) = catalog else {
+        return Ok(None);
+    };
     let discovered_ids: std::collections::BTreeSet<_> = models
         .iter()
         .filter(|model| !model.is_manual)
@@ -482,11 +537,9 @@ async fn retain_verified_models(
     let all_ids: std::collections::BTreeSet<_> =
         models.iter().map(|model| model.model_id.as_str()).collect();
     if !discovered_ids.is_subset(&verified_ids) || !verified_ids.is_subset(&all_ids) {
-        return Err(unavailable());
+        return Ok(None);
     }
-    warn!(provider_id = %provider_id, collected_at = %catalog.collected_at,
-        "ChatGPT model refresh unavailable; retaining the verified catalog for up to 24 hours");
-    Ok(models)
+    Ok(Some(catalog))
 }
 
 async fn persist_models_for_current_session(
@@ -1141,6 +1194,94 @@ mod tests {
         .unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].is_manual);
+    }
+
+    #[tokio::test]
+    async fn available_catalog_hides_unverified_discovery_preserving_preferences_and_manual_rows() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let (pool, _directory) = sync_fixture().await;
+        collect_models(&pool, "verified-model").await;
+        let original = verified_catalog(&pool).await;
+        sqlx::query("UPDATE ai_models SET is_enabled = 0, context_window_tokens = 12345")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO ai_models (id, provider_id, model_id, name, is_manual, first_seen_at, last_seen_at) VALUES ('manual', 'chatgpt', 'manual-model', 'Manual', 1, 'original', 'original')")
+            .execute(&pool).await.unwrap();
+        let valid = super::available_models(&pool, "chatgpt").await.unwrap();
+        assert_eq!(valid.len(), 2);
+        assert!(
+            !valid
+                .iter()
+                .find(|model| model.model_id == "verified-model")
+                .unwrap()
+                .is_enabled
+        );
+
+        let provenance: serde_json::Value = serde_json::from_str(&original).unwrap();
+        let mut expired = provenance.clone();
+        expired["collected_at"] =
+            serde_json::json!(chrono::Utc::now() - chrono::Duration::hours(25));
+        let mut foreign = provenance.clone();
+        foreign["account_id"] = serde_json::json!("another-synthetic-account");
+        for invalid in [None, Some(expired.to_string()), Some(foreign.to_string())] {
+            if let Some(value) = invalid {
+                crate::db::repository::set_app_setting(
+                    &pool,
+                    &super::verified_models_key("chatgpt"),
+                    &value,
+                )
+                .await
+                .unwrap();
+            } else {
+                sqlx::query("DELETE FROM app_settings")
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            let available = super::available_models(&pool, "chatgpt").await.unwrap();
+            assert_eq!(available.len(), 1);
+            assert_eq!(available[0].model_id, "manual-model");
+            let error = super::sync_models_with_fetch(&pool, "chatgpt", |_, _, _| async {
+                Err("Synthetic failure".to_string())
+            })
+            .await
+            .unwrap_err();
+            assert!(error.contains("Retry model sync"));
+            assert_eq!(
+                super::available_models(&pool, "chatgpt")
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let stored = crate::db::repository::list_models_by_provider(&pool, "chatgpt")
+                .await
+                .unwrap();
+            let discovered = stored
+                .iter()
+                .find(|model| model.model_id == "verified-model")
+                .unwrap();
+            assert!(!discovered.is_enabled);
+            assert_eq!(discovered.context_window_tokens, Some(12345));
+        }
+        // Successful retry republishes discovery without erasing the enable preference.
+        collect_models(&pool, "verified-model").await;
+        let available = super::available_models(&pool, "chatgpt").await.unwrap();
+        assert_eq!(available.len(), 2);
+        assert!(
+            !available
+                .iter()
+                .find(|model| model.model_id == "verified-model")
+                .unwrap()
+                .is_enabled
+        );
+        let mut changed_secret = test_secret();
+        changed_secret.account_id = Some("switched-synthetic-account".to_string());
+        crate::secrets::set_chatgpt_secret("chatgpt", &changed_secret).unwrap();
+        let available = super::available_models(&pool, "chatgpt").await.unwrap();
+        assert_eq!(available.len(), 1);
+        assert!(available[0].is_manual);
     }
 
     #[tokio::test]
