@@ -72,7 +72,8 @@ Les diagnostics n'annulent jamais une mutation déjà validée.
 
 ## Limites de cette tranche
 
-- TypeScript et JavaScript, y compris TSX, JSX, MTS, CTS, MJS et CJS.
+- Le code sélectionne TypeScript et JavaScript, y compris TSX, JSX, MTS, CTS,
+  MJS et CJS. La preuve avec un serveur réel porte uniquement sur `.ts`.
 - Quatre documents par lot, vingt diagnostics par document et 2048 caractères
   par champ textuel. Les données spécifiques du serveur et documents liés sont
   exclus. Les documents dépassant 1 Mio ne sont pas envoyés.
@@ -98,3 +99,37 @@ installation de validation existante. Il passe par les vrais outils `write`
 et `edit`, attend l'erreur 2322, puis vérifie la publication vide après correction.
 Il n'installe rien. La fixture protocolaire Python couvre séparément les courses,
 l'annulation et les états d'échec.
+
+## Checkpoints conversationnels et preuves par parcours
+
+Les conversations desktop conservent leurs snapshots avant/après et leur
+sauvegarde de checkpoint. `write` et le contenu calculé par `edit` passent par
+la transaction native `write` avec la révision attendue. `apply_patch` conserve
+sa transaction native par lot. Le résultat conversationnel reprend les
+observations natives après sauvegarde du checkpoint. Une nouvelle vérification
+des révisions des fichiers du checkpoint retire les observations `ready` si le
+contenu a changé pendant cette sauvegarde. Cette vérification supplémentaire
+partage un budget de 250 ms pour le checkpoint et s'interrompt à l'annulation.
+Une vérification inachevée produit `stale`. Un appel filesystem déjà lancé peut
+finir en arrière-plan, sans modifier le résultat publié.
+
+Si le checkpoint échoue, la compensation existante reste conditionnée par la
+révision appliquée. Elle préserve une écriture concurrente et ne publie aucun
+diagnostic de la mutation annulée. L'AbortSignal transmet un identifiant aux
+trois mutations natives. L'arrêt coupe l'observation accessoire ; il conserve
+l'écriture validée et son checkpoint, puis empêche le prochain tour annulé.
+Les anciens runtimes retournant `UNSUPPORTED_WORKSPACE_TOOL` conservent leur
+fallback filesystem, sans preuve LSP.
+
+| Parcours | Preuve obtenue | Limite |
+|---|---|---|
+| Exécuteur Rust desktop, `.ts`, stdio TypeScript réel | `write` produit 2322, `edit` le corrige, publication vide et nouvelle révision/session | Configuration injectée pour le test ; aucune conversation ni UI |
+| Conversation desktop, racine directe ou montage virtuel, fixture `.ts` | Répartiteur, runtime, exécuteur et batch d'outils réels ; `write`, `edit`, `apply_patch`, checkpoints, refus, rollback, concurrence et annulation | IPC natif, filesystem et persistance simulés |
+| Projection OpenAI Chat Completions | Le JSON et ses états arrivent dans l'élément `tool` destiné à la prochaine requête ; cycle erreur/correction programmé | Codec réel, aucun appel fournisseur et aucune correction autonome |
+| Responses, Anthropic, Copilot et autres codecs | Aucune preuve LSP spécifique dans ce lot | Les tests génériques de transport ne prouvent pas ce parcours |
+| JavaScript, JSX, TSX, MTS, CTS, MJS, CJS | Sélection implémentée par extension | Aucun cycle erreur/correction avec serveur réel établi |
+| Remote kernel, WSL, shell et éditions externes | Aucune preuve conversationnelle LSP | Voir les limites de périmètre ci-dessus |
+
+Le test réel dure environ 21 secondes pour deux observations. Il ne mesure
+ni le délai d'une réparation autonome ni le nombre de requêtes économisées.
+Aucun gain produit n'est revendiqué et aucune UI n'a été exercée.

@@ -56,6 +56,9 @@ const interruptibleWorkspaceToolIds = new Set([
   "glob",
   "grep",
   "ast_grep",
+  "write",
+  "edit",
+  "apply_patch",
 ]);
 let workspaceToolExecutionCounter = 0;
 
@@ -973,8 +976,9 @@ const buildApplyPatchDiff = (
 const countLogicalLines = (content: string): number =>
   splitTextLines(content).lines.length;
 
-const buildStructuredWriteResponse = (
+const formatStructuredWriteResponse = (
   input: StructuredWriteResultInput,
+  diagnostics: unknown[],
 ): string =>
   JSON.stringify(
     {
@@ -1013,7 +1017,7 @@ const buildStructuredWriteResponse = (
           deletions: input.deletions,
         },
       ]),
-      diagnostics: [],
+      diagnostics,
       validation: {
         all_files_readable:
           input.validation.readable || !input.validation.exists,
@@ -2129,9 +2133,86 @@ export const executeWorkspaceTool = async (
       toolName === "apply_patch");
   const virtualRootEnabled = virtualRootCandidate && !useMetadataWorkspace;
 
+  // Capture once; checkpoint publication may await persistence while the UI navigates.
+  let nativeDiagnostics: unknown[] = [];
+  let checkpointFilesForDiagnostics: AgentCodeCheckpointFile[] = [];
+  const recordCheckpoint = options.onCodeCheckpoint;
+  if (recordCheckpoint) {
+    options = {
+      ...options,
+      onCodeCheckpoint: async (checkpoint) => {
+        await recordCheckpoint(checkpoint);
+        checkpointFilesForDiagnostics = checkpoint.files;
+      },
+    };
+  }
+  const diagnosticsAfterCheckpoint = async (): Promise<unknown[]> => {
+    const isReady = (item: unknown): item is Record<string, unknown> =>
+      item !== null && typeof item === "object" &&
+      (item as { status?: unknown }).status === "ready";
+    if (!nativeDiagnostics.some(isReady)) {
+      return nativeDiagnostics;
+    }
+    let stopChecking = false;
+    let stop!: () => void;
+    const interrupted = new Promise<boolean>((resolve) => {
+      stop = () => { stopChecking = true; resolve(true); };
+    });
+    // Checkpoint persistence can outlive the native observation. Revalidate with
+    // one small budget for the whole checkpoint; filesystem IPC itself has no abort.
+    const deadline = setTimeout(stop, 250);
+    options.signal?.addEventListener("abort", stop, { once: true });
+    if (options.signal?.aborted) stop();
+    const hasChanged = async (): Promise<boolean> => {
+      for (const file of checkpointFilesForDiagnostics) {
+        if (stopChecking) return true;
+        try {
+          const current = await readCheckpointSnapshot({
+            displayPath: file.path,
+            realPath: file.realPath,
+            workspacePath: file.workspacePath,
+            workspaceScope: file.workspaceScope === "metadata" ? "metadata" : undefined,
+            allowOutsideWorkspace: false,
+          });
+          if (current.exists !== file.after.exists || current.revision !== file.after.revision) {
+            return true;
+          }
+        } catch {
+          return true;
+        }
+      }
+      return false;
+    };
+    let stale: boolean;
+    try {
+      stale = await Promise.race([hasChanged(), interrupted]);
+    } finally {
+      stopChecking = true;
+      clearTimeout(deadline);
+      options.signal?.removeEventListener("abort", stop);
+    }
+    return nativeDiagnostics.map((item) => {
+      if (!isReady(item)) return item;
+      if (!stale && !options.signal?.aborted) return item;
+      return {
+        ...item,
+        status: options.signal?.aborted ? "cancelled" : "stale",
+        items: [],
+        truncated: false,
+      };
+    });
+  };
+  const buildStructuredWriteResponse = async (input: StructuredWriteResultInput): Promise<string> => {
+    return formatStructuredWriteResponse(input, await diagnosticsAfterCheckpoint());
+  };
+
   const executeBackendTool = async (
     backendToolName: string,
     backendArgs: ToolArgs,
+    localTarget?: {
+      workspacePath?: string | null;
+      workspaceScope?: tauriIpc.WorkspaceScope;
+    },
   ): Promise<string> => {
     if (useTauri) {
       const executionId = interruptibleWorkspaceToolIds.has(backendToolName)
@@ -2147,12 +2228,12 @@ export const executeWorkspaceTool = async (
         mode,
         toolId: backendToolName,
         args: backendArgs,
-        workspacePath: effectiveWorkspacePath,
-        workspaceScope: useMetadataWorkspace
-          ? ("metadata" as const)
-          : undefined,
-        projectMounts: options.projectMounts,
-        virtualRootEnabled,
+        workspacePath: localTarget ? localTarget.workspacePath : effectiveWorkspacePath,
+        workspaceScope: localTarget
+          ? localTarget.workspaceScope
+          : useMetadataWorkspace ? ("metadata" as const) : undefined,
+        projectMounts: localTarget ? undefined : options.projectMounts,
+        virtualRootEnabled: localTarget ? false : virtualRootEnabled,
         focusedProjectId: backendFocusedProjectId,
         executionId,
       });
@@ -2163,7 +2244,16 @@ export const executeWorkspaceTool = async (
         if (options.signal?.aborted) abortListener();
       }
       try {
-        return await executionPromise;
+        const response = await executionPromise;
+        if (isWriteTool(backendToolName)) {
+          try {
+            const parsed = JSON.parse(response);
+            nativeDiagnostics = Array.isArray(parsed.diagnostics) ? parsed.diagnostics : [];
+          } catch {
+            // Refusals may be plain text and carry no observations.
+          }
+        }
+        return response;
       } finally {
         if (abortListener) {
           options.signal?.removeEventListener("abort", abortListener);
@@ -2324,6 +2414,46 @@ export const executeWorkspaceTool = async (
     }
   };
 
+  // Keep frontend checkpoint snapshots and CAS compensation, but commit through
+  // the native transaction so the written revision is the one observed by LSP.
+  const writeCheckpointedText = async (
+    request: Parameters<typeof tauriIpc.fsWriteFile>[0],
+  ): Promise<Awaited<ReturnType<typeof tauriIpc.fsWriteFile>>> => {
+    assertToolExecutionActive();
+    const response = await executeBackendTool("write", {
+      path: request.path,
+      content: request.content,
+      create_dirs: request.createDirs,
+      expected_revision: request.expectedRevision,
+      unix_mode: request.unixMode,
+    }, { workspacePath: request.workspacePath, workspaceScope: request.workspaceScope });
+    if (response === "UNSUPPORTED_WORKSPACE_TOOL") {
+      // Compatibility with older desktop runtimes, explicitly without LSP proof.
+      return tauriIpc.fsWriteFile(request);
+    }
+    let result;
+    try {
+      result = JSON.parse(response);
+    } catch {
+      throw new Error(response);
+    }
+    if (result.ok !== true) throw new Error(response);
+    const revision = result.files?.[0]?.validation?.revision;
+    if (typeof revision !== "string") {
+      throw new Error("The native write returned no applied revision; a checkpoint cannot be recorded safely.");
+    }
+    return {
+      path: typeof result.path === "string" ? result.path : request.path,
+      bytes_written: typeof result.bytes_written === "number"
+        ? result.bytes_written
+        : new TextEncoder().encode(request.content).byteLength,
+      created: result.created === true,
+      skipped: result.skipped === true,
+      revision,
+      unix_mode: result.files?.[0]?.validation?.unix_mode ?? request.unixMode ?? null,
+    };
+  };
+
   const validateBackendTool = async (
     backendToolName: string,
     path?: string,
@@ -2364,7 +2494,7 @@ export const executeWorkspaceTool = async (
       try {
         const backendResult = await executeBackendTool(toolName, args);
 
-        if (options.signal?.aborted) {
+        if (options.signal?.aborted && !isWriteTool(toolName)) {
           return "Tool execution aborted";
         }
 
@@ -2703,7 +2833,7 @@ export const executeWorkspaceTool = async (
                 result.readback.revision,
               ),
             mutation: async () => {
-              const result = await tauriIpc.fsWriteFile({
+              const result = await writeCheckpointedText({
                 path: realPath,
                 content,
                 createDirs: rawArgs.create_dirs !== false,
@@ -2850,7 +2980,7 @@ export const executeWorkspaceTool = async (
               reread.revision,
             ),
           mutation: async () => {
-            const result = await tauriIpc.fsWriteFile({
+            const result = await writeCheckpointedText({
               path: realPath,
               content: updated,
               createDirs: true,
@@ -3371,7 +3501,7 @@ export const executeWorkspaceTool = async (
             ok: errors.length === 0,
             files,
             diff: buildApplyPatchDiff(files),
-            diagnostics: [],
+            diagnostics: await diagnosticsAfterCheckpoint(),
             validation: {
               all_files_readable: errors.length === 0,
               files: validationFiles,
@@ -3885,7 +4015,7 @@ export const executeWorkspaceTool = async (
             result.readback.revision,
           ),
         mutation: async () => {
-          const result = await tauriIpc.fsWriteFile({
+          const result = await writeCheckpointedText({
             path,
             content,
             createDirs,
@@ -4010,7 +4140,7 @@ export const executeWorkspaceTool = async (
             result.readback.revision,
           ),
         mutation: async () => {
-          const result = await tauriIpc.fsWriteFile({
+          const result = await writeCheckpointedText({
             path,
             content: updated,
             createDirs: true,
@@ -4484,7 +4614,7 @@ export const executeWorkspaceTool = async (
           ok: errors.length === 0,
           files,
           diff: buildApplyPatchDiff(files),
-          diagnostics: [],
+          diagnostics: await diagnosticsAfterCheckpoint(),
           validation: {
             all_files_readable: errors.length === 0,
             files: validationFiles,
