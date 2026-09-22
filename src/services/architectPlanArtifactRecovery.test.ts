@@ -161,6 +161,82 @@ describe('artifact durable recovery', () => {
     });
   }
 
+  it('resumes an interruption during rollback without losing before-images', async () => {
+    await put('Original');
+    const before = new Map(files);
+    let diskDuringRollback!: Map<string, string>;
+    let settingsDuringRollback!: Map<string, string>;
+    writes = 0;
+    onWrite = () => {
+      if (writes === 5) throw new Error('initial interruption');
+      if (writes === 6) {
+        diskDuringRollback = new Map(files); settingsDuringRollback = new Map(settings);
+        onWrite = undefined;
+        throw new Error('rollback interruption');
+      }
+    };
+    await expect(put('Replacement')).rejects.toThrow('rollback interruption');
+    restore(files, diskDuringRollback); restore(settings, settingsDuringRollback);
+    await restart();
+    await read();
+    expect(files).toEqual(before);
+    await read();
+    expect(files).toEqual(before);
+  });
+
+  const captureInterruptedValidation = async () => {
+    const artifact = await put('Original');
+    let capturedFiles!: Map<string, string>;
+    let capturedSettings!: Map<string, string>;
+    writes = 0;
+    onWrite = () => {
+      if (writes !== 4) return;
+      onWrite = undefined;
+      capturedFiles = new Map(files); capturedSettings = new Map(settings);
+      throw new Error('lost process');
+    };
+    await expect(service.validateVisibleTaskArtifact({ branchName, plan, task, artifactId: artifact.id })).rejects.toThrow();
+    restore(files, capturedFiles); restore(settings, capturedSettings);
+  };
+
+  for (const change of ['add', 'remove']) {
+    it(`blocks a pending validation after ${change} of an unrelated registered project`, async () => {
+      const projects = useAppStore.getState().standaloneProjects;
+      const unrelated = { ...projects[0]!, id: 'c', path: '/synthetic/c' };
+      if (change === 'remove') useAppStore.setState({ standaloneProjects: [...projects, unrelated] });
+      await captureInterruptedValidation();
+      const pending = settings.get(journalKey);
+      const partial = new Map(files);
+      useAppStore.setState({ standaloneProjects: change === 'add' ? [...projects, unrelated] : projects });
+      await restart();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(service.loadUnvalidatedCurrentTaskArtifactsForCompletion(task, async () => plan)).rejects.toThrow('workspace changed');
+      }
+      expect(files).toEqual(partial);
+      expect(settings.get(journalKey)).toBe(pending);
+      useAppStore.setState({ standaloneProjects: change === 'add' ? projects : [...projects, unrelated] });
+      expect((await read()).reviews).toEqual([]);
+    });
+  }
+
+  for (const corruption of ['phase', 'updatedAt']) {
+    it(`keeps an invalid ${corruption} journal envelope blocking on repeated reads`, async () => {
+      await captureInterruptedValidation();
+      const entries = JSON.parse(settings.get(journalKey)!);
+      if (corruption === 'phase') entries[0].phase = 'invalid-phase';
+      else delete entries[0].updatedAt;
+      settings.set(journalKey, JSON.stringify(entries));
+      const corruptJournal = settings.get(journalKey);
+      const partial = new Map(files);
+      await restart();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(service.loadUnvalidatedCurrentTaskArtifactsForCompletion(task, async () => plan)).rejects.toThrow('journal envelope');
+      }
+      expect(files).toEqual(partial);
+      expect(settings.get(journalKey)).toBe(corruptJournal);
+    });
+  }
+
   it('keeps a committed update after journal cleanup fails and reopens idempotently', async () => {
     await put('Original');
     onSetting = (value) => { if (value === '[]') throw new Error('cleanup unavailable'); };
@@ -276,6 +352,28 @@ describe('artifact durable recovery', () => {
     expect(await service.listVisibleTaskArtifacts({ branchName, plan, task: catalogTask })).toHaveLength(1);
     await service.validateVisibleTaskArtifact({ branchName, plan, task: catalogTask, artifactId: artifact.id });
     expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toEqual([]);
+  });
+
+  it('reads and reviews legacy runtime-owned artifacts without rewriting their content', async () => {
+    const artifact = await put('Legacy content');
+    const catalogTask = { ...task, id: 'task:v1:develop:plan-1:task', node_id: 'task' };
+    const legacyPath = service.getPlanArtifactContentPath(branchName, plan.id, catalogTask.id, artifact.id, 'markdown');
+    for (const root of roots) {
+      const indexPath = key(root, service.getPlanArtifactIndexPath(branchName, plan.id));
+      const index = JSON.parse(files.get(indexPath)!);
+      index.artifacts[0].taskId = catalogTask.id;
+      index.artifacts[0].path = legacyPath;
+      files.set(indexPath, JSON.stringify(index));
+      files.set(key(root, legacyPath), files.get(key(root, artifact.path))!);
+      files.delete(key(root, artifact.path));
+      files.delete(key(root, manifestPath)); // Legacy plans without a manifest remain supported.
+    }
+    expect((await read()).artifacts).toHaveLength(1);
+    expect(await service.listVisibleTaskArtifacts({ branchName, plan, task: catalogTask })).toHaveLength(1);
+    expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toHaveLength(1);
+    await service.validateVisibleTaskArtifact({ branchName, plan, task: catalogTask, artifactId: artifact.id });
+    expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toEqual([]);
+    for (const root of roots) expect(files.get(key(root, legacyPath))).toBe('Legacy content');
   });
 
   it('blocks an invalid artifact journal scope without writing or discarding the intent', async () => {

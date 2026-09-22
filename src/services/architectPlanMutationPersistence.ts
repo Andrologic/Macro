@@ -290,6 +290,14 @@ export const recoverArchitectPlanReplicaMutationsUnlocked = async (
   const entries = await loadArchitectPlanMutationJournal(deps.tauri);
   if (entries.length === 0) return;
   const allowedWorkspaceRoots = new Set(currentWorkspaceKey.split('|').filter(Boolean));
+  const overlappingArtifactIntent = entries.find((entry) => entry.operation === 'artifacts' &&
+    entry.workspaceKey !== currentWorkspaceKey &&
+    entry.workspaceKey.split('|').some((root) => allowedWorkspaceRoots.has(root)));
+  if (overlappingArtifactIntent) {
+    // The registry changed. Do not silently read partial artifacts, or replay
+    // under a different lock while the original workspace could still be active.
+    throw new Error(`Artifact recovery workspace changed: ${overlappingArtifactIntent.id}`);
+  }
   for (const entry of entries.filter((candidate) => candidate.workspaceKey === currentWorkspaceKey)) {
       if (entry.operation === 'artifacts') {
         if (!isArtifactMutation(entry)) {

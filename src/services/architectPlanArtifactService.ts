@@ -16,7 +16,7 @@ import {
   resolveTargetBranch,
 } from './architectPlanService';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
-import { getTaskBusinessId, resolveTaskReference } from './durableIdentity';
+import { getTaskBusinessId, resolveTaskReference, toTaskRuntimeId } from './durableIdentity';
 import { isPlanFinalizationTask } from './implementTaskCatalog';
 import {
   enqueueArchitectPlanMutation,
@@ -685,6 +685,16 @@ export const resolveTaskArtifactTarget = async (
   return { branchName, plan: retargetedPlan, task, currentTask: currentTask! };
 };
 
+// Legacy indexes may store a catalog runtime id, or its sanitized form. Resolve
+// only exact aliases of nodes in this plan; keep the stored bytes for integrity checks.
+const artifactTaskNodeId = (taskId: string, branchName: string, plan: ArchitectPlanRecord): string => {
+  const matches = plan.nodes.filter((node) => {
+    const runtimeId = toTaskRuntimeId({ branchName, planId: plan.id, nodeId: node.id });
+    return taskId === node.id || taskId === runtimeId || taskId === sanitizeId(runtimeId);
+  });
+  return matches.length === 1 ? matches[0]!.id : taskId;
+};
+
 export const resolveVisiblePlanTaskIds = (params: {
   plan: Pick<ArchitectPlanRecord, 'nodes'>;
   task: Pick<CatalogedImplementTask, 'id' | 'node_id' | 'dependencies' | 'task_source'>;
@@ -750,10 +760,10 @@ export const listVisibleTaskArtifacts = async (params: {
     includeOwn: params.includeOwn,
   });
   return index.artifacts
-    .filter((artifact) => visibleTaskIds.has(artifact.taskId))
+    .filter((artifact) => visibleTaskIds.has(artifactTaskNodeId(artifact.taskId, params.branchName, params.plan)))
     .map((artifact) => ({
       ...artifact,
-      visibility: (artifact.taskId === getTaskBusinessId(params.task) ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
+      visibility: (artifactTaskNodeId(artifact.taskId, params.branchName, params.plan) === getTaskBusinessId(params.task) ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
     }))
     .sort((left, right) => {
       if (left.visibility !== right.visibility) {
@@ -782,7 +792,7 @@ export const listVisibleTaskArtifactReviewEntries = async (params: {
       reviews.find(
         (candidate) =>
           candidate.artifactId === artifact.id &&
-          candidate.taskId === sanitizeId(getTaskBusinessId(params.task)),
+          artifactTaskNodeId(candidate.taskId, params.branchName, params.plan) === getTaskBusinessId(params.task),
       ) || null;
     return {
       artifact,
@@ -828,7 +838,7 @@ export const listPlanArtifactOverview = async (params: {
         (contract) =>
           !index.artifacts.some(
             (artifact) =>
-              artifact.taskId === node.id &&
+              artifactTaskNodeId(artifact.taskId, params.branchName, params.plan) === node.id &&
               (artifact.contractId === contract.id || artifact.id === contract.id),
           ),
       )
@@ -915,10 +925,10 @@ export const readVisibleTaskArtifactDiff = async (params: {
     includeOwn: true,
   });
   const visibleArtifacts = index.artifacts
-    .filter((artifact) => visibleTaskIds.has(artifact.taskId))
+    .filter((artifact) => visibleTaskIds.has(artifactTaskNodeId(artifact.taskId, params.branchName, params.plan)))
     .map((artifact) => ({
       ...artifact,
-      visibility: (artifact.taskId === getTaskBusinessId(params.task) ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
+      visibility: (artifactTaskNodeId(artifact.taskId, params.branchName, params.plan) === getTaskBusinessId(params.task) ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
     }));
   const artifact = visibleArtifacts.find((candidate) => candidate.id === artifactId);
   if (!artifact) {
@@ -1033,7 +1043,7 @@ const validateVisibleTaskArtifactInternal = async (params: {
       ...(index.reviews || []).filter(
         (candidate) =>
           candidate.artifactId !== review.artifactId ||
-          candidate.taskId !== review.taskId,
+          artifactTaskNodeId(candidate.taskId, params.branchName, params.plan) !== review.taskId,
       ),
       review,
     ].sort((left, right) => `${left.taskId}:${left.artifactId}`.localeCompare(`${right.taskId}:${right.artifactId}`)),
@@ -1080,7 +1090,7 @@ const unvalidateVisibleTaskArtifactInternal = async (params: {
     reviews: (index.reviews || []).filter(
       (review) =>
         review.artifactId !== artifactId ||
-        review.taskId !== sanitizeId(getTaskBusinessId(params.task)),
+        artifactTaskNodeId(review.taskId, params.branchName, params.plan) !== getTaskBusinessId(params.task),
     ),
   };
   await writePlanTaskArtifactIndex({
@@ -1159,7 +1169,7 @@ const putTaskArtifactInternal = async ({
   const existingByContract =
     contractId
       ? index.artifacts.find(
-          (artifact) => artifact.taskId === getTaskBusinessId(target.task) && artifact.contractId === contractId,
+          (artifact) => artifactTaskNodeId(artifact.taskId, target.branchName, target.plan) === getTaskBusinessId(target.task) && artifact.contractId === contractId,
         )
       : undefined;
   const visibleTaskIds = resolveVisiblePlanTaskIds({
@@ -1172,7 +1182,7 @@ const putTaskArtifactInternal = async ({
     ? index.artifacts.find(
         (artifact) =>
           artifact.id === requestedSupersedesArtifactId &&
-          visibleTaskIds.has(artifact.taskId),
+          visibleTaskIds.has(artifactTaskNodeId(artifact.taskId, target.branchName, target.plan)),
       )
     : undefined;
   if (requestedSupersedesArtifactId && !supersededArtifact) {
@@ -1190,21 +1200,22 @@ const putTaskArtifactInternal = async ({
     (existingByContract && existingByContract.id !== artifactId
       ? existingByContract.id
       : undefined);
-  if (previous && previous.taskId !== getTaskBusinessId(target.task)) {
+  if (previous && artifactTaskNodeId(previous.taskId, target.branchName, target.plan) !== getTaskBusinessId(target.task)) {
     throw toServiceError(`Artifact id ${artifactId} already belongs to another task.`);
   }
   const now = new Date().toISOString();
+  const artifactTaskId = previous?.taskId ?? getTaskBusinessId(target.task);
   const path = getPlanArtifactContentPath(
     target.branchName,
     target.plan.id,
-    getTaskBusinessId(target.task),
+    artifactTaskId,
     artifactId,
     contentType,
   );
   const artifact: PlanTaskArtifact = {
     id: artifactId,
     planId: target.plan.id,
-    taskId: getTaskBusinessId(target.task),
+    taskId: artifactTaskId,
     kind,
     title,
     summary,
@@ -1313,7 +1324,7 @@ export const formatTaskArtifactListResult = async (
           required: contract.required,
           satisfied: artifacts.some(
             (artifact) =>
-              artifact.taskId === getTaskBusinessId(target.task) &&
+              artifactTaskNodeId(artifact.taskId, target.branchName, target.plan) === getTaskBusinessId(target.task) &&
               (artifact.contractId === contract.id || artifact.id === contract.id),
           ),
         })),
@@ -1404,7 +1415,7 @@ export const loadMissingRequiredArtifactsForCompletion = async (
       (contract) =>
         !index.artifacts.some(
           (artifact) =>
-            artifact.taskId === getTaskBusinessId(task) &&
+            artifactTaskNodeId(artifact.taskId, branchName, plan) === getTaskBusinessId(task) &&
             (artifact.contractId === contract.id || artifact.id === contract.id),
         ),
     )
@@ -1449,13 +1460,13 @@ export const loadUnvalidatedCurrentTaskArtifactsForCompletion = async (
   });
   const reviews = index.reviews || [];
   return index.artifacts
-    .filter((artifact) => artifact.taskId === getTaskBusinessId(task))
+    .filter((artifact) => artifactTaskNodeId(artifact.taskId, branchName, plan) === getTaskBusinessId(task))
     .filter(
       (artifact) =>
         !reviews.some(
           (review) =>
             review.artifactId === artifact.id &&
-            review.taskId === getTaskBusinessId(task),
+            artifactTaskNodeId(review.taskId, branchName, plan) === getTaskBusinessId(task),
         ),
     );
 };

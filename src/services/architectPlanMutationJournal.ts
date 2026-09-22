@@ -80,6 +80,12 @@ const loadUnlocked = async (transport: JournalTransport): Promise<ArchitectPlanM
     const values = parseArray(expectedValueJson);
     const valid = values.filter(isEntry);
     const invalid = values.filter((entry) => !isEntry(entry));
+    if (invalid.some((entry) => entry !== null && typeof entry === 'object' &&
+      (entry as { operation?: unknown }).operation === 'artifacts')) {
+      // Preserve the blocking intent and its before-images even when the envelope
+      // cannot be parsed. Quarantine alone would allow partially applied reviews.
+      throw new Error('Invalid artifact recovery journal envelope.');
+    }
     if (invalid.length === 0) return valid;
 
     await appendQuarantine(

@@ -1049,7 +1049,12 @@ reste présent jusqu'au succès de cette reprise.
 Chaque écriture ou suppression réutilise la révision native observée. La reprise
 refuse un fichier dont le contenu diffère à la fois de l'état initial et de
 l'état attendu ; elle conserve l'intention pour ne pas écraser une modification
-externe. Une intention d'artefacts invalide bloque aussi la reprise. Les lectures
+externe. Une intention d'artefacts invalide, y compris son enveloppe, bloque
+aussi la reprise et reste dans le journal actif. Si le registre des projets
+change et qu'une ancienne clé de workspace chevauche la clé actuelle, la reprise
+bloque explicitement l'accès plutôt que de rejouer sous un verrou différent.
+Rétablir le registre initial permet alors de reprendre cette intention.
+Les lectures
 d'artefacts vérifient les chemins, les empreintes de contenu, le résumé du
 manifeste lorsqu'il existe et l'accord des répliques avant d'exposer une
 validation ou d'autoriser la fin d'une tâche. Un ancien état partiel sans journal
