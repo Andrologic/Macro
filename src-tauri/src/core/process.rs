@@ -343,6 +343,9 @@ impl ContainedBackgroundProcess {
 
     #[cfg(unix)]
     async fn terminate_unix(&mut self, grace_period: Duration) -> io::Result<ExitStatus> {
+        if self.process_group_id.is_none() {
+            return self.child.wait().await;
+        }
         let (process_ids, inspection_error) = suspend_unix_process_tree(
             self.process_group_id,
             &self.containment_id,
@@ -364,7 +367,13 @@ impl ContainedBackgroundProcess {
                 Some(error) => Err(io::Error::other(format!(
                     "Process tree inspection was incomplete: {error}"
                 ))),
-                None => status,
+                None => {
+                    let status = status?;
+                    // A complete inspection and reap retires this identity.
+                    // Drop must not scan the machine again or signal a reused PID.
+                    self.process_group_id = None;
+                    Ok(status)
+                }
             },
             Err(_) => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -634,7 +643,9 @@ fn bounded_process_inspection(
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    let deadline = deadline.min(std::time::Instant::now() + PROCESS_INSPECTION_TIMEOUT);
+    let started = std::time::Instant::now();
+    let program = command.get_program().to_string_lossy().into_owned();
+    let deadline = deadline.min(started + PROCESS_INSPECTION_TIMEOUT);
     if std::time::Instant::now() >= deadline {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
@@ -667,7 +678,11 @@ fn bounded_process_inspection(
             if std::time::Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "process inspection timed out",
+                    format!(
+                        "{program} process inspection timed out after {:?} ({} bytes, EOF={eof})",
+                        started.elapsed(),
+                        output.len()
+                    ),
                 ));
             }
             match stdout.read(&mut buffer) {
@@ -1018,18 +1033,32 @@ fn suspend_unix_process_tree(
     containment_id: &str,
     containment_marker_path: Option<&Path>,
 ) -> (Vec<u32>, Option<io::Error>) {
-    let deadline = std::time::Instant::now() + PROCESS_TREE_INSPECTION_TIMEOUT;
-    let mut inspection_error = None;
-    if let Some(root_id) = root_id {
-        signal_process_group(root_id, libc::SIGSTOP);
-    }
-    let mut process_ids = root_id.into_iter().collect::<HashSet<_>>();
-    for _ in 0..8 {
-        let previous_len = process_ids.len();
-        for discovered in [
+    suspend_unix_process_tree_using(root_id, |process_ids, deadline| {
+        let mut inspection_error = None;
+        // On macOS both searches inventory the machine. They are independent,
+        // so share the same budget instead of spending it serially.
+        #[cfg(target_os = "macos")]
+        let discoveries = std::thread::scope(|scope| {
+            let marker = std::thread::Builder::new()
+                .name("containment-marker".into())
+                .spawn_scoped(scope, || {
+                    processes_with_containment_marker(containment_marker_path, deadline)
+                });
+            let environment = processes_with_containment_id(containment_id, deadline);
+            let marker = match marker {
+                Ok(handle) => handle.join().unwrap_or_else(|_| {
+                    Err(io::Error::other("process marker inspection panicked"))
+                }),
+                Err(error) => Err(error),
+            };
+            [environment, marker]
+        });
+        #[cfg(not(target_os = "macos"))]
+        let discoveries = [
             processes_with_containment_id(containment_id, deadline),
             processes_with_containment_marker(containment_marker_path, deadline),
-        ] {
+        ];
+        for discovered in discoveries {
             match discovered {
                 Ok(ids) => process_ids.extend(ids),
                 Err(error) => inspection_error = Some(error),
@@ -1052,6 +1081,30 @@ fn suspend_unix_process_tree(
             }
             Err(error) => inspection_error = Some(error),
         }
+        inspection_error
+    })
+}
+
+#[cfg(unix)]
+fn suspend_unix_process_tree_using(
+    root_id: Option<u32>,
+    mut inspect: impl FnMut(&mut HashSet<u32>, std::time::Instant) -> Option<io::Error>,
+) -> (Vec<u32>, Option<io::Error>) {
+    let deadline = std::time::Instant::now() + PROCESS_TREE_INSPECTION_TIMEOUT;
+    let mut inspection_error = None;
+    if let Some(root_id) = root_id {
+        signal_process_group(root_id, libc::SIGSTOP);
+    }
+    let mut process_ids = root_id.into_iter().collect::<HashSet<_>>();
+    for _ in 0..8 {
+        if let Err(error) = check_process_inspection_deadline(deadline) {
+            inspection_error = Some(error);
+            break;
+        }
+        let previous_len = process_ids.len();
+        // Only a fully successful round can establish convergence. A partial
+        // inventory may look unchanged; retry it within the original deadline.
+        inspection_error = inspect(&mut process_ids, deadline);
         for &process_id in &process_ids {
             if let Err(error) = check_process_inspection_deadline(deadline) {
                 inspection_error = Some(error);
@@ -1063,7 +1116,7 @@ fn suspend_unix_process_tree(
             inspection_error = Some(error);
             break;
         }
-        if process_ids.len() == previous_len {
+        if process_ids.len() == previous_len && inspection_error.is_none() {
             return (process_ids.into_iter().collect(), inspection_error);
         }
         std::thread::yield_now();
@@ -1115,6 +1168,9 @@ impl Drop for ContainedBackgroundProcess {
     fn drop(&mut self) {
         #[cfg(unix)]
         {
+            if self.process_group_id.is_none() {
+                return;
+            }
             for process_id in suspend_unix_process_tree(
                 self.process_group_id,
                 &self.containment_id,
@@ -1145,6 +1201,82 @@ mod tests {
     };
     use std::fs;
     use std::path::Path;
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_inspection_retries_a_partial_round_with_the_original_deadline() {
+        let mut calls = 0;
+        let mut first_deadline = None;
+        let (ids, error) = super::suspend_unix_process_tree_using(None, |_, deadline| {
+            calls += 1;
+            assert_eq!(*first_deadline.get_or_insert(deadline), deadline);
+            (calls == 1).then(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "fixture inspector timeout")
+            })
+        });
+        assert!(ids.is_empty());
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(
+            calls, 2,
+            "an unchanged partial inventory is not convergence"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_inspection_rejects_rounds_that_never_complete() {
+        let mut calls = 0;
+        let mut first_deadline = None;
+        let (_, error) = super::suspend_unix_process_tree_using(None, |_, deadline| {
+            calls += 1;
+            assert_eq!(*first_deadline.get_or_insert(deadline), deadline);
+            // Success from different sources on different rounds must not be
+            // combined into a supposedly complete inventory.
+            Some(std::io::Error::other(if calls % 2 == 0 {
+                "environment inspection failed"
+            } else {
+                "marker inspection failed"
+            }))
+        });
+        assert!(error.is_some());
+        assert!(calls > 1 && calls <= 8, "retries must be bounded: {calls}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn contained_process_retires_identity_only_after_complete_termination() {
+        let mut command = super::background_tokio_command("/bin/sleep");
+        command.arg("30");
+        let mut child = super::ContainedBackgroundProcess::spawn(command).unwrap();
+        let group = child.process_group_id;
+        fs::remove_file(&child.containment_marker.path).unwrap();
+        assert!(child
+            .terminate_with_grace(std::time::Duration::ZERO)
+            .await
+            .is_err());
+        assert_eq!(
+            child.process_group_id, group,
+            "failed inspection must remain retryable"
+        );
+
+        child.containment_marker =
+            super::UnixContainmentMarker::create(&child.containment_id).unwrap();
+        let status = child
+            .terminate_with_grace(std::time::Duration::ZERO)
+            .await
+            .unwrap();
+        assert!(child.process_group_id.is_none());
+        // A second call and Drop must not re-inventory a verified, reaped tree.
+        fs::remove_file(&child.containment_marker.path).unwrap();
+        assert_eq!(
+            child
+                .terminate_with_grace(std::time::Duration::ZERO)
+                .await
+                .unwrap(),
+            status
+        );
+        drop(child);
+    }
 
     #[cfg(unix)]
     #[test]
