@@ -294,8 +294,4 @@ export const Dialog: React.FC<DialogProps> = ({
   );
 };
 
-export const hasOpenDialog = (): boolean =>
-  typeof document !== 'undefined' && (
-    document.querySelector('[data-macro-dialog-root]') !== null ||
-    document.querySelector('[role="dialog"][aria-modal="true"]') !== null
-  );
+export { hasOpenDialog } from './dialogPresence';
