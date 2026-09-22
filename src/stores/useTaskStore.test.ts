@@ -3314,7 +3314,7 @@ describe('useTaskStore task command terminal lifecycle', () => {
         expect(workspaceBindManualFeatureDirectCheckpointMock).not.toHaveBeenCalled();
       } else {
         expect(result?.status).toBe('completed');
-        expect(workspaceBindManualFeatureDirectCheckpointMock).toHaveBeenCalledTimes(1);
+        expect(workspaceBindManualFeatureDirectCheckpointMock).toHaveBeenCalledWith(expect.objectContaining({ pilotOnly: true }));
       }
       expect(task.execution_targets![0].checkpointId).toBeUndefined();
     } finally { reservation.release(); appStoreState.getProjectById = originalProject; }
@@ -3954,7 +3954,7 @@ describe('Pilot task lifecycle authorization', () => {
     const reservation = reservePilotAction({ taskId: task.id });
     try {
       await useTaskStore.getState().renameTask(task.id, 'Renamed fixture', { pilotActionToken: reservation.token, beforeEffect: async () => undefined });
-      expect(workspaceRenameManualFeatureMock).toHaveBeenCalledTimes(1);
+      expect(workspaceRenameManualFeatureMock).toHaveBeenCalledWith({ taskId: task.id, title: 'Renamed fixture', pilotOnly: true });
       expect(useTaskStore.getState().getTaskById(task.id)?.title).toBe('Renamed fixture');
       expect(refresh).not.toHaveBeenCalled(); expect(syncTerminalDisplayMetadataMock).not.toHaveBeenCalled();
     } finally { reservation.release(); }

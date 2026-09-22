@@ -752,6 +752,7 @@ pub fn run() {
             commands::workspace::workspace_debug_reset_project,
             commands::workspace::workspace_create_manual_feature_draft,
             commands::workspace::workspace_finalize_manual_feature,
+            commands::workspace::workspace_pilot_mutate_manual_task,
             commands::workspace::workspace_bind_manual_feature_direct_checkpoint,
             commands::workspace::workspace_revert_manual_feature_to_draft,
             commands::workspace::workspace_delete_manual_feature_draft,

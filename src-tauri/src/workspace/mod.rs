@@ -1,5 +1,6 @@
 pub mod architect;
 pub mod metadata;
+pub mod pilot;
 
 use crate::commands::git::build_wsl_git_status;
 use crate::core::error::{BackendError, Result};

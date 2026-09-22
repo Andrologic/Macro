@@ -84,6 +84,26 @@ async fn resolve_metadata_root(workspace_path: PathBuf, git_state: GitState) -> 
     }
 }
 
+fn resolve_existing_pilot_metadata_root(workspace_path: &std::path::Path) -> Result<PathBuf> {
+    if let Some(metadata_root) =
+        crate::git::find_existing_macro_metadata_worktree_root(workspace_path)
+    {
+        return Ok(metadata_root);
+    }
+
+    let legacy_root = workspace_path.join(".macro");
+    if legacy_root.is_dir() {
+        return Ok(legacy_root);
+    }
+
+    Err(BackendError::FilesystemNotFound {
+        message: format!(
+            "Existing Macro metadata root not found for {}",
+            workspace_path.display()
+        ),
+    })
+}
+
 async fn register_project_config_roots(
     projects: impl IntoIterator<Item = ProjectDto>,
     git_state: GitState,
@@ -1235,6 +1255,17 @@ pub async fn workspace_finalize_manual_feature(
         &task_kind,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn workspace_pilot_mutate_manual_task(
+    workspace_root: State<'_, WorkspaceMetadataRoot>,
+    task_id: String,
+    mutation: workspace::pilot::WorkspacePilotManualTaskMutation,
+) -> Result<Option<ManualFeatureDto>> {
+    let workspace_path = workspace_root.inner().0.read().await.clone();
+    let metadata_root = resolve_existing_pilot_metadata_root(&workspace_path)?;
+    workspace::pilot::mutate_manual_task(&workspace_path, &metadata_root, &task_id, mutation).await
 }
 
 #[tauri::command]

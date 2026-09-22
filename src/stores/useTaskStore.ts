@@ -1244,7 +1244,7 @@ const inspectTargetWorktreePath = async (
     getProjectById: useAppStore.getState().getProjectById,
     tauri: beforeEffect ? { ...tauriIpc,
       directCheckpointEnsure: async args => { await beforeEffect(); return tauriIpc.directCheckpointEnsure(args); },
-      workspaceBindManualFeatureDirectCheckpoint: async args => { await beforeEffect(); return tauriIpc.workspaceBindManualFeatureDirectCheckpoint(args); },
+      workspaceBindManualFeatureDirectCheckpoint: async args => { await beforeEffect(); return tauriIpc.workspaceBindManualFeatureDirectCheckpoint({ ...args, pilotOnly: true }); },
     } : tauriIpc,
   });
 };
@@ -3596,7 +3596,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         }
 
         await authorizeEffect();
-        await tauriIpc.workspaceRenameManualFeature({ taskId, title: nextTitle });
+        await tauriIpc.workspaceRenameManualFeature({ taskId, title: nextTitle, ...(options?.pilotActionToken ? { pilotOnly: true } : {}) });
         if (options?.pilotActionToken) {
           set(state => ({ tasks: state.tasks.map(candidate => candidate.id === taskId ? { ...candidate, title: nextTitle } : candidate) }));
         } else {
@@ -3703,6 +3703,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       await authorizeEffect();
       const archived = await tauriIpc.workspaceArchiveManualFeature({
         taskId,
+        ...(options?.pilotActionToken ? { pilotOnly: true } : {}),
         reason: options?.reason ?? null,
         mergedAt: options?.mergedAt ?? null,
       });
@@ -3962,10 +3963,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         await upsertLinkedTaskDeletionSaga(linkedConversationSaga);
         if (task.draft) {
           await authorizeEffect();
-          await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+          await (options?.pilotActionToken ? tauriIpc.workspaceDeleteManualFeatureDraft(taskId, true) : tauriIpc.workspaceDeleteManualFeatureDraft(taskId));
         } else {
           await authorizeEffect();
-          await tauriIpc.workspaceDeleteManualFeature(taskId);
+          await (options?.pilotActionToken ? tauriIpc.workspaceDeleteManualFeature(taskId, true) : tauriIpc.workspaceDeleteManualFeature(taskId));
         }
         linkedConversationSaga = await resumeLinkedTaskGitCleanup(
           linkedConversationSaga,
@@ -3974,10 +3975,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       } else {
         if (task.draft) {
           await authorizeEffect();
-          await tauriIpc.workspaceDeleteManualFeatureDraft(taskId);
+          await (options?.pilotActionToken ? tauriIpc.workspaceDeleteManualFeatureDraft(taskId, true) : tauriIpc.workspaceDeleteManualFeatureDraft(taskId));
         } else {
           await authorizeEffect();
-          await tauriIpc.workspaceDeleteManualFeature(taskId);
+          await (options?.pilotActionToken ? tauriIpc.workspaceDeleteManualFeature(taskId, true) : tauriIpc.workspaceDeleteManualFeature(taskId));
         }
         for (const target of gitTargets) {
           await authorizeEffect();

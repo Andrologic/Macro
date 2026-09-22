@@ -172,3 +172,10 @@ must be loaded by the ordinary desktop lifecycle before Pilot can use it;
 Pilot never creates or repairs approved configuration files during observation.
 An existing action receipt also preserves `conflict` when a subsequent
 request fails authorization or policy validation before reaching its effect.
+
+Guarded manual-task mutations use a targeted native workspace command. It reads
+only the existing primary workspace state, refuses absent or corrupt state, and
+preserves unrelated tasks and unknown JSON fields. Rename, archive, delete and
+legacy direct-checkpoint binding never invoke global sanitization or recovery.
+The command uses the shared workspace locks and checks the primary bytes again
+before writing the selected task change and advancing the workspace revision.

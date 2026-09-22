@@ -1357,3 +1357,22 @@ describe('Pilot loaded configuration IPC', () => {
     expect(invokeCalls).toEqual([{ command: 'config_get_snapshot', payload: { projectIds: ['project-fixture'], observeOnly: true } }]);
   });
 });
+
+describe('Pilot task mutation IPC', () => {
+  it('routes every workspace mutation to the targeted native operation', async () => {
+    const ipc = await loadTauriIpc();
+    invokeCalls.length = 0;
+    await ipc.workspaceRenameManualFeature({ taskId: 'task-fixture', title: 'New', pilotOnly: true });
+    await ipc.workspaceArchiveManualFeature({ taskId: 'task-fixture', pilotOnly: true });
+    await ipc.workspaceDeleteManualFeatureDraft('task-fixture', true);
+    await ipc.workspaceDeleteManualFeature('task-fixture', true);
+    await ipc.workspaceBindManualFeatureDirectCheckpoint({ taskId: 'task-fixture', projectId: 'project-fixture', checkpointId: 'checkpoint-fixture', pilotOnly: true });
+    expect(invokeCalls).toEqual([
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'rename', title: 'New' } } },
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'archive', reason: null, mergedAt: null } } },
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'delete', draftOnly: true } } },
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'delete', draftOnly: false } } },
+      { command: 'workspace_pilot_mutate_manual_task', payload: { taskId: 'task-fixture', mutation: { action: 'bind_checkpoint', projectId: 'project-fixture', checkpointId: 'checkpoint-fixture' } } },
+    ]);
+  });
+});
