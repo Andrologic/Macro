@@ -82,7 +82,7 @@ export function chatSendFixture(mode: ChatSendSnapshot['mode'] = 'Chat') {
     tasks: {
       read: () => task,
       finalizeDraft: mock(async () => { events.push('finalize'); task.draft = false; return { taskId: 'task-1' }; }),
-      assertReady: mock(async () => task), assertExecutionContextReady: () => {},
+      assertReady: mock(async () => task), completeExecutionContext: (_id, captured) => captured, assertExecutionContextReady: () => {},
       rollbackDraft: mock(async () => { events.push('rollback'); task.draft = true; }),
       beginLaunch: mock((params) => { events.push('launch'); launch = params; }),
       setLaunchStep: (_id, _session, step) => { events.push(step); },

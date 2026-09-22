@@ -345,3 +345,38 @@ export const resolveProjectExecutionContext = (
     workspacePath: defaultWorkspacePath,
   };
 };
+
+/** Complete preparation without consulting the current conversation or UI selection. */
+export const completePreparedTaskExecutionContext = (
+  captured: ProjectExecutionContext,
+  input: Pick<ResolveProjectExecutionContextInput,
+    'projects' | 'projectGroups' | 'tasks' | 'branchWorktrees' | 'workspacePathOverridesByProjectId'> & { taskId: string },
+): ProjectExecutionContext => {
+  if (captured.taskId && captured.taskId !== input.taskId) {
+    throw new Error('The captured execution task changed before preparation completed.');
+  }
+  const task = input.tasks?.find((candidate) => candidate.id === input.taskId);
+  if (!task) throw new Error('The captured execution task is no longer available.');
+  const current = resolveProjectExecutionContext({
+    ...input,
+    tasks: [task],
+    mode: 'Implement',
+    selectedTaskId: input.taskId,
+    selectedProjectId: captured.projectId,
+    selectedGroupId: captured.groupId,
+  });
+  if (current.projectId !== captured.projectId ||
+    current.projectIds.length !== captured.projectIds.length ||
+    captured.projectIds.some((id) => !current.projectIds.includes(id)) ||
+    captured.projectIds.some((id) => {
+      const path = captured.workspacePathsByProjectId[id];
+      return path && path !== current.workspacePathsByProjectId[id];
+    })) {
+    throw new Error('The captured execution project or workspace changed during preparation.');
+  }
+  if (!current.projectId || !current.workspacePath ||
+    current.actionableProjectIds.some((id) => !current.workspacePathsByProjectId[id])) {
+    throw new Error('The captured execution workspace is unavailable after task preparation.');
+  }
+  return current;
+};
