@@ -2053,6 +2053,134 @@ mod tests {
     }
 
     #[test]
+    fn test_pilot_worktree_refuses_replacement_repository_without_touching_it() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let task = "pilot-replacement";
+        let branch = "feature/pilot-replacement";
+        let created = state
+            .ensure_pilot_task_worktree(&repo, task, branch, Some("main"))
+            .expect("worktree");
+        let admin = Repository::open(&created.worktree_path)
+            .expect("open worktree")
+            .path()
+            .to_path_buf();
+        let registration_before = fs::read(admin.join("gitdir")).expect("registration");
+        fs::remove_dir_all(&created.worktree_path).expect("remove original directory");
+        let foreign = init_repo(&created.worktree_path);
+        checkout_branch(&foreign, branch);
+        let foreign_head = foreign.head().expect("foreign head").target();
+        let foreign_config = fs::read(foreign.path().join("config")).expect("foreign config");
+        let data_before = fs::read(created.worktree_path.join("README.md")).expect("foreign data");
+        assert_eq!(
+            state
+                .diagnose_task_worktree(&repo, task, Some(branch))
+                .expect("inspect")
+                .status,
+            TaskWorktreeStatus::InvalidRepo
+        );
+        assert!(state
+            .ensure_pilot_task_worktree(&repo, task, branch, Some("main"))
+            .is_err());
+        assert!(state
+            .remove_pilot_task_worktree(&repo, task, branch)
+            .is_err());
+        assert_eq!(
+            fs::read(created.worktree_path.join("README.md")).expect("foreign data preserved"),
+            data_before
+        );
+        assert_eq!(
+            fs::read(foreign.path().join("config")).expect("foreign config preserved"),
+            foreign_config
+        );
+        assert_eq!(
+            foreign.head().expect("foreign head preserved").target(),
+            foreign_head
+        );
+        assert_eq!(
+            fs::read(admin.join("gitdir")).expect("registration preserved"),
+            registration_before
+        );
+    }
+
+    #[test]
+    fn test_pilot_worktree_refuses_links_to_another_registration() {
+        let temp = TempDir::new().expect("temp dir");
+        let repo = init_repo(temp.path());
+        let state = GitState::new();
+        let task = "pilot-crosslink";
+        let branch = "feature/pilot-crosslink";
+        let created = state
+            .ensure_pilot_task_worktree(&repo, task, branch, Some("main"))
+            .expect("worktree");
+        let other = state
+            .ensure_pilot_task_worktree(&repo, "pilot-other", "feature/pilot-other", Some("main"))
+            .expect("other worktree");
+        let own_admin = Repository::open(&created.worktree_path)
+            .expect("open worktree")
+            .path()
+            .to_path_buf();
+        let other_admin = Repository::open(&other.worktree_path)
+            .expect("open other worktree")
+            .path()
+            .to_path_buf();
+        // Keep the same branch name so a branch-only check cannot catch the substitution.
+        fs::write(
+            other_admin.join("HEAD"),
+            format!("ref: refs/heads/{branch}\n"),
+        )
+        .expect("same branch fixture");
+        let own_gitfile = fs::read(created.worktree_path.join(".git")).expect("own gitfile");
+        let other_gitfile = fs::read(other.worktree_path.join(".git")).expect("other gitfile");
+        fs::write(created.worktree_path.join(".git"), &other_gitfile).expect("crosslink");
+        assert_eq!(
+            state
+                .diagnose_task_worktree(&repo, task, Some(branch))
+                .expect("inspect crosslink")
+                .status,
+            TaskWorktreeStatus::InvalidRepo
+        );
+        assert!(state
+            .ensure_pilot_task_worktree(&repo, task, branch, Some("main"))
+            .is_err());
+        assert!(state
+            .remove_pilot_task_worktree(&repo, task, branch)
+            .is_err());
+        assert_eq!(
+            fs::read(created.worktree_path.join(".git")).expect("crosslink preserved"),
+            other_gitfile
+        );
+        assert!(created.worktree_path.join("README.md").exists());
+        assert!(other.worktree_path.join("README.md").exists());
+        assert!(own_admin.exists() && other_admin.exists());
+
+        // The reverse administrative link must point back to this precise gitfile too.
+        fs::write(created.worktree_path.join(".git"), own_gitfile).expect("restore fixture link");
+        fs::write(
+            own_admin.join("gitdir"),
+            other
+                .worktree_path
+                .join(".git")
+                .to_string_lossy()
+                .as_bytes(),
+        )
+        .expect("wrong reverse link");
+        assert_eq!(
+            state
+                .diagnose_task_worktree(&repo, task, Some(branch))
+                .expect("inspect reverse link")
+                .status,
+            TaskWorktreeStatus::InvalidRepo
+        );
+        assert!(state
+            .remove_pilot_task_worktree(&repo, task, branch)
+            .is_err());
+        assert!(created.worktree_path.join("README.md").exists());
+        assert!(other.worktree_path.join("README.md").exists());
+    }
+
+    #[test]
     fn test_remove_pilot_task_worktree_leaves_third_party_worktree_unchanged() {
         let temp = TempDir::new().expect("temp dir");
         let repo = init_repo(temp.path());

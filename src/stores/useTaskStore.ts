@@ -634,6 +634,7 @@ const assertLifecycleGitTargetsSafe = async (
 const resumeLinkedTaskGitCleanup = async (
   saga: LinkedTaskDeletionSaga,
   beforeEffect?: () => Promise<void>,
+  pilotOnly = false,
 ): Promise<LinkedTaskDeletionSaga> => {
   if (!Array.isArray(saga.executionTargets)) {
     throw new Error(
@@ -674,7 +675,7 @@ const resumeLinkedTaskGitCleanup = async (
     if (!target.worktreeRemoved) {
       const inspectWorktree = () =>
         tauriIpc.gitWorktreeInspect({
-          ...(beforeEffect ? { readOnly: true } : {}),
+          ...(pilotOnly ? { readOnly: true } : {}),
           repoPath: target.repoPath,
           taskId: target.worktreeKey,
           branchName: target.branchName,
@@ -684,7 +685,7 @@ const resumeLinkedTaskGitCleanup = async (
         try {
           await beforeEffect?.();
           await tauriIpc.gitWorktreeRemove({
-            ...(beforeEffect ? { pilotOnly: true } : {}),
+            ...(pilotOnly ? { pilotOnly: true } : {}),
             repoPath: target.repoPath,
             taskId: target.worktreeKey,
             force: false,
@@ -721,7 +722,7 @@ const resumeLinkedTaskGitCleanup = async (
         try {
           await beforeEffect?.();
           await tauriIpc.gitBranchDelete({
-            ...(beforeEffect ? { pilotOnly: true } : {}),
+            ...(pilotOnly ? { pilotOnly: true } : {}),
             repoPath: updatedTarget.repoPath,
             branchName: updatedTarget.branchName,
             force: false,
@@ -2912,7 +2913,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               lastError: undefined,
             };
             await upsertLinkedTaskDeletionSaga(recoverySaga);
-            recoverySaga = await resumeLinkedTaskGitCleanup(recoverySaga);
+            recoverySaga = await resumeLinkedTaskGitCleanup(recoverySaga, undefined, false);
             await removeLinkedTaskDeletionSaga(pending.taskId, pending.targetBranch);
           } catch (error) {
             const message = toServiceError(error).message;
@@ -2950,7 +2951,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
                 await tauriIpc.workspaceDeleteManualFeature(pending.taskId);
               }
             }
-            const resumed = await resumeLinkedTaskGitCleanup(pending);
+            const resumed = await resumeLinkedTaskGitCleanup(pending, undefined, false);
             pending.executionTargets = resumed.executionTargets;
           } catch (error) {
             const message = toServiceError(error).message;
@@ -3996,6 +3997,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         linkedConversationSaga = await resumeLinkedTaskGitCleanup(
           linkedConversationSaga,
           () => authorizePilotEffect(taskId, options),
+          Boolean(options?.pilotActionToken),
         );
       } else {
         if (task.draft) {

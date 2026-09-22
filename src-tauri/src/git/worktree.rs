@@ -600,6 +600,58 @@ fn prune_worktree(repo: &Repository, worktree_name: &str) -> Result<bool> {
     Ok(true)
 }
 
+fn validate_registered_worktree_provenance(
+    repo: &Repository,
+    name: &str,
+    path: &Path,
+    candidate: &Repository,
+) -> Result<()> {
+    let common = repo.commondir().canonicalize()?;
+    let admin = common.join("worktrees").join(name);
+    let git_file = path.join(".git");
+    let refuse = || BackendError::Git {
+        message: format!(
+            "Worktree '{}' has inconsistent Git ownership; operation refused.",
+            name
+        ),
+    };
+    for link in [
+        path,
+        git_file.as_path(),
+        common.join("worktrees").as_path(),
+        admin.as_path(),
+        admin.join("gitdir").as_path(),
+        admin.join("commondir").as_path(),
+    ] {
+        if fs::symlink_metadata(link)?.file_type().is_symlink() {
+            return Err(refuse());
+        }
+    }
+    let canonical_path = path.canonicalize()?;
+    let canonical_admin = admin.canonicalize()?;
+    let canonical_git_file = git_file.canonicalize()?;
+    let git_file_content = fs::read_to_string(&git_file)?;
+    let linked_admin = git_file_content
+        .trim()
+        .strip_prefix("gitdir:")
+        .ok_or_else(refuse)?
+        .trim();
+    let admin_gitdir = fs::read_to_string(admin.join("gitdir"))?;
+    let admin_commondir = fs::read_to_string(admin.join("commondir"))?;
+    if !candidate.is_worktree()
+        || candidate.commondir().canonicalize()? != common
+        || candidate.path().canonicalize()? != canonical_admin
+        || candidate.workdir().ok_or_else(refuse)?.canonicalize()? != canonical_path
+        || path.join(linked_admin).canonicalize()? != canonical_admin
+        || admin.join(admin_gitdir.trim()).canonicalize()? != canonical_git_file
+        || admin.join(admin_commondir.trim()).canonicalize()? != common
+        || repo.find_worktree(name)?.path().canonicalize()? != canonical_path
+    {
+        return Err(refuse());
+    }
+    Ok(())
+}
+
 fn inspect_registered_worktree(
     repo: &Repository,
     task_id: &str,
@@ -620,6 +672,26 @@ fn inspect_registered_worktree(
     }
 
     match probe_repo_path(&registered_path) {
+        RepoProbe::Ready(worktree_repo)
+            if !allow_repair
+                && validate_registered_worktree_provenance(
+                    repo,
+                    &worktree_name,
+                    &registered_path,
+                    &worktree_repo,
+                )
+                .is_err() =>
+        {
+            Ok(TaskWorktreeInspection {
+                task_id: task_id.to_string(),
+                worktree_name,
+                worktree_path: registered_path.clone(),
+                registered_path: Some(registered_path),
+                branch_name: None,
+                status: TaskWorktreeStatus::InvalidRepo,
+                is_dirty: None,
+            })
+        }
         RepoProbe::Ready(worktree_repo) => Ok(TaskWorktreeInspection {
             task_id: task_id.to_string(),
             worktree_name,

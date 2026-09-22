@@ -108,6 +108,18 @@ const dbSetAppSettingMock = mock(async (params: { key: string; valueJson: string
     updated_at: '2026-08-12T00:00:00.000Z',
   };
 });
+const dbCompareAndSwapAppSettingMock = mock(async (params: {
+  key: string;
+  expectedValueJson: string | null;
+  valueJson: string;
+}) => {
+  const currentValueJson = dbAppSettings.get(params.key) ?? null;
+  if (currentValueJson !== params.expectedValueJson) {
+    return { applied: false };
+  }
+  dbAppSettings.set(params.key, params.valueJson);
+  return { applied: true };
+});
 const workspaceRevertManualFeatureToDraftMock = mock(async () => ({
   id: 'task-1',
   conversationId: 'conv-1',
@@ -279,6 +291,7 @@ mock.module('../services/tauriIpc', () => ({
   directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
+  dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
@@ -314,6 +327,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   directCheckpointRemove: directCheckpointRemoveMock,
   dbGetAppSetting: dbGetAppSettingMock,
   dbSetAppSetting: dbSetAppSettingMock,
+  dbCompareAndSwapAppSetting: dbCompareAndSwapAppSettingMock,
   workspaceDeleteManualFeatureDraft: workspaceDeleteManualFeatureDraftMock,
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
@@ -1663,6 +1677,14 @@ describe('useTaskStore merge workflow review loading', () => {
       ],
     });
     let worktreeAttempts = 0;
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [
+        { name: 'feature/git-retry-one', is_head: false, commit: 'abc123' },
+        { name: 'feature/git-retry-two', is_head: false, commit: 'def456' },
+      ],
+      remote: [],
+      current: 'develop',
+    }));
     gitWorktreeRemoveMock.mockImplementation(async () => {
       worktreeAttempts += 1;
       if (worktreeAttempts === 2) {
@@ -1701,6 +1723,21 @@ describe('useTaskStore merge workflow review loading', () => {
     }
 
     expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id);
+    expect(
+      (gitWorktreeInspectMock.mock.calls as unknown as Array<[{ readOnly?: boolean }]>).every(
+        ([params]) => params.readOnly !== true,
+      ),
+    ).toBe(true);
+    expect(
+      (gitWorktreeRemoveMock.mock.calls as unknown as Array<[{ pilotOnly?: boolean }]>).every(
+        ([params]) => params.pilotOnly !== true,
+      ),
+    ).toBe(true);
+    expect(
+      (gitBranchDeleteMock.mock.calls as unknown as Array<[{ pilotOnly?: boolean }]>).every(
+        ([params]) => params.pilotOnly !== true,
+      ),
+    ).toBe(true);
     expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith('conv-git-retry');
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
@@ -3945,6 +3982,62 @@ describe('useTaskStore task preparation safety', () => {
 });
 
 describe('Pilot task lifecycle authorization', () => {
+  it('uses strict Git cleanup only for a Pilot deletion', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-pilot-delete',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: false,
+      conversation_id: null,
+      execution_targets: [{
+        projectId: 'project-1',
+        executionMode: 'git',
+        branchName: 'feature/pilot-delete',
+        executionKind: 'worktree',
+        worktreeKey: 'project-1::feature/pilot-delete',
+        repoPath: '/repos/web',
+      }],
+    });
+    gitWorktreeInspectMock.mockClear();
+    gitWorktreeRemoveMock.mockClear();
+    gitBranchListMock.mockClear();
+    gitBranchDeleteMock.mockClear();
+    workspaceDeleteManualFeatureMock.mockClear();
+    gitWorktreeInspectMock.mockImplementation(async (params: { taskId: string; branchName?: string | null }) => ({
+      taskId: params.taskId,
+      worktreePath: `/repos/web/.macro/worktrees/${params.taskId}`,
+      branchName: params.branchName ?? null,
+      status: 'ready' as const,
+      isDirty: false,
+    }));
+    gitBranchListMock.mockImplementation(async () => ({
+      local: [{ name: 'feature/pilot-delete', is_head: false, commit: 'abc123' }],
+      remote: [],
+      current: 'develop',
+    }));
+
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+    const reservation = reservePilotAction({ taskId: task.id });
+    try {
+      await useTaskStore.getState().deleteTask(task.id, {
+        pilotActionToken: reservation.token,
+        beforeEffect: async () => undefined,
+      });
+    } finally {
+      reservation.release();
+    }
+
+    expect(
+      (gitWorktreeInspectMock.mock.calls as unknown as Array<[{ readOnly?: boolean }]>).every(
+        ([params]) => params.readOnly === true,
+      ),
+    ).toBe(true);
+    expect(gitWorktreeRemoveMock).toHaveBeenCalledWith(expect.objectContaining({ pilotOnly: true }));
+    expect(gitBranchDeleteMock).toHaveBeenCalledWith(expect.objectContaining({ pilotOnly: true }));
+    expect(workspaceDeleteManualFeatureMock).toHaveBeenCalledWith(task.id, true);
+  });
+
   it('renames only the captured task without global refresh or terminal initialization', async () => {
     const { useTaskStore } = await loadIsolatedTaskStore();
     const task = buildStandaloneTask({ standalone_kind: 'manual_feature', draft: true });
