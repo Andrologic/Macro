@@ -404,3 +404,68 @@ describe('artifact durable recovery', () => {
     expect(JSON.parse(settings.get(journalKey)!)).toHaveLength(1);
   });
 });
+
+describe('artifact final content reads', () => {
+  const cases = [
+    ['readVisibleTaskArtifactContent', 'current'],
+    ['readVisibleTaskArtifactDiff', 'current'],
+    ['readVisibleTaskArtifactDiff', 'previous'],
+    ['readPlanArtifactDiff', 'current'],
+    ['readPlanArtifactDiff', 'previous'],
+  ] as const;
+
+  for (const [reader, side] of cases) {
+    it(`${reader} rejects a ${side} content mutation after index validation despite an existing review`, async () => {
+      const previous = await put('Original content');
+      const current = await service.putTaskArtifact({
+        target: { branchName, plan, task, currentTask: task },
+        args: {
+          title: 'Revised notes', artifact_id: 'revised-notes', content: 'Revised content',
+          supersedes_artifact_id: previous.id,
+        },
+      });
+      const params = { branchName, plan, task, artifactId: current.id };
+      await service.validateVisibleTaskArtifact(params);
+      expect((await service.listVisibleTaskArtifactReviewEntries(params))
+        .find((entry) => entry.artifact.id === current.id)?.hasValidatedReview).toBe(true);
+      const result = await service[reader](params);
+      expect(result.content).toBe('Revised content');
+      if ('previousContent' in result) expect(result.previousContent).toBe('Original content');
+
+      const changedArtifact = side === 'current' ? current : previous;
+      const changedPath = key(roots[0]!, changedArtifact.path);
+      const before = new Map(files);
+      const journalBefore = settings.get(journalKey);
+      const writesBefore = writes;
+      let contentReads = 0;
+      onRead = (path) => {
+        // The first read validates this replica; the second supplies the returned text.
+        if (path === changedPath && ++contentReads === 2) files.set(path, 'Concurrent external edit');
+      };
+      await expect(service[reader](params)).rejects.toThrow(
+        `Artifact content does not match its index: ${changedArtifact.id}`,
+      );
+      expect(contentReads).toBe(2);
+      onRead = undefined;
+      before.set(changedPath, 'Concurrent external edit');
+      expect(files).toEqual(before);
+      expect(writes).toBe(writesBefore);
+      expect(settings.get(journalKey)).toBe(journalBefore);
+      await expect(service.listVisibleTaskArtifactReviewEntries(params)).rejects.toThrow(
+        'Artifact content does not match its index',
+      );
+    });
+  }
+
+  it('invalidates an existing review when content is replaced through the durable writer', async () => {
+    const artifact = await put('Original content');
+    const params = { branchName, plan, task, artifactId: artifact.id };
+    await service.validateVisibleTaskArtifact(params);
+    await put('Replacement content');
+    expect(await service.readVisibleTaskArtifactContent(params)).toMatchObject({ content: 'Replacement content' });
+    expect((await service.listVisibleTaskArtifactReviewEntries(params))
+      .find((entry) => entry.artifact.id === artifact.id)).toMatchObject({
+        hasValidatedReview: false, hasPendingReview: true,
+      });
+  });
+});
