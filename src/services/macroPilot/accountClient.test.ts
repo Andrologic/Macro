@@ -50,6 +50,91 @@ const response = (request: Request, result: unknown) => json({ contract_version:
   account_id: request.account_id, operation: request.operation, result });
 
 describe('native account v2 over the HTTP boundary', () => {
+  it('starts the transport deadline after the vault releases the session token', async () => {
+    const h = harness(); await h.client.initialize();
+    const pending = deferred<string>();
+    const entered = deferred<void>();
+    const read = h.deps.secretRead;
+    let first = true;
+    h.deps.secretRead = scope => {
+      if (!first) return read(scope);
+      first = false; entered.resolve(); return pending.promise;
+    };
+    const deadlines: AbortController[] = [];
+    const timeout = spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => {
+      expect(milliseconds).toBe(30_000);
+      const controller = new AbortController(); deadlines.push(controller); return controller.signal;
+    });
+    try {
+      const result = h.client.getAccountCatalog();
+      await entered.promise;
+      // Simulate spending longer than a transport deadline in the native prompt.
+      deadlines.forEach(controller => controller.abort());
+      pending.resolve('token-secret');
+      await expect(result).resolves.toEqual({ identity, sessions: devices, revision: 4 });
+      expect(deadlines).toHaveLength(3);
+    } finally { timeout.mockRestore(); }
+  });
+
+  it('recovers the public connection state after authenticated account refresh unlocks the vault', async () => {
+    const h = harness();
+    const read = h.deps.secretRead;
+    h.deps.secretRead = async () => { throw new Error('vault_unavailable'); };
+    await h.client.initialize();
+    expect(h.client.getState()).toMatchObject({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
+    expect(h.requests).toHaveLength(0);
+    h.intercept(() => json({ status: 'ready' }));
+    await h.client.request('GET', '/ready');
+    expect(h.client.getState().status).toBe('vault_unavailable');
+    h.intercept(() => undefined);
+    h.deps.secretRead = read;
+    expect(await h.client.getAccountCatalog()).toEqual({ identity, sessions: devices, revision: 4 });
+    expect(h.client.getState()).toMatchObject({ status: 'connected', lastError: null });
+  });
+
+  it.each(['abort', 'logout'] as const)('cancels a vault wait on %s without publishing a late vault result', async mode => {
+    const h = harness(); await h.client.initialize();
+    const entered = deferred<void>();
+    let rejectVault!: (error: Error) => void;
+    const pending = new Promise<string>((_resolve, reject) => { rejectVault = reject; });
+    const originalRead = h.deps.secretRead;
+    let first = true;
+    h.deps.secretRead = scope => {
+      if (!first) return originalRead(scope);
+      first = false; entered.resolve(); return pending;
+    };
+    const controller = new AbortController();
+    const result = h.client.getAccountCatalog(controller.signal).catch(error => error);
+    await entered.promise;
+    if (mode === 'abort') controller.abort();
+    else await h.client.logout();
+    expect(await result).toMatchObject({ code: 'context_changed' });
+    const state = h.client.getState();
+    const sent = h.requests.length;
+    rejectVault(new Error('vault_unavailable'));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.client.getState()).toEqual(state);
+    expect(h.requests).toHaveLength(sent);
+    expect(h.requests.filter(request => request.body.operation === 'account.get')).toHaveLength(0);
+    expect(state.status).toBe(mode === 'abort' ? 'connected' : 'signed_out');
+  });
+
+  it.each(['network', 'missing', 'revoked'] as const)('distinguishes %s failure after vault recovery', async failure => {
+    const h = harness(); const read = h.deps.secretRead;
+    h.deps.secretRead = async () => { throw new Error('vault_unavailable'); };
+    await h.client.initialize();
+    h.deps.secretRead = failure === 'missing' ? async () => null : read;
+    h.intercept(() => {
+      if (failure === 'network') throw new Error('connection refused');
+      return json({ code: 'session_revoked' }, 401);
+    });
+    await expect(h.client.getAccountCatalog()).rejects.toMatchObject({
+      code: failure === 'network' ? 'offline' : failure === 'missing' ? 'unauthorized' : 'session_revoked',
+    });
+    expect(h.client.getState().status).toBe(failure === 'network' ? 'offline' : 'signed_out');
+    expect(h.requests).toHaveLength(failure === 'missing' ? 0 : 1);
+  });
+
   it('loads verified identity and sessions without an instance or producer key', async () => {
     const h = harness(); await h.client.initialize();
     expect(await h.client.getAccountCatalog()).toEqual({ identity, sessions: devices, revision: 4 });
@@ -279,6 +364,7 @@ describe('native account v2 over the HTTP boundary', () => {
       await started.promise;
       deadline.abort();
       expect(await read).toMatchObject({ code: 'offline' });
+      expect(h.client.getState()).toMatchObject({ status: 'offline', lastError: 'offline' });
       expect(h.client.getState().deviceSession).not.toBeNull();
     } finally { timeout.mockRestore(); }
   });

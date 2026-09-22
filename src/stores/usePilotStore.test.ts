@@ -47,6 +47,18 @@ beforeEach(() => {
 });
 
 describe('Pilot account store', () => {
+  it('updates the vault error badge from client recovery during account refresh', async () => {
+    state = { ...state, status: 'vault_unavailable', lastError: 'vault_unavailable' }; subscriber();
+    getAccountCatalog.mockImplementation(async () => {
+      state = { ...state, status: 'connected', lastError: null }; subscriber();
+      return catalog;
+    });
+    await usePilotStore.getState().refreshAccount();
+    expect(usePilotStore.getState()).toMatchObject({
+      status: 'connected', lastError: null, accountCatalog: catalog, busy: false, reading: false,
+    });
+  });
+
   it('loads account management without an instance', async () => {
     await usePilotStore.getState().refreshAccount();
     expect(usePilotStore.getState().accountCatalog).toEqual(catalog);

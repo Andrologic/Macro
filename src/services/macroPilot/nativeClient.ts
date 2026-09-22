@@ -418,12 +418,21 @@ export class MacroPilotNativeClient {
     };
   }
 
-  private async readSecret(kind: PilotSecretKind, resourceId: string): Promise<string> {
+  private async readSecret(kind: PilotSecretKind, resourceId: string, signal?: AbortSignal): Promise<string> {
+    const context = this.contextKey();
+    const check = () => {
+      this.checkContext(context);
+      if (signal?.aborted) throw new PilotClientError('context_changed');
+    };
     try {
-      const value = await this.dependencies.secretRead(this.secretScope(kind, resourceId));
+      check();
+      const reading = this.dependencies.secretRead(this.secretScope(kind, resourceId));
+      const value = await (signal ? abortable(reading, signal) : reading);
+      check();
       if (!value) throw new PilotClientError('unauthorized');
       return value;
     } catch (error) {
+      check();
       if (error instanceof PilotClientError) throw error;
       const failure = typeof error === 'string' && ['invalid_scope', 'invalid_secret', 'vault_unavailable'].includes(error)
         ? error.replaceAll('_', '') : error instanceof Error && error.message.includes('requires the native desktop runtime') ? 'nativeruntime' : 'ipc';
@@ -551,12 +560,14 @@ export class MacroPilotNativeClient {
     const context = this.contextKey();
     const signals = [this.scopeController.signal];
     if (options.signal) signals.push(options.signal);
-    if (extension) signals.push(AbortSignal.timeout(30_000));
-    const signal = AbortSignal.any(signals);
+    let signal = AbortSignal.any(signals);
     const check = () => {
       this.checkContext(context);
       if (options.signal?.aborted) throw new PilotClientError('context_changed');
-      if (signal.aborted) throw new PilotClientError('offline');
+      if (signal.aborted) {
+        if (options.authenticated) this.publish({ status: 'offline', lastError: 'offline' });
+        throw new PilotClientError('offline');
+      }
     };
     const url = `${normalizeOrigin(this.persisted.relayOrigin)}${extension ? '' : '/pilot/v1'}${safePath(path)}`;
     const headers = new Headers({ Accept: 'application/json', 'X-Request-Id': requestId });
@@ -566,13 +577,16 @@ export class MacroPilotNativeClient {
     if (options.authenticated && !token) {
       const sessionId = this.persisted.deviceSession?.ref.session_id;
       if (!sessionId) throw new PilotClientError('unauthorized');
-      token = await this.readSecret('session_token', sessionId);
+      token = await this.readSecret('session_token', sessionId, signal);
     }
     if (token) headers.set('Authorization', `Bearer ${token}`);
     if (options.producer) {
       if (!this.persisted.instanceCreationId) throw new PilotClientError('unauthorized');
-      headers.set('X-Instance-Key', await this.readSecret('instance_key', this.persisted.instanceCreationId));
+      headers.set('X-Instance-Key', await this.readSecret('instance_key', this.persisted.instanceCreationId, signal));
     }
+    check();
+    // Native vault consent can take time. The deadline bounds transport, not that interaction.
+    if (extension) signal = AbortSignal.any([...signals, AbortSignal.timeout(30_000)]);
     check();
     let response: Response;
     try {
@@ -645,7 +659,7 @@ export class MacroPilotNativeClient {
       }
       throw new PilotClientError(code, response.status, response.status === 429 || response.status === 503, responseRequestId);
     }
-    if (options.authenticated && this.publicState.status === 'offline') {
+    if (options.authenticated && ['offline', 'vault_unavailable'].includes(this.publicState.status)) {
       this.publish({ status: 'connected', lastError: null });
     }
     return { status: response.status, data: data as T | null, requestId: responseRequestId };
