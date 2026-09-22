@@ -1382,6 +1382,127 @@ describe('ChatZone', () => {
     expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
   });
 
+  it('keeps a newer saved draft after deferred active-turn acceptance', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    const submittedRef = {
+      id: 'file:submitted.md',
+      kind: 'file' as const,
+      title: 'submitted.md',
+      data: { id: 'submitted.md', path: '/synthetic/submitted.md', relativePath: 'submitted.md' },
+    };
+    const newerRef = {
+      id: 'file:newer.md',
+      kind: 'file' as const,
+      title: 'newer.md',
+      data: { id: 'newer.md', path: '/synthetic/newer.md', relativePath: 'newer.md' },
+    };
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      composerContextRefs: [submittedRef],
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Premier message accepté.');
+    await clickSendButton();
+
+    expect(chatState.submitDuringActiveTurn).toHaveBeenCalledTimes(1);
+    await setComposerText('Nouveau brouillon conservé.');
+    await act(async () => {
+      useChatStore.setState({ composerContextRefs: [newerRef] });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    await pasteComposerImage();
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('Nouveau brouillon conservé.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([newerRef]);
+    expect(composerDraftsByContextKey['conversation:conv-1']).toEqual({
+      text: 'Nouveau brouillon conservé.',
+      images: [expect.objectContaining({ mimeType: 'image/png' })],
+      contextRefs: [newerRef],
+    });
+  });
+
+  it('does not clear another conversation draft after active-turn acceptance', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      conversations: [
+        buildConversation(),
+        { ...buildConversation(), id: 'conv-2', title: 'Second conversation' },
+      ],
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Message de la première conversation.');
+    await clickSendButton();
+
+    await act(async () => {
+      useChatStore.setState({
+        selectedConversationId: 'conv-2',
+        composerContextRefs: [],
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    await setComposerText('Brouillon de la deuxième conversation.');
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('Brouillon de la deuxième conversation.');
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+    expect(composerDraftsByContextKey['conversation:conv-2']?.text).toBe(
+      'Brouillon de la deuxième conversation.',
+    );
+  });
+
+  it('accepts an active-turn submission only once during a deferred click', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Un seul message doit être accepté.');
+    await clickSendButton();
+    await clickSendButton();
+
+    expect(chatState.submitDuringActiveTurn).toHaveBeenCalledTimes(1);
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
+  });
+
   it('inserts only the image when a paste contains image, text, and HTML', async () => {
     await act(async () => {
       requireRoot().render(<ChatZone />);

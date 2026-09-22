@@ -6161,8 +6161,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       .map((m) => m.role)
       .lastIndexOf("user");
     const lastUserMessage = lastUserIndex >= 0 ? orderedMessages[lastUserIndex] : null;
-    const fileRefsForTurn = (lastUserMessage?.context_refs ?? get().composerContextRefs)
-      .filter(isFileContextRef);
+    // A persisted message owns its references, including an empty list. The
+    // current composer may belong to a different conversation by this point.
+    const turnContextRefs = lastUserMessage
+      ? lastUserMessage.context_refs ?? []
+      : get().composerContextRefs;
+    const fileRefsForTurn = turnContextRefs.filter(isFileContextRef);
     const availableFiles = [
       ...fileCitations
         .map((c) => c.path || c.title || c.source)
@@ -6174,7 +6178,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         ? await useSkillsStore.getState().prepareSkillsForTurn({
             conversationId,
             content: lastUserMessage.content,
-            contextRefs: lastUserMessage.context_refs ?? get().composerContextRefs,
+            contextRefs: turnContextRefs,
             toolsAvailable: allowedToolIds.includes("skill_activate"),
             permissionSnapshot: skillPermissionSnapshot ?? null,
           })
@@ -6239,7 +6243,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         const skillActivationAvailable = allowedToolIds.includes("skill_activate");
-        const contextRefs = (message.context_refs ?? get().composerContextRefs).filter(
+        const contextRefs: (ContextReference | PersistedContextReference)[] = (message.context_refs ?? []).filter(
           (ref) => ref.kind !== "skill" || explicitSkillIdSet.has(ref.id) || skillActivationAvailable,
         );
         if (contextRefs.length > 0) {

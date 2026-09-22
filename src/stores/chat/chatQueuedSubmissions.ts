@@ -24,7 +24,7 @@ export function captureQueuedSubmission(
       conversationId: input.conversationId, content: input.content,
       taskId: input.taskId, images: input.images,
       internalAgentProfile: input.internalAgentProfile,
-      contextRefs: input.contextRefs ?? snapshot.composerContextRefs,
+      contextRefs: input.contextRefs ?? snapshot.composerContextRefs ?? [],
     },
     intent: {
       mode: snapshot.mode, agentType: snapshot.agentType,
@@ -40,7 +40,7 @@ export function captureQueuedSubmission(
           displayName: mount.displayName, workspacePath: mount.workspacePath,
         })),
       },
-      composerContextRefs: input.contextRefs ?? snapshot.composerContextRefs,
+      composerContextRefs: input.contextRefs ?? snapshot.composerContextRefs ?? [],
       provider: {
         selectedProviderId: snapshot.provider.selectedProviderId,
         selectedModelId: snapshot.provider.selectedModelId,

@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import { loadQueuedSubmissions, QUEUED_SUBMISSIONS_STORAGE_KEY } from '../chat/chatQueuedSubmissions';
 import { useConversationArchiveStore } from '../useConversationArchiveStore';
 import { beginAppShutdownGate } from '../../services/appShutdownGate';
+import type { ChatMessage } from '../../types';
 import type { MergeWorkflowRuntimeState } from '../../services/mergeWorkflow';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -56,6 +57,36 @@ export function registerQueuedSubmissionRecoveryScenarios(c: UseChatStoreScenari
       expect(c.createMessageMock.mock.calls[0]?.[3]?.contextRefs).toMatchObject([{ title: 'README' }]);
       expect(c.streamChatMock).toHaveBeenCalledTimes(1);
       expect(c.getLatestStreamOptions()).toMatchObject({ providerId: 'provider-1' });
+    });
+
+    it('keeps an empty reference list after DB mapping and navigation to another composer', async () => {
+      const store = await prepare();
+      const { useSkillsStore } = await import('../useSkillsStore');
+      const originalPrepareSkills = useSkillsStore.getState().prepareSkillsForTurn;
+      const prepareSkills = mock(originalPrepareSkills);
+      useSkillsStore.setState({ prepareSkillsForTurn: prepareSkills });
+      try {
+        await store.getState().submitDuringActiveTurn({ conversationId: 'queued-conv', content: 'No references here' }, 'queue');
+        expect(loadQueuedSubmissions()[0].input.contextRefs).toEqual([]);
+        store.setState({ selectedConversationId: 'other-conv', composerContextRefs: [
+          { id: 'file:foreign', kind: 'file', title: 'Foreign file', path: '/synthetic/foreign-only.md' },
+          { id: 'skill:foreign', kind: 'skill', title: 'Foreign skill', skillId: 'foreign-skill' },
+        ] });
+        release(store);
+        await store.getState().retryQueuedSubmissions('queued-conv');
+        // createMessageMock serializes [] and the real DB mapper returns undefined.
+        // Preparation must still never consult the other conversation's composer.
+        expect(c.createMessageMock.mock.calls[0]?.[3]?.contextRefs).toEqual([]);
+        const persisted = store.getState().messagesByConversationId['queued-conv'].find((message: ChatMessage) => message.role === 'user');
+        expect(persisted).toBeDefined();
+        expect(persisted!.context_refs).toBeUndefined();
+        expect(prepareSkills).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'queued-conv', contextRefs: [] }));
+        expect(c.streamChatMock).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(c.getLatestStreamOptions().messages)).not.toContain('foreign-only');
+        expect(JSON.stringify(c.getLatestStreamOptions().messages)).not.toContain('foreign-skill');
+      } finally {
+        useSkillsStore.setState({ prepareSkillsForTurn: originalPrepareSkills });
+      }
     });
 
     it('keeps the Architect plan after selecting a different plan and mode', async () => {
