@@ -870,26 +870,21 @@ export const readVisibleTaskArtifactContent = async (params: {
   if (!artifact) {
     throw toServiceError(`Artifact is not visible from task ${params.task.id}: ${params.artifactId}`);
   }
-  const workspaceTargets = await resolveWorkspacePaths({
+  const content = await readArtifactContent({
     ...getPlanWorkspaceHints(params.plan),
+    artifact,
   });
-  for (const target of workspaceTargets) {
-    const content = await readTextAtWorkspace(target, artifact.path);
-    if (content !== null) {
-      return { artifact, content };
-    }
-  }
-  throw toServiceError(`Artifact content not found: ${artifact.id}`);
+  return { artifact, content };
 };
 
-const readArtifactContentByPath = async (params: {
+const readArtifactContent = async (params: {
   projectId?: string | null;
   projectIds?: string[] | null;
   availableProjectIds?: string[] | null;
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
-  path: string;
+  artifact: Pick<PlanTaskArtifact, 'id' | 'path' | 'contentHash'>;
 }): Promise<string> => {
   const workspaceTargets = await resolveWorkspacePaths({
     projectId: params.projectId,
@@ -900,12 +895,16 @@ const readArtifactContentByPath = async (params: {
     executionModesByProjectId: params.executionModesByProjectId,
   });
   for (const target of workspaceTargets) {
-    const content = await readTextAtWorkspace(target, params.path);
+    const content = await readTextAtWorkspace(target, params.artifact.path);
     if (content !== null) {
+      // Validate the exact string returned: the file may change after index validation.
+      if (hashString(content) !== params.artifact.contentHash) {
+        throw toServiceError(`Artifact content does not match its index: ${params.artifact.id}`);
+      }
       return content;
     }
   }
-  throw toServiceError(`Artifact content not found: ${params.path}`);
+  throw toServiceError(`Artifact content not found: ${params.artifact.path}`);
 };
 
 export const readVisibleTaskArtifactDiff = async (params: {
@@ -936,17 +935,17 @@ export const readVisibleTaskArtifactDiff = async (params: {
   if (!artifact) {
     throw toServiceError(`Artifact is not visible from task ${params.task.id}: ${params.artifactId}`);
   }
-  const content = await readArtifactContentByPath({
+  const content = await readArtifactContent({
     ...getPlanWorkspaceHints(params.plan),
-    path: artifact.path,
+    artifact,
   });
   const previousArtifact = artifact.supersedes
     ? visibleArtifacts.find((candidate) => candidate.id === artifact.supersedes) || null
     : null;
   const previousContent = previousArtifact
-    ? await readArtifactContentByPath({
+    ? await readArtifactContent({
         ...getPlanWorkspaceHints(params.plan),
-        path: previousArtifact.path,
+        artifact: previousArtifact,
       })
     : '';
   return {
@@ -977,9 +976,9 @@ export const readPlanArtifactDiff = async (params: {
     ...artifact,
     visibility: 'own',
   };
-  const content = await readArtifactContentByPath({
+  const content = await readArtifactContent({
     ...getPlanWorkspaceHints(params.plan),
-    path: artifact.path,
+    artifact,
   });
   const previousArtifact = artifact.supersedes
     ? index.artifacts.find((candidate) => candidate.id === artifact.supersedes) || null
@@ -991,9 +990,9 @@ export const readPlanArtifactDiff = async (params: {
       }
     : null;
   const previousContent = previousArtifact
-    ? await readArtifactContentByPath({
+    ? await readArtifactContent({
         ...getPlanWorkspaceHints(params.plan),
-        path: previousArtifact.path,
+        artifact: previousArtifact,
       })
     : '';
   return {
