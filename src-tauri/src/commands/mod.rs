@@ -1019,9 +1019,22 @@ async fn configured_provider_models(
     pool: &SqlitePool,
     provider_id: &str,
 ) -> CommandResult<Vec<AiModel>> {
-    let mut models = repository::list_models_by_provider(pool, provider_id)
+    let provider = repository::get_provider_config(pool, provider_id)
         .await
-        .map_err(CommandError::from)?
+        .map_err(CommandError::from)?;
+    let stored_models = if provider
+        .as_ref()
+        .is_some_and(|provider| provider.provider_type == "chatgpt")
+    {
+        crate::ai::chatgpt::available_models(pool, provider_id)
+            .await
+            .map_err(command_error)?
+    } else {
+        repository::list_models_by_provider(pool, provider_id)
+            .await
+            .map_err(CommandError::from)?
+    };
+    let mut models = stored_models
         .into_iter()
         .filter(|model| !model.is_manual)
         .collect::<Vec<_>>();
@@ -1616,6 +1629,14 @@ pub async fn db_upsert_provider_models(
         repository::replace_discovered_provider_models(&pool, &provider_id, &models)
             .await
             .map_err(CommandError::from)?;
+    } else if repository::get_provider_config(&pool, &provider_id)
+        .await
+        .map_err(CommandError::from)?
+        .is_some_and(|provider| provider.provider_type == "chatgpt")
+    {
+        crate::ai::chatgpt::persist_model_enrichments(&pool, &provider_id, &models)
+            .await
+            .map_err(command_error)?;
     } else {
         repository::upsert_provider_models(&pool, &provider_id, &models)
             .await
@@ -2038,6 +2059,97 @@ pub async fn db_set_setting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn configured_chatgpt_catalog_requires_provenance_and_keeps_manual_preferences() {
+        let _store_guard = secrets::lock_test_store();
+        let temp = tempfile::tempdir().unwrap();
+        secrets::init(temp.path()).unwrap();
+        let pool = crate::db::create_pool(&temp.path().join("macro.db"))
+            .await
+            .unwrap();
+        repository::upsert_provider_config_by_id(
+            &pool,
+            "chatgpt",
+            "ChatGPT",
+            "chatgpt",
+            "https://chat.invalid",
+            false,
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE provider_configs SET auth_status = 'authenticated', plan_type = 'plus' WHERE id = 'chatgpt'").execute(&pool).await.unwrap();
+        secrets::set_chatgpt_secret(
+            "chatgpt",
+            &secrets::ChatGptSecret {
+                access_token: "synthetic-access".into(),
+                refresh_token: "synthetic-refresh".into(),
+                access_token_expires_at: None,
+                account_id: Some("synthetic-account".into()),
+                auth_source: "browser".into(),
+            },
+        )
+        .unwrap();
+        sqlx::query("INSERT INTO ai_models (id, provider_id, model_id, name, is_manual, first_seen_at, last_seen_at) VALUES ('discovered', 'chatgpt', 'catalog-model', 'Catalog', 0, 'original', 'original')").execute(&pool).await.unwrap();
+        let manager = ConfigManager::initialize(temp.path().join("config"))
+            .await
+            .unwrap();
+        patch_provider_document_top_level(&manager, "manualModels", serde_json::json!({
+            "synthetic-manual": {"providerId": "chatgpt", "modelId": "manual-model", "displayName": "Manual", "enabled": true}
+        })).await.unwrap();
+        patch_provider_document_top_level(
+            &manager,
+            "modelOverrides",
+            serde_json::json!({
+                "chatgpt/catalog-model": {"enabled": false, "contextWindow": 12345}
+            }),
+        )
+        .await
+        .unwrap();
+        let key = "chatgpt.verified_models.v1:chatgpt";
+        let current = serde_json::json!({
+            "account_id": "synthetic-account", "base_url": "https://chat.invalid", "plan_type": "plus",
+            "collected_at": chrono::Utc::now(), "model_ids": ["catalog-model"]
+        });
+        let mut expired = current.clone();
+        expired["collected_at"] =
+            serde_json::json!(chrono::Utc::now() - chrono::Duration::hours(25));
+        let mut foreign = current.clone();
+        foreign["account_id"] = serde_json::json!("other-synthetic-account");
+        for invalid in [None, Some(expired), Some(foreign)] {
+            if let Some(value) = invalid {
+                repository::set_app_setting(&pool, key, &value.to_string())
+                    .await
+                    .unwrap();
+            }
+            let available = configured_provider_models(&manager, &pool, "chatgpt")
+                .await
+                .unwrap();
+            assert_eq!(available.len(), 1);
+            assert_eq!(available[0].model_id, "manual-model");
+            assert!(available[0].is_manual && available[0].is_enabled);
+            assert_eq!(
+                repository::list_models_by_provider(&pool, "chatgpt")
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        repository::set_app_setting(&pool, key, &current.to_string())
+            .await
+            .unwrap();
+        let available = configured_provider_models(&manager, &pool, "chatgpt")
+            .await
+            .unwrap();
+        assert_eq!(available.len(), 2);
+        let discovered = available
+            .iter()
+            .find(|model| model.model_id == "catalog-model")
+            .unwrap();
+        assert!(!discovered.is_enabled);
+        assert_eq!(discovered.context_window_tokens, Some(12345));
+    }
 
     #[test]
     fn ai_provider_validation_rejects_empty_and_unsafe_endpoints() {
