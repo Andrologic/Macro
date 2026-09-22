@@ -1490,9 +1490,13 @@ conserve `is_error` et `error_kind` jusqu'au résultat SDK, où un refus devient
 `denied` et une erreur devient `failure`. Une panne du canal rejette l'appel.
 `bun run typecheck:copilot` vérifie tous ses modules avec le SDK installé ; les
 efforts de raisonnement hors de son contrat sont refusés explicitement.
-Le test du catalogue Copilot conserve aussi la liste des outils `config_*`,
-`skill_*` et `task_*` annoncés mais encore refusés par son exécuteur. Ce raccord
-de contrat ne leur ajoute aucune route d'exécution.
+Le catalogue Copilot exclut les outils `config_*`, `skill_*`, `task_artifact_*`
+et `task_todo_*`, dont le bridge ne possède pas de gestionnaire. Les outils
+internes remis au SDK sont l’intersection du catalogue fourni dans `request.tools`,
+de l’allowlist et des routes prises en charge. Leurs schémas filtrés sont conservés,
+sans reconstruction depuis le registre statique. La liste `availableTools` et
+l’approbation technique du SDK utilisent cette même intersection ; la politique
+frontend continue de décider des autorisations d’exécution.
 
 Les profils de capacités techniques suivent le type de fournisseur configuré,
 comme le dispatch natif. L'identifiant sert de repli quand ce type est absent ;

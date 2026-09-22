@@ -3505,3 +3505,92 @@ describe("workspaceToolExecutor helpers", () => {
     mock.restore();
   });
 });
+
+
+describe("tool catalogue to workspace execution", () => {
+  const fixtures: Record<string, Record<string, unknown>> = {
+    apply_patch: { patch_text: "*** Begin Patch\n*** Add File: result.ts\n+export const result = 1;\n*** End Patch" },
+    ast_grep: { pattern: "console.log($$$ARGS)", path: "src", language: "ts" },
+    write: { path: "result.ts", content: "export const result = 1;" },
+    edit: { path: "result.ts", old_text: "1", new_text: "2" },
+  };
+
+  it.each([
+    ["openai", "gpt-5", "apply_patch"],
+    ["openrouter", "openai/gpt-4.1", "apply_patch"],
+    ["chatgpt", "gpt-5", "apply_patch"],
+    ["anthropic", "claude", "write"],
+    ["anthropic", "claude", "edit"],
+    ["copilot", "gpt-5", "write"],
+    ["copilot", "gpt-5", "edit"],
+    ["openai", "gpt-5", "ast_grep"],
+    ["copilot", "gpt-5", "ast_grep"],
+  ])("sends %s/%s schemas and dispatches %s with the advertised arguments", async (providerType, modelId, toolName) => {
+    const nativeCalls: Array<Record<string, unknown>> = [];
+    const { executeWorkspaceTool } = await loadWorkspaceToolExecutor({
+      tauriModule: {
+        isTauriAvailable: () => true,
+        executeWorkspaceTool: async (params: Record<string, unknown>) => {
+          nativeCalls.push(params);
+          return JSON.stringify({ ok: true, tool: params.toolId });
+        },
+      },
+    } as Partial<MockAppState>);
+    const { getImplementAgentToolPolicy } = await import("./toolModePolicy");
+    const { applyEditingStrategyToToolIds } = await import("./aiEditingStrategy");
+    const { filterCopilotSupportedToolIds, requireMacroToolRegistryEntry, toFunctionToolShape } = await import("../shared/macroToolRegistry");
+    const { normalizeNativeProviderTools } = await import("./ai/toolDefinitions");
+    const { applyToolsToChatCompletionsRequest, resolveChatCompletionProviderProfile } = await import("./ai/chatCompletionsCodec");
+    const { runToolCallingLoop } = await import("./ai/toolCallingLoop");
+    const { createStreamAccumulator } = await import("./ai/streamAccumulator");
+    const selected = applyEditingStrategyToToolIds(getImplementAgentToolPolicy("build").allowedToolIds, providerType, modelId);
+    const allowedToolIds = providerType === "copilot" ? filterCopilotSupportedToolIds(selected) : selected;
+    const options = {
+      providerId: providerType, providerType, modelId, baseUrl: "https://example.invalid", messages: [],
+      allowedToolIds, maxTurns: 2, mode: "Implement" as const,
+      onToken: () => undefined, onComplete: () => undefined, onError: () => undefined,
+      onToolCall: (name: string, args: Record<string, unknown>) => executeWorkspaceTool(name, args, "Implement", {
+        workspacePath: "C:/dev/macro-web", projectId: "web",
+      }),
+    };
+    let requests = 0;
+    const results: unknown[] = [];
+    await runToolCallingLoop(options, {
+      kind: providerType === "chatgpt" || providerType === "copilot" ? "native" : "generic",
+      streamTurn: async ({ tools }) => {
+        const body: Record<string, unknown> = {};
+        if (providerType === "chatgpt" || providerType === "copilot") {
+          body.tools = normalizeNativeProviderTools(tools, providerType);
+        } else {
+          applyToolsToChatCompletionsRequest(body, tools,
+            resolveChatCompletionProviderProfile({ providerType, modelId }), []);
+        }
+        // Inspect the JSON boundary, not just the intermediate allowlist.
+        const wire = JSON.parse(JSON.stringify(body)) as { tools: Array<{ overridesBuiltInTool?: boolean; function: { name: string; parameters: unknown } }> };
+        const advertised = wire.tools.find(tool => tool.function.name === toolName);
+        expect(advertised?.function.parameters).toEqual(toFunctionToolShape(requireMacroToolRegistryEntry(toolName)).function.parameters);
+        if (providerType === "copilot" && toolName !== "ast_grep") expect(advertised?.overridesBuiltInTool).toBe(true);
+        const names = wire.tools.map(tool => tool.function.name);
+        if (selected.includes("apply_patch")) {
+          expect(names).not.toContain("write");
+          expect(names).not.toContain("edit");
+        } else expect(names).not.toContain("apply_patch");
+        requests += 1;
+        return {
+          result: { content: requests === 1 ? "" : "Done", toolCalls: requests === 1 ? [{
+            id: "workspace-call", type: "function" as const,
+            function: { name: toolName, arguments: JSON.stringify(fixtures[toolName]) },
+          }] : [] },
+          projectAssistant: () => ({ items: [] }),
+        };
+      },
+      projectTool: result => { results.push(result); return { type: "function_call_output", output: result.content }; },
+      afterToolResults: () => undefined,
+    }, createStreamAccumulator(options));
+    expect(requests).toBe(2);
+    expect(nativeCalls).toHaveLength(1);
+    expect(nativeCalls[0]).toMatchObject({ toolId: toolName, args: fixtures[toolName], workspacePath: "C:/dev/macro-web", mode: "Implement" });
+    expect(results).toEqual([expect.objectContaining({ tool_name: toolName, is_error: false,
+      content: JSON.stringify({ ok: true, tool: toolName }) })]);
+  });
+});

@@ -24,6 +24,8 @@ export const LIST_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('list
 export const READ_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('read'));
 export const WRITE_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('write'));
 export const EDIT_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('edit'));
+export const APPLY_PATCH_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('apply_patch'));
+export const AST_GREP_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('ast_grep'));
 export const DELETE_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('delete'));
 export const GLOB_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('glob'));
 export const GREP_WORKSPACE_TOOL = toFunctionToolShape(requireMacroToolRegistryEntry('grep'));
@@ -131,6 +133,8 @@ export const collectAllowedTools = (params: {
   if (allowedTools.has('read')) tools.push(READ_WORKSPACE_TOOL);
   if (allowedTools.has('write')) tools.push(WRITE_WORKSPACE_TOOL);
   if (allowedTools.has('edit')) tools.push(EDIT_WORKSPACE_TOOL);
+  if (allowedTools.has('apply_patch')) tools.push(APPLY_PATCH_WORKSPACE_TOOL);
+  if (allowedTools.has('ast_grep')) tools.push(AST_GREP_WORKSPACE_TOOL);
   if (allowedTools.has('delete')) tools.push(DELETE_WORKSPACE_TOOL);
   if (allowedTools.has('glob')) tools.push(GLOB_WORKSPACE_TOOL);
   if (allowedTools.has('grep')) tools.push(GREP_WORKSPACE_TOOL);

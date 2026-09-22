@@ -21,10 +21,9 @@ export const applyEditingStrategyToToolIds = (
   providerType?: string | null,
   modelId?: string | null,
 ): string[] => {
-  const preferApplyPatch = shouldPreferApplyPatchForModel(
-    providerType,
-    modelId,
-  );
+  const preferApplyPatch =
+    toolIds.includes("apply_patch") &&
+    shouldPreferApplyPatchForModel(providerType, modelId);
   const filtered = toolIds.filter((toolId) => {
     if (preferApplyPatch) {
       return toolId !== "write" && toolId !== "edit";
