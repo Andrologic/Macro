@@ -11,10 +11,6 @@ import {
 } from '../types';
 import * as tauriIpc from '../services/tauriIpc';
 import {
-  probeModelsEndpoint,
-  probeProviderReachability,
-} from '../services/providerApi';
-import {
   buildCatalogModelContextLimitOverlay,
   buildProviderModelContextLimitOverlay,
   enrichModelWithCatalogContextLimits,
@@ -1644,6 +1640,9 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
     const finishLoading = beginScan();
 
     try {
+      const { probeModelsEndpoint } = await import('../services/providerApi');
+      lifecycle?.assertActive();
+      if (!isCurrentScan()) return get().modelsByProvider[providerId] || [];
       const result = await probeModelsEndpoint({
         baseUrl: config.baseUrl,
         apiKey,
@@ -3837,6 +3836,21 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       };
     }
 
+    let providerApi: typeof import('../services/providerApi');
+    try {
+      providerApi = await import('../services/providerApi');
+    } catch (error) {
+      lifecycle?.assertActive();
+      if (!isCurrent()) return obsoleteResult;
+      const message = getErrorMessage(error, 'Failed to load provider connection probe.');
+      set((state) => withReachabilityRecord(state, providerId, {
+        status: 'unreachable',
+        lastError: message,
+      }));
+      return { success: false, message, status: 'unreachable' };
+    }
+    lifecycle?.assertActive();
+    if (!isCurrent()) return obsoleteResult;
     const apiKey = config.isLocal ? undefined : await resolveProviderApiKey(providerId);
     lifecycle?.assertActive();
     if (!isCurrent()) return obsoleteResult;
@@ -3847,7 +3861,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
       selectedModelId,
       modelsByProvider,
     });
-    const result = await probeProviderReachability({
+    const result = await providerApi.probeProviderReachability({
       baseUrl: config.baseUrl,
       apiKey,
       providerId: config.providerType,

@@ -657,6 +657,21 @@ describe('useProviderStore secret resolution', () => {
     expect(store.getState().selectedReasoningEffort).toBe('low');
   });
 
+  for (const action of ['scanModelsForProvider', 'testConnection'] as const) {
+    it(`stops ${action} before probing when lifecycle ends during lazy loading`, async () => {
+      const store = await setupModelPreferences();
+      store.setState({ providerConfigs: [{ ...store.getState().providerConfigs[0], isLocal: true }] });
+      const scope = createLifecycleScope();
+      const pending = store.getState()[action]('provider-openai', scope);
+      const failure = pending.then(() => null, (error: unknown) => error);
+      scope.stop();
+      expect(await failure).toBeInstanceOf(Error);
+      expect(probeModelsEndpointMock).not.toHaveBeenCalled();
+      expect(probeProviderReachabilityMock).not.toHaveBeenCalled();
+      expect(store.getState().isLoadingModels).toBe(false);
+    });
+  }
+
   it('keeps an in-flight connection check valid after a model preference changes', async () => {
     const store = await setupModelPreferences();
     const probe = deferred<Awaited<ReturnType<typeof probeProviderReachabilityMock>>>();
