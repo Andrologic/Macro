@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { GroupCombobox } from './GroupCombobox';
+import { Dialog } from './Dialog';
 
 describe('GroupCombobox', () => {
   let container: HTMLDivElement | null = null;
@@ -132,6 +133,70 @@ describe('GroupCombobox', () => {
 
     expect(onSelect).toHaveBeenCalledWith('alpha');
   });
+
+  it.each(['select', 'clear', 'create-button', 'create-enter'] as const)(
+    'restores input focus without reopening after %s inside a dialog', async (action) => {
+      const onSelect = mock((_id: string | null) => undefined);
+      const onCreate = mock((_name: string) => undefined);
+      const onClose = mock(() => undefined);
+      const Harness = () => {
+        const [selected, setSelected] = useState<string | null>('alpha');
+        const [groups, setGroups] = useState([{ id: 'alpha', name: 'Alpha' }, { id: 'beta', name: 'Beta' }]);
+        return <Dialog title="Groups" onClose={onClose}>
+          <GroupCombobox projectGroups={groups} selectedGroupId={selected}
+            onSelect={(id) => { onSelect(id); setSelected(id); }}
+            onCreateGroup={(name) => {
+              onCreate(name);
+              setGroups([...groups, { id: 'created', name }]);
+              setSelected('created');
+            }} />
+          <button>Neighbor</button>
+        </Dialog>;
+      };
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      root = createRoot(container);
+      await act(async () => { root?.render(<Harness />); });
+      const input = document.body.querySelector<HTMLInputElement>('input')!;
+      await act(async () => { input.focus(); });
+      if (action.startsWith('create')) {
+        await act(async () => {
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set?.call(input, 'Gamma');
+          input.dispatchEvent(new window.Event('input', { bubbles: true }));
+        });
+      }
+      await act(async () => {
+        if (action === 'create-enter') {
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+        } else {
+          const options = document.body.querySelectorAll<HTMLButtonElement>('[data-macro-dialog-portal] button');
+          const option = action === 'clear' ? options[0] : options[options.length - 1];
+          // Native buttons dispatch click for pointer and keyboard activation.
+          // Focus explicitly: happy-dom does not emulate pointer focus or native key activation.
+          option.focus();
+          option.click();
+        }
+      });
+      expect(document.activeElement).toBe(input);
+      expect(document.body.querySelector('[data-macro-dialog-portal]')).toBeNull();
+      expect(input.value).toBe(action === 'select' ? 'Beta' : action === 'clear' ? '' : 'Gamma');
+      if (action.startsWith('create')) {
+        expect(onCreate).toHaveBeenCalledTimes(1);
+        expect(onCreate).toHaveBeenCalledWith('Gamma');
+        expect(onSelect).not.toHaveBeenCalled();
+      } else {
+        expect(onSelect).toHaveBeenCalledTimes(1);
+        expect(onSelect).toHaveBeenCalledWith(action === 'select' ? 'beta' : null);
+        expect(onCreate).not.toHaveBeenCalled();
+      }
+      expect(onClose).not.toHaveBeenCalled();
+      expect(container.hasAttribute('inert')).toBe(true);
+      await act(async () => {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([
     ['Escape', () => new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })],

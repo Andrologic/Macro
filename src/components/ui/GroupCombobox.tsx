@@ -96,13 +96,6 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
     });
   }, []);
 
-  const handleSelect = (groupId: string | null) => {
-    onSelect(groupId);
-    setIsOpen(false);
-    setIsCreating(false);
-    setQuery('');
-  };
-
   const resetSearch = useCallback(() => {
     setIsOpen(false);
     setIsCreating(false);
@@ -116,6 +109,11 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
     suppressFocusOpenRef.current = false;
   }, [resetSearch]);
 
+  const handleSelect = (groupId: string | null) => {
+    onSelect(groupId);
+    closeAndRestoreFocus();
+  };
+
   useEffect(() => {
     if (!isOpen || !dialogContext) return;
 
@@ -127,9 +125,7 @@ export const GroupCombobox: React.FC<GroupComboboxProps> = ({
   const handleCreateNew = () => {
     if (onCreateGroup && query.trim()) {
       onCreateGroup(query.trim());
-      setIsCreating(false);
-      setQuery('');
-      setIsOpen(false);
+      closeAndRestoreFocus();
     }
   };
 
