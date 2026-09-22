@@ -1050,7 +1050,11 @@ Chaque écriture ou suppression réutilise la révision native observée. La rep
 refuse un fichier dont le contenu diffère à la fois de l'état initial et de
 l'état attendu ; elle conserve l'intention pour ne pas écraser une modification
 externe. Une intention d'artefacts invalide, y compris son enveloppe, bloque
-aussi la reprise et reste dans le journal actif. Si le registre des projets
+aussi la reprise et reste dans le journal actif. Le chargeur reconnaît également
+une intention d'artefacts par son identifiant ou ses instantanés si le champ
+`operation` manque ou a changé. Le module de persistance des artefacts est chargé
+à la demande lors d'une lecture, d'une mutation ou d'une reprise d'artefact.
+Si le registre des projets
 change et qu'une ancienne clé de workspace chevauche la clé actuelle, la reprise
 bloque explicitement l'accès plutôt que de rejouer sous un verrou différent.
 Rétablir le registre initial permet alors de reprendre cette intention.

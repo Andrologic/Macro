@@ -26,7 +26,7 @@ import {
 } from './architectPlanMutationPersistence';
 import { resolveArchitectPlanServiceDependencies } from './architectPlanReadContext';
 import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
-import { persistArtifactMutation, readArtifactFileSnapshot, type ArtifactFileMutation } from './architectPlanArtifactPersistence';
+import type { ArtifactFileMutation } from './architectPlanArtifactPersistence';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
@@ -435,6 +435,7 @@ export const readPlanTaskArtifactIndex = async (params: {
   if (!tauriIpc.isTauriAvailable()) {
     return emptyArtifactIndex(params.planId);
   }
+  const { readArtifactFileSnapshot } = await import('./architectPlanArtifactPersistence');
   const indexPath = getPlanArtifactIndexPath(params.branchName, params.planId);
   const workspaceTargets = await resolveWorkspacePaths(params);
   const validIndexes: PlanTaskArtifactIndex[] = [];
@@ -534,6 +535,7 @@ const writePlanTaskArtifactIndex = async (params: {
   contentWrites?: Array<{ path: string; content: string }>;
 }): Promise<void> => withArtifactRecovery(async (workspaceKey) => {
   if (!tauriIpc.isTauriAvailable()) return;
+  const { persistArtifactMutation, readArtifactFileSnapshot } = await import('./architectPlanArtifactPersistence');
   const targets = await resolveWorkspacePaths({ ...params, allowFallbackPaths: false });
   if (targets.length === 0) throw new Error('No registered artifact workspace is available.');
   const files: ArtifactFileMutation[] = [];

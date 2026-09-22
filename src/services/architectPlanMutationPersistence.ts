@@ -1,4 +1,3 @@
-import { isArtifactMutation, recoverArtifactMutation } from './architectPlanArtifactPersistence';
 import { getArchitectPlanMetadataCoordinatorDeps } from './architectPlanReadContext';
 import * as tauriIpc from './tauriIpc';
 import { normalizeProjectRegistryPath, type ValidProjectRegistrySnapshot } from './validProjectRegistry';
@@ -300,6 +299,7 @@ export const recoverArchitectPlanReplicaMutationsUnlocked = async (
   }
   for (const entry of entries.filter((candidate) => candidate.workspaceKey === currentWorkspaceKey)) {
       if (entry.operation === 'artifacts') {
+        const { isArtifactMutation, recoverArtifactMutation } = await import('./architectPlanArtifactPersistence');
         if (!isArtifactMutation(entry)) {
           // Keep the intent blocking: quarantine alone must not turn incomplete
           // artifacts into an apparently healthy plan on the next read.

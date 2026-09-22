@@ -219,12 +219,15 @@ describe('artifact durable recovery', () => {
     });
   }
 
-  for (const corruption of ['phase', 'updatedAt']) {
+  for (const corruption of ['phase', 'updatedAt', 'operation-missing', 'operation-invalid', 'operation-wrong-kind']) {
     it(`keeps an invalid ${corruption} journal envelope blocking on repeated reads`, async () => {
       await captureInterruptedValidation();
       const entries = JSON.parse(settings.get(journalKey)!);
       if (corruption === 'phase') entries[0].phase = 'invalid-phase';
-      else delete entries[0].updatedAt;
+      else if (corruption === 'updatedAt') delete entries[0].updatedAt;
+      else if (corruption === 'operation-missing') delete entries[0].operation;
+      else if (corruption === 'operation-invalid') entries[0].operation = 'invalid-operation';
+      else entries[0].operation = 'update';
       settings.set(journalKey, JSON.stringify(entries));
       const corruptJournal = settings.get(journalKey);
       const partial = new Map(files);
@@ -354,27 +357,40 @@ describe('artifact durable recovery', () => {
     expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toEqual([]);
   });
 
-  it('reads and reviews legacy runtime-owned artifacts without rewriting their content', async () => {
-    const artifact = await put('Legacy content');
-    const catalogTask = { ...task, id: 'task:v1:develop:plan-1:task', node_id: 'task' };
-    const legacyPath = service.getPlanArtifactContentPath(branchName, plan.id, catalogTask.id, artifact.id, 'markdown');
-    for (const root of roots) {
-      const indexPath = key(root, service.getPlanArtifactIndexPath(branchName, plan.id));
-      const index = JSON.parse(files.get(indexPath)!);
-      index.artifacts[0].taskId = catalogTask.id;
-      index.artifacts[0].path = legacyPath;
-      files.set(indexPath, JSON.stringify(index));
-      files.set(key(root, legacyPath), files.get(key(root, artifact.path))!);
-      files.delete(key(root, artifact.path));
-      files.delete(key(root, manifestPath)); // Legacy plans without a manifest remain supported.
-    }
-    expect((await read()).artifacts).toHaveLength(1);
-    expect(await service.listVisibleTaskArtifacts({ branchName, plan, task: catalogTask })).toHaveLength(1);
-    expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toHaveLength(1);
-    await service.validateVisibleTaskArtifact({ branchName, plan, task: catalogTask, artifactId: artifact.id });
-    expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toEqual([]);
-    for (const root of roots) expect(files.get(key(root, legacyPath))).toBe('Legacy content');
-  });
+  for (const hasManifest of [false, true]) {
+    it(`reads legacy runtime-owned artifacts with manifest=${hasManifest}`, async () => {
+      const artifact = await put('Legacy content');
+      const catalogTask = { ...task, id: 'task:v1:develop:plan-1:task', node_id: 'task' };
+      const legacyPath = service.getPlanArtifactContentPath(branchName, plan.id, catalogTask.id, artifact.id, 'markdown');
+      for (const root of roots) {
+        const indexPath = key(root, service.getPlanArtifactIndexPath(branchName, plan.id));
+        const index = JSON.parse(files.get(indexPath)!);
+        index.artifacts[0].taskId = catalogTask.id;
+        index.artifacts[0].path = legacyPath;
+        index.updatedAt = '2026-01-01T00:00:00Z';
+        index.artifacts[0].updatedAt = index.updatedAt;
+        files.set(indexPath, JSON.stringify(index));
+        files.set(key(root, legacyPath), files.get(key(root, artifact.path))!);
+        files.delete(key(root, artifact.path));
+        if (hasManifest) {
+          // Fixed summary produced by the historical writer for this legacy index.
+          files.set(key(root, manifestPath), JSON.stringify({
+            version: 3,
+            artifacts: {
+              count: 1, indexHash: 'f10a7330', contentHash: 'b470b7b3',
+              reviewHash: '741638a5', updatedAt: '2026-01-01T00:00:00Z',
+            },
+          }));
+        } else files.delete(key(root, manifestPath));
+      }
+      expect((await read()).artifacts).toHaveLength(1);
+      expect(await service.listVisibleTaskArtifacts({ branchName, plan, task: catalogTask })).toHaveLength(1);
+      expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toHaveLength(1);
+      await service.validateVisibleTaskArtifact({ branchName, plan, task: catalogTask, artifactId: artifact.id });
+      expect(await service.loadUnvalidatedCurrentTaskArtifactsForCompletion(catalogTask, async () => plan)).toEqual([]);
+      for (const root of roots) expect(files.get(key(root, legacyPath))).toBe('Legacy content');
+    });
+  }
 
   it('blocks an invalid artifact journal scope without writing or discarding the intent', async () => {
     settings.set(journalKey, JSON.stringify([{
