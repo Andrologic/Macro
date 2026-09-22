@@ -1741,7 +1741,7 @@ pub(crate) fn restore_paths(
                 .iter()
                 .map(|path| path.to_string_lossy().to_string()),
         );
-        let output = run_git_command(&repo_root, &args)?;
+        let output = run_git_mutation_command(&repo_root, &args)?;
         if !output.success {
             let details = command_output_text(&output);
             return Err(BackendError::Git {
@@ -1765,7 +1765,7 @@ pub(crate) fn restore_paths(
                 .iter()
                 .map(|path| path.to_string_lossy().to_string()),
         );
-        let output = run_git_command(&repo_root, &args)?;
+        let output = run_git_mutation_command(&repo_root, &args)?;
         if !output.success {
             let details = command_output_text(&output);
             return Err(BackendError::Git {
@@ -1791,7 +1791,7 @@ pub(crate) fn restore_paths(
                 .iter()
                 .map(|path| path.to_string_lossy().to_string()),
         );
-        let output = run_git_command(&repo_root, &rm_args)?;
+        let output = run_git_mutation_command(&repo_root, &rm_args)?;
         if !output.success {
             let details = command_output_text(&output);
             return Err(BackendError::Git {
@@ -2199,7 +2199,7 @@ fn conflict_matches_path(conflict: &git2::IndexConflict, relative_path: &Path) -
 
 fn stage_repo_relative_path(repo: &Repository, relative_path: &Path) -> Result<()> {
     let root = repo_root(repo)?;
-    let output = run_git_command(
+    let output = run_git_mutation_command(
         &root,
         &[
             "--literal-pathspecs".to_string(),
@@ -2223,29 +2223,48 @@ fn stage_repo_relative_path(repo: &Repository, relative_path: &Path) -> Result<(
     Ok(())
 }
 
-fn cleanup_temp_worktree(root: &Path, worktree_path: &Path) {
-    let remove_output = run_git_command(
+fn cleanup_temp_worktree(
+    root: &Path,
+    worktree_path: &Path,
+    run: &impl Fn(&Path, &[String]) -> Result<GitCommandOutput>,
+) -> Result<()> {
+    let result = run(
         root,
         &[
-            "worktree".to_string(),
-            "remove".to_string(),
-            "--force".to_string(),
-            worktree_path.to_string_lossy().to_string(),
+            "worktree".into(),
+            "remove".into(),
+            "--force".into(),
+            worktree_path.to_string_lossy().into_owned(),
         ],
     );
-
-    if remove_output.map(|output| output.success).unwrap_or(false) {
-        return;
-    }
-
-    let _ = fs::remove_dir_all(worktree_path);
-    let _ = run_git_command(root, &["worktree".to_string(), "prune".to_string()]);
+    let details = match result {
+        Ok(output) if output.success => return Ok(()),
+        Ok(output) => command_output_text(&output),
+        Err(error) => error.to_string(),
+    };
+    // Preserve both the files and registration if Git cannot finish removal.
+    // A recursive filesystem fallback could itself block without a deadline.
+    Err(BackendError::Git {
+        message: format!(
+            "Temporary rebase worktree cleanup failed at {}: {details}. Inspect this path and its Git worktree registration before retrying removal. An interrupted creation may leave a locked registration; verify that no Git process owns it before unlocking it.",
+            worktree_path.display()
+        ),
+    })
 }
 
 pub(crate) fn build_git_rebase_check(
     repo: &Repository,
     branch_name: &str,
     onto_branch: &str,
+) -> Result<GitRebaseCheckDto> {
+    build_git_rebase_check_with_runner(repo, branch_name, onto_branch, &run_git_mutation_command)
+}
+
+fn build_git_rebase_check_with_runner(
+    repo: &Repository,
+    branch_name: &str,
+    onto_branch: &str,
+    run: &impl Fn(&Path, &[String]) -> Result<GitCommandOutput>,
 ) -> Result<GitRebaseCheckDto> {
     validate_branch_name(branch_name)?;
     validate_branch_name(onto_branch)?;
@@ -2264,55 +2283,52 @@ pub(crate) fn build_git_rebase_check(
         unique_id
     ));
 
-    let add_output = run_git_command(
-        &root,
-        &[
-            "worktree".to_string(),
-            "add".to_string(),
-            "--detach".to_string(),
-            temp_path.to_string_lossy().to_string(),
-            branch_name.to_string(),
-        ],
-    )?;
-    if !add_output.success {
-        let details = command_output_text(&add_output);
-        return Err(BackendError::Git {
-            message: if details.is_empty() {
-                format!("git worktree add failed (exit code: {:?})", add_output.code)
-            } else {
-                details
-            },
-        });
-    }
+    // Creation can partially succeed before a timeout or output-limit error.
+    // Every exit after attempting it must also attempt bounded cleanup.
+    let result = (|| {
+        let add_output = run(
+            &root,
+            &[
+                "worktree".into(),
+                "add".into(),
+                "--detach".into(),
+                temp_path.to_string_lossy().into_owned(),
+                branch_name.to_string(),
+            ],
+        )?;
+        if !add_output.success {
+            return Err(BackendError::Git {
+                message: format!(
+                    "git worktree add failed: {}",
+                    command_output_text(&add_output)
+                ),
+            });
+        }
 
-    let rebase_output =
-        match run_git_command(&temp_path, &["rebase".to_string(), onto_branch.to_string()]) {
-            Ok(output) => output,
-            Err(error) => {
-                cleanup_temp_worktree(&root, &temp_path);
-                return Err(error);
-            }
+        let rebase_output = run(&temp_path, &["rebase".into(), onto_branch.to_string()])?;
+        let mut conflict_files = if rebase_output.success {
+            Vec::new()
+        } else {
+            // Inspect the index directly so a failed or truncated command cannot
+            // masquerade as an empty conflict list.
+            collect_command_conflict_files(&temp_path)?
         };
-    let conflict_files = if rebase_output.success {
-        Vec::new()
-    } else {
-        collect_command_conflict_files(&temp_path)
-    };
-    let output = command_output_text(&rebase_output);
-    cleanup_temp_worktree(&root, &temp_path);
-
-    let mut conflict_files = conflict_files
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    conflict_files.sort();
-
-    Ok(GitRebaseCheckDto {
-        rebaseable: rebase_output.success,
-        conflict_files,
-        output,
-    })
+        conflict_files.sort();
+        conflict_files.dedup();
+        Ok(GitRebaseCheckDto {
+            rebaseable: rebase_output.success,
+            conflict_files,
+            output: command_output_text(&rebase_output),
+        })
+    })();
+    let cleanup = cleanup_temp_worktree(&root, &temp_path, run);
+    match (result, cleanup) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(error), Err(cleanup)) => Err(BackendError::Git {
+            message: format!("{error} {cleanup}"),
+        }),
+    }
 }
 
 pub(crate) fn rebase_branch_repo(
@@ -2583,7 +2599,7 @@ fn apply_guarded_branch_sync(
         checkout_repo(repo, branch_name, false)?;
     }
     let root = repo_root(repo)?;
-    let output = run_git_command(
+    let output = run_git_mutation_command(
         &root,
         &[
             "merge".to_string(),
@@ -2594,7 +2610,7 @@ fn apply_guarded_branch_sync(
     if !output.success {
         let merge_head_path = repo.path().join("MERGE_HEAD");
         if merge_head_path.exists() {
-            let _ = run_git_command(&root, &["merge".to_string(), "--abort".to_string()]);
+            let _ = run_git_mutation_command(&root, &["merge".to_string(), "--abort".to_string()]);
         }
         let details = command_output_text(&output);
         return Err(BackendError::GitConflict {
@@ -2760,7 +2776,7 @@ pub(crate) fn accept_git_conflict_side(
                 message: "Unsupported conflict entry mode".to_string(),
             });
         }
-        let output = run_git_command(
+        let output = run_git_mutation_command(
             repo_root,
             &[
                 "--literal-pathspecs".into(),
@@ -3169,7 +3185,7 @@ pub async fn git_branch_delete_remote(
             ));
         }
         args.push(branch_name);
-        let output = run_git_command(&root, &args)?;
+        let output = run_git_mutation_command(&root, &args)?;
         if !output.success {
             let details = command_output_text(&output);
             let message = if details.is_empty() {
@@ -9580,7 +9596,7 @@ pub async fn macro_branch_commit_if_dirty(
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
         let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
 
-        let add_output = run_git_command(
+        let add_output = run_git_mutation_command(
             &worktree_path,
             &[
                 "add".to_string(),
@@ -9609,7 +9625,7 @@ pub async fn macro_branch_commit_if_dirty(
             );
         }
 
-        let staged_check = run_git_command(
+        let staged_check = run_git_mutation_command(
             &worktree_path,
             &[
                 "diff".to_string(),
@@ -9648,7 +9664,7 @@ pub async fn macro_branch_commit_if_dirty(
             );
         }
 
-        let commit_output = run_git_command(
+        let commit_output = run_git_mutation_command(
             &worktree_path,
             &[
                 "-c".to_string(),
@@ -9717,7 +9733,7 @@ pub async fn macro_branch_push(
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
         let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
-        let push_output = run_git_command(
+        let push_output = run_git_mutation_command(
             &worktree_path,
             &[
                 "push".to_string(),
@@ -9797,7 +9813,7 @@ pub async fn macro_branch_pull(
     tokio::task::spawn_blocking(move || {
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
         let _file_guard = workspace::lock_workspace_state_file(&worktree_path)?;
-        let pull_output = run_git_command(
+        let pull_output = run_git_mutation_command(
             &worktree_path,
             &[
                 "pull".to_string(),
@@ -10520,6 +10536,11 @@ mod tests {
             Err(error) => error,
         };
 
+        assert!(error.to_string().contains("produced too much output"));
+        let error = match run_git_command(temp.path(), &args) {
+            Ok(_) => panic!("default launcher must reject incomplete output"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("produced too much output"));
     }
 
@@ -15189,6 +15210,7 @@ mod tests {
         let check = build_git_rebase_check(&repo, "feature", &base_branch).unwrap();
         assert!(check.rebaseable);
         assert!(check.conflict_files.is_empty());
+        assert!(repo.worktrees().unwrap().is_empty());
     }
 
     #[test]
@@ -15207,6 +15229,287 @@ mod tests {
         let check = build_git_rebase_check(&repo, "feature", &base_branch).unwrap();
         assert!(!check.rebaseable);
         assert!(check.conflict_files.iter().any(|path| path == "README.md"));
+        assert!(repo.worktrees().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_git_rebase_check_cleans_up_after_bounded_command_errors() {
+        let (_temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        for fail_during_add in [false, true] {
+            for excessive_output in [false, true] {
+                let observed = std::cell::RefCell::new(None::<PathBuf>);
+                let runner = |cwd: &Path, args: &[String]| {
+                    if args.get(1).map(String::as_str) == Some("add") {
+                        *observed.borrow_mut() = Some(PathBuf::from(&args[3]));
+                        let output = run_git_command(cwd, args)?;
+                        assert!(output.success);
+                        if !fail_during_add {
+                            return Ok(output);
+                        }
+                    } else if args.first().map(String::as_str) != Some("rebase") {
+                        return run_git_command(cwd, args);
+                    }
+                    let script = if excessive_output {
+                        "alias.fixture=!printf '%0300000d' 0"
+                    } else {
+                        "alias.fixture=!sh -c 'sleep 30 & wait'"
+                    };
+                    run_contained_git_command_with_timeout(
+                        cwd,
+                        &["-c".into(), script.into(), "fixture".into()],
+                        Duration::from_millis(200),
+                        true,
+                    )
+                };
+                let error =
+                    match build_git_rebase_check_with_runner(&repo, &branch, &branch, &runner) {
+                        Ok(_) => panic!("bounded command must fail"),
+                        Err(error) => error.to_string(),
+                    };
+                assert!(
+                    error.contains(if excessive_output {
+                        "too much output"
+                    } else {
+                        "timed out"
+                    }),
+                    "{error}"
+                );
+                assert!(!observed.borrow().as_ref().unwrap().exists());
+                assert!(repo.worktrees().unwrap().is_empty());
+                assert_eq!(
+                    get_branch_name(&repo).unwrap().as_deref(),
+                    Some(branch.as_str())
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_git_rebase_check_cleans_interrupted_worktree_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        let hook = repo.path().join("hooks/post-checkout");
+        fs::write(&hook, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let observed = std::cell::RefCell::new(None::<PathBuf>);
+        let runner = |cwd: &Path, args: &[String]| {
+            if args.get(1).map(String::as_str) == Some("add") {
+                *observed.borrow_mut() = Some(PathBuf::from(&args[3]));
+                return run_contained_git_command_with_timeout(
+                    cwd,
+                    args,
+                    Duration::from_secs(1),
+                    false,
+                );
+            }
+            run_git_mutation_command(cwd, args)
+        };
+        let error = match build_git_rebase_check_with_runner(&repo, &branch, &branch, &runner) {
+            Ok(_) => panic!("worktree creation hook must time out"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("timed out"), "{error}");
+        let path = observed.into_inner().unwrap();
+        // Git can leave its initialization lock. Either removal completed or
+        // the returned error must identify the retained recoverable worktree.
+        if path.exists() {
+            assert!(error.contains("cleanup failed"), "{error}");
+            assert!(error.contains(path.to_str().unwrap()), "{error}");
+            let output = run_git_mutation_command(
+                &repo_root(&repo).unwrap(),
+                &[
+                    "worktree".into(),
+                    "remove".into(),
+                    "--force".into(),
+                    "--force".into(),
+                    path.to_string_lossy().into_owned(),
+                ],
+            )
+            .unwrap();
+            assert!(output.success, "{}", output.stderr);
+        }
+        assert!(!path.exists());
+        assert!(repo.worktrees().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_git_rebase_check_reports_recoverable_cleanup_failure() {
+        let (_temp, repo) = init_repo();
+        let branch = get_branch_name(&repo).unwrap().unwrap();
+        let retained = std::cell::RefCell::new(None::<PathBuf>);
+        let runner = |cwd: &Path, args: &[String]| {
+            if args.get(1).map(String::as_str) == Some("remove") {
+                *retained.borrow_mut() = Some(PathBuf::from(&args[3]));
+                return Err(BackendError::Git {
+                    message: "fixture cleanup timeout".into(),
+                });
+            }
+            run_git_command(cwd, args)
+        };
+        let error = match build_git_rebase_check_with_runner(&repo, &branch, &branch, &runner) {
+            Ok(_) => panic!("cleanup failure must not report success"),
+            Err(error) => error.to_string(),
+        };
+        let path = retained.into_inner().unwrap();
+        assert!(error.contains("fixture cleanup timeout"));
+        assert!(error.contains(path.to_str().unwrap()));
+        assert!(path.exists());
+        assert_eq!(repo.worktrees().unwrap().len(), 1);
+        cleanup_temp_worktree(&repo_root(&repo).unwrap(), &path, &run_git_command).unwrap();
+        assert!(repo.worktrees().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_git_rebase_refused_by_hook_restores_original_branch() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, repo) = init_repo();
+        let base = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature").unwrap();
+        commit_repo(&repo, "feat: feature", true).unwrap();
+        checkout_repo(&repo, &base, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "base").unwrap();
+        commit_repo(&repo, "feat: base", true).unwrap();
+        let hook = repo.path().join("hooks/pre-rebase");
+        fs::write(&hook, "#!/bin/sh\necho fixture-refusal >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = rebase_branch_repo(&repo, "feature", &base, Some(true)).unwrap_err();
+        assert!(error.to_string().contains("fixture-refusal"));
+        assert_eq!(
+            get_branch_name(&repo).unwrap().as_deref(),
+            Some(base.as_str())
+        );
+        assert_eq!(repo.state(), RepositoryState::Clean);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_git_explicit_operation_preserves_repository_ssh_command() {
+        let (temp, repo) = init_repo();
+        repo.config()
+            .unwrap()
+            .set_str("core.sshCommand", "echo fixture-ssh-selected >&2; exit 1")
+            .unwrap();
+        let output = run_git_command(
+            temp.path(),
+            &["ls-remote".into(), "ssh://fixture.invalid/repo".into()],
+        )
+        .unwrap();
+        assert!(!output.success);
+        assert!(
+            output.stderr.contains("fixture-ssh-selected"),
+            "{}",
+            output.stderr
+        );
+    }
+
+    #[test]
+    fn contained_git_mutation_preserves_success_with_large_diagnostics() {
+        let (temp, _repo) = init_repo();
+        let output = run_git_mutation_command(
+            temp.path(),
+            &[
+                "-c".into(),
+                "alias.fixture=!printf '%0300000d' 0".into(),
+                "fixture".into(),
+            ],
+        )
+        .unwrap();
+        assert!(output.success);
+        assert!(output.stdout.contains("[Git output truncated by Macro]"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_git_timeout_reports_retained_index_lock_and_kills_filter() {
+        let (temp, repo) = init_repo();
+        fs::write(
+            temp.path().join(".gitattributes"),
+            "README.md filter=fixture\n",
+        )
+        .unwrap();
+        repo.config()
+            .unwrap()
+            .set_str(
+                "filter.fixture.clean",
+                "echo $$ > filter.pid; exec sleep 30",
+            )
+            .unwrap();
+        fs::write(temp.path().join("README.md"), "new content").unwrap();
+        let error = match run_contained_git_command_with_timeout(
+            temp.path(),
+            &["add".into(), "README.md".into()],
+            Duration::from_secs(1),
+            false,
+        ) {
+            Ok(_) => panic!("filter must time out"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("timed out"), "{error}");
+        assert!(error.contains("index.lock"), "{error}");
+        assert!(repo.path().join("index.lock").exists());
+        let pid: i32 = fs::read_to_string(temp.path().join("filter.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(pid, 0) } == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "filter survived termination"
+        );
+        // The fixture owns this lock. Production must not remove an unproven lock.
+        fs::remove_file(repo.path().join("index.lock")).unwrap();
+        repo.config()
+            .unwrap()
+            .remove("filter.fixture.clean")
+            .unwrap();
+        assert!(
+            run_git_mutation_command(temp.path(), &["add".into(), "README.md".into()])
+                .unwrap()
+                .success
+        );
+    }
+
+    #[test]
+    fn test_git_rebase_branch_preserves_reflog_evidence() {
+        let (temp, repo) = init_repo();
+        let base = get_branch_name(&repo).unwrap().unwrap();
+        checkout_repo(&repo, "feature", true).unwrap();
+        fs::write(temp.path().join("feature.txt"), "feature").unwrap();
+        commit_repo(&repo, "feat: feature", true).unwrap();
+        checkout_repo(&repo, &base, false).unwrap();
+        fs::write(temp.path().join("base.txt"), "base").unwrap();
+        commit_repo(&repo, "feat: base", true).unwrap();
+        rebase_branch_repo_with_reflog_action(
+            &repo,
+            "feature",
+            &base,
+            Some(true),
+            Some("macro-fixture-proof"),
+        )
+        .unwrap();
+        assert!(repo
+            .reflog("refs/heads/feature")
+            .unwrap()
+            .iter()
+            .any(|entry| entry
+                .message()
+                .unwrap()
+                .unwrap_or("")
+                .contains("macro-fixture-proof")));
+        assert_eq!(
+            get_branch_name(&repo).unwrap().as_deref(),
+            Some(base.as_str())
+        );
     }
 
     #[test]
