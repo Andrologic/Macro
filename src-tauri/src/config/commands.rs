@@ -3,6 +3,7 @@ use super::{
     ConfigPatchRequest, ConfigPatchResult, ConfigScope, ConfigSnapshot, ConfigValidationResult,
     PendingSensitiveConfigChange,
 };
+use crate::core::mcp_ids::{build_mcp_oauth_client_secret_id, parse_mcp_oauth_client_secret_ref};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -55,6 +56,8 @@ fn referenced_secret_ids(documents: &[Value]) -> (BTreeSet<String>, BTreeSet<Str
             api_keys.insert(format!("web-search:{id}"));
         } else if let Some(id) = reference.strip_prefix("macro-secret://mcp-env/") {
             api_keys.insert(format!("mcp-env:{}", id.replacen('/', ":", 1)));
+        } else if let Some(server_id) = parse_mcp_oauth_client_secret_ref(&reference) {
+            api_keys.insert(build_mcp_oauth_client_secret_id(server_id));
         } else if let Some(id) = reference.strip_prefix("macro-secret://speech/") {
             api_keys.insert(format!("speech-provider:{id}"));
             api_keys.insert(format!("speech:{id}"));
@@ -381,6 +384,7 @@ fn emit_patch_events(app: &AppHandle, result: &ConfigPatchResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::JsonPatchOperation;
     use serde_json::json;
 
     #[test]
@@ -410,5 +414,105 @@ mod tests {
         assert!(api_keys.contains("speech-provider:dictation"));
         assert!(api_keys.contains("speech:dictation"));
         assert!(api_keys.contains("web-search:brave"));
+    }
+
+    #[tokio::test]
+    async fn oauth_client_secret_cleanup_preserves_active_references() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let temp = tempfile::tempdir().expect("temporary secret store");
+        crate::secrets::init(temp.path()).expect("initialize synthetic secrets");
+        let manager = ConfigManager::initialize(temp.path().join("config"))
+            .await
+            .expect("config manager");
+        let id = build_mcp_oauth_client_secret_id("remote");
+        crate::secrets::set_api_key(&id, "synthetic-client-secret").expect("store secret");
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .expect("tools document");
+        let result = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".to_string(),
+                    path: "/mcpServers".to_string(),
+                    from: None,
+                    value: Some(json!({
+                        "remote": {
+                            "transport": {
+                                "type": "streamable_http",
+                                "url": "https://mcp.example.test/mcp"
+                            },
+                            "authorization": {
+                                "type": "oauth",
+                                "clientId": "synthetic-client",
+                                "clientSecretRef": "macro-secret://mcp-oauth-client/remote"
+                            }
+                        }
+                    })),
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect("configure OAuth client");
+        assert!(result.pending_change.is_none());
+        assert!(list_orphan_secrets(&manager)
+            .await
+            .expect("list")
+            .is_empty());
+        let error = delete_orphan_secret(
+            &manager,
+            DeleteOrphanSecretRequest {
+                id: id.clone(),
+                secret_type: "apiKey".to_string(),
+            },
+        )
+        .await
+        .expect_err("active secret must be protected");
+        assert_eq!(error.code, "config.secrets.not_orphan");
+        assert_eq!(
+            crate::secrets::get_api_key(&id)
+                .expect("retained secret")
+                .as_deref(),
+            Some("synthetic-client-secret")
+        );
+
+        manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: result.document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "remove".to_string(),
+                    path: "/mcpServers/remote".to_string(),
+                    from: None,
+                    value: None,
+                }],
+                source: ConfigChangeSource::UserInterface,
+            })
+            .await
+            .expect("remove reference");
+        let orphans = list_orphan_secrets(&manager).await.expect("list orphans");
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].id, id);
+        assert_eq!(orphans[0].namespace, "mcp");
+        assert_eq!(
+            orphans[0].secret_ref,
+            "macro-secret://mcp-oauth-client/remote"
+        );
+        delete_orphan_secret(
+            &manager,
+            DeleteOrphanSecretRequest {
+                id: id.clone(),
+                secret_type: "apiKey".to_string(),
+            },
+        )
+        .await
+        .expect("delete orphan");
+        assert!(crate::secrets::get_api_key(&id)
+            .expect("deleted secret")
+            .is_none());
     }
 }
