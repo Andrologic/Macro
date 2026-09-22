@@ -6,7 +6,7 @@ import { useAppStore } from '../stores/useAppStore';
 import { useChatStore } from '../stores/useChatStore';
 import { useProviderStore } from '../stores/useProviderStore';
 import { useConversationGoalStore } from '../stores/useConversationGoalStore';
-import { hasOpenDialog } from '../components/ui/Dialog';
+import { hasOpenDialog } from '../components/ui/dialogPresence';
 
 export const useGlobalShortcuts = (): void => {
   const bindings = useShortcutsStore((state) => state.bindings);
