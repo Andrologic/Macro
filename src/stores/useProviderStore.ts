@@ -1109,7 +1109,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
         async ([currentProviderId, changedModels]) => {
           lifecycle?.assertActive();
           const reliableCatalogModels = changedModels.filter(
-            (model) => model.contextWindowSource === 'models_dev',
+            (model) => !model.isManual && model.contextWindowSource === 'models_dev',
           );
           if (reliableCatalogModels.length === 0) return;
           await persistProviderModelsIfCurrent(
@@ -1547,10 +1547,10 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
           },
         );
         if (tauriIpc.isTauriAvailable()) {
-          const hasCatalogEnrichment = normalized.some(
-            (model) => model.contextWindowSource === 'models_dev',
+          const catalogEnrichments = normalized.filter(
+            (model) => !model.isManual && model.contextWindowSource === 'models_dev',
           );
-          if (hasCatalogEnrichment) {
+          if (catalogEnrichments.length > 0) {
             const persisted = await enqueueProviderModelPersistence(providerId, async () => {
               lifecycle?.assertActive();
               if (!isCurrentScan()) {
@@ -1558,7 +1558,7 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
               }
               return tauriIpc.upsertProviderModels({
                 providerId,
-                models: normalized.map(toDbProviderModelInput),
+                models: catalogEnrichments.map(toDbProviderModelInput),
               });
             });
             lifecycle?.assertActive();

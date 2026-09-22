@@ -511,6 +511,66 @@ pub(crate) async fn available_models(
     Ok(models)
 }
 
+// Context enrichment is not discovery. In particular, a configured manual model
+// has no discovered SQL row and must never acquire one through this write path.
+pub(crate) async fn persist_model_enrichments(
+    pool: &SqlitePool,
+    provider_id: &str,
+    inputs: &[ProviderModelInput],
+) -> Result<(), String> {
+    let _auth_guard = lock_auth_mutation(provider_id).await?;
+    recover_pending_disconnect_locked(pool, provider_id).await?;
+    let provider = repository::get_provider_config(pool, provider_id)
+        .await
+        .map_err(db_error_to_string)?
+        .ok_or_else(|| format!("Provider {provider_id} not found."))?;
+    let secret = secrets::reload_chatgpt_secret(provider_id)
+        .map_err(|error| format!("Failed to reload the current ChatGPT session: {error}"))?;
+    let Some(secret) = secret.filter(|_| {
+        provider.provider_type == "chatgpt"
+            && provider.auth_status.as_deref() == Some("authenticated")
+    }) else {
+        return Ok(());
+    };
+    let models = repository::list_models_by_provider(pool, provider_id)
+        .await
+        .map_err(db_error_to_string)?;
+    let Some(catalog) = verified_catalog_for_models(
+        pool,
+        provider_id,
+        &provider,
+        &secret,
+        &models,
+        chrono::Utc::now(),
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    let mut transaction = pool.begin().await.map_err(sqlx_error_to_string)?;
+    for input in inputs
+        .iter()
+        .filter(|input| catalog.model_ids.contains(&input.model_id))
+    {
+        sqlx::query(
+            "UPDATE ai_models SET context_window_tokens = ?, input_limit_tokens = ?, \
+             output_limit_tokens = ?, context_window_source = ?, context_limits_updated_at = ? \
+             WHERE provider_id = ? AND model_id = ? AND is_manual = 0",
+        )
+        .bind(input.context_window_tokens)
+        .bind(input.input_limit_tokens)
+        .bind(input.output_limit_tokens)
+        .bind(&input.context_window_source)
+        .bind(&input.context_limits_updated_at)
+        .bind(provider_id)
+        .bind(&input.model_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(sqlx_error_to_string)?;
+    }
+    transaction.commit().await.map_err(sqlx_error_to_string)
+}
+
 async fn verified_catalog_for_models(
     pool: &SqlitePool,
     provider_id: &str,
@@ -1194,6 +1254,88 @@ mod tests {
         .unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].is_manual);
+    }
+
+    #[tokio::test]
+    async fn enrichment_preserves_verified_discovery_and_the_next_fallback() {
+        let _store_guard = crate::secrets::lock_test_store();
+        let (pool, _directory) = sync_fixture().await;
+        for start_with_fallback in [false, true] {
+            collect_models(&pool, "verified-model").await;
+            sqlx::query("UPDATE ai_models SET is_enabled = 0 WHERE model_id = 'verified-model'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            if start_with_fallback {
+                super::sync_models_with_fetch(&pool, "chatgpt", |_, _, _| async {
+                    Err("Synthetic offline discovery".to_string())
+                })
+                .await
+                .expect("initial verified fallback");
+            }
+            let before = crate::db::repository::list_models_by_provider(&pool, "chatgpt")
+                .await
+                .unwrap();
+            let provenance = verified_catalog(&pool).await;
+            let mut inputs = super::build_provider_models(
+                &[
+                    discovery_entry("verified-model"),
+                    discovery_entry("configured-manual"),
+                    discovery_entry("unknown-model"),
+                ],
+                Some("plus"),
+            );
+            for input in &mut inputs {
+                input.name = "Enrichment must not replace model identity".into();
+                input.context_window_tokens = Some(128_000);
+                input.context_window_source = Some("models_dev".into());
+                input.context_limits_updated_at = Some("2026-09-22T00:00:00Z".into());
+            }
+            super::persist_model_enrichments(&pool, "chatgpt", &inputs)
+                .await
+                .unwrap();
+            let after = crate::db::repository::list_models_by_provider(&pool, "chatgpt")
+                .await
+                .unwrap();
+            assert_eq!(
+                after.len(),
+                1,
+                "enrichment cannot insert manual or unknown models"
+            );
+            assert_eq!(after[0].model_id, "verified-model");
+            assert_eq!(after[0].name, before[0].name);
+            assert_eq!(after[0].last_seen_at, before[0].last_seen_at);
+            assert!(!after[0].is_enabled);
+            assert!(!after[0].is_manual);
+            assert_eq!(after[0].context_window_tokens, Some(128_000));
+            assert_eq!(
+                verified_catalog(&pool).await,
+                provenance,
+                "enrichment cannot renew provenance"
+            );
+            for remote in [Err("Synthetic network error".into()), Ok(vec![])] {
+                let fallback =
+                    super::sync_models_with_fetch(&pool, "chatgpt", |_, _, _| async { remote })
+                        .await
+                        .expect("next fallback remains valid");
+                assert_eq!(fallback.len(), 1);
+                assert_eq!(fallback[0].context_window_tokens, Some(128_000));
+                assert!(!fallback[0].is_enabled);
+            }
+            // Previously verified input cannot update rows after an account switch.
+            let mut new_secret = test_secret();
+            new_secret.account_id = Some("another-synthetic-account".into());
+            crate::secrets::set_chatgpt_secret("chatgpt", &new_secret).unwrap();
+            inputs[0].context_window_tokens = Some(42);
+            super::persist_model_enrichments(&pool, "chatgpt", &inputs)
+                .await
+                .unwrap();
+            let unchanged = crate::db::repository::list_models_by_provider(&pool, "chatgpt")
+                .await
+                .unwrap();
+            assert_eq!(unchanged[0].context_window_tokens, Some(128_000));
+            crate::secrets::set_chatgpt_secret("chatgpt", &test_secret()).unwrap();
+        }
     }
 
     #[tokio::test]

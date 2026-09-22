@@ -1629,6 +1629,14 @@ pub async fn db_upsert_provider_models(
         repository::replace_discovered_provider_models(&pool, &provider_id, &models)
             .await
             .map_err(CommandError::from)?;
+    } else if repository::get_provider_config(&pool, &provider_id)
+        .await
+        .map_err(CommandError::from)?
+        .is_some_and(|provider| provider.provider_type == "chatgpt")
+    {
+        crate::ai::chatgpt::persist_model_enrichments(&pool, &provider_id, &models)
+            .await
+            .map_err(command_error)?;
     } else {
         repository::upsert_provider_models(&pool, &provider_id, &models)
             .await

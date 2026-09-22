@@ -1,6 +1,6 @@
 import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { CopilotStatusDto } from '../services/tauriIpc';
+import type { CopilotStatusDto, DbAiModel, DbProviderModelInput } from '../services/tauriIpc';
 import { __testables as catalogTestables } from '../services/modelContextCatalog';
 
 let importCounter = 0;
@@ -87,8 +87,10 @@ const updateProviderSettingsMock = mock(async (_params: {
   filterFreeModels?: boolean;
   copilotSendTimeoutMs?: number | null;
 }): Promise<void> => undefined);
-const listProviderModelsMock = mock(async (): Promise<ReturnType<typeof dbModel>[]> => []);
-const upsertProviderModelsMock = mock(async () => []);
+const listProviderModelsMock = mock(async (): Promise<DbAiModel[]> => []);
+const upsertProviderModelsMock = mock(async (_params: {
+  providerId: string; models: DbProviderModelInput[]; replaceDiscovered?: boolean;
+}): Promise<DbAiModel[]> => []);
 const setProviderModelEnabledMock = mock(async (_params: { providerId: string; modelId: string; enabled: boolean }): Promise<void> => undefined);
 const setAllProviderModelsEnabledMock = mock(async (_params: { providerId: string; enabled: boolean }): Promise<void> => undefined);
 const deferred = <T,>() => {
@@ -316,6 +318,96 @@ mock.module('../services/aiConfig', () => ({
 };
 
 describe('useProviderStore secret resolution', () => {
+  for (const initialResponse of ['fresh', 'fallback']) {
+    for (const selected of ['verified-model', 'manual-model']) {
+      it(`keeps ${selected} through ${initialResponse} discovery, enrichment and the next fallback`, async () => {
+        const { useProviderStore: store } = await loadProviderStore();
+        const verified = dbModel('chatgpt', 'verified-model');
+        const disabled = dbModel('chatgpt', 'disabled-model', { is_enabled: false });
+        const manual = dbModel('chatgpt', 'manual-model', { id: 'config:manual', is_manual: true });
+        const rows = new Map<string, DbAiModel>([[verified.model_id, verified], [disabled.model_id, disabled]]);
+        const verifiedIds = new Set(rows.keys());
+        const projectAvailable = () => {
+          const valid = rows.size === verifiedIds.size && [...rows.keys()].every((id) => verifiedIds.has(id));
+          return [...(valid ? rows.values() : []), manual];
+        };
+        catalogTestables.writeCachedCatalog({ fetchedAt: new Date().toISOString(), providers: {
+          openai: { id: 'openai', models: {
+            'verified-model': { id: 'verified-model', limit: { context: 128_000 } },
+            'manual-model': { id: 'manual-model', limit: { context: 64_000 } },
+          } },
+        } });
+        store.setState({
+          providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+          modelsByProvider: {}, selectedProviderId: 'chatgpt', selectedModelId: selected,
+          loadProviderConfigs: async () => undefined,
+        });
+        const sync = async () => {
+          if ([...rows.keys()].some((id) => !verifiedIds.has(id))) throw { message: 'No verified catalog. Retry model sync.' };
+          return [...rows.values()] as never[];
+        };
+        aiSyncProviderModelsMock.mockImplementationOnce(async () => {
+          if (initialResponse === 'fresh') rows.set(verified.model_id, { ...verified });
+          return sync();
+        });
+        // The mock deliberately retains the old permissive upsert semantics: an
+        // accidental manual input would create a discovered row and break fallback.
+        const upsert = async (params: { models: DbProviderModelInput[] }) => {
+          for (const model of params.models) {
+            const existing = rows.get(model.model_id) ?? dbModel('chatgpt', model.model_id);
+            rows.set(model.model_id, { ...existing, ...model });
+          }
+          return projectAvailable();
+        };
+        upsertProviderModelsMock.mockImplementation(upsert);
+        listProviderModelsMock.mockImplementationOnce(async () => projectAvailable());
+        const result = await store.getState().scanModelsForProvider('chatgpt');
+        expect(result.map((model: { id: string }) => model.id).sort()).toEqual(['disabled-model', 'manual-model', 'verified-model']);
+        expect(result.find((model: { id: string }) => model.id === 'manual-model')).toMatchObject({ isManual: true, contextWindowTokens: 64_000 });
+        expect(result.find((model: { id: string }) => model.id === 'disabled-model')).toMatchObject({ isEnabled: false });
+        expect(store.getState().selectedModelId).toBe(selected);
+        expect(upsertProviderModelsMock).toHaveBeenCalled();
+        for (const [payload] of upsertProviderModelsMock.mock.calls) {
+          expect(payload.models.map((model) => model.model_id)).toEqual(['verified-model']);
+        }
+        expect([...rows.keys()].sort()).toEqual(['disabled-model', 'verified-model']);
+        expect(rows.get('verified-model')?.context_window_tokens).toBe(128_000);
+        aiSyncProviderModelsMock.mockImplementationOnce(sync);
+        listProviderModelsMock.mockImplementationOnce(async () => projectAvailable());
+        const next = await store.getState().scanModelsForProvider('chatgpt');
+        expect(next.map((model: { id: string }) => model.id).sort()).toEqual(result.map((model: { id: string }) => model.id).sort());
+        expect(next.find((model: { id: string }) => model.id === 'manual-model')).toMatchObject({ isManual: true, contextWindowTokens: 64_000 });
+        expect(next.find((model: { id: string }) => model.id === 'disabled-model')).toMatchObject({ isEnabled: false });
+        expect(store.getState().selectedModelId).toBe(selected);
+        expect(store.getState().lastError).toBeNull();
+        expect(store.getState().providerReachabilityById.chatgpt?.status).toBe('reachable');
+      });
+    }
+  }
+
+  it('enriches loaded manual models without persisting them as discoveries', async () => {
+    const { useProviderStore: store } = await loadProviderStore();
+    catalogTestables.writeCachedCatalog({ fetchedAt: new Date().toISOString(), providers: { openai: {
+      id: 'openai', models: {
+        'verified-model': { id: 'verified-model', limit: { context: 128_000 } },
+        'manual-model': { id: 'manual-model', limit: { context: 64_000 } },
+      },
+    } } });
+    store.setState({
+      providerConfigs: [{ ...copilotProviderConfig, id: 'chatgpt', providerType: 'chatgpt', baseUrl: 'https://chat.invalid', authStatus: 'authenticated' }],
+      selectedProviderId: 'chatgpt', selectedModelId: 'manual-model',
+      modelsByProvider: { chatgpt: [
+        { id: 'verified-model', name: 'Verified', provider_id: 'chatgpt', isEnabled: false },
+        { id: 'manual-model', name: 'Manual', provider_id: 'chatgpt', isEnabled: true, isManual: true },
+      ] },
+    });
+    await store.getState().refreshLoadedModelContextCatalog('chatgpt');
+    expect(upsertProviderModelsMock).toHaveBeenCalledTimes(1);
+    expect(upsertProviderModelsMock.mock.calls[0][0].models.map((model) => model.model_id)).toEqual(['verified-model']);
+    expect(store.getState().modelsByProvider.chatgpt.find((model: { id: string }) => model.id === 'manual-model')).toMatchObject({ isManual: true, contextWindowTokens: 64_000 });
+    expect(store.getState().selectedModelId).toBe('manual-model');
+  });
+
   for (const failure of ['expired', 'missing', 'other-account', 'read-failure']) {
     it(`removes unavailable ChatGPT discovery after ${failure} rejection and preserves manual selection`, async () => {
       const { useProviderStore } = await loadProviderStore();
