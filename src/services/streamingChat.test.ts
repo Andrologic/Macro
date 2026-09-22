@@ -3815,7 +3815,7 @@ describe('streamingChat tool rendering helpers', () => {
       });
   });
 
-  it('sends Copilot built-in override metadata only for shadowing tools', async () => {
+  it.each(['copilot', 'chatgpt'])('sends workspace schemas through native %s with provider-specific overrides', async (providerType) => {
     const listeners = new Map<string, (event: { payload: Record<string, unknown> }) => void>();
     const listenMock = mock(async (eventName: string, handler: (event: { payload: Record<string, unknown> }) => void) => {
       listeners.set(eventName, handler);
@@ -3847,12 +3847,12 @@ describe('streamingChat tool rendering helpers', () => {
 
     await streamChat({
       conversationId: 'conv-1',
-      providerId: 'copilot',
-      providerType: 'copilot',
+      providerId: providerType,
+      providerType,
       baseUrl: 'copilot://cli',
       modelId: 'gpt-5',
       messages: [{ role: 'user', content: 'Search and inspect git status.' }],
-      allowedToolIds: ['grep', 'web_fetch', 'git_status'],
+      allowedToolIds: ['grep', 'web_fetch', 'git_status', 'apply_patch', 'ast_grep'],
       enableWebSearch: false,
       enableWebFetch: true,
       onToken: () => undefined,
@@ -3866,7 +3866,7 @@ describe('streamingChat tool rendering helpers', () => {
       request?: {
         tools?: Array<{
           overridesBuiltInTool?: true;
-          function?: { name?: string };
+          function?: { name?: string; parameters?: { required?: string[] } };
         }>;
       };
     };
@@ -3875,9 +3875,17 @@ describe('streamingChat tool rendering helpers', () => {
     const webFetchTool = tools.find((tool) => tool.function?.name === 'web_fetch');
     const gitStatusTool = tools.find((tool) => tool.function?.name === 'git_status');
 
-    expect(grepTool?.overridesBuiltInTool).toBe(true);
-    expect(webFetchTool?.overridesBuiltInTool).toBe(true);
+    expect(grepTool?.overridesBuiltInTool).toBe(providerType === 'copilot' ? true : undefined);
+    expect(webFetchTool?.overridesBuiltInTool).toBe(providerType === 'copilot' ? true : undefined);
     expect(gitStatusTool?.overridesBuiltInTool).toBeUndefined();
+    const patch = tools.find(tool => tool.function?.name === 'apply_patch');
+    const ast = tools.find(tool => tool.function?.name === 'ast_grep');
+    expect(patch?.function?.parameters?.required).toEqual(['patch_text']);
+    expect(ast?.function?.parameters?.required).toEqual(['pattern']);
+    expect(patch?.overridesBuiltInTool).toBe(providerType === 'copilot' ? true : undefined);
+    expect(ast?.overridesBuiltInTool).toBeUndefined();
+    expect(tools.map(tool => tool.function?.name)).not.toContain('write');
+    expect(tools.map(tool => tool.function?.name)).not.toContain('edit');
   });
 
   it('does not leak Copilot override metadata into OpenAI-compatible payloads', async () => {
