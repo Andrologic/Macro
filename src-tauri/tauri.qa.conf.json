@@ -1,0 +1,29 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Macro Pilot QA",
+  "identifier": "com.macro.desktop.qa.pilot",
+  "app": {
+    "windows": [
+      {
+        "title": "Macro Pilot QA",
+        "width": 1200,
+        "height": 800,
+        "decorations": true,
+        "transparent": false,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay",
+        "backgroundColor": "#09090b",
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "targets": ["app"]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

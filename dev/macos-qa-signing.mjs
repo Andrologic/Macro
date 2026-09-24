@@ -1,0 +1,207 @@
+#!/usr/bin/env bun
+
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { tmpdir } from 'node:os';
+
+export const QA_BUNDLE_IDENTIFIER = 'com.macro.desktop.qa.pilot';
+export const QA_CONFIG = 'src-tauri/tauri.qa.conf.json';
+export const IDENTITY_ENV = 'MACOS_QA_SIGNING_IDENTITY';
+export const QA_ARCHITECTURE = 'arm64';
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const fingerprintPattern = /^[0-9A-F]{40}$/i;
+
+const run = (command, args, options = {}) => {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd || root,
+    encoding: 'utf8',
+    stdio: 'pipe',
+    env: options.env || process.env,
+  });
+  if (result.error) throw result.error;
+  const output = `${result.stdout || ''}${result.stderr || ''}`;
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed${output.trim() ? `:\n${output.trim()}` : ''}`);
+  }
+  return output;
+};
+
+export function resolveSigningIdentity(identity, runCommand) {
+  if (typeof identity !== 'string' || !fingerprintPattern.test(identity)) {
+    throw new Error(`${IDENTITY_ENV} must contain the 40-character SHA-1 fingerprint of a valid code-signing identity.`);
+  }
+
+  const output = runCommand('security', ['find-identity', '-v', '-p', 'codesigning']);
+  const validFingerprints = new Set(
+    output.split(/\r?\n/)
+      .map((line) => line.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"/i)?.[1]?.toUpperCase())
+      .filter(Boolean),
+  );
+  const normalized = identity.toUpperCase();
+  if (!validFingerprints.has(normalized)) {
+    throw new Error(`Signing identity ${normalized} is not present in the valid code-signing identity list. No ad hoc fallback is allowed.`);
+  }
+  return normalized;
+}
+
+function normalizedPhysicalPath(path) {
+  let existing = resolve(path);
+  const suffix = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return existing;
+    suffix.unshift(basename(existing));
+    existing = parent;
+  }
+  return resolve(realpathSync(existing), ...suffix);
+}
+
+export function assertOutsideRepository(path, repositoryRoot = root) {
+  const physicalPath = normalizedPhysicalPath(path);
+  const physicalRoot = realpathSync(repositoryRoot);
+  const fromRoot = relative(physicalRoot, physicalPath);
+  if (fromRoot === '' || (!fromRoot.startsWith(`..${sep}`) && fromRoot !== '..' && !isAbsolute(fromRoot))) {
+    throw new Error('Choose a QA bundle output directory outside the repository.');
+  }
+  return physicalPath;
+}
+
+function signingCertificateFingerprint(appPath, runCommand) {
+  const certificateDirectory = mkdtempSync(resolve(tmpdir(), 'macro-qa-certificate-'));
+  const certificatePrefix = resolve(certificateDirectory, 'certificate-');
+  try {
+    runCommand('codesign', ['--display', '--extract-certificates', certificatePrefix, appPath]);
+    return createHash('sha1').update(readFileSync(`${certificatePrefix}0`)).digest('hex').toUpperCase();
+  } finally {
+    rmSync(certificateDirectory, { recursive: true, force: true });
+  }
+}
+
+function codeDirectoryHash(appPath, runCommand) {
+  const output = runCommand('codesign', ['--display', '--verbose=4', '--arch', QA_ARCHITECTURE, appPath]);
+  const hash = output.match(/^CDHash=([0-9A-F]{40,64})$/im)?.[1]?.toUpperCase();
+  if (!hash) throw new Error(`No ${QA_ARCHITECTURE} CDHash found for ${appPath}.`);
+  return hash;
+}
+
+export function verifySameDesignatedRequirement(firstPath, secondPath, expectedFingerprint, runCommand) {
+  if (!firstPath || !secondPath || resolve(firstPath) === resolve(secondPath)) {
+    throw new Error('Provide two different macOS app bundle paths.');
+  }
+  if (normalizedPhysicalPath(firstPath) === normalizedPhysicalPath(secondPath)) {
+    throw new Error('The two paths resolve to the same macOS app bundle.');
+  }
+  if (typeof expectedFingerprint !== 'string' || !fingerprintPattern.test(expectedFingerprint)) {
+    throw new Error(`${IDENTITY_ENV} must contain the 40-character SHA-1 fingerprint of the signing identity to verify.`);
+  }
+
+  const results = [firstPath, secondPath].map((appPath) => {
+    runCommand('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
+    const bundleIdentifier = runCommand('plutil', [
+      '-extract', 'CFBundleIdentifier', 'raw', '-o', '-', join(appPath, 'Contents', 'Info.plist'),
+    ]).trim();
+    if (bundleIdentifier !== QA_BUNDLE_IDENTIFIER) {
+      throw new Error(`${appPath} has bundle identifier ${bundleIdentifier || 'unknown'}, expected ${QA_BUNDLE_IDENTIFIER}.`);
+    }
+    const output = runCommand('codesign', ['-dr', '-', appPath]);
+    const designated = output.match(/^designated => (.+)$/m)?.[1]?.trim();
+    if (!designated) {
+      throw new Error(`No designated code requirement found for ${appPath}.`);
+    }
+    const identifier = designated.match(/\bidentifier "([^"]+)"/i)?.[1];
+    if (identifier !== QA_BUNDLE_IDENTIFIER) {
+      throw new Error(`${appPath} has bundle identifier ${identifier || 'unknown'}, expected ${QA_BUNDLE_IDENTIFIER}.`);
+    }
+    const actualFingerprint = signingCertificateFingerprint(appPath, runCommand);
+    if (actualFingerprint !== expectedFingerprint.toUpperCase()) {
+      throw new Error(`${appPath} was signed by ${actualFingerprint}, expected ${expectedFingerprint.toUpperCase()}.`);
+    }
+    return { designated, codeDirectoryHash: codeDirectoryHash(appPath, runCommand) };
+  });
+
+  if (results[0].designated !== results[1].designated) {
+    throw new Error('The two QA bundles do not satisfy the same designated code requirement.');
+  }
+  if (results[0].codeDirectoryHash === results[1].codeDirectoryHash) {
+    throw new Error(`The two bundles have the same ${QA_ARCHITECTURE} CDHash and do not prove distinct builds.`);
+  }
+  return results;
+}
+
+function build(outputDirectory, identity, runCommand = run, spawn = spawnSync) {
+  if (process.platform !== 'darwin') {
+    throw new Error('The stable signing QA build runs on macOS only.');
+  }
+  if (!outputDirectory || !isAbsolute(outputDirectory)) {
+    throw new Error('Pass an absolute --output directory for this build.');
+  }
+  const destination = resolve(outputDirectory);
+  assertOutsideRepository(destination);
+  if (existsSync(destination)) {
+    throw new Error(`Output directory already exists; choose a new path: ${destination}`);
+  }
+
+  const signingIdentity = resolveSigningIdentity(identity, runCommand);
+  const target = 'aarch64-apple-darwin';
+  const result = spawn('bun', [
+    'dev/tauri-cli.mjs', 'build',
+    '--config', QA_CONFIG,
+    '--target', target,
+    '--bundles', 'app',
+  ], {
+    cwd: root,
+    stdio: 'inherit',
+    env: { ...process.env, NODE_ENV: 'production', APPLE_SIGNING_IDENTITY: signingIdentity },
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Tauri QA build failed with status ${result.status ?? 'unknown'}.`);
+
+  const appPath = resolve(root, 'src-tauri', 'target', target, 'release', 'bundle', 'macos', 'Macro Pilot QA.app');
+  if (!existsSync(appPath)) throw new Error(`Tauri did not produce the expected bundle: ${appPath}`);
+  mkdirSync(dirname(destination), { recursive: true });
+  assertOutsideRepository(destination);
+  cpSync(appPath, destination, { recursive: true, errorOnExist: true, force: false });
+  console.log(`QA bundle saved at ${destination}`);
+}
+
+function parseArgs(args) {
+  const options = { action: args[0], output: null, bundles: [] };
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--output') options.output = args[++index];
+    else if (arg === '--bundles') options.bundles.push(args[++index]);
+    else throw new Error(`Unknown option: ${arg}`);
+  }
+  return options;
+}
+
+export function main(args = process.argv.slice(2), env = process.env) {
+  const options = parseArgs(args);
+  if (options.action === 'build') {
+    build(options.output, env[IDENTITY_ENV]);
+    return;
+  }
+  if (options.action === 'verify' && options.bundles.length === 2 && !options.output) {
+    const [first, second] = verifySameDesignatedRequirement(
+      options.bundles[0], options.bundles[1], env[IDENTITY_ENV],
+      (command, commandArgs) => run(command, commandArgs),
+    );
+    console.log(`Both bundles satisfy the same designated requirement: ${first.designated}`);
+    console.log(`${QA_ARCHITECTURE} CDHashes differ: ${first.codeDirectoryHash} / ${second.codeDirectoryHash}`);
+    console.log('This checks code requirements only; it does not demonstrate keychain access or session restoration.');
+    return;
+  }
+  throw new Error('Usage: macos-qa-signing.mjs build --output /absolute/path/Macro.app | verify --bundles /path/one.app --bundles /path/two.app');
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
+}
