@@ -74,6 +74,23 @@ describe('Pilot account store', () => {
     });
   });
 
+  it('loads Pilot account data after explicit vault recovery succeeds', async () => {
+    state = { ...state, status: 'vault_unavailable', vaultStatus: 'intervention_required', lastError: 'vault_intervention_required' };
+    subscriber();
+    resumeVaultAccess.mockImplementation(async () => {
+      state = { ...state, status: 'connected', vaultStatus: 'ready', lastError: null };
+      subscriber();
+    });
+
+    await usePilotStore.getState().resumeVaultAccess();
+
+    expect(resumeVaultAccess).toHaveBeenCalledTimes(1);
+    expect(getAccountCatalog).toHaveBeenCalledTimes(1);
+    expect(usePilotStore.getState()).toMatchObject({
+      status: 'connected', vaultStatus: 'ready', accountCatalog: catalog, busy: false, reading: false,
+    });
+  });
+
   it('loads account management without an instance', async () => {
     await usePilotStore.getState().refreshAccount();
     expect(usePilotStore.getState().accountCatalog).toEqual(catalog);

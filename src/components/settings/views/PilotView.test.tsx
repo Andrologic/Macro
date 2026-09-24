@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { PilotAccountCatalog, PilotPublicState, PilotAccessRequest } from '../../../services/macroPilot/nativeClient';
+import type { PilotVaultStatus } from '../../../services/tauriIpc';
 
 const initializeMock = mock(async () => undefined);
+const resumeVaultAccessMock = mock(async () => undefined);
 const reconcileNotExecutedMock = mock(async (_key: string) => undefined);
 const notifySuccessMock = mock(() => undefined);
 const notifyWarningMock = mock((_message: string) => undefined);
@@ -16,6 +18,7 @@ let indeterminate = [{
 
 const pilotState = {
   status: 'connected',
+  vaultStatus: 'ready' as PilotVaultStatus,
   configurationId: 'config:desktop',
   relayOrigin: 'https://pilot.example.com',
   account: null as PilotPublicState['account'],
@@ -31,7 +34,7 @@ const pilotState = {
   },
   instanceAccess: null as PilotPublicState['instanceAccess'],
   attempt: null,
-  lastError: null,
+  lastError: null as PilotPublicState['lastError'],
   logoutRevocationConfirmed: null,
   busy: false,
   reading: false,
@@ -43,6 +46,7 @@ const pilotState = {
   revokeAllSessions: mock(async () => true),
   deleteAccount: mock(async (_identity: unknown, _origin: string) => true),
   initialize: initializeMock,
+  resumeVaultAccess: resumeVaultAccessMock,
   connect: mock(async () => undefined),
   pollAuth: mock(async () => false),
   confirmAccount: mock(async () => undefined),
@@ -97,9 +101,11 @@ describe('PilotView', () => {
 
   beforeEach(async () => {
     pilotState.busy = false; pilotState.reading = false;
+    pilotState.status = 'connected'; pilotState.vaultStatus = 'ready'; pilotState.lastError = null;
     pilotState.account = null; pilotState.deviceSession = null; pilotState.accountCatalog = null;
     pilotState.instanceAccess = null; pilotState.accessRequests = [];
     pilotState.deleteAccount.mockClear(); pilotState.resolveAccess.mockClear();
+    pilotState.logout.mockClear();
     runtimeStatus = 'running';
     indeterminate = [{
       key: '["session:phone","reply:01"]',
@@ -107,6 +113,7 @@ describe('PilotView', () => {
       target: { type: 'task', task_id: 'task:01' },
     }];
     reconcileNotExecutedMock.mockClear();
+    resumeVaultAccessMock.mockReset(); resumeVaultAccessMock.mockImplementation(async () => undefined);
     notifySuccessMock.mockClear(); notifyWarningMock.mockClear();
     pilotState.revokeSession.mockClear(); pilotState.revokeAllSessions.mockClear();
     container = document.createElement('div');
@@ -167,6 +174,113 @@ describe('PilotView', () => {
     await act(async () => root.render(<PilotView />));
   };
   const button = (label: string) => [...container.querySelectorAll('button')].find(item => item.textContent === label)!;
+
+  const showVaultStatus = async (status: Exclude<PilotVaultStatus, 'ready'>) => {
+    pilotState.status = 'vault_unavailable';
+    pilotState.vaultStatus = status;
+    pilotState.lastError = status === 'intervention_required' ? 'vault_intervention_required'
+      : status === 'cancelled' ? 'vault_cancelled'
+        : status === 'suspended' ? 'vault_suspended' : 'vault_unavailable';
+    await act(async () => root.render(<PilotView />));
+  };
+
+  it.each(['intervention_required', 'cancelled', 'suspended', 'vault_unavailable'] as const)(
+    'explains the %s vault state and offers one explicit recovery action', async (status) => {
+      await showVaultStatus(status);
+      const recovery = container.querySelector('[role="alert"]');
+      expect(recovery?.textContent).toContain('Pilot data is paused');
+      const explanations: Record<Exclude<PilotVaultStatus, 'ready'>, string> = {
+        intervention_required: 'Macro needs attention to access the system credential vault and restore Pilot data.',
+        cancelled: 'Credential vault access was cancelled. You can try again when you are ready.',
+        suspended: 'Access to Pilot credentials is suspended. Resume access to restore Pilot data.',
+        vault_unavailable: 'Macro could not access the system credential vault. You can try to resume access.',
+      };
+      expect(recovery?.textContent).toContain(explanations[status]);
+      expect([...container.querySelectorAll('button')].filter(item => item.textContent === 'Resume vault access')).toHaveLength(1);
+      expect(resumeVaultAccessMock).not.toHaveBeenCalled();
+      await act(async () => {
+        button('Resume vault access').click();
+        await Promise.resolve();
+      });
+      expect(resumeVaultAccessMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not resume on mount, refresh, or reopening settings', async () => {
+    await showVaultStatus('cancelled');
+    expect(resumeVaultAccessMock).not.toHaveBeenCalled();
+    await act(async () => button('Refresh').click());
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<PilotView />);
+      await Promise.resolve();
+    });
+    expect(resumeVaultAccessMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a cancelled attempt and restores Pilot data after successful explicit recovery', async () => {
+    await showVaultStatus('intervention_required');
+    resumeVaultAccessMock.mockImplementationOnce(async () => {
+      pilotState.vaultStatus = 'cancelled';
+      pilotState.lastError = 'vault_cancelled';
+      throw new Error('cancelled');
+    });
+    await act(async () => {
+      button('Resume vault access').click();
+      await Promise.resolve();
+    });
+    await act(async () => root.render(<PilotView />));
+    expect(container.textContent).toContain('Credential vault access was cancelled. You can try again when you are ready.');
+    expect(button('Resume vault access')).toBeDefined();
+
+    await showAccount();
+    pilotState.status = 'vault_unavailable';
+    pilotState.vaultStatus = 'suspended';
+    await act(async () => root.render(<PilotView />));
+    resumeVaultAccessMock.mockImplementationOnce(async () => {
+      pilotState.status = 'connected';
+      pilotState.vaultStatus = 'ready';
+      pilotState.lastError = null;
+    });
+    await act(async () => {
+      button('Resume vault access').click();
+      await Promise.resolve();
+    });
+    await act(async () => root.render(<PilotView />));
+    expect(container.textContent).toContain('GitHub @example');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('locks out double clicks while keeping sign out available during recovery', async () => {
+    await showAccount();
+    await showVaultStatus('intervention_required');
+    resumeVaultAccessMock.mockImplementation(async () => {
+      pilotState.busy = true;
+      pilotState.reading = true;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    });
+    await act(async () => {
+      button('Resume vault access').click();
+      button('Resume vault access').click();
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
+    await act(async () => root.render(<PilotView />));
+    expect(resumeVaultAccessMock).toHaveBeenCalledTimes(1);
+    expect(pilotState.busy).toBe(true);
+    expect(pilotState.reading).toBe(true);
+    expect(container.textContent).toContain('Waiting for access to the system credential vault.');
+    expect(button('Resuming access…').disabled).toBe(true);
+    expect(button('Sign out').disabled).toBe(false);
+    await act(async () => button('Resuming access…').click());
+    expect(resumeVaultAccessMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      button('Sign out').click();
+      await Promise.resolve();
+    });
+    expect(pilotState.logout).toHaveBeenCalledTimes(1);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
+  });
 
   it('shows identity and sessions without an instance and requires explicit deletion confirmation', async () => {
     const instance = pilotState.instance;

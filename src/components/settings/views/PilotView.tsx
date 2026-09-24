@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl } from '../../../services/externalUrlOpener';
 import type { PilotRuntimeStatus } from '../../../services/macroPilot/runtime';
@@ -38,6 +38,20 @@ const errorFallbacks: Record<string, string> = {
   offline: 'The relay cannot be reached. Local Macro features remain available.',
 };
 
+const vaultErrorStatus: Record<string, 'intervention_required' | 'cancelled' | 'suspended' | 'vault_unavailable'> = {
+  vault_intervention_required: 'intervention_required',
+  vault_cancelled: 'cancelled',
+  vault_suspended: 'suspended',
+  vault_unavailable: 'vault_unavailable',
+};
+
+const vaultRecoveryFallbacks: Record<'intervention_required' | 'cancelled' | 'suspended' | 'vault_unavailable', string> = {
+  intervention_required: 'Macro needs attention to access the system credential vault and restore Pilot data.',
+  cancelled: 'Credential vault access was cancelled. You can try again when you are ready.',
+  suspended: 'Access to Pilot credentials is suspended. Resume access to restore Pilot data.',
+  vault_unavailable: 'Macro could not access the system credential vault. You can try to resume access.',
+};
+
 export const PilotView: React.FC = () => {
   const { t } = useTranslation();
   const store = usePilotStore();
@@ -55,6 +69,8 @@ export const PilotView: React.FC = () => {
   const [indeterminateCommands, setIndeterminateCommands] = useState<IndeterminateCommand[]>([]);
   const [reconciliationTarget, setReconciliationTarget] = useState<IndeterminateCommand | null>(null);
   const [reconciliationBusy, setReconciliationBusy] = useState(false);
+  const [vaultRecoveryBusy, setVaultRecoveryBusy] = useState(false);
+  const vaultRecoveryLock = useRef(false);
 
   const refreshIndeterminate = useCallback(async () => {
     const { macroPilotRuntime } = await import('../../../services/macroPilot/runtime');
@@ -148,6 +164,25 @@ export const PilotView: React.FC = () => {
     );
   });
 
+  const resumeVaultAccess = async () => {
+    if (vaultRecoveryLock.current) return;
+    vaultRecoveryLock.current = true;
+    setVaultRecoveryBusy(true);
+    try {
+      await store.resumeVaultAccess();
+    } catch {
+      // The store exposes a redacted vault status and error code below.
+    } finally {
+      vaultRecoveryLock.current = false;
+      setVaultRecoveryBusy(false);
+    }
+  };
+
+  const vaultRecoveryStatus = store.vaultStatus && store.vaultStatus !== 'ready'
+    ? store.vaultStatus
+    : vaultErrorStatus[store.lastError ?? ''];
+  const vaultRecoveryActive = vaultRecoveryBusy;
+
   const accountMutation = (work: () => Promise<boolean>) => run(async () => {
     const confirmed = await work();
     setDeleteTarget(null);
@@ -190,9 +225,37 @@ export const PilotView: React.FC = () => {
           </span>
         </div>
 
-        {store.lastError && (
+        {store.lastError && !vaultRecoveryStatus && (
           <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {t(`settings.pilot.errors.${store.lastError}`, errorFallbacks[store.lastError] || store.lastError)}
+          </div>
+        )}
+
+        {store.status === 'vault_unavailable' && vaultRecoveryStatus && (
+          <div
+            role={vaultRecoveryActive ? 'status' : 'alert'}
+            aria-live="polite"
+            className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs space-y-2"
+          >
+            <p className="font-medium">{t('settings.pilot.vaultRecovery.title', 'Pilot data is paused')}</p>
+            <p className="text-muted-foreground">
+              {vaultRecoveryActive
+                ? t('settings.pilot.vaultRecovery.waiting', 'Waiting for access to the system credential vault. You can keep using Macro or sign out.')
+                : t(
+                  `settings.pilot.vaultRecovery.${vaultRecoveryStatus}`,
+                  vaultRecoveryFallbacks[vaultRecoveryStatus],
+                )}
+            </p>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={vaultRecoveryBusy || store.busy}
+              onClick={() => { void resumeVaultAccess(); }}
+            >
+              {vaultRecoveryActive
+                ? t('settings.pilot.vaultRecovery.resuming', 'Resuming access…')
+                : t('settings.pilot.vaultRecovery.resume', 'Resume vault access')}
+            </Button>
           </div>
         )}
 
