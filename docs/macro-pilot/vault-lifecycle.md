@@ -56,6 +56,8 @@ la suite du lot. Réveil et déverrouillage ne réarment pas le coffre.
 ## Nettoyage et durabilité
 
 La session devient restaurable seulement après écriture durable de son jeton.
+Si l'enregistrement du nettoyage de la tentative échoue ensuite, la session
+reste utilisable et la tentative conservée permet de réessayer ce nettoyage.
 La déconnexion enregistre une session vide et les références de nettoyage
 dans la même mise à jour de métadonnées, avant la suppression physique.
 Ces références sont des tombstones : une ancienne session qui les mentionne

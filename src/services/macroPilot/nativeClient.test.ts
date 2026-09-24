@@ -477,3 +477,45 @@ describe('MacroPilotNativeClient', () => {
   });
 
 });
+
+
+describe('Pilot vault audit regressions', () => {
+  it('publishes a durable session even when cleanup metadata fails', async () => {
+    const h = createHarness([
+      jsonResponse({ attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH',
+        verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }),
+      jsonResponse({ status: 'identified', account }),
+      jsonResponse({ account, device_session: session, session_token: validSecret(8) }),
+    ]);
+    await h.client.initialize();
+    const attempt = await h.client.connect('https://pilot.example.com', 'Synthetic desktop');
+    await h.client.pollAuth();
+    const save = h.dependencies.setStateValue;
+    h.dependencies.setStateValue = async (key, value) => {
+      const state = value as Record<string, unknown>;
+      if (state.deviceSession && state.attempt === null) throw new Error('synthetic cleanup metadata failure');
+      return save(key, value);
+    };
+    await expect(h.client.confirmAccount(account.account_id)).resolves.toEqual(session);
+    expect(h.client.getState()).toMatchObject({ status: 'connected', deviceSession: session, attempt: null });
+    expect(h.values.macro_pilot_native_v1).toMatchObject({ deviceSession: session, attempt: { attemptKey: attempt.attemptKey } });
+    expect(h.secrets.has(`session_token:${session.ref.session_id}`)).toBe(true);
+    expect(h.secrets.has(`claim_secret:${attempt.attemptKey}`)).toBe(true);
+    expect(h.secrets.has(`poll_secret:${attempt.attemptKey}`)).toBe(true);
+  });
+
+  it.each(['suspended', 'cancelled', 'intervention_required', 'vault_unavailable'] as const)(
+    'preserves %s during signed-out reinitialization', async status => {
+      const h = createHarness([]);
+      h.values.macro_pilot_native_v1 = { configurationId: 'config:synthetic', relayOrigin: 'https://pilot.example.com' };
+      let notify!: Parameters<NonNullable<PilotClientDependencies['vaultSubscribe']>>[0];
+      h.dependencies.vaultSubscribe = async callback => { notify = callback; return () => undefined; };
+      await h.client.initialize();
+      notify({ generation: '3', status });
+      const blocked = h.client.getState();
+      await h.client.initialize();
+      expect(h.client.getState()).toMatchObject({ status: 'vault_unavailable', vaultStatus: status,
+        lastError: blocked.lastError, deviceSession: null });
+      expect(h.requests).toHaveLength(0);
+    });
+});

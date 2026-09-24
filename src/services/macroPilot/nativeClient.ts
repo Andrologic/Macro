@@ -414,13 +414,16 @@ export class MacroPilotNativeClient {
     return () => this.listeners.delete(listener);
   };
 
+  private blockedVaultState(): Partial<PilotPublicState> {
+    if (!this.vaultLease || this.vaultLease.status === 'ready') return {};
+    const status = this.vaultLease.status;
+    return { status: 'vault_unavailable', vaultStatus: status,
+      lastError: status === 'suspended' ? 'vault_suspended' : status === 'cancelled' ? 'vault_cancelled'
+        : status === 'intervention_required' ? 'vault_intervention_required' : 'vault_unavailable' };
+  }
+
   private publish(patch: Partial<PilotPublicState>): void {
-    if (patch.status === 'connected' && this.vaultLease && this.vaultLease.status !== 'ready') {
-      patch = { ...patch, status: 'vault_unavailable', vaultStatus: this.vaultLease.status,
-        lastError: this.vaultLease.status === 'suspended' ? 'vault_suspended'
-          : this.vaultLease.status === 'cancelled' ? 'vault_cancelled'
-          : this.vaultLease.status === 'intervention_required' ? 'vault_intervention_required' : 'vault_unavailable' };
-    }
+    if (patch.status === 'connected') patch = { ...patch, ...this.blockedVaultState() };
     this.publicState = { ...this.publicState, ...patch };
     for (const listener of this.listeners) listener();
   }
@@ -651,6 +654,7 @@ export class MacroPilotNativeClient {
       attempt: this.persisted.deviceSession ? null : this.persisted.attempt,
       status: this.persisted.deviceSession ? 'offline' : configured ? 'signed_out' : 'unconfigured',
       lastError: null,
+      ...this.blockedVaultState(),
     });
     if (!this.persisted.deviceSession) { this.scheduleCleanup(); return this.publicState; }
     if (epoch !== this.epoch) throw new PilotClientError('context_changed');
@@ -921,6 +925,7 @@ export class MacroPilotNativeClient {
   }
 
   async confirmAccount(accountId: string): Promise<PilotDeviceSession> {
+    const epoch = this.epoch;
     const attempt = this.persisted?.attempt;
     if (!attempt?.identifiedAccount || attempt.identifiedAccount.account_id !== accountId) {
       throw new PilotClientError('invalid_configuration');
@@ -957,8 +962,14 @@ export class MacroPilotNativeClient {
       this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
       throw new PilotClientError('vault_unavailable');
     }
-    await this.finishClaimCleanup();
+    // The durable session is already usable. Keep the attempt for later cleanup
+    // if its separate metadata update fails.
+    await this.finishClaimCleanup().catch(error => {
+      if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
+    });
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     await this.invalidateVault();
+    if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     this.publish({
       account: data.account,
       deviceSession: data.device_session,
