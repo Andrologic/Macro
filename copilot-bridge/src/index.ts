@@ -1604,14 +1604,22 @@ const handleHealth = async (): Promise<void> => {
 
 const modelDescription = (model: ModelInfo): string | null => {
   const parts: string[] = [];
-  if (model.capabilities.supports.vision) {
+  if (model.capabilities?.supports?.vision) {
     parts.push('vision');
   }
-  if (model.capabilities.supports.reasoningEffort && model.supportedReasoningEfforts?.length) {
+  if (model.capabilities?.supports?.reasoningEffort && model.supportedReasoningEfforts?.length) {
     parts.push(`reasoning:${model.supportedReasoningEfforts.join('/')}`);
   }
   return parts.length > 0 ? `Copilot model (${parts.join(', ')})` : null;
 };
+
+const mapModel = (model: ModelInfo) => ({
+  model_id: model.id,
+  name: model.name || model.id,
+  description: modelDescription(model),
+  owned_by: 'github-copilot',
+  supported_reasoning_efforts: model.supportedReasoningEfforts || undefined,
+});
 
 const handleModels = async (): Promise<void> => {
   const probe = await probeCli();
@@ -1634,15 +1642,7 @@ const handleModels = async (): Promise<void> => {
     return client.listModels();
   }, probe);
 
-  emitJson({
-    models: models.map((model) => ({
-      model_id: model.id,
-      name: model.name || model.id,
-      description: modelDescription(model),
-      owned_by: 'github-copilot',
-      supported_reasoning_efforts: model.supportedReasoningEfforts || undefined,
-    })),
-  });
+  emitJson({ models: models.map(mapModel) });
 };
 
 const handleSend = async (): Promise<void> => {
@@ -1768,6 +1768,8 @@ const main = async (): Promise<void> => {
 
 export const __testables = {
   parseSdkReasoningEffort,
+  modelDescription,
+  mapModel,
   buildMacroTools,
   buildSessionToolConfig,
   closeCopilotThinkingBlock,
