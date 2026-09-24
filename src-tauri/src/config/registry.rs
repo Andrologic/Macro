@@ -713,6 +713,28 @@ pub fn validate_document(
     }));
 
     if kind == ConfigDocumentKind::Tools {
+        if let Some(server) = value.get("languageServer") {
+            if matches!(scope, ConfigScope::Project { .. }) {
+                diagnostics.push(diagnostic(
+                    kind,
+                    scope,
+                    Some("/languageServer".into()),
+                    "config.project.lsp_forbidden",
+                    "Le serveur LSP et ses racines autorisées sont configurés par l’utilisateur.",
+                ));
+            }
+            if let Ok(server) = serde_json::from_value::<LanguageServerSettings>(server.clone()) {
+                if let Err(message) = server.validate() {
+                    diagnostics.push(diagnostic(
+                        kind,
+                        scope,
+                        Some("/languageServer".into()),
+                        "config.tools.lsp_invalid",
+                        message,
+                    ));
+                }
+            }
+        }
         diagnostics.extend(
             validate_mcp_secret_refs(value)
                 .into_iter()
@@ -963,6 +985,14 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             Deep,
             ApprovalRequired,
             Reconnect,
+        ),
+        descriptor(
+            Tools,
+            "/languageServer",
+            &["user"],
+            Replace,
+            ApprovalRequired,
+            Live,
         ),
         descriptor(
             Tools,

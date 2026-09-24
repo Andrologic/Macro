@@ -79,7 +79,14 @@ descendants started by that server. A future production adapter that accepts
 untrusted server launchers should add process-tree isolation before treating
 descendant cleanup as guaranteed.
 
-## Future Macro adapter
+## Product adapter
+
+`core/workspace_execution/post_write_diagnostics.rs` connects committed local
+file mutations to bounded diagnostics. User approval and exact workspace roots
+come from `tools.languageServer`. See `docs/lsp-diagnostics.md` for the product
+contract, fresh-session strategy, transports, and limits.
+
+## Other possible Macro operations
 
 The adapter remains responsible for server selection, installed-server
 detection, user configuration, workspace routing, persistence, tool policy,

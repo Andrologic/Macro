@@ -3704,6 +3704,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lsp_configuration_requires_approval_and_survives_restart() {
+        let (_temp, manager) = manager().await;
+        let root = manager.root().to_path_buf();
+        let server = json!({
+            "enabled": true, "executable": root.join("language-server"),
+            "arguments": ["--stdio"], "workspaceRoots": [root.join("workspace")], "waitMs": 4000
+        });
+        let document = manager
+            .get_document(ConfigDocumentKind::Tools, ConfigScope::User)
+            .await
+            .unwrap();
+        let pending = manager
+            .apply_patch(ConfigPatchRequest {
+                kind: ConfigDocumentKind::Tools,
+                scope: ConfigScope::User,
+                expected_etag: document.etag,
+                patch: vec![JsonPatchOperation {
+                    op: "add".into(),
+                    path: "/languageServer".into(),
+                    from: None,
+                    value: Some(server.clone()),
+                }],
+                source: ConfigChangeSource::Agent,
+            })
+            .await
+            .unwrap();
+        assert_eq!(pending.status, "pendingApproval");
+        let pending_id = pending.pending_change.unwrap().id;
+        assert!(manager
+            .effective_user_document(ConfigDocumentKind::Tools)
+            .await
+            .get("languageServer")
+            .is_none());
+        drop(manager);
+        let manager = ConfigManager::initialize(root.clone()).await.unwrap();
+        assert!(manager
+            .effective_user_document(ConfigDocumentKind::Tools)
+            .await
+            .get("languageServer")
+            .is_none());
+        manager.accept_pending_change(&pending_id).await.unwrap();
+        drop(manager);
+        let manager = ConfigManager::initialize(root).await.unwrap();
+        assert_eq!(
+            manager
+                .effective_user_document(ConfigDocumentKind::Tools)
+                .await["languageServer"],
+            server
+        );
+    }
+
+    #[tokio::test]
     async fn sensitive_agent_patch_waits_for_explicit_approval() {
         let (_temp, manager) = manager().await;
         let document = manager

@@ -64,14 +64,24 @@ fn json_file_sizes_remain_numbers_and_absent_unix_mode_stays_omitted() {
         size: 4,
         encoding: "utf-8".into(),
         revision: "revision".into(),
+        workspace_identity: None,
         unix_mode: None,
     };
     let value = serde_json::to_value(dto).unwrap();
     assert_eq!(value["size"], json!(4));
     assert!(value.get("unix_mode").is_none());
+    assert!(value.get("workspace_identity").is_none());
     let declaration = FileContentDto::decl(&Config::default().with_large_int("number"));
     assert!(declaration.contains("size: number"), "{declaration}");
     assert!(declaration.contains("unix_mode?:"), "{declaration}");
+    assert!(
+        declaration.contains("workspace_identity?: string"),
+        "{declaration}"
+    );
+    let mut attested = value;
+    attested["workspace_identity"] = json!("unix:fffffffffffffffe:ffffffffffffffff");
+    let round_trip: FileContentDto = serde_json::from_value(attested.clone()).unwrap();
+    assert_eq!(serde_json::to_value(round_trip).unwrap(), attested);
 }
 
 #[test]

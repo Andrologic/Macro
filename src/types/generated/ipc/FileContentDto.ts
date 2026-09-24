@@ -26,6 +26,11 @@ encoding: string,
  */
 revision: string,
 /**
+ * Native root identity verified before and after a confined local read.
+ * Absent for unconfined reads, WSL, or a root that changed during the read.
+ */
+workspace_identity?: string,
+/**
  * Unix permission bits when available (for example `0o755`)
  */
 unix_mode?: number, };
