@@ -1324,6 +1324,35 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(appStoreState.setSelectedTask).toHaveBeenCalledWith(null);
   });
 
+  it('keeps an ordinary draft and its deletion journal when metadata files cannot be removed', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-metadata-delete-failure',
+      task_source: 'standalone',
+      standalone_kind: 'manual_feature',
+      draft: true,
+      conversation_id: 'conversation-metadata-delete-failure',
+      execution_targets: [],
+    });
+    removeManualFeatureMetadataMock.mockClear();
+    removeManualFeatureMetadataMock.mockImplementationOnce(async () => {
+      throw new Error('metadata delete unavailable');
+    });
+    const { useTaskStore } = await loadIsolatedTaskStore();
+    useTaskStore.setState({ tasks: [task], lastError: null });
+
+    try {
+      await expect(useTaskStore.getState().deleteTask(task.id)).rejects.toThrow('metadata delete unavailable');
+    } finally {
+      removeManualFeatureMetadataMock.mockImplementation(async () => undefined);
+    }
+
+    expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, true, false);
+    expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
+      expect.objectContaining({ taskId: task.id, phase: 'task_deleting', draft: true }),
+    ]);
+  });
+
   it('deletes a direct-edit task through the durable cleanup journal without Git calls', async () => {
     const task = buildStandaloneTask({
       id: 'manual-task-direct',
@@ -2439,7 +2468,7 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])('uses strict metadata cleanup only for interrupted creation=%s', async (interruptedCreation) => {
+  it.each([false, true])('retries failed metadata cleanup before deleting a draft (interrupted creation=%s)', async (interruptedCreation) => {
     const task = buildStandaloneTask({
       id: 'manual-task-cleanup-origin', task_source: 'standalone',
       standalone_kind: 'manual_feature', draft: true,
@@ -2459,20 +2488,27 @@ describe('useTaskStore merge workflow review loading', () => {
     removeManualFeatureMetadataMock.mockClear();
     if (!interruptedCreation) {
       removeManualFeatureMetadataMock.mockImplementationOnce(async () => {
-        throw new Error('ordinary metadata commit unavailable');
+        throw new Error('metadata delete unavailable');
       });
     }
     workspaceDeleteManualFeatureDraftMock.mockImplementation(async () => { draftPresent = false; return true; });
     try {
       const { useTaskStore } = await loadIsolatedTaskStore();
       await useTaskStore.getState().refreshFromPlan({ restoreSelection: false, activateSelectedTask: false });
+      if (!interruptedCreation) {
+        expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+        expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toHaveLength(1);
+        await useTaskStore.getState().refreshFromPlan({ restoreSelection: false, activateSelectedTask: false });
+      }
     } finally {
       services.listTasks = originalListTasks;
+      removeManualFeatureMetadataMock.mockImplementation(async () => undefined);
     }
     if (interruptedCreation) {
       expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, true);
     } else {
-      expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, false, false);
+      expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, true, false);
+      expect(removeManualFeatureMetadataMock).toHaveBeenCalledTimes(2);
     }
     expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);

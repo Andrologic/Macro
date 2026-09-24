@@ -3067,12 +3067,7 @@ return ({
                     if (deletionSaga.interruptedCreation) {
                       await removeManualFeatureMetadata(currentTask, true);
                     } else {
-                      await removeManualFeatureMetadata(currentTask, false, false).catch((error) => {
-                        devLogger.warn('[tasks] Could not remove metadata during draft deletion recovery.', {
-                          taskId: currentTask.id,
-                          error: toServiceError(error).message,
-                        });
-                      });
+                      await removeManualFeatureMetadata(currentTask, true, false);
                     }
                   }
                   await deleteManualFeatureDraftDurably(
@@ -4301,6 +4296,7 @@ return ({
           ),
         }));
         if (task.draft) {
+          await removeManualFeatureMetadata(task, true, false);
           await deleteManualFeatureDraftDurably(taskId, taskLifecycleLeaseId);
         } else {
           await tauriIpc.workspaceDeleteManualFeature({
@@ -4314,6 +4310,7 @@ return ({
         linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
       } else {
         if (task.draft) {
+          await removeManualFeatureMetadata(task, true, false);
           await deleteManualFeatureDraftDurably(taskId, taskLifecycleLeaseId);
         } else {
           await tauriIpc.workspaceDeleteManualFeature({
