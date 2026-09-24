@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 
@@ -100,6 +100,12 @@ export function verifySameDesignatedRequirement(firstPath, secondPath, expectedF
 
   const results = [firstPath, secondPath].map((appPath) => {
     runCommand('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
+    const bundleIdentifier = runCommand('plutil', [
+      '-extract', 'CFBundleIdentifier', 'raw', '-o', '-', join(appPath, 'Contents', 'Info.plist'),
+    ]).trim();
+    if (bundleIdentifier !== QA_BUNDLE_IDENTIFIER) {
+      throw new Error(`${appPath} has bundle identifier ${bundleIdentifier || 'unknown'}, expected ${QA_BUNDLE_IDENTIFIER}.`);
+    }
     const output = runCommand('codesign', ['-dr', '-', appPath]);
     const designated = output.match(/^designated => (.+)$/m)?.[1]?.trim();
     if (!designated) {
