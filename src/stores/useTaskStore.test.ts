@@ -2472,7 +2472,7 @@ describe('useTaskStore merge workflow review loading', () => {
     if (interruptedCreation) {
       expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, true);
     } else {
-      expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task);
+      expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, false, false);
     }
     expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);

@@ -341,6 +341,7 @@ export const removeManualFeatureMetadata = async (
     'id' | 'base_branch' | 'project_id' | 'project_ids' | 'execution_targets' | 'standalone_kind'
   >,
   strict = false,
+  commit = true,
 ): Promise<void> => {
   if (!tauriIpc.isTauriAvailable() || task.standalone_kind !== 'manual_feature') {
     return;
@@ -370,10 +371,12 @@ export const removeManualFeatureMetadata = async (
       });
     })
   );
-  await commitMetadataTargets(
-    workspaceTargets
-      .filter((target) => target.workspaceScope === METADATA_WORKSPACE_SCOPE)
-      .map((target) => target.workspacePath),
-    `chore(@macro): delete manual feature ${task.id}`,
-  );
+  if (commit) {
+    await commitMetadataTargets(
+      workspaceTargets
+        .filter((target) => target.workspaceScope === METADATA_WORKSPACE_SCOPE)
+        .map((target) => target.workspacePath),
+      `chore(@macro): delete manual feature ${task.id}`,
+    );
+  }
 };

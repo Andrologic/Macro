@@ -3067,7 +3067,7 @@ return ({
                     if (deletionSaga.interruptedCreation) {
                       await removeManualFeatureMetadata(currentTask, true);
                     } else {
-                      await removeManualFeatureMetadata(currentTask).catch((error) => {
+                      await removeManualFeatureMetadata(currentTask, false, false).catch((error) => {
                         devLogger.warn('[tasks] Could not remove metadata during draft deletion recovery.', {
                           taskId: currentTask.id,
                           error: toServiceError(error).message,
