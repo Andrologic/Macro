@@ -193,6 +193,7 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
     git(
         remote.path(),
         &[
+            "--git-dir=.",
             "update-ref",
             "refs/heads/feature",
             &journal.session.target_commit,
@@ -212,12 +213,13 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
     assert!(!worktree.exists());
     assert!(repo.find_branch("feature", git2::BranchType::Local).is_ok());
     assert_eq!(
-        git(remote.path(), &["rev-parse", "feature"]),
+        git(remote.path(), &["--git-dir=.", "rev-parse", "feature"]),
         journal.session.target_commit
     );
     git(
         remote.path(),
         &[
+            "--git-dir=.",
             "update-ref",
             "refs/heads/feature",
             &journal.session.source_commit,
@@ -239,7 +241,11 @@ fn remote_lease_failure_preserves_local_source_and_cleanup_can_resume() {
     assert!(repo
         .find_branch("feature", git2::BranchType::Local)
         .is_err());
-    assert!(git(remote.path(), &["for-each-ref", "refs/heads/feature"]).is_empty());
+    assert!(git(
+        remote.path(),
+        &["--git-dir=.", "for-each-ref", "refs/heads/feature"]
+    )
+    .is_empty());
 }
 
 #[test]
