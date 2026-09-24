@@ -177,6 +177,27 @@ describe('manualFeatureMetadataService', () => {
     ]);
   });
 
+  it('reports a metadata deletion failure so recovery can retry before deleting the draft', async () => {
+    fsExistsMock.mockImplementation(async () => true);
+    fsDeleteMock.mockImplementation(async () => { throw new Error('metadata delete unavailable'); });
+    const { removeManualFeatureMetadata } = await loadService();
+    await expect(removeManualFeatureMetadata({
+      id: 'task-1', base_branch: 'develop', project_id: 'project-1',
+      project_ids: ['project-1'], standalone_kind: 'manual_feature', execution_targets: [],
+    }, true)).rejects.toThrow('metadata delete unavailable');
+  });
+
+  it('removes ordinary recovery metadata without waiting for a metadata commit', async () => {
+    fsExistsMock.mockImplementation(async () => true);
+    const { removeManualFeatureMetadata } = await loadService();
+    await removeManualFeatureMetadata({
+      id: 'task-1', base_branch: 'develop', project_id: 'project-1',
+      project_ids: ['project-1'], standalone_kind: 'manual_feature', execution_targets: [],
+    }, false, false);
+    expect(fsDeleteMock).toHaveBeenCalledTimes(2);
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+  });
+
   it('writes direct task metadata to the current project .macro scope without Git', async () => {
     appState.project = {
       id: 'project-1',
