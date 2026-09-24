@@ -6,6 +6,20 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 
 ## Unreleased
 
+## 0.1.6 - 2026-09-17
+
+### Fixed
+
+- Restored Andrologic reasoning-level selection and transmission to the model.
+- Prevented provider reconnections and model-catalog refreshes from reusing stale credentials or results.
+- Added recovery for unsaved assistant responses and preserved drafts, attachments, and conversation context during asynchronous navigation.
+- Made task creation, archiving, and worktree provisioning recoverable after interruptions.
+- Protected local changes during Git merges, rebases, resets, and plan finalization, with durable recovery after failures.
+- Preserved edits made during diff saves and conflict resolutions already staged.
+- Strengthened backup validation and retained data needed for recovery.
+- Allowed verified staged updates to install offline and corrected interrupted downloads and update-channel transitions.
+- Improved terminal cancellation, child-process cleanup, dialog focus, active-work checks on quit, and translations.
+
 ## 0.1.5 - 2026-09-06
 
 ### Added
