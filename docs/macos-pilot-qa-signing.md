@@ -1,6 +1,6 @@
 # macOS Pilot QA signing
 
-The Pilot QA app is a separate local macOS build for exercising the stable-signature path. Its fixed Tauri bundle identifier is `com.macro.desktop.qa.pilot`; this identifier is also the contract for the native Pilot keychain namespace. The native namespace must derive from the application's trusted identity. Frontend input must not be able to choose it.
+The Pilot QA app is a separate local macOS build for exercising the stable-signature path. Its fixed Tauri bundle identifier is `com.macro.desktop.qa.pilot`. The native vault implementation in `f828ef86` derives its macOS keychain service from the trusted Tauri identifier, so this QA app uses `macro.pilot.v1.app:com.macro.desktop.qa.pilot`. Frontend input must not be able to choose the namespace.
 
 Tauri uses the separate identifier for the app's macOS preferences and application data directories. The desktop app uses that Tauri configuration directory by default. `MACRO_CONFIG_DIR` explicitly overrides it, so unset that variable when launching QA. Do not copy the normal Macro profile, its configuration, or any secret references into this QA profile. The QA bundle is named `Macro Pilot QA`, creates no updater artifacts, has no configured updater endpoints, and builds only an `.app` bundle. It does not publish or deploy an artifact, and its updater cannot contact the production channel.
 
@@ -40,4 +40,4 @@ bun run tauri:verify:macos:qa-signing -- --bundles /tmp/macro-pilot-qa-run-1/Mac
 
 The verifier resolves both paths to ensure they name separate bundles, runs `codesign --verify` against each, extracts each bundle's public signing certificate, and requires its SHA-1 fingerprint to equal `MACOS_QA_SIGNING_IDENTITY`. It checks the `com.macro.desktop.qa.pilot` identifier, requires the designated code requirements to match exactly, and reads the `arm64` CDHash only after signature verification. The CDHashes must differ, so identical bundle copies fail even if their signature requirement matches. This control proves that the two bundles contain different signed code under the same signer and requirement; it does not prove access to the keychain or restoration of a Pilot session. A first access may still require macOS authorization, and subsequent keychain behavior must be checked in the native recipe.
 
-The script checks only the QA bundle signature inputs. It does not inspect, migrate, or copy the normal Macro profile. The native keychain namespace implementation is a separate change and must use the fixed bundle identifier above.
+The script checks only the QA bundle signature inputs. It does not inspect, migrate, or copy the normal Macro profile. The native vault owns keychain namespace selection and derives it from the trusted bundle identifier above.
