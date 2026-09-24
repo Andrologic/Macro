@@ -35,6 +35,7 @@ import { registerQuestionnaireNavigationScenarios } from './__tests__/questionna
 const actualTauriIpc = await import('../services/tauriIpc');
 const actualConfigurationClient = await import('../services/configurationClient');
 let actualResolveProjectExecutionContext: typeof import('../services/projectExecutionContext').resolveProjectExecutionContext;
+let actualCompletePreparedTaskExecutionContext: typeof import('../services/projectExecutionContext').completePreparedTaskExecutionContext;
 let useRealProjectExecutionContextForTest = false;
 
 interface LocalStorageMock {
@@ -2000,6 +2001,8 @@ const registerUseChatStoreMocks = async () => {
   }));
 
   mock.module('../services/projectExecutionContext', () => ({
+    completePreparedTaskExecutionContext: (...args: Parameters<typeof actualCompletePreparedTaskExecutionContext>) =>
+      useRealProjectExecutionContextForTest ? actualCompletePreparedTaskExecutionContext(...args) : args[0],
     resolveProjectExecutionContext: mock((input: Parameters<typeof actualResolveProjectExecutionContext>[0]) => useRealProjectExecutionContextForTest ? actualResolveProjectExecutionContext(input) : ({
       groupName: 'Macro',
       groupId: 'group-1',
@@ -2659,7 +2662,9 @@ const useChatStoreScenarioContext = {
   webSearchMock,
   async enableRealProjectExecutionContext() {
     const realModulePath = "../services/projectExecutionContext.ts?queue-tests";
-    actualResolveProjectExecutionContext = (await import(realModulePath)).resolveProjectExecutionContext;
+    const real = await import(realModulePath);
+    actualResolveProjectExecutionContext = real.resolveProjectExecutionContext;
+    actualCompletePreparedTaskExecutionContext = real.completePreparedTaskExecutionContext;
     useRealProjectExecutionContextForTest = true;
   },
   get useRealProjectExecutionContext() { return useRealProjectExecutionContextForTest; },

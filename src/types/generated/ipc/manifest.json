@@ -1468,6 +1468,14 @@
       "families": [
         "skills"
       ],
+      "name": "SkillScriptWorkspaceDto",
+      "origin": "macro_lib::commands::skills::types::SkillScriptWorkspaceDto",
+      "path": "SkillScriptWorkspaceDto.ts"
+    },
+    {
+      "families": [
+        "skills"
+      ],
       "name": "SkillSourceDto",
       "origin": "macro_lib::commands::skills::types::SkillSourceDto",
       "path": "SkillSourceDto.ts"

@@ -81,8 +81,8 @@ pub mod skills {
     pub use crate::commands::skills::{
         SkillDetailResponse, SkillDiagnosticDto, SkillListResponse, SkillLocationDto,
         SkillManifestDto, SkillProjectRootDto, SkillResourceDto, SkillResourceReadResponse,
-        SkillScriptRunResponse, SkillSourceDto, SkillTemplateCreateRequest,
-        SkillTemplateCreateResponse,
+        SkillScriptRunResponse, SkillScriptWorkspaceDto, SkillSourceDto,
+        SkillTemplateCreateRequest, SkillTemplateCreateResponse,
     };
 }
 

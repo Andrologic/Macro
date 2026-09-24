@@ -20,7 +20,8 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
   const { content, images, hiddenContext, providerInputItems, internalAgentProfile } = input;
   const contextRefs = input.contextRefs ?? snapshot.composerContextRefs;
   const clearComposerRevision = input.contextRefs === undefined ? snapshot.composerRevision : undefined;
-  const { mode, agentType, architectPlan, executionContext, provider } = snapshot;
+  const { mode, agentType, architectPlan, provider } = snapshot;
+  let executionContext = snapshot.executionContext;
   const resolvedTaskId = mode === 'Chat' ? '' : (input.taskId ?? snapshot.conversationTaskId ?? snapshot.selectedTaskId);
   const abortController = new AbortController();
   let lease: SendLease | null = null;
@@ -150,6 +151,7 @@ export async function sendMessage<Task extends SendTask, Recovery, Launch>(
       task = (await tasks.assertReady(resolvedTaskId)) ?? task;
       if (!isCurrent()) return cancelled();
       tasks.assertExecutionContextReady(task);
+      executionContext = tasks.completeExecutionContext(resolvedTaskId, executionContext);
       if (firstManualFeatureMessage) tasks.setLaunchStep(conversationId, current.sessionId, 'starting_agent');
     }
     if (!userMessage) {

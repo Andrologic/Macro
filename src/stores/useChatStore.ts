@@ -228,6 +228,7 @@ import {
 import { syncMacroMetadataAfterStream as syncMacroMetadataAfterStreamService } from "../services/macroSyncService";
 import {
   resolveProjectExecutionContext,
+  completePreparedTaskExecutionContext,
   type ProjectExecutionContext,
 } from "../services/projectExecutionContext";
 import {
@@ -13491,6 +13492,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
           read: (id) => useTaskStore.getState().getTaskById(id),
           finalizeDraft: maybeFinalizeManualFeatureDraftForAssistantRequest,
           assertReady: assertImplementTaskReadyForSend,
+          completeExecutionContext: (taskId, captured) => {
+            const app = useAppStore.getState();
+            const tasks = useTaskStore.getState();
+            const merge = tasks.getMergeWorkflowRuntime?.(taskId);
+            return completePreparedTaskExecutionContext(captured, {
+              taskId,
+              projects: [...(app.standaloneProjects ?? []), ...app.projectGroups.flatMap(group => group.projects)],
+              projectGroups: app.projectGroups,
+              tasks: tasks.tasks,
+              branchWorktrees: tasks.branchWorktrees,
+              workspacePathOverridesByProjectId: Object.fromEntries(
+                (merge?.repositories ?? []).map(repository => [repository.projectId, repository.repoPath]),
+              ),
+            });
+          },
           assertExecutionContextReady: assertStandaloneTaskExecutionContextReady,
           rollbackDraft: rollbackManualFeatureDraftAfterFailedLaunch,
           beginLaunch: beginStandaloneTaskLaunch,
@@ -13533,9 +13549,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
           start: (request, launch) => startAssistantStream({
             ...launch,
             ...request,
-            // The profile is resolved during preparation; the execution scope is captured at send.
+            // Preparation completes workspaces for the task identity captured at send.
             internalAgentProfile: launch.internalAgentProfile,
-            executionContext: snapshot.executionContext,
+            executionContext: request.executionContext ?? launch.executionContext,
             selectedProviderId: request.providerId,
             selectedModelId: request.modelId,
             selectedReasoningEffort: request.reasoningEffort,
