@@ -24,10 +24,20 @@ Run each build from the repository root. Use a fresh absolute output path outsid
 unset MACRO_CONFIG_DIR
 export MACOS_QA_SIGNING_IDENTITY=0123456789ABCDEF0123456789ABCDEF01234567
 bun run tauri:build:macos:qa -- --output /tmp/macro-pilot-qa-run-1/Macro.app
+```
+
+Replace the sample fingerprint with the identity's actual fingerprint. After the first build, make one temporary local edit to `src-tauri/tauri.qa.conf.json`: change `app.windows[0].title` from `Macro Pilot QA` to `Macro Pilot QA recipe B`. Keep `identifier`, `productName`, the signing fingerprint, and all profile settings unchanged. Build the second bundle:
+
+```sh
 bun run tauri:build:macos:qa -- --output /tmp/macro-pilot-qa-run-2/Macro.app
+```
+
+Restore the title to `Macro Pilot QA` before continuing. The title change is the recipe variation; it does not change the product version or need a commit. Compare the saved bundles:
+
+```sh
 bun run tauri:verify:macos:qa-signing -- --bundles /tmp/macro-pilot-qa-run-1/Macro.app --bundles /tmp/macro-pilot-qa-run-2/Macro.app
 ```
 
-Replace the sample fingerprint with the identity's actual fingerprint. The verifier resolves both paths to ensure they name separate bundles, runs `codesign` against each, extracts each bundle's public signing certificate, and requires its SHA-1 fingerprint to equal `MACOS_QA_SIGNING_IDENTITY`. It also checks the `com.macro.desktop.qa.pilot` identifier and requires the designated code requirements to match exactly. This is a repeatable signature-requirement and signer check; by itself it does not prove access to the keychain or restoration of a Pilot session. A first access may still require macOS authorization, and subsequent keychain behavior must be checked in the native recipe.
+The verifier resolves both paths to ensure they name separate bundles, runs `codesign --verify` against each, extracts each bundle's public signing certificate, and requires its SHA-1 fingerprint to equal `MACOS_QA_SIGNING_IDENTITY`. It checks the `com.macro.desktop.qa.pilot` identifier, requires the designated code requirements to match exactly, and reads the `arm64` CDHash only after signature verification. The CDHashes must differ, so identical bundle copies fail even if their signature requirement matches. This control proves that the two bundles contain different signed code under the same signer and requirement; it does not prove access to the keychain or restoration of a Pilot session. A first access may still require macOS authorization, and subsequent keychain behavior must be checked in the native recipe.
 
 The script checks only the QA bundle signature inputs. It does not inspect, migrate, or copy the normal Macro profile. The native keychain namespace implementation is a separate change and must use the fixed bundle identifier above.

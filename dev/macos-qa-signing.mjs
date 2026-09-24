@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 export const QA_BUNDLE_IDENTIFIER = 'com.macro.desktop.qa.pilot';
 export const QA_CONFIG = 'src-tauri/tauri.qa.conf.json';
 export const IDENTITY_ENV = 'MACOS_QA_SIGNING_IDENTITY';
+export const QA_ARCHITECTURE = 'arm64';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const fingerprintPattern = /^[0-9A-F]{40}$/i;
 
@@ -79,6 +80,13 @@ function signingCertificateFingerprint(appPath, runCommand) {
   }
 }
 
+function codeDirectoryHash(appPath, runCommand) {
+  const output = runCommand('codesign', ['--display', '--verbose=4', '--arch', QA_ARCHITECTURE, appPath]);
+  const hash = output.match(/^CDHash=([0-9A-F]{40,64})$/im)?.[1]?.toUpperCase();
+  if (!hash) throw new Error(`No ${QA_ARCHITECTURE} CDHash found for ${appPath}.`);
+  return hash;
+}
+
 export function verifySameDesignatedRequirement(firstPath, secondPath, expectedFingerprint, runCommand) {
   if (!firstPath || !secondPath || resolve(firstPath) === resolve(secondPath)) {
     throw new Error('Provide two different macOS app bundle paths.');
@@ -90,7 +98,7 @@ export function verifySameDesignatedRequirement(firstPath, secondPath, expectedF
     throw new Error(`${IDENTITY_ENV} must contain the 40-character SHA-1 fingerprint of the signing identity to verify.`);
   }
 
-  const requirements = [firstPath, secondPath].map((appPath) => {
+  const results = [firstPath, secondPath].map((appPath) => {
     runCommand('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
     const output = runCommand('codesign', ['-dr', '-', appPath]);
     const designated = output.match(/^designated => (.+)$/m)?.[1]?.trim();
@@ -105,13 +113,16 @@ export function verifySameDesignatedRequirement(firstPath, secondPath, expectedF
     if (actualFingerprint !== expectedFingerprint.toUpperCase()) {
       throw new Error(`${appPath} was signed by ${actualFingerprint}, expected ${expectedFingerprint.toUpperCase()}.`);
     }
-    return designated;
+    return { designated, codeDirectoryHash: codeDirectoryHash(appPath, runCommand) };
   });
 
-  if (requirements[0] !== requirements[1]) {
+  if (results[0].designated !== results[1].designated) {
     throw new Error('The two QA bundles do not satisfy the same designated code requirement.');
   }
-  return requirements[0];
+  if (results[0].codeDirectoryHash === results[1].codeDirectoryHash) {
+    throw new Error(`The two bundles have the same ${QA_ARCHITECTURE} CDHash and do not prove distinct builds.`);
+  }
+  return results;
 }
 
 function build(outputDirectory, identity, runCommand = run, spawn = spawnSync) {
@@ -168,11 +179,12 @@ export function main(args = process.argv.slice(2), env = process.env) {
     return;
   }
   if (options.action === 'verify' && options.bundles.length === 2 && !options.output) {
-    const requirement = verifySameDesignatedRequirement(
+    const [first, second] = verifySameDesignatedRequirement(
       options.bundles[0], options.bundles[1], env[IDENTITY_ENV],
       (command, commandArgs) => run(command, commandArgs),
     );
-    console.log(`Both bundles satisfy the same designated requirement: ${requirement}`);
+    console.log(`Both bundles satisfy the same designated requirement: ${first.designated}`);
+    console.log(`${QA_ARCHITECTURE} CDHashes differ: ${first.codeDirectoryHash} / ${second.codeDirectoryHash}`);
     console.log('This checks code requirements only; it does not demonstrate keychain access or session restoration.');
     return;
   }

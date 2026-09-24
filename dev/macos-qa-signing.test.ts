@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   assertOutsideRepository,
   IDENTITY_ENV,
+  QA_ARCHITECTURE,
   QA_BUNDLE_IDENTIFIER,
   resolveSigningIdentity,
   verifySameDesignatedRequirement,
@@ -25,6 +26,33 @@ mkdirSync(secondBundle);
 mkdirSync(repository);
 symlinkSync(firstBundle, bundleAlias);
 symlinkSync(repository, repositoryAlias);
+const designatedRequirement = `identifier "${QA_BUNDLE_IDENTIFIER}" and anchor apple generic`;
+
+function fakeCodesign({
+  inspected = [],
+  cdHashes = new Map([[firstBundle, 'A'.repeat(40)], [secondBundle, 'B'.repeat(40)]]),
+  certificates = new Map(),
+  requirements = new Map(),
+  omitCdHash = false,
+} = {}) {
+  return (command, args) => {
+    const appPath = args.at(-1);
+    inspected.push([command, ...args]);
+    if (args[0] === '--verify') return '';
+    if (args[0] === '-dr') {
+      return `Executable=Macro\ndesignated => ${requirements.get(appPath) || designatedRequirement}\n`;
+    }
+    if (args[0] === '--display' && args[1] === '--extract-certificates') {
+      writeFileSync(`${args[2]}0`, certificates.get(appPath) || certificate);
+      return '';
+    }
+    if (args[0] === '--display' && args[1] === '--verbose=4') {
+      expect(args.slice(2, 4)).toEqual(['--arch', QA_ARCHITECTURE]);
+      return omitCdHash ? 'Executable=Macro' : `Executable=Macro\nCDHash=${cdHashes.get(appPath)}\n`;
+    }
+    throw new Error(`Unexpected fake codesign args: ${args.join(' ')}`);
+  };
+}
 
 describe('macOS Pilot QA signing', () => {
   afterAll(() => rmSync(fixtureRoot, { recursive: true, force: true }));
@@ -45,43 +73,36 @@ describe('macOS Pilot QA signing', () => {
   });
 
   test('checks two physical bundles against the same requirement and leaf certificate', () => {
-    const requirement = `identifier "${QA_BUNDLE_IDENTIFIER}" and anchor apple generic`;
     const inspected = [];
-    const fakeCodesign = (command, args) => {
-      inspected.push([command, ...args]);
-      if (args[0] === '--verify' || args[0] === '-dr') {
-        return args[0] === '--verify' ? '' : `Executable=Macro\ndesignated => ${requirement}\n`;
-      }
-      writeFileSync(`${args[2]}0`, certificate);
-      return '';
-    };
+    const cdHashes = new Map([[firstBundle, 'A'.repeat(40)], [secondBundle, 'B'.repeat(40)]]);
+    const fake = fakeCodesign({ inspected, cdHashes });
 
-    expect(verifySameDesignatedRequirement(firstBundle, secondBundle, fingerprint, fakeCodesign)).toBe(requirement);
-    expect(inspected.map(([, ...args]) => args[0])).toEqual([
-      '--verify', '-dr', '--display', '--verify', '-dr', '--display',
+    expect(verifySameDesignatedRequirement(firstBundle, secondBundle, fingerprint, fake)).toEqual([
+      { designated: designatedRequirement, codeDirectoryHash: 'A'.repeat(40) },
+      { designated: designatedRequirement, codeDirectoryHash: 'B'.repeat(40) },
     ]);
-    expect(() => verifySameDesignatedRequirement(firstBundle, bundleAlias, fingerprint, fakeCodesign))
+    expect(inspected.map(([, ...args]) => args[0])).toEqual([
+      '--verify', '-dr', '--display', '--display', '--verify', '-dr', '--display', '--display',
+    ]);
+    expect(() => verifySameDesignatedRequirement(firstBundle, bundleAlias, fingerprint, fake))
       .toThrow('same macOS app');
-    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, 'F'.repeat(40), fakeCodesign))
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, 'F'.repeat(40), fake))
       .toThrow('was signed by');
 
-    const mismatchedCertificate = (command, args) => {
-      if (args[0] === '--verify') return '';
-      if (args[0] === '-dr') return `designated => ${requirement}`;
-      writeFileSync(`${args[2]}0`, Buffer.from('different synthetic certificate'));
-      return '';
-    };
-    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, fingerprint, mismatchedCertificate))
+    const certificates = new Map([[secondBundle, Buffer.from('different synthetic certificate')]]);
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, fingerprint, fakeCodesign({ certificates })))
       .toThrow('was signed by');
 
-    const mismatchedRequirement = (command, args) => {
-      if (args[0] === '--verify') return '';
-      if (args[0] === '-dr') return `designated => ${requirement} and certificate leaf[subject.CN] = "${args.at(-1)}"`;
-      writeFileSync(`${args[2]}0`, certificate);
-      return '';
-    };
-    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, fingerprint, mismatchedRequirement))
+    const requirements = new Map([[secondBundle, `${designatedRequirement} and certificate leaf[subject.CN] = "other"`]]);
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, fingerprint, fakeCodesign({ requirements })))
       .toThrow('same designated');
+
+    cdHashes.set(secondBundle, 'A'.repeat(40));
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, fingerprint, fakeCodesign({ cdHashes })))
+      .toThrow('same arm64 CDHash');
+
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, fingerprint, fakeCodesign({ omitCdHash: true })))
+      .toThrow('No arm64 CDHash');
   });
 
   test('rejects QA bundle outputs that reach the repository through a symlink', () => {
@@ -98,5 +119,6 @@ describe('macOS Pilot QA signing', () => {
     expect(config.bundle.targets).toEqual(['app']);
     expect(config.plugins.updater.endpoints).toEqual([]);
     expect(config.productName).toBe('Macro Pilot QA');
+    expect(config.app.windows[0].title).toBe('Macro Pilot QA');
   });
 });
