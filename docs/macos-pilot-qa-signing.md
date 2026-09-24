@@ -2,7 +2,7 @@
 
 The Pilot QA app is a separate local macOS build for exercising the stable-signature path. Its fixed Tauri bundle identifier is `com.macro.desktop.qa.pilot`. The native vault implementation in `f828ef86` derives its macOS keychain service from the trusted Tauri identifier, so this QA app uses `macro.pilot.v1.app:com.macro.desktop.qa.pilot`. Frontend input must not be able to choose the namespace.
 
-Tauri uses the separate identifier for the app's macOS preferences and application data directories. The desktop app uses that Tauri configuration directory by default. `MACRO_CONFIG_DIR` explicitly overrides it, so unset that variable when launching QA. Do not copy the normal Macro profile, its configuration, or any secret references into this QA profile. The QA bundle is named `Macro Pilot QA`, creates no updater artifacts, has no configured updater endpoints, and builds only an `.app` bundle. It does not publish or deploy an artifact, and its updater cannot contact the production channel.
+Tauri uses the separate identifier for the app's macOS preferences and application data directories. The desktop app uses that Tauri configuration directory by default. `MACRO_CONFIG_DIR` overrides it, and the deprecated `MACRO_CONFIG` can load a separate legacy settings file. Unset both variables when launching QA. Do not copy the normal Macro profile, its configuration, or any secret references into this QA profile. The QA bundle is named `Macro Pilot QA`, creates no updater artifacts, has no configured updater endpoints, and builds only an `.app` bundle. It does not publish or deploy an artifact, and its updater cannot contact the production channel.
 
 ## Prerequisite
 
@@ -21,7 +21,7 @@ Set `MACOS_QA_SIGNING_IDENTITY` to the 40-character SHA-1 fingerprint printed fo
 Run each build from the repository root. Use a fresh absolute output path outside the repository for each one. The paths below are examples under the system temporary directory.
 
 ```sh
-unset MACRO_CONFIG_DIR
+unset MACRO_CONFIG MACRO_CONFIG_DIR
 export MACOS_QA_SIGNING_IDENTITY=0123456789ABCDEF0123456789ABCDEF01234567
 bun run tauri:build:macos:qa -- --output /tmp/macro-pilot-qa-run-1/Macro.app
 ```
