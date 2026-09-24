@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { tmpdir } from 'node:os';
 
 export const QA_BUNDLE_IDENTIFIER = 'com.macro.desktop.qa.pilot';
 export const QA_CONFIG = 'src-tauri/tauri.qa.conf.json';
@@ -44,12 +46,48 @@ export function resolveSigningIdentity(identity, runCommand) {
   return normalized;
 }
 
-export function verifySameDesignatedRequirement(firstPath, secondPath, runCommand) {
+function normalizedPhysicalPath(path) {
+  let existing = resolve(path);
+  const suffix = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return existing;
+    suffix.unshift(basename(existing));
+    existing = parent;
+  }
+  return resolve(realpathSync(existing), ...suffix);
+}
+
+export function assertOutsideRepository(path, repositoryRoot = root) {
+  const physicalPath = normalizedPhysicalPath(path);
+  const physicalRoot = realpathSync(repositoryRoot);
+  const fromRoot = relative(physicalRoot, physicalPath);
+  if (fromRoot === '' || (!fromRoot.startsWith(`..${sep}`) && fromRoot !== '..' && !isAbsolute(fromRoot))) {
+    throw new Error('Choose a QA bundle output directory outside the repository.');
+  }
+  return physicalPath;
+}
+
+function signingCertificateFingerprint(appPath, runCommand) {
+  const certificateDirectory = mkdtempSync(resolve(tmpdir(), 'macro-qa-certificate-'));
+  const certificatePrefix = resolve(certificateDirectory, 'certificate-');
+  try {
+    runCommand('codesign', ['--display', '--extract-certificates', certificatePrefix, appPath]);
+    return createHash('sha1').update(readFileSync(`${certificatePrefix}0`)).digest('hex').toUpperCase();
+  } finally {
+    rmSync(certificateDirectory, { recursive: true, force: true });
+  }
+}
+
+export function verifySameDesignatedRequirement(firstPath, secondPath, expectedFingerprint, runCommand) {
   if (!firstPath || !secondPath || resolve(firstPath) === resolve(secondPath)) {
     throw new Error('Provide two different macOS app bundle paths.');
   }
-  if (realpathSync(firstPath) === realpathSync(secondPath)) {
+  if (normalizedPhysicalPath(firstPath) === normalizedPhysicalPath(secondPath)) {
     throw new Error('The two paths resolve to the same macOS app bundle.');
+  }
+  if (typeof expectedFingerprint !== 'string' || !fingerprintPattern.test(expectedFingerprint)) {
+    throw new Error(`${IDENTITY_ENV} must contain the 40-character SHA-1 fingerprint of the signing identity to verify.`);
   }
 
   const requirements = [firstPath, secondPath].map((appPath) => {
@@ -63,10 +101,9 @@ export function verifySameDesignatedRequirement(firstPath, secondPath, runComman
     if (identifier !== QA_BUNDLE_IDENTIFIER) {
       throw new Error(`${appPath} has bundle identifier ${identifier || 'unknown'}, expected ${QA_BUNDLE_IDENTIFIER}.`);
     }
-    const pinsSigner = /\bcertificate\s+leaf(?:\[[^\]]+\])?\s*(?:=|\bexists\b)/i.test(designated)
-      || /\banchor\s+H"[0-9A-F]{40}"/i.test(designated);
-    if (!pinsSigner) {
-      throw new Error(`${appPath} designated requirement does not pin a signing certificate or its anchor.`);
+    const actualFingerprint = signingCertificateFingerprint(appPath, runCommand);
+    if (actualFingerprint !== expectedFingerprint.toUpperCase()) {
+      throw new Error(`${appPath} was signed by ${actualFingerprint}, expected ${expectedFingerprint.toUpperCase()}.`);
     }
     return designated;
   });
@@ -75,13 +112,6 @@ export function verifySameDesignatedRequirement(firstPath, secondPath, runComman
     throw new Error('The two QA bundles do not satisfy the same designated code requirement.');
   }
   return requirements[0];
-}
-
-function assertOutsideRepository(path) {
-  const fromRoot = relative(root, path);
-  if (fromRoot === '' || (!fromRoot.startsWith(`..${sep}`) && fromRoot !== '..' && !isAbsolute(fromRoot))) {
-    throw new Error('Choose a QA bundle output directory outside the repository.');
-  }
 }
 
 function build(outputDirectory, identity, runCommand = run, spawn = spawnSync) {
@@ -115,6 +145,7 @@ function build(outputDirectory, identity, runCommand = run, spawn = spawnSync) {
   const appPath = resolve(root, 'src-tauri', 'target', target, 'release', 'bundle', 'macos', 'Macro Pilot QA.app');
   if (!existsSync(appPath)) throw new Error(`Tauri did not produce the expected bundle: ${appPath}`);
   mkdirSync(dirname(destination), { recursive: true });
+  assertOutsideRepository(destination);
   cpSync(appPath, destination, { recursive: true, errorOnExist: true, force: false });
   console.log(`QA bundle saved at ${destination}`);
 }
@@ -138,7 +169,7 @@ export function main(args = process.argv.slice(2), env = process.env) {
   }
   if (options.action === 'verify' && options.bundles.length === 2 && !options.output) {
     const requirement = verifySameDesignatedRequirement(
-      options.bundles[0], options.bundles[1],
+      options.bundles[0], options.bundles[1], env[IDENTITY_ENV],
       (command, commandArgs) => run(command, commandArgs),
     );
     console.log(`Both bundles satisfy the same designated requirement: ${requirement}`);
