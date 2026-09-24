@@ -475,6 +475,7 @@ export function createChatCompletionsAdapter(sourceOptions: StreamingChatOptions
     projectTool: (result, calls) => buildToolChatCompletionProviderItem(
       result.tool_call_id, result.content,
       result.tool_name ?? calls.find((call) => call.id === result.tool_call_id)?.function.name,
+      result.blocks, result.is_error,
     ),
     afterToolResults: (messages, results) => {
       if (results.some((result) => result.is_error)) messages.push({ role: 'system', content:

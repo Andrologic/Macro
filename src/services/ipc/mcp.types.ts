@@ -14,6 +14,6 @@ export type MCPDiscoverToolsResponseDto = OmitFields<NativeMCPDiscoverToolsRespo
 };
 
 /** Frontend compatibility: preserves adapted fields and omission rules. */
-export type MCPCallToolResponseDto = OptionalFields<OmitFields<NativeMCPCallToolResponseDto, "rawResult">, "isError"> & {
+export type MCPCallToolResponseDto = OptionalFields<OmitFields<NativeMCPCallToolResponseDto, "rawResult">, "isError" | "blocks"> & {
   rawResult?: unknown;
 };

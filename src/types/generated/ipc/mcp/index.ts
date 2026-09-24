@@ -4,6 +4,7 @@ export type { McpCatalogDto } from '../McpCatalogDto';
 export type { McpDiscoverToolsResponse } from '../McpDiscoverToolsResponse';
 export type { McpProtocolEra } from '../McpProtocolEra';
 export type { McpProtocolMode } from '../McpProtocolMode';
+export type { McpResultBlock } from '../McpResultBlock';
 export type { McpRuntimeKey } from '../McpRuntimeKey';
 export type { McpRuntimeSelector } from '../McpRuntimeSelector';
 export type { McpRuntimeServerSnapshot } from '../McpRuntimeServerSnapshot';

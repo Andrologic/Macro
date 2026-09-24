@@ -33,7 +33,7 @@ use tokio::sync::Mutex;
 
 use super::env_secrets::sanitized_process_environment;
 use super::ids::build_mcp_tool_id;
-use super::result_format::format_tool_call_result;
+use super::result_format::normalize_tool_call_result;
 use super::runtime::McpOperationCancellation;
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
@@ -647,12 +647,7 @@ impl RmcpLegacyStdioClient {
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
-                let content = format_tool_call_result(&raw_result);
-                Ok(McpCallToolResponse {
-                    content,
-                    is_error: result.is_error.unwrap_or(false),
-                    raw_result,
-                })
+                Ok(normalize_tool_call_result(raw_result))
             }
             CallToolResponse::InputRequired(_input_required) => Err(command_error(format!(
                 "MCP server '{}' requires interaction to complete tools/call; \

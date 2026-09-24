@@ -16,6 +16,9 @@ export type StreamAccumulator = ReturnType<typeof createStreamAccumulator>;
 
 export interface LoopTurn {
   result: StreamingTurnResult;
+  // Native tools can finish inside streamTurn, before the loop accepts its text.
+  executedToolItems?: unknown[];
+  executedToolNames?: string[];
   projectAssistant: (content: string, calls: ToolCall[], recovering: boolean, incomplete: boolean) => {
     items: unknown[];
     state?: ProviderTurnState;
@@ -68,9 +71,11 @@ export async function runToolCallingLoop(
   let enforceGuidedRetry = Boolean(options.guidedToolRetry);
   let recoveryCause: 'length' | 'incomplete' | null = null;
   const usedToolNames = new Set<string>();
+  // Native live context also contains completed results from a turn interrupted
+  // before projectAssistant could add it to the settled transcript.
   const complete = (completionReason?: StreamCompletionReason) => ({
     ...accumulator.buildResult(),
-    providerInputItems: cloneProviderInputItems(transcript),
+    providerInputItems: cloneProviderInputItems(accumulator.snapshotLiveContext().providerInputItems ?? transcript),
     ...(providerTurnState ? { providerTurnState } : {}),
     ...(completionReason ? { completionReason } : {}),
   });
@@ -111,7 +116,14 @@ export async function runToolCallingLoop(
       const recoveryAttemptedTool = recovering && rawCalls.length > 0;
       const calls = incomplete || recoveryAttemptedTool ? [] : rawCalls;
 
-      if (!incomplete && !recovering && shouldRetryMissingRequiredTool(options.guidedToolRetry, calls, guidedRetryCount)) {
+      if (enforceGuidedRetry && !incomplete && !recovering && shouldRetryMissingRequiredTool(options.guidedToolRetry, calls, guidedRetryCount, turn.executedToolNames)) {
+        // Reject the answer, not effects that already completed in the native turn.
+        const executedItems = cloneProviderInputItems(turn.executedToolItems);
+        if (executedItems?.length) {
+          transcript.push(...executedItems);
+          accumulator.setProviderContext({ providerInputItems: transcript, providerTurnState });
+          messages.push({ role: 'assistant', content: '', provider_input_items: executedItems });
+        }
         guidedRetryCount += 1;
         messages.push({ role: 'system', content: options.guidedToolRetry?.retrySystemPrompt || '' });
         turnCount += 1;
@@ -125,9 +137,11 @@ export async function runToolCallingLoop(
         if (suffix) accumulator.appendProviderDelta(suffix);
       }
       accumulator.flushProviderDelta();
-      const projected = turn.projectAssistant(replayContent, calls, recovering, incomplete);
+      const transcriptStart = transcript.length;
+      const projected = turn.projectAssistant(replayContent, [], recovering, incomplete);
+      const requestProjection = calls.length ? turn.projectAssistant(replayContent, calls, recovering, incomplete) : projected;
       providerTurnState = projected.state ?? providerTurnState;
-      if (replayContent.trim() || calls.length) {
+      if (replayContent.trim() || calls.length || projected.items.length) {
         if (projected.items.length) {
           transcript.push(...projected.items);
           accumulator.setProviderContext({ providerInputItems: transcript, providerTurnState });
@@ -135,8 +149,8 @@ export async function runToolCallingLoop(
         messages.push({
           role: 'assistant', content: replayContent,
           ...(calls.length ? { tool_calls: calls } : {}),
-          ...(projected.items.length ? { provider_input_items: projected.items } : {}),
-          ...(projected.state ? { provider_turn_state: projected.state } : {}),
+          ...(requestProjection.items.length ? { provider_input_items: requestProjection.items } : {}),
+          ...(requestProjection.state ? { provider_turn_state: requestProjection.state } : {}),
         });
       }
       if (!calls.length) {
@@ -168,22 +182,28 @@ export async function runToolCallingLoop(
         adapter.assertTerminal?.(content, calls);
         return complete(recoveryCause ? recoveredCompletionReason(recoveryCause) : result.completionReason);
       }
+      const completedCalls: ToolCall[] = [];
+      const completedItems: unknown[] = [];
       const { toolResults, interruptResolution } = await runToolBatch({
         calls, messages, options, allowedTools, schemas, accumulator,
         batchId: `${adapter.kind}-turn-${turnCount}`, usedToolNames,
+        onCompletedResult: (toolResult) => {
+          completedCalls.push(calls.find(call => call.id === toolResult.tool_call_id)!);
+          const item = adapter.projectTool(toolResult, calls);
+          completedItems.push(item);
+          const progress = turn.projectAssistant(replayContent, completedCalls, recovering, incomplete);
+          providerTurnState = progress.state ?? providerTurnState;
+          transcript.splice(transcriptStart, transcript.length - transcriptStart, ...progress.items, ...completedItems);
+          accumulator.setProviderContext({ providerInputItems: transcript, providerTurnState });
+          messages.push({ role: 'tool', content: toolResult.content,
+            tool_call_id: toolResult.tool_call_id, provider_input_items: [item] });
+        },
       });
       if (interruptResolution) {
         accumulator.replaceVisibleContent(interruptResolution.visibleContent);
         return complete();
       }
       if (toolResults.length) {
-        messages.push(...toolResults.map((result) => {
-          const item = adapter.projectTool(result, calls);
-          transcript.push(cloneProviderInputItems([item])![0]);
-          accumulator.setProviderContext({ providerInputItems: transcript, providerTurnState });
-          return { role: 'tool' as const, content: result.content,
-            tool_call_id: result.tool_call_id, provider_input_items: [item] };
-        }));
         if (options.onBeforeFollowUpRequest) {
           const compacted = await options.onBeforeFollowUpRequest({
             reason: 'tool_results', messages: messages.map(cloneStreamMessage),

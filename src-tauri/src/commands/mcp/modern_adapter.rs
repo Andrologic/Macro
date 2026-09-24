@@ -28,7 +28,7 @@ use rmcp::ClientHandler;
 use serde_json::Value;
 
 use super::ids::build_mcp_tool_id;
-use super::result_format::format_tool_call_result;
+use super::result_format::normalize_tool_call_result;
 use super::rmcp_adapter::{ContainedStdioTransport, McpToolPageDto, RmcpStdioServerConfig};
 use super::runtime::McpOperationCancellation;
 use super::types::{McpCallToolResponse, McpToolDto};
@@ -403,11 +403,9 @@ impl RmcpModernStdioClient {
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
-                Ok(McpModernToolCallOutcome::Complete(McpCallToolResponse {
-                    content: format_tool_call_result(&raw_result),
-                    is_error: result.is_error.unwrap_or(false),
-                    raw_result,
-                }))
+                Ok(McpModernToolCallOutcome::Complete(
+                    normalize_tool_call_result(raw_result),
+                ))
             }
             CallToolResponse::InputRequired(result) => {
                 Ok(McpModernToolCallOutcome::InputRequired {

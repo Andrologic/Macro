@@ -1,4 +1,8 @@
+import type { ToolResultBlock } from '../../shared/toolResultContent';
+import { projectCopilotMessageContent } from './copilotPromptCodec';
 import {
+  buildAssistantProviderInputItemsFromTurn,
+  buildFunctionCallOutputProviderInputItem,
   buildChatGptProviderTurnState,
   extractVisibleTextFromProviderInputItems,
 } from './responsesCodec';
@@ -65,6 +69,7 @@ export const streamNativeTurnViaTauri = async (params: {
     toolCallId: string;
     result: string;
     hiddenContext?: string;
+    providerInputItems?: unknown[];
   }) => void;
 }, invocationResources?: ActiveStreamResources): Promise<StreamingTurnResult> => {
   if (!tauriIpc.isTauriAvailable()) {
@@ -83,6 +88,7 @@ export const streamNativeTurnViaTauri = async (params: {
   }
 
   let fullContent = '';
+  const nativeToolItems: unknown[] = [];
 
   return new Promise<StreamingTurnResult>((resolve, reject) => {
     let settled = false;
@@ -183,6 +189,7 @@ export const streamNativeTurnViaTauri = async (params: {
 
               try {
                 let toolResult = '';
+                let blocks: ToolResultBlock[] | undefined;
                 let hiddenContext: string | undefined;
                 let visibleContent: string | undefined;
                 let interrupt = false;
@@ -220,16 +227,26 @@ export const streamNativeTurnViaTauri = async (params: {
                     interrupt = true;
                   } else if (resolution?.kind === 'result') {
                     toolResult = resolution.result;
+                    blocks = resolution.blocks;
                     isError = resolution.isError === true;
                     errorKind = resolution.errorKind;
                   }
                 }
 
                 if (settled || params.signal?.aborted) return;
+                nativeToolItems.push(
+                  { type: 'function_call', call_id: toolCallId, name: toolName, arguments: JSON.stringify(args) },
+                  buildFunctionCallOutputProviderInputItem(toolCallId, toolResult, blocks, isError),
+                );
+                params.onLiveToolResult?.({
+                  toolName, args, toolCallId, result: toolResult, hiddenContext,
+                  providerInputItems: [...nativeToolItems],
+                });
                 await tauriIpc.aiSubmitToolResult({
                   requestId,
                   toolCallId,
                   result: toolResult,
+                  ...(blocks ? { blocks } : {}),
                   hiddenContext,
                   visibleContent,
                   interrupt,
@@ -237,13 +254,6 @@ export const streamNativeTurnViaTauri = async (params: {
                   errorKind,
                 });
                 if (settled || params.signal?.aborted) return;
-                params.onLiveToolResult?.({
-                  toolName,
-                  args,
-                  toolCallId,
-                  result: toolResult,
-                  hiddenContext,
-                });
                 params.onToolResult?.(toolName, toolResult);
               } catch (error) {
                 if (settled || params.signal?.aborted) {
@@ -282,7 +292,9 @@ export const streamNativeTurnViaTauri = async (params: {
           }),
           ownListener<tauriIpc.AiStreamDoneEvent>('ai:done', (event) => {
             if (settled || event.payload.request_id !== requestId) return;
-            const providerInputItems = event.payload.provider_input_items ?? undefined;
+            const providerInputItems = nativeToolItems.length ? [
+              ...nativeToolItems, ...(event.payload.provider_input_items ?? buildAssistantProviderInputItemsFromTurn(event.payload.output_text || fullContent, event.payload.tool_calls || [])),
+            ] : event.payload.provider_input_items ?? undefined;
             const providerTurnState =
               event.payload.provider_turn_state ??
               (params.providerType === 'chatgpt'
@@ -328,7 +340,7 @@ export const streamNativeTurnViaTauri = async (params: {
           conversationId: params.conversationId ?? null,
           messages: params.messages.map((message) => ({
             role: message.role,
-            content: message.content,
+            content: params.providerType === 'copilot' ? projectCopilotMessageContent(message) : message.content,
             ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
             ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
             ...(message.provider_input_items

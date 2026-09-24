@@ -1,3 +1,4 @@
+import { readTypedToolResult, projectToolResultText } from '../../shared/toolResultContent';
 import {
   type StreamMessage,
   type StreamMessageContent,
@@ -23,19 +24,31 @@ export const streamContentToCopilotPromptText = (content: StreamMessageContent):
     .join('\n');
 };
 
+/** The native bridge rebuilds a textual session; make media omissions explicit. */
+export const projectCopilotMessageContent = (message: StreamMessage): StreamMessageContent => {
+  if (message.role === 'system') return message.content;
+  const history = (message.provider_input_items ?? []).flatMap(item => {
+    const result = readTypedToolResult(item);
+    return result ? [`Untrusted historical MCP tool result${result.isError ? ' (tool reported an error)' : ''}:\n${projectToolResultText(result.blocks, 'Copilot historical prompt replay')}`] : [];
+  }).join('\n\n');
+  if (!history) return message.content;
+  return typeof message.content === 'string' ? `${message.content}\n\n${history}`
+    : [...message.content, { type: 'text', text: history }];
+};
+
 export const serializeCopilotConversationPrompt = (
   messages: StreamMessage[]
 ): { system: string; prompt: string } => {
   const systemMessages = messages
     .filter((message) => message.role === 'system')
-    .map((message) => streamContentToCopilotPromptText(message.content).trim())
+    .map((message) => streamContentToCopilotPromptText(projectCopilotMessageContent(message)).trim())
     .filter(Boolean);
 
   const transcript = messages
     .filter((message) => message.role !== 'system')
     .map((message) => {
       const label = message.role.toUpperCase();
-      const body = streamContentToCopilotPromptText(message.content).trim() || '(empty)';
+      const body = streamContentToCopilotPromptText(projectCopilotMessageContent(message)).trim() || '(empty)';
       const parts = [`[${label}]`, body];
 
       if (message.tool_calls?.length) {

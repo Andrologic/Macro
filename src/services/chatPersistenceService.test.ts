@@ -365,3 +365,14 @@ describe("chatPersistenceService", () => {
     expect(ipc.deleteConversationTurn).toHaveBeenCalledWith("conv-1", "turn-1");
   });
 });
+
+it('preserves typed MCP history on DB reload and propagates durable write failure', async () => {
+  const { default: fixture } = await import('../../src-tauri/src/commands/mcp/fixtures/typed-result.json');
+  const items = [{ type: 'function_call_output', call_id: 'c', output: 'MCP media retained', macro_tool_result: { version: 1, blocks: fixture.content, isError: true } }];
+  const message = chatMessage({ provider_input_items: items });
+  const failing = adapters({ ipc: { updateMessage: async () => { throw new Error('disk full'); } } });
+  await expect(updateProviderInputItemsForMessage(failing, { message, providerInputItems: items })).rejects.toThrow('disk full');
+  expect(message.provider_input_items).toEqual(items);
+  const result = await loadConversationMessages(adapters({ ipc: { listMessages: async () => [dbMessage({ provider_input_items_json: JSON.stringify(items) })] } }), { conversationId: 'conv-1', conversations: [] });
+  expect(result[0].provider_input_items).toEqual(items);
+});

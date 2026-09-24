@@ -985,6 +985,10 @@ Une future synchronisation de cet historique peut exister plus tard, mais ne fai
 
 ### 17.5 Accès outils
 
+Les résultats MCP conservent des blocs typés dans l’historique. Le
+[contrat MCP](mcp-tool-results.md) décrit les limites, les formats transmis au
+modèle, les replis explicites et le retour à une ancienne version.
+
 Le mode Chat peut accéder :
 
 - au web

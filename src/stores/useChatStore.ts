@@ -82,6 +82,7 @@ import {
 import { formatConversationFilePage, readConversationFileBody } from "../services/conversationFileTool";
 import {
   buildSpilledToolResultPreview,
+  preserveToolResultContent,
   shouldSpillToolResult,
 } from "../services/toolResultArtifacts";
 import { getStreamingWebSearchConfig } from "../services/webSearchSettings";
@@ -147,7 +148,7 @@ import {
   isCanonicalArchitectPlan,
 } from "../services/architectPlanPresentation";
 
-import { selectInjectableMCPToolIds } from "../services/mcp";
+import { selectInjectableMCPToolIds, selectCopilotToolIds } from "../services/mcp";
 import { isMCPToolId } from "../services/mcpToolNames";
 import { notify } from "../components/ui/toastService";
 import {
@@ -298,7 +299,6 @@ import {
   type InternalAgentProfile,
 } from "../services/internalAgentProfile";
 import {
-  filterCopilotSupportedToolIds,
   MACRO_TOOL_REGISTRY,
   type MacroToolRegistryEntry,
 } from "../shared/macroToolRegistry";
@@ -5417,17 +5417,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     toolCallId: string | undefined,
     resolution: ToolCallResolution | string | void,
   ): Promise<ToolCallResolution | string | void> => {
-    if (
-      typeof resolution !== "string" ||
-      !shouldSpillToolResult(toolName, resolution)
-    ) {
-      return resolution;
-    }
-    return spillToolResultWithArtifact(
-      operation,
-      toolName,
-      toolCallId,
-      resolution,
+    return preserveToolResultContent(toolName, resolution, (text) =>
+      spillToolResultWithArtifact(operation, toolName, toolCallId, text),
     );
   };
 
@@ -7355,7 +7346,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       );
     const filterForSelectedProvider = (toolIds: string[]): string[] =>
       selectedProvider?.providerType === "copilot"
-        ? filterCopilotSupportedToolIds(
+        ? selectCopilotToolIds(
             strategyFilterForSelectedProvider(toolIds),
           )
         : strategyFilterForSelectedProvider(toolIds);

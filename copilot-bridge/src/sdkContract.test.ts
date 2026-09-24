@@ -109,6 +109,30 @@ describe('installed Copilot SDK contract', () => {
     expect(__testables.buildMacroTools({ ...base, allowed_tool_ids: ['unknown'], tools: [{ type: 'function', function: { name: 'unknown', parameters: {} } }] })).toEqual([]);
   });
 
+  it('combines scoped Macro and MCP tools in the SDK session without restoring excluded tools', async () => {
+    const name = 'mcp__fixture__read';
+    const schema = { type: 'object', properties: { query: { type: 'string', enum: ['approved'] } }, required: ['query'] };
+    const requestTool = mock(async () => ({ result: 'mcp-result', interrupt: false }));
+    const config = __testables.buildSessionToolConfig({
+      model_id: 'model', messages: [],
+      allowed_tool_ids: ['read_file', 'web_fetch', 'skill_run_script', name, 'mcp__fixture__missing'],
+      tools: [...definitions(['read_file', 'skill_run_script']),
+        { type: 'function', function: { name, description: 'Scoped MCP', parameters: schema } },
+        { type: 'function', function: { name: 'mcp__fixture__denied', parameters: schema } }],
+    }, { controlChannel: { requestTool } as unknown as BridgeControlChannel });
+    expect(config.tools!.map(tool => tool.name).sort()).toEqual([name, 'read_file'].sort());
+    expect([...config.availableTools!].sort()).toEqual([name, 'read_file'].sort());
+    const mcp = config.tools!.find(tool => tool.name === name)!;
+    expect(mcp.parameters).toEqual(schema);
+    const args = { query: 'approved' };
+    await expect(mcp.handler(args, invocation(name, args))).resolves.toBe('mcp-result');
+    expect(requestTool).toHaveBeenCalledWith(expect.objectContaining({ toolName: name, args }));
+    for (const toolName of [name, 'read_file', 'web_fetch', 'skill_run_script', 'mcp__fixture__missing', 'mcp__fixture__denied']) {
+      expect(await config.onPermissionRequest!({ kind: 'custom-tool', toolName } as PermissionRequest, { sessionId: 'session' }))
+        .toEqual({ kind: [name, 'read_file'].includes(toolName) ? 'approved' : 'denied-no-approval-rule-and-could-not-request-from-user' });
+    }
+  });
+
   it('dispatches every advertised SDK tool to a frontend, local source, or tool-host route', async () => {
     const ids = filterCopilotSupportedToolIds(MACRO_TOOL_REGISTRY.map(entry => entry.id));
     const requestTool = mock(async () => ({ result: 'relayed', interrupt: false }));
