@@ -57,6 +57,8 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFRelease(value: *const c_void);
+    #[cfg(test)]
+    fn CFRetain(value: *const c_void) -> *const c_void;
 }
 
 static SECURITY_LOCK: Mutex<()> = Mutex::new(());
@@ -108,6 +110,12 @@ fn access<T>(
     interactive: bool,
     call: impl FnOnce(Ref, &mut i32) -> Result<T, i32>,
 ) -> Result<T, PilotSecretError> {
+    #[cfg(test)]
+    TEST_STATUS.with(|slot| slot.set(None));
+    #[cfg(test)]
+    if interactive && std::env::var_os("MACRO_PILOT_NATIVE_SMOKE").is_some() {
+        return Err(PilotSecretError::VaultUnavailable);
+    }
     let start = Instant::now();
     let correlation = CORRELATION.fetch_add(1, Ordering::Relaxed);
     let _lock = SECURITY_LOCK
@@ -120,20 +128,20 @@ fn access<T>(
     let result = (|| {
         let guard = InteractionGuard::enter(&Policy, interactive)?;
         let mut keychain = Owned(null_mut());
-        // Explicit user-domain default, as used by apple-native-keyring-store.
-        let result =
-            check(unsafe { SecKeychainCopyDomainDefault(0, &mut keychain.0) }).and_then(|_| {
-                if keychain.0.is_null() {
-                    Err(-25295)
-                } else {
-                    call(keychain.0, &mut observed_status)
-                }
-            });
+        let result = copy_target(&mut keychain.0).and_then(|_| {
+            if keychain.0.is_null() {
+                Err(-25295)
+            } else {
+                call(keychain.0, &mut observed_status)
+            }
+        });
         drop(keychain);
         guard.restore()?;
         result
     })();
     let system_status = result.as_ref().err().copied().unwrap_or(observed_status);
+    #[cfg(test)]
+    TEST_STATUS.with(|slot| slot.set(Some(system_status)));
     tracing::info!(
         operation,
         ?kind,
@@ -144,6 +152,33 @@ fn access<T>(
     );
     result.map_err(status_error)
 }
+
+// Production always resolves the user-domain default. Tests can borrow only a
+// retained explicit reference on their own thread; the opt-in smoke fails closed
+// when that reference is missing, including on a newly spawned thread.
+fn copy_target(target: &mut Ref) -> Result<(), i32> {
+    #[cfg(test)]
+    {
+        let injected = TEST_KEYCHAIN.with(std::cell::Cell::get);
+        if !injected.is_null() {
+            *target = unsafe { CFRetain(injected) }.cast_mut();
+            return Ok(());
+        }
+        if std::env::var_os("MACRO_PILOT_NATIVE_SMOKE").is_some() {
+            return Err(-25295);
+        }
+    }
+    check(unsafe { SecKeychainCopyDomainDefault(0, target) })
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_KEYCHAIN: std::cell::Cell<Ref> = const { std::cell::Cell::new(null_mut()) };
+    static TEST_STATUS: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+#[path = "macos_smoke.rs"]
+mod native_smoke;
 
 fn find(
     keychain: Ref,
