@@ -1,5 +1,7 @@
-import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   IDENTITY_ENV,
   QA_BUNDLE_IDENTIFIER,
@@ -9,8 +11,17 @@ import {
 
 const fingerprint = '0123456789ABCDEF0123456789ABCDEF01234567';
 const identityList = `  1) ${fingerprint} "Apple Development: Example (ABCDE12345)"\n     1 valid identities found`;
+const bundleRoot = mkdtempSync(join(tmpdir(), 'macro-qa-signing-'));
+const firstBundle = join(bundleRoot, 'first.app');
+const secondBundle = join(bundleRoot, 'second.app');
+const aliasBundle = join(bundleRoot, 'alias.app');
+mkdirSync(firstBundle);
+mkdirSync(secondBundle);
+symlinkSync(firstBundle, aliasBundle);
 
 describe('macOS Pilot QA signing', () => {
+  afterAll(() => rmSync(bundleRoot, { recursive: true, force: true }));
+
   test('requires an explicit valid SHA-1 identity and never accepts ad hoc signing', () => {
     const calls = [];
     const fakeSecurity = (command, args) => {
@@ -35,22 +46,26 @@ describe('macOS Pilot QA signing', () => {
       return `Executable=Macro\ndesignated => ${requirement}\n`;
     };
 
-    expect(verifySameDesignatedRequirement('/qa/first.app', '/qa/second.app', fakeCodesign)).toBe(requirement);
+    expect(verifySameDesignatedRequirement(firstBundle, secondBundle, fakeCodesign)).toBe(requirement);
     expect(inspected).toEqual([
-      ['codesign', '--verify', '--deep', '--strict', '--verbose=2', '/qa/first.app'],
-      ['codesign', '-dr', '-', '/qa/first.app'],
-      ['codesign', '--verify', '--deep', '--strict', '--verbose=2', '/qa/second.app'],
-      ['codesign', '-dr', '-', '/qa/second.app'],
+      ['codesign', '--verify', '--deep', '--strict', '--verbose=2', firstBundle],
+      ['codesign', '-dr', '-', firstBundle],
+      ['codesign', '--verify', '--deep', '--strict', '--verbose=2', secondBundle],
+      ['codesign', '-dr', '-', secondBundle],
     ]);
-    expect(() => verifySameDesignatedRequirement('/qa/same.app', '/qa/same.app', fakeCodesign)).toThrow('two different');
-    expect(() => verifySameDesignatedRequirement('/qa/first.app', '/qa/second.app', () => 'no requirement'))
+    expect(() => verifySameDesignatedRequirement(firstBundle, firstBundle, fakeCodesign)).toThrow('two different');
+    expect(() => verifySameDesignatedRequirement(firstBundle, aliasBundle, fakeCodesign)).toThrow('same macOS app');
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, () => 'no requirement'))
       .toThrow('No designated');
-    expect(() => verifySameDesignatedRequirement('/qa/first.app', '/qa/second.app', (_command, args) =>
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, (_command, args) =>
       args[0] === '--verify' ? '' : `designated => identifier "com.macro.desktop" and anchor apple generic (${args.at(-1)})`))
       .toThrow('expected com.macro.desktop.qa.pilot');
-    expect(() => verifySameDesignatedRequirement('/qa/first.app', '/qa/second.app', (_command, args) =>
-      args[0] === '--verify' ? '' : `designated => identifier "${QA_BUNDLE_IDENTIFIER}" and requirement ${args.at(-1)}`))
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, (_command, args) =>
+      args[0] === '--verify' ? '' : `designated => identifier "${QA_BUNDLE_IDENTIFIER}" and anchor apple generic and certificate leaf = "${args.at(-1)}"`))
       .toThrow('same designated');
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, (_command, args) =>
+      args[0] === '--verify' ? '' : `designated => identifier "${QA_BUNDLE_IDENTIFIER}"`))
+      .toThrow('stable signing identity');
   });
 
   test('QA Tauri configuration isolates the app and disables updater publication artifacts', () => {
@@ -58,6 +73,7 @@ describe('macOS Pilot QA signing', () => {
     expect(config.identifier).toBe(QA_BUNDLE_IDENTIFIER);
     expect(config.bundle.createUpdaterArtifacts).toBe(false);
     expect(config.bundle.targets).toEqual(['app']);
+    expect(config.plugins.updater.endpoints).toEqual([]);
     expect(config.productName).toBe('Macro Pilot QA');
   });
 });

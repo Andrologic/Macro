@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -48,6 +48,9 @@ export function verifySameDesignatedRequirement(firstPath, secondPath, runComman
   if (!firstPath || !secondPath || resolve(firstPath) === resolve(secondPath)) {
     throw new Error('Provide two different macOS app bundle paths.');
   }
+  if (realpathSync(firstPath) === realpathSync(secondPath)) {
+    throw new Error('The two paths resolve to the same macOS app bundle.');
+  }
 
   const requirements = [firstPath, secondPath].map((appPath) => {
     runCommand('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
@@ -59,6 +62,9 @@ export function verifySameDesignatedRequirement(firstPath, secondPath, runComman
     const identifier = designated.match(/\bidentifier "([^"]+)"/i)?.[1];
     if (identifier !== QA_BUNDLE_IDENTIFIER) {
       throw new Error(`${appPath} has bundle identifier ${identifier || 'unknown'}, expected ${QA_BUNDLE_IDENTIFIER}.`);
+    }
+    if (!/\b(?:anchor|certificate)\b/i.test(designated)) {
+      throw new Error(`${appPath} does not have a designated requirement tied to a stable signing identity.`);
     }
     return designated;
   });

@@ -5,5 +5,10 @@
   "bundle": {
     "createUpdaterArtifacts": false,
     "targets": ["app"]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
   }
 }
