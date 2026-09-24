@@ -3063,8 +3063,8 @@ return ({
               deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
               if (taskStillExistsUnderLease) {
                 if (deletionSaga.draft) {
-                  if (currentTask?.draft && isManualStandaloneTask(currentTask)) {
-                    await removeManualFeatureMetadata(currentTask, deletionSaga.interruptedCreation === true);
+                  if (deletionSaga.interruptedCreation && currentTask?.draft && isManualStandaloneTask(currentTask)) {
+                    await removeManualFeatureMetadata(currentTask, true);
                   }
                   await deleteManualFeatureDraftDurably(
                     deletionSaga.taskId,

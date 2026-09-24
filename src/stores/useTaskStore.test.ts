@@ -2464,7 +2464,11 @@ describe('useTaskStore merge workflow review loading', () => {
     } finally {
       services.listTasks = originalListTasks;
     }
-    expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, interruptedCreation);
+    if (interruptedCreation) {
+      expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, true);
+    } else {
+      expect(removeManualFeatureMetadataMock).not.toHaveBeenCalled();
+    }
     expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
