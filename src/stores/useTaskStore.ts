@@ -2891,6 +2891,7 @@ return ({
               recoverySaga = {
                 ...current,
                 conversationId,
+                interruptedCreation: true,
                 phase: current.creationCommitted ? 'task_deleted' : 'task_deleting',
                 updatedAt: new Date().toISOString(),
               };
@@ -3063,7 +3064,7 @@ return ({
               if (taskStillExistsUnderLease) {
                 if (deletionSaga.draft) {
                   if (currentTask?.draft && isManualStandaloneTask(currentTask)) {
-                    await removeManualFeatureMetadata(currentTask, true);
+                    await removeManualFeatureMetadata(currentTask, deletionSaga.interruptedCreation === true);
                   }
                   await deleteManualFeatureDraftDurably(
                     deletionSaga.taskId,

@@ -1007,6 +1007,7 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
             conversationId: '',
             phase: 'task_creating',
             draft: true,
+            interruptedCreation: true,
             executionTargets: [],
             createdAt: now,
             updatedAt: now,

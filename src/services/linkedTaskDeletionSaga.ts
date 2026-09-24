@@ -54,6 +54,7 @@ export interface LinkedConversationDeletionSaga {
   generation?: number;
   legacyCreatedAt?: string;
   draft?: boolean;
+  interruptedCreation?: boolean;
   creationCommitted?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
   archivedCleanupOperationId?: string;
@@ -73,6 +74,7 @@ export interface LinkedTaskDeletionSaga {
   generation?: number;
   legacyCreatedAt?: string;
   draft?: boolean;
+  interruptedCreation?: boolean;
   creationCommitted?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
   archivedCleanupOperationId?: string;
@@ -161,6 +163,8 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
           candidate.phase !== 'plan_conversation_created' &&
           candidate.phase !== 'plan_deleting') ||
         !isAllowedOwnerPhase(ownerType, candidate.phase) ||
+        (candidate.interruptedCreation !== undefined &&
+          (typeof candidate.interruptedCreation !== 'boolean' || ownerType !== 'task')) ||
         (candidate.creationCommitted !== undefined && typeof candidate.creationCommitted !== 'boolean') ||
         (candidate.creationCommitted === true && (ownerType !== 'task' ||
           (candidate.phase !== 'prepared' && candidate.phase !== 'task_deleted'))) ||
@@ -553,6 +557,7 @@ export const loadLinkedTaskDeletionSagas = async (
           generation: saga.generation,
           legacyCreatedAt: saga.legacyCreatedAt,
           draft: saga.draft,
+          interruptedCreation: saga.interruptedCreation,
           creationCommitted: saga.creationCommitted,
           executionTargets: saga.executionTargets,
           archivedCleanupOperationId: saga.archivedCleanupOperationId,

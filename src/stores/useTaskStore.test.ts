@@ -2439,6 +2439,36 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('uses strict metadata cleanup only for interrupted creation=%s', async (interruptedCreation) => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-cleanup-origin', task_source: 'standalone',
+      standalone_kind: 'manual_feature', draft: true,
+      conversation_id: 'conversation-cleanup-origin', execution_targets: [],
+    });
+    dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify([{
+      taskId: task.id, conversationId: task.conversation_id, phase: 'task_deleting',
+      draft: true, interruptedCreation, executionTargets: [], generation: 1,
+      createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+    }]));
+    let draftPresent = true;
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: draftPresent ? [task] : [], plans: [], hasStandaloneTasks: draftPresent,
+      source: draftPresent ? 'mixed' as const : 'empty' as const,
+    }));
+    removeManualFeatureMetadataMock.mockClear();
+    workspaceDeleteManualFeatureDraftMock.mockImplementation(async () => { draftPresent = false; return true; });
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({ restoreSelection: false, activateSelectedTask: false });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+    expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, interruptedCreation);
+    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
   it('deletes the conversation only after restart confirms an ambiguous draft is absent', async () => {
     dbAppSettings.set(
       'pendingLinkedTaskDeletions:v1',
