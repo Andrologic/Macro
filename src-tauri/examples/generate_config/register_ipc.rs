@@ -153,6 +153,7 @@ pub fn register(registry: &mut Registry) -> Result<(), String> {
     registry.add::<ipc_contracts::copilot::BridgeToolResultMessage>("copilot")?;
     registry.add::<ipc_contracts::provider::MacroAiProvisioningStatus>("provider")?;
     registry.add::<ipc_contracts::skills::SkillProjectRootDto>("skills")?;
+    registry.add::<ipc_contracts::skills::SkillScriptWorkspaceDto>("skills")?;
     registry.add::<ipc_contracts::skills::SkillTemplateCreateRequest>("skills")?;
     registry.add::<ipc_contracts::skills::SkillSourceDto>("skills")?;
     registry.add::<ipc_contracts::skills::SkillResourceDto>("skills")?;

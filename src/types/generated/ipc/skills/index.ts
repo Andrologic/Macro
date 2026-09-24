@@ -7,6 +7,7 @@ export type { SkillProjectRootDto } from '../SkillProjectRootDto';
 export type { SkillResourceDto } from '../SkillResourceDto';
 export type { SkillResourceReadResponse } from '../SkillResourceReadResponse';
 export type { SkillScriptRunResponse } from '../SkillScriptRunResponse';
+export type { SkillScriptWorkspaceDto } from '../SkillScriptWorkspaceDto';
 export type { SkillSourceDto } from '../SkillSourceDto';
 export type { SkillTemplateCreateRequest } from '../SkillTemplateCreateRequest';
 export type { SkillTemplateCreateResponse } from '../SkillTemplateCreateResponse';

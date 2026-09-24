@@ -136,6 +136,23 @@ beforeEach(() => {
 });
 
 describe("chat tool execution policy and frozen ownership", () => {
+  test("routes skill scripts with the frozen workspace after navigation during policy lookup", async () => {
+    const f = setup("skill_run_script");
+    const enabled = deferred<boolean>();
+    f.ports.policy.isSourceToolEnabled = () => enabled.promise;
+    f.ports.handlers.skill = mock(async () => "script result");
+    const args = { skill_id: "runner", script_path: "scripts/check.sh", allow_workspace: true };
+    const pending = f.run(args);
+    f.ports.policy.executionContext = () => ({
+      ...f.operation.executionContext, projectId: "other-project", workspacePath: "/other",
+    });
+    enabled.resolve(true);
+    expect(await pending).toBe("script result");
+    expect(f.ports.handlers.skill).toHaveBeenCalledWith(
+      "skill_run_script", args, "conversation", undefined, f.operation.executionContext,
+    );
+  });
+
   test("blocks obsolete sessions before routing and when source policy finishes late", async () => {
     const f = setup();
     f.runtime.sessionId = "new-session";

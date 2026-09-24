@@ -8,6 +8,7 @@ import type {
   SkillTemplateCreateRequest,
   SkillTemplateCreateResult,
 } from "../../types";
+import type { SkillScriptWorkspaceDto } from "../../types/generated/ipc";
 import { invoke } from "../tauriRuntimeBridge";
 import type {
   SkillDetailResponseDto,
@@ -83,6 +84,7 @@ export async function skillsRunScript(params: {
   timeoutMs?: number | null;
   allowWorkspace?: boolean;
   workspacePath?: string | null;
+  workspaceRoot?: SkillScriptWorkspaceDto | null;
   projectRoots?: SkillProjectRoot[];
 }): Promise<SkillScriptRunResult> {
   return invoke<SkillScriptRunResult>("skills_run_script", {
@@ -92,6 +94,7 @@ export async function skillsRunScript(params: {
     timeoutMs: params.timeoutMs ?? null,
     allowWorkspace: params.allowWorkspace ?? false,
     workspacePath: params.workspacePath ?? null,
+    workspaceRoot: params.workspaceRoot ?? null,
     projectRoots: params.projectRoots ?? [],
   });
 }

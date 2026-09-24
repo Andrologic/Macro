@@ -1,5 +1,6 @@
 import type { OmitFields } from '../ipc/compatibility.types';
 import type {
+  SkillScriptWorkspaceDto,
   McpCatalogDto,
   McpProtocolEra,
   McpRuntimeKey,
@@ -302,6 +303,7 @@ export interface ServiceProvider {
     data: SkillScriptRunRequest & {
       projectRoots?: SkillProjectRoot[];
       workspacePath?: string | null;
+      workspaceRoot?: SkillScriptWorkspaceDto | null;
     }
   ) => Promise<SkillScriptRunResult>;
 }

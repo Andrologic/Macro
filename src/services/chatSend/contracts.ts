@@ -123,6 +123,7 @@ export interface ChatSendPorts<Task extends SendTask, Recovery, Launch> {
     read(taskId: string): Task | undefined;
     finalizeDraft(params: SendModel & { conversationId: string; taskId: string; userContent: string; onStep(step: StandaloneTaskLaunchStep): void }): Promise<Recovery | null>;
     assertReady(taskId: string): Promise<Task | undefined>;
+    completeExecutionContext(taskId: string, captured: ProjectExecutionContext): ProjectExecutionContext;
     assertExecutionContextReady(task: Task | undefined): void;
     rollbackDraft(recovery: Recovery): Promise<void>;
     beginLaunch(params: { conversationId: string; taskId: string; userMessageId: string; sessionId: string }): void;
