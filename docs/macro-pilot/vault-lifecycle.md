@@ -92,3 +92,10 @@ utiliser une identité native distincte.
 
 Windows et Linux conservent leur backend de credentials existant. La garantie
 sur la politique globale d'interaction décrite ici concerne macOS uniquement.
+
+## Parcours synthétiques
+
+La [suite de parcours synthétiques](synthetic-flows.md) relie le client et le
+runtime publics à un coffre mémoire et à une passerelle de test locale au
+processus. Elle couvre notamment les blocages, la reprise explicite et la
+non-restauration après déconnexion, sans accès au trousseau réel.
