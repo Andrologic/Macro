@@ -4522,7 +4522,33 @@ export interface PilotSecretScope {
   /** Session ID, retained instance creation ID, or client-generated attempt key. */
   resource_id: string;
 }
-export type PilotSecretError = 'invalid_scope' | 'invalid_secret' | 'vault_unavailable';
+export type PilotSecretError = 'invalid_scope' | 'invalid_secret' | 'intervention_required' | 'cancelled' | 'vault_unavailable' | 'context_changed' | 'suspended';
+export type PilotVaultStatus = 'ready' | 'intervention_required' | 'cancelled' | 'vault_unavailable' | 'suspended';
+export interface PilotVaultContext {
+  configuration_id: string;
+  relay_origin: string;
+  owner_id: string;
+}
+export interface PilotVaultLease { generation: string; status: PilotVaultStatus }
+
+export async function pilotVaultActivate(context: PilotVaultContext, generation?: string): Promise<PilotVaultLease> {
+  requireNativePilotVault();
+  return invoke('pilot_vault_activate', { context, generation });
+}
+export async function pilotVaultInvalidate(generation: string): Promise<PilotVaultLease> {
+  requireNativePilotVault();
+  return invoke('pilot_vault_invalidate', { generation });
+}
+/** Call only from an explicit user action; ordinary reads never enable OS interaction. */
+export async function pilotVaultResume(scopes: PilotSecretScope[], generation: string): Promise<PilotVaultLease> {
+  requireNativePilotVault();
+  return invoke('pilot_vault_resume', { scopes, generation });
+}
+export async function pilotVaultSubscribe(listener: (state: PilotVaultLease) => void): Promise<() => void> {
+  requireNativePilotVault();
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<PilotVaultLease>('pilot-vault-state', event => listener(event.payload));
+}
 
 function requireNativePilotVault(): void {
   if (typeof window === 'undefined' || isBrowserRuntimeBridgeEnabled() ||
@@ -4532,17 +4558,17 @@ function requireNativePilotVault(): void {
   }
 }
 
-export async function pilotSecretRead(scope: PilotSecretScope): Promise<string | null> {
+export async function pilotSecretRead(scope: PilotSecretScope, generation?: string): Promise<string | null> {
   requireNativePilotVault();
-  return invoke<string | null>('pilot_secret_read', { scope });
+  return invoke<string | null>('pilot_secret_read', { scope, generation });
 }
-export async function pilotSecretWrite(scope: PilotSecretScope, secret: string): Promise<void> {
+export async function pilotSecretWrite(scope: PilotSecretScope, secret: string, generation?: string): Promise<void> {
   requireNativePilotVault();
-  return invoke<void>('pilot_secret_write', { scope, secret });
+  return invoke<void>('pilot_secret_write', { scope, secret, generation });
 }
-export async function pilotSecretDelete(scope: PilotSecretScope): Promise<void> {
+export async function pilotSecretDelete(scope: PilotSecretScope, generation?: string): Promise<void> {
   requireNativePilotVault();
-  return invoke<void>('pilot_secret_delete', { scope });
+  return invoke<void>('pilot_secret_delete', { scope, generation });
 }
 
 // Native immutable Pilot review primitives. These do not negotiate v2 transport.

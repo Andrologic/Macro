@@ -1304,16 +1304,28 @@ describe("Pilot native credential IPC", () => {
         invokeCalls.push({ command, payload });
         return null as unknown as string;
       });
-      expect(await ipc.pilotSecretRead(scope)).toBeNull();
-      await ipc.pilotSecretWrite(scope, 'A'.repeat(43));
-      await ipc.pilotSecretDelete(scope);
+      expect(await ipc.pilotSecretRead(scope, '7')).toBeNull();
+      await ipc.pilotSecretWrite(scope, 'A'.repeat(43), '7');
+      await ipc.pilotSecretDelete(scope, '7');
       expect(invokeCalls).toEqual([
-        { command: 'pilot_secret_read', payload: { scope } },
-        { command: 'pilot_secret_write', payload: { scope, secret: 'A'.repeat(43) } },
-        { command: 'pilot_secret_delete', payload: { scope } },
+        { command: 'pilot_secret_read', payload: { scope, generation: '7' } },
+        { command: 'pilot_secret_write', payload: { scope, secret: 'A'.repeat(43), generation: '7' } },
+        { command: 'pilot_secret_delete', payload: { scope, generation: '7' } },
       ]);
-      invokeMock.mockRejectedValueOnce('vault_unavailable');
-      await expect(ipc.pilotSecretRead(scope)).rejects.toBe('vault_unavailable');
+      for (const status of ['intervention_required', 'cancelled', 'vault_unavailable', 'context_changed', 'suspended']) {
+        invokeMock.mockRejectedValueOnce(status);
+        await expect(ipc.pilotSecretRead(scope, '7')).rejects.toBe(status);
+      }
+      invokeCalls.length = 0;
+      const context = { configuration_id: scope.configuration_id, relay_origin: scope.relay_origin, owner_id: scope.resource_id };
+      await ipc.pilotVaultActivate(context, '7');
+      await ipc.pilotVaultResume([scope], '7');
+      await ipc.pilotVaultInvalidate('7');
+      expect(invokeCalls).toEqual([
+        { command: 'pilot_vault_activate', payload: { context, generation: '7' } },
+        { command: 'pilot_vault_resume', payload: { scopes: [scope], generation: '7' } },
+        { command: 'pilot_vault_invalidate', payload: { generation: '7' } },
+      ]);
     } finally {
       if (previous === undefined) delete runtime.__TAURI_INTERNALS__;
       else runtime.__TAURI_INTERNALS__ = previous;
@@ -1327,9 +1339,9 @@ describe("Pilot native credential IPC", () => {
     delete runtime.__TAURI_INTERNALS__;
     invokeCalls.length = 0;
     try {
-      await expect(ipc.pilotSecretRead(scope)).rejects.toThrow('native desktop runtime');
-      await expect(ipc.pilotSecretWrite(scope, 'A'.repeat(43))).rejects.toThrow('native desktop runtime');
-      await expect(ipc.pilotSecretDelete(scope)).rejects.toThrow('native desktop runtime');
+      await expect(ipc.pilotSecretRead(scope, '7')).rejects.toThrow('native desktop runtime');
+      await expect(ipc.pilotSecretWrite(scope, 'A'.repeat(43), '7')).rejects.toThrow('native desktop runtime');
+      await expect(ipc.pilotSecretDelete(scope, '7')).rejects.toThrow('native desktop runtime');
       expect(invokeCalls).toHaveLength(0);
     } finally {
       if (previous !== undefined) runtime.__TAURI_INTERNALS__ = previous;

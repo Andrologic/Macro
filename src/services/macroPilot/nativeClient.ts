@@ -3,14 +3,19 @@ import { validateContentMessage, validateContentResponse } from './contentProtoc
 export type { PilotAccountCatalog, PilotAccountConfirmation } from './accountClient';
 import { tauriFetch } from '../tauriHttp';
 import {
-  frontendLog,
   pilotSecretDelete,
   pilotSecretRead,
   pilotSecretWrite,
+  pilotVaultActivate,
+  pilotVaultInvalidate,
+  pilotVaultResume,
+  pilotVaultSubscribe,
   stateGetSnapshot,
   stateSetValue,
   type PilotSecretKind,
   type PilotSecretScope,
+  type PilotVaultLease,
+  type PilotVaultStatus,
 } from '../tauriIpc';
 
 const TRANSPORT_VERSION = '1.0' as const;
@@ -106,6 +111,8 @@ export interface PilotAuthAttempt {
 }
 
 export interface PilotPublicState {
+  /** Native access state, separate from relay connectivity; never contains credentials. */
+  vaultStatus?: PilotVaultStatus;
   status: PilotConnectionState;
   configurationId: string | null;
   relayOrigin: string | null;
@@ -148,6 +155,9 @@ export type PilotClientErrorCode =
   | 'stale_revision'
   | 'unavailable'
   | 'vault_unavailable'
+  | 'vault_intervention_required'
+  | 'vault_cancelled'
+  | 'vault_suspended'
   | 'offline';
 
 export class PilotClientError extends Error {
@@ -182,6 +192,11 @@ export interface PilotClientDependencies {
   secretRead: typeof pilotSecretRead;
   secretWrite: typeof pilotSecretWrite;
   secretDelete: typeof pilotSecretDelete;
+  // Optional only for fully injected synthetic transports. The native default supplies all four.
+  vaultActivate?: typeof pilotVaultActivate;
+  vaultInvalidate?: typeof pilotVaultInvalidate;
+  vaultResume?: typeof pilotVaultResume;
+  vaultSubscribe?: typeof pilotVaultSubscribe;
   randomBytes: (size: number) => Uint8Array;
   sha256: (value: Uint8Array) => Promise<Uint8Array>;
   now: () => Date;
@@ -206,6 +221,10 @@ const defaultDependencies: PilotClientDependencies = {
   secretRead: pilotSecretRead,
   secretWrite: pilotSecretWrite,
   secretDelete: pilotSecretDelete,
+  vaultActivate: pilotVaultActivate,
+  vaultInvalidate: pilotVaultInvalidate,
+  vaultResume: pilotVaultResume,
+  vaultSubscribe: pilotVaultSubscribe,
   randomBytes,
   sha256: async (value) =>
     new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.from(value).buffer)),
@@ -351,6 +370,15 @@ export class MacroPilotNativeClient {
   private epoch = 0;
   private scopeController = new AbortController();
   private readonly pendingReads = new Set<AbortController>();
+  private vaultLease: PilotVaultLease | null = null;
+  private vaultOwner: string | null = null;
+  private vaultActivation: Promise<PilotVaultLease | null> | null = null;
+  private vaultUnsubscribe: (() => void) | null = null;
+  private cleanupPromise: Promise<void> | null = null;
+  private cleanupScheduled = false;
+  private vaultFence = 0;
+  private lastVaultScope: PilotSecretScope | null = null;
+  private vaultRecovering = false;
   private readonly accountClient = new PilotAccountClient({
     context: () => {
       const state = this.persisted;
@@ -387,16 +415,22 @@ export class MacroPilotNativeClient {
   };
 
   private publish(patch: Partial<PilotPublicState>): void {
+    if (patch.status === 'connected' && this.vaultLease && this.vaultLease.status !== 'ready') {
+      patch = { ...patch, status: 'vault_unavailable', vaultStatus: this.vaultLease.status,
+        lastError: this.vaultLease.status === 'suspended' ? 'vault_suspended'
+          : this.vaultLease.status === 'cancelled' ? 'vault_cancelled'
+          : this.vaultLease.status === 'intervention_required' ? 'vault_intervention_required' : 'vault_unavailable' };
+    }
     this.publicState = { ...this.publicState, ...patch };
     for (const listener of this.listeners) listener();
   }
 
-  private persist(patch: Partial<PersistedPilotState>): Promise<void> {
+  private persist(patch: Partial<PersistedPilotState> | ((state: PersistedPilotState) => Partial<PersistedPilotState>)): Promise<void> {
     const context = this.contextKey();
     const write = this.persistenceTail.then(async () => {
       this.checkContext(context);
       if (!this.persisted) throw new PilotClientError('invalid_configuration');
-      const next = { ...this.persisted, ...patch };
+      const next = { ...this.persisted, ...(typeof patch === 'function' ? patch(this.persisted) : patch) };
       try { await this.dependencies.setStateValue(STATE_KEY, next); }
       catch (error) { this.checkContext(context); throw error; }
       // A logout may have invalidated this write while native storage was busy.
@@ -418,6 +452,132 @@ export class MacroPilotNativeClient {
     };
   }
 
+  private vaultFailure(error: unknown): PilotClientError {
+    if (error instanceof PilotClientError) return error;
+    const code = typeof error === 'string' ? error : isRecord(error) ? error.code : undefined;
+    if (code === 'context_changed') return new PilotClientError('context_changed');
+    const status: PilotVaultStatus = code === 'intervention_required' || code === 'cancelled' || code === 'suspended'
+      ? code : 'vault_unavailable';
+    const lastError: PilotClientErrorCode = status === 'intervention_required' ? 'vault_intervention_required'
+      : status === 'cancelled' ? 'vault_cancelled' : status === 'suspended' ? 'vault_suspended' : 'vault_unavailable';
+    if (this.vaultLease) this.vaultLease = { ...this.vaultLease, status };
+    this.publish({ status: 'vault_unavailable', vaultStatus: status, lastError });
+    return new PilotClientError(lastError);
+  }
+
+  private async ensureVault(): Promise<PilotVaultLease | null> {
+    if (!this.dependencies.vaultActivate) return null;
+    if (!this.persisted?.relayOrigin) throw new PilotClientError('invalid_configuration');
+    const context = this.contextKey();
+    const owner = JSON.stringify([this.persisted.configurationId, this.persisted.relayOrigin,
+      this.persisted.deviceSession?.ref.session_id ?? this.persisted.attempt?.attemptKey ?? 'signed-out']);
+    if (this.vaultOwner === owner && this.vaultLease) return this.vaultLease;
+    if (this.vaultActivation) {
+      await this.vaultActivation;
+      this.checkContext(context);
+      return this.ensureVault();
+    }
+    const fence = this.vaultFence;
+    const activation = (async () => {
+      const lease = await this.dependencies.vaultActivate!({
+        configuration_id: this.persisted!.configurationId,
+        relay_origin: this.persisted!.relayOrigin!,
+        owner_id: this.persisted!.deviceSession?.ref.session_id ?? this.persisted!.attempt?.attemptKey ?? 'signed-out',
+      }, this.vaultLease?.generation);
+      if (fence !== this.vaultFence || context !== this.contextKey()) {
+        await this.dependencies.vaultInvalidate?.(lease.generation);
+        throw new PilotClientError('context_changed');
+      }
+      this.vaultLease = lease;
+      this.vaultOwner = owner;
+      this.publish({ vaultStatus: lease.status });
+      return lease;
+    })();
+    this.vaultActivation = activation;
+    try { return await activation; }
+    finally { if (this.vaultActivation === activation) this.vaultActivation = null; }
+  }
+
+  private async invalidateVault(): Promise<void> {
+    const fence = ++this.vaultFence;
+    const lease = this.vaultLease;
+    this.vaultLease = null;
+    this.vaultOwner = null;
+    this.lastVaultScope = null;
+    // Pending activation/resume results carry their own fence and invalidate on return.
+    if (lease && this.dependencies.vaultInvalidate) {
+      const invalidated = await this.dependencies.vaultInvalidate(lease.generation);
+      if (fence === this.vaultFence) this.vaultLease = invalidated;
+    }
+  }
+
+  private async subscribeVault(): Promise<void> {
+    if (this.vaultUnsubscribe || !this.dependencies.vaultSubscribe) return;
+    this.vaultUnsubscribe = await this.dependencies.vaultSubscribe(lease => {
+      if (lease.status === 'ready') return;
+      if (lease.status === 'suspended') this.vaultFence++;
+      this.vaultLease = lease;
+      this.scopeController.abort();
+      this.scopeController = new AbortController();
+      this.accountClient.reset();
+      this.vaultFailure(lease.status);
+    });
+  }
+
+  /** Explicit UI action only. Never called by startup, polling, refresh, or cleanup. */
+  async resumeVaultAccess(): Promise<void> {
+    if (this.vaultRecovering) throw new PilotClientError('conflict');
+    if (!this.dependencies.vaultResume) throw new PilotClientError('invalid_configuration');
+    this.vaultRecovering = true;
+    try {
+      const context = this.contextKey();
+      const lease = await this.ensureVault();
+      if (!lease) throw new PilotClientError('invalid_configuration');
+      const scopes: PilotSecretScope[] = [];
+      if (this.persisted?.deviceSession) scopes.push(this.secretScope('session_token', this.persisted.deviceSession.ref.session_id));
+      if (this.persisted?.instanceCreationId) scopes.push(this.secretScope('instance_key', this.persisted.instanceCreationId));
+      if (this.persisted?.attempt && !this.persisted.deviceSession) {
+        scopes.push(this.secretScope('poll_secret', this.persisted.attempt.attemptKey), this.secretScope('claim_secret', this.persisted.attempt.attemptKey));
+      }
+      if (!scopes.length && this.lastVaultScope) scopes.push(this.lastVaultScope);
+      // A signed-out recovery unlocks against a fresh empty scope, never a tombstoned credential.
+      if (!scopes.length) scopes.push(this.secretScope('claim_secret', createOpaqueId('attempt', this.dependencies)));
+      const fence = this.vaultFence;
+      const resumed = await this.dependencies.vaultResume(scopes, lease.generation).catch(error => {
+        this.checkContext(context);
+        throw this.vaultFailure(error);
+      });
+      if (fence !== this.vaultFence || context !== this.contextKey()) {
+        await this.dependencies.vaultInvalidate?.(resumed.generation);
+        throw new PilotClientError('context_changed');
+      }
+      this.vaultLease = resumed;
+      if (resumed.status !== 'ready') throw this.vaultFailure(resumed.status);
+      this.publish({ vaultStatus: 'ready', lastError: null });
+      await this.initialize();
+    } finally { this.vaultRecovering = false; }
+  }
+
+  private async writeSecret(scope: PilotSecretScope, secret: string): Promise<void> {
+    const context = this.contextKey();
+    try {
+      this.lastVaultScope = scope;
+      const lease = await this.ensureVault();
+      this.checkContext(context);
+      if (lease && lease.status !== 'ready') throw this.vaultFailure(lease.status);
+      await this.dependencies.secretWrite(scope, secret, lease?.generation);
+      this.checkContext(context);
+    } catch (error) { this.checkContext(context); throw this.vaultFailure(error); }
+  }
+
+  private async deleteSecret(scope: PilotSecretScope): Promise<void> {
+    const context = this.contextKey();
+    const lease = await this.ensureVault();
+    this.checkContext(context);
+    await this.dependencies.secretDelete(scope, lease?.generation);
+    this.checkContext(context);
+  }
+
   private async readSecret(kind: PilotSecretKind, resourceId: string, signal?: AbortSignal): Promise<string> {
     const context = this.contextKey();
     const check = () => {
@@ -426,7 +586,12 @@ export class MacroPilotNativeClient {
     };
     try {
       check();
-      const reading = this.dependencies.secretRead(this.secretScope(kind, resourceId));
+      const lease = await this.ensureVault();
+      check();
+      if (lease && lease.status !== 'ready') throw this.vaultFailure(lease.status);
+      const scope = this.secretScope(kind, resourceId);
+      this.lastVaultScope = scope;
+      const reading = this.dependencies.secretRead(scope, lease?.generation);
       const value = await (signal ? abortable(reading, signal) : reading);
       check();
       if (!value) throw new PilotClientError('unauthorized');
@@ -434,11 +599,7 @@ export class MacroPilotNativeClient {
     } catch (error) {
       check();
       if (error instanceof PilotClientError) throw error;
-      const failure = typeof error === 'string' && ['invalid_scope', 'invalid_secret', 'vault_unavailable'].includes(error)
-        ? error.replaceAll('_', '') : error instanceof Error && error.message.includes('requires the native desktop runtime') ? 'nativeruntime' : 'ipc';
-      void frontendLog({ level: 'error', scope: 'frontend', message: `[Frontend:PilotVault${kind.replaceAll('_', '')}${failure}]` }).catch(() => undefined);
-      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
-      throw new PilotClientError('vault_unavailable');
+      throw this.vaultFailure(error);
     }
   }
 
@@ -471,7 +632,14 @@ export class MacroPilotNativeClient {
       ? { ...emptyPersistedState(configurationId), ...raw, configurationId } as PersistedPilotState
       : emptyPersistedState(configurationId);
     if (!isRecord(raw)) await this.persist({});
-    await this.cleanupPendingSecrets();
+    await this.subscribeVault();
+    // A durable cleanup reference is also a tombstone, even in an older mixed snapshot.
+    const sessionId = this.persisted.deviceSession?.ref.session_id;
+    if (sessionId && this.persisted.pendingSecretCleanup.some(scope => scope.kind === 'session_token' &&
+      scope.resource_id === sessionId && scope.configuration_id === configurationId &&
+      scope.relay_origin === this.persisted?.relayOrigin)) {
+      await this.clearSession();
+    }
     const configured = Boolean(this.persisted.relayOrigin);
     this.publish({
       configurationId,
@@ -484,8 +652,7 @@ export class MacroPilotNativeClient {
       status: this.persisted.deviceSession ? 'offline' : configured ? 'signed_out' : 'unconfigured',
       lastError: null,
     });
-    if (!this.persisted.deviceSession) return this.publicState;
-    await this.finishClaimCleanup();
+    if (!this.persisted.deviceSession) { this.scheduleCleanup(); return this.publicState; }
     if (epoch !== this.epoch) throw new PilotClientError('context_changed');
     try {
       const context = this.contextKey();
@@ -501,12 +668,14 @@ export class MacroPilotNativeClient {
       if (error instanceof PilotClientError && error.code === 'context_changed') throw error;
       if (error instanceof PilotClientError && (error.code === 'unauthorized' || error.code === 'session_revoked')) {
         await this.clearSession();
-      } else if (error instanceof PilotClientError && error.code === 'vault_unavailable') {
+      } else if (error instanceof PilotClientError && error.code.startsWith('vault_')) {
         // readSecret already published the precise state.
       } else {
         this.publish({ status: 'offline', lastError: 'offline' });
       }
     }
+    void this.finishClaimCleanup().catch(() => undefined);
+    this.scheduleCleanup();
     return this.publicState;
   }
 
@@ -565,6 +734,7 @@ export class MacroPilotNativeClient {
       this.checkContext(context);
       if (options.signal?.aborted) throw new PilotClientError('context_changed');
       if (signal.aborted) {
+        if (this.vaultLease && this.vaultLease.status !== 'ready') throw this.vaultFailure(this.vaultLease.status);
         if (options.authenticated) this.publish({ status: 'offline', lastError: 'offline' });
         throw new PilotClientError('offline');
       }
@@ -585,7 +755,7 @@ export class MacroPilotNativeClient {
       headers.set('X-Instance-Key', await this.readSecret('instance_key', this.persisted.instanceCreationId, signal));
     }
     check();
-    // Native vault consent can take time. The deadline bounds transport, not that interaction.
+    // Start the transport deadline only after the native credential read settles.
     if (extension) signal = AbortSignal.any([...signals, AbortSignal.timeout(30_000)]);
     check();
     let response: Response;
@@ -667,7 +837,7 @@ export class MacroPilotNativeClient {
 
   async connect(relayOrigin: string, deviceLabel: string): Promise<PilotAuthAttempt> {
     if (!this.persisted) await this.initialize();
-    await this.cleanupPendingSecrets();
+    this.scheduleCleanup();
     const origin = normalizeOrigin(relayOrigin.trim());
     if (!deviceLabel.trim() || deviceLabel.trim().length > 120) {
       throw new PilotClientError('invalid_configuration');
@@ -679,13 +849,14 @@ export class MacroPilotNativeClient {
     this.scopeController.abort();
     this.scopeController = new AbortController();
     this.accountClient.reset();
+    await this.invalidateVault();
     await this.persist({ relayOrigin: origin });
     this.publish({ relayOrigin: origin, status: 'authorizing', lastError: null });
     const attemptKey = createOpaqueId('attempt', this.dependencies);
     const claimSecret = createSecret(this.dependencies);
     const challenge = base64Url(await this.dependencies.sha256(new TextEncoder().encode(claimSecret)));
     try {
-      await this.dependencies.secretWrite(this.secretScope('claim_secret', attemptKey), claimSecret);
+      await this.writeSecret(this.secretScope('claim_secret', attemptKey), claimSecret);
       const response = await this.request<{
         attempt_id: string; poll_secret: string; user_code: string; verification_uri: string;
         expires_at: string; interval: number;
@@ -699,7 +870,7 @@ export class MacroPilotNativeClient {
       if (data.verification_uri !== GITHUB_DEVICE_VERIFICATION_URI) {
         throw new PilotClientError('invalid_response', response.status);
       }
-      await this.dependencies.secretWrite(this.secretScope('poll_secret', attemptKey), data.poll_secret);
+      await this.writeSecret(this.secretScope('poll_secret', attemptKey), data.poll_secret);
       const attempt: PilotAuthAttempt = {
         attemptKey,
         attemptId: data.attempt_id,
@@ -712,14 +883,14 @@ export class MacroPilotNativeClient {
       this.publish({ attempt, status: 'authorizing' });
       return attempt;
     } catch (error) {
-      await Promise.all((['claim_secret', 'poll_secret'] as const).map((kind) =>
-        this.dependencies.secretDelete(this.secretScope(kind, attemptKey)).catch(() => undefined),
-      ));
+      const scopes = (['claim_secret', 'poll_secret'] as const).map(kind => this.secretScope(kind, attemptKey));
+      await this.persist(state => ({ pendingSecretCleanup: this.appendCleanup(state, scopes) })).catch(() => undefined);
+      this.scheduleCleanup();
       if (!(error instanceof PilotClientError)) {
         this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
         throw new PilotClientError('vault_unavailable');
       }
-      this.publish({ status: 'signed_out', lastError: error.code });
+      this.publish({ status: error.code.startsWith('vault_') ? 'vault_unavailable' : 'signed_out', lastError: error.code });
       throw error;
     }
   }
@@ -776,16 +947,18 @@ export class MacroPilotNativeClient {
     });
     const data = response.data!;
     const sessionScope = this.secretScope('session_token', data.device_session.ref.session_id);
-    await this.dependencies.secretWrite(sessionScope, data.session_token);
+    await this.writeSecret(sessionScope, data.session_token);
     try {
       // Keep the attempt identifier until its secrets have been cleaned up.
       await this.persist({ account: data.account, deviceSession: data.device_session });
     } catch {
-      await this.dependencies.secretDelete(sessionScope).catch(() => undefined);
+      await this.invalidateVault();
+      void this.deleteSecret(sessionScope).catch(() => undefined);
       this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
       throw new PilotClientError('vault_unavailable');
     }
     await this.finishClaimCleanup();
+    await this.invalidateVault();
     this.publish({
       account: data.account,
       deviceSession: data.device_session,
@@ -816,11 +989,12 @@ export class MacroPilotNativeClient {
       : createSecret(this.dependencies);
     const instanceKeyHash = base64Url(await this.dependencies.sha256(new TextEncoder().encode(instanceKey)));
     if (!this.persisted.instanceCreationId) {
-      await this.dependencies.secretWrite(this.secretScope('instance_key', creationId), instanceKey);
+      await this.writeSecret(this.secretScope('instance_key', creationId), instanceKey);
       try {
         await this.persist({ instanceCreationId: creationId, pendingInstanceLabel: label });
       } catch (error) {
-        await this.dependencies.secretDelete(this.secretScope('instance_key', creationId)).catch(() => undefined);
+        await this.invalidateVault();
+        void this.deleteSecret(this.secretScope('instance_key', creationId)).catch(() => undefined);
         throw error;
       }
     }
@@ -868,7 +1042,8 @@ export class MacroPilotNativeClient {
 
   async logout(): Promise<{ revocationConfirmed: boolean }> {
     for (const controller of this.pendingReads) controller.abort();
-    if (!this.persisted?.deviceSession) {
+    if (!this.persisted?.deviceSession || this.vaultActivation || this.vaultRecovering ||
+      (this.vaultLease && this.vaultLease.status !== 'ready')) {
       await this.clearSession();
       return { revocationConfirmed: false };
     }
@@ -877,40 +1052,50 @@ export class MacroPilotNativeClient {
     return result;
   }
 
+  private appendCleanup(state: PersistedPilotState, scopes: PilotSecretScope[]): PilotSecretScope[] {
+    const entries = new Map([...state.pendingSecretCleanup, ...scopes].map(scope => [JSON.stringify(scope), scope]));
+    return [...entries.values()];
+  }
+
   private async finishClaimCleanup(): Promise<void> {
     const attempt = this.persisted?.attempt;
     if (!this.persisted?.deviceSession || !attempt) return;
-    try {
-      await this.clearAttemptSecrets(attempt);
-      await this.persist({ attempt: null });
-    } catch {
-      // The session is durable. Retain the attempt identifier to retry cleanup on startup.
-    }
-  }
-
-  private async clearAttemptSecrets(attempt: PilotAuthAttempt): Promise<void> {
-    await Promise.all([
-      this.dependencies.secretDelete(this.secretScope('claim_secret', attempt.attemptKey)),
-      this.dependencies.secretDelete(this.secretScope('poll_secret', attempt.attemptKey)),
-    ]);
+    const scopes = [this.secretScope('claim_secret', attempt.attemptKey), this.secretScope('poll_secret', attempt.attemptKey)];
+    await this.persist(state => ({ attempt: null, pendingSecretCleanup: this.appendCleanup(state, scopes) }));
+    this.scheduleCleanup();
   }
 
   private async clearAttempt(): Promise<void> {
     const attempt = this.persisted?.attempt;
-    if (attempt) await this.clearAttemptSecrets(attempt);
-    await this.persist({ attempt: null });
+    const scopes = attempt ? [this.secretScope('claim_secret', attempt.attemptKey), this.secretScope('poll_secret', attempt.attemptKey)] : [];
+    await this.invalidateVault();
+    await this.persist(state => ({ attempt: null, pendingSecretCleanup: this.appendCleanup(state, scopes) }));
     this.publish({ attempt: null, status: 'signed_out' });
+    this.scheduleCleanup();
+  }
+
+  private scheduleCleanup(): void {
+    if (this.cleanupScheduled || this.cleanupPromise || !this.persisted?.pendingSecretCleanup.length) return;
+    this.cleanupScheduled = true;
+    setTimeout(() => {
+      this.cleanupScheduled = false;
+      if (this.cleanupPromise) return;
+      const cleanup = this.cleanupPendingSecrets().catch(() => undefined);
+      this.cleanupPromise = cleanup;
+      void cleanup.finally(() => { if (this.cleanupPromise === cleanup) this.cleanupPromise = null; });
+    }, 0);
   }
 
   private async cleanupPendingSecrets(): Promise<void> {
-    const pending = this.persisted?.pendingSecretCleanup || [];
-    if (!pending.length) return;
-    const results = await Promise.allSettled(pending.map((scope) => this.dependencies.secretDelete(scope)));
-    const remaining = pending.filter((_, index) => results[index].status === 'rejected');
-    await this.persist({ pendingSecretCleanup: remaining });
-    if (remaining.length) {
-      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
-      throw new PilotClientError('vault_unavailable');
+    const context = this.contextKey();
+    const pending = [...(this.persisted?.pendingSecretCleanup || [])];
+    for (const scope of pending) {
+      this.checkContext(context);
+      try { await this.deleteSecret(scope); }
+      catch { return; } // Retain tombstones; no automatic loop after a refusal.
+      this.checkContext(context);
+      await this.persist(state => ({ pendingSecretCleanup: state.pendingSecretCleanup.filter(candidate =>
+        JSON.stringify(candidate) !== JSON.stringify(scope)) }));
     }
   }
 
@@ -927,26 +1112,24 @@ export class MacroPilotNativeClient {
       pending.push(this.secretScope('claim_secret', this.persisted.attempt.attemptKey));
       pending.push(this.secretScope('poll_secret', this.persisted.attempt.attemptKey));
     }
+    const cleared = { account: null, deviceSession: null, instanceAccess: null, attempt: null,
+      instance: null, instanceCreationId: null, pendingInstanceLabel: null, pendingSecretCleanup: pending };
+    // Stop new credential consumers before waiting for durable metadata or IPC.
+    if (this.persisted) this.persisted = { ...this.persisted, ...cleared };
     this.publish({ account: null, deviceSession: null, instanceAccess: null, attempt: null, instance: null, status: 'signed_out' });
-    // Remove secrets immediately, even when an earlier metadata write is still pending.
-    const deletions = Promise.allSettled(pending.map((scope) => this.dependencies.secretDelete(scope)));
-    // Only relay metadata is touched. Keep failed vault deletions for the next startup.
+    const invalidating = this.invalidateVault();
+    // The durable tombstone precedes cleanup. A deferred delete cannot restore this session.
     try {
-      await this.persist({ account: null, deviceSession: null, instanceAccess: null, attempt: null,
-        instance: null, instanceCreationId: null, pendingInstanceLabel: null, pendingSecretCleanup: pending });
+      await this.persist(cleared);
+      await invalidating;
     } catch {
-      // Even if metadata storage fails, never keep the bearer available for replay.
-      await deletions;
+      // Best-effort deletion is silent and never blocks reporting a metadata failure.
+      void invalidating.catch(() => undefined);
+      void Promise.allSettled(pending.map(scope => this.deleteSecret(scope)));
       this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
       throw new PilotClientError('vault_unavailable');
     }
-    const results = await deletions;
-    const remaining = pending.filter((_, index) => results[index].status === 'rejected');
-    await this.persist({ pendingSecretCleanup: remaining });
-    if (remaining.length) {
-      this.publish({ status: 'vault_unavailable', lastError: 'vault_unavailable' });
-      throw new PilotClientError('vault_unavailable');
-    }
+    this.scheduleCleanup();
   }
 }
 

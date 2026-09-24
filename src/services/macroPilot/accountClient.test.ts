@@ -50,6 +50,132 @@ const response = (request: Request, result: unknown) => json({ contract_version:
   account_id: request.account_id, operation: request.operation, result });
 
 describe('native account v2 over the HTTP boundary', () => {
+  it('requires explicit vault recovery and never turns refresh into an interactive retry', async () => {
+    const h = harness();
+    let blocked = true;
+    let reads = 0;
+    let resumes = 0;
+    let generation = '2';
+    const read = h.deps.secretRead;
+    h.deps.vaultActivate = async () => ({ generation, status: blocked ? 'intervention_required' : 'ready' });
+    h.deps.vaultInvalidate = async () => ({ generation: String(Number(generation) + 1), status: 'ready' });
+    h.deps.secretRead = async (scope, lease) => { reads++; expect(lease).toBe(generation); return read(scope); };
+    h.deps.vaultResume = async (scopes, lease) => {
+      resumes++; expect(lease).toBe(generation);
+      expect(scopes.map(scope => scope.kind)).toEqual(['session_token', 'instance_key']);
+      blocked = false; generation = '3'; return { generation, status: 'ready' };
+    };
+    await h.client.initialize();
+    for (let index = 0; index < 4; index++) {
+      await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'vault_intervention_required' });
+    }
+    expect(reads).toBe(0); expect(resumes).toBe(0); expect(h.requests).toHaveLength(0);
+    await h.client.resumeVaultAccess();
+    expect(resumes).toBe(1); expect(reads).toBe(1);
+    expect(h.client.getState()).toMatchObject({ status: 'connected', vaultStatus: 'ready', lastError: null });
+  });
+
+  it('restores the session without waiting for stale credential cleanup', async () => {
+    const h = harness();
+    const persisted = h.values.macro_pilot_native_v1 as Record<string, unknown>;
+    persisted.pendingSecretCleanup = [{ configuration_id: 'config-demo', relay_origin: 'https://relay.example',
+      kind: 'instance_key', resource_id: 'old-creation' }];
+    const deleting = deferred<void>();
+    h.deps.secretDelete = async () => deleting.promise;
+    expect((await h.client.initialize()).status).toBe('connected');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect((h.values.macro_pilot_native_v1 as Record<string, unknown>).pendingSecretCleanup).toHaveLength(1);
+    expect(h.requests).toHaveLength(1);
+    deleting.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+
+  it('invalidates a pending activation and a late recovery instead of restoring a logged-out session', async () => {
+    for (const phase of ['activation', 'recovery'] as const) {
+      const h = harness();
+      const entered = deferred<void>();
+      const pending = deferred<{ generation: string; status: 'ready' }>();
+      const invalidated: string[] = [];
+      let held = phase === 'activation';
+      h.deps.vaultActivate = async () => {
+        if (held) { entered.resolve(); held = false; return pending.promise; }
+        return { generation: '2', status: 'ready' };
+      };
+      h.deps.vaultInvalidate = async generation => {
+        invalidated.push(generation); return { generation: '4', status: 'ready' };
+      };
+      h.deps.vaultResume = async () => { entered.resolve(); return pending.promise; };
+      let old: Promise<unknown>;
+      if (phase === 'activation') old = h.client.initialize().catch(error => error);
+      else { await h.client.initialize(); old = h.client.resumeVaultAccess().catch(error => error); }
+      await entered.promise;
+      await expect(h.client.logout()).resolves.toEqual({ revocationConfirmed: false });
+      expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null });
+      pending.resolve({ generation: '3', status: 'ready' });
+      expect(await old).toMatchObject({ code: 'context_changed' });
+      expect(invalidated).toContain('3');
+      if (phase === 'recovery') expect(invalidated).toContain('2');
+      expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null });
+      expect((h.values.macro_pilot_native_v1 as Record<string, unknown>).deviceSession).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  });
+
+  it('keeps a suspension visible when an earlier session metadata write completes', async () => {
+    const h = harness();
+    let notify!: (lease: { generation: string; status: 'suspended' }) => void;
+    h.deps.vaultSubscribe = async listener => { notify = listener; return () => undefined; };
+    h.deps.vaultActivate = async () => ({ generation: '2', status: 'ready' });
+    const entered = deferred<void>();
+    const pending = deferred<void>();
+    const write = h.deps.setStateValue;
+    h.deps.setStateValue = async (key, value) => { entered.resolve(); await pending.promise; return write(key, value); };
+    const restoring = h.client.initialize();
+    await entered.promise;
+    notify({ generation: '3', status: 'suspended' });
+    pending.resolve();
+    await restoring;
+    expect(h.client.getState()).toMatchObject({ status: 'vault_unavailable', vaultStatus: 'suspended', lastError: 'vault_suspended' });
+    const sent = h.requests.length;
+    await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'vault_suspended' });
+    expect(h.requests).toHaveLength(sent);
+  });
+
+  it('suspends on OS notification and cannot restore a tombstoned session on startup', async () => {
+    const h = harness();
+    let notify!: (lease: { generation: string; status: 'suspended' }) => void;
+    h.deps.vaultSubscribe = async listener => { notify = listener; return () => undefined; };
+    h.deps.vaultActivate = async () => ({ generation: '2', status: 'ready' });
+    h.deps.vaultInvalidate = async () => ({ generation: '4', status: 'suspended' });
+    await h.client.initialize();
+    notify({ generation: '3', status: 'suspended' });
+    const sent = h.requests.length;
+    await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'vault_suspended' });
+    expect(h.requests).toHaveLength(sent);
+    h.deps.secretDelete = async () => { throw 'intervention_required'; };
+    await h.client.logout();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const persisted = h.values.macro_pilot_native_v1 as Record<string, unknown>;
+    expect(persisted.pendingSecretCleanup).toHaveLength(2);
+    const resumedScopes: string[] = [];
+    h.deps.vaultResume = async scopes => {
+      resumedScopes.push(...scopes.map(scope => `${scope.kind}:${scope.resource_id}`));
+      return { generation: '5', status: 'ready' };
+    };
+    await h.client.resumeVaultAccess();
+    expect(resumedScopes).toHaveLength(1);
+    expect(resumedScopes[0]).toStartWith('claim_secret:attempt');
+    expect(resumedScopes).not.toContain('session_token:session-demo');
+    expect(h.client.getState().deviceSession).toBeNull();
+    expect(h.requests).toHaveLength(sent);
+    // Even an older mixed snapshot cannot resurrect a session named by its tombstone.
+    persisted.deviceSession = session; persisted.account = account;
+    const restarted = new MacroPilotNativeClient(h.deps);
+    expect((await restarted.initialize()).deviceSession).toBeNull();
+    expect(h.requests).toHaveLength(sent);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+
   it('starts the transport deadline after the vault releases the session token', async () => {
     const h = harness(); await h.client.initialize();
     const pending = deferred<string>();
@@ -205,6 +331,7 @@ describe('native account v2 over the HTTP boundary', () => {
           operation === 'account.delete' ? await h.client.deleteAccount(identity) : await h.client.logout();
       expect(result).toEqual({ revocationConfirmed: false });
       expect(h.client.getState()).toMatchObject({ status: 'signed_out', account: null, instance: null, deviceSession: null });
+      await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
       expect(h.secrets.size).toBe(0);
       expect(h.values.localData).toEqual(h.localData);
       expect(h.requests.filter(r => r.body.operation === operation)).toHaveLength(1);
@@ -220,6 +347,7 @@ describe('native account v2 over the HTTP boundary', () => {
     expect(h.client.getState().deviceSession).not.toBeNull();
     h.intercept(request => request.operation === 'account.get' ? json({ code: 'session_revoked' }, 401) : undefined);
     await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'session_revoked' });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(h.secrets.size).toBe(0);
   });
 
@@ -257,6 +385,7 @@ describe('native account v2 over the HTTP boundary', () => {
     h.intercept(request => request.operation === 'sessions.revoke_all' ? json({ code: 'session_revoked' }, 401) : undefined);
     await expect(h.client.revokeAllSessions()).resolves.toEqual({ revocationConfirmed: false });
     expect(h.client.getState().deviceSession).toBeNull();
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(h.secrets.size).toBe(0);
     const expired = harness(); await expired.client.initialize();
     expired.intercept(request => request.operation === 'sessions.list' ? response(request, {
@@ -269,13 +398,15 @@ describe('native account v2 over the HTTP boundary', () => {
     const h = harness(); await h.client.initialize(); await h.client.getAccountCatalog();
     const remove = h.deps.secretDelete;
     h.deps.secretDelete = async scope => { if (scope.kind === 'instance_key') throw new Error('vault locked'); await remove(scope); };
-    await expect(h.client.deleteAccount(identity)).rejects.toMatchObject({ code: 'vault_unavailable' });
+    await expect(h.client.deleteAccount(identity)).resolves.toEqual({ revocationConfirmed: true });
     expect(h.client.getState().deviceSession).toBeNull();
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(h.secrets.has('session_token:session-demo')).toBe(false);
     expect(h.values.macro_pilot_native_v1).toHaveProperty('pendingSecretCleanup');
     await expect(h.client.getAccountCatalog()).rejects.toMatchObject({ code: 'unauthorized' });
     h.deps.secretDelete = remove;
     await new MacroPilotNativeClient(h.deps).initialize();
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(h.secrets.size).toBe(0);
     expect(h.values.localData).toEqual(h.localData);
   });
@@ -285,6 +416,7 @@ describe('native account v2 over the HTTP boundary', () => {
     h.deps.setStateValue = async () => { throw new Error('storage unavailable'); };
     await expect(h.client.deleteAccount(identity)).rejects.toMatchObject({ code: 'vault_unavailable' });
     expect(h.client.getState().deviceSession).toBeNull();
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(h.secrets.size).toBe(0);
     await expect(h.client.request('GET', '/me', undefined, { authenticated: true })).rejects.toMatchObject({ code: 'unauthorized' });
     expect(h.values.localData).toEqual(h.localData);
@@ -300,6 +432,7 @@ describe('native account v2 over the HTTP boundary', () => {
         operation === 'sessions.revoke_all' ? await h.client.revokeAllSessions() :
           operation === 'account.delete' ? await h.client.deleteAccount(identity) : await h.client.logout();
       expect(result).toEqual({ revocationConfirmed: false });
+      await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
       expect(h.secrets.size).toBe(0);
       expect(h.client.getState().deviceSession).toBeNull();
       const sent = h.requests.length;
@@ -342,6 +475,7 @@ describe('native account v2 over the HTTP boundary', () => {
       await expect(h.client.revokeSession('session-other')).rejects.toMatchObject({ code: 'conflict' });
       pendingLogout.resolve(response(logoutRequest, { outcome: 'applied', revision: 5 }));
       await expect(logout).resolves.toEqual({ revocationConfirmed: true });
+      await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
       expect(h.secrets.size).toBe(0);
       if (phase === 'body') expect(bodyCancelled).toBe(true);
       pendingRead.resolve(response(original, identity));
@@ -380,6 +514,7 @@ describe('native account v2 over the HTTP boundary', () => {
     expect(await initialize).toMatchObject({ code: 'context_changed' });
     pending.resolve(json({ account, device_session: session }));
     expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null, account: null });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(h.secrets.size).toBe(0);
   });
 
@@ -402,11 +537,13 @@ describe('native account v2 over the HTTP boundary', () => {
     const initializing = h.client.initialize().catch(error => error);
     await writing.promise;
     const logout = h.client.logout();
-    await removed.promise;
-    expect(h.secrets.size).toBe(0);
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null });
+    await expect(h.client.contentSecretValues()).rejects.toMatchObject({ code: 'unauthorized' });
     resume.resolve();
     await expect(logout).resolves.toEqual({ revocationConfirmed: true });
+    await removed.promise;
+    expect(h.secrets.size).toBe(0);
     expect(await initializing).toMatchObject({ code: 'context_changed' });
     expect(h.client.getState()).toMatchObject({ status: 'signed_out', deviceSession: null, account: null });
     expect(h.values.macro_pilot_native_v1).toMatchObject({ deviceSession: null, account: null, instance: null });

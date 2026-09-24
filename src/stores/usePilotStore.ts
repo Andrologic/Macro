@@ -20,6 +20,8 @@ interface PilotStore extends PilotPublicState {
   confirmAccount: () => Promise<void>;
   createOrAttachInstance: (label: string) => Promise<void>;
   refreshAccount: () => Promise<void>;
+  /** The UI must invoke this only from its explicit resume-access action. */
+  resumeVaultAccess: () => Promise<void>;
   refreshAccessRequests: () => Promise<void>;
   resolveAccess: (accessRequestId: string, verdict: 'grant' | 'deny') => Promise<void>;
   revokeSession: (sessionId: string) => Promise<boolean>;
@@ -110,6 +112,12 @@ export const usePilotStore = create<PilotStore>((set, get) => {
     }),
     createOrAttachInstance: (label) => action(async () => { await client.createOrAttachInstance({ label }); sync(); }),
     refreshAccount: () => action(readAccount, 'read'),
+    resumeVaultAccess: () => action(async signal => {
+      await client.resumeVaultAccess();
+      if (signal.aborted) throw new PilotClientError('context_changed');
+      sync();
+      if (get().status === 'connected') await readAccount(signal);
+    }, 'read'),
     refreshAccessRequests: () => action(async (signal) => {
       const started = generation;
       const target = instanceId;
