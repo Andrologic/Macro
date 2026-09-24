@@ -3063,8 +3063,17 @@ return ({
               deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
               if (taskStillExistsUnderLease) {
                 if (deletionSaga.draft) {
-                  if (deletionSaga.interruptedCreation && currentTask?.draft && isManualStandaloneTask(currentTask)) {
-                    await removeManualFeatureMetadata(currentTask, true);
+                  if (currentTask?.draft && isManualStandaloneTask(currentTask)) {
+                    if (deletionSaga.interruptedCreation) {
+                      await removeManualFeatureMetadata(currentTask, true);
+                    } else {
+                      await removeManualFeatureMetadata(currentTask).catch((error) => {
+                        devLogger.warn('[tasks] Could not remove metadata during draft deletion recovery.', {
+                          taskId: currentTask.id,
+                          error: toServiceError(error).message,
+                        });
+                      });
+                    }
                   }
                   await deleteManualFeatureDraftDurably(
                     deletionSaga.taskId,

@@ -2457,6 +2457,11 @@ describe('useTaskStore merge workflow review loading', () => {
       source: draftPresent ? 'mixed' as const : 'empty' as const,
     }));
     removeManualFeatureMetadataMock.mockClear();
+    if (!interruptedCreation) {
+      removeManualFeatureMetadataMock.mockImplementationOnce(async () => {
+        throw new Error('ordinary metadata commit unavailable');
+      });
+    }
     workspaceDeleteManualFeatureDraftMock.mockImplementation(async () => { draftPresent = false; return true; });
     try {
       const { useTaskStore } = await loadIsolatedTaskStore();
@@ -2467,7 +2472,7 @@ describe('useTaskStore merge workflow review loading', () => {
     if (interruptedCreation) {
       expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, true);
     } else {
-      expect(removeManualFeatureMetadataMock).not.toHaveBeenCalled();
+      expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task);
     }
     expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
