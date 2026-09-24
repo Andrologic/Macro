@@ -99,6 +99,7 @@ import type { ArchivedTaskCleanupSaga } from '../../services/archivedTaskCleanup
 import {
   getLinkedDeletionSagaGeneration,
   findPersistedTaskConversationId,
+  loadLinkedTaskDeletionSagas,
   removeLinkedTaskDeletionSaga,
   startLinkedTaskDeletionSaga,
   upsertLinkedTaskDeletionSaga,
@@ -1053,16 +1054,20 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           if (!(await selectConversation(conversation.id))) {
             throw new Error('Impossible de sélectionner la nouvelle conversation.');
           }
-          preparedCleanupSaga.phase = 'prepared';
-          preparedCleanupSaga.creationCommitted = true;
-          preparedCleanupSaga.updatedAt = new Date().toISOString();
-          await upsertLinkedTaskDeletionSaga(preparedCleanupSaga);
+          const committedCleanupSaga: LinkedTaskDeletionSaga = {
+            ...preparedCleanupSaga,
+            phase: 'prepared',
+            creationCommitted: true,
+            updatedAt: new Date().toISOString(),
+          };
+          await upsertLinkedTaskDeletionSaga(committedCleanupSaga);
+          cleanupSaga = committedCleanupSaga;
           creationCommitted = true;
           await removeLinkedTaskDeletionSaga(
             taskId,
             undefined,
             getLinkedDeletionSagaGeneration({
-              ...preparedCleanupSaga,
+              ...committedCleanupSaga,
               ownerType: 'task',
               ownerId: taskId,
             }),
@@ -1070,6 +1075,22 @@ const TaskQueueBase: React.FC<TaskQueueProps> = ({ className }) => {
           cleanupSaga = null;
           setShowCreateTaskDialog(false);
         } catch (error) {
+          if (!creationCommitted && cleanupSaga) {
+            try {
+              const persisted = (await loadLinkedTaskDeletionSagas()).find((candidate) =>
+                candidate.taskId === taskId &&
+                getLinkedDeletionSagaGeneration({ ...candidate, ownerType: 'task', ownerId: taskId }) ===
+                  getLinkedDeletionSagaGeneration({ ...cleanupSaga!, ownerType: 'task', ownerId: taskId }),
+              );
+              if (persisted?.creationCommitted) creationCommitted = true;
+            } catch (journalError) {
+              notify.warning(
+                t('implement.manualFeatureCleanupPending', 'La tâche a été créée, mais la clôture de son journal reste en attente.'),
+                { description: `${toServiceError(error).message} ${toServiceError(journalError).message}` },
+              );
+              return;
+            }
+          }
           if (creationCommitted) {
             setShowCreateTaskDialog(false);
             notify.warning(

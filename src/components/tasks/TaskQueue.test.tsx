@@ -2059,6 +2059,57 @@ describe('TaskQueue', () => {
       .toContain('injected transport failure after draft persistence');
   });
 
+  it('keeps the journal readable when the creation commit write fails', async () => {
+    seedTasks([]);
+    let failCommitWrite = true;
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined ? null : { key, value_json: value, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        if (key === 'pendingLinkedTaskDeletions:v1' &&
+          String(payload?.valueJson ?? '').includes('"creationCommitted":true') && failCommitWrite) {
+          failCommitWrite = false;
+          throw new Error('injected commit write failure');
+        }
+        if ((taskQueueAppSettings.get(key) ?? null) !== (payload?.expectedValueJson ?? null)) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
+      return undefined;
+    }));
+    const createConversation = mock(async () => ({ id: 'conversation-created' }));
+    const createManualFeatureDraft = mock(async () => undefined);
+    const activateTask = mock(async () => undefined);
+    const selectConversation = mock(async () => true);
+    const deleteManualFeatureDraft = mock(async () => { throw new Error('injected cleanup failure'); });
+    useChatStore.setState({ ...useChatStore.getState(), createConversation: createConversation as never,
+      selectConversation: selectConversation as never });
+    useTaskStore.setState({ ...useTaskStore.getState(), createManualFeatureDraft: createManualFeatureDraft as never,
+      activateTask: activateTask as never, deleteManualFeatureDraft: deleteManualFeatureDraft as never });
+    useAppStore.setState({ ...useAppStore.getState(), projectGroups: [{
+      id: 'group-folder', name: 'Folder group', isOpen: true,
+      projects: [{ ...makeProject('project-folder', '/tmp/project-folder', 'Folder project'), directEdit: true,
+        gitSetupState: 'not_git' as const }],
+    }] as never });
+    await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-create-task"]')?.click();
+      await flushRender();
+    });
+    const dialog = await waitForCreateDialog();
+    const findButton = (text: string) => Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes(text));
+    await act(async () => { findButton('Folder project')?.click(); await flushRender(); });
+    await act(async () => { findButton('Create task')?.click(); await flushRender(); });
+    expect(notifyMock.error.mock.calls.at(-1)?.[0]).toContain('injected commit write failure');
+    const pending = JSON.parse(taskQueueAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]');
+    expect(pending).toEqual([expect.objectContaining({ phase: 'task_deleting' })]);
+    expect(pending[0].creationCommitted).toBeUndefined();
+  });
+
   it('opens task creation for a direct project without loading Git start points', async () => {
     const invokedCommands: string[] = [];
     installTauriRuntimeMock(mock(async (command) => {

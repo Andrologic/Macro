@@ -2296,6 +2296,43 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
+  it('retries metadata cleanup before deleting an interrupted draft', async () => {
+    const taskId = 'manual-task-metadata-retry';
+    const task = buildStandaloneTask({
+      id: taskId, task_source: 'standalone', standalone_kind: 'manual_feature',
+      draft: true, conversation_id: 'conversation-metadata-retry', execution_targets: [],
+    });
+    dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify([{
+      taskId, conversationId: task.conversation_id, phase: 'task_creating', draft: true,
+      executionTargets: [], generation: 1,
+      createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+    }]));
+    let draftPresent = true;
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: draftPresent ? [task] : [], plans: [], hasStandaloneTasks: draftPresent,
+      source: draftPresent ? 'mixed' as const : 'empty' as const,
+    }));
+    removeManualFeatureMetadataMock.mockClear();
+    removeManualFeatureMetadataMock.mockImplementationOnce(async () => { throw new Error('metadata unavailable'); });
+    workspaceDeleteManualFeatureDraftMock.mockClear();
+    workspaceDeleteManualFeatureDraftMock.mockImplementation(async () => { draftPresent = false; return true; });
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({ restoreSelection: false, activateSelectedTask: false });
+      expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+      expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toHaveLength(1);
+      await useTaskStore.getState().refreshFromPlan({ restoreSelection: false, activateSelectedTask: false });
+    } finally {
+      services.listTasks = originalListTasks;
+      removeManualFeatureMetadataMock.mockImplementation(async () => undefined);
+    }
+    expect(removeManualFeatureMetadataMock).toHaveBeenCalledTimes(2);
+    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(1);
+    expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(task.conversation_id);
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
   it('does not acquire another creation lease while two clients refresh their drafts', async () => {
     const now = '2026-08-30T00:00:00.000Z';
     dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify(['creation-a', 'creation-b'].map((taskId) => ({

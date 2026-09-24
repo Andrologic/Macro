@@ -2888,10 +2888,10 @@ return ({
               };
               await upsertLinkedTaskDeletionSaga(recoverySaga);
               if (survivingTask) {
-                await deleteManualFeatureDraftDurably(current.taskId, taskLifecycleLeaseId);
                 if (isManualStandaloneTask(survivingTask)) {
                   await removeManualFeatureMetadata(survivingTask);
                 }
+                await deleteManualFeatureDraftDurably(current.taskId, taskLifecycleLeaseId);
               }
               recoverySaga = { ...recoverySaga, phase: 'task_deleted', updatedAt: new Date().toISOString() };
               await upsertLinkedTaskDeletionSaga(recoverySaga);
@@ -3044,6 +3044,10 @@ return ({
               deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
               if (taskStillExistsUnderLease) {
                 if (deletionSaga.draft) {
+                  const currentTask = resolveTaskReference(freshCatalog.tasks, deletionSaga.taskId);
+                  if (currentTask && isManualStandaloneTask(currentTask)) {
+                    await removeManualFeatureMetadata(currentTask);
+                  }
                   await deleteManualFeatureDraftDurably(
                     deletionSaga.taskId,
                     taskLifecycleLeaseId,
@@ -3480,6 +3484,10 @@ return ({
       const normalized = toServiceError(error);
       if (draftCreationStarted) {
         try {
+          const createdTask = get().getTaskById(params.taskId);
+          if (createdTask && isManualStandaloneTask(createdTask)) {
+            await removeManualFeatureMetadata(createdTask);
+          }
           await deleteManualFeatureDraftDurably(params.taskId, params.taskLifecycleLeaseId);
           await get().refreshFromPlan({ creatingTaskId: params.taskLifecycleLeaseId ? params.taskId : undefined });
         } catch (rollbackError) {
@@ -3718,8 +3726,11 @@ return ({
       }
 
       const removeDraft = async (leaseId: string | null) => {
+        if (taskLifecycleLeaseId && existingTask && isManualStandaloneTask(existingTask)) {
+          await removeManualFeatureMetadata(existingTask);
+        }
         await deleteManualFeatureDraftDurably(taskId, leaseId);
-        if (existingTask && isManualStandaloneTask(existingTask)) {
+        if (!taskLifecycleLeaseId && existingTask && isManualStandaloneTask(existingTask)) {
           try {
             await removeManualFeatureMetadata(existingTask);
           } catch (error) {
