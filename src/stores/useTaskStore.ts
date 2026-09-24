@@ -2878,6 +2878,14 @@ return ({
                 );
                 return;
               }
+              if (survivingTask && !survivingTask.draft) {
+                await removeLinkedTaskDeletionSaga(
+                  current.taskId,
+                  current.targetBranch,
+                  getLinkedDeletionSagaGeneration({ ...current, ownerType: 'task', ownerId: current.taskId }),
+                );
+                return;
+              }
               const conversationId = current.conversationId ||
                 (await findPersistedTaskConversationId(current.taskId)) || '';
               recoverySaga = {
@@ -3045,7 +3053,7 @@ return ({
               if (taskStillExistsUnderLease) {
                 if (deletionSaga.draft) {
                   const currentTask = resolveTaskReference(freshCatalog.tasks, deletionSaga.taskId);
-                  if (currentTask && isManualStandaloneTask(currentTask)) {
+                  if (currentTask?.draft && isManualStandaloneTask(currentTask)) {
                     await removeManualFeatureMetadata(currentTask);
                   }
                   await deleteManualFeatureDraftDurably(
@@ -3477,7 +3485,11 @@ return ({
         baseCommitHash: params.baseCommitHash ?? null,
       });
       await get().refreshFromPlan({ creatingTaskId: params.taskLifecycleLeaseId ? params.taskId : undefined });
-      await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
+      const createdTask = get().getTaskById(params.taskId);
+      if (!createdTask || !isManualStandaloneTask(createdTask) || !createdTask.draft) {
+        throw new Error(get().lastError || 'Le brouillon créé est absent du catalogue après actualisation.');
+      }
+      await syncManualFeatureTaskMetadata(createdTask, (message) => {
         set({ lastError: message });
       });
     } catch (error) {

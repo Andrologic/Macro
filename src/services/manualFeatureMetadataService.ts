@@ -83,29 +83,19 @@ const resolveMetadataWorkspaceTargets = (
 
 const deleteMetadataRootIfPresent = async (
   metadataRoot: string,
-  target: MetadataWorkspaceTarget
+  target: MetadataWorkspaceTarget,
+  strict = false,
 ): Promise<void> => {
   try {
-    const exists = await tauriIpc.fsExists(metadataRoot, {
+    const options = {
       workspaceScope: target.workspaceScope,
       workspacePath: target.workspacePath,
-    });
-    if (!exists) {
-      return;
-    }
-  } catch {
-    return;
-  }
-
-  try {
-    await tauriIpc.fsDelete({
-      path: metadataRoot,
-      recursive: true,
-      workspaceScope: target.workspaceScope,
-      workspacePath: target.workspacePath,
-    });
-  } catch {
-    // Treat missing or concurrently removed legacy metadata as already cleaned up.
+    };
+    if (!await tauriIpc.fsExists(metadataRoot, options)) return;
+    await tauriIpc.fsDelete({ path: metadataRoot, recursive: true, ...options });
+  } catch (error) {
+    if (strict) throw error;
+    // Legacy cleanup during metadata sync remains best effort.
   }
 };
 
@@ -367,7 +357,7 @@ export const removeManualFeatureMetadata = async (
     workspaceTargets.map(async (target) => {
       await Promise.all(
         metadataRoots.map((metadataRoot) =>
-          deleteMetadataRootIfPresent(metadataRoot, target)
+          deleteMetadataRootIfPresent(metadataRoot, target, true)
         )
       );
       recordMacroMetadataMutation({
