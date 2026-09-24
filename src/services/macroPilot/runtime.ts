@@ -1,3 +1,5 @@
+import { taskActionPermissions, assertTaskActionPermissions } from './taskActionAuthorization';
+import { TASK_COMPLETION_CAPABILITIES } from './taskCompletionHost';
 import { findPilotTask, pilotTaskId, resolvePilotTask, resolvePilotStartTask } from './taskIdentity';
 import { createDesktopContentHost } from './desktopContentHost';
 import type { ContentHost } from './contentHost';
@@ -201,18 +203,21 @@ export class PilotRuntime {
   private async pollContent(host: ContentHost, instanceId: string, signal: AbortSignal) {
     const base = `/pilot/v2/instances/${encodeURIComponent(instanceId)}/deliveries`;
     let failures = 0;
+    let extended = true;
     while (!signal.aborted && host.isAvailable() && !isAppShutdownGateActive()) {
       try {
-        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'] }, signal);
+        const response = await this.client.requestContent!(`${base}/poll`, { transport_version: '2.0', type: 'poll', commands: ['conversation.send'], ...(extended ? { capabilities: [...TASK_COMPLETION_CAPABILITIES] } : {}) }, signal);
         if (signal.aborted) break;
         if (response.status === 204) { failures = 0; await pause(25, signal); continue; }
         let executeBefore = 0;
         const result = await host.handle(response.data, async (delivery: ContentDelivery) => {
           if (signal.aborted) throw new PilotError('unavailable');
+          const requiredPermissions = taskActionPermissions(delivery.request);
           const authorization = await this.client.requestContent!(`${base}/${encodeURIComponent(delivery.request_id)}/authorize`,
-            { transport_version: '2.0', type: 'authorize', request_id: delivery.request_id }, signal);
+            { transport_version: '2.0', type: 'authorize', request_id: delivery.request_id, ...(requiredPermissions ? { required_permissions: requiredPermissions } : {}) }, signal);
           const data = object(authorization.data);
           if (signal.aborted || data.type !== 'authorized' || data.request_id !== delivery.request_id || typeof data.execute_before !== 'string') throw new PilotError('unavailable');
+          assertTaskActionPermissions(requiredPermissions, data);
           executeBefore = Date.parse(data.execute_before);
           return data.execute_before;
         });
@@ -225,7 +230,12 @@ export class PilotRuntime {
           } catch { if (attempt === 2) throw new PilotError('unavailable'); await pause(500 * (attempt + 1), signal); }
         }
         failures = 0;
-      } catch { if (signal.aborted) break; this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal); }
+      } catch (error) {
+        if (signal.aborted) break;
+        const status = object(error).status;
+        if (extended && (status === 400 || status === 422)) { extended = false; continue; }
+        this.publish('unavailable'); await pause(Math.min(1000 * 2 ** Math.min(failures++, 5), 30_000), signal);
+      }
     }
   }
   private decisionRef(command:Command) {

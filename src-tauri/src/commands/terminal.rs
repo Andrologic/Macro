@@ -483,11 +483,17 @@ async fn resolve_project_target(
     workspace_path: &Path,
     metadata_root: &Path,
     project_id: &str,
+    pilot_only: bool,
 ) -> CommandResult<ProjectTerminalTarget> {
-    let project = workspace::get_project_by_id(workspace_path, metadata_root, project_id)
-        .await
-        .map_err(|error| command_error(error.to_string()))?
-        .ok_or_else(|| command_error(format!("Unknown project id: {}", project_id)))?;
+    let project = if pilot_only {
+        workspace::pilot::get_project_by_id_from_primary(metadata_root, project_id)
+            .map_err(|error| command_error(error.to_string()))?
+    } else {
+        workspace::get_project_by_id(workspace_path, metadata_root, project_id)
+            .await
+            .map_err(|error| command_error(error.to_string()))?
+    }
+    .ok_or_else(|| command_error(format!("Unknown project id: {}", project_id)))?;
 
     if project.is_read_only {
         return Err(command_error(format!(
@@ -507,6 +513,29 @@ async fn resolve_project_target(
         mount_name: project.mount_name,
         workspace_path,
     })
+}
+
+async fn resolve_existing_metadata_root(workspace_path: PathBuf) -> CommandResult<PathBuf> {
+    if parse_wsl_unc_path(&workspace_path.to_string_lossy()).is_some() {
+        return Err(command_error(
+            "Macro metadata-scoped terminals are not yet available for WSL projects.",
+        ));
+    }
+
+    let fallback = workspace_path.join(".macro");
+    let root = tokio::task::spawn_blocking(move || {
+        crate::git::find_existing_macro_metadata_worktree_root(&workspace_path)
+            .or_else(|| fallback.is_dir().then_some(fallback))
+    })
+    .await
+    .map_err(|error| command_error(format!("Metadata root task failed: {}", error)))?
+    .ok_or_else(|| {
+        command_error(
+            "Pilot terminal requires an existing Macro metadata root; no metadata was created.",
+        )
+    })?;
+
+    Ok(root)
 }
 
 fn is_within(root: &Path, candidate: &Path) -> bool {
@@ -592,6 +621,101 @@ fn resolve_session_cwd(
         "cwd must remain inside the selected project or a valid worktree: {}",
         canonical_candidate.display()
     )))
+}
+
+fn resolve_pilot_session_cwd(
+    project_root: &Path,
+    cwd: Option<&str>,
+    expected_branch: Option<&str>,
+) -> CommandResult<PathBuf> {
+    let canonical_project_root = canonicalize_existing_dir(project_root)?;
+    let candidate = cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|requested| {
+            if requested.is_absolute() {
+                requested
+            } else {
+                canonical_project_root.join(requested)
+            }
+        })
+        .unwrap_or_else(|| canonical_project_root.clone());
+    let canonical_candidate = canonicalize_existing_dir(&candidate)?;
+
+    if expected_branch.is_none() {
+        if canonical_candidate != canonical_project_root {
+            return Err(command_error(
+                "Pilot direct terminal cwd must equal the selected project root.",
+            ));
+        }
+        return Ok(canonical_project_root);
+    }
+
+    let project_repo = open_pilot_repo(&canonical_project_root, "project")?;
+    let candidate_repo = open_pilot_repo(&canonical_candidate, "cwd")?;
+    let candidate_is_project_root = canonical_candidate == canonical_project_root;
+    if !candidate_is_project_root && !candidate_repo.is_worktree() {
+        return Err(command_error(format!(
+            "Pilot cwd must be a worktree of the selected project: {}",
+            canonical_candidate.display()
+        )));
+    }
+
+    let project_commondir = canonicalize_repo_commondir(&project_repo)?;
+    let candidate_commondir = canonicalize_repo_commondir(&candidate_repo)?;
+    if project_commondir != candidate_commondir {
+        return Err(command_error(format!(
+            "Pilot cwd belongs to a different repository: {}",
+            canonical_candidate.display()
+        )));
+    }
+    validate_pilot_branch(&candidate_repo, expected_branch, "cwd")?;
+    Ok(canonical_candidate)
+}
+
+fn open_pilot_repo(path: &Path, label: &str) -> CommandResult<git2::Repository> {
+    git2::Repository::discover(path)
+        .or_else(|_| git2::Repository::open(path))
+        .map_err(|error| {
+            command_error(format!(
+                "Pilot {} is not a Git repository: {}",
+                label, error
+            ))
+        })
+}
+
+fn canonicalize_repo_commondir(repo: &git2::Repository) -> CommandResult<PathBuf> {
+    repo.commondir().canonicalize().map_err(|error| {
+        command_error(format!(
+            "Failed to resolve the Pilot repository common directory: {}",
+            error
+        ))
+    })
+}
+
+fn validate_pilot_branch(
+    repo: &git2::Repository,
+    expected_branch: Option<&str>,
+    label: &str,
+) -> CommandResult<()> {
+    let Some(expected_branch) = expected_branch
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let actual_branch = repo
+        .head()
+        .ok()
+        .and_then(|head| head.shorthand().ok().map(str::to_string));
+    if actual_branch.as_deref() != Some(expected_branch) {
+        return Err(command_error(format!(
+            "Pilot {} is on branch {:?}; expected {}.",
+            label, actual_branch, expected_branch
+        )));
+    }
+    Ok(())
 }
 
 fn build_terminal_record(
@@ -1971,7 +2095,8 @@ pub async fn terminal_create_tab(
     let workspace_path = workspace_root.inner().0.read().await.clone();
     let metadata_root =
         resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let project = resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
+    let project =
+        resolve_project_target(&workspace_path, &metadata_root, &project_id, false).await?;
     let session_cwd =
         resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?;
     let record = build_terminal_record(
@@ -2001,6 +2126,8 @@ pub async fn terminal_start_command_tab(
     title: String,
     task_id: Option<String>,
     prompt_context: Option<TerminalPromptContext>,
+    pilot_only: Option<bool>,
+    expected_branch: Option<String>,
     command: String,
 ) -> CommandResult<TerminalTabDto> {
     let trimmed_command = command.trim();
@@ -2009,11 +2136,23 @@ pub async fn terminal_start_command_tab(
     }
 
     let workspace_path = workspace_root.inner().0.read().await.clone();
-    let metadata_root =
-        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?;
-    let project = resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
-    let session_cwd =
-        resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?;
+    let pilot_only = pilot_only.unwrap_or(false);
+    let metadata_root = if pilot_only {
+        resolve_existing_metadata_root(workspace_path.clone()).await?
+    } else {
+        resolve_metadata_root(workspace_path.clone(), git_state.inner().clone()).await?
+    };
+    let project =
+        resolve_project_target(&workspace_path, &metadata_root, &project_id, pilot_only).await?;
+    let session_cwd = if pilot_only {
+        resolve_pilot_session_cwd(
+            &project.workspace_path,
+            cwd.as_deref(),
+            expected_branch.as_deref(),
+        )?
+    } else {
+        resolve_session_cwd(&project.workspace_path, cwd.as_deref(), git_state.inner())?
+    };
     let mut record = build_terminal_record(
         kind.trim(),
         project_id,
@@ -2883,7 +3022,7 @@ pub async fn create_legacy_session_internal(
             let metadata_root =
                 resolve_metadata_root(workspace_path.clone(), git_state.clone()).await?;
             let project =
-                resolve_project_target(&workspace_path, &metadata_root, &project_id).await?;
+                resolve_project_target(&workspace_path, &metadata_root, &project_id, false).await?;
             let session_cwd =
                 resolve_session_cwd(&project.workspace_path, cwd.as_deref(), &git_state)?;
             (
@@ -3631,6 +3770,34 @@ mod tests {
         }
     }
 
+    fn init_terminal_test_repo(path: &Path, branch_name: &str) -> Repository {
+        fs::create_dir_all(path).expect("repository path");
+        let repo = Repository::init(path).expect("repository");
+        fs::write(path.join("README.md"), "ready\n").expect("readme");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add readme");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("tree");
+        let signature = Signature::now("Macro Test", "macro@example.test").expect("signature");
+        let commit_id = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                "Initial commit",
+                &tree,
+                &[],
+            )
+            .expect("initial commit");
+        let commit = repo.find_commit(commit_id).expect("commit");
+        repo.branch(branch_name, &commit, false).expect("branch");
+        repo.set_head(&format!("refs/heads/{branch_name}"))
+            .expect("checkout branch");
+        drop(commit);
+        drop(tree);
+        repo
+    }
+
     #[tokio::test]
     async fn resolve_project_target_accepts_standalone_project() {
         let temp = TempDir::new().expect("temp dir");
@@ -3662,12 +3829,154 @@ mod tests {
         )
         .expect("write workspace state");
 
-        let target = resolve_project_target(temp.path(), temp.path(), "project-octan-sales")
+        let target = resolve_project_target(temp.path(), temp.path(), "project-octan-sales", false)
             .await
             .expect("standalone project target");
 
         assert_eq!(target.project_name, "project-octan-sales");
         assert_eq!(target.workspace_path, project_dir.canonicalize().unwrap());
+    }
+
+    #[tokio::test]
+    async fn existing_metadata_root_does_not_create_or_migrate_metadata() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let legacy_root = metadata_root.join("legacy");
+        fs::create_dir_all(&legacy_root).expect("metadata root");
+        fs::write(legacy_root.join("workspace.json"), b"legacy").expect("legacy state");
+        let before = fs::read(legacy_root.join("workspace.json")).expect("read legacy state");
+
+        let resolved = resolve_existing_metadata_root(temp.path().to_path_buf())
+            .await
+            .expect("existing metadata root");
+
+        assert_eq!(resolved, metadata_root);
+        assert_eq!(
+            fs::read(legacy_root.join("workspace.json")).unwrap(),
+            before
+        );
+        assert!(metadata_root.join("legacy").is_dir());
+        assert!(!temp.path().join("macro-metadata-worktree").exists());
+    }
+
+    #[tokio::test]
+    async fn pilot_project_target_uses_the_linked_project_from_primary_state() {
+        let temp = TempDir::new().expect("temp dir");
+        let metadata_root = temp.path().join(".macro");
+        let project_a_path = temp.path().join("project-a");
+        let project_b_path = temp.path().join("project-b");
+        fs::create_dir_all(&metadata_root).expect("metadata root");
+        fs::create_dir_all(&project_a_path).expect("project a");
+        fs::create_dir_all(&project_b_path).expect("project b");
+        let state = WorkspaceState {
+            standalone_projects: vec![
+                terminal_test_project("project-a", "project-a"),
+                terminal_test_project("project-b", "project-b"),
+            ],
+            ..WorkspaceState::default()
+        };
+        fs::write(
+            metadata_root.join("workspace.json"),
+            serde_json::to_vec_pretty(&state).expect("serialize state"),
+        )
+        .expect("write primary state");
+
+        let target = resolve_project_target(temp.path(), &metadata_root, "project-b", true)
+            .await
+            .expect("pilot project target");
+
+        assert_eq!(target.project_name, "project-b");
+        assert_eq!(
+            target.workspace_path,
+            project_b_path.canonicalize().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_metadata_root_refuses_to_initialize_missing_metadata() {
+        let temp = TempDir::new().expect("temp dir");
+
+        let error = resolve_existing_metadata_root(temp.path().to_path_buf())
+            .await
+            .expect_err("missing metadata must fail");
+
+        assert!(error.message.contains("existing Macro metadata root"));
+        assert!(!temp.path().join(".macro").exists());
+    }
+
+    #[test]
+    fn pilot_cwd_accepts_nested_macro_worktree_on_expected_branch() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path().join("project");
+        let repo = init_terminal_test_repo(&project_root, "develop");
+        let develop_commit = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("develop commit");
+        repo.branch("feature", &develop_commit, false)
+            .expect("feature branch");
+        let worktree_path = project_root.join(".macro/worktrees/feature");
+        fs::create_dir_all(worktree_path.parent().unwrap()).expect("worktree parent");
+        let reference = repo
+            .find_reference("refs/heads/feature")
+            .expect("feature reference");
+        let mut options = git2::WorktreeAddOptions::new();
+        options.reference(Some(&reference));
+        repo.worktree("feature-worktree", &worktree_path, Some(&options))
+            .expect("feature worktree");
+
+        let resolved = resolve_pilot_session_cwd(
+            &project_root,
+            Some(worktree_path.to_str().unwrap()),
+            Some("feature"),
+        )
+        .expect("nested feature worktree");
+
+        assert_eq!(resolved, worktree_path.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn pilot_cwd_rejects_wrong_branch_at_project_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path().join("project");
+        init_terminal_test_repo(&project_root, "develop");
+
+        let error = resolve_pilot_session_cwd(
+            &project_root,
+            Some(project_root.to_str().unwrap()),
+            Some("feature"),
+        )
+        .expect_err("wrong project branch must fail");
+
+        assert!(error.message.contains("expected feature"));
+    }
+
+    #[test]
+    fn pilot_cwd_rejects_nested_repository_and_direct_nested_cwd() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_root = temp.path().join("project");
+        init_terminal_test_repo(&project_root, "feature");
+        let nested_repo_path = project_root.join(".macro/worktrees/third-party");
+        init_terminal_test_repo(&nested_repo_path, "feature");
+
+        let error = resolve_pilot_session_cwd(
+            &project_root,
+            Some(nested_repo_path.to_str().unwrap()),
+            Some("feature"),
+        )
+        .expect_err("nested third-party repository must fail");
+        assert!(
+            error.message.contains("worktree") || error.message.contains("different repository")
+        );
+
+        let error = resolve_pilot_session_cwd(
+            &project_root,
+            Some(nested_repo_path.to_str().unwrap()),
+            None,
+        )
+        .expect_err("direct nested cwd must fail");
+        assert!(error.message.contains("selected project root"));
     }
 
     #[test]

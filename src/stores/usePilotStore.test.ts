@@ -21,12 +21,13 @@ const revokeSession = mock(async (_id: string) => ({ revocationConfirmed: true }
 const deleteAccount = mock(async () => ({ revocationConfirmed: true }));
 const resolveAccess = mock(async () => undefined);
 const connect = mock(async () => undefined);
+const resumeVaultAccess = mock(async (): Promise<void> => undefined);
 const signOut = async () => { state = { ...state, account: null, deviceSession: null, status: 'signed_out' as const }; subscriber(); return { revocationConfirmed: false }; };
 const logout = mock(signOut);
 mock.module('../services/macroPilot/nativeClient', () => ({ ...native, macroPilotNativeClient: {
   getState: () => state, subscribe: (listener: () => void) => { subscriber = listener; return () => undefined; },
   initialize: async () => undefined, getAccountCatalog, listAccessRequests, revokeSession, deleteAccount,
-  resolveAccess, connect,
+  resolveAccess, connect, resumeVaultAccess,
   logout,
 } }));
 const { usePilotStore } = await import('./usePilotStore');
@@ -43,10 +44,36 @@ beforeEach(() => {
   listAccessRequests.mockReset(); listAccessRequests.mockImplementation(async () => []);
   revokeSession.mockReset(); revokeSession.mockImplementation(async () => ({ revocationConfirmed: true }));
   logout.mockReset(); logout.mockImplementation(signOut);
+  resumeVaultAccess.mockReset(); resumeVaultAccess.mockImplementation(async () => undefined);
   deleteAccount.mockClear(); resolveAccess.mockClear(); connect.mockClear();
 });
 
 describe('Pilot account store', () => {
+  it('allows logout to preempt explicit vault recovery and discards its late result', async () => {
+    const pending = deferred<void>();
+    resumeVaultAccess.mockImplementation(() => pending.promise);
+    const recovery = usePilotStore.getState().resumeVaultAccess();
+    await expect(usePilotStore.getState().resumeVaultAccess()).rejects.toThrow('conflict');
+    await expect(usePilotStore.getState().logout()).resolves.toBe(false);
+    pending.resolve();
+    await expect(recovery).rejects.toThrow('context_changed');
+    expect(resumeVaultAccess).toHaveBeenCalledTimes(1);
+    expect(getAccountCatalog).not.toHaveBeenCalled();
+    expect(usePilotStore.getState()).toMatchObject({ status: 'signed_out', busy: false });
+  });
+
+  it('updates the vault error badge from client recovery during account refresh', async () => {
+    state = { ...state, status: 'vault_unavailable', lastError: 'vault_unavailable' }; subscriber();
+    getAccountCatalog.mockImplementation(async () => {
+      state = { ...state, status: 'connected', lastError: null }; subscriber();
+      return catalog;
+    });
+    await usePilotStore.getState().refreshAccount();
+    expect(usePilotStore.getState()).toMatchObject({
+      status: 'connected', lastError: null, accountCatalog: catalog, busy: false, reading: false,
+    });
+  });
+
   it('loads account management without an instance', async () => {
     await usePilotStore.getState().refreshAccount();
     expect(usePilotStore.getState().accountCatalog).toEqual(catalog);

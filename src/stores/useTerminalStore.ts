@@ -91,7 +91,7 @@ interface TerminalStore extends TerminalVisibilityState {
     sessionId: string,
     executionId?: string | null
   ) => Promise<tauriIpc.TerminalSessionDto>;
-  initialize: () => Promise<void>;
+  initialize: (options?: { syncDisplayMetadata?: boolean }) => Promise<void>;
   togglePanel: () => Promise<void>;
   setPanelOpen: (open: boolean) => void;
   setPanelHeight: (height: number) => void;
@@ -132,6 +132,8 @@ interface TerminalStore extends TerminalVisibilityState {
     command: string;
     reveal: boolean;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
+    beforeEffect?: () => Promise<void>;
+    expectedBranch?: string | null;
   }) => Promise<TerminalTab>;
   startWorktreeSetupCommandTab: (params: {
     taskId: string;
@@ -140,6 +142,8 @@ interface TerminalStore extends TerminalVisibilityState {
     title: string;
     command: string;
     promptContext?: tauriIpc.TerminalPromptContextInput | null;
+    beforeEffect?: () => Promise<void>;
+    expectedBranch?: string | null;
   }) => Promise<TerminalTab>;
   syncTerminalDisplayMetadata: (params?: { taskId?: string | null }) => Promise<void>;
   reconnectTab: (tabId: string) => Promise<TerminalTab>;
@@ -1033,7 +1037,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return get().upsertSession(session);
     },
 
-    initialize: async () => {
+    initialize: async (options) => {
       if (get().initialized) {
         return;
       }
@@ -1092,7 +1096,7 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
             hiddenTerminalTabCount: computeCurrentHiddenCount(nextState),
           });
           await registerListeners();
-          await get().syncTerminalDisplayMetadata();
+          if (options?.syncDisplayMetadata !== false) await get().syncTerminalDisplayMetadata();
         } catch (error) {
           set({ initializing: false });
           throw error;
@@ -1347,11 +1351,14 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return tab;
     },
 
-    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext }) => {
-      await get().initialize();
+    startTaskCommandTab: async ({ taskId, projectId, cwd, title, command, reveal, promptContext, beforeEffect, expectedBranch }) => {
+      await beforeEffect?.();
+      await get().initialize(beforeEffect ? { syncDisplayMetadata: false } : undefined);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
+      await beforeEffect?.();
       const dto = await tauriIpc.terminalStartCommandTab({
+        ...(beforeEffect ? { pilotOnly: true, expectedBranch } : {}),
         kind: 'task',
         projectId: resolvedProjectId,
         cwd,
@@ -1365,11 +1372,14 @@ export const useTerminalStore = create<TerminalStore>((set, get) => {
       return tab;
     },
 
-    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext }) => {
-      await get().initialize();
+    startWorktreeSetupCommandTab: async ({ taskId, projectId, cwd, title, command, promptContext, beforeEffect, expectedBranch }) => {
+      await beforeEffect?.();
+      await get().initialize(beforeEffect ? { syncDisplayMetadata: false } : undefined);
       const resolvedProject = resolveSupportedTerminalProject(projectId);
       const resolvedProjectId = resolvedProject.projectId;
+      await beforeEffect?.();
       const dto = await tauriIpc.terminalStartCommandTab({
+        ...(beforeEffect ? { pilotOnly: true, expectedBranch } : {}),
         kind: 'worktree_setup',
         projectId: resolvedProjectId,
         cwd,

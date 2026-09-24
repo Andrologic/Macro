@@ -50,6 +50,8 @@ interface LoadArchitectPlanServiceOptions {
     operation: string;
     workspaceScope?: WorkspaceScope;
   }>;
+  readPaths?: string[];
+  failDelete?: (path: string) => boolean;
   failWriteOnce?: (params: {
     path: string;
     workspacePath?: string | null;
@@ -196,6 +198,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       workspaceScope?: WorkspaceScope;
     }) => {
       options.workspaceScopeCalls?.push({ operation: 'read', workspaceScope: params.workspaceScope });
+      options.readPaths?.push(params.path);
       const workspacePath = params.workspacePath ?? '';
       const content = workspaceFilesByWorkspacePath[workspacePath]?.[normalizeMockPath(params.path)];
       if (typeof content !== 'string') {
@@ -244,6 +247,7 @@ const registerArchitectPlanMocks = (options: LoadArchitectPlanServiceOptions = {
       workspaceScope?: WorkspaceScope;
     }) => {
       options.workspaceScopeCalls?.push({ operation: 'delete', workspaceScope: params.workspaceScope });
+      if (options.failDelete?.(params.path)) throw new Error('Injected deletion denied');
       const workspacePath = params.workspacePath ?? '';
       const workspaceFiles = workspaceFilesByWorkspacePath[workspacePath] ?? {};
       const normalizedPath = normalizeMockPath(params.path);
@@ -970,6 +974,12 @@ describe('architectPlanService', () => {
     };
     seedLegacyPlan(storage, legacyExpectedOnlyPlan);
 
+    const storageSnapshot = () => Array.from({ length: storage.length }, (_, index) => storage.key(index)!).sort().map(key => [key, storage.getItem(key)]);
+    const beforeRead = storageSnapshot();
+    const snapshot = await service.readArchitectPlanSnapshot(branchName, legacyExpectedOnlyPlan.id);
+    expect(snapshot?.projectIds).toEqual(['web']);
+    expect(storageSnapshot()).toEqual(beforeRead);
+
     const hydratedLegacy = await service.getArchitectPlan(branchName, legacyExpectedOnlyPlan.id);
     expect(hydratedLegacy?.projectIds).toEqual(['web']);
     expect(hydratedLegacy?.contextProjectIds).toEqual(['docs']);
@@ -1672,6 +1682,23 @@ describe('architectPlanService', () => {
       registrySnapshot,
       filesByWorkspacePath,
     });
+    const readPaths: string[] = [];
+    const readScopes: Array<{ operation: string; workspaceScope?: WorkspaceScope }> = [];
+    filesByWorkspacePath['/repos/docs']['branches/develop/plans/mixed-recovery-plan/artifacts/large.txt'] = 'Large artifact body';
+    service = await loadArchitectPlanService({ tauriAvailable: true, appSettings, workspaceRoot: '/repos/docs', registrySnapshot, filesByWorkspacePath, readPaths, workspaceScopeCalls: readScopes });
+    const beforeReadFiles = JSON.stringify(filesByWorkspacePath);
+    const beforeReadSettings = [...appSettings];
+    expect(await service.readArchitectPlanSnapshot(branchName, 'unrelated-missing-plan')).toBeNull();
+    await service.readArchitectPlanSnapshot(branchName, 'mixed-recovery-plan');
+    expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeReadFiles);
+    expect([...appSettings]).toEqual(beforeReadSettings);
+    expect(readPaths.some(path => path.includes('/artifacts/') || path.endsWith('/chat.jsonl'))).toBe(false);
+    expect(readScopes.filter(call => call.operation === 'read').every(call => call.workspaceScope === 'direct' || call.workspaceScope === 'metadata_existing')).toBe(true);
+    await expect(service.updateArchitectPlan({ branchName, planId: 'mixed-recovery-plan', description: 'Guarded update',
+      beforeEffect: async () => { throw new Error('authorization revoked'); },
+    })).rejects.toThrow('authorization revoked');
+    expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeReadFiles);
+    expect([...appSettings]).toEqual(beforeReadSettings);
     await service.listArchitectPlans(branchName, true, true);
 
     expect(JSON.parse(
@@ -1783,6 +1810,117 @@ describe('architectPlanService', () => {
         'branches/develop/plans/plan-task-metadata/tasks/task-remove/executed.md'
       ]
     ).toBe('# Executed task');
+    filesByWorkspacePath['/repos/web']['branches/develop/plans/plan-task-metadata/tasks/orphan/planned.md'] = 'Orphan';
+    service = await loadArchitectPlanService({ tauriAvailable: true, workspaceRoot: '/repos/web', registrySnapshot, filesByWorkspacePath,
+      failDelete: path => path.endsWith('/orphan/planned.md'),
+    });
+    await expect(service.updateArchitectPlan({ branchName, planId: 'plan-task-metadata', description: 'Guarded change',
+      beforeEffect: async () => undefined,
+    })).rejects.toThrow('content_unavailable');
+    expect(filesByWorkspacePath['/repos/web']['branches/develop/plans/plan-task-metadata/tasks/orphan/planned.md']).toBe('Orphan');
+  });
+
+  it('keeps foreign plan fields and orphaned planned files during a Pilot task rename', async () => {
+    const registrySnapshot: ValidProjectRegistrySnapshot = {
+      selectedGroupId: null,
+      selectedProjectId: null,
+      scopedProjectIds: [],
+      actionableProjectIds: ['web'],
+      readOnlyProjectIds: [],
+      actionableProjectIdSet: new Set(['web']),
+      readOnlyProjectIdSet: new Set<string>(),
+      validProjectIds: ['web'],
+      validProjectIdSet: new Set(['web']),
+      repoPathByProjectId: new Map([['web', '/repos/web']]),
+      workspacePathByProjectId: new Map([['web', '/repos/web']]),
+      gitFlowSettingsByProjectId: new Map(),
+      executionModeByProjectId: new Map([['web', 'git']]),
+      hasRegisteredProjects: true,
+    };
+    const filesByWorkspacePath: Record<string, Record<string, string>> = {
+      '/repos/web': {},
+    };
+
+    service = await loadArchitectPlanService({
+      tauriAvailable: true,
+      workspaceRoot: '/repos/web',
+      registrySnapshot,
+      filesByWorkspacePath,
+    });
+    const created = await service.createArchitectPlan({
+      branchName,
+      planId: 'pilot-task-rename',
+      projectIds: ['web'],
+      nodes: [
+        {
+          id: 'task-primary',
+          title: 'Primary task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/primary',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+        {
+          id: 'task-foreign',
+          title: 'Foreign task',
+          type: 'task',
+          status: 'pending',
+          dependencies: [],
+          assignedBranch: 'feature/foreign',
+          projectId: 'web',
+          projectIds: ['web'],
+        },
+      ],
+    });
+
+    const planPath = 'branches/develop/plans/pilot-task-rename/plan.json';
+    const indexPath = 'branches/develop/plans/index.json';
+    const manifestPath = 'branches/develop/plans/pilot-task-rename/manifest.json';
+    const rawPlan = JSON.parse(filesByWorkspacePath['/repos/web'][planPath] || '{}') as Record<string, any>;
+    rawPlan.foreignPlanField = { keep: true };
+    rawPlan.nodes[1].foreignNodeField = { keep: true };
+    filesByWorkspacePath['/repos/web'][planPath] = JSON.stringify(rawPlan, null, 2);
+    const rawIndex = JSON.parse(filesByWorkspacePath['/repos/web'][indexPath] || '{}') as Record<string, any>;
+    rawIndex.foreignIndexField = { keep: true };
+    rawIndex.plans[0].foreignSummaryField = { keep: true };
+    filesByWorkspacePath['/repos/web'][indexPath] = JSON.stringify(rawIndex, null, 2);
+    const rawManifest = JSON.parse(filesByWorkspacePath['/repos/web'][manifestPath] || '{}') as Record<string, any>;
+    rawManifest.foreignManifestField = { keep: true };
+    filesByWorkspacePath['/repos/web'][manifestPath] = JSON.stringify(rawManifest, null, 2);
+    const orphanPath = 'branches/develop/plans/pilot-task-rename/tasks/orphan/planned.md';
+    filesByWorkspacePath['/repos/web'][orphanPath] = 'Keep this orphan for desktop inspection';
+
+    await service.updateArchitectPlan({
+      branchName,
+      planId: created.id,
+      nodes: created.nodes.map((node: ArchitectPlanRecord['nodes'][number]) => node.id === 'task-primary'
+        ? { ...node, title: 'Renamed primary task' }
+        : node),
+      pilotTaskId: 'task-primary',
+      beforeEffect: async () => undefined,
+    });
+
+    const persistedPlan = JSON.parse(filesByWorkspacePath['/repos/web'][planPath] || '{}');
+    expect(persistedPlan.foreignPlanField).toEqual({ keep: true });
+    expect(persistedPlan.nodes[1].foreignNodeField).toEqual({ keep: true });
+    const persistedIndex = JSON.parse(filesByWorkspacePath['/repos/web'][indexPath] || '{}');
+    expect(persistedIndex.foreignIndexField).toEqual({ keep: true });
+    expect(persistedIndex.plans[0].foreignSummaryField).toEqual({ keep: true });
+    const persistedManifest = JSON.parse(filesByWorkspacePath['/repos/web'][manifestPath] || '{}');
+    expect(persistedManifest.foreignManifestField).toEqual({ keep: true });
+    expect(filesByWorkspacePath['/repos/web'][orphanPath]).toBe('Keep this orphan for desktop inspection');
+    expect(filesByWorkspacePath['/repos/web'][
+      'branches/develop/plans/pilot-task-rename/tasks/task-primary/planned.md'
+    ]).toContain('Renamed primary task');
+    const beforeNoop = JSON.stringify(filesByWorkspacePath);
+    const renamed = await service.readArchitectPlanSnapshot(branchName, created.id);
+    await service.updateArchitectPlan({
+      branchName, planId: created.id, nodes: renamed!.nodes,
+      pilotTaskId: 'task-primary', beforeEffect: async () => undefined,
+    });
+    expect(JSON.stringify(filesByWorkspacePath)).toBe(beforeNoop);
   });
 
   it('does not treat unscoped legacy plans as visible inside a selected project scope', () => {

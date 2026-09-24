@@ -172,8 +172,14 @@ pub async fn config_delete_orphan_secret(
 pub async fn config_get_snapshot(
     manager: State<'_, ConfigManager>,
     project_ids: Option<Vec<String>>,
+    observe_only: Option<bool>,
 ) -> Result<ConfigSnapshot, ConfigApiError> {
-    manager.get_snapshot(&project_ids.unwrap_or_default()).await
+    let project_ids = project_ids.unwrap_or_default();
+    if observe_only.unwrap_or(false) {
+        manager.get_loaded_snapshot(&project_ids).await
+    } else {
+        manager.get_snapshot(&project_ids).await
+    }
 }
 
 #[tauri::command]

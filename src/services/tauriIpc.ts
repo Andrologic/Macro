@@ -1354,7 +1354,7 @@ export interface TerminalOutputEvent {
   updated_at: string;
 }
 
-export type WorkspaceScope = "default" | "metadata" | "direct";
+export type WorkspaceScope = "default" | "metadata" | "metadata_existing" | "direct";
 export type FrontendLogLevel = "debug" | "info" | "warn" | "error";
 
 export interface FrontendLogParams {
@@ -2323,11 +2323,13 @@ export async function gitBranchCreate(params: {
 
 export async function gitBranchDelete(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   branchName: string;
   force?: boolean;
 }): Promise<void> {
   return invoke("git_branch_delete", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     branchName: params.branchName,
     force: params.force ?? null,
   });
@@ -2712,6 +2714,7 @@ export async function gitTaskStartPoints(params: {
 
 export async function gitWorktreeCreate(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   taskId: string;
   branchName: string;
   fromRef?: string | null;
@@ -2720,6 +2723,7 @@ export async function gitWorktreeCreate(params: {
 }): Promise<GitWorktreeEnsureDto> {
   return invoke<GitWorktreeEnsureDto>("git_worktree_create", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     taskId: params.taskId,
     branchName: params.branchName,
     fromRef: params.fromRef ?? null,
@@ -2730,12 +2734,14 @@ export async function gitWorktreeCreate(params: {
 
 export async function gitWorktreeRemove(params: {
   repoPath: string;
+  pilotOnly?: boolean;
   taskId: string;
   force?: boolean;
   branchName?: string | null;
 }): Promise<GitWorktreeRemoveDto> {
   return invoke<GitWorktreeRemoveDto>("git_worktree_remove", {
     repoPath: params.repoPath,
+    ...(params.pilotOnly ? { pilotOnly: true } : {}),
     taskId: params.taskId,
     force: params.force ?? null,
     branchName: params.branchName ?? null,
@@ -2847,11 +2853,14 @@ export async function macroBranchStatus(params?: {
 }
 
 export async function macroBranchCommitIfDirty(params?: {
+  pilotOnly?: boolean;
+  metadataPaths?: string[];
   message?: string;
   workspacePath?: string | null;
 }): Promise<MacroBranchSyncDto> {
   return invoke<MacroBranchSyncDto>("macro_branch_commit_if_dirty", {
     message: params?.message ?? null,
+    ...(params?.pilotOnly ? { pilotOnly: true, metadataPaths: params.metadataPaths ?? [] } : {}),
     workspacePath: params?.workspacePath ?? null,
   });
 }
@@ -3386,11 +3395,23 @@ export async function workspaceFinalizeManualFeature(params: {
   );
 }
 
+type PilotManualTaskMutation = { action: 'rename'; title: string } | { action: 'archive'; reason: string | null; mergedAt: string | null }
+  | { action: 'delete'; draftOnly: boolean } | { action: 'bind_checkpoint'; projectId: string; checkpointId: string };
+async function workspacePilotMutateManualTask(taskId: string, mutation: Extract<PilotManualTaskMutation, { action: 'delete' }>): Promise<null>;
+async function workspacePilotMutateManualTask(taskId: string, mutation: Exclude<PilotManualTaskMutation, { action: 'delete' }>): Promise<WorkspaceManualFeatureDto>;
+async function workspacePilotMutateManualTask(taskId: string, mutation: PilotManualTaskMutation): Promise<WorkspaceManualFeatureDto | null> {
+  const result = await invoke<WorkspaceManualFeatureDto | null>('workspace_pilot_mutate_manual_task', { taskId, mutation });
+  if (mutation.action !== 'delete' && !result) throw new Error('content_unavailable');
+  return result;
+}
+
 export async function workspaceBindManualFeatureDirectCheckpoint(params: {
   taskId: string;
   projectId: string;
   checkpointId: string;
+  pilotOnly?: boolean;
 }): Promise<WorkspaceManualFeatureDto> {
+  if (params.pilotOnly) return workspacePilotMutateManualTask(params.taskId, { action: 'bind_checkpoint', projectId: params.projectId, checkpointId: params.checkpointId });
   return invoke<WorkspaceManualFeatureDto>(
     'workspace_bind_manual_feature_direct_checkpoint',
     params,
@@ -3416,14 +3437,18 @@ export async function workspaceRevertManualFeatureToDraft(params: {
 
 export async function workspaceDeleteManualFeatureDraft(
   taskId: string,
+  pilotOnly = false,
 ): Promise<void> {
+  if (pilotOnly) { await workspacePilotMutateManualTask(taskId, { action: 'delete', draftOnly: true }); return; }
   return invoke("workspace_delete_manual_feature_draft", { taskId });
 }
 
 export async function workspaceRenameManualFeature(params: {
   taskId: string;
   title: string;
+  pilotOnly?: boolean;
 }): Promise<WorkspaceManualFeatureDto> {
+  if (params.pilotOnly) return workspacePilotMutateManualTask(params.taskId, { action: 'rename', title: params.title });
   return invoke<WorkspaceManualFeatureDto>("workspace_rename_manual_feature", {
     taskId: params.taskId,
     title: params.title,
@@ -3434,7 +3459,9 @@ export async function workspaceArchiveManualFeature(params: {
   taskId: string;
   reason?: string | null;
   mergedAt?: string | null;
+  pilotOnly?: boolean;
 }): Promise<WorkspaceManualFeatureDto> {
+  if (params.pilotOnly) return workspacePilotMutateManualTask(params.taskId, { action: 'archive', reason: params.reason ?? null, mergedAt: params.mergedAt ?? null });
   return invoke<WorkspaceManualFeatureDto>("workspace_archive_manual_feature", {
     taskId: params.taskId,
     reason: params.reason ?? null,
@@ -3452,7 +3479,9 @@ export async function workspaceRestoreManualFeature(
 
 export async function workspaceDeleteManualFeature(
   taskId: string,
+  pilotOnly = false,
 ): Promise<void> {
+  if (pilotOnly) { await workspacePilotMutateManualTask(taskId, { action: 'delete', draftOnly: false }); return; }
   return invoke("workspace_delete_manual_feature", { taskId });
 }
 
@@ -4043,6 +4072,8 @@ export async function terminalStartCommandTab(params: {
   taskId?: string | null;
   promptContext?: TerminalPromptContextInput | null;
   command: string;
+  pilotOnly?: boolean;
+  expectedBranch?: string | null;
 }): Promise<TerminalTabDto> {
   return invoke<TerminalTabDto>("terminal_start_command_tab", {
     kind: params.kind,
@@ -4052,6 +4083,7 @@ export async function terminalStartCommandTab(params: {
     taskId: params.taskId ?? null,
     promptContext: params.promptContext ?? null,
     command: params.command,
+    ...(params.pilotOnly ? { pilotOnly: true, expectedBranch: params.expectedBranch ?? null } : {}),
   });
 }
 
@@ -4127,8 +4159,9 @@ export async function terminalCloseTab(tabId: string): Promise<void> {
 
 export async function configGetSnapshot(
   projectIds: string[] = [],
+  observeOnly = false,
 ): Promise<ConfigSnapshot> {
-  return invoke<ConfigSnapshot>("config_get_snapshot", { projectIds });
+  return invoke<ConfigSnapshot>("config_get_snapshot", { projectIds, ...(observeOnly ? { observeOnly: true } : {}) });
 }
 
 export async function configGetDocument(
@@ -4489,7 +4522,33 @@ export interface PilotSecretScope {
   /** Session ID, retained instance creation ID, or client-generated attempt key. */
   resource_id: string;
 }
-export type PilotSecretError = 'invalid_scope' | 'invalid_secret' | 'vault_unavailable';
+export type PilotSecretError = 'invalid_scope' | 'invalid_secret' | 'intervention_required' | 'cancelled' | 'vault_unavailable' | 'context_changed' | 'suspended';
+export type PilotVaultStatus = 'ready' | 'intervention_required' | 'cancelled' | 'vault_unavailable' | 'suspended';
+export interface PilotVaultContext {
+  configuration_id: string;
+  relay_origin: string;
+  owner_id: string;
+}
+export interface PilotVaultLease { generation: string; status: PilotVaultStatus }
+
+export async function pilotVaultActivate(context: PilotVaultContext, generation?: string): Promise<PilotVaultLease> {
+  requireNativePilotVault();
+  return invoke('pilot_vault_activate', { context, generation });
+}
+export async function pilotVaultInvalidate(generation: string): Promise<PilotVaultLease> {
+  requireNativePilotVault();
+  return invoke('pilot_vault_invalidate', { generation });
+}
+/** Call only from an explicit user action; ordinary reads never enable OS interaction. */
+export async function pilotVaultResume(scopes: PilotSecretScope[], generation: string): Promise<PilotVaultLease> {
+  requireNativePilotVault();
+  return invoke('pilot_vault_resume', { scopes, generation });
+}
+export async function pilotVaultSubscribe(listener: (state: PilotVaultLease) => void): Promise<() => void> {
+  requireNativePilotVault();
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<PilotVaultLease>('pilot-vault-state', event => listener(event.payload));
+}
 
 function requireNativePilotVault(): void {
   if (typeof window === 'undefined' || isBrowserRuntimeBridgeEnabled() ||
@@ -4499,17 +4558,17 @@ function requireNativePilotVault(): void {
   }
 }
 
-export async function pilotSecretRead(scope: PilotSecretScope): Promise<string | null> {
+export async function pilotSecretRead(scope: PilotSecretScope, generation?: string): Promise<string | null> {
   requireNativePilotVault();
-  return invoke<string | null>('pilot_secret_read', { scope });
+  return invoke<string | null>('pilot_secret_read', { scope, generation });
 }
-export async function pilotSecretWrite(scope: PilotSecretScope, secret: string): Promise<void> {
+export async function pilotSecretWrite(scope: PilotSecretScope, secret: string, generation?: string): Promise<void> {
   requireNativePilotVault();
-  return invoke<void>('pilot_secret_write', { scope, secret });
+  return invoke<void>('pilot_secret_write', { scope, secret, generation });
 }
-export async function pilotSecretDelete(scope: PilotSecretScope): Promise<void> {
+export async function pilotSecretDelete(scope: PilotSecretScope, generation?: string): Promise<void> {
   requireNativePilotVault();
-  return invoke<void>('pilot_secret_delete', { scope });
+  return invoke<void>('pilot_secret_delete', { scope, generation });
 }
 
 // Native immutable Pilot review primitives. These do not negotiate v2 transport.
@@ -4539,4 +4598,27 @@ export async function pilotReviewCommit(input: {
   key: string; expectedValueJson: string | null; valueJson: string; executeBefore: string; branches?: { base: string; head: string };
 }): Promise<boolean> {
   return invoke<boolean>('pilot_review_commit', { input });
+}
+
+/** Bounded public tool metadata; never reads message bodies or provider replay into IPC. */
+export interface PilotToolTraceMetadata {
+  message_id: string;
+  trace_index: number;
+  tool_call_id: string;
+  tool_name: string;
+  status: 'running' | 'pending_approval' | 'denied' | 'done';
+  has_detail: boolean;
+  detail_bytes: number;
+}
+export async function pilotToolTracesList(conversationId: string): Promise<{ revision: number; traces: PilotToolTraceMetadata[] }> {
+  return invoke<{ revision: number; traces: PilotToolTraceMetadata[] }>('pilot_tool_traces_list', { conversationId }).catch(pilotToolTraceError);
+}
+export async function pilotToolTraceRead(params: { conversationId: string; messageId: string; traceIndex: number; expectedRevision: number }): Promise<{ revision: number; detail: string }> {
+  return invoke<{ revision: number; detail: string }>('pilot_tool_trace_read', params).catch(pilotToolTraceError);
+}
+
+function pilotToolTraceError(error: unknown): never {
+  const message = typeof error === 'string' ? error : error && typeof error === 'object' && 'message' in error ? error.message : undefined;
+  const codes = ['not_found', 'content_unavailable', 'resource_limit', 'stale_revision'];
+  throw new Error(typeof message === 'string' && codes.includes(message) ? message : 'unavailable');
 }

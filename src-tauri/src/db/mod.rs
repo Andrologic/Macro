@@ -5,6 +5,7 @@
 pub mod agent_runs;
 #[allow(dead_code)]
 pub mod models;
+pub mod pilot_tools;
 pub mod repository;
 
 use crate::ai::macro_ai;
@@ -42,6 +43,9 @@ const MIGRATION_003_SQL: &str = include_str!("migrations/002_agent_runs.sql");
 const MIGRATION_004_VERSION: i64 = 4;
 const MIGRATION_004_NAME: &str = "004_message_search";
 const MIGRATION_004_SQL: &str = include_str!("migrations/004_message_search.sql");
+const MIGRATION_005_VERSION: i64 = 5;
+const MIGRATION_005_NAME: &str = "005_pilot_tool_trace_revisions";
+const MIGRATION_005_SQL: &str = include_str!("migrations/005_pilot_tool_trace_revisions.sql");
 
 fn app_db_path(app_dir: &Path) -> PathBuf {
     app_dir.join("macro.db")
@@ -176,6 +180,19 @@ async fn run_migrations_on_connection(connection: &mut SqliteConnection) -> DbRe
             MIGRATION_004_VERSION,
             MIGRATION_004_NAME.to_string(),
             MIGRATION_004_SQL.to_string(),
+        )
+        .await?;
+    }
+
+    if !list_applied_migrations(connection)
+        .await?
+        .contains(&MIGRATION_005_VERSION)
+    {
+        apply_migration(
+            connection,
+            MIGRATION_005_VERSION,
+            MIGRATION_005_NAME.to_string(),
+            MIGRATION_005_SQL.to_string(),
         )
         .await?;
     }

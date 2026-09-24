@@ -31,6 +31,12 @@ export const configurationGetSnapshot = (projectIds: string[] = []): Promise<Con
         body: JSON.stringify({ projectIds }),
       });
 
+/** Pilot observes approved configuration already loaded by desktop lifecycle. */
+export const configurationGetLoadedSnapshot = (projectIds: string[] = []): Promise<ConfigSnapshot> => {
+  if (!isNativeConfigClientAvailable()) return Promise.reject(new Error('content_unavailable'));
+  return tauriIpc.configGetSnapshot(projectIds, true);
+};
+
 export interface ScopedTurnConfiguration {
   projectIds: string[];
   focusProjectId: string | null;

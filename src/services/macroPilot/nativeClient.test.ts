@@ -137,11 +137,14 @@ describe('MacroPilotNativeClient', () => {
     await harness.client.confirmAccount(account.account_id);
 
     expect(harness.client.getState()).toMatchObject({ status: 'connected', account, deviceSession: session, attempt: null });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.entries()]).toContainEqual([
       `session_token:${session.ref.session_id}`,
       sessionSecret,
     ]);
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()].some((key) => key.startsWith('claim_secret:'))).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()].some((key) => key.startsWith('poll_secret:'))).toBe(false);
     expect(JSON.stringify(harness.values)).not.toContain(sessionSecret);
   });
@@ -216,6 +219,7 @@ describe('MacroPilotNativeClient', () => {
       return persist(key, value);
     };
     await expect(harness.client.confirmAccount(account.account_id)).rejects.toMatchObject({ code: 'vault_unavailable' });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()].map((key) => key.split(':')[0]).sort()).toEqual(['claim_secret', 'poll_secret']);
     harness.dependencies.setStateValue = persist;
     const restarted = new MacroPilotNativeClient(harness.dependencies);
@@ -223,6 +227,7 @@ describe('MacroPilotNativeClient', () => {
     expect(restarted.getState().attempt?.identifiedAccount).toEqual(account);
     await restarted.confirmAccount(account.account_id);
     expect(restarted.getState()).toMatchObject({ deviceSession: session, attempt: null, status: 'connected' });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()]).toEqual([`session_token:${session.ref.session_id}`]);
   });
 
@@ -237,6 +242,7 @@ describe('MacroPilotNativeClient', () => {
     await harness.client.pollAuth();
     await expect(harness.client.confirmAccount(account.account_id)).rejects.toMatchObject({ code: 'unauthorized' });
     expect(harness.client.getState()).toMatchObject({ attempt: null, deviceSession: null, status: 'signed_out' });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(harness.secrets.size).toBe(0);
   });
 
@@ -254,11 +260,13 @@ describe('MacroPilotNativeClient', () => {
     harness.dependencies.secretDelete = async () => { throw new Error('vault unavailable'); };
     await harness.client.confirmAccount(account.account_id);
     expect(harness.client.getState()).toMatchObject({ status: 'connected', deviceSession: session, attempt: null });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(harness.secrets.size).toBe(3);
     harness.dependencies.secretDelete = remove;
     const restarted = new MacroPilotNativeClient(harness.dependencies);
     await restarted.initialize();
     expect(restarted.getState()).toMatchObject({ status: 'connected', deviceSession: session, attempt: null });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()]).toEqual([`session_token:${session.ref.session_id}`]);
   });
 
@@ -273,6 +281,7 @@ describe('MacroPilotNativeClient', () => {
       return persist(key, value);
     };
     await expect(harness.client.connect('https://pilot.example.com', 'Studio Mac')).rejects.toMatchObject({ code: 'vault_unavailable' });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect(harness.secrets.size).toBe(0);
     expect(harness.client.getState().attempt).toBeNull();
     await expect(harness.client.pollAuth()).rejects.toMatchObject({ code: 'invalid_configuration' });
@@ -297,12 +306,14 @@ describe('MacroPilotNativeClient', () => {
       return persist(key, value);
     };
     await expect(harness.client.createOrAttachInstance({ label: 'Studio Mac' })).rejects.toThrow('metadata unavailable');
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()]).toEqual([`session_token:${session.ref.session_id}`]);
     expect(harness.requests.some(({ url }) => url.endsWith('/instances'))).toBe(false);
     expect(harness.client.getState().instance).toBeNull();
     // A second attempt must prepare a new key, rather than read an unpersisted identifier.
     await expect(harness.client.createOrAttachInstance({ label: 'Studio Mac' })).rejects.toThrow('metadata unavailable');
     expect(harness.events.filter((event) => event === 'secret:instance_key')).toHaveLength(2);
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()]).toEqual([`session_token:${session.ref.session_id}`]);
   });
 
@@ -354,6 +365,7 @@ describe('MacroPilotNativeClient', () => {
     await expect(harness.client.logout()).resolves.toEqual({ revocationConfirmed: false });
 
     expect(harness.client.getState()).toMatchObject({ status: 'signed_out', account: null, deviceSession: null });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()].some((key) => key.startsWith('session_token:'))).toBe(false);
   });
 
@@ -380,6 +392,7 @@ describe('MacroPilotNativeClient', () => {
 
     expect(harness.client.getState().status).toBe('connected');
     expect(harness.requests.filter(({ url }) => url.endsWith('/auth/attempts'))).toHaveLength(1);
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()].some((key) => key.startsWith('session_token:'))).toBe(true);
   });
 
@@ -411,7 +424,9 @@ describe('MacroPilotNativeClient', () => {
       ).rejects.toMatchObject({ code: 'invalid_response' });
 
       expect(harness.client.getState().attempt).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
       expect([...harness.secrets.keys()].some((key) => key.startsWith('claim_secret:'))).toBe(false);
+      await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
       expect([...harness.secrets.keys()].some((key) => key.startsWith('poll_secret:'))).toBe(false);
     }
   });
@@ -440,6 +455,7 @@ describe('MacroPilotNativeClient', () => {
     expect(harness.client.getState()).toMatchObject({
       status: 'signed_out', account: null, deviceSession: null, instanceAccess: null,
     });
+    await new Promise(resolve => setTimeout(resolve, 0)); // Allow deferred credential cleanup.
     expect([...harness.secrets.keys()].some((key) => key.startsWith('session_token:'))).toBe(false);
     expect(JSON.stringify(harness.values)).not.toContain(session.ref.session_id);
     const revokedRequestHeaders = new Headers(harness.requests.at(-1)!.init.headers);
@@ -460,4 +476,46 @@ describe('MacroPilotNativeClient', () => {
     expect(harness.requests[1].url).toBe('https://pilot.example.com/pilot/v1/instances/instance:studio%2Fextra');
   });
 
+});
+
+
+describe('Pilot vault audit regressions', () => {
+  it('publishes a durable session even when cleanup metadata fails', async () => {
+    const h = createHarness([
+      jsonResponse({ attempt_id: 'attempt:server:01J8T', poll_secret: validSecret(7), user_code: 'ABCD-EFGH',
+        verification_uri: 'https://github.com/login/device', expires_at: '2026-09-06T10:10:00Z', interval: 5 }),
+      jsonResponse({ status: 'identified', account }),
+      jsonResponse({ account, device_session: session, session_token: validSecret(8) }),
+    ]);
+    await h.client.initialize();
+    const attempt = await h.client.connect('https://pilot.example.com', 'Synthetic desktop');
+    await h.client.pollAuth();
+    const save = h.dependencies.setStateValue;
+    h.dependencies.setStateValue = async (key, value) => {
+      const state = value as Record<string, unknown>;
+      if (state.deviceSession && state.attempt === null) throw new Error('synthetic cleanup metadata failure');
+      return save(key, value);
+    };
+    await expect(h.client.confirmAccount(account.account_id)).resolves.toEqual(session);
+    expect(h.client.getState()).toMatchObject({ status: 'connected', deviceSession: session, attempt: null });
+    expect(h.values.macro_pilot_native_v1).toMatchObject({ deviceSession: session, attempt: { attemptKey: attempt.attemptKey } });
+    expect(h.secrets.has(`session_token:${session.ref.session_id}`)).toBe(true);
+    expect(h.secrets.has(`claim_secret:${attempt.attemptKey}`)).toBe(true);
+    expect(h.secrets.has(`poll_secret:${attempt.attemptKey}`)).toBe(true);
+  });
+
+  it.each(['suspended', 'cancelled', 'intervention_required', 'vault_unavailable'] as const)(
+    'preserves %s during signed-out reinitialization', async status => {
+      const h = createHarness([]);
+      h.values.macro_pilot_native_v1 = { configurationId: 'config:synthetic', relayOrigin: 'https://pilot.example.com' };
+      let notify!: Parameters<NonNullable<PilotClientDependencies['vaultSubscribe']>>[0];
+      h.dependencies.vaultSubscribe = async callback => { notify = callback; return () => undefined; };
+      await h.client.initialize();
+      notify({ generation: '3', status });
+      const blocked = h.client.getState();
+      await h.client.initialize();
+      expect(h.client.getState()).toMatchObject({ status: 'vault_unavailable', vaultStatus: status,
+        lastError: blocked.lastError, deviceSession: null });
+      expect(h.requests).toHaveLength(0);
+    });
 });

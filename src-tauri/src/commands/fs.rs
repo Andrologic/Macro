@@ -469,6 +469,17 @@ async fn resolve_workspace_for_path(
     workspace_scope: Option<&str>,
 ) -> Result<PathBuf, BackendError> {
     let base_workspace = workspace_path.unwrap_or(workspace);
+    if matches!(workspace_scope.map(str::trim), Some("metadata_existing")) {
+        // Observation must never initialize, repair, or migrate a metadata worktree.
+        return crate::git::find_existing_macro_metadata_worktree_root(&base_workspace)
+            .or_else(|| {
+                let legacy = base_workspace.join(".macro");
+                legacy.is_dir().then_some(legacy)
+            })
+            .ok_or_else(|| BackendError::FilesystemNotFound {
+                message: "Existing Macro metadata is unavailable.".to_string(),
+            });
+    }
     let metadata_scope = matches!(workspace_scope.map(str::trim), Some("metadata"));
     let direct_scope = matches!(workspace_scope.map(str::trim), Some("direct"));
     if allow_outside_workspace.unwrap_or(false)
@@ -3382,6 +3393,84 @@ mod tests {
                 "non-virtual or escaping path: {path}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_existing_metadata_resolution_does_not_initialize_git_metadata() {
+        let workspace = setup_empty_workspace();
+        let repo = init_git_repo(workspace.path());
+        let before_refs: Vec<_> = repo
+            .references()
+            .unwrap()
+            .map(|r| r.unwrap().name().unwrap().to_string())
+            .collect();
+        let before_entries: Vec<_> = std::fs::read_dir(repo.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        let result = resolve_workspace_for_path(
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            None,
+            "branches/develop/plans/index.json",
+            None,
+            Some("metadata_existing"),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(BackendError::FilesystemNotFound { .. })
+        ));
+        assert_eq!(
+            before_refs,
+            repo.references()
+                .unwrap()
+                .map(|r| r.unwrap().name().unwrap().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            before_entries,
+            std::fs::read_dir(repo.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+        assert!(!workspace.path().join(".macro").exists());
+    }
+
+    #[tokio::test]
+    async fn test_existing_metadata_resolution_does_not_repair_or_migrate_existing_files() {
+        let workspace = setup_empty_workspace();
+        let repo = init_git_repo(workspace.path());
+        let metadata = repo.path().join(crate::git::MACRO_WORKTREE_DIR_NAME);
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::write(
+            metadata.join(".git"),
+            "gitdir: /synthetic/missing-registration\n",
+        )
+        .unwrap();
+        std::fs::write(metadata.join("workspace.json"), "legacy fixture").unwrap();
+        let resolved = resolve_workspace_for_path(
+            workspace.path().to_path_buf(),
+            GitState::new(),
+            None,
+            "workspace.json",
+            None,
+            Some("metadata_existing"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved, std::fs::canonicalize(&metadata).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(metadata.join(".git")).unwrap(),
+            "gitdir: /synthetic/missing-registration\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(metadata.join("workspace.json")).unwrap(),
+            "legacy fixture"
+        );
+        assert!(!metadata.join(".gitignore").exists());
+        assert_eq!(std::fs::read_dir(metadata).unwrap().count(), 2);
     }
 
     #[tokio::test]

@@ -17,6 +17,9 @@ les comptes, sessions, accès et la présence des instances ; il transporte les
 requêtes de supervision vers C. Il n'exécute ni outils ni providers. Le site
 public ne propose aucun compte web. L'utilisation locale reste sans compte.
 
+Pour modifier le coffre desktop ou son interface de reprise, consulter le
+[cycle de vie du coffre](vault-lifecycle.md).
+
 ## Règles communes
 
 Les corps sont du JSON UTF-8 fermé, avec `transport_version: "1.0"` pour les

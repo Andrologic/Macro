@@ -1167,6 +1167,22 @@ describe('useTerminalStore', () => {
     expect(terminalCreateTabMock).not.toHaveBeenCalled();
   });
 
+  it('starts a guarded command without synchronizing unrelated restored terminal metadata', async () => {
+    terminalListTabsMock.mockImplementationOnce(async () => [buildManualTabDto({
+      id: 'unrelated-tab', task_id: 'other-task', project_id: 'project-1', title: 'Old title',
+    })]);
+    const { useTerminalStore } = await loadTerminalStore();
+    let authorizationCount = 0;
+    await useTerminalStore.getState().startTaskCommandTab({ taskId: 'task-1', projectId: 'project-2',
+      cwd: 'C:/repos/api', title: 'Run fixture', command: 'echo fixture', reveal: false,
+      beforeEffect: async () => { authorizationCount++; },
+    });
+    expect(authorizationCount).toBe(2);
+    expect(terminalStartCommandTabMock.mock.calls[0]?.[0]).toMatchObject({ pilotOnly: true });
+    expect(terminalUpdateTabMetadataMock).not.toHaveBeenCalled();
+    expect(terminalStartCommandTabMock).toHaveBeenCalledTimes(1);
+  });
+
   it('syncs stale terminal titles to the current UI task title on initialize', async () => {
     terminalListTabsMock.mockImplementationOnce(async () => [
       buildManualTabDto({

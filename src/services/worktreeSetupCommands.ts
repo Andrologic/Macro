@@ -8,6 +8,9 @@ interface RunWorktreeSetupCommandParams {
   repoPath: string;
   worktreePath: string;
   command: string;
+  beforeEffect?: () => Promise<void>;
+  expectedBranch?: string | null;
+  signal?: AbortSignal;
 }
 
 export interface WorktreeSetupCommandResult {
@@ -42,29 +45,25 @@ const isFailedTerminalTab = (tab: TerminalTab): boolean =>
   tab.status === 'error' ||
   (typeof tab.lastExitCode === 'number' && tab.lastExitCode !== 0);
 
-const waitForSetupTab = (tabId: string): Promise<TerminalTab> =>
-  new Promise((resolve) => {
-    const readCurrent = () => useTerminalStore.getState().tabs[tabId] ?? null;
-    const current = readCurrent();
-    if (current && isFinalTerminalTab(current)) {
-      resolve(current);
-      return;
-    }
-
-    const unsubscribe = useTerminalStore.subscribe((state) => {
-      const tab = state.tabs[tabId];
-      if (!tab || !isFinalTerminalTab(tab)) {
-        return;
-      }
-      unsubscribe();
-      resolve(tab);
-    });
-
-    const nextCurrent = readCurrent();
-    if (nextCurrent && isFinalTerminalTab(nextCurrent)) {
-      unsubscribe();
-      resolve(nextCurrent);
-    }
+const waitForSetupTab = (tabId: string, signal?: AbortSignal): Promise<TerminalTab> =>
+  new Promise((resolve, reject) => {
+    let unsubscribe = () => {};
+    let settled = false;
+    const finish = (tab?: TerminalTab, error?: Error) => {
+      if (settled) return;
+      settled = true; unsubscribe(); signal?.removeEventListener('abort', abort);
+      if (error) reject(error); else resolve(tab!);
+    };
+    const abort = () => finish(undefined, new Error('Setup command wait cancelled.'));
+    const inspect = () => {
+      const tab = useTerminalStore.getState().tabs[tabId];
+      if (signal?.aborted) abort();
+      else if (!tab) finish(undefined, new Error('Setup terminal was removed.'));
+      else if (isFinalTerminalTab(tab)) finish(tab);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    unsubscribe = useTerminalStore.subscribe(inspect);
+    inspect();
   });
 
 export const runWorktreeSetupCommand = async (
@@ -82,7 +81,15 @@ export const runWorktreeSetupCommand = async (
   const key = setupCommandKey({ ...params, command: trimmedCommand });
   const existing = inFlightSetupCommands.get(key);
   if (existing) {
-    return existing;
+    if (!params.signal) return existing;
+    return new Promise<WorktreeSetupCommandResult>((resolve, reject) => {
+      const signal = params.signal!;
+      const abort = () => { signal.removeEventListener('abort', abort); reject(new Error('Setup command wait cancelled.')); };
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) { abort(); return; }
+      existing.then(result => { signal.removeEventListener('abort', abort); resolve(result); },
+        error => { signal.removeEventListener('abort', abort); reject(error); });
+    });
   }
 
   const runPromise = (async () => {
@@ -98,9 +105,11 @@ export const runWorktreeSetupCommand = async (
         taskLabel: params.taskTitle,
         branchLabel: null,
       },
+      beforeEffect: params.beforeEffect,
+      ...(params.beforeEffect ? { expectedBranch: params.expectedBranch } : {}),
     });
 
-    const finalTab = await waitForSetupTab(tab.id);
+    const finalTab = await waitForSetupTab(tab.id, params.signal);
     const failed = isFailedTerminalTab(finalTab);
 
     if (failed) {
@@ -108,7 +117,9 @@ export const runWorktreeSetupCommand = async (
       latestStore.activateTab(finalTab.id);
       latestStore.setPanelOpen(true);
     } else {
-      await useTerminalStore.getState().closeTab(finalTab.id).catch(() => undefined);
+      await params.beforeEffect?.();
+      const close = useTerminalStore.getState().closeTab(finalTab.id);
+      if (params.beforeEffect) await close; else await close.catch(() => undefined);
     }
 
     return {

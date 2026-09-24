@@ -1,9 +1,9 @@
 // Git Commands
 
-#[path = "git/review.rs"]
-mod review;
 #[path = "git/pilot_capture.rs"]
 mod pilot_capture;
+#[path = "git/review.rs"]
+mod review;
 pub use pilot_capture::*;
 
 use std::collections::{HashMap, HashSet};
@@ -3127,6 +3127,146 @@ fn resolve_macro_worktree(
     Ok((worktree_path, worktree_repo, repaired_after_move))
 }
 
+// Pilot may commit an existing metadata worktree, but must not initialize,
+// repair, migrate, or change a code branch while resolving it.
+fn resolve_existing_macro_worktree(workspace_root: &Path) -> Result<(PathBuf, Repository)> {
+    let path = crate::git::find_existing_macro_metadata_worktree_root(workspace_root).ok_or_else(
+        || BackendError::FilesystemNotFound {
+            message: "Existing Macro metadata worktree is unavailable.".to_string(),
+        },
+    )?;
+    let repo = Repository::open(&path)?;
+    let head = repo.head()?;
+    if !head.is_branch() || head.shorthand()? != MACRO_BRANCH_NAME {
+        return Err(BackendError::Validation(
+            "Existing metadata worktree is not on the Macro metadata branch.".to_string(),
+        ));
+    }
+    drop(head);
+    Ok((path, repo))
+}
+
+fn commit_existing_pilot_metadata(
+    workspace: &Path,
+    message: &str,
+    paths: &[String],
+) -> Result<MacroBranchSyncDto> {
+    if paths.is_empty()
+        || paths.iter().any(|path| {
+            path.is_empty()
+                || path.contains('\\')
+                || Path::new(path).is_absolute()
+                || Path::new(path)
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        })
+    {
+        return Err(BackendError::Validation(
+            "Pilot metadata commit requires explicit relative paths.".to_string(),
+        ));
+    }
+    let (root, repo) = resolve_existing_macro_worktree(workspace)?;
+    let mut status_options = get_status_options();
+    status_options
+        .renames_head_to_index(false)
+        .renames_index_to_workdir(false)
+        .renames_from_rewrites(false);
+    let statuses = repo.statuses(Some(&mut status_options))?;
+    let selected: Vec<String> = statuses
+        .iter()
+        .filter_map(|entry| entry.path().ok().map(str::to_string))
+        .filter(|path| {
+            paths
+                .iter()
+                .any(|allowed| path == allowed || path.starts_with(&format!("{allowed}/")))
+        })
+        .collect();
+    if selected.is_empty() {
+        return build_macro_sync_dto(
+            &repo,
+            &root,
+            false,
+            None,
+            Some("Selected metadata is unchanged".to_string()),
+            None,
+        );
+    }
+    let parent = repo.head()?.peel_to_commit()?;
+    let mut commit_index = git2::Index::new()?;
+    commit_index.read_tree(&parent.tree()?)?;
+    let mut live_index = repo.index()?;
+    for relative in &selected {
+        let path = root.join(relative);
+        let change = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                let bytes = fs::read(&path)?;
+                #[cfg(unix)]
+                let executable = {
+                    use std::os::unix::fs::PermissionsExt;
+                    metadata.permissions().mode() & 0o111 != 0
+                };
+                #[cfg(not(unix))]
+                let executable = false;
+                Some((bytes, if executable { 0o100755 } else { 0o100644 }))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Ok(_) => {
+                return Err(BackendError::Validation(
+                    "Pilot metadata commits require regular files.".to_string(),
+                ))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if let Some((bytes, mode)) = change {
+            let oid = repo.odb()?.write(git2::ObjectType::Blob, &bytes)?;
+            let entry = git2::IndexEntry {
+                ctime: git2::IndexTime::new(0, 0),
+                mtime: git2::IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode,
+                uid: 0,
+                gid: 0,
+                file_size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+                id: oid,
+                flags: 0,
+                flags_extended: 0,
+                path: relative.as_bytes().to_vec(),
+            };
+            commit_index.add(&entry)?;
+            live_index.add(&entry)?;
+        } else {
+            commit_index.remove_path(Path::new(relative))?;
+            live_index.remove_path(Path::new(relative))?;
+        }
+    }
+    let tree_id = commit_index.write_tree_to(&repo)?;
+    if tree_id == parent.tree_id() {
+        return build_macro_sync_dto(
+            &repo,
+            &root,
+            false,
+            None,
+            Some("Selected metadata is unchanged".to_string()),
+            None,
+        );
+    }
+    let tree = repo.find_tree(tree_id)?;
+    let signature = git2::Signature::now("Macro", "macro@local")?;
+    // Raw object/index APIs run no hooks, clean filters, signing commands or shell.
+    // libgit2 checks that the updated ref still points to the supplied parent.
+    let commit = repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        message,
+        &tree,
+        &[&parent],
+    )?;
+    live_index.write()?;
+    build_macro_sync_dto(&repo, &root, true, Some(short_hash(commit)), None, None)
+}
+
 fn resolve_macro_workspace_path(
     default_workspace_root: &Path,
     workspace_path: Option<String>,
@@ -4860,7 +5000,7 @@ fn delete_local_branch(repo: &Repository, branch_name: &str, force: bool) -> Res
                 .map_err(|e| BackendError::Git {
                     message: e.to_string(),
                 })?;
-            if !is_merged {
+            if !is_merged && head_commit.id() != branch_commit.id() {
                 return Err(BackendError::Git {
                     message: format!(
                         "Branch {} is not merged into current HEAD. Use force=true to delete it.",
@@ -6435,7 +6575,11 @@ pub async fn git_branch_delete(
     repo_path: String,
     branch_name: String,
     force: Option<bool>,
+    pilot_only: Option<bool>,
 ) -> Result<()> {
+    if pilot_only.unwrap_or(false) && parse_wsl_repo_path(&repo_path).is_some() {
+        return Err(unsupported_wsl_git_operation("Pilot branch cleanup"));
+    }
     if let Some(wsl_repo_path) = parse_wsl_repo_path(&repo_path) {
         return wsl_git_branch_delete(&wsl_repo_path, &branch_name, force.unwrap_or(false)).await;
     }
@@ -6450,7 +6594,27 @@ pub async fn git_branch_delete(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        delete_local_branch(&repo, &branch_name, force.unwrap_or(false))
+        if pilot_only.unwrap_or(false) {
+            let head = repo.head()?.peel_to_commit()?;
+            let branch = repo
+                .find_branch(&branch_name, BranchType::Local)?
+                .get()
+                .peel_to_commit()?;
+            if head.id() != branch.id() && !repo.graph_descendant_of(head.id(), branch.id())? {
+                return Err(BackendError::Validation(
+                    "Pilot cleanup cannot delete an unmerged task branch.".to_string(),
+                ));
+            }
+        }
+        delete_local_branch(
+            &repo,
+            &branch_name,
+            if pilot_only.unwrap_or(false) {
+                false
+            } else {
+                force.unwrap_or(false)
+            },
+        )
     })
     .await
     .map_err(to_join_error)?
@@ -8005,8 +8169,6 @@ fn open_direct_checkpoint_at_locked(
             }
             ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)
         })?;
-    } else if create {
-        ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)?;
     }
 
     let repo = match Repository::open(&checkpoint_path) {
@@ -8118,6 +8280,9 @@ fn open_direct_checkpoint_at_locked(
             }
             Ok(_) => {}
         }
+    }
+    if create && !checkpoint_created {
+        ensure_direct_checkpoint_exclusions(&checkpoint_path, &checkpoint_id)?;
     }
     if create && !direct_checkpoint_known_marker_exists(&marker_path, &checkpoint_id)? {
         fs::OpenOptions::new()
@@ -11826,6 +11991,7 @@ pub async fn git_worktree_create(
     from_ref: Option<String>,
     preferred_commit_branch: Option<String>,
     fallback_branches: Option<Vec<String>>,
+    pilot_only: Option<bool>,
 ) -> Result<GitWorktreeEnsureDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_worktree_create"));
@@ -11848,14 +12014,23 @@ pub async fn git_worktree_create(
                 .collect::<Vec<_>>()
         });
 
-        let ensured = git_state.ensure_task_worktree(
-            &repo,
-            &task_id,
-            &branch_name,
-            from_ref.as_deref(),
-            preferred_commit_branch.as_deref(),
-            &fallback_branches,
-        )?;
+        let ensured = if pilot_only.unwrap_or(false) {
+            git_state.ensure_pilot_task_worktree(
+                &repo,
+                &task_id,
+                &branch_name,
+                from_ref.as_deref(),
+            )?
+        } else {
+            git_state.ensure_task_worktree(
+                &repo,
+                &task_id,
+                &branch_name,
+                from_ref.as_deref(),
+                preferred_commit_branch.as_deref(),
+                &fallback_branches,
+            )?
+        };
         Ok(GitWorktreeEnsureDto {
             task_id: ensured.task_id,
             worktree_path: ensured.worktree_path.to_string_lossy().into_owned(),
@@ -12017,6 +12192,7 @@ pub async fn git_worktree_remove(
     task_id: String,
     force: Option<bool>,
     branch_name: Option<String>,
+    pilot_only: Option<bool>,
 ) -> Result<GitWorktreeRemoveDto> {
     if parse_wsl_repo_path(&repo_path).is_some() {
         return Err(unsupported_wsl_git_operation("git_worktree_remove"));
@@ -12032,15 +12208,27 @@ pub async fn git_worktree_remove(
             message: "Failed to lock repository".to_string(),
         })?;
 
-        let removed = git_state.remove_task_worktree(
-            &repo,
-            &task_id,
-            force.unwrap_or(false),
-            branch_name
+        let removed = if pilot_only.unwrap_or(false) {
+            let expected = branch_name
                 .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty()),
-        )?;
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    BackendError::Validation(
+                        "Pilot cleanup requires an expected branch.".to_string(),
+                    )
+                })?;
+            git_state.remove_pilot_task_worktree(&repo, &task_id, expected)?
+        } else {
+            git_state.remove_task_worktree(
+                &repo,
+                &task_id,
+                force.unwrap_or(false),
+                branch_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty()),
+            )?
+        };
         Ok(GitWorktreeRemoveDto {
             task_id: removed.task_id,
             worktree_path: removed.worktree_path.to_string_lossy().into_owned(),
@@ -12334,6 +12522,8 @@ pub async fn macro_branch_commit_if_dirty(
     git_state: State<'_, GitState>,
     message: Option<String>,
     workspace_path: Option<String>,
+    pilot_only: Option<bool>,
+    metadata_paths: Option<Vec<String>>,
 ) -> Result<MacroBranchSyncDto> {
     let workspace = resolve_macro_workspace_path(
         &workspace_root.inner().0.read().await.clone(),
@@ -12347,6 +12537,13 @@ pub async fn macro_branch_commit_if_dirty(
         .to_string();
 
     tokio::task::spawn_blocking(move || {
+        if pilot_only.unwrap_or(false) {
+            return commit_existing_pilot_metadata(
+                &workspace,
+                &commit_message,
+                &metadata_paths.unwrap_or_default(),
+            );
+        }
         let (worktree_path, worktree_repo, _) = resolve_macro_worktree(&git_state, &workspace)?;
 
         let add_output = run_git_command(
@@ -16838,6 +17035,88 @@ mod tests {
             "outside stays\n"
         );
         assert!(!project_path.join(".git").exists());
+    }
+
+    #[test]
+    fn pilot_metadata_resolution_never_migrates_or_changes_code_branch() {
+        let (temp, repo) = init_repo();
+        let git_state = GitState::new();
+        let metadata = git_state.resolve_macro_metadata_root(temp.path()).unwrap();
+        let legacy = metadata.join(".macro/branches/develop/manual-features/unrelated");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("feature.json"), b"unrelated").unwrap();
+        fs::write(temp.path().join(".gitignore"), b"# external edit\n").unwrap();
+        let head_before = repo.head().unwrap().target();
+        let (resolved, _) = resolve_existing_macro_worktree(temp.path()).unwrap();
+        assert_eq!(resolved, metadata);
+        assert!(legacy.join("feature.json").exists());
+        assert!(!metadata
+            .join("branches/develop/manual-features/unrelated")
+            .exists());
+        assert_eq!(repo.head().unwrap().target(), head_before);
+        assert_eq!(
+            fs::read(temp.path().join(".gitignore")).unwrap(),
+            b"# external edit\n"
+        );
+        fs::create_dir_all(metadata.join("manual-features/target")).unwrap();
+        fs::write(
+            metadata.join("manual-features/target/feature.json"),
+            b"target",
+        )
+        .unwrap();
+        fs::write(metadata.join("unrelated.txt"), b"unrelated staged").unwrap();
+        let metadata_repo = Repository::open(&metadata).unwrap();
+        let mut index = metadata_repo.index().unwrap();
+        index.add_path(Path::new("unrelated.txt")).unwrap();
+        index.write().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let hook = repo.path().join("hooks/pre-commit");
+            fs::create_dir_all(hook.parent().unwrap()).unwrap();
+            fs::write(&hook, b"#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let result = commit_existing_pilot_metadata(
+            temp.path(),
+            "target only",
+            &["manual-features/target".to_string()],
+        )
+        .unwrap();
+        assert!(result.committed);
+        let tree = metadata_repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(tree
+            .get_path(Path::new("manual-features/target/feature.json"))
+            .is_ok());
+        assert!(tree.get_path(Path::new("unrelated.txt")).is_err());
+        assert!(metadata_repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("unrelated.txt"), 0)
+            .is_some());
+        assert!(legacy.join("feature.json").exists());
+        assert_eq!(repo.head().unwrap().target(), head_before);
+        fs::remove_dir_all(metadata.join("manual-features/target")).unwrap();
+        assert!(
+            commit_existing_pilot_metadata(
+                temp.path(),
+                "delete target",
+                &["manual-features/target".to_string()]
+            )
+            .unwrap()
+            .committed
+        );
+        assert!(metadata_repo
+            .head()
+            .unwrap()
+            .peel_to_tree()
+            .unwrap()
+            .get_path(Path::new("manual-features/target"))
+            .is_err());
+        let missing = TempDir::new().unwrap();
+        Repository::init(missing.path()).unwrap();
+        assert!(resolve_existing_macro_worktree(missing.path()).is_err());
+        assert!(!missing.path().join(".macro").exists());
     }
 
     fn init_macro_repo() -> (TempDir, Repository) {

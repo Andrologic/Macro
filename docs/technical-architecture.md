@@ -1106,6 +1106,23 @@ Les budgets conservateurs sont de 24 Mio pour les captures de conversations, 32 
 
 ---
 
+### 15.6 Détails et actions des tâches dans Pilot
+
+Le [contrat de complétion](macro-pilot/task-completion-contract.md) ajoute deux
+capacités négociées à v2. `task.cards.list` fournit les descriptions et badges
+par pages, sans lecture par tâche. `TaskCompletionHost` capture séparément les
+artéfacts visibles et les traces structurées publiques ; les corps sont lus à
+la demande. Les empreintes et reçus persistent, les captures restent en mémoire,
+liées au compte, à la session, à l'instance et à la politique d'export.
+
+Les actions réutilisent les stores desktop avec réservation et contrôle avant
+effet. Le relais atteste `respond` pour les mutations de tâches et ajoute
+`approve_tools` pour les commandes configurées. Une action dont le reçu est
+consommé mais non terminé ne peut pas être relancée automatiquement. Les journaux
+de suppression et de réplication créés par Pilot conservent cette origine pour
+empêcher une reprise automatique après perte de l'autorisation. Une suppression
+avec restauration de code en attente exige une intervention desktop.
+
 ## 16. Fondation expérimentale : backend distant et kernel headless
 
 Cette section documente du code exploratoire interne. Ce code n'est pas exposé comme mode produit, n'est pas supporté en 0.1 et ne constitue pas un engagement de compatibilité.

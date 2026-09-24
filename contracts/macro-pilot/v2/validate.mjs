@@ -31,6 +31,10 @@ export function validateMessage(message) {
     }
   }
   walk(message);
+  if (['negotiate', 'negotiated', 'poll'].includes(message.type)) {
+    reject(message.type === 'negotiated' && !message.instance_id && (message.capabilities ?? []).length > 0, 'account cannot select instance capabilities');
+    reject((message.capabilities ?? []).includes('task-actions-1') && !(message.capabilities ?? []).includes('task-details-1'), 'task actions require details capability');
+  }
   if (message.type === 'accepted') reject(message.exchange_id !== message.request_id, 'exchange identity mismatch');
   if (message.type === 'delivery') {
     reject(message.request_id !== message.request.request_id || message.account_id !== message.request.account_id, 'delivery correlation mismatch');
@@ -50,7 +54,7 @@ export function validateMessage(message) {
     reject(page.offset + result.items.length > page.total, 'page exceeds total');
     reject((page.next_cursor === null) !== (page.offset + result.items.length === page.total), 'cursor does not match remaining items');
     reject(result.items.length === 0 && page.next_cursor !== null, 'empty nonterminal page');
-    const identities = result.items.map((item) => item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id);
+    const identities = result.items.map((item) => item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id);
     reject(new Set(identities).size !== identities.length, 'duplicate page identities');
     result.items.forEach((item, index) => {
       if ('position' in item) reject(item.position !== page.offset + index, 'noncontiguous positions');
@@ -79,6 +83,19 @@ export function validateMessage(message) {
     reject(result.next_offset_bytes !== (end === result.total_bytes ? null : end), 'patch continuation mismatch');
     reject(result.patch.length === 0 && result.next_offset_bytes !== null, 'empty nonterminal patch');
   }
+  if (message.type === 'request' && message.operation === 'task.action') {
+    reject((message.body.action === 'rename') !== ('title' in message.body), 'rename requires title exclusively');
+    reject(message.body.action === 'rename' && !message.body.title.trim(), 'empty title');
+  }
+  if (message.type === 'response' && ['task.artifact.read', 'conversation.tool.read'].includes(message.operation)) {
+    const content = result.content;
+    if (content.content_state === 'withheld') reject(result.total_bytes !== 0 || result.offset_bytes !== 0 || result.next_offset_bytes !== null, 'withheld content has bytes');
+    else {
+      const end = result.offset_bytes + bytes(content.text);
+      reject(end > result.total_bytes || result.next_offset_bytes !== (end === result.total_bytes ? null : end), 'content continuation mismatch');
+      reject(!content.text.length && result.next_offset_bytes !== null, 'empty chunk');
+    }
+  }
   if (message.type === 'event') {
     reject(message.change.scope.account_id && message.change.scope.account_id !== message.account_id, 'cross-account event');
   }
@@ -102,6 +119,7 @@ export function validateExchange(request, response) {
   reject(request.request_id !== response.request_id, 'request_id mismatch');
   if (request.type === 'negotiate') {
     reject(response.type !== 'negotiated' || request.instance_id !== response.instance_id, 'negotiation target mismatch');
+    reject((response.capabilities ?? []).some(cap => !(request.capabilities ?? []).includes(cap)), 'unoffered capability selected');
     reject(response.selected_version !== null && !request.supported_versions.includes(response.selected_version), 'unoffered version selected');
   } else if (request.type === 'request') {
     reject(!['response', 'error'].includes(response.type), 'expected response or error');
@@ -111,7 +129,7 @@ export function validateExchange(request, response) {
       const body = request.body;
       const result = response.result;
       const expectedSnapshot = body.snapshot_id ?? body.continuation?.snapshot_id;
-      if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
+      if (expectedSnapshot && ['diff.read', 'diff.files', 'conversation.read', 'conversations.list', 'projects.list', 'sessions.list', 'task.cards.list', 'task.artifacts.list', 'task.artifact.read', 'conversation.tools.list', 'conversation.tool.read'].includes(request.operation)) reject(expectedSnapshot !== (result.snapshot_id ?? result.page?.snapshot_id), 'snapshot mismatch');
       if (request.operation === 'diff.read') reject(body.file_id !== result.file_id || body.offset_bytes !== result.offset_bytes, 'file or byte offset mismatch');
       if (result.page && !body.continuation) reject(result.page.offset !== 0, 'initial page starts after zero');
       if (request.operation === 'conversations.list') {
@@ -120,6 +138,9 @@ export function validateExchange(request, response) {
       if (request.operation === 'projects.list') {
         for (const item of result.items) reject(item.instance_id !== body.instance_id, 'project instance mismatch');
       }
+      if (request.operation === 'task.get') reject(['instance_id', 'workspace_id', 'task_id'].some(key => body.ref[key] !== result.ref[key]), 'task reference mismatch');
+      if (request.operation === 'task.cards.list') for (const item of result.items) reject(item.ref.instance_id !== body.instance_id, 'task catalog instance mismatch');
+      if (['task.artifact.read', 'conversation.tool.read'].includes(request.operation)) reject(body.item_id !== result.item_id || body.offset_bytes !== result.offset_bytes, 'item or offset mismatch');
       if ('expected_revision' in body) reject(result.revision !== body.expected_revision + 1, 'mutation revision mismatch');
       if (request.operation === 'account.get') reject(result.account_id !== request.account_id, 'account result mismatch');
     }
@@ -148,7 +169,7 @@ export function validatePageContinuation(previous, next) {
   }
   if (previous.account_id !== next.account_id || previous.operation !== next.operation) errors.push('page scope changed');
   if (a.next_cursor === null || b.offset !== a.offset + previous.result.items.length) errors.push('page continuation gap');
-  const identity = (item) => item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id;
+  const identity = (item) => item.trace_id ?? item.artifact_id ?? item.message_id ?? item.file_id ?? item.session_id ?? item.project_id ?? item.ref?.conversation_id ?? item.ref?.task_id;
   const seen = new Set(previous.result.items.map(identity));
   if (next.result.items.some((item) => seen.has(identity(item)))) errors.push('repeated page identity');
   return { valid: errors.length === 0, errors };

@@ -38,12 +38,21 @@ mock.module('@tauri-apps/api/core', () => ({ ...core, invoke: async (command: st
     return { applied };
   }
   if (command === 'pilot_content_policy') { if (!supported) throw 'content_unavailable'; return secretValues; }
-  if (command === 'workspace_get_bootstrap') return { standaloneProjects: [{ id: 'project:one', name: 'Project', path: repoPath }, ...extraProjects], projectGroups: [{ id: 'closed', isOpen: false, projects: [{ id: 'project:closed', name: 'Closed', path: '/private/closed' }] }] };
+  if (command === 'workspace_get_bootstrap') throw new Error('Pilot reads must not bootstrap workspaces');
   if (command === 'workspace_list_tasks') return { tasks: taskRecords };
   if (command === 'git_branch_list') return { local: branchRecords, remote: [] };
   if (command === 'db_list_conversations') return structuredClone(conversations);
   if (command === 'db_get_conversation') return structuredClone(conversations.find(c => c.id === args.id) ?? null);
   if (command === 'db_list_messages') { if (messagesUnavailable) throw 'unavailable'; await messageWait; return structuredClone(messages.filter(message => message.conversation_id === args.conversationId)); }
+  if (command === 'pilot_tool_traces_list') return { revision: 1, traces: messages.filter(message => message.conversation_id === args.conversationId && message.role === 'assistant').flatMap(message =>
+    (JSON.parse(message.tool_traces_json || '[]') as Array<{ tool_call_id: string; tool_name: string; status: string; detail?: string }>).map((trace, trace_index) => ({
+      message_id: message.id, trace_index, tool_call_id: trace.tool_call_id, tool_name: trace.tool_name, status: trace.status,
+      has_detail: Boolean(trace.detail), detail_bytes: new TextEncoder().encode(trace.detail || '').length,
+    }))) };
+  if (command === 'pilot_tool_trace_read') {
+    const message = messages.find(message => message.id === args.messageId && message.conversation_id === args.conversationId)!;
+    return { revision: 1, detail: JSON.parse(message.tool_traces_json!)[Number(args.traceIndex)].detail || '' };
+  }
   if (command === 'pilot_review_commit') {
     const input = args.input as { snapshotId: string; key: string; expectedValueJson: string | null; valueJson: string };
     beforeFresh?.();
@@ -84,6 +93,7 @@ const { PilotRuntime } = await import('./runtime');
 const { MacroPilotNativeClient } = await import('./nativeClient');
 const { validateContentMessage } = await import('./contentProtocol');
 const { useChatStore } = await import('../../stores/useChatStore');
+const { useAppStore } = await import('../../stores/useAppStore');
 const { CONTENT_BUDGET } = await import('./contentHost');
 const { secretForms } = await import('./desktopContentHost');
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -96,6 +106,13 @@ function request(operation: ContentRequest['operation'], body: unknown, requestI
   return { contract_version: '2.0', type: 'request', account_id: accountId, request_id: requestId, operation, body } as ContentRequest;
 }
 function harness() {
+  const project = (value: { id: string; name: string; path: string }) => ({ ...value, mountName: value.id,
+    created_at: '2026-01-01T00:00:00Z', status: 'active' as const, gitSetupState: 'ready' as const,
+    metadata: { description: '', tags: [], team_members: [], api_contracts: [], dependencies: [] } });
+  useAppStore.setState({
+    standaloneProjects: [{ id: 'project:one', name: 'Project', path: repoPath }, ...extraProjects].map(project),
+    projectGroups: [{ id: 'group:closed', name: 'Closed', isOpen: false, projects: [project({ id: 'project:closed', name: 'Closed', path: '/private/closed' })] }],
+  });
   const account = { contract_version: '1.0', type: 'account', account_id: accountId, identity: { provider: 'github', subject: '1', login: 'test' }, revision: 1 };
   const session = { contract_version: '1.0', type: 'device_session', ref: { type: 'session', account_id: accountId, session_id: 'session:desktop' }, device_id: 'device:desktop', state: 'active', issued_at: new Date().toISOString(), expires_at: new Date(Date.now() + 86400000).toISOString(), revision: 1 };
   const values: Record<string, unknown> = { macro_pilot_native_v1: { configurationId: 'config:test', relayOrigin: 'https://pilot.example.test', account, deviceSession: session,
@@ -520,4 +537,31 @@ it.skipIf(!process.env.PILOT_CAPTURE_BRIDGE)('uses real native Git captures thro
     expect(contentLimit).toBe(true); expect(conversationsHeld).toBeGreaterThan(5);
     expect(Object.values(CONTENT_BUDGET).reduce((a, b) => a + b, 0)).toBeLessThan(64 * 1024 * 1024);
   } finally { await h.runtime.stop(); lines.close(); child.stdin.end(); child.kill(); await rm(dir, { recursive: true, force: true }); }
+});
+
+it('serves cards and public tool details through authenticated deliveries without loading each task', async () => {
+  taskRecords = [{ id: 'task:one', project_id: 'project:one', status: 'Pending', task_source: 'standalone', title: 'Demo task',
+    description: 'Description on the card', draft: true, plan_title: null, feature_slug: 'demo-feature', task_kind: 'feature', execution_targets: [] }];
+  messages.push({ ...messages[0], id: 'message:tools', role: 'assistant', content: '<think>private reasoning</think>',
+    hidden_context: 'hidden replay', provider_turn_state_json: '{"private":"provider replay"}',
+    tool_traces_json: JSON.stringify([{ tool_call_id: 'call:demo', tool_name: 'read_file', status: 'done', detail: 'README.md' }]) });
+  const h = harness();
+  try {
+    await h.runtime.start();
+    const cards = await h.deliver(request('task.cards.list', { instance_id: instanceId }));
+    expect(cards).toMatchObject({ type: 'response', result: { items: [{ description: { text: 'Description on the card' }, draft: true, feature: { text: 'demo-feature' } }] } });
+    expect(nativeCalls).not.toContain('configuration_get_snapshot');
+    const toolRef = { instance_id: instanceId, kind: 'conversation', conversation_id: conversation.id };
+    const transcriptReads = nativeCalls.filter(command => command === 'db_list_messages').length;
+    const listed = await h.deliver(request('conversation.tools.list', { ref: toolRef }));
+    expect(nativeCalls.filter(command => command === 'db_list_messages')).toHaveLength(transcriptReads);
+    expect(nativeCalls).not.toContain('pilot_tool_trace_read');
+    if (listed.type !== 'response' || listed.operation !== 'conversation.tools.list') throw Error('tools');
+    expect(listed.result.items).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain('private'); expect(JSON.stringify(listed)).not.toContain('README.md');
+    const detail = await h.deliver(request('conversation.tool.read', { ref: toolRef, snapshot_id: listed.result.page.snapshot_id,
+      item_id: listed.result.items[0].trace_id, offset_bytes: 0 }));
+    expect(detail).toMatchObject({ type: 'response', result: { content: { text: 'README.md' } } });
+    expect(h.requests.some(item => item.body.type === 'poll' && (item.body.capabilities as string[] | undefined)?.includes('task-details-1'))).toBe(true);
+  } finally { await h.runtime.stop(); }
 });

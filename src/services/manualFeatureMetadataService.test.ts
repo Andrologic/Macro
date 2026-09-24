@@ -143,6 +143,17 @@ describe('manualFeatureMetadataService', () => {
     });
   });
 
+  it('uses existing metadata roots for every guarded write', async () => {
+    const { syncManualFeatureMetadataFromTask } = await loadService();
+    await syncManualFeatureMetadataFromTask({
+      id: 'task-1', title: 'Renamed', description: '', status: 'Pending', draft: false,
+      base_branch: 'develop', project_id: 'project-1', project_ids: ['project-1'],
+      standalone_kind: 'manual_feature', execution_targets: [],
+    }, async () => undefined);
+    expect(fsWriteFileMock).toHaveBeenCalledTimes(3);
+    for (const [params] of fsWriteFileMock.mock.calls) expect(params.workspaceScope).toBe('metadata_existing');
+  });
+
   it('removes both canonical and legacy metadata roots when deleting a manual feature snapshot', async () => {
     fsExistsMock.mockImplementation(
       async (path: string) =>
@@ -217,4 +228,47 @@ describe('manualFeatureMetadataService', () => {
     }
     expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
   });
+  it('reauthorizes each project metadata commit and stops after revocation', async () => {
+    const saved = appState.getProjectById;
+    const projects = ['project-1', 'project-2'].map((id, index) => ({ ...appState.project, id, path: `/synthetic/project-${index}`, name: id }));
+    appState.getProjectById = id => projects.find(project => project.id === id);
+    const { registerAppStateGetter } = await import('./appStateRuntime');
+    registerAppStateGetter(() => ({ standaloneProjects: projects, projectGroups: [] }));
+    let revoked = false;
+    macroBranchCommitIfDirtyMock.mockImplementation(async () => { revoked = true; });
+    try {
+      const { commitManualFeatureMetadata } = await loadService();
+      await expect(commitManualFeatureMetadata({ id: 'task:fixture', standalone_kind: 'manual_feature', project_id: 'project-1',
+        project_ids: ['project-1', 'project-2'], execution_targets: [], base_branch: 'develop' }, 'Fixture commit', async () => {
+        if (revoked) throw new Error('authorization revoked');
+      })).rejects.toThrow('authorization revoked');
+      expect(macroBranchCommitIfDirtyMock).toHaveBeenCalledTimes(1);
+      expect(macroBranchCommitIfDirtyMock.mock.calls[0]?.[0]).toMatchObject({ pilotOnly: true });
+    } finally { appState.getProjectById = saved; }
+  });
+
+  it.each(['exists', 'delete', 'authorization'])('propagates %s failures during metadata cleanup', async stage => {
+    fsExistsMock.mockImplementation(async () => true);
+    const failure = new Error(`${stage} denied`);
+    if (stage === 'exists') fsExistsMock.mockImplementation(async () => { throw failure; });
+    if (stage === 'delete') fsDeleteMock.mockImplementation(async () => { throw failure; });
+    const { removeManualFeatureMetadata } = await loadService();
+    await expect(removeManualFeatureMetadata({ id: 'task-1', base_branch: 'develop', project_id: 'project-1',
+      project_ids: ['project-1'], standalone_kind: 'manual_feature', execution_targets: [] }, async () => {
+      if (stage === 'authorization') throw failure;
+    })).rejects.toThrow(`${stage} denied`);
+    expect(macroBranchCommitIfDirtyMock).not.toHaveBeenCalled();
+    if (stage !== 'delete') expect(fsDeleteMock).not.toHaveBeenCalled();
+    for (const call of fsExistsMock.mock.calls) expect(call[1]).toMatchObject({ workspaceScope: 'metadata_existing' });
+  });
+
+  it('accepts only a typed missing-file error when a metadata root disappears during deletion', async () => {
+    fsExistsMock.mockImplementation(async () => true);
+    fsDeleteMock.mockImplementation(async () => { throw { code: 'FilesystemNotFound', message: 'Already removed' }; });
+    const { removeManualFeatureMetadata } = await loadService();
+    await removeManualFeatureMetadata({ id: 'task-1', base_branch: 'develop', project_id: 'project-1',
+      project_ids: ['project-1'], standalone_kind: 'manual_feature', execution_targets: [] });
+    expect(fsDeleteMock).toHaveBeenCalledTimes(2);
+  });
+
 });

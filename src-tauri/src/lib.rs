@@ -411,6 +411,7 @@ pub fn run() {
         .manage(commands::workspace::ProjectOperationStore::default())
         .manage(commands::terminal::TerminalSessionStore::default())
         .setup(move |app| {
+            commands::pilot_secrets::setup(app.handle());
             if let Err(error) = app_updates::activate_staged_update(app.handle(), false) {
                 tracing::error!(%error, "Failed to activate staged application update");
             }
@@ -589,6 +590,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::pilot_secrets::pilot_vault_activate,
+            commands::pilot_secrets::pilot_vault_invalidate,
+            commands::pilot_secrets::pilot_vault_resume,
             commands::pilot_secrets::pilot_secret_read,
             commands::pilot_secrets::pilot_secret_write,
             commands::pilot_secrets::pilot_secret_delete,
@@ -658,6 +662,8 @@ pub fn run() {
             commands::db_delete_conversations_by_ids,
             commands::db_toggle_pin_conversation,
             commands::db_list_messages,
+            commands::pilot_tools::pilot_tool_traces_list,
+            commands::pilot_tools::pilot_tool_trace_read,
             commands::db_search_messages,
             commands::db_create_message,
             commands::db_import_messages,
@@ -750,6 +756,7 @@ pub fn run() {
             commands::workspace::workspace_debug_reset_project,
             commands::workspace::workspace_create_manual_feature_draft,
             commands::workspace::workspace_finalize_manual_feature,
+            commands::workspace::workspace_pilot_mutate_manual_task,
             commands::workspace::workspace_bind_manual_feature_direct_checkpoint,
             commands::workspace::workspace_revert_manual_feature_to_draft,
             commands::workspace::workspace_delete_manual_feature_draft,
@@ -912,13 +919,21 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {
+        tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed,
+            ..
+        } => {
+            commands::pilot_secrets::suspend();
+        }
         tauri::RunEvent::ExitRequested { .. } => {
+            commands::pilot_secrets::suspend();
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
         }
         tauri::RunEvent::Exit => {
+            commands::pilot_secrets::suspend();
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();
