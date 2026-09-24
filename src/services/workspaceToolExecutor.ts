@@ -2133,19 +2133,7 @@ export const executeWorkspaceTool = async (
       toolName === "apply_patch");
   const virtualRootEnabled = virtualRootCandidate && !useMetadataWorkspace;
 
-  // Capture once; checkpoint publication may await persistence while the UI navigates.
   let nativeDiagnostics: unknown[] = [];
-  let checkpointFilesForDiagnostics: AgentCodeCheckpointFile[] = [];
-  const recordCheckpoint = options.onCodeCheckpoint;
-  if (recordCheckpoint) {
-    options = {
-      ...options,
-      onCodeCheckpoint: async (checkpoint) => {
-        await recordCheckpoint(checkpoint);
-        checkpointFilesForDiagnostics = checkpoint.files;
-      },
-    };
-  }
   const diagnosticsAfterCheckpoint = async (): Promise<unknown[]> => {
     const isReady = (item: unknown): item is Record<string, unknown> =>
       item !== null && typeof item === "object" &&
@@ -2163,29 +2151,33 @@ export const executeWorkspaceTool = async (
     const deadline = setTimeout(stop, 250);
     options.signal?.addEventListener("abort", stop, { once: true });
     if (options.signal?.aborted) stop();
-    const hasChanged = async (): Promise<boolean> => {
-      for (const file of checkpointFilesForDiagnostics) {
+    const verified = new Set<unknown>();
+    const verify = async (): Promise<boolean> => {
+      for (const item of nativeDiagnostics) {
         if (stopChecking) return true;
+        if (!isReady(item)) continue;
+        // Use the native observation's target, never the current UI selection or
+        // an unqualified checkpoint path shared by several mounts.
+        if (typeof item.root_identity !== "string" || !item.root_identity ||
+            typeof item.workspace_path !== "string" || !item.workspace_path ||
+            typeof item.document_path !== "string" || !item.document_path ||
+            typeof item.revision !== "string" || !item.revision) continue;
         try {
-          const current = await readCheckpointSnapshot({
-            displayPath: file.path,
-            realPath: file.realPath,
-            workspacePath: file.workspacePath,
-            workspaceScope: file.workspaceScope === "metadata" ? "metadata" : undefined,
+          const current = await tauriIpc.fsReadFileWithOptions({
+            path: item.document_path,
+            workspacePath: item.workspace_path,
             allowOutsideWorkspace: false,
           });
-          if (current.exists !== file.after.exists || current.revision !== file.after.revision) {
-            return true;
-          }
+          if (!stopChecking && current.workspace_identity === item.root_identity &&
+              current.revision === item.revision) verified.add(item);
         } catch {
-          return true;
+          // Unknown identity, missing file and failed read invalidate only this observation.
         }
       }
       return false;
     };
-    let stale: boolean;
     try {
-      stale = await Promise.race([hasChanged(), interrupted]);
+      await Promise.race([verify(), interrupted]);
     } finally {
       stopChecking = true;
       clearTimeout(deadline);
@@ -2193,7 +2185,7 @@ export const executeWorkspaceTool = async (
     }
     return nativeDiagnostics.map((item) => {
       if (!isReady(item)) return item;
-      if (!stale && !options.signal?.aborted) return item;
+      if (verified.has(item) && !options.signal?.aborted) return item;
       return {
         ...item,
         status: options.signal?.aborted ? "cancelled" : "stale",

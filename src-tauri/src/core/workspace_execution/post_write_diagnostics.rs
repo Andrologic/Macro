@@ -111,6 +111,8 @@ pub(super) async fn collect(changes: &[PendingFileChange], roots: Roots) -> Vec<
             .map(|text| fs::content_revision(text.as_bytes()));
         let mut result = json!({
             "path": change.display_path, "root": canonical_root, "uri": uri,
+            "workspace_path": change.effective_workspace, "document_path": change.effective_path,
+            "root_identity": roots.get(&change.effective_workspace).and_then(|identity| identity.observation_key()),
             "revision": revision, "version": 1, "session": uuid::Uuid::new_v4().to_string(),
             "status": "disabled", "items": [], "truncated": false,
         });

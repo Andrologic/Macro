@@ -50,6 +50,17 @@ pub struct WorkspaceRootIdentity {
     file_index: Option<u64>,
 }
 
+impl WorkspaceRootIdentity {
+    /// Lossless, opaque identity for comparing observations across IPC calls.
+    /// Strings preserve native 64-bit identifiers without JavaScript rounding.
+    pub fn observation_key(self) -> Option<String> {
+        #[cfg(unix)]
+        return Some(format!("unix:{:x}:{:x}", self.device, self.inode));
+        #[cfg(windows)]
+        return Some(format!("windows:{:x}:{:x}", self.volume?, self.file_index?));
+    }
+}
+
 #[cfg(unix)]
 fn workspace_root_identity_from_std(metadata: &std::fs::Metadata) -> WorkspaceRootIdentity {
     use std::os::unix::fs::MetadataExt;
@@ -1143,6 +1154,7 @@ async fn read_wsl_file_internal(
             size,
             revision,
             unix_mode,
+            workspace_identity: None,
         });
     }
     let content = String::from_utf8(output.stdout).map_err(|error| BackendError::Filesystem {
@@ -1157,6 +1169,7 @@ async fn read_wsl_file_internal(
         encoding: "utf-8".to_string(),
         revision,
         unix_mode,
+        workspace_identity: None,
     })
 }
 
@@ -1686,6 +1699,7 @@ pub async fn read_file_internal(
             None => workspace_root_identity(&workspace)?,
         })
     };
+    let identity_workspace = workspace.clone();
     let read_path = validated_path.clone();
     let (bytes, unix_mode) = tokio::task::spawn_blocking(move || {
         let file = if allow_outside {
@@ -1718,6 +1732,11 @@ pub async fn read_file_internal(
     })
     .await
     .map_err(capability_task_error)??;
+    // The capability opened above checked this identity before reading. Only
+    // attest it if the named root still identifies that same directory afterward.
+    let workspace_identity = expected_identity
+        .filter(|expected| workspace_root_identity(&identity_workspace).ok() == Some(*expected))
+        .and_then(WorkspaceRootIdentity::observation_key);
     let is_binary = bytes_look_binary(&bytes);
     let actual_size = bytes.len() as u64;
     let revision = content_revision(&bytes);
@@ -1731,6 +1750,7 @@ pub async fn read_file_internal(
             size: actual_size,
             revision,
             unix_mode,
+            workspace_identity,
         })
     } else {
         // Read text file content
@@ -1752,6 +1772,7 @@ pub async fn read_file_internal(
             encoding: "utf-8".to_string(),
             revision,
             unix_mode,
+            workspace_identity,
         })
     }
 }

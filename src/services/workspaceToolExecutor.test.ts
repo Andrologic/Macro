@@ -1,3 +1,6 @@
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ChatToolExecutionPorts } from "./chatToolExecutionContracts";
 import type { FrozenToolCallContext } from "./chatStreamContracts";
 import type { AgentCodeCheckpointFile, ChatMessage } from "../types";
@@ -3519,10 +3522,19 @@ describe("workspaceToolExecutor helpers", () => {
 async function lspConversationFixture(params: {
   virtual?: boolean; status?: string; refuse?: boolean; checkpointFailure?: boolean;
   mutateDuringCheckpoint?: boolean; holdNative?: boolean; readOnly?: boolean; holdFreshness?: boolean;
+  realRoot?: string; replaceRoot?: boolean; secondRoot?: string;
+  missingIdentity?: "observation" | "read"; failedFreshness?: boolean;
 } = {}) {
   let content = "export const value: string = 'old';\n";
   let revision = "before";
-  const root = "C:/dev/macro-web";
+  const root = params.realRoot ?? "C:/dev/macro-web";
+  if (params.realRoot) writeFileSync(join(root, "sample.ts"), content);
+  if (params.secondRoot) writeFileSync(join(params.secondRoot, "sample.ts"), content);
+  const rootIdentity = (workspace = root) => {
+    if (!params.realRoot) return "fixture-root-identity";
+    const stat = statSync(workspace, {bigint: true});
+    return `unix:${stat.dev.toString(16)}:${stat.ino.toString(16)}`;
+  };
   const filePath = params.virtual ? "web/sample.ts" : "sample.ts";
   const nativeCalls: Array<Record<string, unknown>> = [];
   const checkpoints: AgentCodeCheckpointFile[][] = [];
@@ -3540,12 +3552,17 @@ async function lspConversationFixture(params: {
     tauriModule: {
       isTauriAvailable: () => true,
       fsExists: async () => true,
-      fsReadFileWithOptions: async () => {
+      fsReadFileWithOptions: async (request: {path: string; workspacePath?: string}) => {
         if (params.holdFreshness && checkpoints.length > 0) {
           readingFreshness();
           await new Promise(() => {});
         }
-        return { content, revision, language: "typescript", is_binary: false, size: content.length, encoding: "utf-8", unix_mode: 0o755 };
+        if (params.failedFreshness && checkpoints.length > 0) throw new Error("Identity read failed");
+        const workspace = params.secondRoot && (request.workspacePath === params.secondRoot || request.path.startsWith(params.secondRoot + "/"))
+          ? params.secondRoot : root;
+        const readContent = params.realRoot ? readFileSync(join(workspace, "sample.ts"), "utf8") : content;
+        return { content: readContent, revision, language: "typescript", is_binary: false, size: content.length, encoding: "utf-8", unix_mode: 0o755,
+          workspace_identity: params.missingIdentity === "read" ? undefined : rootIdentity(workspace) };
       },
       fsWriteFile: async (args: {path: string; content: string; expectedRevision?: string; unixMode?: number}) => {
         expect(args.expectedRevision).toBe("applied");
@@ -3560,20 +3577,24 @@ async function lspConversationFixture(params: {
         if (params.refuse) throw new Error("Revision conflict: concurrent writer");
         const args = request.args as Record<string, unknown>;
         if (request.toolId === "apply_patch") {
-          expect(Object.values(args.expected_revisions as object)).toEqual([revision]);
+          expect(Object.values(args.expected_revisions as object)).toEqual(params.secondRoot ? [revision, revision] : [revision]);
           content = "export const value: string = 42;\n";
         } else {
           expect(args.expected_revision).toBe(revision);
           content = String(args.content);
         }
         revision = nativeCalls.length === 1 ? "applied" : `applied-${nativeCalls.length}`;
+        if (params.realRoot) writeFileSync(join(root, "sample.ts"), content);
+        if (params.secondRoot) writeFileSync(join(params.secondRoot, "sample.ts"), content);
         started();
         if (params.holdNative) await nativeRelease;
         const status = cancellations ? "cancelled" : params.status ?? "ready";
         return JSON.stringify({ok: true, path: `${root}/sample.ts`, created: false, bytes_written: content.length,
-          files: [{path: filePath, validation: {revision, unix_mode: 0o755}}],
-          diagnostics: [{path: filePath, root, uri: "file:///C:/dev/macro-web/sample.ts", revision,
-            session: `fixture-session-${nativeCalls.length}`, version: 1, status, items: status === "ready" && content.includes("= 42") ? [{code: 2322, message: "Type number is not assignable to string"}] : []}],
+          files: [filePath, ...(params.secondRoot ? ["api/sample.ts"] : [])].map(path => ({path, validation: {revision, unix_mode: 0o755}})),
+          diagnostics: [root, ...(params.secondRoot ? [params.secondRoot] : [])].map(workspace => ({
+            path: "sample.ts", root: workspace, workspace_path: workspace, document_path: `${workspace}/sample.ts`,
+            root_identity: params.missingIdentity === "observation" ? undefined : rootIdentity(workspace), uri: `file://${workspace}/sample.ts`, revision,
+            session: `fixture-session-${nativeCalls.length}`, version: 1, status, items: status === "ready" && content.includes("= 42") ? [{code: 2322, message: "Type number is not assignable to string"}] : []})),
         });
       },
       cancelWorkspaceTool: async (id: string) => {
@@ -3589,8 +3610,11 @@ async function lspConversationFixture(params: {
     executionContext: {
       groupId: "macro-suite", groupName: "Macro Suite", projectId: "web", projectName: "Web", projectIds: ["web"],
       actionableProjectIds: ["web"], contextProjectIds: [], focusedProjectId: "web", taskId: "task", branchName: "feature/test",
-      projectMounts: params.virtual ? [{projectId: "web", groupId: "macro-suite", displayName: "Web", mountName: "web", workspacePath: root, isReadOnly: params.readOnly ?? false}] : [],
-      virtualRootEnabled: params.virtual ?? false, workspacePathsByProjectId: {web: root}, defaultWorkspacePath: root, workspacePath: root,
+      projectMounts: params.virtual ? [
+        {projectId: "web", groupId: "macro-suite", displayName: "Web", mountName: "web", workspacePath: root, isReadOnly: params.readOnly ?? false},
+        ...(params.secondRoot ? [{projectId: "api", groupId: "macro-suite", displayName: "API", mountName: "api", workspacePath: params.secondRoot, isReadOnly: false}] : []),
+      ] : [],
+      virtualRootEnabled: params.virtual ?? false, workspacePathsByProjectId: {web: root, ...(params.secondRoot ? {api: params.secondRoot} : {})}, defaultWorkspacePath: root, workspacePath: root,
     },
   };
   const unexpected = async (): Promise<never> => { throw new Error("Unexpected unrelated IO"); };
@@ -3604,6 +3628,12 @@ async function lspConversationFixture(params: {
     terminal: {cachedSession: () => undefined, createSession: unexpected, readSession: unexpected, runCommand: unexpected, killSession: unexpected},
     workspace: {executor: async () => executor, resolvePromotion: () => ({task: undefined, projectIds: [], unavailableResult: null}), promote: async () => null,
       recordCheckpoint: async (checkpoint) => {
+        if (params.replaceRoot) {
+          renameSync(root, `${root}-old`);
+          mkdirSync(root);
+          writeFileSync(join(root, "sample.ts"), content);
+          writeFileSync(join(root, "tsconfig.json"), '{"compilerOptions":{"strict":false}}');
+        }
         if (params.mutateDuringCheckpoint) {content = "external edit"; revision = "external";}
         if (params.checkpointFailure) throw new Error("checkpoint unavailable");
         checkpoints.push(checkpoint.files);
@@ -3616,7 +3646,7 @@ async function lspConversationFixture(params: {
   }, () => true, () => {});
   const argsFor = (tool: string) => tool === "write" ? {path: filePath, content: "export const value: string = 42;\n"}
     : tool === "edit" ? {path: filePath, old_text: "'old'", new_text: "42"}
-    : {patch_text: `*** Begin Patch\n*** Update File: ${filePath}\n@@\n-export const value: string = 'old';\n+export const value: string = 42;\n*** End Patch`};
+    : {patch_text: `*** Begin Patch\n*** Update File: ${filePath}\n@@\n-export const value: string = 'old';\n+export const value: string = 42;${params.secondRoot ? "\n*** Update File: api/sample.ts\n@@\n-export const value: string = 'old';\n+export const value: string = 42;" : ""}\n*** End Patch`};
   const run = async (tool: string, args = argsFor(tool)) => {
     const batch = await runToolBatch({
       calls: [{id: "call", type: "function", function: {name: tool, arguments: JSON.stringify(args)}}],
@@ -3748,4 +3778,73 @@ describe("conversation checkpoint diagnostics reach the next provider request", 
     expect(f.nativeCalls).toHaveLength(0);
     expect(f.checkpoints).toHaveLength(0);
   });
+});
+
+
+describe("native root identity remains bound through conversation checkpoints", () => {
+  for (const virtual of [false, true]) {
+    for (const tool of ["write", "edit", "apply_patch"]) {
+      for (const replaceRoot of [false, true]) {
+        it(`${tool}, virtual=${virtual}, replacement=${replaceRoot}: compares native identities for identical bytes`, async () => {
+          const temporary = mkdtempSync(join(tmpdir(), "macro-lsp-root-"));
+          try {
+            const root = join(temporary, "workspace").replaceAll("\\", "/");
+            mkdirSync(root);
+            const before = statSync(root, {bigint: true});
+            const f = await lspConversationFixture({virtual, realRoot: root, replaceRoot});
+            const {result, nextTurn} = await f.run(tool);
+            const after = statSync(root, {bigint: true});
+            expect(after.ino === before.ino).toBe(!replaceRoot);
+            expect(result.is_error).toBe(false);
+            const observation = JSON.parse(String(nextTurn.content)).diagnostics[0];
+            expect(observation.status).toBe(replaceRoot ? "stale" : "ready");
+            if (replaceRoot) expect(observation.items).toEqual([]);
+            else expect(observation.items[0].code).toBe(2322);
+            expect(f.checkpoints).toHaveLength(1);
+            expect(f.state()).toMatchObject({revision: "applied", filesystemWrites: 0});
+            expect(readFileSync(join(root, "sample.ts"), "utf8")).toBe("export const value: string = 42;\n");
+            if (replaceRoot) expect(readFileSync(join(`${root}-old`, "sample.ts"), "utf8")).toBe(readFileSync(join(root, "sample.ts"), "utf8"));
+          } finally {
+            rmSync(temporary, {recursive: true, force: true});
+          }
+        });
+      }
+      for (const failure of ["observation", "read", "failed"] as const) {
+        it(`${tool}, virtual=${virtual}: unknown or failed identity ${failure} invalidates only observation`, async () => {
+          const f = await lspConversationFixture({virtual,
+            missingIdentity: failure === "failed" ? undefined : failure,
+            failedFreshness: failure === "failed",
+          });
+          const {result} = await f.run(tool);
+          expect(result.is_error).toBe(false);
+          expect(JSON.parse(result.content).diagnostics[0]).toMatchObject({status: "stale", items: []});
+          expect(f.checkpoints).toHaveLength(1);
+          expect(f.state()).toMatchObject({revision: "applied", filesystemWrites: 0});
+        });
+      }
+    }
+  }
+});
+
+
+it("keeps each native observation bound to its own root in a multi-mount checkpoint", async () => {
+  const temporary = mkdtempSync(join(tmpdir(), "macro-lsp-mounts-"));
+  try {
+    const root = join(temporary, "web").replaceAll("\\", "/");
+    const secondRoot = join(temporary, "api").replaceAll("\\", "/");
+    mkdirSync(root);
+    mkdirSync(secondRoot);
+    const f = await lspConversationFixture({virtual: true, realRoot: root, secondRoot, replaceRoot: true});
+    const {result} = await f.run("apply_patch");
+    expect(result.is_error).toBe(false);
+    const observations = JSON.parse(result.content).diagnostics;
+    expect(observations).toHaveLength(2);
+    expect(observations[0]).toMatchObject({workspace_path: root, status: "stale", items: []});
+    expect(observations[1]).toMatchObject({workspace_path: secondRoot, status: "ready", items: [{code: 2322}]});
+    expect(f.checkpoints).toHaveLength(1);
+    expect(f.checkpoints[0]).toHaveLength(2);
+    expect(f.state().filesystemWrites).toBe(0);
+  } finally {
+    rmSync(temporary, {recursive: true, force: true});
+  }
 });

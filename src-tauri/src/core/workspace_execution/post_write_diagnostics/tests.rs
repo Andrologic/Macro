@@ -469,3 +469,94 @@ async fn lsp_batch_limit_is_explicit_and_preserves_all_writes() {
     assert_eq!(response["diagnostics"][4]["omitted_documents"], 1);
     assert!(root.path().join("e.ts").exists());
 }
+
+// The response's identity must survive the IPC boundary: a later read of the
+// same bytes at the same path must distinguish a newly installed directory.
+#[cfg(unix)]
+#[tokio::test]
+async fn lsp_observation_identity_matches_reads_and_detects_replacement_after_response() {
+    use crate::core::workspace_execution::WorkspaceProjectMount;
+    for virtual_root in [false, true] {
+        for tool in ["write", "edit", "apply_patch"] {
+            let container = TempDir::new().unwrap();
+            let root = container.path().join("workspace");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("sample.ts"), "before").unwrap();
+            let path = if virtual_root {
+                "web/sample.ts"
+            } else {
+                "sample.ts"
+            };
+            let args = match tool {
+                "write" => json!({"path":path,"content":"bad"}),
+                "edit" => json!({"path":path,"old_text":"before","new_text":"bad"}),
+                _ => {
+                    json!({"patch_text":format!("*** Begin Patch\n*** Update File: {path}\n@@\n-before\n+bad\n*** End Patch")})
+                }
+            };
+            let output = TEST_SETTINGS
+                .scope(
+                    fixture(&root, "ready"),
+                    execute_workspace_tool_controlled(
+                        root.clone(),
+                        root.clone(),
+                        GitState::new(),
+                        "Implement".into(),
+                        tool.into(),
+                        args,
+                        None,
+                        None,
+                        virtual_root.then(|| {
+                            vec![WorkspaceProjectMount {
+                                project_id: "web".into(),
+                                mount_name: "web".into(),
+                                workspace_path: Some(root.to_string_lossy().into_owned()),
+                                display_name: None,
+                                is_read_only: false,
+                            }]
+                        }),
+                        Some(virtual_root),
+                        None,
+                        None,
+                    ),
+                )
+                .await
+                .unwrap();
+            let result: Value = serde_json::from_str(&output).unwrap();
+            let observation = &result["diagnostics"][0];
+            assert_eq!(
+                observation["status"], "ready",
+                "{tool}, {virtual_root}: {result}"
+            );
+            let observed_root = PathBuf::from(observation["workspace_path"].as_str().unwrap());
+            let observed_path = observation["document_path"].as_str().unwrap().to_owned();
+            let stable = fs::read_file_internal(&observed_root, observed_path.clone(), Some(false))
+                .await
+                .unwrap();
+            assert!(stable.workspace_identity.is_some());
+            assert_eq!(
+                json!(stable.workspace_identity),
+                observation["root_identity"]
+            );
+            assert_eq!(json!(stable.revision), observation["revision"]);
+            // Simulate a completed checkpoint before replacing the directory.
+            std::fs::rename(&root, container.path().join("original")).unwrap();
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("sample.ts"), &stable.content).unwrap();
+            let replaced =
+                fs::read_file_internal(&observed_root, observed_path.clone(), Some(false))
+                    .await
+                    .unwrap();
+            assert_eq!(replaced.revision, stable.revision);
+            assert_ne!(replaced.workspace_identity, stable.workspace_identity);
+            let unconfined = fs::read_file_internal(&root, observed_path, Some(true))
+                .await
+                .unwrap();
+            assert_eq!(unconfined.workspace_identity, None);
+            assert_eq!(
+                std::fs::read_to_string(container.path().join("original/sample.ts")).unwrap(),
+                stable.content
+            );
+        }
+    }
+}

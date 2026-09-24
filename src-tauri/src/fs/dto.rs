@@ -14,6 +14,11 @@ pub struct FileContentDto {
     pub encoding: String,
     /// SHA-256 digest of the exact file bytes read
     pub revision: String,
+    /// Native root identity verified before and after a confined local read.
+    /// Absent for unconfined reads, WSL, or a root that changed during the read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_identity: Option<String>,
     /// Unix permission bits when available (for example `0o755`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

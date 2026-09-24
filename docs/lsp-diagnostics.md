@@ -41,7 +41,8 @@ serveur. `workspace/applyEdit` reste sans handler et reçoit une erreur JSON-RPC
 
 `diagnostics` contient une entrée par document observé. Chaque entrée porte
 `path`, `root`, `uri`, `revision`, `session`, `version`, `status`, `items`,
-`truncated` et `wait_ms`. La révision est l'empreinte du contenu écrit. Le serveur
+`truncated` et `wait_ms`. Les champs `workspace_path`, `document_path` et
+`root_identity` lient chaque observation à sa cible native capturée. La révision est l'empreinte du contenu écrit. Le serveur
 reçoit le contenu validé, pas une relecture d'une sélection UI ultérieure.
 
 | État | Signification |
@@ -106,12 +107,24 @@ Les conversations desktop conservent leurs snapshots avant/après et leur
 sauvegarde de checkpoint. `write` et le contenu calculé par `edit` passent par
 la transaction native `write` avec la révision attendue. `apply_patch` conserve
 sa transaction native par lot. Le résultat conversationnel reprend les
-observations natives après sauvegarde du checkpoint. Une nouvelle vérification
-des révisions des fichiers du checkpoint retire les observations `ready` si le
-contenu a changé pendant cette sauvegarde. Cette vérification supplémentaire
-partage un budget de 250 ms pour le checkpoint et s'interrompt à l'annulation.
-Une vérification inachevée produit `stale`. Un appel filesystem déjà lancé peut
-finir en arrière-plan, sans modifier le résultat publié.
+observations natives après sauvegarde du checkpoint. Une relecture confinée de
+chaque document observé compare sa révision et l'identité native de sa racine.
+Elle utilise `workspace_path` et `document_path` capturés par le backend, même
+si deux montages contiennent le même chemin relatif. Le DTO de lecture retourne
+`workspace_identity` seulement si l'identité de la racine a été vérifiée avant
+et après la lecture. Ces identifiants sont des chaînes opaques préservant les
+entiers natifs : device/inode sur Unix, volume/index de fichier sur Windows.
+Ils ne sont ni un chemin canonique ni une empreinte du document.
+
+Un remplacement de racine au même chemin invalide donc l'observation, même à
+contenu identique. Une identité absente, une erreur de lecture ou une révision
+modifiée produit `stale` sans items. La racine stable d'un autre montage garde
+ses diagnostics vérifiés. Un ancien runtime sans cette preuve ne peut plus
+conserver `ready` après checkpoint ; l'écriture reste réussie.
+Cette vérification supplémentaire partage un budget de 250 ms pour le checkpoint
+et s'interrompt à l'annulation. Une observation non vérifiée dans ce budget
+produit `stale`. Un appel filesystem déjà lancé peut finir en arrière-plan,
+sans modifier le résultat publié.
 
 Si le checkpoint échoue, la compensation existante reste conditionnée par la
 révision appliquée. Elle préserve une écriture concurrente et ne publie aucun
@@ -124,7 +137,8 @@ fallback filesystem, sans preuve LSP.
 | Parcours | Preuve obtenue | Limite |
 |---|---|---|
 | Exécuteur Rust desktop, `.ts`, stdio TypeScript réel | `write` produit 2322, `edit` le corrige, publication vide et nouvelle révision/session | Configuration injectée pour le test ; aucune conversation ni UI |
-| Conversation desktop, racine directe ou montage virtuel, fixture `.ts` | Répartiteur, runtime, exécuteur et batch d'outils réels ; `write`, `edit`, `apply_patch`, checkpoints, refus, rollback, concurrence et annulation | IPC natif, filesystem et persistance simulés |
+| Conversation desktop, racine directe ou montage virtuel, fixture `.ts` | Répartiteur, runtime, exécuteur et batch d'outils réels ; `write`, `edit`, `apply_patch`, checkpoints, refus, rollback, concurrence et annulation. Cas de remplacement réel de répertoire, témoin stable et deux montages | IPC natif et persistance simulés ; filesystem réel pour les cas de remplacement |
+| Identité native après réponse, serveur protocolaire de test | Les trois mutations natives, directes et virtuelles, rendent une identité retrouvée par le lecteur natif ; elle diffère après remplacement de racine malgré des octets identiques | Serveur LSP simulé ; pas de Tauri UI |
 | Projection OpenAI Chat Completions | Le JSON et ses états arrivent dans l'élément `tool` destiné à la prochaine requête ; cycle erreur/correction programmé | Codec réel, aucun appel fournisseur et aucune correction autonome |
 | Responses, Anthropic, Copilot et autres codecs | Aucune preuve LSP spécifique dans ce lot | Les tests génériques de transport ne prouvent pas ce parcours |
 | JavaScript, JSX, TSX, MTS, CTS, MJS, CJS | Sélection implémentée par extension | Aucun cycle erreur/correction avec serveur réel établi |
