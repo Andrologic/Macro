@@ -339,7 +339,8 @@ export const removeManualFeatureMetadata = async (
   task: Pick<
     CatalogedImplementTask,
     'id' | 'base_branch' | 'project_id' | 'project_ids' | 'execution_targets' | 'standalone_kind'
-  >
+  >,
+  strict = false,
 ): Promise<void> => {
   if (!tauriIpc.isTauriAvailable() || task.standalone_kind !== 'manual_feature') {
     return;
@@ -357,7 +358,7 @@ export const removeManualFeatureMetadata = async (
     workspaceTargets.map(async (target) => {
       await Promise.all(
         metadataRoots.map((metadataRoot) =>
-          deleteMetadataRootIfPresent(metadataRoot, target, true)
+          deleteMetadataRootIfPresent(metadataRoot, target, strict)
         )
       );
       recordMacroMetadataMutation({

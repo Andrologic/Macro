@@ -184,7 +184,7 @@ describe('manualFeatureMetadataService', () => {
     await expect(removeManualFeatureMetadata({
       id: 'task-1', base_branch: 'develop', project_id: 'project-1',
       project_ids: ['project-1'], standalone_kind: 'manual_feature', execution_targets: [],
-    })).rejects.toThrow('metadata delete unavailable');
+    }, true)).rejects.toThrow('metadata delete unavailable');
   });
 
   it('writes direct task metadata to the current project .macro scope without Git', async () => {

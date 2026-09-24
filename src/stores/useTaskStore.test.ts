@@ -2265,7 +2265,7 @@ describe('useTaskStore merge workflow review loading', () => {
     }
     expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(draftPresent ? 1 : 0);
     expect(removeManualFeatureMetadataMock).toHaveBeenCalledTimes(draftPresent ? 1 : 0);
-    if (draftPresent) expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task);
+    if (draftPresent) expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task, true);
     expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(conversationId);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
@@ -2296,11 +2296,12 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
-  it('preserves a draft finalized by another client before creation recovery', async () => {
+  it.each(['task_creating', 'task_deleting'] as const)(
+    'preserves a draft finalized by another client during %s recovery', async (phase) => {
     const taskId = 'manual-task-finalized-during-creation';
     const conversationId = 'conversation-finalized-during-creation';
     dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify([{
-      taskId, conversationId, phase: 'task_creating', draft: true, executionTargets: [],
+      taskId, conversationId, phase, draft: true, executionTargets: [],
       generation: 1, createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
     }]));
     const task = buildStandaloneTask({
@@ -2322,7 +2323,8 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(removeManualFeatureMetadataMock).not.toHaveBeenCalled();
     expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
-  });
+    },
+  );
 
   it('retries metadata cleanup before deleting an interrupted draft', async () => {
     const taskId = 'manual-task-metadata-retry';
