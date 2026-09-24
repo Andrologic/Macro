@@ -63,8 +63,10 @@ export function verifySameDesignatedRequirement(firstPath, secondPath, runComman
     if (identifier !== QA_BUNDLE_IDENTIFIER) {
       throw new Error(`${appPath} has bundle identifier ${identifier || 'unknown'}, expected ${QA_BUNDLE_IDENTIFIER}.`);
     }
-    if (!/\b(?:anchor|certificate)\b/i.test(designated)) {
-      throw new Error(`${appPath} does not have a designated requirement tied to a stable signing identity.`);
+    const pinsSigner = /\bcertificate\s+leaf(?:\[[^\]]+\])?\s*(?:=|\bexists\b)/i.test(designated)
+      || /\banchor\s+H"[0-9A-F]{40}"/i.test(designated);
+    if (!pinsSigner) {
+      throw new Error(`${appPath} designated requirement does not pin a signing certificate or its anchor.`);
     }
     return designated;
   });

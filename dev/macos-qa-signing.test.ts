@@ -65,7 +65,13 @@ describe('macOS Pilot QA signing', () => {
       .toThrow('same designated');
     expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, (_command, args) =>
       args[0] === '--verify' ? '' : `designated => identifier "${QA_BUNDLE_IDENTIFIER}"`))
-      .toThrow('stable signing identity');
+      .toThrow('does not pin a signing certificate');
+    expect(() => verifySameDesignatedRequirement(firstBundle, secondBundle, (_command, args) =>
+      args[0] === '--verify' ? '' : `designated => identifier "${QA_BUNDLE_IDENTIFIER}" and anchor apple generic`))
+      .toThrow('does not pin a signing certificate');
+    expect(verifySameDesignatedRequirement(firstBundle, secondBundle, (_command, args) => args[0] === '--verify' ? '' :
+      `designated => identifier "${QA_BUNDLE_IDENTIFIER}" and anchor H"0123456789ABCDEF0123456789ABCDEF01234567"`))
+      .toContain('anchor H');
   });
 
   test('QA Tauri configuration isolates the app and disables updater publication artifacts', () => {
