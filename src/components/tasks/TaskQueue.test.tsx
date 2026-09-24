@@ -16,6 +16,7 @@ import {
   installReactI18nextMock,
 } from '../../test-utils/reactI18nextMock';
 import { installTauriRuntimeMock, removeTauriRuntimeMock } from '../../test-utils/tauriRuntime';
+import { services } from '../../services';
 
 let useAppStore!: typeof UseAppStoreHook;
 let useChatStore!: typeof UseChatStoreHook;
@@ -1820,6 +1821,138 @@ describe('TaskQueue', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it('keeps a newly created feature and its conversation through the real task refresh', async () => {
+    const persistedTasks: Array<ReturnType<typeof makeTask>> = [];
+    const persistedConversations: Array<Record<string, unknown>> = [];
+    let concurrentRefresh: Promise<void> | null = null;
+    let holdStaleRead = false;
+    let releaseStaleRead!: () => void;
+    const staleReadReleased = new Promise<void>((resolve) => { releaseStaleRead = resolve; });
+    let reportStaleReadStarted!: () => void;
+    const staleReadStarted = new Promise<void>((resolve) => { reportStaleReadStarted = resolve; });
+    let leaseHeld = false;
+    let leaseCounter = 0;
+    const leaseWaiters: Array<() => void> = [];
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => {
+      if (holdStaleRead) {
+        holdStaleRead = false;
+        reportStaleReadStarted();
+        await staleReadReleased;
+        return { tasks: [], plans: [], hasStandaloneTasks: false, source: 'empty' as const };
+      }
+      if (persistedTasks.length > 0 && !concurrentRefresh) {
+        concurrentRefresh = useTaskStore.getState().refreshFromPlan({
+          restoreSelection: false, activateSelectedTask: false,
+        });
+      }
+      return {
+        tasks: [...persistedTasks] as never, plans: [], hasStandaloneTasks: persistedTasks.length > 0,
+        source: persistedTasks.length > 0 ? 'mixed' as const : 'empty' as const,
+      };
+    }) as typeof services.listTasks;
+    installTauriRuntimeMock(mock(async (command, payload) => {
+      const key = String(payload?.key ?? '');
+      if (command === 'db_get_app_setting') {
+        const value = taskQueueAppSettings.get(key);
+        return value === undefined ? null : { key, value_json: value, updated_at: '2026-08-30T00:00:00Z' };
+      }
+      if (command === 'db_compare_and_swap_app_setting') {
+        if ((taskQueueAppSettings.get(key) ?? null) !== (payload?.expectedValueJson ?? null)) return { applied: false };
+        taskQueueAppSettings.set(key, String(payload?.valueJson ?? ''));
+        return { applied: true };
+      }
+      if (command === 'workspace_acquire_task_lifecycle_lock') {
+        if (leaseHeld) await new Promise<void>((resolve) => leaseWaiters.push(resolve));
+        leaseHeld = true;
+        leaseCounter += 1;
+        return `test-lease-${leaseCounter}`;
+      }
+      if (command === 'workspace_release_task_lifecycle_lock') {
+        leaseHeld = false;
+        leaseWaiters.shift()?.();
+        return undefined;
+      }
+      if (command === 'db_create_conversation') {
+        // A refresh can finish while the new task is still only a journal entry.
+        await useTaskStore.getState().refreshFromPlan({ activateSelectedTask: false });
+        expect(useAppStore.getState().selectedTaskId).toBeNull();
+        const conversation = {
+          id: 'created-conversation', title: payload?.title, description: '',
+          scope_mode: 'Implement', task_id: payload?.taskId,
+          group_id: payload?.groupId, project_id: payload?.projectId,
+          provider_id: null, model_id: null, reasoning_effort: null,
+          last_message: '', message_count: 0, updated_at: '2026-08-30T00:00:00Z', is_pinned: false,
+        };
+        persistedConversations.push(conversation);
+        return conversation;
+      }
+      if (command === 'db_list_conversations') return [...persistedConversations];
+      if (command === 'db_list_conversation_citations') return [];
+      if (command === 'workspace_create_manual_feature_draft') {
+        persistedTasks.push(makeTask(String(payload?.taskId), 'Pending', {
+          task_source: 'standalone', standalone_kind: 'manual_feature', draft: true,
+          conversation_id: payload?.conversationId, title: 'New feature',
+          assigned_branch: '', branch_name: '', execution_targets: [],
+        }));
+        return {};
+      }
+      if (command === 'workspace_delete_manual_feature_draft') {
+        const index = persistedTasks.findIndex((task) => task.id === payload?.taskId);
+        if (index >= 0) persistedTasks.splice(index, 1);
+        return true;
+      }
+      return undefined;
+    }));
+    seedTasks([]);
+    useAppStore.setState({
+      selectedTaskId: null,
+      mode: 'Implement',
+      projectGroups: [{
+        id: 'group-1', name: 'Project Group', isOpen: true,
+        projects: [{
+          ...makeProject('project-1', '/tmp/project-1', 'Project One', makeGitFlowSettings('develop', 'main')),
+          gitSetupState: 'ready',
+        }],
+      }] as never,
+    });
+    try {
+      await act(async () => { root?.render(<TaskQueueComponent />); await flushRender(); });
+      holdStaleRead = true;
+      const staleRefresh = useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false, activateSelectedTask: false,
+      });
+      await staleReadStarted;
+      await act(async () => {
+        document.body.querySelector<HTMLButtonElement>('[data-tour-id="implement-create-task"]')?.click();
+        await flushRender();
+      });
+      const dialog = await waitForCreateDialog();
+      const findButton = (label: string) => Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+        .find((button) => button.textContent?.includes(label));
+      await act(async () => { findButton('Project One')?.click(); await flushRender(); });
+      await act(async () => { findButton('Feature')?.click(); await flushRender(); });
+      expect({ disabled: findButton('Create task')?.disabled, dialog: dialog?.textContent }).toEqual({ disabled: false, dialog: expect.any(String) });
+      await act(async () => { findButton('Create task')?.click(); await flushRender(); });
+      expect(notifyMock.error.mock.calls).toEqual([]);
+      expect(concurrentRefresh).not.toBeNull();
+      await concurrentRefresh;
+      releaseStaleRead();
+      await staleRefresh;
+      expect(notifyMock.error.mock.calls).toEqual([]);
+      expect(persistedTasks).toHaveLength(1);
+      expect(useTaskStore.getState().getTaskById(persistedTasks[0].id)).toBeDefined();
+      expect(useChatStore.getState().selectedConversationId).toBe('created-conversation');
+      expect(useAppStore.getState().selectedTaskId).toBe(persistedTasks[0].id);
+      expect(persistedConversations).toHaveLength(1);
+      expect(JSON.parse(taskQueueAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+      expect(notifyMock.error).not.toHaveBeenCalled();
+    } finally {
+      releaseStaleRead();
+      services.listTasks = originalListTasks;
+    }
+  });
+
   it('preserves the conversation while ambiguous draft cleanup remains durable and unconfirmed', async () => {
     const directProject = {
       ...makeProject('project-folder', '/tmp/project-folder', 'Folder project'),
@@ -1907,7 +2040,7 @@ describe('TaskQueue', () => {
 
     const taskId = createManualFeatureDraft.mock.calls[0]?.[0]?.taskId;
     expect(taskId).toEqual(expect.stringContaining('manual-feature-'));
-    expect(deleteManualFeatureDraft).toHaveBeenCalledWith(taskId);
+    expect(deleteManualFeatureDraft).toHaveBeenCalledWith(taskId, undefined);
     expect(deleteConversation).not.toHaveBeenCalled();
     expect(JSON.parse(appSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([
       expect.objectContaining({
@@ -1922,6 +2055,8 @@ describe('TaskQueue', () => {
     expect(notifyMock.error.mock.calls.some(([, options]) =>
       String(options?.description ?? '').includes('injected durable draft cleanup failure')
     )).toBe(true);
+    expect(notifyMock.error.mock.calls.at(-1)?.[0])
+      .toContain('injected transport failure after draft persistence');
   });
 
   it('opens task creation for a direct project without loading Git start points', async () => {

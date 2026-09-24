@@ -24,6 +24,7 @@ export class StaleLinkedTaskDeletionSagaError extends Error {
 export type LinkedConversationDeletionOwner = 'task' | 'plan' | 'conversation';
 export type LinkedConversationDeletionPhase =
   | 'prepared'
+  | 'task_creating'
   | 'task_deleting'
   | 'task_deleted'
   | 'draft_reverting'
@@ -53,6 +54,7 @@ export interface LinkedConversationDeletionSaga {
   generation?: number;
   legacyCreatedAt?: string;
   draft?: boolean;
+  creationCommitted?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
   archivedCleanupOperationId?: string;
   archivedCleanupCreatedAt?: string;
@@ -71,6 +73,7 @@ export interface LinkedTaskDeletionSaga {
   generation?: number;
   legacyCreatedAt?: string;
   draft?: boolean;
+  creationCommitted?: boolean;
   executionTargets?: LinkedTaskDeletionTarget[];
   archivedCleanupOperationId?: string;
   archivedCleanupCreatedAt?: string;
@@ -100,7 +103,7 @@ const isAllowedOwnerPhase = (
   phase: LinkedConversationDeletionPhase,
 ): boolean => {
   if (ownerType === 'task') {
-    return phase === 'prepared' || phase === 'task_deleting' || phase === 'task_deleted' ||
+    return phase === 'prepared' || phase === 'task_creating' || phase === 'task_deleting' || phase === 'task_deleted' ||
       phase === 'draft_reverting' || phase === 'draft_reverted';
   }
   if (ownerType === 'plan') {
@@ -130,6 +133,9 @@ export const getLinkedDeletionSagaGeneration = (
   ? `g${saga.generation}`
   : saga.createdAt}`;
 
+export const findPersistedTaskConversationId = async (taskId: string): Promise<string | null> =>
+  (await tauriIpc.listConversations()).find((conversation) => conversation.task_id === taskId)?.id ?? null;
+
 const parseSagas = (value: string | null | undefined): LinkedConversationDeletionSaga[] => {
   if (!value) return [];
   try {
@@ -147,6 +153,7 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
         typeof ownerId !== 'string' ||
         typeof candidate.conversationId !== 'string' ||
         (candidate.phase !== 'prepared' &&
+          candidate.phase !== 'task_creating' &&
           candidate.phase !== 'task_deleting' &&
           candidate.phase !== 'task_deleted' &&
           candidate.phase !== 'draft_reverting' &&
@@ -154,6 +161,9 @@ const parseSagas = (value: string | null | undefined): LinkedConversationDeletio
           candidate.phase !== 'plan_conversation_created' &&
           candidate.phase !== 'plan_deleting') ||
         !isAllowedOwnerPhase(ownerType, candidate.phase) ||
+        (candidate.creationCommitted !== undefined && typeof candidate.creationCommitted !== 'boolean') ||
+        (candidate.creationCommitted === true && (ownerType !== 'task' ||
+          (candidate.phase !== 'prepared' && candidate.phase !== 'task_deleted'))) ||
         (candidate.generation !== undefined && !isDurableGeneration(candidate.generation)) ||
         (
           candidate.legacyCreatedAt !== undefined &&
@@ -306,7 +316,7 @@ const mutateLinkedConversationDeletionSagas = async (
 };
 
 const phaseRank = (phase: LinkedConversationDeletionPhase): number => {
-  if (phase === 'prepared' || phase === 'plan_conversation_created') return 0;
+  if (phase === 'prepared' || phase === 'task_creating' || phase === 'plan_conversation_created') return 0;
   if (phase === 'task_deleting' || phase === 'draft_reverting' || phase === 'plan_deleting') return 1;
   return 2;
 };
@@ -342,6 +352,7 @@ const mergeSameGenerationProgress = (
 ): LinkedConversationDeletionSaga => {
   if (
     persisted.createdAt !== incoming.createdAt ||
+    (persisted.creationCommitted === true && incoming.creationCommitted !== true) ||
     (
       persisted.legacyCreatedAt !== undefined &&
       incoming.legacyCreatedAt !== undefined &&
@@ -542,6 +553,7 @@ export const loadLinkedTaskDeletionSagas = async (
           generation: saga.generation,
           legacyCreatedAt: saga.legacyCreatedAt,
           draft: saga.draft,
+          creationCommitted: saga.creationCommitted,
           executionTargets: saga.executionTargets,
           archivedCleanupOperationId: saga.archivedCleanupOperationId,
           archivedCleanupCreatedAt: saga.archivedCleanupCreatedAt,

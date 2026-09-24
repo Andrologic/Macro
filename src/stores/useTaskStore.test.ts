@@ -163,6 +163,7 @@ const workspaceListTasksMock = mock(async (): ReturnType<typeof actualTauriIpc.w
   hasStandaloneTasks: false,
   source: 'empty',
 }));
+const listConversationsMock = mock(async (): ReturnType<typeof actualTauriIpc.listConversations> => []);
 const workspaceRestoreManualFeatureMock = mock(async () => undefined);
 const dbAppSettings = new Map<string, string>();
 const dbGetAppSettingMock = mock(async (key: string) => {
@@ -209,9 +210,9 @@ const workspaceRevertManualFeatureToDraftMock = mock(async () => ({
   createdAt: '2026-04-01T00:00:00.000Z',
   updatedAt: '2026-04-01T00:00:00.000Z',
 }));
-const workspaceAcquireTaskLifecycleLockMock = mock(async () => 'task-lifecycle-lease');
+const workspaceAcquireTaskLifecycleLockMock = mock(async (_taskId: string) => 'task-lifecycle-lease');
 const workspaceRenewTaskLifecycleLockMock = mock(async () => undefined);
-const workspaceReleaseTaskLifecycleLockMock = mock(async () => undefined);
+const workspaceReleaseTaskLifecycleLockMock = mock(async (_leaseId: string) => undefined);
 const workspaceUpdateStandaloneTaskStatusMock = mock(
   async (params: { taskId: string; status: string; expectedRevision?: number; expectedStatus?: string }) => {
     if (!updateStandaloneTaskStatusImpl) {
@@ -373,6 +374,7 @@ mock.module('../services/tauriIpc', () => ({
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceListTasks: workspaceListTasksMock,
+  listConversations: listConversationsMock,
   workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
   workspaceAcquireTaskLifecycleLock: workspaceAcquireTaskLifecycleLockMock,
@@ -416,6 +418,7 @@ mock.module('../services/tauriIpc.ts', () => ({
   workspaceDeleteManualFeature: workspaceDeleteManualFeatureMock,
   workspaceArchiveManualFeature: workspaceArchiveManualFeatureMock,
   workspaceListTasks: workspaceListTasksMock,
+  listConversations: listConversationsMock,
   workspaceRestoreManualFeature: workspaceRestoreManualFeatureMock,
   workspaceRevertManualFeatureToDraft: workspaceRevertManualFeatureToDraftMock,
   workspaceAcquireTaskLifecycleLock: workspaceAcquireTaskLifecycleLockMock,
@@ -1161,6 +1164,8 @@ describe('useTaskStore merge workflow review loading', () => {
       archivedAt: '2026-08-30T10:00:00.000Z',
     } as Awaited<ReturnType<typeof actualTauriIpc.workspaceArchiveManualFeature>>));
     workspaceListTasksMock.mockClear();
+    listConversationsMock.mockClear();
+    listConversationsMock.mockImplementation(async () => []);
     workspaceListTasksMock.mockImplementation(async () => ({
       tasks: [],
       plans: [],
@@ -2226,6 +2231,144 @@ describe('useTaskStore merge workflow review loading', () => {
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
 
+  it.each([false, true])('recovers an interrupted creation with draft present=%s', async (draftPresent) => {
+    const taskId = 'manual-task-interrupted-creation';
+    const conversationId = 'conversation-interrupted-creation';
+    dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify([{
+      taskId,
+      conversationId: '',
+      phase: 'task_creating',
+      draft: true,
+      executionTargets: [],
+      generation: 1,
+      createdAt: '2026-08-30T00:00:00.000Z',
+      updatedAt: '2026-08-30T00:00:00.000Z',
+    }]));
+    listConversationsMock.mockImplementation(async () => ([{ id: conversationId, task_id: taskId }] as never));
+    const task = buildStandaloneTask({
+      id: taskId, task_source: 'standalone', standalone_kind: 'manual_feature',
+      draft: true, conversation_id: conversationId, execution_targets: [],
+    });
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: draftPresent ? [task] : [], plans: [],
+      hasStandaloneTasks: draftPresent, source: draftPresent ? 'mixed' as const : 'empty' as const,
+    }));
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({
+        restoreSelection: false, activateSelectedTask: false,
+      });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+    expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(draftPresent ? 1 : 0);
+    expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(conversationId);
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('keeps a committed creation when only journal completion was interrupted', async () => {
+    const taskId = 'manual-task-committed-creation';
+    const conversationId = 'conversation-committed-creation';
+    dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify([{
+      taskId, conversationId, phase: 'prepared', creationCommitted: true, draft: true, executionTargets: [],
+      generation: 1, createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+    }]));
+    const task = buildStandaloneTask({
+      id: taskId, task_source: 'standalone', standalone_kind: 'manual_feature',
+      draft: true, conversation_id: conversationId, execution_targets: [],
+    });
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [task], plans: [], hasStandaloneTasks: true, source: 'mixed' as const,
+    }));
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({ restoreSelection: false, activateSelectedTask: false });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+    expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+    expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
+    expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
+  });
+
+  it('does not acquire another creation lease while two clients refresh their drafts', async () => {
+    const now = '2026-08-30T00:00:00.000Z';
+    dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify(['creation-a', 'creation-b'].map((taskId) => ({
+      taskId, conversationId: `conversation-${taskId}`, phase: 'task_creating',
+      draft: true, executionTargets: [], createdAt: now, updatedAt: now,
+    }))));
+    const held = new Set<string>();
+    workspaceAcquireTaskLifecycleLockMock.mockImplementation(async (taskId: string) => {
+      if (held.has(taskId)) throw new Error(`Nested lease for ${taskId}`);
+      held.add(taskId);
+      return `lease-${taskId}`;
+    });
+    workspaceReleaseTaskLifecycleLockMock.mockImplementation(async (leaseId: string) => {
+      held.delete(leaseId.replace('lease-', ''));
+    });
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [], plans: [], hasStandaloneTasks: false, source: 'empty' as const,
+    }));
+    try {
+      const first = await loadIsolatedTaskStore();
+      const second = await loadIsolatedTaskStore();
+      const { withTaskLifecycleLock } = await import('../services/taskLifecycleLease');
+      await Promise.all([
+        withTaskLifecycleLock('creation-a', async (leaseId) => {
+          await first.useTaskStore.getState().refreshFromPlan({
+            creatingTaskId: 'creation-a', restoreSelection: false, activateSelectedTask: false,
+          });
+          expect(leaseId).toBe('lease-creation-a');
+        }),
+        withTaskLifecycleLock('creation-b', async (leaseId) => {
+          await second.useTaskStore.getState().refreshFromPlan({
+            creatingTaskId: 'creation-b', restoreSelection: false, activateSelectedTask: false,
+          });
+          expect(leaseId).toBe('lease-creation-b');
+        }),
+      ]);
+      expect(workspaceAcquireTaskLifecycleLockMock).toHaveBeenCalledTimes(2);
+      expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
+      expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toHaveLength(2);
+    } finally {
+      services.listTasks = originalListTasks;
+      workspaceAcquireTaskLifecycleLockMock.mockImplementation(async () => 'task-lifecycle-lease');
+      workspaceReleaseTaskLifecycleLockMock.mockImplementation(async () => undefined);
+    }
+  });
+
+  it('does not replay a deletion generation closed while waiting for its lease', async () => {
+    const task = buildStandaloneTask({
+      id: 'manual-task-stale-deletion', task_source: 'standalone',
+      standalone_kind: 'manual_feature', draft: true,
+      conversation_id: 'conversation-stale-deletion', execution_targets: [],
+    });
+    dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify([{
+      taskId: task.id, conversationId: task.conversation_id,
+      phase: 'task_deleting', draft: true, executionTargets: [], generation: 1,
+      createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+    }]));
+    workspaceAcquireTaskLifecycleLockMock.mockImplementationOnce(async () => {
+      dbAppSettings.set('pendingLinkedTaskDeletions:v1', '[]');
+      return 'task-lifecycle-lease';
+    });
+    const originalListTasks = services.listTasks;
+    services.listTasks = mock(async () => ({
+      tasks: [task], plans: [], hasStandaloneTasks: true, source: 'mixed' as const,
+    }));
+    try {
+      const { useTaskStore } = await loadIsolatedTaskStore();
+      await useTaskStore.getState().refreshFromPlan({ restoreSelection: false, activateSelectedTask: false });
+    } finally {
+      services.listTasks = originalListTasks;
+    }
+    expect(workspaceDeleteManualFeatureDraftMock).not.toHaveBeenCalled();
+    expect(completeLinkedTaskConversationDeletionMock).not.toHaveBeenCalled();
+  });
+
   it('deletes the conversation only after restart confirms an ambiguous draft is absent', async () => {
     dbAppSettings.set(
       'pendingLinkedTaskDeletions:v1',
@@ -2464,7 +2607,7 @@ describe('useTaskStore merge workflow review loading', () => {
     let catalogLoadCount = 0;
     services.listTasks = mock(async () => {
       catalogLoadCount += 1;
-      return catalogLoadCount === 1
+      return catalogLoadCount <= 2
         ? {
             tasks: [task],
             plans: [],
@@ -2490,7 +2633,7 @@ describe('useTaskStore merge workflow review loading', () => {
         activateSelectedTask: false,
       });
 
-      expect(catalogLoadCount).toBe(2);
+      expect(catalogLoadCount).toBe(3);
       expect(useTaskStore.getState().tasks).toEqual([]);
       expect(appStoreState.selectedTaskId).toBeNull();
     } finally {
