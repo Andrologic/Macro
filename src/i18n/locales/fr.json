@@ -972,6 +972,16 @@
       "title": "Macro Pilot",
       "description": "Connectez cet ordinateur au relais Pilot configuré. Macro reste entièrement utilisable en local sans compte.",
       "connection": "Connexion",
+      "vaultRecovery": {
+        "title": "Les données Pilot sont en pause",
+        "intervention_required": "Une intervention est nécessaire pour accéder au coffre d’identifiants du système et restaurer les données Pilot.",
+        "cancelled": "L’accès au coffre d’identifiants a été annulé. Vous pourrez réessayer quand vous le souhaitez.",
+        "suspended": "L’accès aux identifiants Pilot est suspendu. Reprenez l’accès pour restaurer les données Pilot.",
+        "vault_unavailable": "Macro n’a pas pu accéder au coffre d’identifiants du système. Vous pouvez essayer de reprendre l’accès.",
+        "waiting": "En attente d’accès au coffre d’identifiants du système. Vous pouvez continuer à utiliser Macro ou vous déconnecter.",
+        "resume": "Reprendre l’accès au coffre",
+        "resuming": "Reprise de l’accès…"
+      },
       "relayOrigin": "Origine HTTPS du relais",
       "deviceLabel": "Nom de l’appareil",
       "signIn": "Se connecter avec GitHub",

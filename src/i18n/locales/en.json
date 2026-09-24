@@ -974,6 +974,16 @@
       "title": "Macro Pilot",
       "description": "Connect this desktop to the configured Pilot relay. Macro remains fully usable locally without an account.",
       "connection": "Connection",
+      "vaultRecovery": {
+        "title": "Pilot data is paused",
+        "intervention_required": "Macro needs attention to access the system credential vault and restore Pilot data.",
+        "cancelled": "Credential vault access was cancelled. You can try again when you are ready.",
+        "suspended": "Access to Pilot credentials is suspended. Resume access to restore Pilot data.",
+        "vault_unavailable": "Macro could not access the system credential vault. You can try to resume access.",
+        "waiting": "Waiting for access to the system credential vault. You can keep using Macro or sign out.",
+        "resume": "Resume vault access",
+        "resuming": "Resuming access…"
+      },
       "relayOrigin": "Relay HTTPS origin",
       "deviceLabel": "Device label",
       "signIn": "Connect with GitHub",

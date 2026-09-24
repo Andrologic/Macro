@@ -944,6 +944,16 @@
       "title": "Macro Pilot",
       "description": "Connect this desktop to the configured Pilot relay. Macro remains fully usable locally without an account.",
       "connection": "Connection",
+      "vaultRecovery": {
+        "title": "Pilot データは一時停止中です",
+        "intervention_required": "システムの資格情報保管庫にアクセスして Pilot データを復元するには、対応が必要です。",
+        "cancelled": "資格情報保管庫へのアクセスはキャンセルされました。準備ができたら再試行できます。",
+        "suspended": "Pilot 資格情報へのアクセスは一時停止中です。アクセスを再開すると Pilot データが復元されます。",
+        "vault_unavailable": "Macro はシステムの資格情報保管庫にアクセスできませんでした。アクセスを再開できます。",
+        "waiting": "システムの資格情報保管庫へのアクセスを待っています。Macro の利用やログアウトは続けられます。",
+        "resume": "保管庫へのアクセスを再開",
+        "resuming": "アクセスを再開しています…"
+      },
       "relayOrigin": "Relay HTTPS origin",
       "deviceLabel": "Device label",
       "signIn": "Connect with GitHub",

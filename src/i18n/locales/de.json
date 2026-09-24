@@ -945,6 +945,16 @@
       "title": "Macro Pilot",
       "description": "Connect this desktop to the configured Pilot relay. Macro remains fully usable locally without an account.",
       "connection": "Connection",
+      "vaultRecovery": {
+        "title": "Pilot-Daten sind angehalten",
+        "intervention_required": "Für den Zugriff auf den System-Anmeldedatenspeicher und die Wiederherstellung der Pilot-Daten ist ein Eingriff erforderlich.",
+        "cancelled": "Der Zugriff auf den Anmeldedatenspeicher wurde abgebrochen. Sie können es später erneut versuchen.",
+        "suspended": "Der Zugriff auf Pilot-Anmeldedaten ist ausgesetzt. Setzen Sie den Zugriff fort, um Pilot-Daten wiederherzustellen.",
+        "vault_unavailable": "Macro konnte nicht auf den System-Anmeldedatenspeicher zugreifen. Sie können den Zugriff erneut versuchen.",
+        "waiting": "Warte auf den Zugriff auf den System-Anmeldedatenspeicher. Sie können Macro weiterverwenden oder sich abmelden.",
+        "resume": "Zugriff auf Anmeldedatenspeicher fortsetzen",
+        "resuming": "Zugriff wird fortgesetzt…"
+      },
       "relayOrigin": "Relay HTTPS origin",
       "deviceLabel": "Device label",
       "signIn": "Connect with GitHub",
