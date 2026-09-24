@@ -219,9 +219,11 @@ impl Fixture {
         std::fs::remove_dir(&self.directory)
             .map_err(|_| format!("fixture residue: {}", self.directory.display()))?;
         self.clean = true;
-        eprintln!(
-            "native smoke cleanup=verified search_reference_absent=true search_list_unchanged=true directory_absent=true"
-        );
+        if self.keychain.0.is_null() {
+            eprintln!("native smoke cleanup=directory-only keychain_reference=none search_list_verification=not_performed directory_absent=true");
+        } else {
+            eprintln!("native smoke cleanup=verified search_reference_absent=true search_list_unchanged=true directory_absent=true");
+        }
         Ok(())
     }
 }
