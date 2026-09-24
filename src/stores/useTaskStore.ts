@@ -2889,6 +2889,9 @@ return ({
               await upsertLinkedTaskDeletionSaga(recoverySaga);
               if (survivingTask) {
                 await deleteManualFeatureDraftDurably(current.taskId, taskLifecycleLeaseId);
+                if (isManualStandaloneTask(survivingTask)) {
+                  await removeManualFeatureMetadata(survivingTask);
+                }
               }
               recoverySaga = { ...recoverySaga, phase: 'task_deleted', updatedAt: new Date().toISOString() };
               await upsertLinkedTaskDeletionSaga(recoverySaga);

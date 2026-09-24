@@ -2232,6 +2232,7 @@ describe('useTaskStore merge workflow review loading', () => {
   });
 
   it.each([false, true])('recovers an interrupted creation with draft present=%s', async (draftPresent) => {
+    removeManualFeatureMetadataMock.mockClear();
     const taskId = 'manual-task-interrupted-creation';
     const conversationId = 'conversation-interrupted-creation';
     dbAppSettings.set('pendingLinkedTaskDeletions:v1', JSON.stringify([{
@@ -2263,6 +2264,8 @@ describe('useTaskStore merge workflow review loading', () => {
       services.listTasks = originalListTasks;
     }
     expect(workspaceDeleteManualFeatureDraftMock).toHaveBeenCalledTimes(draftPresent ? 1 : 0);
+    expect(removeManualFeatureMetadataMock).toHaveBeenCalledTimes(draftPresent ? 1 : 0);
+    if (draftPresent) expect(removeManualFeatureMetadataMock).toHaveBeenCalledWith(task);
     expect(completeLinkedTaskConversationDeletionMock).toHaveBeenCalledWith(conversationId);
     expect(JSON.parse(dbAppSettings.get('pendingLinkedTaskDeletions:v1') ?? '[]')).toEqual([]);
   });
