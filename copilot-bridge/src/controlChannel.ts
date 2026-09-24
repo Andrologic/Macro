@@ -250,6 +250,7 @@ export class BridgeControlChannel {
 
     pending.resolve({
       result: typeof message.result === 'string' ? message.result : '',
+      ...(message.blocks ? { blocks: message.blocks } : {}),
       isError: message.is_error,
       errorKind: message.error_kind,
       hiddenContext:

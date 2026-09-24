@@ -71,6 +71,7 @@ export async function runToolBatch(params: {
   accumulator: ToolBatchAccumulator;
   batchId: string;
   usedToolNames: Set<string>;
+  onCompletedResult?: (result: ToolResult) => void;
 }): Promise<{ toolResults: ToolResult[]; interruptResolution: ToolInterruptResolution | null }> {
   const { calls, messages, options, allowedTools, schemas, accumulator, batchId, usedToolNames } = params;
   const toolResults: ToolResult[] = [];
@@ -119,13 +120,16 @@ export async function runToolBatch(params: {
     throwIfToolAborted(options.signal);
     if (resolution.kind === 'interrupt') {
       interruptResolution = resolution;
-      accumulator.addHiddenContextBlock(resolution.hiddenContext);
     }
-    if (notifyResult) options.onToolResult?.(name, resolution.result);
+    const errorKind = resolution.kind === 'result' && resolution.isError ? resolution.errorKind ?? 'execution' : undefined;
+    const completed: ToolResult = { tool_call_id: call.id, tool_name: name, content: resolution.result, ...(resolution.kind === 'result' && resolution.blocks ? { blocks: resolution.blocks } : {}), is_error: Boolean(errorKind), ...(errorKind ? { error_kind: errorKind } : {}) };
+    toolResults.push(completed);
+    // Journal before notifications or the next handler can cancel/interrupt the batch.
+    params.onCompletedResult?.(completed);
+    if (resolution.kind === 'interrupt') accumulator.addHiddenContextBlock(resolution.hiddenContext);
     accumulator.addHiddenToolContext(call.id, name, detail, resolution.result);
     accumulator.completeToolTrace(call.id);
-    const errorKind = resolution.kind === 'result' && resolution.isError ? resolution.errorKind ?? 'execution' : undefined;
-    toolResults.push({ tool_call_id: call.id, tool_name: name, content: resolution.result, is_error: Boolean(errorKind), ...(errorKind ? { error_kind: errorKind } : {}) });
+    if (notifyResult) options.onToolResult?.(name, resolution.result);
     if (interruptResolution) break;
   }
   return { toolResults, interruptResolution };

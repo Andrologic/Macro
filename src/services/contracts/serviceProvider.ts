@@ -1,3 +1,4 @@
+import type { MCPCallToolResponseDto } from '../ipc/mcp.types';
 import type { OmitFields } from '../ipc/compatibility.types';
 import type {
   SkillScriptWorkspaceDto,
@@ -268,7 +269,7 @@ export interface ServiceProvider {
     toolName: string;
     arguments: Record<string, unknown>;
     timeoutMs?: number | null;
-  }) => Promise<{ content: string; isError?: boolean; rawResult?: unknown }>;
+  }) => Promise<MCPCallToolResponseDto>;
   // Persistent MCP runtime (compatibility adapters mcpDiscoverTools/mcpCallTool
   // above stay unchanged until stores migrate to these methods).
   mcpRuntimeGetSnapshot: () => Promise<MCPRuntimeSnapshotDto>;
@@ -284,7 +285,7 @@ export interface ServiceProvider {
     toolName: string;
     arguments: Record<string, unknown>;
     operationId: string;
-  }) => Promise<{ content: string; isError?: boolean; rawResult?: unknown }>;
+  }) => Promise<MCPCallToolResponseDto>;
   mcpRuntimeCancelOperation: (operationId: string) => Promise<boolean>;
   listSkills: (data?: { projectRoots?: SkillProjectRoot[] }) => Promise<SkillListDto>;
   getSkill: (data: {

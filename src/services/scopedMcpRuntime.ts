@@ -1,3 +1,5 @@
+import { normalizeToolResultBlocks, projectToolResultText } from '../shared/toolResultContent';
+import type { ToolResultResolution } from './ai/contracts';
 import { bindMcpRuntimeKey, readMcpRuntimeKey } from "./mcp/runtimeSnapshot";
 import { assertUniqueMCPToolIds } from './mcp/normalization';
 import type { MCPServer, MCPTool } from '../types';
@@ -251,7 +253,7 @@ export const callScopedMcpTool = async (
   args: Record<string, unknown>,
   servers: readonly MCPServer[],
   options: CallScopedMcpToolOptions = {},
-): Promise<string> => {
+): Promise<string | ToolResultResolution> => {
   assertCanonicalUniqueServerIds(servers.map((server) => server.id));
   assertUniqueMCPToolIds(servers.flatMap((server) => normalizeMCPServerTools(server)));
   const deps = resolveDeps(options.deps);
@@ -300,6 +302,11 @@ export const callScopedMcpTool = async (
             }),
           ])
         : await call;
+      if (response.blocks?.length) {
+        const blocks = normalizeToolResultBlocks(response.blocks);
+        return { kind: 'result', result: `${response.isError ? '[MCP tool reported an error]\n' : ''}${projectToolResultText(blocks)}`, blocks,
+          isError: response.isError || blocks.some(block => block.type === 'unavailable') };
+      }
       if (response.isError) {
         throw new ScopedMcpToolReportedError(
           response.content || `MCP tool ${tool.name} reported an error.`,

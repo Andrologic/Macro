@@ -676,7 +676,8 @@ export const useToolsStore = create<ToolsStore>((set, get) => ({
     }
 
     try {
-      return await callScopedMcpTool(toolId, args, [resolved.server]);
+      const result = await callScopedMcpTool(toolId, args, [resolved.server]);
+      return typeof result === 'string' ? result : result.result;
     } catch (error) {
       const normalizedError = toServiceError(error);
       const message = normalizedError.message;

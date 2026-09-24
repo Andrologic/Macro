@@ -1,3 +1,4 @@
+import { typedToolResult, readTypedToolResult, projectToolResultText, type TypedToolResult, type ToolResultBlock } from '../../shared/toolResultContent';
 import {
   isRecord,
   deepCloneJsonValue,
@@ -33,6 +34,7 @@ export interface ChatCompletionProviderMessageItem {
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   tool_name?: string;
+  macro_tool_result?: TypedToolResult;
 }
 
 export const stripThinkingBlocksForModel = (content: string): string =>
@@ -69,7 +71,31 @@ export const getChatCompletionProviderItems = (
     return [];
   }
 
-  return items.filter(isChatCompletionProviderMessageItem);
+  if (!items.some(item => isRecord(item) && 'macro_tool_result' in item)) return items.filter(isChatCompletionProviderMessageItem);
+  // A conversation may change transport after reload. Convert the preserved tool
+  // chain, keeping the media fallback in tool results rather than dropping it.
+  const converted = items.flatMap((item): ChatCompletionProviderMessageItem[] => {
+    if (isChatCompletionProviderMessageItem(item)) return [item];
+    if (!isRecord(item)) return [];
+    if (item.type === 'function_call' && typeof item.call_id === 'string' && typeof item.name === 'string') {
+      return [{ type: CHAT_COMPLETION_PROVIDER_ITEM_TYPE, role: 'assistant', content: '', tool_calls: [{ id: item.call_id, type: 'function', function: { name: item.name, arguments: typeof item.arguments === 'string' ? item.arguments : '{}' } }] }];
+    }
+    if (item.type === 'function_call_output' && typeof item.call_id === 'string') {
+      return [{ type: CHAT_COMPLETION_PROVIDER_ITEM_TYPE, role: 'tool', tool_call_id: item.call_id, content: typeof item.output === 'string' ? item.output : '', macro_tool_result: readTypedToolResult(item) }];
+    }
+    if (item.type === 'message' && item.role === 'assistant') {
+      return [{ type: CHAT_COMPLETION_PROVIDER_ITEM_TYPE, role: 'assistant', content: chatCompletionMessageContentToText(item.content) }];
+    }
+    return [];
+  });
+  return converted.reduce<ChatCompletionProviderMessageItem[]>((messages, item) => {
+    const previous = messages.at(-1);
+    if (item.role === 'assistant' && item.tool_calls?.length && !item.content
+      && previous?.role === 'assistant' && previous.tool_calls?.length && !previous.content) {
+      previous.tool_calls = [...previous.tool_calls, ...item.tool_calls];
+    } else messages.push(item);
+    return messages;
+  }, []);
 };
 
 export const normalizeToolCallIdForProvider = (
@@ -173,9 +199,10 @@ export const serializeProviderItemForChatCompletions = (
       return null;
     }
 
+    const typedResult = readTypedToolResult(item);
     const message: Record<string, unknown> = {
       role: 'tool',
-      content: item.content,
+      content: typedResult ? `${typedResult.isError ? '[MCP tool reported an error]\n' : ''}${projectToolResultText(typedResult.blocks, 'Chat Completions')}` : item.content,
       tool_call_id: normalizeToolCallIdForProvider(
         item.tool_call_id,
         profile.toolCallIdPolicy
@@ -537,12 +564,15 @@ export const buildAssistantChatCompletionProviderItem = (params: {
 export const buildToolChatCompletionProviderItem = (
   toolCallId: string,
   content: string,
-  toolName?: string
+  toolName?: string,
+  blocks?: ToolResultBlock[],
+  isError = false,
 ): ChatCompletionProviderMessageItem => ({
   type: CHAT_COMPLETION_PROVIDER_ITEM_TYPE,
   role: 'tool',
   content,
   tool_call_id: toolCallId,
+  ...(blocks ? { macro_tool_result: typedToolResult(blocks, isError) } : {}),
   ...(toolName?.trim() ? { tool_name: toolName } : {}),
 });
 

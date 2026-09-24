@@ -1,3 +1,4 @@
+import { normalizeToolResultBlocks, type ToolResultBlock } from '../../src/shared/toolResultContent';
 import type { BridgeToolResultMessage as NativeBridgeToolResultMessage } from '../../src/types/generated/ipc/BridgeToolResultMessage';
 
 export type JsonRecord = Record<string, unknown>;
@@ -68,6 +69,7 @@ export type BridgeToolRequestMessage = {
 // Older senders may omit payload fields or send a channel error. Keep that
 // compatibility at the decoder boundary while deriving field types from Rust.
 type HistoricalToolResultField =
+  | 'blocks'
   | 'result'
   | 'hidden_context'
   | 'visible_content'
@@ -81,6 +83,7 @@ export type BridgeToolResultMessage =
   & { error?: string };
 
 export interface RelayToolResult {
+  blocks?: ToolResultBlock[];
   result: string;
   isError?: boolean;
   errorKind?: string | null;
@@ -137,6 +140,7 @@ export const decodeToolResultMessage = (value: unknown): BridgeToolResultMessage
     request_id: requestId,
     tool_call_id: toolCallId,
     result: record.result as string | undefined,
+    ...(record.blocks !== undefined ? { blocks: normalizeToolResultBlocks(record.blocks) } : {}),
     hidden_context: record.hidden_context as string | null | undefined,
     visible_content: record.visible_content as string | null | undefined,
     interrupt: record.interrupt as boolean | undefined,

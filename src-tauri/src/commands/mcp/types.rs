@@ -55,10 +55,32 @@ pub struct McpDiscoverToolsResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+#[derive(ts_rs::TS, Deserialize)]
+pub enum McpResultBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    #[serde(rename = "audio")]
+    Audio {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    #[serde(rename = "unavailable")]
+    Unavailable { reason: String },
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[derive(ts_rs::TS)]
 pub struct McpCallToolResponse {
     pub content: String,
+    pub blocks: Vec<McpResultBlock>,
     pub is_error: bool,
     pub raw_result: Value,
 }

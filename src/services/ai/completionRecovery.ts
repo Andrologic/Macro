@@ -59,7 +59,8 @@ export const recoveredCompletionReason = (
 export function shouldRetryMissingRequiredTool(
   policy: StreamingChatOptions['guidedToolRetry'],
   toolCalls: ToolCall[],
-  retryCount: number
+  retryCount: number,
+  executedToolNames: string[] = [],
 ): boolean {
   if (!policy || retryCount >= (policy.maxRetries ?? 1)) {
     return false;
@@ -70,5 +71,6 @@ export function shouldRetryMissingRequiredTool(
     return false;
   }
 
-  return !toolCalls.some((toolCall) => requiredToolNames.has(toolCall.function.name));
+  return !executedToolNames.some(name => requiredToolNames.has(name))
+    && !toolCalls.some((toolCall) => requiredToolNames.has(toolCall.function.name));
 }

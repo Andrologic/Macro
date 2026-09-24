@@ -73,11 +73,10 @@ describe("chat request preparation", () => {
     expect(result.mcpTools).toEqual(f.mcpTools);
   });
 
-  for (const restriction of ["strict", "copilot", "no-native", "implement-plan"] as const) {
+  for (const restriction of ["strict", "no-native", "implement-plan"] as const) {
     it(`excludes MCP tools for ${restriction} even when present in the base tool list`, async () => {
       const f = fixture();
       if (restriction === "strict") f.scoped.riskLevel = "strict";
-      if (restriction === "copilot") f.params.providerConfig.providerType = "copilot";
       if (restriction === "no-native") f.params.providerSupportsNativeToolCalling = false;
       if (restriction === "implement-plan") {
         f.params.modeAtSend = "Implement";
@@ -178,4 +177,13 @@ it("does not project feedback or launch compaction after its turn is replaced du
   expect(feedback).not.toHaveBeenCalled();
   expect(compact).not.toHaveBeenCalled();
   expect(persist).not.toHaveBeenCalled();
+});
+
+
+it('includes scoped MCP schemas for the native Copilot frontend relay', async () => {
+  const f = fixture();
+  f.params.providerConfig.providerType = 'copilot';
+  const result = await f.run();
+  expect(result.mcpTools).toEqual(f.mcpTools);
+  expect(result.allowedToolIds).toContain('mcp__server__read');
 });

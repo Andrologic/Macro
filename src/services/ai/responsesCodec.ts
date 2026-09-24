@@ -1,3 +1,4 @@
+import { typedToolResult, type ToolResultBlock } from '../../shared/toolResultContent';
 import {
   type ToolCall,
 } from './contracts';
@@ -23,11 +24,14 @@ export const buildChatGptProviderTurnState = (
 
 export const buildFunctionCallOutputProviderInputItem = (
   toolCallId: string,
-  output: string
+  output: string,
+  blocks?: ToolResultBlock[],
+  isError = false,
 ): unknown => ({
   type: 'function_call_output',
   call_id: toolCallId,
   output,
+  ...(blocks ? { macro_tool_result: typedToolResult(blocks, isError) } : {}),
 });
 
 export const extractTextValue = (value: unknown): string => {

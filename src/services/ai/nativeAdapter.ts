@@ -8,8 +8,20 @@ import type { ReasoningCompatibility } from './reasoningCompatibility';
 import { emitStreamTimeline } from './streamDiagnostics';
 import { formatToolTraceDetail } from './toolPresentation';
 import { buildNativeReasoningVisibleTurnContent, buildAssistantProviderInputItemsFromTurn, buildFunctionCallOutputProviderInputItem, isEmptyTerminalChatGptTurn } from './responsesCodec';
-import { cloneProviderInputItems } from './jsonValues';
+import { cloneProviderInputItems, isRecord } from './jsonValues';
 import { devLogger } from '../../utils/devLogger';
+
+// Truncated responses may contain unfinished calls. Only pairs with an actual
+// result can be replayed during continuation; media and error metadata stay intact.
+const completedToolItems = (items: unknown[] | undefined): unknown[] => {
+  const records = (items ?? []).filter(isRecord);
+  const calls = new Set(records.filter(item => item.type === 'function_call').map(item => item.call_id));
+  const outputs = new Set(records.filter(item => item.type === 'function_call_output').map(item => item.call_id));
+  return cloneProviderInputItems(records.filter(item =>
+    typeof item.call_id === 'string' && calls.has(item.call_id) && outputs.has(item.call_id)
+    && (item.type === 'function_call' || item.type === 'function_call_output'),
+  )) ?? [];
+};
 
 export function createNativeAdapter(options: StreamingChatOptions, accumulator: StreamAccumulator, reasoning: ReasoningCompatibility, resources?: ActiveStreamResources): ToolCallingAdapter {
   const { providerId, providerType, modelId } = options;
@@ -19,6 +31,9 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
   return {
     kind: 'native',
     streamTurn: async ({ messages, tools, recovering, onDelta }) => {
+      // Live callbacks contain the current turn's cumulative results only.
+      // Keep the previous turns once, without re-appending each live snapshot.
+      const previousContext = accumulator.snapshotLiveContext();
       let streamedTurnContent = '';
       let turnResult: StreamingTurnResult;
       while (true) {
@@ -50,10 +65,14 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
             },
             onToolCall: options.onToolCall,
             onToolResult: options.onToolResult,
-            onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext }) => {
+            onLiveToolResult: ({ toolName, args, toolCallId, result, hiddenContext, providerInputItems }) => {
               const detail = formatToolTraceDetail(toolName, args);
               accumulator.addLiveOnlyHiddenToolContext(toolCallId, toolName, detail, result);
               accumulator.addHiddenContextBlock(hiddenContext);
+              if (providerInputItems) accumulator.setProviderContext({
+                providerInputItems: [...(previousContext.providerInputItems ?? []), ...providerInputItems],
+                providerTurnState: previousContext.providerTurnState,
+              });
             },
           }, resources);
           break;
@@ -83,21 +102,28 @@ export function createNativeAdapter(options: StreamingChatOptions, accumulator: 
       const content = providerType === 'chatgpt' || providerType === 'copilot'
         ? buildNativeReasoningVisibleTurnContent(turnResult.content || streamedTurnContent, turnResult.reasoningSummary)
         : turnResult.content || streamedTurnContent;
+      const executedToolItems = completedToolItems(turnResult.providerInputItems);
       return {
+        executedToolItems,
+        executedToolNames: executedToolItems.filter(isRecord).filter(item => item.type === 'function_call' && typeof item.name === 'string').map(item => item.name as string),
         result: { ...turnResult, content, completionReason: turnResult.completionReason ?? 'completed' },
         projectAssistant: (replayContent, calls, recovering, incomplete) => {
+          const pendingIds = new Set((turnResult.toolCalls ?? []).filter(call => !calls.some(accepted => accepted.id === call.id)).map(call => call.id));
+          const withoutPendingCalls = (items: unknown[] | undefined) => items?.filter(item =>
+            !isRecord(item) || item.type !== 'function_call' || !pendingIds.has(String(item.call_id)),
+          );
           const items = recovering || incomplete
-            ? buildAssistantProviderInputItemsFromTurn(replayContent, calls)
-            : cloneProviderInputItems(turnResult.providerInputItems) ?? buildAssistantProviderInputItemsFromTurn(replayContent, calls);
+            ? [...(cloneProviderInputItems(executedToolItems) ?? []), ...buildAssistantProviderInputItemsFromTurn(replayContent, calls)]
+            : cloneProviderInputItems(withoutPendingCalls(turnResult.providerInputItems)) ?? buildAssistantProviderInputItemsFromTurn(replayContent, calls);
           const state = turnResult.providerTurnState ? {
             ...turnResult.providerTurnState,
-            output_items: recovering || incomplete ? cloneProviderInputItems(items) ?? [] : turnResult.providerTurnState.output_items,
+            output_items: recovering || incomplete ? cloneProviderInputItems(items) ?? [] : withoutPendingCalls(turnResult.providerTurnState.output_items) ?? [],
           } : undefined;
           return { items, state };
         },
       };
     },
-    projectTool: (result) => buildFunctionCallOutputProviderInputItem(result.tool_call_id, result.content),
+    projectTool: (result) => buildFunctionCallOutputProviderInputItem(result.tool_call_id, result.content, result.blocks, result.is_error),
     afterToolResults: (_messages, results) => {
       const hasToolErrors = results.some((result) => result.is_error);
       const hasFileReadResults = results.some((result) => /^FILE:\s+/m.test(result.content));
