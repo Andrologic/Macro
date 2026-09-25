@@ -195,7 +195,7 @@ const toNotificationCenterItem = (
     variant,
     category,
     title: item.title.trim(),
-    description,
+    ...(description ? { description } : {}),
     createdAt: item.createdAt,
     ...(variant === 'actionable' && category === 'task_attention_required'
       ? { workflowNavigation: sanitizeWorkflowNotificationNavigation(item.workflowNavigation) }

@@ -280,6 +280,15 @@ describe('configRuntimeEffects', () => {
     expect(loadProviderConfigs).toHaveBeenCalledTimes(1);
   });
 
+  it('does not create a notification when notification persistence itself fails', () => {
+    installConfigRuntimeEffects();
+    const listener = [...persistenceErrorListeners][0];
+
+    listener(new Error('Disk full'), 'notificationCenterItems');
+
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
   it('reports persistence errors while installed and stops after cleanup', () => {
     const cleanupEffects = installConfigRuntimeEffects();
     const listener = [...persistenceErrorListeners][0];

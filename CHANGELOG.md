@@ -13,6 +13,7 @@ The format is based on Keep a Changelog, and this project uses versions from `pa
 - Recovered interrupted standalone task creation without losing its draft or conversation, and cleaned up incomplete creation state on restart.
 - Made draft-task deletion clean up its associated metadata durably.
 - Kept the GitHub Copilot model catalog available when a model omits optional capability fields.
+- Fixed persistence of notifications without descriptions and prevented notification-center save errors from repeatedly notifying themselves.
 
 ## 0.1.6 - 2026-09-17
 
