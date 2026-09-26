@@ -26,7 +26,9 @@ export MACOS_QA_SIGNING_IDENTITY=0123456789ABCDEF0123456789ABCDEF01234567
 bun run tauri:build:macos:qa -- --output /tmp/macro-pilot-qa-run-1/Macro.app
 ```
 
-Replace the sample fingerprint with the identity's actual fingerprint. After the first build, make one temporary local edit to `src-tauri/tauri.qa.conf.json`: change `app.windows[0].title` from `Macro Pilot QA` to `Macro Pilot QA recipe B`. Keep `identifier`, `productName`, the signing fingerprint, and all profile settings unchanged. Build the second bundle:
+Replace the sample fingerprint with the identity's actual fingerprint. On macOS 27, a Rust release build may fail while loading a proc-macro with a `mis-aligned LINKEDIT string pool` error. For that specific toolchain failure, set `CARGO_PROFILE_RELEASE_STRIP=none` for **both** QA build commands. This avoids the affected `-C strip=debuginfo` option for these builds without changing the repository's release profile. See [rust-lang/rust#157750](https://github.com/rust-lang/rust/issues/157750). It does not replace code-signing or keychain authorization.
+
+After the first build, make one temporary local edit to `src-tauri/tauri.qa.conf.json`: change `app.windows[0].title` from `Macro Pilot QA` to `Macro Pilot QA recipe B`. Keep `identifier`, `productName`, the signing fingerprint, and all profile settings unchanged. Build the second bundle:
 
 ```sh
 bun run tauri:build:macos:qa -- --output /tmp/macro-pilot-qa-run-2/Macro.app
