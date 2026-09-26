@@ -1,3 +1,4 @@
+import type { LifecycleContext } from '../types/lifecycle';
 import { getEffectiveConfigDocument, patchUserConfigTopLevel } from './configDocuments';
 import {
   isTauriAvailable,
@@ -38,6 +39,7 @@ export const DEFAULT_WEB_SEARCH_SETTINGS: WebSearchSettings = {
   secretRef: null,
 };
 
+let refreshGeneration = 0;
 let cachedSettings: WebSearchSettings = DEFAULT_WEB_SEARCH_SETTINGS;
 
 const normalizeSettings = (
@@ -58,8 +60,11 @@ export function getWebSearchSettings(): WebSearchSettings {
   return cachedSettings;
 }
 
-export async function refreshWebSearchSettings(): Promise<WebSearchSettings> {
+export async function refreshWebSearchSettings(context?: LifecycleContext): Promise<WebSearchSettings> {
+  context?.assertActive();
+  const generation = ++refreshGeneration;
   const config = await getEffectiveConfigDocument<ToolsConfigDocument>('tools');
+  context?.assertActive();
   let next = normalizeSettings(config.webSearch, cachedSettings);
   if (isTauriAvailable()) {
     const [tavily, brave] = await Promise.all([
@@ -72,13 +77,15 @@ export async function refreshWebSearchSettings(): Promise<WebSearchSettings> {
       hasBraveSecret: brave.hasSecret,
     };
   }
-  cachedSettings = next;
+  context?.assertActive();
+  if (generation === refreshGeneration) cachedSettings = next;
   return next;
 }
 
 export async function saveWebSearchSettings(
   settings: WebSearchSettings,
 ): Promise<WebSearchSettings> {
+  ++refreshGeneration;
   const normalized = normalizeSettings(settings, settings);
   await patchUserConfigTopLevel('tools', 'webSearch', {
     enabled: normalized.enabled,
@@ -87,6 +94,7 @@ export async function saveWebSearchSettings(
     secretRef: normalized.secretRef,
     maxResults: normalized.maxResults,
   });
+  ++refreshGeneration;
   cachedSettings = normalized;
   return normalized;
 }
@@ -140,5 +148,6 @@ export function getStreamingWebSearchConfig(): {
 }
 
 export const resetWebSearchSettingsCacheForTests = (): void => {
+  ++refreshGeneration;
   cachedSettings = DEFAULT_WEB_SEARCH_SETTINGS;
 };

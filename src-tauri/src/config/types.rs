@@ -548,6 +548,8 @@ impl ToolRiskLevel {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ToolsDocument {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_server: Option<LanguageServerSettings>,
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
     #[serde(default = "current_schema_version")]
@@ -571,6 +573,48 @@ pub struct ToolsDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "Record<string, unknown> | null")]
     pub extensions: Option<BTreeMap<String, Value>>,
+}
+
+/// Local, user-approved executable. Workspace roots are an exact allowlist, not prefixes.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LanguageServerSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    pub executable: String,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    #[serde(default)]
+    pub workspace_roots: Vec<String>,
+    #[serde(default = "default_diagnostics_wait_ms")]
+    #[schemars(range(min = 100, max = 10000))]
+    pub wait_ms: u32,
+}
+
+fn default_diagnostics_wait_ms() -> u32 {
+    4_000
+}
+
+impl LanguageServerSettings {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !std::path::Path::new(&self.executable).is_absolute()
+            || self.executable.contains('\0')
+            || self.arguments.len() > 64
+            || self
+                .arguments
+                .iter()
+                .any(|arg| arg.len() > 4096 || arg.contains('\0'))
+            || self.workspace_roots.len() > 128
+            || self
+                .workspace_roots
+                .iter()
+                .any(|root| !std::path::Path::new(root).is_absolute())
+            || !(100..=10_000).contains(&self.wait_ms)
+        {
+            return Err("Le serveur LSP exige un exécutable et des racines absolus, au plus 64 arguments de 4096 octets, 128 racines et un délai de 100 à 10000 ms.");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, TS)]

@@ -2516,19 +2516,27 @@ pub async fn replace_discovered_provider_models(
     models: &[ProviderModelInput],
 ) -> DbResult<()> {
     let mut tx = pool.begin().await?;
-    upsert_provider_models_on_connection(&mut tx, provider_id, models).await?;
+    replace_discovered_provider_models_on_connection(&mut tx, provider_id, models).await?;
+    tx.commit().await?;
+
+    Ok(())
+}
+
+pub(crate) async fn replace_discovered_provider_models_on_connection(
+    connection: &mut SqliteConnection,
+    provider_id: &str,
+    models: &[ProviderModelInput],
+) -> DbResult<()> {
+    upsert_provider_models_on_connection(connection, provider_id, models).await?;
     prune_provider_models_on_connection(
-        &mut tx,
+        connection,
         provider_id,
         &models
             .iter()
             .map(|model| model.model_id.clone())
             .collect::<Vec<_>>(),
     )
-    .await?;
-    tx.commit().await?;
-
-    Ok(())
+    .await
 }
 
 pub async fn prune_provider_models(

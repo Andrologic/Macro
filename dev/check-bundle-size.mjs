@@ -1,8 +1,9 @@
 import { readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
-const ASSETS_DIR = fileURLToPath(new URL('../dist/assets/', import.meta.url));
+// Optional fresh-build directory for the performance runner; the budgets are identical.
+const ASSETS_DIR = process.argv[2] ? resolve(process.argv[2]) : fileURLToPath(new URL('../dist/assets/', import.meta.url));
 
 const BUDGETS = [
   // Application code follows Rollup's dependency graph; vendor libraries keep stable manual chunks.

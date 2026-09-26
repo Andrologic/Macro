@@ -1031,3 +1031,96 @@ fn build_provider_models_preserves_safe_and_filters_unsafe_reasoning_metadata() 
     );
     assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("low"));
 }
+
+#[test]
+fn mcp_typed_result_reaches_responses_payload_after_history_reload() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../commands/mcp/fixtures/typed-result.json"
+    ))
+    .unwrap();
+    let result = crate::commands::mcp::result_format::normalize_tool_call_result(fixture.clone());
+    let history = json!([
+        {"type":"function_call", "call_id":"fixture-call", "name":"mcp__fixture__read", "arguments":"{}"},
+        {"type":"function_call_output", "call_id":"fixture-call", "output": result.content,
+         "macro_tool_result":{"version":1,"blocks":result.blocks,"isError":result.is_error}}
+    ]);
+    let serialized_history = serde_json::to_string(&history).unwrap();
+    let restored: Vec<serde_json::Value> = serde_json::from_str(&serialized_history).unwrap();
+    let request: AiChatRequest = serde_json::from_value(json!({
+        "request_id":"fixture", "provider_id":"chatgpt", "model_id":"fixture",
+        "messages":[{"role":"assistant", "content":"", "provider_input_items":restored}]
+    }))
+    .unwrap();
+    let payload = serde_json::to_value(build_responses_request(&request).unwrap()).unwrap();
+    assert_eq!(payload["input"][1]["call_id"], "fixture-call");
+    let parts = payload["input"][1]["output"].as_array().unwrap();
+    assert_eq!(parts[0]["text"], "[MCP tool reported an error]");
+    assert_eq!(parts[1]["type"], "input_text");
+    assert_eq!(parts[2]["type"], "input_image");
+    assert_eq!(
+        parts[2]["image_url"],
+        format!(
+            "data:image/png;base64,{}",
+            fixture["content"][1]["data"].as_str().unwrap()
+        )
+    );
+    assert!(parts[3]["text"].as_str().unwrap().contains("cannot hear"));
+    assert!(payload["input"][1].get("macro_tool_result").is_none());
+    assert!(!payload
+        .to_string()
+        .contains(fixture["content"][2]["data"].as_str().unwrap()));
+}
+
+#[test]
+fn mcp_chat_completions_history_replays_as_responses_with_assistant_text() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../commands/mcp/fixtures/typed-result.json"
+    ))
+    .unwrap();
+    let items = vec![
+        json!({"type":"chat_completion_message", "role":"assistant", "content":"Inspecting the result.",
+            "tool_calls":[{"id":"c1", "type":"function", "function":{"name":"mcp__fixture__read", "arguments":"{}"}}]}),
+        json!({"type":"chat_completion_message", "role":"tool", "tool_call_id":"c1", "content":"fallback",
+            "macro_tool_result":{"version":1,"blocks":fixture["content"],"isError":false}}),
+    ];
+    let replay = normalize_provider_input_items_for_replay(&items).unwrap();
+    assert_eq!(replay[0]["content"][0]["text"], "Inspecting the result.");
+    assert_eq!(replay[1]["call_id"], "c1");
+    assert_eq!(replay[2]["output"][1]["type"], "input_image");
+}
+
+#[test]
+fn mcp_resource_and_structured_results_reach_responses_after_history_reload() {
+    let resource = json!({"type":"resource","resource":{"uri":"memo://example","mimeType":"text/plain","text":"already supplied content"}});
+    let link = json!({"type":"resource_link","uri":"memo://next","name":"next","description":"linked memo"});
+    let structured = json!({"content":[],"structuredContent":{"answer":42}});
+    for (input, expected) in [
+        (json!({"content":[resource,link]}), vec![resource, link]),
+        (structured.clone(), vec![structured]),
+    ] {
+        let result = crate::commands::mcp::result_format::normalize_tool_call_result(input);
+        let history = json!([
+            {"type":"function_call","call_id":"compatibility-call","name":"mcp__fixture__read","arguments":"{}"},
+            {"type":"function_call_output","call_id":"compatibility-call","output":result.content,
+             "macro_tool_result":{"version":1,"blocks":result.blocks,"isError":result.is_error}}
+        ]);
+        let restored: Vec<serde_json::Value> = serde_json::from_str(&history.to_string()).unwrap();
+        let request: AiChatRequest = serde_json::from_value(json!({
+            "request_id":"fixture","provider_id":"chatgpt","model_id":"fixture",
+            "messages":[{"role":"assistant","content":"","provider_input_items":restored}]
+        }))
+        .unwrap();
+        let payload = serde_json::to_value(build_responses_request(&request).unwrap()).unwrap();
+        assert_eq!(payload["input"][1]["call_id"], "compatibility-call");
+        let parts = payload["input"][1]["output"].as_array().unwrap();
+        assert_eq!(parts.len(), expected.len());
+        for (part, expected) in parts.iter().zip(expected) {
+            assert_eq!(part["type"], "input_text");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(part["text"].as_str().unwrap()).unwrap(),
+                expected
+            );
+        }
+        assert!(payload["input"][1].get("macro_tool_result").is_none());
+    }
+}

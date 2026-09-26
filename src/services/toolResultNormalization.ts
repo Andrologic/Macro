@@ -1,4 +1,4 @@
-import type { ToolCallResolution } from './streamingChat';
+import type { ToolCallResolution } from './ai/contracts';
 
 export const normalizeLegacyToolExecutionResult = (
   toolName: string,

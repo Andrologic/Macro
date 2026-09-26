@@ -348,7 +348,7 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
                 };
                 if reference.starts_with("macro-secret://")
                     && !matches!(
-                        crate::commands::mcp::parse_mcp_env_secret_ref(reference),
+                        crate::core::mcp_ids::parse_mcp_env_secret_ref(reference),
                         Some((reference_server_id, reference_key))
                             if reference_server_id == expected_server_id
                                 && reference_key.eq_ignore_ascii_case(header_name)
@@ -393,7 +393,7 @@ fn validate_mcp_secret_refs(value: &Value) -> Vec<(String, &'static str, String)
             if let Some(reference) = authorization.get("clientSecretRef").and_then(Value::as_str) {
                 let valid = client_id.is_some()
                     && matches!(
-                        crate::commands::mcp::parse_mcp_oauth_client_secret_ref(reference),
+                        crate::core::mcp_ids::parse_mcp_oauth_client_secret_ref(reference),
                         Some(reference_server_id) if reference_server_id == expected_server_id
                     );
                 if !valid {
@@ -713,6 +713,28 @@ pub fn validate_document(
     }));
 
     if kind == ConfigDocumentKind::Tools {
+        if let Some(server) = value.get("languageServer") {
+            if matches!(scope, ConfigScope::Project { .. }) {
+                diagnostics.push(diagnostic(
+                    kind,
+                    scope,
+                    Some("/languageServer".into()),
+                    "config.project.lsp_forbidden",
+                    "Le serveur LSP et ses racines autorisées sont configurés par l’utilisateur.",
+                ));
+            }
+            if let Ok(server) = serde_json::from_value::<LanguageServerSettings>(server.clone()) {
+                if let Err(message) = server.validate() {
+                    diagnostics.push(diagnostic(
+                        kind,
+                        scope,
+                        Some("/languageServer".into()),
+                        "config.tools.lsp_invalid",
+                        message,
+                    ));
+                }
+            }
+        }
         diagnostics.extend(
             validate_mcp_secret_refs(value)
                 .into_iter()
@@ -963,6 +985,14 @@ pub fn descriptors() -> Vec<ConfigDescriptor> {
             Deep,
             ApprovalRequired,
             Reconnect,
+        ),
+        descriptor(
+            Tools,
+            "/languageServer",
+            &["user"],
+            Replace,
+            ApprovalRequired,
+            Live,
         ),
         descriptor(
             Tools,

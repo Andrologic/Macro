@@ -97,6 +97,7 @@ pub mod core;
 mod db;
 mod dev_overrides;
 mod diagnostics;
+pub mod ipc_contracts;
 mod local_backup;
 #[cfg(target_os = "macos")]
 mod macos_traffic_lights;
@@ -107,7 +108,7 @@ mod speech;
 mod state_manager;
 
 // Placeholder modules for critical manual implementation
-mod fs;
+pub mod fs;
 pub mod git;
 pub mod lsp;
 
@@ -1029,12 +1030,14 @@ pub fn run() {
             app_quit_state.mark_quitting("exit-requested");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            fs::watcher::shutdown_watcher(app_handle);
         }
         tauri::RunEvent::Exit => {
             let app_quit_state = app_handle.state::<AppQuitState>();
             app_quit_state.mark_quitting("exit");
             commands::git::cancel_all_git_reviews();
             shutdown_mcp_runtime(app_handle);
+            fs::watcher::shutdown_watcher(app_handle);
         }
         _ => {}
     });

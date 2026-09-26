@@ -4,6 +4,7 @@ pub mod macro_ai;
 pub mod openai_compatible;
 pub mod provider_capabilities;
 pub mod reasoning_catalog;
+pub mod types;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,7 +56,7 @@ pub fn emit_timeline(
     let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let _ = app_handle.emit(
         "ai:timeline",
-        chatgpt::types::AiStreamTimelineEvent {
+        types::AiStreamTimelineEvent {
             request_id: request_id.to_string(),
             provider_id: provider_id.to_string(),
             provider_type: provider_type.to_string(),

@@ -233,6 +233,7 @@ pub async fn speech_create_provider_config(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct UpdateSpeechProviderParams {
     id: String,
     name: Option<String>,

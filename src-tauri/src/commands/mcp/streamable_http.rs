@@ -49,7 +49,7 @@ use url::Url;
 use super::ids::build_mcp_tool_id;
 use super::modern_adapter::{McpModernServerMetadata, MODERN_PROTOCOL_VERSION};
 use super::oauth::McpBearerTokenProvider;
-use super::result_format::format_tool_call_result;
+use super::result_format::normalize_tool_call_result;
 use super::runtime::McpOperationCancellation;
 use super::types::{McpCallToolResponse, McpToolDto};
 use crate::commands::{command_error, CommandError, CommandResult};
@@ -1770,11 +1770,7 @@ impl RmcpLegacyHttpClient {
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
-                Ok(McpCallToolResponse {
-                    content: format_tool_call_result(&raw_result),
-                    is_error: result.is_error.unwrap_or(false),
-                    raw_result,
-                })
+                Ok(normalize_tool_call_result(raw_result))
             }
             CallToolResponse::InputRequired(_) => Err(command_error(format!(
                 "Streamable HTTP MCP server '{}' requires interaction rounds; \
@@ -1999,11 +1995,7 @@ impl RmcpModernHttpClient {
         match response {
             CallToolResponse::Complete(result) => {
                 let raw_result = serde_json::to_value(&result).unwrap_or(Value::Null);
-                Ok(McpCallToolResponse {
-                    content: format_tool_call_result(&raw_result),
-                    is_error: result.is_error.unwrap_or(false),
-                    raw_result,
-                })
+                Ok(normalize_tool_call_result(raw_result))
             }
             CallToolResponse::InputRequired(_) => Err(command_error(format!(
                 "Streamable HTTP MCP server '{}' requested an interaction round; \

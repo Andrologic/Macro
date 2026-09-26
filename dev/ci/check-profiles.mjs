@@ -8,9 +8,13 @@ const repositoryChecks = [
 
 const installStep = step('Install locked frontend dependencies', 'bun', ['install', '--frozen-lockfile']);
 const workflowStep = step('Validate GitHub workflows', 'bun', ['dev/ci/validate-workflows.mjs']);
+const architectureCheck = step('Check domain import boundaries', 'bun', ['run', 'architecture:check']);
+const copilotTypecheck = step('Typecheck Copilot bridge', 'bun', ['run', 'typecheck:copilot']);
 
 const frontendChecks = [
+  architectureCheck,
   step('Typecheck frontend', 'bun', ['run', 'typecheck']),
+  copilotTypecheck,
   step('Lint frontend', 'bun', ['run', 'lint']),
   step('Audit translations', 'bun', ['run', 'i18n:audit']),
   step('Run frontend tests', 'bun', ['run', 'test']),
@@ -35,7 +39,13 @@ const rustDocTestCheck = step('Run locked Rust doc tests', 'cargo', [
   '--locked',
   '--doc',
 ]);
-const nativeChecks = [sidecarCheck, rustTestCheck, rustDocTestCheck];
+const generatedContractChecks = ['config', 'ipc'].map((domain) => step(
+  `Check generated ${domain} contracts`, 'cargo', [
+    'run', '--manifest-path', 'src-tauri/Cargo.toml', '--locked', '--jobs', '2',
+    '--example', 'generate_config', '--', '--domain', domain, '--check',
+  ],
+));
+const nativeChecks = [sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck];
 
 const windowsNativeCheck = step('Check all Windows native targets', 'cargo', [
   'check',
@@ -68,13 +78,13 @@ export function stepsForProfile(profile, options = {}) {
     case 'native':
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
     case 'native-core':
-      return [...install, ...repositoryChecks, sidecarCheck, rustTestCheck, rustDocTestCheck];
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, rustTestCheck, rustDocTestCheck];
     case 'sidecar':
-      return [...install, sidecarCheck];
+      return [...install, copilotTypecheck, sidecarCheck];
     case 'windows':
-      return [...install, workflowStep, ...repositoryChecks, sidecarCheck, windowsNativeCheck];
+      return [...install, workflowStep, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, windowsNativeCheck];
     case 'windows-core':
-      return [...install, ...repositoryChecks, sidecarCheck, windowsNativeCheck];
+      return [...install, ...repositoryChecks, architectureCheck, copilotTypecheck, sidecarCheck, ...generatedContractChecks, windowsNativeCheck];
     case 'full': {
       return [...install, workflowStep, ...repositoryChecks, ...frontendChecks, ...nativeChecks];
     }

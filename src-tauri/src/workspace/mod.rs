@@ -1,10 +1,10 @@
 pub mod architect;
 pub mod metadata;
 
-use crate::commands::git::build_wsl_git_status;
 use crate::core::error::{BackendError, Result};
 use crate::core::process::{background_command, background_tokio_command};
 use crate::db::models::GitWorktreeRecord;
+use crate::git::operations::build_wsl_git_status;
 use crate::git::repo::get_status_options;
 use crate::git::MACRO_BRANCH_NAME;
 use crate::git::{detect_preferred_git_flow_branches, GitState};

@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { BUILT_IN_TOOLS } from '../services/tools/builtInTools';
 import type { MCPServer, Tool } from '../types';
@@ -124,6 +125,24 @@ const loadUseToolsStore = async () => {
 };
 
 describe('useToolsStore chat toolbox policy', () => {
+  it('does not load the next settings source after a revoked first read', async () => {
+    const { useToolsStore } = await loadUseToolsStore();
+    const { services } = await import('../services');
+    const scope = createLifecycleScope();
+    let release!: () => void;
+    const tools = services.getToolSettings as ReturnType<typeof mock>;
+    tools.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { tools: buildToolSettings() };
+    });
+    const loading = useToolsStore.getState().loadSettings(scope).catch((error: unknown) => error);
+    scope.stop();
+    release();
+    expect((await loading).name).toBe('LifecycleStoppedError');
+    expect(useToolsStore.getState().internalTools).toEqual({});
+    expect(useToolsStore.getState().lastError).toBeNull();
+  });
+
   afterEach(() => {
     localStorage.clear();
     mock.restore();

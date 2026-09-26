@@ -1,3 +1,4 @@
+import type { LifecycleContext } from '../types/lifecycle';
 import { create } from 'zustand';
 import {
   loadPersistedPreference,
@@ -42,7 +43,7 @@ interface ViewFilterStore {
   architect: ArchivedViewFilter;
   chat: ArchivedViewFilter;
   isHydrated: boolean;
-  hydrate: () => Promise<void>;
+  hydrate: (context?: LifecycleContext) => Promise<void>;
   setImplementProjectFilter: (projectId: string) => void;
   setImplementStatusFilter: (status: TaskQueueStatusFilter) => void;
   setImplementShowArchived: (showArchived: boolean) => void;
@@ -122,7 +123,8 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
     architect: { ...DEFAULT_ARCHITECT_VIEW_FILTERS },
     chat: { ...DEFAULT_CHAT_VIEW_FILTERS },
     isHydrated: false,
-    hydrate: async () => {
+    hydrate: async (context) => {
+      if (context?.isActive() === false) return;
       if (get().isHydrated) return;
       if (hydrationPromise) return hydrationPromise;
 
@@ -135,6 +137,7 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
         loadPersistedPreference(PREF_KEYS.CHAT_VIEW_FILTERS),
       ])
         .then(([persistedImplement, persistedArchitect, persistedChat]) => {
+          if (context?.isActive() === false) return;
           const implement = normalizeImplementViewFilters(persistedImplement);
           const architect = normalizeArchivedViewFilter(
             persistedArchitect,
@@ -193,6 +196,7 @@ export const useViewFilterStore = create<ViewFilterStore>((set, get) => {
           hydrationVersions = null;
         })
         .catch((error: unknown) => {
+          if (context?.isActive() === false) return;
           console.warn('View filters could not be hydrated; a later hydration can retry.', error);
         })
         .finally(() => {

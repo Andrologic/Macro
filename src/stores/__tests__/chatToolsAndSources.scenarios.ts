@@ -1368,6 +1368,8 @@ export const registerChatToolsAndSourcesScenarios = (
         { skill_id: 'project:project-1:docs', path: 'references/style.md' },
         'call-resource',
       )).resolves.toBe('resource content');
+      appState.selectedProjectId = 'project-2';
+      appState.selectedTaskId = null;
       const scriptResult = await streamOptions.onToolCall(
         'skill_run_script',
         {
@@ -1387,6 +1389,7 @@ export const registerChatToolsAndSourcesScenarios = (
         'references/style.md',
       );
       expect(runSkillScriptResult.mock.calls[0]?.[0]).toEqual({
+        executionContext: { projectId: 'project-1', workspacePath: 'C:/repos/web/.macro/worktrees/task-1' },
         skillId: 'project:project-1:docs',
         scriptPath: 'scripts/check.sh',
         args: ['--check'],

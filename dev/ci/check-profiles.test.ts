@@ -27,7 +27,11 @@ describe('local CI profiles', () => {
       'Check version manifests',
       'Reject generated binaries',
       'Check Tauri updater configuration',
+      'Check domain import boundaries',
+      'Typecheck Copilot bridge',
       'Build AI runtime sidecar',
+      'Check generated config contracts',
+      'Check generated ipc contracts',
       'Run locked Rust tests for all targets',
       'Run locked Rust doc tests',
     ]);
@@ -36,9 +40,11 @@ describe('local CI profiles', () => {
   test('sidecar checks install dependencies unless the caller already did', () => {
     expect(names('sidecar')).toEqual([
       'Install locked frontend dependencies',
+      'Typecheck Copilot bridge',
       'Build AI runtime sidecar',
     ]);
     expect(stepsForProfile('sidecar', { skipInstall: true }).map((entry) => entry.name)).toEqual([
+      'Typecheck Copilot bridge',
       'Build AI runtime sidecar',
     ]);
   });
@@ -80,4 +86,42 @@ describe('local CI profiles', () => {
     expect(profileForClassification({ configuration: true })).toBe('full');
     expect(profileForClassification({})).toBe('full');
   });
+
+  test('checks extracted boundaries once before native compilation in every native profile', () => {
+    for (const profile of ['native', 'native-core', 'windows', 'windows-core', 'full']) {
+      const steps = stepsForProfile(profile, { skipInstall: true });
+      const guards = steps.filter((entry) => entry.args.includes('architecture:check'));
+      expect(guards).toHaveLength(1);
+      expect(steps.indexOf(guards[0])).toBeLessThan(steps.findIndex((entry) => entry.command === 'cargo'));
+    }
+  });
+
+  test('typechecks Copilot once in code profiles and before building a sidecar', () => {
+    for (const profile of ['frontend', 'native', 'native-core', 'sidecar', 'windows', 'windows-core', 'full']) {
+      for (const skipInstall of [false, true]) {
+        const steps = stepsForProfile(profile, { skipInstall });
+        const checks = steps.filter((entry) => entry.args.includes('typecheck:copilot'));
+        expect(checks).toHaveLength(1);
+        expect(checks[0]).toMatchObject({ command: 'bun', args: ['run', 'typecheck:copilot'] });
+        const sidecarIndex = steps.findIndex((entry) => entry.args.includes('build:ai-runtime'));
+        if (sidecarIndex !== -1) expect(steps.indexOf(checks[0])).toBeLessThan(sidecarIndex);
+      }
+    }
+    expect(stepsForProfile('documentation').some((entry) => entry.args.includes('typecheck:copilot'))).toBe(false);
+  });
+});
+
+
+test('active native profiles check both generated contract domains after the sidecar', () => {
+  for (const profile of ['native', 'native-core', 'windows', 'windows-core', 'full']) {
+    const steps = stepsForProfile(profile);
+    for (const domain of ['config', 'ipc']) {
+      const checks = steps.filter((entry) => entry.args.includes('generate_config') && entry.args.includes(domain));
+      expect(checks).toHaveLength(1);
+      expect(checks[0].args).toContain('--check');
+      expect(checks[0].args).toContain('--locked');
+      expect(steps.indexOf(checks[0])).toBeGreaterThan(steps.findIndex((entry) => entry.name === 'Build AI runtime sidecar'));
+    }
+  }
+  expect(stepsForProfile('frontend').some((entry) => entry.args.includes('generate_config'))).toBe(false);
 });

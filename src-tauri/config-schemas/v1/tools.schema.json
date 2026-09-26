@@ -25,6 +25,16 @@
       ],
       "additionalProperties": true
     },
+    "languageServer": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LanguageServerSettings"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "mcpServers": {
       "type": [
         "object",
@@ -176,6 +186,44 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "LanguageServerSettings": {
+      "description": "Local, user-approved executable. Workspace roots are an exact allowlist, not prefixes.",
+      "type": "object",
+      "required": [
+        "executable"
+      ],
+      "properties": {
+        "arguments": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "executable": {
+          "type": "string"
+        },
+        "waitMs": {
+          "default": 4000,
+          "type": "integer",
+          "format": "uint32",
+          "maximum": 10000.0,
+          "minimum": 100.0
+        },
+        "workspaceRoots": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

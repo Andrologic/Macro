@@ -1,10 +1,13 @@
 import type {
-  PlanNode,
   PlanNodeArtifactContract,
   PlanTaskArtifact,
   PlanTaskArtifactContentType,
   PlanTaskArtifactReview,
 } from '../types';
+import {
+  normalizeArtifactContracts,
+  sanitizeId,
+} from '../domains/plans/artifactContracts';
 import type { ProjectExecutionContext } from './projectExecutionContext';
 import type { ArchitectPlanRecord } from './architectPlanService';
 import {
@@ -13,9 +16,17 @@ import {
   resolveTargetBranch,
 } from './architectPlanService';
 import type { CatalogedImplementTask } from './implementTaskCatalog';
-import { getTaskBusinessId, resolveTaskReference } from './durableIdentity';
+import { getTaskBusinessId, resolveTaskReference, toTaskRuntimeId } from './durableIdentity';
 import { isPlanFinalizationTask } from './implementTaskCatalog';
-import { recordMacroMetadataMutation } from './macroMetadataCoordinator';
+import {
+  enqueueArchitectPlanMutation,
+  recoverArchitectPlanReplicaMutationsUnlocked,
+  resolveReplicaWorkspaceKey,
+  withReplicaTransactionLock,
+} from './architectPlanMutationPersistence';
+import { resolveArchitectPlanServiceDependencies } from './architectPlanReadContext';
+import { buildValidProjectRegistrySnapshot } from './validProjectRegistry';
+import type { ArtifactFileMutation } from './architectPlanArtifactPersistence';
 import * as tauriIpc from './tauriIpc';
 import { useAppStore } from '../stores/useAppStore';
 import { toServiceError } from './contracts/errors';
@@ -31,7 +42,7 @@ const METADATA_WORKSPACE_SCOPE: tauriIpc.WorkspaceScope = 'metadata';
 
 type ArtifactWorkspaceTarget = {
   workspacePath: string;
-  workspaceScope: tauriIpc.WorkspaceScope;
+  workspaceScope: 'metadata' | 'direct';
 };
 
 export class PlanTaskArtifactIndexReadError extends Error {
@@ -41,29 +52,17 @@ export class PlanTaskArtifactIndexReadError extends Error {
   }
 }
 
-const artifactMutationTails = new Map<string, Promise<void>>();
+const serializeArtifactMutation = enqueueArchitectPlanMutation;
 
-const serializeArtifactMutation = async <T>(
-  branchName: string,
-  planId: string,
-  operation: () => Promise<T>,
-): Promise<T> => {
-  const key = `${branchName}\u0000${planId}`;
-  const previous = artifactMutationTails.get(key) || Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
+const withArtifactRecovery = async <T>(operation: (workspaceKey: string) => Promise<T>): Promise<T> => {
+  if (!tauriIpc.isTauriAvailable()) return operation('');
+  const deps = resolveArchitectPlanServiceDependencies({ getAppState: () => useAppStore.getState() });
+  const registry = buildValidProjectRegistrySnapshot(useAppStore.getState());
+  const workspaceKey = await resolveReplicaWorkspaceKey(deps, registry);
+  return withReplicaTransactionLock(workspaceKey, async () => {
+    await recoverArchitectPlanReplicaMutationsUnlocked(deps, registry, workspaceKey);
+    return operation(workspaceKey);
   });
-  artifactMutationTails.set(key, current);
-  await previous.catch(() => undefined);
-  try {
-    return await operation();
-  } finally {
-    release();
-    if (artifactMutationTails.get(key) === current) {
-      artifactMutationTails.delete(key);
-    }
-  }
 };
 
 export interface PlanTaskArtifactIndex {
@@ -139,14 +138,6 @@ const normalizeBranchName = (value?: string | null): string => {
     return getGitFlowBaseBranch();
   }
 };
-
-const sanitizeId = (value: string): string =>
-  value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+/, '')
-    .replace(/-+$/, '') || `artifact-${Date.now()}`;
 
 const slugify = (value: string): string =>
   sanitizeId(value).replace(/[._]+/g, '-').slice(0, 60) || `artifact-${Date.now()}`;
@@ -268,7 +259,7 @@ const normalizeArtifactIndex = (
           ...artifact,
           id: sanitizeId(artifact.id),
           planId,
-          taskId: sanitizeId(artifact.taskId),
+          taskId: artifact.taskId,
           kind: typeof artifact.kind === 'string' && artifact.kind.trim() ? artifact.kind.trim() : 'note',
           title: typeof artifact.title === 'string' && artifact.title.trim() ? artifact.title.trim() : artifact.id,
           summary: typeof artifact.summary === 'string' ? artifact.summary.trim() : '',
@@ -406,21 +397,6 @@ const readTextAtWorkspace = async (
   }
 };
 
-const writeTextAtWorkspace = async (
-  target: ArtifactWorkspaceTarget,
-  path: string,
-  content: string,
-): Promise<void> => {
-  await tauriIpc.fsWriteFile({
-    path,
-    content,
-    createDirs: true,
-    allowOutsideWorkspace: false,
-    workspaceScope: target.workspaceScope,
-    workspacePath: target.workspacePath,
-  });
-};
-
 const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
   count: index.artifacts.length,
   indexHash: hashString(stableSerialize(index.artifacts.map((artifact) => ({
@@ -446,50 +422,6 @@ const buildArtifactManifestSummary = (index: PlanTaskArtifactIndex) => ({
   updatedAt: index.updatedAt,
 });
 
-const updateArtifactManifestAtWorkspace = async (params: {
-  target: ArtifactWorkspaceTarget;
-  branchName: string;
-  planId: string;
-  index: PlanTaskArtifactIndex;
-}): Promise<void> => {
-  const manifestPath = getPlanManifestPath(params.branchName, params.planId);
-  const exists = await tauriIpc.fsExists(manifestPath, {
-    workspaceScope: params.target.workspaceScope,
-    workspacePath: params.target.workspacePath,
-  });
-  if (!exists) {
-    return;
-  }
-  let existing: Record<string, unknown>;
-  try {
-    const file = await tauriIpc.fsReadFileWithOptions({
-      path: manifestPath,
-      allowOutsideWorkspace: false,
-      workspaceScope: params.target.workspaceScope,
-      workspacePath: params.target.workspacePath,
-    });
-    const parsed: unknown = JSON.parse(file.content);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Manifest has an invalid schema.');
-    }
-    existing = parsed as Record<string, unknown>;
-  } catch (error) {
-    throw new PlanTaskArtifactIndexReadError(params.planId, manifestPath, error);
-  }
-  await writeTextAtWorkspace(
-    params.target,
-    manifestPath,
-    `${JSON.stringify(
-      {
-        ...existing,
-        artifacts: buildArtifactManifestSummary(params.index),
-      },
-      null,
-      2,
-    )}\n`,
-  );
-};
-
 export const readPlanTaskArtifactIndex = async (params: {
   branchName: string;
   planId: string;
@@ -499,10 +431,11 @@ export const readPlanTaskArtifactIndex = async (params: {
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
-}): Promise<PlanTaskArtifactIndex> => {
+}): Promise<PlanTaskArtifactIndex> => withArtifactRecovery(async () => {
   if (!tauriIpc.isTauriAvailable()) {
     return emptyArtifactIndex(params.planId);
   }
+  const { readArtifactFileSnapshot } = await import('./architectPlanArtifactPersistence');
   const indexPath = getPlanArtifactIndexPath(params.branchName, params.planId);
   const workspaceTargets = await resolveWorkspacePaths(params);
   const validIndexes: PlanTaskArtifactIndex[] = [];
@@ -516,7 +449,13 @@ export const readPlanTaskArtifactIndex = async (params: {
     } catch (error) {
       throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, error);
     }
-    if (!indexExists) continue;
+    if (!indexExists) {
+      const manifest = await readArtifactFileSnapshot({ ...target, path: getPlanManifestPath(params.branchName, params.planId) });
+      if (manifest.content !== null && JSON.parse(manifest.content)?.artifacts) {
+        throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, new Error('Artifact index is missing from a manifested replica.'));
+      }
+      continue;
+    }
     try {
       const file = await tauriIpc.fsReadFileWithOptions({
         path: indexPath,
@@ -535,15 +474,41 @@ export const readPlanTaskArtifactIndex = async (params: {
       ) {
         throw new Error('Artifact index has an invalid schema.');
       }
-      validIndexes.push(normalizeArtifactIndex(
-        params.planId,
-        parsed as Partial<PlanTaskArtifactIndex>,
-      ));
+      const raw = parsed as PlanTaskArtifactIndex;
+      const index = normalizeArtifactIndex(params.planId, raw);
+      if (raw.schemaVersion !== 1 || raw.planId !== params.planId || index.artifacts.length !== raw.artifacts.length ||
+        raw.artifacts.some((artifact) => artifact.planId !== params.planId ||
+          artifact.id !== sanitizeId(artifact.id) || !artifact.taskId.trim() ||
+          !['markdown', 'json', 'text'].includes(artifact.contentType)) ||
+        new Set(index.artifacts.map((artifact) => artifact.id)).size !== index.artifacts.length) {
+        throw new Error('Invalid artifact entry or schema.');
+      }
+      for (const artifact of index.artifacts) {
+        if (artifact.path.split('/').some((part) => part === '.' || part === '..') ||
+          artifact.path !== getPlanArtifactContentPath(params.branchName, params.planId, artifact.taskId, artifact.id, artifact.contentType)) {
+          throw new Error(`Invalid artifact content path: ${artifact.id}`);
+        }
+        const content = await readArtifactFileSnapshot({ ...target, path: artifact.path });
+        if (content.content === null || hashString(content.content) !== artifact.contentHash) {
+          throw new Error(`Artifact content does not match its index: ${artifact.id}`);
+        }
+      }
+      const manifest = await readArtifactFileSnapshot({ ...target, path: getPlanManifestPath(params.branchName, params.planId) });
+      if (manifest.content !== null) {
+        const summary = JSON.parse(manifest.content)?.artifacts;
+        if (stableSerialize(summary) !== stableSerialize(buildArtifactManifestSummary(index))) {
+          throw new Error('Artifact manifest does not match its index.');
+        }
+      }
+      validIndexes.push(index);
     } catch (error) {
       throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, error);
     }
   }
   if (validIndexes.length === 0) return emptyArtifactIndex(params.planId);
+  if (validIndexes.length !== workspaceTargets.length) {
+    throw new PlanTaskArtifactIndexReadError(params.planId, indexPath, new Error('Artifact index replica is missing.'));
+  }
   const canonical = validIndexes[0]!;
   const canonicalSerialized = stableSerialize(canonical);
   if (validIndexes.some((index) => stableSerialize(index) !== canonicalSerialized)) {
@@ -554,7 +519,7 @@ export const readPlanTaskArtifactIndex = async (params: {
     );
   }
   return canonical;
-};
+});
 
 const writePlanTaskArtifactIndex = async (params: {
   branchName: string;
@@ -566,82 +531,57 @@ const writePlanTaskArtifactIndex = async (params: {
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
   index: PlanTaskArtifactIndex;
+  previousIndex: PlanTaskArtifactIndex;
   contentWrites?: Array<{ path: string; content: string }>;
-}): Promise<void> => {
-  if (!tauriIpc.isTauriAvailable()) {
-    return;
-  }
-  const workspaceTargets = await resolveWorkspacePaths({ ...params, allowFallbackPaths: false });
-  if (workspaceTargets.length === 0) {
-    return;
-  }
-  const indexPath = getPlanArtifactIndexPath(params.branchName, params.planId);
-  const indexContent = `${JSON.stringify(params.index, null, 2)}\n`;
-  const paths = [
-    ...(params.contentWrites || []).map((write) => write.path),
-    indexPath,
-    getPlanManifestPath(params.branchName, params.planId),
-  ];
-  const snapshots = await Promise.all(workspaceTargets.map(async (target) => ({
-    target,
-    files: await Promise.all(paths.map(async (path) => ({
-      path,
-      exists: await tauriIpc.fsExists(path, {
-        workspaceScope: target.workspaceScope,
-        workspacePath: target.workspacePath,
-      }),
-      content: await readTextAtWorkspace(target, path),
-    }))),
-  })));
-  try {
-    for (const target of workspaceTargets) {
-      for (const write of params.contentWrites || []) {
-        await writeTextAtWorkspace(target, write.path, write.content);
+}): Promise<void> => withArtifactRecovery(async (workspaceKey) => {
+  if (!tauriIpc.isTauriAvailable()) return;
+  const { persistArtifactMutation, readArtifactFileSnapshot } = await import('./architectPlanArtifactPersistence');
+  const targets = await resolveWorkspacePaths({ ...params, allowFallbackPaths: false });
+  if (targets.length === 0) throw new Error('No registered artifact workspace is available.');
+  const files: ArtifactFileMutation[] = [];
+  for (const target of targets) {
+    const manifestPath = getPlanManifestPath(params.branchName, params.planId);
+    const manifest = await readArtifactFileSnapshot({ ...target, path: manifestPath });
+    const unchangedContents = [];
+    for (const artifact of params.previousIndex.artifacts) {
+      if (params.contentWrites?.some((write) => write.path === artifact.path)) continue;
+      const snapshot = await readArtifactFileSnapshot({ ...target, path: artifact.path });
+      if (snapshot.content === null || hashString(snapshot.content) !== artifact.contentHash) {
+        throw new Error(`Artifact content changed during mutation: ${artifact.id}`);
       }
-      await writeTextAtWorkspace(target, indexPath, indexContent);
-      await updateArtifactManifestAtWorkspace({
-        target,
-        branchName: params.branchName,
-        planId: params.planId,
-        index: params.index,
-      });
-      recordMacroMetadataMutation({
-        workspacePath: target.workspacePath,
-        kind: 'task_metadata',
-        entityId: params.planId,
-        label: 'task artifacts',
-        importance: 'light',
-      });
+      unchangedContents.push({ path: artifact.path, content: snapshot.content });
     }
-  } catch (error) {
-    const rollbackFailures: string[] = [];
-    for (const snapshot of [...snapshots].reverse()) {
-      for (const file of [...snapshot.files].reverse()) {
-        try {
-          if (!file.exists) {
-            await tauriIpc.fsDelete({
-              path: file.path,
-              workspaceScope: snapshot.target.workspaceScope,
-              workspacePath: snapshot.target.workspacePath,
-            });
-          } else if (file.content !== null) {
-            await writeTextAtWorkspace(snapshot.target, file.path, file.content);
-          } else {
-            throw new Error(`Cannot restore ${file.path}: its prior content is unreadable.`);
-          }
-        } catch (rollbackError) {
-          rollbackFailures.push(`${snapshot.target.workspacePath}:${file.path}: ${toServiceError(rollbackError).message}`);
+    const writes = [
+      ...unchangedContents,
+      ...(params.contentWrites || []),
+      { path: getPlanArtifactIndexPath(params.branchName, params.planId), content: `${JSON.stringify(params.index, null, 2)}\n` },
+    ];
+    if (manifest.content !== null) {
+      const parsed: unknown = JSON.parse(manifest.content);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid artifact manifest.');
+      writes.push({ path: manifestPath, content: `${JSON.stringify({
+        ...parsed, artifacts: buildArtifactManifestSummary(params.index),
+      }, null, 2)}\n` });
+    }
+    for (const write of writes) {
+      const before = write.path === manifestPath ? manifest : await readArtifactFileSnapshot({ ...target, path: write.path });
+      if (write.path === getPlanArtifactIndexPath(params.branchName, params.planId)) {
+        if (before.content === null
+          ? params.previousIndex.artifacts.length > 0 || (params.previousIndex.reviews || []).length > 0
+          : stableSerialize(normalizeArtifactIndex(params.planId, JSON.parse(before.content))) !== stableSerialize(params.previousIndex)) {
+          throw new Error('Artifact index changed during mutation.');
         }
       }
+      const priorArtifact = params.previousIndex.artifacts.find((artifact) => artifact.path === write.path);
+      if (priorArtifact && (before.content === null || hashString(before.content) !== priorArtifact.contentHash)) {
+        throw new Error(`Artifact content changed during mutation: ${priorArtifact.id}`);
+      }
+      if (before.content !== null && !before.revision) throw new Error(`Artifact revision unavailable: ${write.path}`);
+      files.push({ ...target, path: write.path, before: before.content, after: write.content });
     }
-    if (rollbackFailures.length > 0) {
-      throw new Error(
-        `Artifact write failed and rollback is incomplete: ${toServiceError(error).message}; ${rollbackFailures.join('; ')}`
-      );
-    }
-    throw error;
   }
-};
+  await persistArtifactMutation({ branchName: normalizeBranchName(params.branchName), planId: sanitizeId(params.planId), workspaceKey, files });
+});
 
 const getRequestedTaskId = (
   args: Record<string, unknown>,
@@ -747,9 +687,19 @@ export const resolveTaskArtifactTarget = async (
   return { branchName, plan: retargetedPlan, task, currentTask: currentTask! };
 };
 
+// Legacy indexes may store a catalog runtime id, or its sanitized form. Resolve
+// only exact aliases of nodes in this plan; keep the stored bytes for integrity checks.
+const artifactTaskNodeId = (taskId: string, branchName: string, plan: ArchitectPlanRecord): string => {
+  const matches = plan.nodes.filter((node) => {
+    const runtimeId = toTaskRuntimeId({ branchName, planId: plan.id, nodeId: node.id });
+    return taskId === node.id || taskId === runtimeId || taskId === sanitizeId(runtimeId);
+  });
+  return matches.length === 1 ? matches[0]!.id : taskId;
+};
+
 export const resolveVisiblePlanTaskIds = (params: {
   plan: Pick<ArchitectPlanRecord, 'nodes'>;
-  task: Pick<CatalogedImplementTask, 'id' | 'dependencies' | 'task_source'>;
+  task: Pick<CatalogedImplementTask, 'id' | 'node_id' | 'dependencies' | 'task_source'>;
   includeInherited?: boolean;
   includeOwn?: boolean;
 }): Set<string> => {
@@ -783,9 +733,9 @@ export const resolveVisiblePlanTaskIds = (params: {
     return visible;
   }
 
-  const currentNode = nodeById.get(params.task.id);
+  const currentNode = nodeById.get(getTaskBusinessId(params.task));
   if (includeOwn && currentNode) {
-    visible.add(params.task.id);
+    visible.add(getTaskBusinessId(params.task));
   }
   if (includeInherited && currentNode) {
     currentNode.dependencies.forEach(addAncestors);
@@ -812,10 +762,10 @@ export const listVisibleTaskArtifacts = async (params: {
     includeOwn: params.includeOwn,
   });
   return index.artifacts
-    .filter((artifact) => visibleTaskIds.has(artifact.taskId))
+    .filter((artifact) => visibleTaskIds.has(artifactTaskNodeId(artifact.taskId, params.branchName, params.plan)))
     .map((artifact) => ({
       ...artifact,
-      visibility: (artifact.taskId === params.task.id ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
+      visibility: (artifactTaskNodeId(artifact.taskId, params.branchName, params.plan) === getTaskBusinessId(params.task) ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
     }))
     .sort((left, right) => {
       if (left.visibility !== right.visibility) {
@@ -844,7 +794,7 @@ export const listVisibleTaskArtifactReviewEntries = async (params: {
       reviews.find(
         (candidate) =>
           candidate.artifactId === artifact.id &&
-          candidate.taskId === sanitizeId(params.task.id),
+          artifactTaskNodeId(candidate.taskId, params.branchName, params.plan) === getTaskBusinessId(params.task),
       ) || null;
     return {
       artifact,
@@ -890,7 +840,7 @@ export const listPlanArtifactOverview = async (params: {
         (contract) =>
           !index.artifacts.some(
             (artifact) =>
-              artifact.taskId === node.id &&
+              artifactTaskNodeId(artifact.taskId, params.branchName, params.plan) === node.id &&
               (artifact.contractId === contract.id || artifact.id === contract.id),
           ),
       )
@@ -920,26 +870,21 @@ export const readVisibleTaskArtifactContent = async (params: {
   if (!artifact) {
     throw toServiceError(`Artifact is not visible from task ${params.task.id}: ${params.artifactId}`);
   }
-  const workspaceTargets = await resolveWorkspacePaths({
+  const content = await readArtifactContent({
     ...getPlanWorkspaceHints(params.plan),
+    artifact,
   });
-  for (const target of workspaceTargets) {
-    const content = await readTextAtWorkspace(target, artifact.path);
-    if (content !== null) {
-      return { artifact, content };
-    }
-  }
-  throw toServiceError(`Artifact content not found: ${artifact.id}`);
+  return { artifact, content };
 };
 
-const readArtifactContentByPath = async (params: {
+const readArtifactContent = async (params: {
   projectId?: string | null;
   projectIds?: string[] | null;
   availableProjectIds?: string[] | null;
   replicas?: ArchitectPlanRecord['replicas'];
   repoPaths?: Array<string | null | undefined>;
   executionModesByProjectId?: Record<string, 'git' | 'direct'>;
-  path: string;
+  artifact: Pick<PlanTaskArtifact, 'id' | 'path' | 'contentHash'>;
 }): Promise<string> => {
   const workspaceTargets = await resolveWorkspacePaths({
     projectId: params.projectId,
@@ -950,12 +895,16 @@ const readArtifactContentByPath = async (params: {
     executionModesByProjectId: params.executionModesByProjectId,
   });
   for (const target of workspaceTargets) {
-    const content = await readTextAtWorkspace(target, params.path);
+    const content = await readTextAtWorkspace(target, params.artifact.path);
     if (content !== null) {
+      // Validate the exact string returned: the file may change after index validation.
+      if (hashString(content) !== params.artifact.contentHash) {
+        throw toServiceError(`Artifact content does not match its index: ${params.artifact.id}`);
+      }
       return content;
     }
   }
-  throw toServiceError(`Artifact content not found: ${params.path}`);
+  throw toServiceError(`Artifact content not found: ${params.artifact.path}`);
 };
 
 export const readVisibleTaskArtifactDiff = async (params: {
@@ -977,26 +926,26 @@ export const readVisibleTaskArtifactDiff = async (params: {
     includeOwn: true,
   });
   const visibleArtifacts = index.artifacts
-    .filter((artifact) => visibleTaskIds.has(artifact.taskId))
+    .filter((artifact) => visibleTaskIds.has(artifactTaskNodeId(artifact.taskId, params.branchName, params.plan)))
     .map((artifact) => ({
       ...artifact,
-      visibility: (artifact.taskId === params.task.id ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
+      visibility: (artifactTaskNodeId(artifact.taskId, params.branchName, params.plan) === getTaskBusinessId(params.task) ? 'own' : 'inherited') as VisiblePlanTaskArtifact['visibility'],
     }));
   const artifact = visibleArtifacts.find((candidate) => candidate.id === artifactId);
   if (!artifact) {
     throw toServiceError(`Artifact is not visible from task ${params.task.id}: ${params.artifactId}`);
   }
-  const content = await readArtifactContentByPath({
+  const content = await readArtifactContent({
     ...getPlanWorkspaceHints(params.plan),
-    path: artifact.path,
+    artifact,
   });
   const previousArtifact = artifact.supersedes
     ? visibleArtifacts.find((candidate) => candidate.id === artifact.supersedes) || null
     : null;
   const previousContent = previousArtifact
-    ? await readArtifactContentByPath({
+    ? await readArtifactContent({
         ...getPlanWorkspaceHints(params.plan),
-        path: previousArtifact.path,
+        artifact: previousArtifact,
       })
     : '';
   return {
@@ -1027,9 +976,9 @@ export const readPlanArtifactDiff = async (params: {
     ...artifact,
     visibility: 'own',
   };
-  const content = await readArtifactContentByPath({
+  const content = await readArtifactContent({
     ...getPlanWorkspaceHints(params.plan),
-    path: artifact.path,
+    artifact,
   });
   const previousArtifact = artifact.supersedes
     ? index.artifacts.find((candidate) => candidate.id === artifact.supersedes) || null
@@ -1041,9 +990,9 @@ export const readPlanArtifactDiff = async (params: {
       }
     : null;
   const previousContent = previousArtifact
-    ? await readArtifactContentByPath({
+    ? await readArtifactContent({
         ...getPlanWorkspaceHints(params.plan),
-        path: previousArtifact.path,
+        artifact: previousArtifact,
       })
     : '';
   return {
@@ -1081,7 +1030,7 @@ const validateVisibleTaskArtifactInternal = async (params: {
   const now = new Date().toISOString();
   const review: PlanTaskArtifactReview = {
     artifactId,
-    taskId: sanitizeId(params.task.id),
+    taskId: sanitizeId(getTaskBusinessId(params.task)),
     validatedAt: now,
     validatedBy:
       typeof params.validatedBy === 'string' && params.validatedBy.trim()
@@ -1095,7 +1044,7 @@ const validateVisibleTaskArtifactInternal = async (params: {
       ...(index.reviews || []).filter(
         (candidate) =>
           candidate.artifactId !== review.artifactId ||
-          candidate.taskId !== review.taskId,
+          artifactTaskNodeId(candidate.taskId, params.branchName, params.plan) !== review.taskId,
       ),
       review,
     ].sort((left, right) => `${left.taskId}:${left.artifactId}`.localeCompare(`${right.taskId}:${right.artifactId}`)),
@@ -1108,6 +1057,7 @@ const validateVisibleTaskArtifactInternal = async (params: {
       (params.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
     ),
     index: nextIndex,
+    previousIndex: index,
   });
   return review;
 };
@@ -1141,7 +1091,7 @@ const unvalidateVisibleTaskArtifactInternal = async (params: {
     reviews: (index.reviews || []).filter(
       (review) =>
         review.artifactId !== artifactId ||
-        review.taskId !== sanitizeId(params.task.id),
+        artifactTaskNodeId(review.taskId, params.branchName, params.plan) !== getTaskBusinessId(params.task),
     ),
   };
   await writePlanTaskArtifactIndex({
@@ -1152,31 +1102,11 @@ const unvalidateVisibleTaskArtifactInternal = async (params: {
       (params.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
     ),
     index: nextIndex,
+    previousIndex: index,
   });
 };
 
-export const normalizeArtifactContracts = (
-  node: Pick<PlanNode, 'artifactContracts'>,
-): PlanNodeArtifactContract[] =>
-  (node.artifactContracts || [])
-    .filter((contract) =>
-      Boolean(
-        contract &&
-          typeof contract.id === 'string' &&
-          contract.id.trim().length > 0 &&
-          typeof contract.title === 'string' &&
-          contract.title.trim().length > 0,
-      ),
-    )
-    .map((contract) => ({
-      id: sanitizeId(contract.id),
-      title: contract.title.trim(),
-      kind: typeof contract.kind === 'string' && contract.kind.trim() ? contract.kind.trim() : 'note',
-      ...(typeof contract.description === 'string' && contract.description.trim()
-        ? { description: contract.description.trim() }
-        : {}),
-      required: true,
-    }));
+export { normalizeArtifactContracts, sanitizeId } from '../domains/plans/artifactContracts';
 
 const putTaskArtifactInternal = async ({
   target,
@@ -1240,7 +1170,7 @@ const putTaskArtifactInternal = async ({
   const existingByContract =
     contractId
       ? index.artifacts.find(
-          (artifact) => artifact.taskId === target.task.id && artifact.contractId === contractId,
+          (artifact) => artifactTaskNodeId(artifact.taskId, target.branchName, target.plan) === getTaskBusinessId(target.task) && artifact.contractId === contractId,
         )
       : undefined;
   const visibleTaskIds = resolveVisiblePlanTaskIds({
@@ -1253,7 +1183,7 @@ const putTaskArtifactInternal = async ({
     ? index.artifacts.find(
         (artifact) =>
           artifact.id === requestedSupersedesArtifactId &&
-          visibleTaskIds.has(artifact.taskId),
+          visibleTaskIds.has(artifactTaskNodeId(artifact.taskId, target.branchName, target.plan)),
       )
     : undefined;
   if (requestedSupersedesArtifactId && !supersededArtifact) {
@@ -1263,29 +1193,30 @@ const putTaskArtifactInternal = async ({
     explicitArtifactId ||
     existingByContract?.id ||
     (supersededArtifact
-      ? slugify(`${supersededArtifact.id}-${target.task.id}`)
-      : slugify(`${target.task.id}-${contractId || title}`));
+      ? slugify(`${supersededArtifact.id}-${getTaskBusinessId(target.task)}`)
+      : slugify(`${getTaskBusinessId(target.task)}-${contractId || title}`));
   const previous = index.artifacts.find((artifact) => artifact.id === artifactId);
   const supersededArtifactId =
     requestedSupersedesArtifactId ||
     (existingByContract && existingByContract.id !== artifactId
       ? existingByContract.id
       : undefined);
-  if (previous && previous.taskId !== target.task.id) {
+  if (previous && artifactTaskNodeId(previous.taskId, target.branchName, target.plan) !== getTaskBusinessId(target.task)) {
     throw toServiceError(`Artifact id ${artifactId} already belongs to another task.`);
   }
   const now = new Date().toISOString();
+  const artifactTaskId = previous?.taskId ?? getTaskBusinessId(target.task);
   const path = getPlanArtifactContentPath(
     target.branchName,
     target.plan.id,
-    target.task.id,
+    artifactTaskId,
     artifactId,
     contentType,
   );
   const artifact: PlanTaskArtifact = {
     id: artifactId,
     planId: target.plan.id,
-    taskId: target.task.id,
+    taskId: artifactTaskId,
     kind,
     title,
     summary,
@@ -1319,6 +1250,7 @@ const putTaskArtifactInternal = async ({
       (target.task.execution_targets || []).map((executionTarget) => executionTarget.repoPath),
     ),
     index: nextIndex,
+    previousIndex: index,
     contentWrites: [{ path, content: normalizedContent }],
   });
 
@@ -1393,7 +1325,7 @@ export const formatTaskArtifactListResult = async (
           required: contract.required,
           satisfied: artifacts.some(
             (artifact) =>
-              artifact.taskId === target.task.id &&
+              artifactTaskNodeId(artifact.taskId, target.branchName, target.plan) === getTaskBusinessId(target.task) &&
               (artifact.contractId === contract.id || artifact.id === contract.id),
           ),
         })),
@@ -1484,7 +1416,7 @@ export const loadMissingRequiredArtifactsForCompletion = async (
       (contract) =>
         !index.artifacts.some(
           (artifact) =>
-            artifact.taskId === getTaskBusinessId(task) &&
+            artifactTaskNodeId(artifact.taskId, branchName, plan) === getTaskBusinessId(task) &&
             (artifact.contractId === contract.id || artifact.id === contract.id),
         ),
     )
@@ -1529,13 +1461,13 @@ export const loadUnvalidatedCurrentTaskArtifactsForCompletion = async (
   });
   const reviews = index.reviews || [];
   return index.artifacts
-    .filter((artifact) => artifact.taskId === getTaskBusinessId(task))
+    .filter((artifact) => artifactTaskNodeId(artifact.taskId, branchName, plan) === getTaskBusinessId(task))
     .filter(
       (artifact) =>
         !reviews.some(
           (review) =>
             review.artifactId === artifact.id &&
-            review.taskId === getTaskBusinessId(task),
+            artifactTaskNodeId(review.taskId, branchName, plan) === getTaskBusinessId(task),
         ),
     );
 };
