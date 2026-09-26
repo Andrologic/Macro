@@ -228,6 +228,7 @@
   "mixedTargets": "Mixed targets",
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "No se pudo crear la función manual.",
+  "manualFeatureCleanupPending": "La tarea se creó, pero aún está pendiente cerrar su registro de recuperación.",
   "taskValidationProgress": "{{resolved}}/{{total}} subproyectos resueltos",
   "repositoryCountInlineSingle": "{{count}} repositorio involucrado",
   "taskValidationProgressSingle": "{{resolved}}/{{total}} subproyecto resuelto",

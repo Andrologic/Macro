@@ -228,6 +228,7 @@
   "mixedTargets": "Mixed targets",
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "手動フィーチャーの作成に失敗しました。",
+  "manualFeatureCleanupPending": "タスクは作成されましたが、復旧記録の確定はまだ完了していません。",
   "taskValidationProgress": "{{resolved}}/{{total}}サブプロジェクトが解決されました",
   "repositoryCountInlineSingle": "{{count}}関連するリポジトリ",
   "taskValidationProgressSingle": "{{resolved}}/{{total}}サブプロジェクトが解決されました",

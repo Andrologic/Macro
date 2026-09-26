@@ -228,6 +228,7 @@
   "mixedTargets": "Mixed targets",
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "수동 기능을 생성하지 못했습니다.",
+  "manualFeatureCleanupPending": "작업이 생성되었지만 복구 기록의 마무리가 아직 완료되지 않았습니다.",
   "taskValidationProgress": "{{resolved}}/{{total}}해결된 하위 프로젝트",
   "repositoryCountInlineSingle": "{{count}}관련된 저장소",
   "taskValidationProgressSingle": "{{resolved}}/{{total}}해결된 하위 프로젝트",

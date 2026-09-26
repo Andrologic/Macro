@@ -228,6 +228,7 @@
   "mixedTargets": "Mixed targets",
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "Die manuelle Funktion konnte nicht erstellt werden.",
+  "manualFeatureCleanupPending": "Die Aufgabe wurde erstellt, aber der Abschluss ihres Wiederherstellungsprotokolls steht noch aus.",
   "taskValidationProgress": "{{resolved}}/{{total}} Teilprojekte gelöst",
   "repositoryCountInlineSingle": "{{count}} beteiligtes Repository",
   "taskValidationProgressSingle": "{{resolved}}/{{total}} Teilprojekt gelöst",
