@@ -12,7 +12,8 @@ const BUDGETS = [
   { name: 'entry', pattern: /^index-.*\.js$/, limitBytes: 1_465_000 },
   { name: 'max-chunk', pattern: /\.js$/, limitBytes: 600_000, exclude: /^index-.*\.js$/ },
   { name: 'chat-zone', pattern: /^ChatZone-.*\.js$/, limitBytes: 118_500 },
-  { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 61_500 },
+  // The 0.1.7 task recovery fix builds a 61,741 B chunk; keep a narrow margin.
+  { name: 'task-queue', pattern: /^TaskQueue-.*\.js$/, limitBytes: 62_000 },
   { name: 'markdown-rich-content', pattern: /^MarkdownRichContent-.*\.js$/, limitBytes: 70_000 },
   { name: 'locale-fragment', pattern: /^(de|es|fr|ko)-.*\.js$/, limitBytes: 134_000 },
   { name: 'locale-fragment-ja', pattern: /^ja-.*\.js$/, limitBytes: 148_000 },
