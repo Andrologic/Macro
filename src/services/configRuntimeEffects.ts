@@ -62,7 +62,9 @@ const applySettings = (snapshot: ConfigSnapshot): void => {
 
 export const installConfigRuntimeEffects = (): (() => void) => {
   if (cleanup) return cleanup;
-  unsubscribePersistenceErrors = subscribePreferencePersistenceErrors((error) => {
+  unsubscribePersistenceErrors = subscribePreferencePersistenceErrors((error, key) => {
+    // A notification about this failure would try to persist through the same failing key.
+    if (key === 'notificationCenterItems') return;
     notify.error(
       i18n.t('settings.configuration.saveFailed', 'Could not save configuration'),
       { description: errorMessage(error) },
