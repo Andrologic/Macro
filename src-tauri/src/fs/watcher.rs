@@ -783,7 +783,8 @@ mod tests {
         use std::time::Instant;
 
         let temp = tempfile::tempdir().expect("tempdir");
-        let workspace = temp.path().to_path_buf();
+        // macOS reports FSEvents paths under /private/var even when TMPDIR uses /var.
+        let workspace = temp.path().canonicalize().expect("canonical tempdir");
         let recreated = workspace.join("recreated");
         std::fs::create_dir_all(&recreated).expect("initial directory");
 
