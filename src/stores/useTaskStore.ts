@@ -9,6 +9,7 @@ import {
 } from '../services';
 import { isPlanMetadataMissingError, toServiceError } from '../services/contracts/errors';
 import { isAppShutdownGateActive } from '../services/appShutdownGate';
+import { withTaskLifecycleLock } from '../services/taskLifecycleLease';
 import { useAppStore } from './useAppStore';
 import { useChatStore } from './useChatStore';
 import { isConversationRuntimeActive } from './chat/chatRuntimeState';
@@ -24,6 +25,7 @@ import { getLocalProjectContextState } from '../services/localProjectContext';
 import * as tauriIpc from '../services/tauriIpc';
 import {
   getLinkedDeletionSagaGeneration,
+  findPersistedTaskConversationId,
   loadLinkedTaskDeletionSagas,
   removeLinkedTaskDeletionSaga,
   startLinkedTaskDeletionSaga,
@@ -874,44 +876,6 @@ const resumeLinkedTaskGitCleanup = async (
     }
   }
   return current;
-};
-
-const withTaskLifecycleLock = async <T>(
-  taskId: string,
-  operation: (leaseId: string | null) => Promise<T>,
-  directProjectPaths?: string[],
-): Promise<T> => {
-  if (!tauriIpc.isTauriAvailable()) {
-    return operation(null);
-  }
-  const leaseId = await tauriIpc.workspaceAcquireTaskLifecycleLock(taskId, directProjectPaths);
-  let renewalInFlight: Promise<void> | null = null;
-  const renewLease = () => {
-    if (renewalInFlight) return;
-    renewalInFlight = tauriIpc.workspaceRenewTaskLifecycleLock(leaseId)
-      .catch((error) => {
-        devLogger.warn('[tasks] Could not renew the task lifecycle lease.', {
-          taskId,
-          error: toServiceError(error).message,
-        });
-      })
-      .finally(() => {
-        renewalInFlight = null;
-      });
-  };
-  const heartbeat = globalThis.setInterval(renewLease, 30_000);
-  try {
-    return await operation(leaseId);
-  } finally {
-    globalThis.clearInterval(heartbeat);
-    await renewalInFlight;
-    await tauriIpc.workspaceReleaseTaskLifecycleLock(leaseId).catch((error) => {
-      devLogger.warn('[tasks] Could not release the task lifecycle lease.', {
-        taskId,
-        error: toServiceError(error).message,
-      });
-    });
-  }
 };
 
 const updateArchivedCleanupTarget = (
@@ -2321,6 +2285,7 @@ interface TaskStore {
   refreshFromPlan: (options?: {
     restoreSelection?: boolean;
     activateSelectedTask?: boolean;
+    creatingTaskId?: string;
   }) => Promise<void>;
   activateTask: (taskId: string) => Promise<void>;
   createManualFeatureDraft: (params: {
@@ -2335,6 +2300,7 @@ interface TaskStore {
     taskKind: import('../types').StandaloneTaskKind;
     existingBranchName?: string | null;
     baseCommitHash?: string | null;
+    taskLifecycleLeaseId?: string | null;
   }) => Promise<void>;
   finalizeManualFeatureDraft: (params: {
     taskId: string;
@@ -2350,7 +2316,7 @@ interface TaskStore {
     title?: string | null;
     description?: string | null;
   }) => Promise<void>;
-  deleteManualFeatureDraft: (taskId: string) => Promise<void>;
+  deleteManualFeatureDraft: (taskId: string, taskLifecycleLeaseId?: string | null) => Promise<void>;
   createMissingBaseBranch: (issue: TaskMissingBaseBranchIssue) => Promise<void>;
   clearMissingBaseBranchIssue: () => void;
   renameTask: (taskId: string, title: string) => Promise<void>;
@@ -2944,6 +2910,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   // Catalog loads and task activation await metadata/filesystem work. Keep their
   // effects scoped to the latest request so a stale context cannot win a race.
   let refreshRequestId = 0;
+  let creationRefreshBarrier: Promise<void> | null = null;
   let taskActivationRequestId = 0;
 
   const getTaskCommandMutationBlockedMessage = (action: 'archive' | 'delete' | 'complete'): string =>
@@ -3174,6 +3141,16 @@ export const useTaskStore = create<TaskStore>((set, get) => {
   },
 
   refreshFromPlan: async (options) => {
+    // A normal refresh must not supersede the catalog publication needed by an active creation.
+    if (creationRefreshBarrier) {
+      await creationRefreshBarrier;
+    }
+    let releaseCreationRefresh: () => void = () => undefined;
+    if (options?.creatingTaskId) {
+      creationRefreshBarrier = new Promise<void>((resolve) => {
+        releaseCreationRefresh = resolve;
+      });
+    }
     const requestId = ++refreshRequestId;
     const appStateAtStart = useAppStore.getState();
     const selectionContextKey = `${appStateAtStart.selectedGroupId ?? ''}::${appStateAtStart.selectedProjectId ?? ''}`;
@@ -3184,6 +3161,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     };
     const restoreSelection = options?.restoreSelection !== false;
     const activateSelectedTask = options?.activateSelectedTask !== false;
+    const creatingTaskId = options?.creatingTaskId;
     try {
       const previousTaskCount = get().tasks.length;
       const previousSource = get().source;
@@ -3193,13 +3171,106 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       if (!isCurrentRefresh()) return;
       let catalog = await services.listTasks();
       if (!isCurrentRefresh()) return;
-      const pendingLinkedTaskDeletions = await loadLinkedTaskDeletionSagas();
+      // Recovery takes task leases. A creator holding one must not wait on another creator's lease.
+      const pendingLinkedTaskDeletions = creatingTaskId
+        ? []
+        : (await loadLinkedTaskDeletionSagas()).filter(
+          (pending) => pending.taskId !== activeManualFeatureCreationId,
+        );
       if (!isCurrentRefresh()) return;
       let shouldReloadCatalogAfterLinkedTaskRecovery = false;
       for (const pending of pendingLinkedTaskDeletions) {
         if (!isCurrentRefresh()) return;
         const catalogTask = resolveTaskReference(catalog.tasks, pending.taskId);
         const taskStillExists = Boolean(catalogTask);
+        if (pending.phase === 'task_creating' || (pending.phase === 'prepared' && pending.creationCommitted)) {
+          shouldReloadCatalogAfterLinkedTaskRecovery = true;
+          await withTaskLifecycleLock(pending.taskId, async (taskLifecycleLeaseId) => {
+            const current = (await loadLinkedTaskDeletionSagas()).find((candidate) =>
+              candidate.taskId === pending.taskId &&
+              getLinkedDeletionSagaGeneration({ ...candidate, ownerType: 'task', ownerId: candidate.taskId }) ===
+                getLinkedDeletionSagaGeneration({ ...pending, ownerType: 'task', ownerId: pending.taskId }),
+            );
+            if (!current || (current.phase !== 'task_creating' &&
+              !(current.phase === 'prepared' && current.creationCommitted))) return;
+            let recoverySaga = current;
+            try {
+              const freshCatalog = await services.listTasks();
+              const survivingTask = resolveTaskReference(freshCatalog.tasks, current.taskId);
+              if (current.creationCommitted && survivingTask) {
+                await removeLinkedTaskDeletionSaga(
+                  current.taskId,
+                  current.targetBranch,
+                  getLinkedDeletionSagaGeneration({ ...current, ownerType: 'task', ownerId: current.taskId }),
+                );
+                return;
+              }
+              if (survivingTask && !survivingTask.draft) {
+                await removeLinkedTaskDeletionSaga(
+                  current.taskId,
+                  current.targetBranch,
+                  getLinkedDeletionSagaGeneration({ ...current, ownerType: 'task', ownerId: current.taskId }),
+                );
+                return;
+              }
+              const conversationId = current.conversationId ||
+                (await findPersistedTaskConversationId(current.taskId)) || '';
+              recoverySaga = {
+                ...current,
+                conversationId,
+                interruptedCreation: true,
+                phase: current.creationCommitted ? 'task_deleted' : 'task_deleting',
+                updatedAt: new Date().toISOString(),
+              };
+              await upsertLinkedTaskDeletionSaga(recoverySaga);
+              if (survivingTask) {
+                if (isManualStandaloneTask(survivingTask)) {
+                  await removeManualFeatureMetadata(survivingTask, true);
+                }
+                await deleteManualFeatureDraftDurably(current.taskId, taskLifecycleLeaseId);
+              }
+              recoverySaga = { ...recoverySaga, phase: 'task_deleted', updatedAt: new Date().toISOString() };
+              await upsertLinkedTaskDeletionSaga(recoverySaga);
+              const completed = conversationId
+                ? await useChatStore.getState().completeLinkedTaskConversationDeletion(conversationId)
+                : true;
+              if (completed) {
+                await removeLinkedTaskDeletionSaga(
+                  current.taskId,
+                  current.targetBranch,
+                  getLinkedDeletionSagaGeneration({ ...recoverySaga, ownerType: 'task', ownerId: current.taskId }),
+                );
+              } else {
+                await upsertLinkedTaskDeletionSaga({
+                  ...recoverySaga,
+                  lastError: useChatStore.getState().lastError ?? undefined,
+                  updatedAt: new Date().toISOString(),
+                });
+              }
+            } catch (error) {
+              const cause = toServiceError(error).message;
+              let message = `La création interrompue reste à nettoyer : ${cause}`;
+              try {
+                const stillPending = (await loadLinkedTaskDeletionSagas()).find((candidate) =>
+                  candidate.taskId === current.taskId &&
+                  getLinkedDeletionSagaGeneration({ ...candidate, ownerType: 'task', ownerId: candidate.taskId }) ===
+                    getLinkedDeletionSagaGeneration({ ...current, ownerType: 'task', ownerId: current.taskId }),
+                );
+                if (stillPending) {
+                  await upsertLinkedTaskDeletionSaga({
+                    ...stillPending,
+                    lastError: cause,
+                    updatedAt: new Date().toISOString(),
+                  });
+                }
+              } catch (journalError) {
+                message += ` La mise à jour du journal a échoué : ${toServiceError(journalError).message}`;
+              }
+              set({ lastError: message });
+            }
+          });
+          continue;
+        }
         if (pending.phase === 'draft_reverting' || pending.phase === 'draft_reverted') {
           shouldReloadCatalogAfterLinkedTaskRecovery = true;
           let recoverySaga = pending;
@@ -3287,11 +3358,42 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         if (pending.phase === 'task_deleting') {
           shouldReloadCatalogAfterLinkedTaskRecovery = true;
           let deletionRecoveryFailed = false;
+          let deletionRecoverySkipped = false;
           await withTaskLifecycleLock(pending.taskId, async (taskLifecycleLeaseId) => {
             try {
+              const currentPending = (await loadLinkedTaskDeletionSagas()).find((candidate) =>
+                candidate.taskId === pending.taskId &&
+                candidate.targetBranch === pending.targetBranch &&
+                getLinkedDeletionSagaGeneration({ ...candidate, ownerType: 'task', ownerId: candidate.taskId }) ===
+                  getLinkedDeletionSagaGeneration({ ...pending, ownerType: 'task', ownerId: pending.taskId }),
+              );
+              if (!currentPending || currentPending.phase !== 'task_deleting') {
+                deletionRecoverySkipped = true;
+                return;
+              }
+              deletionSaga = currentPending;
+              const freshCatalog = await services.listTasks();
+              const currentTask = resolveTaskReference(freshCatalog.tasks, pending.taskId);
+              const taskStillExistsUnderLease = Boolean(currentTask);
+              if (deletionSaga.draft && currentTask && !currentTask.draft) {
+                await removeLinkedTaskDeletionSaga(
+                  deletionSaga.taskId,
+                  deletionSaga.targetBranch,
+                  getLinkedDeletionSagaGeneration({ ...deletionSaga, ownerType: 'task', ownerId: deletionSaga.taskId }),
+                );
+                deletionRecoverySkipped = true;
+                return;
+              }
               deletionSaga = await transferArchivedCleanupToLinkedDeletion(deletionSaga);
-              if (taskStillExists) {
+              if (taskStillExistsUnderLease) {
                 if (deletionSaga.draft) {
+                  if (currentTask?.draft && isManualStandaloneTask(currentTask)) {
+                    if (deletionSaga.interruptedCreation) {
+                      await removeManualFeatureMetadata(currentTask, true);
+                    } else {
+                      await removeManualFeatureMetadata(currentTask, true, false);
+                    }
+                  }
                   await deleteManualFeatureDraftDurably(
                     deletionSaga.taskId,
                     taskLifecycleLeaseId,
@@ -3318,7 +3420,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
               deletionRecoveryFailed = true;
             }
           });
-          if (deletionRecoveryFailed) continue;
+          if (deletionRecoveryFailed || deletionRecoverySkipped) continue;
         }
         const taskDeletedSaga: LinkedTaskDeletionSaga = {
           ...deletionSaga,
@@ -3513,6 +3615,11 @@ export const useTaskStore = create<TaskStore>((set, get) => {
       if (!isCurrentRefresh()) return;
       const normalized = toServiceError(error);
       set({ isLoading: false, lastError: normalized.message, publishedStandaloneTasks: {} });
+    } finally {
+      if (options?.creatingTaskId) {
+        creationRefreshBarrier = null;
+        releaseCreationRefresh();
+      }
     }
   },
 
@@ -3696,16 +3803,24 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         existingBranchName: params.existingBranchName ?? null,
         baseCommitHash: params.baseCommitHash ?? null,
       });
-      await get().refreshFromPlan();
-      await syncManualFeatureTaskMetadata(get().getTaskById(params.taskId), (message) => {
+      await get().refreshFromPlan({ creatingTaskId: params.taskLifecycleLeaseId ? params.taskId : undefined });
+      const createdTask = get().getTaskById(params.taskId);
+      if (!createdTask || !isManualStandaloneTask(createdTask) || !createdTask.draft) {
+        throw new Error(get().lastError || 'Le brouillon créé est absent du catalogue après actualisation.');
+      }
+      await syncManualFeatureTaskMetadata(createdTask, (message) => {
         set({ lastError: message });
       });
     } catch (error) {
       const normalized = toServiceError(error);
       if (draftCreationStarted) {
         try {
-          await deleteManualFeatureDraftDurably(params.taskId);
-          await get().refreshFromPlan();
+          const createdTask = get().getTaskById(params.taskId);
+          if (createdTask && isManualStandaloneTask(createdTask)) {
+            await removeManualFeatureMetadata(createdTask, true);
+          }
+          await deleteManualFeatureDraftDurably(params.taskId, params.taskLifecycleLeaseId);
+          await get().refreshFromPlan({ creatingTaskId: params.taskLifecycleLeaseId ? params.taskId : undefined });
         } catch (rollbackError) {
           const rollbackMessage = toServiceError(rollbackError).message;
           normalized.message = `${normalized.message} Le brouillon créé n'a pas pu être annulé : ${rollbackMessage}`;
@@ -3930,7 +4045,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
     }
   },
 
-  deleteManualFeatureDraft: async (taskId) => {
+  deleteManualFeatureDraft: async (taskId, taskLifecycleLeaseId) => {
     set({ lastError: null });
     assertTaskMutationRuntime('deleteManualFeatureDraft');
 
@@ -3941,9 +4056,12 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         throw new Error('Manual features require the desktop runtime.');
       }
 
-      await withTaskLifecycleLock(taskId, async (taskLifecycleLeaseId) => {
-        await deleteManualFeatureDraftDurably(taskId, taskLifecycleLeaseId);
-        if (existingTask && isManualStandaloneTask(existingTask)) {
+      const removeDraft = async (leaseId: string | null) => {
+        if (taskLifecycleLeaseId && existingTask && isManualStandaloneTask(existingTask)) {
+          await removeManualFeatureMetadata(existingTask, true);
+        }
+        await deleteManualFeatureDraftDurably(taskId, leaseId);
+        if (!taskLifecycleLeaseId && existingTask && isManualStandaloneTask(existingTask)) {
           try {
             await removeManualFeatureMetadata(existingTask);
           } catch (error) {
@@ -3951,8 +4069,10 @@ export const useTaskStore = create<TaskStore>((set, get) => {
             set({ lastError: normalized.message });
           }
         }
-      });
-      await get().refreshFromPlan();
+      };
+      if (taskLifecycleLeaseId) await removeDraft(taskLifecycleLeaseId);
+      else await withTaskLifecycleLock(taskId, removeDraft);
+      await get().refreshFromPlan({ creatingTaskId: taskLifecycleLeaseId ? taskId : undefined });
     } catch (error) {
       const normalized = toServiceError(error);
       set({ lastError: normalized.message });
@@ -4497,6 +4617,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
           ),
         }));
         if (task.draft) {
+          await removeManualFeatureMetadata(task, true, false);
           await deleteManualFeatureDraftDurably(taskId, taskLifecycleLeaseId);
         } else {
           await tauriIpc.workspaceDeleteManualFeature({
@@ -4510,6 +4631,7 @@ export const useTaskStore = create<TaskStore>((set, get) => {
         linkedConversationSaga = await resumeLinkedTaskGitCleanup(linkedConversationSaga);
       } else {
         if (task.draft) {
+          await removeManualFeatureMetadata(task, true, false);
           await deleteManualFeatureDraftDurably(taskId, taskLifecycleLeaseId);
         } else {
           await tauriIpc.workspaceDeleteManualFeature({

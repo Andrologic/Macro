@@ -228,6 +228,7 @@
   "mixedTargets": "Cibles mixtes",
   "singleTarget": "Cible : {{branchName}}",
   "manualFeatureCreateFailed": "Échec de la création de la fonctionnalité manuelle.",
+  "manualFeatureCleanupPending": "La tâche a été créée, mais la clôture de son journal reste en attente.",
   "taskValidationProgress": "{{resolved}}/{{total}} projets résolus",
   "repositoryCountInlineSingle": "{{count}} projet impliqué",
   "taskValidationProgressSingle": "{{resolved}}/{{total}} projet résolu",

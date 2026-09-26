@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { ModelInfo } from '@github/copilot-sdk';
 
 process.env.MACRO_COPILOT_BRIDGE_TEST_IMPORT = '1';
 
@@ -26,6 +27,44 @@ afterEach(() => {
   defineToolMock.mockClear();
   delete process.env.MACRO_TOOL_HOST_URL;
   delete process.env.MACRO_TOOL_HOST_BEARER_TOKEN;
+});
+
+describe('Copilot model catalogue', () => {
+  it('maps models with missing capabilities or supports without claiming unsupported features', async () => {
+    const { __testables } = await loadBridge();
+    const missingCapabilities = { id: 'plain', name: 'Plain' } as ModelInfo;
+    const missingSupports = { id: 'partial', name: '', capabilities: {} } as ModelInfo;
+
+    expect(__testables.modelDescription(missingCapabilities)).toBeNull();
+    expect(__testables.mapModel(missingCapabilities)).toEqual({
+      model_id: 'plain', name: 'Plain', description: null,
+      owned_by: 'github-copilot', supported_reasoning_efforts: undefined,
+    });
+    expect(__testables.modelDescription(missingSupports)).toBeNull();
+    expect(__testables.mapModel(missingSupports)).toEqual({
+      model_id: 'partial', name: 'partial', description: null,
+      owned_by: 'github-copilot', supported_reasoning_efforts: undefined,
+    });
+  });
+
+  it('preserves declared vision and reasoning support for complete models', async () => {
+    const { __testables } = await loadBridge();
+    const model: ModelInfo = {
+      id: 'complete', name: 'Complete',
+      capabilities: {
+        supports: { vision: true, reasoningEffort: true },
+        limits: { max_context_window_tokens: 128_000 },
+      },
+      supportedReasoningEfforts: ['low', 'high'],
+    };
+
+    expect(__testables.modelDescription(model)).toBe('Copilot model (vision, reasoning:low/high)');
+    expect(__testables.mapModel(model)).toEqual({
+      model_id: 'complete', name: 'Complete',
+      description: 'Copilot model (vision, reasoning:low/high)',
+      owned_by: 'github-copilot', supported_reasoning_efforts: ['low', 'high'],
+    });
+  });
 });
 
 describe('copilot bridge tool registration', () => {

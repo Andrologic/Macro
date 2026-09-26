@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { NotificationCenterItem } from './useNotificationCenterStore';
+import { isPreferenceValueValid } from '../services/preferenceValidation';
 
 interface LocalStorageMock {
   clear: () => void;
@@ -159,6 +160,17 @@ describe('useNotificationCenterStore', () => {
     expect(items[1].level).toBe('warning');
     expect(items[2].level).toBe('info');
     expect(items[2].description).toBe('Helpful context');
+  });
+
+  it('persists a notification without a description as a valid preference', () => {
+    const store = notificationStore.useNotificationCenterStore.getState();
+    store.upsertItem(createNotificationItem(1));
+
+    expect(isPreferenceValueValid(
+      'notificationCenterItems',
+      notificationStore.useNotificationCenterStore.getState().items,
+      [],
+    )).toBe(true);
   });
 
   it('trims history to the configured maximum', () => {

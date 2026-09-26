@@ -228,6 +228,7 @@
   "mixedTargets": "Mixed targets",
   "singleTarget": "Target: {{branchName}}",
   "manualFeatureCreateFailed": "Failed to create manual feature.",
+  "manualFeatureCleanupPending": "The task was created, but finalizing its recovery journal is still pending.",
   "taskValidationProgress": "{{resolved}}/{{total}} projects resolved",
   "repositoryCountInlineSingle": "{{count}} project involved",
   "taskValidationProgressSingle": "{{resolved}}/{{total}} project resolved",
