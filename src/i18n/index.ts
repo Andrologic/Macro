@@ -1,6 +1,7 @@
+import type { LifecycleContext } from '../types/lifecycle';
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
-import { notify } from "../components/ui/toastService";
+import { reportLanguageChange } from "./languageNotifications";
 import { loadPreference, PREF_KEYS, savePreference } from "../services/preferences";
 import {
   DEFAULT_LANGUAGE,
@@ -26,12 +27,14 @@ const resolveInitialLanguage = async (): Promise<SupportedLanguage> =>
     DEFAULT_LANGUAGE,
   );
 
-const ensureLanguageResources = async (language: SupportedLanguage): Promise<void> => {
+const ensureLanguageResources = async (language: SupportedLanguage, context?: LifecycleContext): Promise<void> => {
+  context?.assertActive();
   if (i18n.hasResourceBundle(language, "translation")) {
     return;
   }
 
   const translation = await loadTranslation(language);
+  context?.assertActive();
   i18n.addResourceBundle(language, "translation", translation, true, true);
 };
 
@@ -58,17 +61,21 @@ i18n
 let initializationPromise: Promise<void> | null = null;
 const enqueueLanguageChange = createSerialQueue();
 
-export const initializeI18n = (): Promise<void> => {
+export const initializeI18n = (context?: LifecycleContext): Promise<void> => {
+  context?.assertActive();
   if (initializationPromise) {
     return initializationPromise;
   }
 
   const currentInitialization = (async () => {
     const initialLanguage = await resolveInitialLanguage();
-    await ensureLanguageResources(DEFAULT_LANGUAGE);
+    context?.assertActive();
+    await ensureLanguageResources(DEFAULT_LANGUAGE, context);
+    context?.assertActive();
 
     if (initialLanguage !== DEFAULT_LANGUAGE) {
-      await ensureLanguageResources(initialLanguage);
+      await ensureLanguageResources(initialLanguage, context);
+      context?.assertActive();
       await i18n.changeLanguage(initialLanguage);
     } else {
       await i18n.changeLanguage(DEFAULT_LANGUAGE);
@@ -95,12 +102,8 @@ export function changeLanguage(lang: SupportedLanguage): Promise<void> {
     await ensureLanguageResources(lang);
     await i18n.changeLanguage(lang);
 
-    try {
-      const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
-      notify.success(i18n.t("toast.languageChanged", { language: languageName }));
-    } catch {
-      // Toast not available.
-    }
+    const languageName = SUPPORTED_LANGUAGES[lang].nativeName;
+    reportLanguageChange(i18n.t("toast.languageChanged", { language: languageName }));
 
     try {
       await savePreference(PREF_KEYS.LANGUAGE, lang);
@@ -110,8 +113,9 @@ export function changeLanguage(lang: SupportedLanguage): Promise<void> {
   });
 }
 
-export async function applyConfiguredLanguage(lang: SupportedLanguage): Promise<void> {
-  await ensureLanguageResources(lang);
+export async function applyConfiguredLanguage(lang: SupportedLanguage, context?: LifecycleContext): Promise<void> {
+  await ensureLanguageResources(lang, context);
+  context?.assertActive();
   if (i18n.resolvedLanguage !== lang) {
     await i18n.changeLanguage(lang);
   }

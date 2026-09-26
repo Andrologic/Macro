@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct FileContentDto {
     /// File content as UTF-8 string (empty for binary files if not base64 encoded)
     pub content: String,
@@ -14,12 +14,18 @@ pub struct FileContentDto {
     pub encoding: String,
     /// SHA-256 digest of the exact file bytes read
     pub revision: String,
+    /// Native root identity verified before and after a confined local read.
+    /// Absent for unconfined reads, WSL, or a root that changed during the read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_identity: Option<String>,
     /// Unix permission bits when available (for example `0o755`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub unix_mode: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct DirEntryDto {
     /// Absolute path to the entry
     pub path: String,
@@ -43,7 +49,7 @@ pub struct DirEntryDto {
     pub is_readonly: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceFileSearchRootDto {
     pub project_id: Option<String>,
     pub project_name: Option<String>,
@@ -52,7 +58,7 @@ pub struct WorkspaceFileSearchRootDto {
     pub is_focused: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WorkspaceFileSearchResultDto {
     pub id: String,
     pub path: String,
@@ -65,7 +71,7 @@ pub struct WorkspaceFileSearchResultDto {
     pub is_focused: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct FileStatsDto {
     /// Absolute path
     pub path: String,
@@ -95,7 +101,7 @@ pub struct FileStatsDto {
     pub symlink_target: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct WriteResultDto {
     /// Path where file was written
     pub path: String,
@@ -109,11 +115,13 @@ pub struct WriteResultDto {
     pub revision: String,
     /// Unix permission bits after the write when available
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub unix_mode: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[derive(ts_rs::TS)]
 pub enum FsEventDto {
     Created { path: String },
     Modified { path: String },

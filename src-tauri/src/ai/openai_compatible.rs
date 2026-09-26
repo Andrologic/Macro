@@ -1,4 +1,4 @@
-use super::chatgpt::types::{
+use super::types::{
     AiChatMessageContent, AiChatRequest, AiStreamChunkEvent, AiStreamDoneEvent, AiStreamErrorEvent,
     AiToolCall, AiToolCallFunction,
 };
@@ -378,7 +378,7 @@ fn message_content_to_plain_text(content: &AiChatMessageContent) -> String {
 }
 
 fn serialize_provider_input_items(
-    message: &super::chatgpt::types::AiChatMessage,
+    message: &super::types::AiChatMessage,
 ) -> Result<Option<Vec<Value>>, String> {
     let Some(items) = message
         .provider_input_items
@@ -1068,7 +1068,7 @@ fn supports_reasoning_effort(provider_type: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::chatgpt::types::AiChatMessage;
+    use super::super::types::AiChatMessage;
     use super::*;
     use std::future::pending;
 

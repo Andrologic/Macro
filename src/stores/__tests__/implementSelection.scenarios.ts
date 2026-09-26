@@ -1,4 +1,4 @@
-import { describe, expect, it, jest } from 'bun:test';
+import { describe, expect, it, jest, spyOn } from 'bun:test';
 import type { Conversation } from '../../types';
 import type { UseChatStoreScenarioContext } from '../useChatStore.test';
 
@@ -25,6 +25,84 @@ export const registerImplementSelectionScenarios = (
   } = context;
 
   describe('useChatStore Implement selection and manual features', () => {
+    for (const { draft, outcome } of [
+      { draft: false, outcome: 'ready' }, { draft: true, outcome: 'ready' },
+      { draft: false, outcome: 'start-error' }, { draft: false, outcome: 'deleted-task' },
+      { draft: false, outcome: 'missing-worktree' }, { draft: false, outcome: 'deleted-project' },
+    ]) it(`prepares the first script workspace across navigation, draft=${draft}, outcome=${outcome}`, async () => {
+      context.tauriAvailable = true;
+      appState.mode = 'Implement';
+      appState.selectedTaskId = 'first-task';
+      appState.selectedProjectId = 'project-1';
+      const task = createManualFeatureTask({ id: 'first-task', draft, branch_name: draft ? '' : 'feature/first' });
+      taskStoreState.tasks = [task];
+      await savePreferenceForTest('toolRiskLevel', 'yolo');
+      if (draft) queueSendChatNonStreamingImplementation(async () => JSON.stringify({
+        title: 'First feature', description: 'Prepare workspace', featureSlug: 'first', taskKind: 'feature',
+      }));
+      const { useChatStore } = await loadChatStore();
+      await context.enableRealProjectExecutionContext();
+      const taskState = taskStoreState as typeof taskStoreState & { branchWorktrees?: Record<string, string> };
+      taskState.branchWorktrees = {};
+      const entered = createDeferred<void>();
+      const ready = createDeferred<void>();
+      taskStoreState.startTask.mockImplementationOnce(async () => {
+        entered.resolve();
+        await ready.promise;
+        if (outcome === 'start-error') throw new Error('Worktree preparation failed');
+        if (outcome === 'deleted-task') { taskStoreState.tasks = []; return; }
+        taskStoreState.tasks = [{ ...task, draft: false, status: 'InProgress', branch_name: 'feature/first',
+          execution_targets: [{ projectId: 'project-1', executionMode: 'git',
+            branchName: 'feature/first', worktreeKey: 'first-worktree' }],
+        }];
+        taskState.branchWorktrees = outcome === 'missing-worktree' ? {} : { 'first-worktree': '/worktrees/first' };
+        if (outcome === 'deleted-project') appState.projectGroups = [];
+      });
+      const { services } = await import('../../services');
+      const { useSkillsStore } = await import('../useSkillsStore');
+      const skill = context.createSkillManifest();
+      const previousRunScript = useSkillsStore.getState().runSkillScriptResult;
+      useSkillsStore.setState({ runSkillScriptResult: useSkillsStore.getInitialState().runSkillScriptResult, skills: [skill], settingsBySkillId: { [skill.id]: {
+        enabled: true, scriptsEnabled: true,
+        trust: { contentHash: skill.contentHash!, grantedBy: 'user', grantedAt: '2026-09-22T00:00:00Z' },
+      } } });
+      const runScript = spyOn(services, 'runSkillScript').mockResolvedValue({
+        skillId: skill.id, scriptPath: 'scripts/check.sh', stdout: 'script ran', stderr: '',
+        exitCode: 0, timedOut: false, truncated: false,
+      });
+      const originalGroups = appState.projectGroups;
+      try {
+        context.setImplementStoreState(useChatStore, { conversationId: 'first-conv', taskId: 'first-task' });
+        const pending = useChatStore.getState().sendMessage({ conversationId: 'first-conv', content: 'Run the check.' });
+        await entered.promise;
+        appState.selectedTaskId = 'other-task';
+        appState.selectedProjectId = 'project-2';
+        if (outcome !== 'ready') {
+          ready.resolve();
+          await expect(pending).rejects.toMatchObject({ message: expect.stringMatching(/preparation|task|project|workspace/i) });
+          expect(streamChatMock).not.toHaveBeenCalled();
+          expect(runScript).not.toHaveBeenCalled();
+          return;
+        }
+        ready.resolve();
+        await pending;
+        const options = context.getLatestStreamOptions<{
+          onToolCall: (name: string, args: Record<string, unknown>, id: string) => Promise<unknown>;
+        }>();
+        expect(String(await options.onToolCall('skill_run_script', {
+          skill_id: skill.id, script_path: 'scripts/check.sh', allow_workspace: true,
+        }, 'first-script'))).toContain('script ran');
+        expect(runScript).toHaveBeenCalledWith(expect.objectContaining({ workspacePath: '/worktrees/first' }));
+        expect(JSON.stringify(context.repositoryInstructionsLoadMock.mock.calls)).toContain('/worktrees/first');
+      } finally {
+        runScript.mockRestore();
+        useSkillsStore.setState({ runSkillScriptResult: previousRunScript });
+        context.useRealProjectExecutionContext = false;
+        appState.projectGroups = originalGroups;
+        delete taskState.branchWorktrees;
+      }
+    });
+
     it('ignores a delayed Implement context read after group navigation', async () => {
       appState.mode = 'Implement';
       appState.selectedGroupId = 'group-old';

@@ -910,3 +910,7 @@ mod tests {
         cleanup_workspace(&workspace);
     }
 }
+
+pub mod operations;
+
+pub(crate) mod mutation_locks;

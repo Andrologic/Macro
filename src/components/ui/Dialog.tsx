@@ -1,4 +1,13 @@
-import React, { createContext, useContext, useEffect, useId, useRef, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 
 const FOCUSABLE_SELECTOR = [
@@ -13,9 +22,20 @@ const FOCUSABLE_SELECTOR = [
 interface OpenDialogEntry {
   order: number;
   zIndex: number;
+  escapeHandlers: Set<EscapeHandler>;
+  portals: Set<HTMLElement>;
+}
+
+type EscapeHandler = () => boolean | void;
+
+interface DialogContextValue {
+  zIndex: number;
+  registerEscapeHandler: (handler: EscapeHandler) => () => void;
+  registerPortal: (portal: HTMLElement) => () => void;
 }
 
 const ParentDialogZIndexContext = createContext<number | null>(null);
+export const DialogContext = createContext<DialogContextValue | null>(null);
 const openDialogs = new Map<HTMLElement, OpenDialogEntry>();
 let nextDialogOrder = 0;
 const backgroundAttributes = new Map<HTMLElement, { inert: boolean; ariaHidden: string | null }>();
@@ -50,6 +70,11 @@ const getFocusableElements = (container: HTMLElement): HTMLElement[] =>
     (element) => !element.hasAttribute('hidden')
   );
 
+const getDialogFocusableElements = (entry: OpenDialogEntry, panel: HTMLElement): HTMLElement[] => [
+  ...getFocusableElements(panel),
+  ...Array.from(entry.portals).flatMap(getFocusableElements),
+];
+
 const restoreFocusAfterDialogClose = (
   previousFocus: HTMLElement | null,
 ): void => {
@@ -59,7 +84,12 @@ const restoreFocusAfterDialogClose = (
     return;
   }
 
-  if (previousFocus && topmostDialog.contains(previousFocus)) {
+  const topmostEntry = openDialogs.get(topmostDialog);
+  const focusBelongsToTopmostDialog = previousFocus && (
+    topmostDialog.contains(previousFocus) ||
+    Array.from(topmostEntry?.portals ?? []).some((portal) => portal.contains(previousFocus))
+  );
+  if (focusBelongsToTopmostDialog) {
     previousFocus.focus();
     return;
   }
@@ -73,10 +103,12 @@ const synchronizeBackgroundInertness = (): void => {
   if (typeof document === 'undefined') return;
 
   const topmostDialog = getTopmostDialog();
+  const topmostEntry = topmostDialog ? openDialogs.get(topmostDialog) : undefined;
   for (const child of Array.from(document.body.children).filter(
     (candidate): candidate is HTMLElement => candidate instanceof HTMLElement
   )) {
-    const shouldBeInert = openDialogs.size > 0 && child !== topmostDialog;
+    const isTopmostPortal = topmostEntry?.portals.has(child) ?? false;
+    const shouldBeInert = openDialogs.size > 0 && child !== topmostDialog && !isTopmostPortal;
     if (shouldBeInert) {
       if (!backgroundAttributes.has(child)) {
         backgroundAttributes.set(child, {
@@ -131,6 +163,30 @@ export const Dialog: React.FC<DialogProps> = ({
   const panelRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const escapeHandlersRef = useRef<Set<EscapeHandler>>(new Set());
+  const portalsRef = useRef<Set<HTMLElement>>(new Set());
+
+  const registerEscapeHandler = useCallback((handler: EscapeHandler) => {
+    escapeHandlersRef.current.add(handler);
+    return () => {
+      escapeHandlersRef.current.delete(handler);
+    };
+  }, []);
+
+  const registerPortal = useCallback((portal: HTMLElement) => {
+    portalsRef.current.add(portal);
+    synchronizeBackgroundInertness();
+    return () => {
+      portalsRef.current.delete(portal);
+      synchronizeBackgroundInertness();
+    };
+  }, []);
+
+  const dialogContextValue = useMemo<DialogContextValue>(() => ({
+    zIndex: effectiveZIndex,
+    registerEscapeHandler,
+    registerPortal,
+  }), [effectiveZIndex, registerEscapeHandler, registerPortal]);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -147,6 +203,8 @@ export const Dialog: React.FC<DialogProps> = ({
     openDialogs.set(root, {
       order: dialogOrder,
       zIndex: effectiveZIndex,
+      escapeHandlers: escapeHandlersRef.current,
+      portals: portalsRef.current,
     });
     synchronizeBackgroundInertness();
 
@@ -163,12 +221,22 @@ export const Dialog: React.FC<DialogProps> = ({
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
+
+        const entry = openDialogs.get(root);
+        const handlers = entry ? Array.from(entry.escapeHandlers).reverse() : [];
+        for (const handler of handlers) {
+          if (handler() !== false) return;
+        }
+
         onCloseRef.current();
         return;
       }
 
       if (event.key !== 'Tab') return;
-      const focusableElements = getFocusableElements(panel);
+      const entry = openDialogs.get(root);
+      const focusableElements = entry
+        ? getDialogFocusableElements(entry, panel)
+        : getFocusableElements(panel);
       if (focusableElements.length === 0) {
         event.preventDefault();
         panel.focus();
@@ -197,35 +265,33 @@ export const Dialog: React.FC<DialogProps> = ({
 
   return createPortal(
     <ParentDialogZIndexContext.Provider value={effectiveZIndex}>
-      <div
-        ref={rootRef}
-        data-macro-dialog-root
-        className={backdropClassName}
-        style={{ zIndex: effectiveZIndex }}
-        onClick={(event) => {
-          if (closeOnBackdropClick && event.target === event.currentTarget) onClose();
-        }}
-      >
+      <DialogContext.Provider value={dialogContextValue}>
         <div
-          ref={panelRef}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby={titleId}
-          aria-describedby={ariaDescribedBy}
-          tabIndex={-1}
-          className={panelClassName}
+          ref={rootRef}
+          data-macro-dialog-root
+          className={backdropClassName}
+          style={{ zIndex: effectiveZIndex }}
+          onClick={(event) => {
+            if (closeOnBackdropClick && event.target === event.currentTarget) onClose();
+          }}
         >
-          <h2 id={titleId} className="sr-only">{title}</h2>
-          {children}
+          <div
+            ref={panelRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            aria-describedby={ariaDescribedBy}
+            tabIndex={-1}
+            className={panelClassName}
+          >
+            <h2 id={titleId} className="sr-only">{title}</h2>
+            {children}
+          </div>
         </div>
-      </div>
+      </DialogContext.Provider>
     </ParentDialogZIndexContext.Provider>,
     document.body
   );
 };
 
-export const hasOpenDialog = (): boolean =>
-  typeof document !== 'undefined' && (
-    document.querySelector('[data-macro-dialog-root]') !== null ||
-    document.querySelector('[role="dialog"][aria-modal="true"]') !== null
-  );
+export { hasOpenDialog } from './dialogPresence';

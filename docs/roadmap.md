@@ -31,11 +31,14 @@ Un écart devenu obsolète doit être supprimé.
 
 ## 3. État actuel synthétique
 
-La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.4`.
-La configuration Tauri reprend la version de `package.json`. Cette version est
-publiée depuis le 5 septembre 2026 sur GitHub et le canal de mises à jour stable.
-Les paquets macOS universel, Windows x64/ARM64 et Linux x64 ont été construits
-et contrôlés par le workflow de release.
+La version déclarée par `package.json` et `src-tauri/Cargo.toml` est `0.1.5`.
+La configuration Tauri reprend la version de `package.json`. Le tag local
+`v0.1.5` désigne le commit `73e794d2`. Le code intégré depuis ce tag conserve
+la même version déclarée ; sa présence dans la branche de développement ne
+signifie pas qu'une nouvelle release a été publiée.
+
+L'état ci-dessous décrit le code intégré. Il ne vaut pas validation des paquets
+ou du canal de mises à jour.
 
 L'application dispose déjà d'une base solide :
 
@@ -58,7 +61,9 @@ L'application dispose déjà d'une base solide :
 - recherche locale compacte dans les listes Architect, Implement et Chat
 - brouillons de composer persistants par conversation ou tâche
 - tâches directes Git et édition directe des projets sans Git, avec checkpoints internes pour la review
-- couches de services, stores et IPC déjà structurées
+- contrats de domaine et adaptateurs de composition présents, avec extraction des workflows Chat, Tasks et Plans hors des stores
+- registres internes de vues, raccourcis et réglages présents, avec chargement différé des panneaux
+- contrats IPC générés et contrôles de frontières entre domaines présents
 - fondation headless expérimentale présente dans le code, sans capacité produit exposée
 
 En revanche, le produit cible n'est pas encore atteint sur plusieurs axes critiques :
@@ -74,9 +79,9 @@ La boucle d'attention desktop est livrée dans la version `0.1.4`.
 Les notifications et la file « À traiter » ramènent aux demandes en attente.
 Le périmètre est figé sur le code intégré au commit `22c16fea`. La branche
 locale `release/0.1.4` conserve le jalon de stabilisation. Le tag immuable
-`v0.1.4` pointe sur le commit `156c067a`, validé puis publié. Les corrections
-ultérieures feront l'objet d'une nouvelle version. Les nouvelles fonctionnalités
-sont réservées à la 0.1.5, dont le périmètre reste à décider.
+`v0.1.4` pointe sur le commit `156c067a`. Ce périmètre constitue un repère
+historique ; la version déclarée courante est désormais `0.1.5`. Les évolutions
+intégrées depuis ce repère sont décrites dans l'état courant ci-dessus.
 
 Écarts résolus dans le code :
 
@@ -158,13 +163,17 @@ une nouvelle politique de merge automatique restent hors périmètre de la
 
 ### 4.4 Review et édition ciblée
 
+État déjà présent :
+- chargement du contenu et brouillon éditable dans la review pour les fichiers éligibles
+- sauvegarde du brouillon avec contrôle de révision du fichier
+
 État attendu :
 - review principalement en lecture
 - possibilité d'ajuster rapidement les modifications de l'IA
 - chargement progressif de contexte puis du fichier complet si besoin
 
 État à consolider :
-- surface d'édition exacte
+- couverture des fichiers éligibles à l'édition
 - expérience de correction manuelle dans les diffs
 - ergonomie de validation du code après retouche
 

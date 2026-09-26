@@ -19,6 +19,7 @@ const DECLARATIVE_PROVIDER_TYPES: &[&str] = &[
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct DevProviderOverrideConfig {
     pub name: Option<String>,
     pub provider_type: Option<String>,
@@ -27,7 +28,7 @@ pub struct DevProviderOverrideConfig {
     pub is_local: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
 pub struct DevProviderOverridesFile {
     pub providers: Option<HashMap<String, DevProviderOverrideConfig>>,
 }

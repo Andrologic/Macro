@@ -1,3 +1,4 @@
+import { useShortcutBinding } from '../../hooks/useShortcutBinding';
 import React, {
   Suspense,
   useCallback,
@@ -94,7 +95,8 @@ import {
 } from '../implement/TaskBlockedState';
 import {
   buildChatTranscriptItems,
-  getTranscriptMessageIndexById,
+  buildTranscriptMessageIndex,
+  buildTranscriptBootstrapWindow,
   isChatTranscriptCompactionProgressPhase,
   type ChatTranscriptItem,
   type ChatTranscriptMessageItem,
@@ -1310,9 +1312,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   })));
   const promptHistoryNavigationMode = useShortcutsStore((state) => state.promptHistoryNavigationMode);
   const activeTurnSendBehavior = useShortcutsStore((state) => state.activeTurnSendBehavior ?? 'steer');
-  const secondarySendBinding = useShortcutsStore(
-    (state) => state.bindings ? state.bindings['chat.secondarySend'] : 'Mod+Enter',
-  );
+  const secondarySendBinding = useShortcutBinding('chat.secondarySend');
   const speechLanguage = useSpeechToTextStore((state) => state.language);
   const { tasks, startTask } = useTaskStore(useShallow((state) => ({
     tasks: state.tasks,
@@ -1350,6 +1350,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
   const composerFileInputRef = useRef<HTMLInputElement>(null);
   const pendingSpeechInsertionRef = useRef<SpeechComposerInsertion | null>(null);
+  const activeTurnSubmissionInFlightRef = useRef(false);
   const contextRefreshInFlightRef = useRef(false);
   const wasContextStreamingRef = useRef(false);
   const standaloneTaskBuildResetRef = useRef<string | null>(null);
@@ -2454,147 +2455,63 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         : undefined,
   });
   const messageIndexById = useMemo(
-    () => {
-      const indexed = new Map<string, number>();
-      for (const message of currentMessages) {
-        const transcriptIndex = getTranscriptMessageIndexById(
-          transcriptItems,
-          message.id,
-        );
-        if (transcriptIndex !== null) {
-          indexed.set(message.id, transcriptIndex);
-        }
-      }
-      return indexed;
-    },
-    [currentMessages, transcriptItems]
+    () => buildTranscriptMessageIndex(transcriptItems),
+    [transcriptItems]
   );
+  const bootstrapWindow = useMemo(
+    () => virtualMessageItems.length > 0 ? null : buildTranscriptBootstrapWindow(
+      transcriptItems,
+      (item) => item.kind === 'message' ? 220 : CHAT_COMPACTION_ROW_ESTIMATED_SIZE,
+      CHAT_TRANSCRIPT_ITEM_GAP,
+    ),
+    [transcriptItems, virtualMessageItems.length]
+  );
+  const transcriptGapAdjustments = useMemo(() => {
+    let total = 0;
+    const beforeRow: number[] = [];
+    const afterRow: number[] = [];
+    for (const [index, item] of transcriptItems.entries()) {
+      const previousItem = transcriptItems[index - 1];
+      const hasNext = index < transcriptItems.length - 1;
+      const isCompactionItem = item.kind !== 'message';
+      const isArchitectActionItem = item.kind === 'message' &&
+        item.message.role === 'user' &&
+        Boolean(resolveArchitectButtonActionFromContent(item.message.content, t));
+      if (isCompactionItem && previousItem?.kind === 'message' &&
+          previousItem.message.role === 'assistant') {
+        total += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
+      }
+      if (isArchitectActionItem && previousItem) {
+        total += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
+      }
+      const before = total;
+      if (isCompactionItem && hasNext) total += CHAT_TRANSCRIPT_ITEM_GAP;
+      if (isArchitectActionItem && hasNext) total += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
+      beforeRow.push(before);
+      afterRow.push(total);
+    }
+    return { beforeRow, afterRow, total };
+  }, [t, transcriptItems]);
   const renderedMessageItems = useMemo(
     () => {
-      const sourceItems =
-        virtualMessageItems.length > 0
-          ? virtualMessageItems
-          : (() => {
-              let start = 0;
-              return transcriptItems.map((item, index) => {
-                const size =
-                  item.kind === 'compaction_boundary'
-                    ? CHAT_COMPACTION_ROW_ESTIMATED_SIZE
-                    : item.kind === 'compaction_progress'
-                      ? CHAT_COMPACTION_ROW_ESTIMATED_SIZE
-                      : 220;
-                const renderedItem = {
-                  index,
-                  key: item.key,
-                  size,
-                  start,
-                  item,
-                };
-                start += size + CHAT_TRANSCRIPT_ITEM_GAP;
-                return renderedItem;
-              });
-            })();
-
-      return sourceItems.reduce<{
-        items: typeof sourceItems;
-        positionAdjustment: number;
-      }>((state, item) => {
-        const previousItem = transcriptItems[item.index - 1];
-        const isArchitectActionItem =
-          item.item.kind === 'message' &&
-          item.item.message.role === 'user' &&
-          Boolean(resolveArchitectButtonActionFromContent(item.item.message.content, t));
-        const isCompactionItem =
-          item.item.kind === 'compaction_boundary' ||
-          item.item.kind === 'compaction_progress';
-        const assistantGapAdjustment =
-          isCompactionItem &&
-          previousItem?.kind === 'message' &&
-          previousItem.message.role === 'assistant'
-            ? CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION
-            : 0;
-        const architectActionTopGapAdjustment =
-          isArchitectActionItem && previousItem
-            ? CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION
-            : 0;
-        const adjustmentBeforeRender =
-          state.positionAdjustment +
-          assistantGapAdjustment +
-          architectActionTopGapAdjustment;
-        const nextItem = transcriptItems[item.index + 1];
-        const compactionFollowingGapAdjustment =
-          isCompactionItem && nextItem ? CHAT_TRANSCRIPT_ITEM_GAP : 0;
-        const architectActionFollowingGapAdjustment =
-          isArchitectActionItem && nextItem
-            ? CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION
-            : 0;
-        return {
-          items: [
-            ...state.items,
-            {
-              ...item,
-              start: item.start - adjustmentBeforeRender,
-            },
-          ],
-          positionAdjustment:
-            adjustmentBeforeRender +
-            compactionFollowingGapAdjustment +
-            architectActionFollowingGapAdjustment,
-        };
-      }, { items: [], positionAdjustment: 0 }).items;
+      const sourceItems = bootstrapWindow?.rows ?? virtualMessageItems;
+      // Virtualizer offsets already select the visible window. Preserve its local
+      // spacing correction; the bootstrap tail instead starts in the full transcript.
+      const firstIndex = sourceItems[0]?.index ?? 0;
+      const precedingAdjustment = !bootstrapWindow && firstIndex > 0
+        ? transcriptGapAdjustments.afterRow[firstIndex - 1]
+        : 0;
+      return sourceItems.map((item) => ({
+        ...item,
+        start: item.start - transcriptGapAdjustments.beforeRow[item.index] + precedingAdjustment,
+      }));
     },
-    [t, transcriptItems, virtualMessageItems]
+    [virtualMessageItems, bootstrapWindow, transcriptGapAdjustments]
   );
-  const compactionGapAdjustment = useMemo(
-    () =>
-      transcriptItems.reduce((total, item, index) => {
-        let adjustment = total;
-        const isCompactionItem =
-          item.kind === 'compaction_boundary' || item.kind === 'compaction_progress';
-        const isArchitectActionItem =
-          item.kind === 'message' &&
-          item.message.role === 'user' &&
-          Boolean(resolveArchitectButtonActionFromContent(item.message.content, t));
-
-        if (isCompactionItem) {
-          const previousItem = transcriptItems[index - 1];
-          if (
-            previousItem?.kind === 'message' &&
-            previousItem.message.role === 'assistant'
-          ) {
-            adjustment += CHAT_COMPACTION_AFTER_ASSISTANT_GAP_REDUCTION;
-          }
-          if (index < transcriptItems.length - 1) {
-            adjustment += CHAT_TRANSCRIPT_ITEM_GAP;
-          }
-        }
-
-        if (
-          isArchitectActionItem &&
-          index > 0
-        ) {
-          adjustment += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
-        }
-        if (
-          isArchitectActionItem &&
-          index < transcriptItems.length - 1
-        ) {
-          adjustment += CHAT_ARCHITECT_ACTION_ITEM_GAP_REDUCTION;
-        }
-        return adjustment;
-      }, 0),
-    [t, transcriptItems]
+  const renderedMessageTotalSize = Math.max(
+    0,
+    (bootstrapWindow?.totalSize ?? virtualMessageTotalSize) - transcriptGapAdjustments.total,
   );
-  const renderedMessageTotalSize =
-    virtualMessageItems.length > 0
-      ? Math.max(0, virtualMessageTotalSize - compactionGapAdjustment)
-      : Math.max(
-          0,
-          renderedMessageItems.reduce(
-            (total, item) => Math.max(total, item.start + item.size),
-            0,
-          )
-        );
 
   const previousConversationIdRef = useRef<string | null>(null);
   const pendingConversationJumpRef = useRef<string | null>(null);
@@ -2615,8 +2532,8 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     const jumpToBottom = () => {
       const container = scrollContainerRef.current;
       if (!container) return;
-      if (currentMessages.length > 0) {
-        scrollToMessageIndex(currentMessages.length - 1, { align: 'end' });
+      if (transcriptItems.length > 0) {
+        scrollToMessageIndex(transcriptItems.length - 1, { align: 'end' });
       }
       container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
     };
@@ -2628,7 +2545,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
         pendingConversationJumpRef.current = null;
       });
     });
-  }, [currentMessages.length, scrollContainerRef, scrollToMessageIndex, selectedConversationId]);
+  }, [transcriptItems.length, scrollContainerRef, scrollToMessageIndex, selectedConversationId]);
 
   const ensureConversation = useCallback(async (): Promise<string | null> => {
     if (mode === 'Architect' && isWorkspaceMissing) return null;
@@ -3068,16 +2985,33 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     activeBehaviorOverride?: 'steer' | 'queue',
   ) => {
     if (isComposerDisabled || activeQuestionnaire || attachmentImportInFlightRef.current) return;
+    if (activeTurnSubmissionInFlightRef.current) return;
     if (isArchitectPlanSelectionMissing) return;
     if (mode === 'Architect' && isWorkspaceMissing) return;
     const text = (textOverride ?? composerEditorRef.current?.getTextContent() ?? '').trim();
     if (isBusySending) {
       if (!selectedConversationId || !text) return;
+      activeTurnSubmissionInFlightRef.current = true;
+      const submittedConversationId = selectedConversationId;
+      const submittedContextKey = composerDraftContextKey;
+      const submittedDraft: SavedComposerDraft = {
+        savedDraftText: textOverride ?? composerEditorRef.current?.getTextContent() ?? inputValue,
+        savedDraftImages: [...composerImages],
+        savedDraftContextRefs: cloneContextRefs(composerContextRefs),
+      };
+      const submittedDraftContextKeys = [
+        ...new Set([
+          submittedContextKey,
+          `conversation:${submittedConversationId}`,
+        ]),
+      ];
       try {
-        const internalAgentProfile = getConflictAssistantInternalAgentProfile(selectedConversationId);
+        const internalAgentProfile = getConflictAssistantInternalAgentProfile(
+          submittedConversationId,
+        );
         await submitDuringActiveTurn(
           {
-            conversationId: selectedConversationId,
+            conversationId: submittedConversationId,
             content: text,
             taskId: implementTaskIdForSend,
             images: [...composerImages],
@@ -3086,19 +3020,38 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
           activeBehaviorOverride ?? activeTurnSendBehavior,
         );
         if (internalAgentProfile) {
-          clearConflictAssistantInternalAgentProfile(selectedConversationId);
+          clearConflictAssistantInternalAgentProfile(submittedConversationId);
         }
-        clearComposerDraftForContext(composerDraftContextKey);
-        clearComposerDraftForContext(`conversation:${selectedConversationId}`);
-        composerEditorRef.current?.clear();
-        clearComposerContextRefs();
-        setComposerImages([]);
-        setInputValue('');
-        resetPromptHistoryNavigation();
+        submittedDraftContextKeys.forEach((contextKey) => {
+          const storedDraft = getComposerDraftForContext(contextKey);
+          if (storedDraft && composerDraftMatchesSavedDraft(storedDraft, submittedDraft)) {
+            clearComposerDraftForContext(contextKey);
+          }
+        });
+        const composerStillContainsSubmittedDraft =
+          activeComposerDraftContextKeyRef.current === submittedContextKey &&
+          composerDraftMatchesSavedDraft(latestComposerDraftRef.current, submittedDraft);
+        if (composerStillContainsSubmittedDraft) {
+          // The saved draft may lag behind the editor's 250 ms persistence timer.
+          // Acceptance consumes this context even when storage still holds an older edit.
+          clearComposerDraftForContext(submittedContextKey);
+          composerEditorRef.current?.clear();
+          clearComposerContextRefs();
+          setComposerImages([]);
+          setInputValue('');
+          latestComposerDraftRef.current = {
+            text: '',
+            images: [],
+            contextRefs: [],
+          };
+          resetPromptHistoryNavigation();
+        }
       } catch (error) {
         notify.error(t('chat.activeTurnSendFailed', 'Message not sent'), {
           description: toServiceError(error).message,
         });
+      } finally {
+        activeTurnSubmissionInFlightRef.current = false;
       }
       return;
     }

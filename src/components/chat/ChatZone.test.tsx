@@ -18,6 +18,11 @@ import { useConversationArchiveStore } from '../../stores/useConversationArchive
 import { useCitationsStore } from '../../stores/useCitationsStore';
 import type { PendingToolApproval } from '../../types';
 import type { ComposerDraft } from '../../stores/useChatStore';
+import {
+  COMPOSER_DRAFTS_STORAGE_KEY,
+  loadComposerDraftsFromStorage,
+  saveComposerDraftsToStorage,
+} from '../../stores/chat/chatLocalSessionState';
 import { registerArchitectScenarios } from './__tests__/architect.scenarios';
 import { registerCompactionScenarios } from './__tests__/compaction.scenarios';
 import { registerImplementScenarios } from './__tests__/implement.scenarios';
@@ -1165,6 +1170,43 @@ describe('ChatZone', () => {
     mock.restore();
   });
 
+  it('bounds the zero-viewport fallback for a long history without truncating conversation data', async () => {
+    chatState = {
+      ...chatState,
+      messages: Array.from({ length: 1000 }, (_, index) => buildMessage({
+        id: `history-${index}`, role: 'user', content: `History message ${index}`,
+      })),
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const rows = requireContainer().querySelectorAll('[data-index]');
+    expect(rows).toHaveLength(20);
+    expect(rows[0]?.getAttribute('data-index')).toBe('980');
+    expect(rows[19]?.getAttribute('data-index')).toBe('999');
+    expect(requireContainer().textContent).toContain('History message 999');
+    expect(chatState.messages).toHaveLength(1000);
+  });
+
+  it('preserves compaction spacing when the bootstrap window omits older rows', async () => {
+    chatState = {
+      ...chatState,
+      messages: Array.from({ length: 30 }, (_, index) => buildMessage({
+        id: `history-${index}`, role: 'assistant', content: `History message ${index}`,
+      })),
+      sessionCompactionEventsByConversationId: {
+        'conv-1': [
+          buildCompactionEvent({ id: 'early', displayAfterMessageId: 'history-0' }),
+          buildCompactionEvent({ id: 'recent', displayAfterMessageId: 'history-29' }),
+        ],
+      },
+    };
+    await act(async () => { requireRoot().render(<ChatZone />); });
+    const first = requireContainer().querySelector<HTMLElement>('[data-index="12"]');
+    const last = requireContainer().querySelector<HTMLElement>('[data-index="31"]');
+    expect(first?.style.transform).toBe('translateY(2700px)');
+    expect(last?.style.transform).toBe('translateY(7312px)');
+    expect(last?.parentElement?.style.height).toBe('7352px');
+  });
+
   it('renders the first user message when the selected conversation has messages', async () => {
     chatState = {
       ...chatState,
@@ -1380,6 +1422,189 @@ describe('ChatZone', () => {
     });
 
     expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'restores only unsent edits after active-turn acceptance and immediate reload (edited: %s)',
+    async (edited) => {
+      const acceptanceDeferred = createDeferred<'queued'>();
+      const originalSave = chatState.saveComposerDraftForContext;
+      const originalClear = chatState.clearComposerDraftForContext;
+      const persistTextDrafts = () => {
+        expect(saveComposerDraftsToStorage(Object.fromEntries(
+          Object.entries(composerDraftsByContextKey).map(([key, draft]) => [key, {
+            text: draft.text, images: [], contextRefs: [],
+          }]),
+        ))).toBe(true);
+      };
+      window.localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
+      chatState = {
+        ...chatState,
+        isStreaming: true,
+        submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+        saveComposerDraftForContext: mock((key: string, draft: ComposerDraft) => {
+          originalSave(key, draft);
+          persistTextDrafts();
+        }),
+        clearComposerDraftForContext: mock((key: string) => {
+          originalClear(key);
+          persistTextDrafts();
+        }),
+      };
+      chatState.saveComposerDraftForContext('conversation:conv-1', {
+        text: 'Version antérieure enregistrée.', images: [], contextRefs: [],
+      });
+      chatState.saveComposerDraftForContext('conversation:conv-2', {
+        text: 'Autre conversation intacte.', images: [], contextRefs: [],
+      });
+      await act(async () => { requireRoot().render(<ChatZone />); });
+      await setComposerText('Message accepté dans la file.');
+      await clickSendButton();
+      if (edited) await setComposerText('Nouvelle édition non envoyée.');
+      await act(async () => {
+        acceptanceDeferred.resolve('queued');
+        await acceptanceDeferred.promise;
+      });
+      expect(getComposerEditor().value).toBe(edited ? 'Nouvelle édition non envoyée.' : '');
+      // Observe durable state before pagehide or the 250 ms draft timer can repair it.
+      if (!edited) {
+        expect(loadComposerDraftsFromStorage()['conversation:conv-1']).toBeUndefined();
+      }
+      await act(async () => {
+        window.dispatchEvent(new window.Event('pagehide'));
+        requireRoot().unmount();
+      });
+      const restored = loadComposerDraftsFromStorage();
+      composerDraftsByContextKey = Object.fromEntries(Object.entries(restored).map(
+        ([key, draft]) => [key, { text: draft.text, images: [], contextRefs: [] }],
+      ));
+      root = createRoot(requireContainer());
+      await act(async () => { requireRoot().render(<ChatZone />); });
+      expect(getComposerEditor().value).toBe(edited ? 'Nouvelle édition non envoyée.' : '');
+      expect(restored['conversation:conv-2']?.text).toBe('Autre conversation intacte.');
+      window.localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    },
+  );
+
+  it('keeps a newer saved draft after deferred active-turn acceptance', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    const submittedRef = {
+      id: 'file:submitted.md',
+      kind: 'file' as const,
+      title: 'submitted.md',
+      data: { id: 'submitted.md', path: '/synthetic/submitted.md', relativePath: 'submitted.md' },
+    };
+    const newerRef = {
+      id: 'file:newer.md',
+      kind: 'file' as const,
+      title: 'newer.md',
+      data: { id: 'newer.md', path: '/synthetic/newer.md', relativePath: 'newer.md' },
+    };
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      composerContextRefs: [submittedRef],
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Premier message accepté.');
+    await clickSendButton();
+
+    expect(chatState.submitDuringActiveTurn).toHaveBeenCalledTimes(1);
+    await setComposerText('Nouveau brouillon conservé.');
+    await act(async () => {
+      useChatStore.setState({ composerContextRefs: [newerRef] });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    await pasteComposerImage();
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('Nouveau brouillon conservé.');
+    expect(requireContainer().querySelector('img[alt="Pasted image"]')).not.toBeNull();
+    expect(chatState.composerContextRefs).toEqual([newerRef]);
+    expect(composerDraftsByContextKey['conversation:conv-1']).toEqual({
+      text: 'Nouveau brouillon conservé.',
+      images: [expect.objectContaining({ mimeType: 'image/png' })],
+      contextRefs: [newerRef],
+    });
+  });
+
+  it('does not clear another conversation draft after active-turn acceptance', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      conversations: [
+        buildConversation(),
+        { ...buildConversation(), id: 'conv-2', title: 'Second conversation' },
+      ],
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Message de la première conversation.');
+    await clickSendButton();
+
+    await act(async () => {
+      useChatStore.setState({
+        selectedConversationId: 'conv-2',
+        composerContextRefs: [],
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 20));
+    });
+    await setComposerText('Brouillon de la deuxième conversation.');
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    });
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(getComposerEditor().value).toBe('Brouillon de la deuxième conversation.');
+    expect(composerDraftsByContextKey['conversation:conv-1']).toBeUndefined();
+    expect(composerDraftsByContextKey['conversation:conv-2']?.text).toBe(
+      'Brouillon de la deuxième conversation.',
+    );
+  });
+
+  it('accepts an active-turn submission only once during a deferred click', async () => {
+    const acceptanceDeferred = createDeferred<'queued'>();
+    chatState = {
+      ...chatState,
+      isStreaming: true,
+      submitDuringActiveTurn: mock(() => acceptanceDeferred.promise),
+    };
+
+    await act(async () => {
+      requireRoot().render(<ChatZone />);
+    });
+    await setComposerText('Un seul message doit être accepté.');
+    await clickSendButton();
+    await clickSendButton();
+
+    expect(chatState.submitDuringActiveTurn).toHaveBeenCalledTimes(1);
+
+    acceptanceDeferred.resolve('queued');
+    await act(async () => {
+      await acceptanceDeferred.promise;
+      await Promise.resolve();
+    });
   });
 
   it('inserts only the image when a paste contains image, text, and HTML', async () => {

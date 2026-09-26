@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   computePlanSelectorRefreshState,
@@ -9,6 +10,11 @@ import type {
   ArchitectPlanStatus,
 } from '../services/architectPlanService';
 import type { PlanNode } from '../types';
+import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
+
+// Capture once before mock.module rewrites the shared IPC re-export binding.
+// A query-suffixed facade still re-exports the same underlying runtime module.
+const { isTauriAvailable: actualIsTauriAvailable } = await import('../services/tauriIpc');
 
 type ProjectRecord = {
   id: string;
@@ -637,7 +643,7 @@ const registerUseAppStoreMocks = async () => {
 
   registerMockModulePair('../services/tauriIpc', () => ({
     ...actualTauriIpc,
-    isTauriAvailable: () => tauriAvailable || actualTauriIpc.isTauriAvailable(),
+    isTauriAvailable: () => tauriAvailable || actualIsTauriAvailable(),
     workspaceArchitectInvalidate: async () => undefined,
     workspaceRecoverMissingMetadata: workspaceRecoverMissingMetadataMock,
     workspaceReconcileProjectRegistryFromHints:
@@ -653,9 +659,17 @@ const registerUseAppStoreMocks = async () => {
   }));
 };
 
+let releasePlanRuntimePorts: (() => void) | undefined;
+
 const loadIsolatedUseAppStore = async () => {
   importCounter += 1;
-  return import(`./useAppStore.ts?architect-plan-resolution-test=${importCounter}`);
+  const module = await import(`./useAppStore.ts?architect-plan-resolution-test=${importCounter}`);
+  // main.tsx installs these ports before bootstrap; isolated stores bypass that entrypoint.
+  releasePlanRuntimePorts?.();
+  releasePlanRuntimePorts = installArchitectPlanRuntimePorts({
+    getProjectById: (id) => module.useAppStore.getState().getProjectById(id),
+  });
+  return module;
 };
 
 describe('useAppStore architect plan resolution', () => {
@@ -764,6 +778,8 @@ describe('useAppStore architect plan resolution', () => {
   });
 
   afterEach(() => {
+    releasePlanRuntimePorts?.();
+    releasePlanRuntimePorts = undefined;
     mock.restore();
   });
 
@@ -808,6 +824,43 @@ describe('useAppStore architect plan resolution', () => {
       });
     }
   }
+
+  it('stops bootstrap after its pending read without replacing the visible selection', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const scope = createLifecycleScope();
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    getAppBootstrapMock.mockImplementationOnce(async () => {
+      entered();
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { plan: null, standaloneProjects: [], projectGroups: [], planNodes: [], predictedBranches: [] };
+    });
+    useAppStore.setState({ mode: 'Chat', selectedProjectId: 'visible-project' });
+    const initializing = useAppStore.getState().initializeCritical(scope).catch((error: unknown) => error);
+    await reading;
+    scope.stop();
+    release();
+    expect((await initializing).name).toBe('LifecycleStoppedError');
+    expect(useAppStore.getState().selectedProjectId).toBe('visible-project');
+    expect(useAppStore.getState().mode).toBe('Chat');
+  });
+
+  it('does not reconcile or restore after an admitted session write finishes after stop', async () => {
+    const { useAppStore } = await loadIsolatedUseAppStore();
+    const scope = createLifecycleScope();
+    let release!: () => void;
+    upsertLocalSessionContextStateMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return null as never;
+    });
+    const resuming = useAppStore.getState().resumeAfterInitialize(scope).catch((error: unknown) => error);
+    scope.stop();
+    release();
+    expect((await resuming).name).toBe('LifecycleStoppedError');
+    expect(reconcileLocalProjectRegistryStateMock).not.toHaveBeenCalled();
+    expect(getLocalProjectContextStateMock).not.toHaveBeenCalled();
+  });
 
   it('keeps the current project and mode when a rename finishes after navigation', async () => {
     const { useAppStore } = await loadIsolatedUseAppStore();

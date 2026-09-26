@@ -14,7 +14,7 @@ import {
 describe("tool output limits", () => {
   it("keeps the Rust hard limits aligned with the shared TypeScript contract", async () => {
     const rustSource = await Bun.file(
-      new URL("../../src-tauri/src/commands/tool_output.rs", import.meta.url),
+      new URL("../../src-tauri/src/core/workspace_execution/tool_output.rs", import.meta.url),
     ).text();
     expect(rustSource).toContain("READ_DEFAULT_MAX_LINES: usize = 500");
     expect(rustSource).toContain("READ_HARD_MAX_LINES: usize = 3_000");

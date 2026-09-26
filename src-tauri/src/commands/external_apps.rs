@@ -37,7 +37,7 @@ impl ExternalOpenAction {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct ExternalAppOptionDto {
     pub id: String,
     pub label: String,
@@ -45,7 +45,7 @@ pub struct ExternalAppOptionDto {
     pub kind: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct ExternalAppCatalogDto {
     pub editor: Vec<ExternalAppOptionDto>,
     pub terminal: Vec<ExternalAppOptionDto>,

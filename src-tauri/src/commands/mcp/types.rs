@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct McpServerDto {
     pub id: String,
     pub name: String,
@@ -13,6 +14,7 @@ pub struct McpServerDto {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[derive(ts_rs::TS)]
 pub enum McpTransportDto {
     Stdio {
         command: String,
@@ -35,6 +37,7 @@ pub enum McpTransportDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct McpToolDto {
     pub id: String,
     pub server_id: String,
@@ -46,20 +49,45 @@ pub struct McpToolDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct McpDiscoverToolsResponse {
     pub tools: Vec<McpToolDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+#[derive(ts_rs::TS, Deserialize)]
+pub enum McpResultBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    #[serde(rename = "audio")]
+    Audio {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    #[serde(rename = "unavailable")]
+    Unavailable { reason: String },
+}
+
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct McpCallToolResponse {
     pub content: String,
+    pub blocks: Vec<McpResultBlock>,
     pub is_error: bool,
     pub raw_result: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct McpRuntimeSelector {
     pub server_id: String,
     #[serde(default)]
@@ -68,6 +96,7 @@ pub struct McpRuntimeSelector {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct McpRuntimeKey {
     pub server_id: String,
     #[serde(default)]
@@ -79,6 +108,7 @@ pub struct McpRuntimeKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(ts_rs::TS)]
 pub enum McpProtocolMode {
     Auto,
     Legacy,
@@ -87,6 +117,7 @@ pub enum McpProtocolMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(ts_rs::TS)]
 pub enum McpProtocolEra {
     Legacy,
     Modern,
@@ -94,6 +125,7 @@ pub enum McpProtocolEra {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(ts_rs::TS)]
 pub enum McpRuntimeStatus {
     Disconnected,
     Probing,
@@ -105,6 +137,7 @@ pub enum McpRuntimeStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct McpRuntimeServerSnapshot {
     pub key: McpRuntimeKey,
     pub status: McpRuntimeStatus,
@@ -113,6 +146,7 @@ pub struct McpRuntimeServerSnapshot {
     pub negotiated_protocol_version: Option<String>,
     pub protocol_decision_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub last_error_code: Option<String>,
     pub last_error: Option<String>,
     pub updated_at: String,
@@ -120,6 +154,7 @@ pub struct McpRuntimeServerSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct McpRuntimeSnapshotDto {
     pub generated_at: String,
     pub servers: Vec<McpRuntimeServerSnapshot>,
@@ -127,6 +162,7 @@ pub struct McpRuntimeSnapshotDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(ts_rs::TS)]
 pub struct McpCatalogDto {
     pub key: McpRuntimeKey,
     pub tools: Vec<McpToolDto>,

@@ -441,6 +441,7 @@ export const runSkillScript: ServiceProvider['runSkillScript'] = async (data) =>
       timeoutMs: data.timeoutMs ?? null,
       allowWorkspace: data.allowWorkspace === true,
       workspacePath: data.workspacePath ?? null,
+      workspaceRoot: data.workspaceRoot ?? null,
       projectRoots: data.projectRoots ?? [],
     },
   );

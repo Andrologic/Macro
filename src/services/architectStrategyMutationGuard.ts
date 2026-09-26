@@ -26,7 +26,7 @@ import {
   normalizeStrategyDependencies,
 } from "./implementTaskDerivation";
 import { normalizePlanNodeTodos } from "./planNodeTodos";
-import { normalizeArtifactContracts } from "./architectPlanArtifactService";
+import { normalizeArtifactContracts } from "../domains/plans/artifactContracts";
 
 const BRANCH_COLORS = [
   "#3b82f6",

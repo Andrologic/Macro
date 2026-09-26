@@ -1,3 +1,4 @@
+import { createLifecycleScope } from '../services/lifecycleScope';
 import { registerToolApprovalRecoveryScenarios } from './__tests__/toolApprovalRecovery.scenarios';
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type {
@@ -16,8 +17,10 @@ import {
   type ArchitectPlanStatus,
 } from '../services/architectPlanService';
 import { createDeferred } from '../test-utils/deferred';
+import { installArchitectPlanRuntimePorts } from '../services/architectPlanRuntimeService';
 import { recoverFailedPlanActivation } from '../components/architect/planActivationRecovery';
 import { registerComposerDraftQueueScenarios } from './__tests__/composerDraftQueue.scenarios';
+import { registerQueuedSubmissionRecoveryScenarios } from './__tests__/queuedSubmissionRecovery.scenarios';
 import { registerArchitectLifecycleScenarios } from './__tests__/architectLifecycle.scenarios';
 import { registerArchitectStrategyScenarios } from './__tests__/architectStrategy.scenarios';
 import { registerChatToolsAndSourcesScenarios } from './__tests__/chatToolsAndSources.scenarios';
@@ -31,6 +34,9 @@ import { registerConversationSelectionScenarios } from './__tests__/conversation
 import { registerQuestionnaireNavigationScenarios } from './__tests__/questionnaireNavigation.scenarios';
 const actualTauriIpc = await import('../services/tauriIpc');
 const actualConfigurationClient = await import('../services/configurationClient');
+let actualResolveProjectExecutionContext: typeof import('../services/projectExecutionContext').resolveProjectExecutionContext;
+let actualCompletePreparedTaskExecutionContext: typeof import('../services/projectExecutionContext').completePreparedTaskExecutionContext;
+let useRealProjectExecutionContextForTest = false;
 
 interface LocalStorageMock {
   clear: () => void;
@@ -1995,7 +2001,9 @@ const registerUseChatStoreMocks = async () => {
   }));
 
   mock.module('../services/projectExecutionContext', () => ({
-    resolveProjectExecutionContext: mock(() => ({
+    completePreparedTaskExecutionContext: (...args: Parameters<typeof actualCompletePreparedTaskExecutionContext>) =>
+      useRealProjectExecutionContextForTest ? actualCompletePreparedTaskExecutionContext(...args) : args[0],
+    resolveProjectExecutionContext: mock((input: Parameters<typeof actualResolveProjectExecutionContext>[0]) => useRealProjectExecutionContextForTest ? actualResolveProjectExecutionContext(input) : ({
       groupName: 'Macro',
       groupId: 'group-1',
       projectName: 'Web',
@@ -2041,9 +2049,16 @@ const registerUseChatStoreMocks = async () => {
 
 };
 
+const chatSubscriptionDisposers = new Set<() => void>();
+afterEach(() => {
+  for (const stop of chatSubscriptionDisposers) stop();
+  chatSubscriptionDisposers.clear();
+});
 const loadChatStore = async () => {
   importCounter += 1;
-  return import(`./useChatStore.ts?test=${importCounter}`);
+  const module = await import(`./useChatStore.ts?test=${importCounter}`);
+  chatSubscriptionDisposers.add(module.useChatStore.getState().startSubscriptions());
+  return module;
 };
 
 const waitForToolboxPersistence = async () => {
@@ -2645,6 +2660,15 @@ const useChatStoreScenarioContext = {
   waitForConversationDiagnostics,
   waitForStreamCallCount,
   webSearchMock,
+  async enableRealProjectExecutionContext() {
+    const realModulePath = "../services/projectExecutionContext.ts?queue-tests";
+    const real = await import(realModulePath);
+    actualResolveProjectExecutionContext = real.resolveProjectExecutionContext;
+    actualCompletePreparedTaskExecutionContext = real.completePreparedTaskExecutionContext;
+    useRealProjectExecutionContextForTest = true;
+  },
+  get useRealProjectExecutionContext() { return useRealProjectExecutionContextForTest; },
+  set useRealProjectExecutionContext(value: boolean) { useRealProjectExecutionContextForTest = value; },
   get tauriAvailable() {
     return tauriAvailable;
   },
@@ -2693,9 +2717,12 @@ export type UseChatStoreScenarioContext = typeof useChatStoreScenarioContext;
 
 describe('useChatStore ensureArchitectConversationForPlan', () => {
   let localStorageMock: LocalStorageMock;
+  let releasePlanRuntimePorts: (() => void) | undefined;
 
   beforeEach(async () => {
     await registerUseChatStoreMocks();
+    // Isolated stores bypass main.tsx, which installs Plans ports before bootstrap.
+    releasePlanRuntimePorts = installArchitectPlanRuntimePorts({ getProjectById: appState.getProjectById });
     localStorageMock = createLocalStorageMock();
     (globalThis as { window?: unknown }).window = {
       localStorage: localStorageMock,
@@ -2931,6 +2958,8 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   });
 
   afterEach(() => {
+    releasePlanRuntimePorts?.();
+    releasePlanRuntimePorts = undefined;
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       writable: true,
@@ -2956,6 +2985,50 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       value: originalLocalStorage,
     });
     mock.restore();
+  });
+
+  it('stops hydration before replay recovery or publication after a delayed snapshot', async () => {
+    const { useChatStore } = await loadChatStore();
+    tauriAvailable = true;
+    let release!: () => void;
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    getChatBootstrapSnapshotMock.mockImplementationOnce(async () => {
+      entered();
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { conversations: [], messages_by_conversation_id: {} };
+    });
+    const scope = createLifecycleScope();
+    const loading = useChatStore.getState().initializeCritical(scope).catch((error: unknown) => error);
+    await reading;
+    const previousSettingsReads = dbGetAppSettingMock.mock.calls.length;
+    scope.stop();
+    release();
+    expect((await loading).name).toBe('LifecycleStoppedError');
+    expect(dbGetAppSettingMock.mock.calls.length).toBe(previousSettingsReads);
+    expect(useChatStore.getState().hydrationStatus).toBe('hydrating');
+  });
+
+  it('owns subscriptions across stop and restart without aborting an admitted Chat turn', async () => {
+    const { useChatStore } = await loadChatStore();
+    const controller = new AbortController();
+    useChatStore.setState({ conversationRuntimeById: {
+      'owned-turn': { phase: 'streaming', sessionId: 'session', turnId: 'turn', assistantMessageId: 'assistant', abortController: controller, lastError: null },
+    } });
+    const first = useChatStore.getState().startSubscriptions();
+    first();
+    first();
+    expect(controller.signal.aborted).toBe(false);
+    expect(appStoreSubscribers.size).toBe(0);
+    expect(taskStoreSubscribers.size).toBe(0);
+    const second = useChatStore.getState().startSubscriptions();
+    first();
+    expect(appStoreSubscribers.size).toBe(1);
+    expect(taskStoreSubscribers.size).toBe(1);
+    second();
+    await useChatStore.getState().drainSubscriptions();
+    expect(appStoreSubscribers.size).toBe(0);
+    expect(controller.signal.aborted).toBe(false);
   });
 
   it('keeps rejected native preference writes observable and retryable in the chat harness', async () => {
@@ -3121,8 +3194,12 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       timed_out: boolean;
       updated_at: string;
     }>();
+    const commandStarted = createDeferred<void>();
     terminalRunCommandFromChatMock.mockImplementationOnce(
-      async () => commandFinished.promise,
+      async () => {
+        commandStarted.resolve();
+        return commandFinished.promise;
+      },
     );
     terminalKillSessionFromChatMock.mockImplementationOnce(async () => {
       const commandResult = {
@@ -3142,16 +3219,24 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
       };
     });
 
+    const approvalReady = new Promise<void>(resolve => {
+      const unsubscribe = useChatStore.subscribe((state: ReturnType<typeof import('./useChatStore').useChatStore.getState>) => {
+        if (state.pendingToolApprovalByConversationId['implement-conv']?.toolCallId === 'terminal-run-cancelled') {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
     const toolCall = onToolCall(
       'terminal_run',
       { session_id: 'session-1', command: 'bun test' },
       'terminal-run-cancelled',
     );
-    await flushAsyncWork();
+    await approvalReady;
     useChatStore
       .getState()
       .approvePendingToolApprovalForConversation('implement-conv');
-    await flushAsyncWork();
+    await commandStarted.promise;
 
     useChatStore.getState().stopConversationStream('implement-conv');
     await toolCall;
@@ -3536,6 +3621,7 @@ describe('useChatStore ensureArchitectConversationForPlan', () => {
   registerReplayAndEditingScenarios(useChatStoreScenarioContext);
   registerImplementPolicyScenarios(useChatStoreScenarioContext);
   registerToolApprovalRecoveryScenarios(useChatStoreScenarioContext);
+  registerQueuedSubmissionRecoveryScenarios(useChatStoreScenarioContext);
   registerSendRuntimeAndDeletionScenarios(useChatStoreScenarioContext);
 });
 

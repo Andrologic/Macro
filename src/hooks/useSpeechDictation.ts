@@ -126,10 +126,9 @@ export const useSpeechDictation = ({
     recorderRef.current?.cancel();
     recorderRef.current = null;
     setElapsedSeconds(0);
-    if (phase !== 'transcribing' && phase !== 'enhancing') {
-      finishingRef.current = false;
-      setPhase('idle');
-    }
+    finishingRef.current = false;
+    setCompletion(null);
+    setPhase('idle');
     onError({ code: 'context-changed' });
   }, [contextKey, onError, phase]);
 
@@ -151,15 +150,21 @@ export const useSpeechDictation = ({
     const operationContext = operationContextRef.current;
     const providerId = operationProviderIdRef.current;
     const enhancement = operationEnhancementRef.current;
+    const recorder = recorderRef.current;
+    const isCurrent = () => mountedRef.current && operationId === operationIdRef.current
+      && operationContext === contextKeyRef.current;
     finishingRef.current = true;
     setCompletion(requestedCompletion);
     setPhase('transcribing');
     try {
-      const recorded = await recorderRef.current.stop();
-      recorderRef.current = null;
+      const recorded = await recorder.stop();
+      if (!isCurrent()) return;
+      if (recorderRef.current === recorder) recorderRef.current = null;
       if (!providerId) throw new Error('The speech provider changed during recording.');
       const prepared = await prepareAudioForSpeechProvider(recorded, providerId);
+      if (!isCurrent()) return;
       const bytes = new Uint8Array(await prepared.blob.arrayBuffer());
+      if (!isCurrent()) return;
       const result = await transcribe({
         providerId,
         audio: bytes,
@@ -220,13 +225,13 @@ export const useSpeechDictation = ({
         });
       }
     } finally {
-      finishingRef.current = false;
       if (operationId === operationIdRef.current) {
+        finishingRef.current = false;
         operationContextRef.current = null;
         operationProviderIdRef.current = null;
         operationEnhancementRef.current = null;
       }
-      if (mountedRef.current) {
+      if (isCurrent()) {
         setCompletion(null);
         setElapsedSeconds(0);
         setPhase('idle');
@@ -287,8 +292,9 @@ export const useSpeechDictation = ({
         void finishRecording();
       });
       if (mountedRef.current && operationId === operationIdRef.current) setPhase('recording');
+      else recorder.cancel();
     } catch (error) {
-      recorderRef.current = null;
+      if (recorderRef.current === recorder) recorderRef.current = null;
       if (mountedRef.current && operationId === operationIdRef.current) {
         operationContextRef.current = null;
         operationProviderIdRef.current = null;

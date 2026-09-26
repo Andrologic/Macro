@@ -1,11 +1,14 @@
+import { isMCPToolId } from '../../src/services/mcp/identifiers';
 import {
   CopilotClient,
   defineTool,
   type ModelInfo,
+  type SessionConfig,
   type PermissionRequest,
   type PermissionRequestResult,
   type Tool,
   type ToolInvocation,
+  type ToolResultObject,
 } from '@github/copilot-sdk';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -15,99 +18,27 @@ import path from 'node:path';
 import {
   filterCopilotSupportedToolIds,
   getMacroToolRegistryEntry,
-  type JsonSchema,
 } from '../../src/shared/macroToolRegistry';
+import {
+  BridgeError,
+  BridgeControlError,
+  type BridgeChatMessage,
+  type BridgeSendRequest,
+  type JsonRecord,
+  type RelayToolResult,
+  type ToolTraceSnapshot,
+} from './protocol';
+import {
+  BridgeControlChannel,
+  frontendToolTimeoutMs,
+  normalizeCopilotSendTimeoutMs,
+} from './controlChannel';
+import { toSdkToolResult } from './sdkToolResult';
+
 const MIN_CLI_VERSION = '1.0.12';
 const CLI_NAME = 'copilot';
-const DEFAULT_FRONTEND_TOOL_TIMEOUT_MS = 300_000;
-const TERMINAL_RUN_TIMEOUT_MARGIN_MS = 30_000;
-const MAX_TERMINAL_RUN_TIMEOUT_MS = 30 * 60 * 1000;
-const COPILOT_COMPLETION_MARGIN_MS = 30_000;
-const DEFAULT_COPILOT_SEND_TIMEOUT_MS =
-  MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS + COPILOT_COMPLETION_MARGIN_MS;
-const MIN_COPILOT_SEND_TIMEOUT_MS = 60 * 1000;
 const TOOL_HOST_URL_ENV = 'MACRO_TOOL_HOST_URL';
 const TOOL_HOST_BEARER_TOKEN_ENV = 'MACRO_TOOL_HOST_BEARER_TOKEN';
-
-type JsonRecord = Record<string, unknown>;
-
-const frontendToolTimeoutMs = (
-  toolName: string,
-  args: JsonRecord,
-  sessionTimeoutMs = DEFAULT_COPILOT_SEND_TIMEOUT_MS
-): number => {
-  const relayBudget = Math.max(1, sessionTimeoutMs - COPILOT_COMPLETION_MARGIN_MS);
-  if (toolName === 'question' || toolName.startsWith('need_')) {
-    return Math.min(
-      MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
-      relayBudget
-    );
-  }
-  if (toolName !== 'terminal_run') {
-    return Math.min(DEFAULT_FRONTEND_TOOL_TIMEOUT_MS, relayBudget);
-  }
-
-  const requested = args.timeout_ms;
-  const requestedMs =
-    typeof requested === 'number' && Number.isFinite(requested)
-      ? Math.max(0, Math.floor(requested))
-      : DEFAULT_FRONTEND_TOOL_TIMEOUT_MS - TERMINAL_RUN_TIMEOUT_MARGIN_MS;
-  return Math.min(
-    relayBudget,
-    MAX_TERMINAL_RUN_TIMEOUT_MS + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
-    Math.max(
-      DEFAULT_FRONTEND_TOOL_TIMEOUT_MS,
-      requestedMs + TERMINAL_RUN_TIMEOUT_MARGIN_MS,
-    ),
-  );
-};
-
-interface BridgeProjectMount {
-  project_id: string;
-  mount_name: string;
-  workspace_path: string | null;
-  display_name?: string;
-}
-
-interface BridgeChatMessageImageUrl {
-  url: string;
-}
-
-interface BridgeChatMessagePart {
-  type: string;
-  text?: string;
-  image_url?: BridgeChatMessageImageUrl;
-}
-
-interface BridgeToolCall {
-  id: string;
-  type: 'function';
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-interface BridgeChatMessage {
-  role: string;
-  content: string | BridgeChatMessagePart[];
-  tool_calls?: BridgeToolCall[];
-  tool_call_id?: string;
-}
-
-interface BridgeSendRequest {
-  request_id?: string;
-  model_id: string;
-  reasoning_effort?: string | null;
-  messages: BridgeChatMessage[];
-  allowed_tool_ids?: string[];
-  workspace_path?: string | null;
-  default_workspace_path?: string | null;
-  project_mounts?: BridgeProjectMount[];
-  virtual_root_enabled?: boolean;
-  focused_project_id?: string | null;
-  copilot_send_timeout_ms?: number | null;
-}
 
 interface ToolHostClient {
   baseUrl: string;
@@ -162,31 +93,6 @@ interface WorkspaceContext {
   candidates: WorkspaceCandidate[];
 }
 
-interface ToolTraceSnapshot {
-  tool_call_id: string;
-  tool_name: string;
-  detail?: string;
-  status: 'running' | 'done';
-}
-
-interface BridgeToolResultMessage {
-  type: 'tool_result';
-  request_id?: string;
-  tool_call_id: string;
-  result?: string;
-  hidden_context?: string | null;
-  visible_content?: string | null;
-  interrupt?: boolean;
-  error?: string;
-}
-
-interface RelayToolResult {
-  result: string;
-  hiddenContext?: string;
-  visibleContent?: string;
-  interrupt?: boolean;
-}
-
 interface CopilotSessionEventState {
   finalContent: string;
   lastError: string | null;
@@ -197,16 +103,7 @@ interface CopilotSessionEventState {
   thinkingOpen: boolean;
 }
 
-class BridgeError extends Error {
-  code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
-
-const emitJson = (payload: JsonRecord): void => {
+const emitJson = (payload: JsonRecord | BridgeHealthResult): void => {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 };
 
@@ -275,11 +172,6 @@ const getCopilotReasoningSummary = (
   optionalTrimmedText(state.streamedReasoning) ||
   optionalTrimmedText(state.completeReasoning) ||
   optionalTrimmedText(state.messageReasoning);
-
-const normalizeCopilotSendTimeoutMs = (value?: number | null): number =>
-  typeof value === 'number' && Number.isFinite(value) && value >= MIN_COPILOT_SEND_TIMEOUT_MS
-    ? Math.floor(value)
-    : DEFAULT_COPILOT_SEND_TIMEOUT_MS;
 
 const handleCopilotAssistantMessage = (
   state: CopilotSessionEventState,
@@ -416,190 +308,6 @@ const handleCopilotSessionEvent = (params: {
     state.completionReason =
       classifyCopilotWarningCompletionReason(data) ?? state.completionReason;
   }
-};
-
-class BridgeControlChannel {
-  private readonly reader = createInterface({ input: process.stdin });
-  private readonly pendingToolResults = new Map<
-    string,
-    {
-      resolve: (result: RelayToolResult) => void;
-      reject: (error: Error) => void;
-      timeout: ReturnType<typeof setTimeout>;
-    }
-  >();
-  private initialMessage: unknown | null = null;
-  private initialError: Error | null = null;
-  private initialClosed = false;
-  private initialResolved = false;
-  private readonly initialWaiters: Array<{
-    resolve: (value: unknown | null) => void;
-    reject: (error: Error) => void;
-  }> = [];
-
-  constructor() {
-    this.reader.on('line', (line) => {
-      this.handleLine(line);
-    });
-    this.reader.on('close', () => {
-      this.initialClosed = true;
-      this.flushInitialWaiters();
-      this.rejectPendingToolResults(
-        new BridgeError('tool_result_channel_closed', 'Copilot tool result channel closed.')
-      );
-    });
-  }
-
-  async readInitialJson<T>(): Promise<T | null> {
-    if (process.stdin.isTTY) {
-      return null;
-    }
-
-    if (this.initialResolved) {
-      if (this.initialError) throw this.initialError;
-      return this.initialMessage as T | null;
-    }
-
-    return new Promise<T | null>((resolve, reject) => {
-      this.initialWaiters.push({
-        resolve: (value) => resolve(value as T | null),
-        reject,
-      });
-      this.flushInitialWaiters();
-    });
-  }
-
-  requestTool(params: {
-    requestId: string;
-    toolCallId: string;
-    toolName: string;
-    args: JsonRecord;
-    sessionTimeoutMs: number;
-  }): Promise<RelayToolResult> {
-    if (this.pendingToolResults.has(params.toolCallId)) {
-      return Promise.reject(
-        new BridgeError(
-          'duplicate_tool_call_id',
-          `Duplicate Copilot tool call id "${params.toolCallId}".`
-        )
-      );
-    }
-
-    emitJson({
-      type: 'tool_request',
-      request_id: params.requestId,
-      tool_call_id: params.toolCallId,
-      tool_name: params.toolName,
-      args: params.args,
-    });
-
-    return new Promise<RelayToolResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingToolResults.delete(params.toolCallId);
-        reject(
-          new BridgeError(
-            'tool_result_timeout',
-            `Timed out waiting for Macro to execute tool "${params.toolName}".`
-          )
-        );
-      }, frontendToolTimeoutMs(params.toolName, params.args, params.sessionTimeoutMs));
-
-      this.pendingToolResults.set(params.toolCallId, {
-        resolve,
-        reject,
-        timeout,
-      });
-    });
-  }
-
-  close(): void {
-    this.reader.close();
-    this.rejectPendingToolResults(
-      new BridgeError('tool_result_channel_closed', 'Copilot tool result channel closed.')
-    );
-  }
-
-  private handleLine(line: string): void {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-
-    let message: unknown;
-    try {
-      message = JSON.parse(trimmed);
-    } catch (error) {
-      const parsedError = new BridgeError(
-        'invalid_control_message',
-        `Invalid Copilot control message: ${error instanceof Error ? error.message : String(error)}`
-      );
-      if (!this.initialResolved) {
-        this.initialError = parsedError;
-        this.initialResolved = true;
-        this.flushInitialWaiters();
-        return;
-      }
-      this.rejectPendingToolResults(parsedError);
-      return;
-    }
-
-    if (!this.initialResolved) {
-      this.initialMessage = message;
-      this.initialResolved = true;
-      this.flushInitialWaiters();
-      return;
-    }
-
-    if (isBridgeToolResultMessage(message)) {
-      this.resolveToolResult(message);
-    }
-  }
-
-  private flushInitialWaiters(): void {
-    if (!this.initialResolved && !this.initialClosed) return;
-    const waiters = this.initialWaiters.splice(0);
-    for (const waiter of waiters) {
-      if (this.initialError) {
-        waiter.reject(this.initialError);
-      } else {
-        waiter.resolve(this.initialResolved ? this.initialMessage : null);
-      }
-    }
-  }
-
-  private resolveToolResult(message: BridgeToolResultMessage): void {
-    const pending = this.pendingToolResults.get(message.tool_call_id);
-    if (!pending) return;
-
-    clearTimeout(pending.timeout);
-    this.pendingToolResults.delete(message.tool_call_id);
-
-    if (message.error) {
-      pending.reject(new BridgeError('tool_result_failed', message.error));
-      return;
-    }
-
-    pending.resolve({
-      result: typeof message.result === 'string' ? message.result : '',
-      hiddenContext:
-        typeof message.hidden_context === 'string' ? message.hidden_context : undefined,
-      visibleContent:
-        typeof message.visible_content === 'string' ? message.visible_content : undefined,
-      interrupt: message.interrupt === true,
-    });
-  }
-
-  private rejectPendingToolResults(error: Error): void {
-    for (const [toolCallId, pending] of this.pendingToolResults) {
-      clearTimeout(pending.timeout);
-      this.pendingToolResults.delete(toolCallId);
-      pending.reject(error);
-    }
-  }
-}
-
-const isBridgeToolResultMessage = (value: unknown): value is BridgeToolResultMessage => {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return record.type === 'tool_result' && typeof record.tool_call_id === 'string';
 };
 
 const normalizePath = (value?: string | null): string | null => {
@@ -1620,6 +1328,7 @@ const TOOL_HOST_GIT_READ_IDS = new Set([
 ]);
 
 const isFrontendRelayToolId = (toolId: string): boolean =>
+  isMCPToolId(toolId) ||
   toolId === 'question' ||
   toolId === 'read_file' ||
   toolId === 'web_fetch' ||
@@ -1683,7 +1392,7 @@ const executeCopilotMacroTool = async (
   invocation?: ToolInvocation,
   controlChannel?: BridgeControlChannel,
   recordRelayResult?: (result: RelayToolResult) => void
-): Promise<string> => {
+): Promise<string | ToolResultObject> => {
   const mode = inferMacroMode(request.allowed_tool_ids || []);
 
   if (isFrontendRelayToolId(toolId)) {
@@ -1695,14 +1404,14 @@ const executeCopilotMacroTool = async (
     }
 
     const result = await controlChannel.requestTool({
-      requestId: request.request_id || invocation?.sessionId || 'copilot',
-      toolCallId: invocation?.toolCallId || `${toolId}_${randomUUID()}`,
+      requestId: request.request_id ?? invocation?.sessionId ?? 'copilot',
+      toolCallId: invocation?.toolCallId ?? `${toolId}_${randomUUID()}`,
       toolName: toolId,
       args,
       sessionTimeoutMs: normalizeCopilotSendTimeoutMs(request.copilot_send_timeout_ms),
     });
     recordRelayResult?.(result);
-    return result.result;
+    return toSdkToolResult(result);
   }
 
   if (toolId === 'mark_source_passage') {
@@ -1744,6 +1453,23 @@ const executeCopilotMacroTool = async (
   );
 };
 
+const isToolArgumentObject = (value: unknown): value is JsonRecord =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const parseSdkReasoningEffort = (value: unknown): SessionConfig['reasoningEffort'] => {
+  if (value === undefined || value === null || value === '') return undefined;
+  switch (value) {
+    case 'low': return 'low';
+    case 'medium': return 'medium';
+    case 'high': return 'high';
+    case 'xhigh': return 'xhigh';
+    default: throw new BridgeError(
+      'invalid_reasoning_effort',
+      'Invalid reasoning_effort value. Supported values: low, medium, high, xhigh.',
+    );
+  }
+};
+
 const buildMacroTools = (
   request: BridgeSendRequest,
   options?: {
@@ -1754,18 +1480,59 @@ const buildMacroTools = (
   const context = buildWorkspaceContext(request);
   const allowedToolIds = filterCopilotSupportedToolIds(request.allowed_tool_ids || []);
 
-  return allowedToolIds
+  // The frontend catalogue already applies availability and schema restrictions.
+  // An allowlist entry alone must never recreate a tool removed from that catalogue.
+  const suppliedTools = new Map<string, JsonRecord>();
+  for (const tool of request.tools ?? []) {
+    if (!isToolArgumentObject(tool) || tool.type !== 'function' || !isToolArgumentObject(tool.function)) continue;
+    const definition = tool.function;
+    if (typeof definition.name !== 'string' || !allowedToolIds.includes(definition.name)) continue;
+    if (suppliedTools.has(definition.name)) {
+      throw new BridgeError('duplicate_macro_tool', `Duplicate Macro tool ${definition.name}.`);
+    }
+    if (!isToolArgumentObject(definition.parameters)) {
+      throw new BridgeError('invalid_macro_schema', `Invalid Macro schema for ${definition.name}.`);
+    }
+    suppliedTools.set(definition.name, definition);
+  }
+
+  const mcpTools: Tool[] = [];
+  const allowedMcpIds = new Set((request.allowed_tool_ids ?? []).filter(isMCPToolId));
+  const seen = new Set<string>();
+  for (const tool of request.tools ?? []) {
+    if (!isToolArgumentObject(tool) || tool.type !== 'function' || !isToolArgumentObject(tool.function)) continue;
+    const fn = tool.function;
+    if (typeof fn.name !== 'string' || !allowedMcpIds.has(fn.name)) continue;
+    if (seen.has(fn.name)) throw new BridgeError('duplicate_mcp_tool', `Duplicate MCP tool ${fn.name}.`);
+    if (!isToolArgumentObject(fn.parameters)) throw new BridgeError('invalid_mcp_schema', `Invalid MCP schema for ${fn.name}.`);
+    seen.add(fn.name);
+    const name = fn.name;
+    mcpTools.push(defineTool(name, {
+      description: typeof fn.description === 'string' ? fn.description : '',
+      parameters: fn.parameters,
+      handler: async (args: unknown, invocation: ToolInvocation) => {
+        if (!isToolArgumentObject(args)) throw new BridgeError('invalid_tool_arguments', 'Tool arguments must be an object.');
+        return executeCopilotMacroTool(request, context, name, args, invocation, options?.controlChannel, options?.recordRelayResult);
+      },
+    }));
+  }
+  return [...mcpTools, ...Array.from(new Set(allowedToolIds))
+    .filter((toolId) => suppliedTools.has(toolId))
     .map((toolId) => getMacroToolRegistryEntry(toolId))
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
     .map((entry) =>
       defineTool(entry.id, {
-        description: entry.description,
-        parameters: entry.parameters as JsonSchema & { type: 'object' },
+        description: typeof suppliedTools.get(entry.id)!.description === 'string'
+          ? suppliedTools.get(entry.id)!.description as string : entry.description,
+        parameters: suppliedTools.get(entry.id)!.parameters as JsonRecord,
         ...(entry.copilot?.overridesBuiltInTool === true
           ? { overridesBuiltInTool: true }
           : {}),
-        handler: async (args: JsonRecord, invocation: ToolInvocation) => {
+        handler: async (args: unknown, invocation: ToolInvocation) => {
           try {
+            if (!isToolArgumentObject(args)) {
+              throw new BridgeError('invalid_tool_arguments', 'Tool arguments must be an object.');
+            }
             return await executeCopilotMacroTool(
               request,
               context,
@@ -1776,13 +1543,36 @@ const buildMacroTools = (
               options?.recordRelayResult
             );
           } catch (error) {
+            if (error instanceof BridgeControlError) throw error;
             return `Error executing ${entry.id}: ${
               error instanceof Error ? error.message : String(error)
             }`;
           }
         },
       })
-    );
+    )];
+};
+
+const buildSessionToolConfig = (
+  request: BridgeSendRequest,
+  options?: Parameters<typeof buildMacroTools>[1],
+): Pick<SessionConfig, 'tools' | 'availableTools' | 'onPermissionRequest'> => {
+  const tools = buildMacroTools(request, options);
+  const allowedToolNames = new Set(tools.map((tool) => tool.name));
+  return {
+    tools,
+    availableTools: Array.from(allowedToolNames),
+    onPermissionRequest: (permissionRequest: PermissionRequest): PermissionRequestResult => {
+      if (
+        permissionRequest.kind === 'custom-tool' &&
+        typeof permissionRequest.toolName === 'string' &&
+        allowedToolNames.has(permissionRequest.toolName)
+      ) {
+        return { kind: 'approved' };
+      }
+      return { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
+    },
+  };
 };
 
 const handleHealth = async (): Promise<void> => {
@@ -1875,24 +1665,24 @@ const handleSend = async (): Promise<void> => {
       );
     }
 
+    const reasoningEffort = parseSdkReasoningEffort(request.reasoning_effort);
     const { system, prompt } = serializeConversationPrompt(request.messages);
     const toolTraces = new Map<string, ToolTraceSnapshot>();
     const hiddenContextBlocks: string[] = [];
     const eventState = createCopilotSessionEventState();
-    let interruptResult: RelayToolResult | null = null;
+    const relayState: { interruptResult: RelayToolResult | null } = { interruptResult: null };
     const recordRelayResult = (result: RelayToolResult) => {
       if (result.hiddenContext?.trim()) {
         hiddenContextBlocks.push(result.hiddenContext.trim());
       }
       if (result.interrupt) {
-        interruptResult = result;
+        relayState.interruptResult = result;
       }
     };
-    const tools = buildMacroTools(request, {
+    const toolConfig = buildSessionToolConfig(request, {
       controlChannel,
       recordRelayResult,
     });
-    const allowedToolNames = new Set(tools.map((tool) => tool.name));
 
     await withClient(async (client) => {
       const auth = await client.getAuthStatus();
@@ -1902,26 +1692,14 @@ const handleSend = async (): Promise<void> => {
 
       const session = await client.createSession({
         model: request.model_id,
-        ...(request.reasoning_effort ? { reasoningEffort: request.reasoning_effort } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
         workingDirectory:
           normalizePath(request.workspace_path) ||
           normalizePath(request.default_workspace_path) ||
           undefined,
         streaming: true,
         systemMessage: system ? { mode: 'append', content: system } : undefined,
-        tools,
-        availableTools: Array.from(allowedToolNames),
-        onPermissionRequest: (permissionRequest: PermissionRequest): PermissionRequestResult => {
-          if (
-            permissionRequest.kind === 'custom-tool' &&
-            typeof permissionRequest.toolName === 'string' &&
-            allowedToolNames.has(permissionRequest.toolName)
-          ) {
-            return { kind: 'approved' };
-          }
-
-          return { kind: 'denied-no-approval-rule-and-could-not-request-from-user' };
-        },
+        ...toolConfig,
       });
 
       try {
@@ -1954,8 +1732,8 @@ const handleSend = async (): Promise<void> => {
     emitJson({
       type: 'done',
       content:
-        interruptResult?.interrupt && interruptResult.visibleContent != null
-          ? interruptResult.visibleContent
+        relayState.interruptResult?.interrupt && relayState.interruptResult.visibleContent != null
+          ? relayState.interruptResult.visibleContent
           : eventState.finalContent,
       reasoning_summary: getCopilotReasoningSummary(eventState),
       hidden_context: hiddenContextBlocks.join('\n\n').trim() || undefined,
@@ -1989,9 +1767,11 @@ const main = async (): Promise<void> => {
 };
 
 export const __testables = {
+  parseSdkReasoningEffort,
   modelDescription,
   mapModel,
   buildMacroTools,
+  buildSessionToolConfig,
   closeCopilotThinkingBlock,
   classifyCopilotWarningCompletionReason,
   createCopilotSessionEventState,
