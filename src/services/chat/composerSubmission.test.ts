@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { captureComposerSnapshot, sameComposerSnapshot, persistableContextRefs } from './composerSubmission';
+import { captureComposerSnapshot, sameComposerSnapshot, persistableContextRefs, submissionHiddenContext } from './composerSubmission';
 import { COMPOSER_REFERENCE_PATTERN, referenceId, referenceText } from './composerReferenceText';
 import type { AgsdlSelectionReference, ContextReference } from '../../types';
 
@@ -30,4 +30,13 @@ it('never resolves a missing or malformed stable identity by its title', async (
   expect(resolveReference(parse('[file: README](macro-context://skill/actual)'), refs)).toBeUndefined();
   expect(resolveReference(parse('[file: README]'), refs)).toEqual(refs[0]);
   expect(resolveReference(parse('[file: README]'), [...refs, { ...refs[0], id: 'other' }])).toBeUndefined();
+});
+
+it('rejects multiple AgSDL selections even with supplied hidden context', () => {
+  const refs = [
+    { id: 'first', kind: 'agsdl' as const, title: 'First' },
+    { id: 'foreign', kind: 'agsdl' as const, title: 'Foreign' },
+  ];
+  expect(() => submissionHiddenContext(refs)).toThrow('Only one AgSDL selection');
+  expect(() => submissionHiddenContext(refs, '<agsdl_selection>existing</agsdl_selection>')).toThrow('Only one AgSDL selection');
 });

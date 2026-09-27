@@ -57,3 +57,5 @@ Supprimer une occurrence ne retire pas le contexte tant qu'une autre occurrence 
 `resolveReference` est partagé par le composeur et le transcript. Une nouvelle référence est résolue exclusivement par son identité et son type. Une identité introuvable ou malformée devient du texte, jamais une référence homonyme. La résolution par titre est réservée aux anciens marqueurs et exige une correspondance unique. Leur ancien rendu sans métadonnées reste pris en charge pour la compatibilité.
 
 Le collage AgSDL entre conversations ne contourne pas la vérification du plan, de la conversation et de la révision à l'envoi. Une sélection incompatible doit être retirée ou sélectionnée à nouveau dans le graphe de destination.
+
+Le brouillon accepte au plus une sélection AgSDL à l’envoi. Si un collage ou une restauration en introduit plusieurs, elles restent visibles et l’envoi est bloqué jusqu’au retrait des sélections en trop. Le contrôle s’applique aussi aux instructions pendant un tour actif et aux appels directs du store. Une sélection envoyée se rend à son emplacement dans le texte ; la pastille séparée reste réservée aux messages qui n’ont pas de marqueur intégré.

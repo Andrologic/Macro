@@ -1,4 +1,4 @@
-import { persistableContextRefs } from "../services/chat/composerSubmission";
+import { hasMultipleAgsdlContexts, persistableContextRefs } from "../services/chat/composerSubmission";
 import { agsdlContextForModel } from "../services/agsdl/chatContextPayload";
 import { type LifecycleContext, createLifecycleScope } from '../services/lifecycleScope';
 import type { PendingToolApprovalResolution } from "../services/chatToolExecutionContracts";
@@ -13362,6 +13362,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     submitDuringActiveTurn: async (payload, behavior) => {
+      if (hasMultipleAgsdlContexts(payload.contextRefs ?? get().composerContextRefs)) {
+        throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
+      }
       const runtime = getConversationRuntimeSnapshot(
         get().conversationRuntimeById,
         payload.conversationId,
@@ -13403,7 +13406,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const conversation = get().conversations.find(
         (candidate) => candidate.id === payload.conversationId,
       );
-      const contextRefs = persistableContextRefs(get().composerContextRefs);
+      const contextRefs = payload.contextRefs ?? persistableContextRefs(get().composerContextRefs);
       const revision = composerContextRefsRevision;
       const providerContent = [content, payload.hiddenContext].filter(Boolean).join("\n\n");
       const steerMessage: StreamMessage = {
@@ -13457,6 +13460,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
               isLoading: provider.isLoading,
               providerConfigs: provider.providerConfigs.map(config => ({ ...config })) } }
         : captureSendSnapshot(payload.conversationId);
+      if (hasMultipleAgsdlContexts(payload.contextRefs ?? snapshot.composerContextRefs)) {
+        throw buildSendError(i18n.t('agsdl.multipleChatSelections', { ns: 'agsdl', defaultValue: 'Keep only one AgSDL selection before sending.' }));
+      }
       if (isAppShutdownGateActive()) throw buildSendError(i18n.t('shutdown.closing', 'Macro is closing.'));
       let queuedUserPersisted = false;
       return sendChatMessage({ ...payload, submissionTurnId: queuedSubmission?.id }, snapshot, {

@@ -1,7 +1,7 @@
 import { getAgsdlContext, replaceAgsdlChatContext, legacyAgsdlReference, serializeAgsdlChatContext, readAgsdlChatSelection, isAgsdlChatContextCurrent } from "../../stores/agsdl/chatContext";
 import { createComposerTransaction } from "../../services/chat/composerTransaction";
 import { COMPOSER_REFERENCE_PATTERN, resolveReference, referenceText } from "../../services/chat/composerReferenceText";
-import { captureComposerSnapshot, sameComposerSnapshot, persistableContextRefs } from "../../services/chat/composerSubmission";
+import { captureComposerSnapshot, hasMultipleAgsdlContexts, sameComposerSnapshot, persistableContextRefs } from "../../services/chat/composerSubmission";
 import type { ContextRefKind } from "../../types";
 import { useAgsdlTranslation } from "../agsdl/useAgsdlTranslation";
 import { AgsdlSentSelection } from "../agsdl/AgsdlChatSelection";
@@ -614,11 +614,16 @@ const UserMessageContent: React.FC<{ content: string; hiddenContext?: string; co
   const selection = attached
     ? { title: attached.title, review: Boolean(attached.diagnostic) }
     : readAgsdlChatSelection(hiddenContext);
+  const hasInlineSelection = Boolean(selection) && [...content.matchAll(new RegExp(COMPOSER_REFERENCE_PATTERN))].some(match =>
+    match[1].toLowerCase() === 'agsdl' && (attached
+      ? resolveReference(match, contextRefs)?.id === attached.id
+      : !match[3] && match[2].trim() === selection?.title),
+  );
   const lines = content.split('\n');
 
   return (
     <div data-user-message-content="true" className="break-words leading-[1.35]">
-      {selection && <AgsdlSentSelection {...selection} />}
+      {selection && !hasInlineSelection && <AgsdlSentSelection {...selection} />}
       {lines.map((line, lineIndex) => {
         const parts: React.ReactNode[] = [];
         let lastIndex = 0;
@@ -1124,6 +1129,7 @@ const buildImplementKickoffPrompt = (params: {
 };
 
 const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
+  const { t: agsdlT } = useAgsdlTranslation();
   const { t } = useTranslation();
   const runtimeCapabilities = getServiceRuntimeCapabilities();
   const {
@@ -2583,6 +2589,14 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     if (startingExecutionRef.current) return false;
 
     const kickoffSnapshot = captureComposerSnapshot(latestComposerDraftRef.current);
+    if (hasMultipleAgsdlContexts(kickoffSnapshot.contextRefs)) {
+      notify.warning(agsdlT("agsdl.multipleChatSelections"));
+      return false;
+    }
+    if (getAgsdlContext(kickoffSnapshot.contextRefs)) {
+      notify.warning(agsdlT("agsdl.staleChatSelection"));
+      return false;
+    }
     startingExecutionRef.current = true;
     let conversationId: string | null = null;
     let goalActivated = false;
@@ -2703,6 +2717,7 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
       startingExecutionRef.current = false;
     }
   }, [
+    agsdlT,
     ensureConversation,
     activateConversationGoal,
     clearComposerDraftForContext,
@@ -2983,7 +2998,6 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     applySavedComposerDraft(session);
   }, [applySavedComposerDraft]);
 
-  const { t: agsdlT } = useAgsdlTranslation();
 
   const sendComposerMessage = async (
     textOverride?: string,
@@ -3011,6 +3025,10 @@ const ChatZone: React.FC<ChatZoneProps> = ({ headerActions }) => {
     });
     const ownsUnchangedComposer = () => transaction.canClear(currentComposerState());
     const capturedRefs = persistableContextRefs(snapshot.contextRefs);
+    if (hasMultipleAgsdlContexts(snapshot.contextRefs)) {
+      notify.warning(agsdlT("agsdl.multipleChatSelections"));
+      return;
+    }
     const agsdlContext = getAgsdlContext(snapshot.contextRefs);
 
     if (agsdlContext && (mode !== 'Architect' || agsdlContext.conversationId !== selectedConversationId || agsdlContext.planId !== activeArchitectPlanId || agsdlContext.branchName !== activePlanContext?.targetBranch || !isAgsdlChatContextCurrent(agsdlContext))) {

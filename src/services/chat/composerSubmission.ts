@@ -1,6 +1,10 @@
 import { serializeAgsdlChatContext } from "../agsdl/selectionContext";
 import type { Citation } from "../../stores/useCitationsStore";
-import type { ContextReference, PersistedContextReference, SkillManifest, WorkspaceFileReference } from "../../types";
+import type { ContextRefKind, ContextReference, PersistedContextReference, SkillManifest, WorkspaceFileReference } from "../../types";
+/** Pasted selections stay in the draft until the user chooses which one to keep. */
+export function hasMultipleAgsdlContexts(refs: readonly { kind: ContextRefKind }[] | undefined): boolean {
+  return (refs?.filter(ref => ref.kind === 'agsdl').length ?? 0) > 1;
+}
 export const persistableContextRefs = (
   refs: readonly ContextReference[],
 ): PersistedContextReference[] | undefined => {
@@ -78,6 +82,7 @@ export function sameComposerSnapshot(left: ComposerSnapshot, right: ComposerSnap
 
 /** Build model context from the same persisted references used to render the message. */
 export function submissionHiddenContext(refs: readonly PersistedContextReference[] | undefined, supplied?: string): string | undefined {
+  if (hasMultipleAgsdlContexts(refs)) throw new Error('Only one AgSDL selection may be sent.');
   if (supplied?.includes('<agsdl_selection>')) return supplied;
   const selection = refs?.find(ref => ref.kind === 'agsdl')?.agsdl;
   return [supplied, serializeAgsdlChatContext(selection)].filter(Boolean).join('\n\n') || undefined;

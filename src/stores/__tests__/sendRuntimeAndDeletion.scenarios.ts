@@ -61,11 +61,14 @@ export const registerSendRuntimeAndDeletionScenarios = (
       await flushAsyncWork();
       const options = getLatestStreamOptions<{ consumePendingSteers: () => Array<{content: unknown}>; messages: unknown[] }>();
       expect(JSON.stringify(options.messages)).toContain('initial reference');
-      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Steer visibly', hiddenContext: '<agsdl_selection>\nsteer reference</agsdl_selection>' }, 'steer');
+      const capturedRefs = [{ id: 'captured-file', kind: 'file' as const, title: 'Captured file', path: '/synthetic/captured.ts' }];
+      useChatStore.setState({ composerContextRefs: [{ id: 'later-file', kind: 'file', title: 'Later file', data: { path: '/synthetic/later.ts' } }] });
+      await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Steer visibly', hiddenContext: '<agsdl_selection>\nsteer reference</agsdl_selection>', contextRefs: capturedRefs }, 'steer');
       const steers = options.consumePendingSteers();
       expect(steers[0]?.content).toContain('steer reference');
       const persisted = useChatStore.getState().getConversationMessages('chat-context').find((message: ChatMessage) => message.content === 'Steer visibly');
       expect(persisted?.hidden_context).toContain('steer reference');
+      expect(persisted?.context_refs).toEqual(capturedRefs);
       expect(persisted?.content).toBe('Steer visibly');
       expect(createMessageMock).toHaveBeenCalledWith('chat-context', 'user', 'Steer visibly', expect.objectContaining({ hiddenContext: '<agsdl_selection>\nsteer reference</agsdl_selection>' }));
       await useChatStore.getState().submitDuringActiveTurn({ conversationId: 'chat-context', content: 'Queued visibly', hiddenContext: '<agsdl_selection>\nqueued reference</agsdl_selection>' }, 'queue');

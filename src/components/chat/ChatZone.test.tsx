@@ -1222,6 +1222,37 @@ describe('ChatZone', () => {
     expect(chatState.composerContextRefs).toHaveLength(1);
   });
 
+  it('keeps multiple pasted AgSDL selections visible and blocks Architect send', async () => {
+    const { useAgsdlStore, agsdlSessionKey } = await import('../../stores/useAgsdlStore');
+    const first = { id: 'selection-1', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'First' };
+    const second = { ...first, id: 'selection-2', title: 'Second', conversationId: 'other-conversation' };
+    useAgsdlStore.setState({ sessions: { [agsdlSessionKey(first)]: { source: '{}', annexes: {}, version: 'v1', persistedRevision: 1, dirty: false, saving: false, status: 'draft', history: [], future: [], reports: [], error: null } } });
+    appState = { ...appState, mode: 'Architect', activeArchitectPlanId: 'plan-1', activePlanContext: { id: 'plan-1', status: 'draft', targetBranch: 'develop' } };
+    chatState.conversations = [{ ...buildConversation(), scope_mode: 'Architect' }];
+    await act(async () => requireRoot().render(<ChatZone />));
+    await setComposerText('Review selections');
+    await act(async () => useChatStore.setState({ composerContextRefs: [
+      { id: first.id, kind: 'agsdl', title: first.title, data: first },
+      { id: second.id, kind: 'agsdl', title: second.title, data: second },
+    ] }));
+    await clickSendButton();
+    expect(chatState.sendMessage).not.toHaveBeenCalled();
+    expect(chatState.composerContextRefs).toHaveLength(2);
+    expect(getComposerEditor().value).toBe('Review selections');
+  });
+
+  it('keeps a sent AgSDL inline reference as one transcript chip', async () => {
+    const { referenceText } = await import('../../services/chat/composerReferenceText');
+    const selection = { id: 'sent-selection', conversationId: 'conv-1', planId: 'plan-1', branchName: 'develop', document: 'agsdl' as const, version: 'v1', persistedRevision: 1, path: '', title: 'Release' };
+    chatState.messages = [buildMessage({ id: 'sent-inline', role: 'user', content: `Review ${referenceText('agsdl', selection.id, selection.title)}`,
+      context_refs: [{ id: selection.id, kind: 'agsdl', title: selection.title, agsdl: selection }],
+    })];
+    await act(async () => requireRoot().render(<ChatZone />));
+    const message = requireContainer().querySelector('[data-user-message-content]');
+    expect(message?.querySelectorAll('[data-context-reference-kind="agsdl"]')).toHaveLength(1);
+    expect(message?.querySelector('[data-agsdl-sent-selection]')).toBeNull();
+  });
+
   it('shows a sent AgSDL selection from persisted context without exposing its technical data', async () => {
     chatState.messages = [buildMessage({
       id: 'sent-selection', role: 'user', content: 'Review this system',

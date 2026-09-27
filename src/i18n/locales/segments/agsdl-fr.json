@@ -206,6 +206,7 @@
   "chatSelection": "Sélection AgSDL",
   "removeChatSelection": "Retirer la sélection AgSDL",
   "staleChatSelection": "Le document a changé. Joignez à nouveau la sélection avant l’envoi.",
+  "multipleChatSelections": "Conservez une seule sélection AgSDL avant l’envoi. Retirez les autres sélections du composeur.",
   "queueSendFailed": "Le message en attente n’a pas été envoyé",
   "queueRetained": "Votre message et son contexte sont conservés pour réessayer : {{message}}",
   "chatDocumentMissing": "Chargez d’abord le document AgSDL.",

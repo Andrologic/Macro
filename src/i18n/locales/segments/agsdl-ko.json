@@ -206,6 +206,7 @@
   "chatSelection": "AgSDL 선택",
   "removeChatSelection": "AgSDL 선택 제거",
   "staleChatSelection": "문서가 변경되었습니다. 보내기 전에 선택 항목을 다시 첨부하세요.",
+  "multipleChatSelections": "보내기 전에 AgSDL 선택을 하나만 남기세요. 작성 창에서 다른 선택을 제거하세요.",
   "queueSendFailed": "대기 중인 메시지를 보내지 못했습니다",
   "queueRetained": "다시 시도할 수 있도록 메시지와 컨텍스트를 보관합니다: {{message}}",
   "chatDocumentMissing": "먼저 AgSDL 문서를 불러오세요.",

@@ -206,6 +206,7 @@
   "chatSelection": "Selección AgSDL",
   "removeChatSelection": "Quitar selección AgSDL",
   "staleChatSelection": "El documento ha cambiado. Vuelve a adjuntar la selección antes de enviar.",
+  "multipleChatSelections": "Conserva solo una selección AgSDL antes de enviar. Quita las demás selecciones del editor.",
   "queueSendFailed": "No se envió el mensaje en cola",
   "queueRetained": "El mensaje y su contexto se conservan para reintentar: {{message}}",
   "chatDocumentMissing": "Carga primero el documento AgSDL.",
