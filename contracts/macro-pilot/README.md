@@ -8,8 +8,7 @@ It adds separate Implement and global Conversation catalogs, immutable diff
 pagination and native account/session management. Version 1.0 remains frozen.
 This is a consumable contract, not a claim of integrated runtime support.
 Run `bun contracts/macro-pilot/test/validate-content.mjs`; follow the
-[C/D/E guide](../../docs/macro-pilot/content-consumer-guide.md) for integration.
-
+[integration guide](../../docs/macro-pilot/content-consumer-guide.md) for integration.
 
 This directory contains the portable wire contract shared by Macro, its relay,
 and the Flutter companion. It does not implement the service or the relay.

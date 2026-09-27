@@ -65,10 +65,11 @@ The relay authorization is checked again at effect boundaries; a reservation
 alone does not authorize a provider or tool effect. Historical snapshots remain
 partial when Macro has no durable evidence for their actor, time or run.
 
-The implemented scope is the accepted A1 core. Per-project permissions,
-conversation reading, actual diff content and global account/session lifecycle
-remain contract complements. Reviews contain commit references and a verdict;
-they do not merge or publish changes.
+The v1 supervision core and the negotiated v2 desktop content and account
+clients are implemented here. The desktop can read conversation captures and
+bounded diff content, and can manage account sessions. Per-project permissions,
+relay support and mobile presentation require separate integration and
+validation. Reviews record a verdict; they do not merge or publish changes.
 
 For an opt-in cross-check, independently start a synthetic relay fixture and run
 `bun dev/pilot-relay-cross-check.ts http://127.0.0.1:PORT`. The script accepts only
@@ -91,9 +92,8 @@ production CSP remains unchanged; tests execute generated validators with
 `Function` blocked and verify the Vite development import, including HMR URLs.
 
 Add `--project-scope` to the cross-check to exercise the public task-by-project
-page fixture. Relay D at `81f7828b` rejects that valid result with HTTP 400
-`invalid_reference`; the opt-in check fails until D accepts task membership via
-`project_ids`. C preserves this contract behavior. Reviews with an explicit
+page fixture. A participating relay must accept task membership through
+`project_ids` as defined by the public contract. Reviews with an explicit
 `ref.project_id` never inherit another project from their task.
 
 

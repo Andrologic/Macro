@@ -195,7 +195,7 @@ local_total HEAD to worktree over the union of staged/unstaged/untracked paths.
 
 `gitDiff` with explicit OIDs and requireComplete can supply short commit
 patches. `gitReviewSnapshot` and file hydration are separate mutable reads;
-neither proves an immutable local capture. C5 must implement capture before
+neither proves an immutable local capture. A producer must capture content before
 advertising 2.0. Serialize Macro mutations, read selected sides without following
 symlinks or invoking external diff/textconv, record HEAD/index/catalog/modes
 and bytes, then independently verify them. Retry once within ten seconds,
