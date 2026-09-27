@@ -5159,7 +5159,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_project_target_accepts_standalone_project() {
         let temp = TempDir::new().expect("temp dir");
-        let project_dir = temp.path().join("octan_sales");
+        let project_dir = temp.path().join("sample_sales");
         fs::create_dir_all(&project_dir).expect("project dir");
         let repo = Repository::init(&project_dir).expect("git repo");
         fs::write(project_dir.join("README.md"), "ready\n").expect("readme");
@@ -5178,7 +5178,10 @@ mod tests {
         )
         .expect("initial commit");
         let state = WorkspaceState {
-            standalone_projects: vec![terminal_test_project("project-octan-sales", "octan_sales")],
+            standalone_projects: vec![terminal_test_project(
+                "project-sample-sales",
+                "sample_sales",
+            )],
             ..WorkspaceState::default()
         };
         fs::write(
@@ -5187,11 +5190,11 @@ mod tests {
         )
         .expect("write workspace state");
 
-        let target = resolve_project_target(temp.path(), temp.path(), "project-octan-sales")
+        let target = resolve_project_target(temp.path(), temp.path(), "project-sample-sales")
             .await
             .expect("standalone project target");
 
-        assert_eq!(target.project_name, "project-octan-sales");
+        assert_eq!(target.project_name, "project-sample-sales");
         assert_eq!(target.workspace_path, project_dir.canonicalize().unwrap());
     }
 

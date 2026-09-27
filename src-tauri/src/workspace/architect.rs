@@ -2163,14 +2163,14 @@ mod tests {
     #[tokio::test]
     async fn list_plans_tags_physical_workspace_scope_with_single_project_hint() {
         let workspace = TempDir::new().expect("workspace temp dir");
-        let project_path = workspace.path().join("octan_sales");
+        let project_path = workspace.path().join("sample_sales");
         let _repo = init_repo(&project_path);
         let metadata_root = GitState::new()
             .resolve_macro_metadata_root(&project_path)
             .expect("project metadata root");
 
-        let current_project_id = "project-octan-sales-1780653766405";
-        let stale_project_id = "project-lplr-app-1780329499166";
+        let current_project_id = "project-sample-sales-1780653766405";
+        let stale_project_id = "project-sample-app-1780329499166";
         let plan_id = "refonte-catalogue-produit";
         write_plan_replica(
             &metadata_root,
@@ -2270,13 +2270,13 @@ mod tests {
         let workspace = TempDir::new().expect("workspace temp dir");
         let metadata_root = workspace.path().join("metadata");
         std_fs::create_dir_all(&metadata_root).expect("create metadata root");
-        let project_path = workspace.path().join("lplr-app");
+        let project_path = workspace.path().join("sample-app");
         let _repo = init_repo(&project_path);
         let project_metadata_root = GitState::new()
             .resolve_macro_metadata_root(&project_path)
             .expect("project metadata root");
 
-        let project_id = "project-lplr-app-1780237886690";
+        let project_id = "project-sample-app-1780237886690";
         let stale_project_id = "project-stale-before-standalone-migration";
         let plan_id = "refonte-catalogue-produit";
         let mut state = WorkspaceState::default();

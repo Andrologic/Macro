@@ -5176,31 +5176,31 @@ describe('useTaskStore task command terminal lifecycle', () => {
 
   it('uses the current registry repo path instead of stale task target snapshots when launching commands', async () => {
     appStoreState.selectedGroupId = null;
-    appStoreState.selectedProjectId = 'project-lplr-app-1780329499166';
+    appStoreState.selectedProjectId = 'project-sample-app-1780329499166';
     appStoreState.projectGroups = [];
     appStoreState.standaloneProjects = [
       {
-        id: 'project-lplr-app-1780329499166',
-        name: 'octan_sales',
-        path: '/repos/octan_sales',
+        id: 'project-sample-app-1780329499166',
+        name: 'sample_sales',
+        path: '/repos/sample_sales',
         gitSetupState: 'ready',
         directEdit: false,
       },
     ];
     appStoreState.getProjectById = (_projectId: string) => ({
-      id: 'project-lplr-app-1780329499166',
-      name: 'octan_sales',
-      path: '/repos/octan_sales',
+      id: 'project-sample-app-1780329499166',
+      name: 'sample_sales',
+      path: '/repos/sample_sales',
       gitSetupState: 'ready',
       directEdit: false,
     });
     taskProjectCommandRegistryMock = {
       version: 3,
       commandsByProjectPath: {
-        '/repos/octan_sales': {
-          projectId: 'project-lplr-app-1780329499166',
-          projectName: 'octan_sales',
-          projectPath: '/repos/octan_sales',
+        '/repos/sample_sales': {
+          projectId: 'project-sample-app-1780329499166',
+          projectName: 'sample_sales',
+          projectPath: '/repos/sample_sales',
           command: 'npm test',
           worktreeSetupCommand: 'bun install',
           openTerminalOnRun: true,
@@ -5217,22 +5217,22 @@ describe('useTaskStore task command terminal lifecycle', () => {
           title: 'Run renamed app',
           status: 'InProgress',
           draft: false,
-          project_id: 'project-lplr-app-1780329499166',
-          project_ids: ['project-lplr-app-1780329499166'],
+          project_id: 'project-sample-app-1780329499166',
+          project_ids: ['project-sample-app-1780329499166'],
           execution_targets: [
             {
-              projectId: 'project-lplr-app-1780329499166',
+              projectId: 'project-sample-app-1780329499166',
               branchName: 'feature/run-app',
-              worktreeKey: 'branch-project-lplr-app-feature-run-app',
-              repoPath: '/repos/lplr-app',
+              worktreeKey: 'branch-project-sample-app-feature-run-app',
+              repoPath: '/repos/sample-app',
               executionMode: 'git',
             },
           ],
         }),
       ],
       branchWorktrees: {
-        'project-lplr-app-1780329499166::feature/run-app':
-          '/repos/octan_sales/.macro/worktrees/task-1',
+        'project-sample-app-1780329499166::feature/run-app':
+          '/repos/sample_sales/.macro/worktrees/task-1',
       },
       taskCommandRuns: {},
       lastError: null,
@@ -5247,9 +5247,9 @@ describe('useTaskStore task command terminal lifecycle', () => {
     });
     expect(runWorktreeSetupCommandMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        projectId: 'project-lplr-app-1780329499166',
-        repoPath: '/repos/octan_sales',
-        worktreePath: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
+        projectId: 'project-sample-app-1780329499166',
+        repoPath: '/repos/sample_sales',
+        worktreePath: expect.stringContaining('/repos/sample_sales/.macro/worktrees/'),
         command: 'bun install',
       }),
       expect.anything(),
@@ -5257,8 +5257,8 @@ describe('useTaskStore task command terminal lifecycle', () => {
     expect(startTaskCommandTabMock).toHaveBeenCalledWith(
       expect.objectContaining({
         taskId: 'task-1',
-        projectId: 'project-lplr-app-1780329499166',
-        cwd: expect.stringContaining('/repos/octan_sales/.macro/worktrees/'),
+        projectId: 'project-sample-app-1780329499166',
+        cwd: expect.stringContaining('/repos/sample_sales/.macro/worktrees/'),
         command: 'npm test',
       })
     );
