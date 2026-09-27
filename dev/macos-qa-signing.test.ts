@@ -44,8 +44,10 @@ function fakeTools({
     if (args[0] === '-dr') {
       return `Executable=Macro\ndesignated => ${requirements.get(appPath) || designatedRequirement}\n`;
     }
-    if (args[0] === '--display' && args[1] === '--extract-certificates') {
-      writeFileSync(`${args[2]}0`, certificates.get(appPath) || certificate);
+    if (args[0] === '--display' && args[1]?.startsWith('--extract-certificates=')) {
+      expect(args).toHaveLength(3);
+      const prefix = args[1].slice('--extract-certificates='.length);
+      writeFileSync(`${prefix}0`, certificates.get(appPath) || certificate);
       return '';
     }
     if (args[0] === '--display' && args[1] === '--verbose=4') {

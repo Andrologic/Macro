@@ -73,7 +73,7 @@ function signingCertificateFingerprint(appPath, runCommand) {
   const certificateDirectory = mkdtempSync(resolve(tmpdir(), 'macro-qa-certificate-'));
   const certificatePrefix = resolve(certificateDirectory, 'certificate-');
   try {
-    runCommand('codesign', ['--display', '--extract-certificates', certificatePrefix, appPath]);
+    runCommand('codesign', ['--display', `--extract-certificates=${certificatePrefix}`, appPath]);
     return createHash('sha1').update(readFileSync(`${certificatePrefix}0`)).digest('hex').toUpperCase();
   } finally {
     rmSync(certificateDirectory, { recursive: true, force: true });
